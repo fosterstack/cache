@@ -3195,6 +3195,15 @@ PY
   newcase "vc-$1" "$(cat "$work/vc-$1.py")"; runck "vc-$1" '{"times": {}}'
 }
 for v in "run-script:bash vendor/example.test/dep/install.sh" \
+         "make-C:make -C vendor/example.test/dep" \
+         "python-version-suffix:python3.12 vendor/example.test/dep/run.py" \
+         "python-module:python3 -m vendor.example.test.dep.run" \
+         "python-option-first:python3 -W ignore vendor/example.test/dep/run.py" \
+         "go-run-flag-first:go run -mod=vendor vendor/example.test/dep/tool.go" \
+         "docker-build-context:docker build vendor/example.test/dep" \
+         "pip-constraint:pip install --require-hashes -r requirements.txt -c vendor/example.test/dep/constraints.txt" \
+         "pip-constraint-long:pip install --constraint=vendor/example.test/dep/constraints.txt -r requirements.txt" \
+         "unknown-command:frobnicate vendor/example.test/dep/x" \
          "run-dotslash:./vendor/example.test/dep/install.sh" \
          "source-script:source vendor/example.test/dep/install.sh" \
          "pip-requirements:pip install --require-hashes -r vendor/example.test/dep/requirements.txt" \
@@ -3203,7 +3212,9 @@ for v in "run-script:bash vendor/example.test/dep/install.sh" \
   CASE="a workflow step that runs or installs from vendor/ is refused: ${v%%:*} (exit 1)"
   check test "$rc" -eq 1
 done
-for v in "build-mod-vendor:go build -mod=vendor ./cmd/fscache" "vendor-check:bash bin/vendor-check.sh" "list:ls vendor/"; do
+for v in "build-mod-vendor:go build -mod=vendor ./cmd/fscache" "vendor-check:bash bin/vendor-check.sh" "list:ls vendor/" \
+         "ls-dot:ls ./vendor/example.test" "find:find vendor/example.test -type f" "cmp:cmp vendor/modules.txt /tmp/m.txt" "mod-vendor:go mod vendor" \
+         "test-d:test -d vendor/example.test" "grep:grep -rn foo vendor/example.test"; do
   vcase "ok-${v%%:*}" "${v#*:}"
   CASE="a plain mention of vendor/ that does not run or install from it is not refused: ${v%%:*} (exit 0)"
   check test "$rc" -eq 0
