@@ -14,7 +14,8 @@
     "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/release-sign-apks.sh: names the script '$here/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/release-sign-apks.sh: sets IFS (it can make a shell, interpreter or tool load other code)"
+    "AC1: bin/release-sign-apks.sh: sets IFS (it can make a shell, interpreter or tool load other code)",
+    "AC1: bin/release-sign-apks.sh: names the script 'bin/install-build-tools.sh', which is not exactly a path in this script's `runs` list"
    ]
   },
   {
@@ -30,7 +31,8 @@
     "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/release-sign-apks.sh: names the script '$here/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/release-sign-apks.sh: sets IFS (it can make a shell, interpreter or tool load other code)"
+    "AC1: bin/release-sign-apks.sh: sets IFS (it can make a shell, interpreter or tool load other code)",
+    "AC1: bin/release-sign-apks.sh: names the script 'bin/install-build-tools.sh', which is not exactly a path in this script's `runs` list"
    ]
   },
   {

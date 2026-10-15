@@ -1331,8 +1331,7 @@
         "at"
       ],
       "runs": [
-        "bin/apk-tool.py",
-        "bin/install-build-tools.sh"
+        "bin/apk-tool.py"
       ],
       "signs": "other",
       "reason": "cache P4's release signing: refuses unless Build and Rebuild agree on every apk, then re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
@@ -1342,6 +1341,11 @@
           "rule": "script-name",
           "text": "bin/build-apk-test.sh",
           "why": "a comment naming the test that runs a copy of this file with the TEST-SUBST lines replaced; prose, never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/install-build-tools.sh",
+          "why": "prose naming the installer: the comment and the error message that tell the operator how to install melange; never run from here (the script names it twice and one exception waives one occurrence: the second stays a known-red finding until the script is reworded)"
         }
       ],
       "env_mentions": [
