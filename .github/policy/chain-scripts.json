@@ -1277,7 +1277,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
-      "sha256": "ea0d41e6f899c290a9ff819e5b4edb5a383fab8452bffb6f1d1997e7f5e933a5",
+      "sha256": "401743043037b7b02b6d1883027c48c006f073b371670c5cb1e24ef218cd6a17",
       "exceptions": [
         {
           "rule": "deny",
@@ -1299,6 +1299,13 @@
           "line_sha256": "a04ec4cd4028105cb7577852900a340cd9b417283ed2c0b464dabe028adafe00",
           "count": 1,
           "why": "the refusal message naming the fixed location; prose, never run"
+        }
+      ],
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "os.path.join(d, \"ctrl.bin\")], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"})",
+          "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
         }
       ]
     },
@@ -1335,7 +1342,7 @@
       ],
       "signs": "other",
       "reason": "cache P4's release signing: refuses unless Build and Rebuild agree on every apk, then re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "3be36c26922a63e63053586da2a5a7dc376a8c1c1e2d1a38638475156b9e1f2f",
+      "sha256": "003d9477419f512b6da0f74be9445a37feb557db042574567d4e48fa3d3791c7",
       "exceptions": [
         {
           "rule": "script-name",
@@ -1345,19 +1352,19 @@
         {
           "rule": "script-name",
           "text": "bin/install-build-tools.sh",
-          "why": "prose naming the installer: the comment and the error message that tell the operator how to install melange; never run from here (the script names it twice and one exception waives one occurrence: the second stays a known-red finding until the script is reworded)"
+          "why": "prose naming the installer: the error message that tells the operator how to install melange; never run from here (the script names it once since cache#349 and the one exception waives it)"
+        },
+        {
+          "rule": "script-name",
+          "text": "build-apk.sh",
+          "why": "a comment naming the sibling script whose way of naming its helpers this file follows (repo-relative literal paths); prose, never run from here"
         }
       ],
       "env_mentions": [
         {
-          "name": "IFS",
-          "text": "while IFS= read -r f; do apks+=(\"$f\"); done",
-          "why": "the one-command IFS= prefix of read that keeps a filename intact; it does not persist"
-        },
-        {
-          "name": "IFS",
-          "text": "while IFS= read -r rel; do",
-          "why": "the one-command IFS= prefix of read that keeps a filename intact; it does not persist"
+          "name": "PATH",
+          "text": "r = subprocess.run([sys.argv[2], \"rsa\", \"-pubout\", \"-passin\", \"pass:\"], input=block.encode(), capture_output=True, env={\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"})",
+          "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
         }
       ]
     },

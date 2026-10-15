@@ -1772,13 +1772,13 @@ for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/ch
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
 # the committed entries of the two real suites carry the structured identity of their findings, with multiplicity (KR-SIGN-1 is the 19 findings of the real tree)
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1 and KR-SIGN-3 carry their structured findings (8 each since cache#341 (P4) is on main: the vendor-provenance row, four assemble-image edges, three release-sign-apks.sh script findings; was 22 each: 19 plus PR 4's three cache scripts; KR-SIGN-2 left with the legacy-list probes, KR-BUILD-1 went green with PR 4's release job)" || bad "known-red: the real-suite entries lack their structured findings"
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1 and KR-SIGN-3 carry their structured findings (5 each since cache#349 is on main: the vendor-provenance row and four assemble-image edges; the three release-sign-apks.sh script findings are gone; was 8 after cache#341 (P4) and 22 before: 19 plus PR 4's three cache scripts; KR-SIGN-2 left with the legacy-list probes, KR-BUILD-1 went green with PR 4's release job)" || bad "known-red: the real-suite entries lack their structured findings"
 import json, sys
 e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
 for k in ("KR-SIGN-1", "KR-SIGN-3"):
     f = e[k].get("findings")
     assert isinstance(f, list) and f and all(isinstance(x, str) and x for x in f), k
-for k in ("KR-SIGN-1", "KR-SIGN-3"): assert len(e[k]["findings"]) == 8, (k, len(e[k]["findings"]))   # the vendor-provenance row, the four assemble-image edges and three bin/release-sign-apks.sh script findings (advisor 0433/0434)
+for k in ("KR-SIGN-1", "KR-SIGN-3"): assert len(e[k]["findings"]) == 5, (k, len(e[k]["findings"]))   # the vendor-provenance row and the four assemble-image edges (advisor 0433/0434; cache#349 removed the three bin/release-sign-apks.sh findings)
 PY
 # PR 4 (advisor ruling): the records suite's expected failures are ONE entry (KR-RECORDS-1) that names the three cache scripts Release's steps run and that are not
 # listed rows yet. The judge accepts exactly those findings, refuses any other (the entry cannot grow silently) and any missing one (it shrinks only by an edit that
