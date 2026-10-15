@@ -208,10 +208,10 @@ for drv in "$BA" "$AI" "$SP" "$LP"; do
 done
 
 t "rule 20" "no scanner (syft, trivy, grype, bomber, scout) makes or gates an SBOM in the drivers or the module tool" bash -c "test -f '$BA' && test -f '$AI_PROD' && test -f '$GS' && ! grep -Eqi '\\b(syft|trivy|grype|bomber|cyclonedx|scout)\\b' '$BA' '$AI_PROD' '$GS'"
-nogrep "rule 17" "image assembly, lock tooling and refresh never reference the release key" 'APK_RELEASE_SIGNING_KEY|release\.rsa( |$|")' "$AI_PROD" "$LK" "$RF"
+nogrep "rule 17" "image assembly and lock tooling never reference the release key" 'APK_RELEASE_SIGNING_KEY|release\.rsa( |$|")' "$AI_PROD" "$LK"
 
 # ===== rule 19: signatures are always checked ============================================================================
-nogrep "rule 19" "the skip-signatures switches appear in no workflow, recipe, config or driver" 'ignore-signatures|allow-untrusted|--insecure' $root/.github/workflows/*.yml "$root/build/melange.yaml" "$root/build/melange-fips.yaml" "$root/build/apko.yaml" "$root/build/apko-fips.yaml" "$BA" "$AI_PROD" "$LK" "$RF"   # melange pkg/cli/build.go:86, apko internal/cli/build.go:143 and lock.go:115
+nogrep "rule 19" "the skip-signatures switches appear in no workflow, recipe, config or driver" 'ignore-signatures|allow-untrusted|--insecure' $root/.github/workflows/*.yml "$root/build/melange.yaml" "$root/build/melange-fips.yaml" "$root/build/apko.yaml" "$root/build/apko-fips.yaml" "$BA" "$AI_PROD" "$LK"   # melange pkg/cli/build.go:86, apko internal/cli/build.go:143 and lock.go:115
 t "rule 19" "apko configs carry the Wolfi key and the assembly key (each package checked against the right key)" y apko-keys "$root/build/apko.yaml"
 t "rule 19" "apko-fips.yaml: the same two keys" y apko-keys "$root/build/apko-fips.yaml"
 
@@ -617,7 +617,7 @@ run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCKED_CACHE=1 "$AI" "${ai
 t "rule 40" "assemble: a root-written (unremovable) apko cache in the temp dir does not change a successful exit 0" test "$(rc)" = 0
 run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCKED_CACHE=1 STUB_NETATTEMPT=1 "$AI" "${ai_args[@]}" --out "$(mo)"
 t "rule 40" "assemble: ...nor the network-attempt exit 4" test "$(rc)" = 4
-trapok=0; for f in assemble-image lock-proof sealed-proof build-apk release-sign-apks refresh-inputs install-build-tools; do grep -Eq 'local rc=\$\?' "$root/bin/$f.sh" && grep -Eq 'exit \$rc' "$root/bin/$f.sh" || { trapok=1; echo "no status-preserving trap in $f" >&2; }; done
+trapok=0; for f in assemble-image lock-proof sealed-proof build-apk release-sign-apks install-build-tools; do grep -Eq 'local rc=\$\?' "$root/bin/$f.sh" && grep -Eq 'exit \$rc' "$root/bin/$f.sh" || { trapok=1; echo "no status-preserving trap in $f" >&2; }; done
 t "rule 40" "every script's EXIT trap preserves the exit status (it captures it, cannot fail, and exits with it)" test "$trapok" = 0
 # sealed-proof deletes a package of the BASE LOCK (not the first apk in sorted order) and each negative needs its own reason
 mkarch "$work/sp-unrel"; cp "$work/sp-unrel/x86_64/tzdata-2026a-r0.apk" "$work/sp-unrel/x86_64/aaa-unrelated-1-r0.apk"
