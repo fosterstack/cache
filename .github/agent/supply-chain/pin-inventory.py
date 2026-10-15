@@ -784,11 +784,6 @@ _UNMEASURED = [
     (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
     (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements[\w.-]*\.txt(?:\s|$))\S+"), "a pip requirements file not named requirements*.txt"),
     (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
-    # the top-level vendor/ is skipped by this inventory because nothing runs from it (REQ-VEND-001): a line outside it that runs, sources or installs from it
-    # is refused here, so the exclusion cannot hide an executed script or an installed requirements file
-    (re.compile(r"(?:^|[\s;&|(\"'=])(?:(?:bash|sh|dash|zsh|ksh|source|\.|exec|python3?|node|perl|ruby|sudo|env|xargs)\s+(?:-\S+\s+)*|(?:go\s+(?:run|install)\s+)|"
-                r"(?:pip[0-9.]*\b[^\n;&|]*?\s(?:-r|--requirement)[\s=]*))[\"']?(?:\./)?vendor/\S"
-                r"|(?:^|[\s;&|(\"'])\./vendor/\S|^\s*vendor/\S+\.(?:sh|bash|py)\b"), "a vendored file run or installed from"),
 ]
 
 
@@ -841,6 +836,37 @@ def _line_ids(text):
     return ids
 
 
+_VENDOR_WORD = re.compile(r"""(?:^|[\s"'=(:/])(?:\./)?vendor(?:/|\.[A-Za-z_])""")
+_VENDOR_DIR_OPT = re.compile(r"(?:^|\s)(?:-C|--directory|--chdir)[\s=]+[\"']?(?:\./)?vendor(?:/|[\"']?(?:\s|$))")
+_VENDOR_TOOLS = re.compile(r"(?:^|[\s\"'/])bin/(?:vendor-check\.sh|vendor-provenance\.py|vendor-provenance-test\.sh|vendoring-test\.sh)(?:$|[\s\"'])")
+_EXECUTORS = re.compile(r"(?:python[0-9.]*|pypy[0-9]*|perl|ruby|node|nodejs|deno|bun|php|lua|bash|sh|dash|zsh|ksh|fish|csh|tcsh|source|\.|exec|eval|make|gmake|ninja|cmake|"
+                        r"docker|podman|buildah|nerdctl|pip[0-9.]*|pipx|uv|poetry|conda|npm|npx|yarn|pnpm|cargo|mvn|gradle|ant|java|dotnet|gem|bundle|rake|"
+                        r"helm|kubectl|terraform|ansible[a-z-]*|apk|apt|apt-get|dnf|yum|sudo|doas|su|env|xargs|nohup|timeout|nice|chroot|unshare|bwrap|"
+                        r"melange|apko|crane|cosign|gh|curl|wget|install|patch|ld|gcc|cc|g\+\+|clang|rustc|swift|go-run)")
+
+
+def _vendor_consumed(seg):
+    """The top-level vendor/ is skipped by this inventory because nothing runs from it (REQ-VEND-001): a command segment whose command word is an interpreter,
+    shell, build tool, container tool, installer or fetcher (a broad closed list), `go run|install|generate`, or a path that is itself a script (`./x.sh`, `x.py`),
+    and that names a vendor/ path (or a vendor.x python module, or -C vendor) anywhere in its words, is refused. A comment line, a test helper that only
+    describes the case, and the commands that read, list, copy or compile the tree are not."""
+    if seg.lstrip().startswith("#") or not (_VENDOR_WORD.search(seg) or _VENDOR_DIR_OPT.search(seg)) or _VENDOR_TOOLS.search(seg):
+        return False
+    seg = re.sub(r"""^\s*(?:-\s+)?(?:run:\s*)?[|>]?[-+]?\s*["']?""", "", seg)          # a YAML step line: `- run: cmd`
+    words = seg.split()
+    while words and (re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*", words[0]) or words[0] in ("sudo", "env", "time", "nice", "command", "!", "if", "then", "do", "&&")):
+        words = words[1:]
+    if not words:
+        return False
+    w = words[0].strip("\"'(){}").rsplit("/", 1)[-1]
+    if w == "go":
+        sub = next((x for x in words[1:] if not x.startswith("-")), "")
+        return sub in ("run", "install", "generate", "tool")
+    if w.endswith((".sh", ".bash", ".py", ".pl", ".rb")) or words[0].lstrip("\"'(").startswith(("./", "/")) and not re.fullmatch(r"/(?:usr/)?bin/[a-z]+", words[0].strip("\"'")):
+        return True
+    return _EXECUTORS.fullmatch(w) is not None
+
+
 def unmeasured_occurrences(files):
     """Each unmeasured occurrence as (key, the WHOLE flattened line it was found in, bashlike): the line binds a ruled-text row (REQ-SUP-001-AC16) to the
     line, not to the one downloader segment the key hashes. bashlike is False when the line holds whitespace other than a space or a tab, or was joined from
@@ -867,6 +893,10 @@ def unmeasured_occurrences(files):
                 _step({"run": flat}, probe, {})
                 if any(i.kind == "package" and i.version == "(unpinned)" for i in probe):
                     yield (path, "an unpinned package install", hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike
+            for _seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):
+                if _vendor_consumed(_seg):
+                    yield (path, "a vendored file run or installed from", hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike
+                    break
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
                     yield (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike  # the WHOLE line decides identity (its hash), never a truncation

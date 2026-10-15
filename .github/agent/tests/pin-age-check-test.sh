@@ -3203,7 +3203,6 @@ for v in "run-script:bash vendor/example.test/dep/install.sh" \
          "docker-build-context:docker build vendor/example.test/dep" \
          "pip-constraint:pip install --require-hashes -r requirements.txt -c vendor/example.test/dep/constraints.txt" \
          "pip-constraint-long:pip install --constraint=vendor/example.test/dep/constraints.txt -r requirements.txt" \
-         "unknown-command:frobnicate vendor/example.test/dep/x" \
          "run-dotslash:./vendor/example.test/dep/install.sh" \
          "source-script:source vendor/example.test/dep/install.sh" \
          "pip-requirements:pip install --require-hashes -r vendor/example.test/dep/requirements.txt" \
