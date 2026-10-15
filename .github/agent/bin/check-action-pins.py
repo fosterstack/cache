@@ -1025,8 +1025,8 @@ SCRIPT_MARK = "#@@" + secrets.token_hex(16) + "@@"   # a comment line between th
 #                                                     alone; chosen per run, so no repository text can carry it (a script that wrote the line itself would
 #                                                     otherwise split its own function or branch in two)
 _LIT_TAINT = re.compile(
-    r"(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])(set|bash|sh)\s+([^\n;&|]*\s)?-[A-Za-z]*[ai]\b|allexport"
-    r"|(?<![\w.-])(read|mapfile|readarray|getopts|unset|printf\s+-v|let|select|eval)(?![\w.-])[^\n;&|]*\$"         # a variable names or feeds the target
+    r"(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])(set|bash|sh)\s+([^\n;&|]*\s)?-[A-Za-z]*[ai][A-Za-z]*|allexport"
+    r"|(?<![\w.-])(read|mapfile|readarray|getopts|unset|printf\s+-v|let|select|eval|wait)(?![\w.-])[^\n;&|]*\$"         # a variable names or feeds the target
     r"|(?<![\w.-])(declare|typeset|local|export|readonly)\s+([^\n;&|=]*\s)?(-[A-Za-z]*n|[^\n;&|=\s]*\$)"       # a nameref in any option word, or a name built from an expansion
     r"|(?<![\w.-])trap\b[^\n;&|]*\b(DEBUG|RETURN|ERR)\b|(?<![\w.-])shopt\b[^\n;&|]*(extdebug|-s\s+\w*[dD]ebug)"   # a trap that runs between commands
     r"|\(\(|\$\[")                                                                                          # arithmetic can assign
@@ -1066,8 +1066,17 @@ def _literal_path_vars(script):
     if SOURCED_MARK in script:
         return {}                                        # sourced: the caller's namerefs, functions and variables reach it
     joined = re.sub(r"\\\n", " ", script)
-    _nc, _bl, _oq = _mask_shell(joined)
-    scan = "".join(c if (b != " " or c in " \t\n") else ("_" if c in ";&|" else c) for c, b in zip(_nc, _bl))   # punctuation inside quotes is not a boundary
+    scan, q = [], None
+    for c in _mask_shell(joined)[0]:                     # comments gone; a command boundary inside a quoted string is not one
+        if q:
+            scan.append("_" if c in ";&|\n" else c)
+            if c == q:
+                q = None
+        else:
+            scan.append(c)
+            if c in "'\"":
+                q = c
+    scan = "".join(scan)
     if _LIT_TAINT.search(scan):
         return {}                                        # a computed write target, a nameref, allexport or a startup file: the name may be written where no mention shows
     if re.search(r"(?<![\w.-])enable(?![\w.-])", script):
@@ -2491,7 +2500,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=(), inherit
     # treated as sourced, which closes the wrapper forms the command reader does not classify; so is a text that exports a function (the child imports it)
     sourced_any = inherited or bool(re.search(r"(?<![\w./$-])source(?![\w./-])|(^|[;&|(\s])\.\s+\S"
                            r"|(?<![\w.-])(export|declare|typeset)\b[^\n;&|]*\s-[A-Za-z]*f|BASH_FUNC_"
-                           r"|(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])(set|bash|sh)\s+([^\n;&|]*\s)?-[A-Za-z]*[ai]\b|allexport", _unquoted(text), re.M))   # or exports a function: it reaches every child
+                           r"|(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])(set|bash|sh)\s+([^\n;&|]*\s)?-[A-Za-z]*[ai][A-Za-z]*|allexport", _unquoted(text), re.M))   # or exports a function: it reaches every child
     dlnames = _downloaded_commands(job or text)
     if dlnames:
         for chunk in _split_commands(_cut_substitutions(text)[0]):
@@ -2573,7 +2582,7 @@ def check_runs(where_job, scripts, bad, tree=None):
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)
-    job0 = "\n".join(read(item[1]) for item, ok in zip(scripts, posix) if ok)
+    job0 = "\n".join(read(_rewrite_step(item[1], item[2])) for item, ok in zip(scripts, posix) if ok)
     for item, ok in zip(scripts, posix):
         marked = _drop_foreign_heredocs(_decode_dollar_quotes(_mark_defaults(_rewrite_step(re.sub(r"\\\n", "", item[1]), item[2]))))
         for t in (_commands(marked) if ok else []):
@@ -2590,7 +2599,8 @@ def check_runs(where_job, scripts, bad, tree=None):
         # The word anywhere counts, quoted or nested in sh -c / eval: fail closed (Sonnet #164 r17, NEW-25)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(read(raw))))
         bases = item[6] if len(item) > 6 else ()
-        more, also = _run_scripts(read(_rewrite_step(raw, item[2])), tree, moved, 0, where, job0, bases) if ok else ("", [])
+        more, also = _run_scripts(read(_rewrite_step(raw, item[2])), tree, moved, 0, where, job0, bases,
+                                         bool(item[2]) and _rewrite_step("G=/a\n", item[2]) == "G=/a\n") if ok else ("", [])
         # each script is read on its own, as written (before ${NAME:-word} is read away): its literal-path variables are replaced in it alone
         inlined.append((_rewrite_consts(more), also))
 
@@ -2955,7 +2965,7 @@ def check_file(tree, rel, pins, bad):
                 if isinstance(n, yaml.MappingNode):
                     for k, v in n.value:
                         if isinstance(k, yaml.ScalarNode) and k.value in ("DOCKER_HOST", "DOCKER_CONTEXT", "BUILDKIT_HOST",
-                                                                          "DOCKER_CONFIG", "BASH_ENV", "ENV"):
+                                                                          "DOCKER_CONFIG", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"):
                             bad.append(f"{rel}: an env block sets {k.value}, which points docker or buildx elsewhere "
                                        f"or makes every shell read a startup file; refused")
                         stack.append(v)
