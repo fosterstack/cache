@@ -756,6 +756,12 @@ passfam "feature/x" "REQ-REL-009: .github/release-identity.json" ".github/releas
 runeach fail "feature/x" "REQ-REL-009: release-identity near-miss refused" ".github/release-identity.json.bak" ".github/Release-Identity.json" ".github/release-identity.yaml" ".github/other.json" ".github/nested/release-identity.json" ".github/x/release-identity.json" "release-identity.json" ".github/release-identity.json " ".github/release-identityXjson" ".github/policy/../release-identity.json"
 passfam "feature/x" "REQ-UAT-001: the persona UAT driver, agent, provider, decrypt script, tests, recipient key, tool list and requirements" "bin/persona-uat.py" "bin/persona-uat-agent.py" "bin/persona-uat-provider.py" "bin/persona-uat-test.sh" "bin/persona-uat-wiring-test.sh" "bin/persona-uat-agent-test.sh" "bin/persona-uat-decrypt-test.sh" "bin/persona-uat-decrypt.sh" "bin/persona-uat-recipient.pem" "bin/persona-uat-tools.json" "bin/persona-uat-requirements.txt"
 runeach fail "feature/x" "REQ-UAT-001: near-miss siblings refused" "bin/persona-uat.sh" "bin/persona-uat-other.py" "bin/persona-uat-provider-test.sh" "bin/persona-uat-agent.sh" "bin/persona-uat-decrypt.py" "bin/persona-uat-recipient.key" "bin/persona-uat-recipient.pem.bak" "bin/persona-uat-tools.yaml" "bin/persona-uat-requirements.in" "bin/Persona-UAT.py" "bin/persona-uat-agent-wiring-test.sh"
+# REQ-UAT-001 is the rule the six bin/persona-uat* patterns above serve: it must be defined on the tree that admits
+# them (round 2, seat A: an allowlist grant citing a requirement the source of truth lacks has no ratified rule behind it).
+for ac in "" -AC1 -AC2 -AC3 -AC4 -AC5; do
+  if grep -q "^ *- id: REQ-UAT-001$ac\$" requirements/requirements.yaml; then gp "REQ-UAT-001$ac is defined in requirements/requirements.yaml"
+  else gf "REQ-UAT-001$ac is defined in requirements/requirements.yaml" "missing"; fi
+done
 passfam "feature/x" "REQ-REL-004-AC5: the daily-rescan current-release test" "bin/rescan-current-only-test.sh"
 runeach fail "feature/x" "REQ-REL-004-AC5: rescan-current-only-test near-miss refused" "bin/rescan-current-only-test.sh.bak" "bin/rescan-current-only-test.shx" "bin/Rescan-Current-Only-Test.sh" "bin/sub/rescan-current-only-test.sh" "bin/rescan-current-only-test.py" "rescan-current-only-test.sh" "bin/rescan-current-only-test.sh "
 
