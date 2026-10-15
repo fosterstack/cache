@@ -841,36 +841,49 @@ def _line_ids(text):
 _KEY_URL = "https://packages.wolfi.dev/os/wolfi-signing.rsa.pub"
 _KEY_BASE = "https://packages.wolfi.dev/os"
 _KEY_FP = "build/locks/archive-keys.sha256"
-_KEY_BAD_OPTS = re.compile(r"(?<![\w-])(--url|--connect-to|--resolve|-x|--proxy|-K|--config|--next|-T|--upload-file)(?![\w-])")
+# The WHOLE line is one anchored shape: one curl (fixed path or bare name), a fixed set of known flags in this order, a named output file under a variable
+# directory, exactly one URL operand that is the literal key URL or "$VAR/wolfi-signing.rsa.pub", and at most a trailing `|| die "..." [digit]`. Nothing can be
+# added or attached: an extra URL, -K, -x, a cluster, -o - or a second command is not this shape.
+_KEY_LINE = re.compile(
+    r'(?:/usr/bin/)?curl -fsSL(?: -g)?(?: --max-filesize [0-9]+)?(?: --max-time [0-9]+)?(?: --proto =https)?(?: --tlsv1\.2)?'
+    r' -o "(?P<out>\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/[A-Za-z0-9._-]+)"'
+    r' (?:"?https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub"?|"\$\{?(?P<var>[A-Za-z_][A-Za-z0-9_]*)\}?/wolfi-signing\.rsa\.pub")'
+    r'(?: \|\| die "[^"$`\\]*"(?: [0-9]+)?)?')
+_KEY_NOT_CMD = re.compile(r"^\s*(#|echo\b|printf\b|:\s|cat\b)")
 
 
-def _key_fetch_ok(files, path, text, seg, flat):
-    """The signing-key fetch: ONE curl or wget of exactly the fixed Wolfi key URL (literally, or as "$VAR/wolfi-signing.rsa.pub" with VAR assigned exactly once at line
-    start to the fixed base URL), written to a named file, on a line with no pipe, no second URL and no option that changes the destination, in a script that
-    compares bytes with the committed build/locks/archive-keys.sha256 AFTER the fetch and before anything else uses them. Anything else stays a download."""
-    if not path.endswith(".sh") or _KEY_FP not in files or "|" in flat:
+def _key_fetch_ok(files, path, before, flat, after):
+    """The signing-key fetch (owner exception 2, advisor limits of handoff 0452): the line is exactly _KEY_LINE; a variable base URL is assigned exactly once, at
+    line start to the fixed base, before the fetch and before any function, block or here-document, and never otherwise mentioned as a target; and the NEXT
+    command after the fetch (comments and blanks skipped) is an executable comparison of that output file with the committed build/locks/archive-keys.sha256
+    by sha256sum, shasum -a 256 or openssl dgst -sha256, so nothing uses the file before it is compared."""
+    if not path.endswith(".sh") or _KEY_FP not in files:
         return False
-    m = re.search(r"(?<![\w./-])(curl|wget)(?![\w-])", seg)
-    if not m or _KEY_BAD_OPTS.search(seg):
+    m = _KEY_LINE.fullmatch(flat.strip())
+    if not m:
         return False
-    if not re.search(r"(?<![\w-])(-[A-Za-z]*o|--output|-O|--output-document)(?![\w-])", seg) and not re.search(r"\s-[A-Za-z]*[oO]\b", seg):
-        return False                                   # no named output file: the bytes would go to the shell or the terminal
-    urls = re.findall(r"https?://[^\s'\"]+", seg)
-    varurls = re.findall(r"\$\{?([A-Za-z_]\w*)\}?/wolfi-signing\.rsa\.pub", seg)
-    if len(urls) + len(varurls) != 1:
-        return False
-    if urls:
-        if urls[0] != _KEY_URL:
-            return False
-    else:
-        assigns = re.findall(r"(?m)^[ \t]*(?:export[ \t]+)?" + re.escape(varurls[0]) + r"=(\S*)[ \t]*$", text)
-        if len(assigns) != 1 or assigns[0].strip("'\"") != _KEY_BASE:
-            return False
-        if len(re.findall(r"(?<![\w])" + re.escape(varurls[0]) + r"\+?=", text)) != 1:
-            return False                               # a second write of the variable anywhere (read, export, +=)
-    at = text.find(seg)
-    after = text[at + len(seg):] if at >= 0 else ""
-    return _KEY_FP in after and bool(re.search(r"sha256sum|openssl[ \t]+dgst|shasum|\bcmp\b", after))
+    if m.group("var"):
+        name = re.escape(m.group("var"))
+        top = []
+        for ln in before:
+            if re.search(r"^\s*(?:export\s+)?" + name + r"=https://packages\.wolfi\.dev/os\s*$", ln):
+                break
+            if re.search(r"\(\)|<<|\{|^\s*(if|case|for|while|until|function|select)\b", ln):
+                return False                           # a function, block or here-document comes before the assignment
+            top.append(ln)
+        else:
+            return False                               # no assignment before the fetch
+        mentions = [ln for ln in before + after if re.search(r"(?<![\w$])" + name + r"(?![\w])", ln)]
+        assigns = [ln for ln in mentions if re.search(r"^\s*(?:export\s+)?" + name + r"=", ln)]
+        if len(assigns) != 1:
+            return False                               # a second assignment, anywhere
+        if any(re.search(r"(?<![\w$])" + name + r"(?![\w])", ln) and not re.search(r"\$\{?" + name + r"\}?", ln) and ln is not assigns[0]
+               for ln in before + after):
+            return False                               # read -r NAME, local NAME, declare NAME ... : another way to write it
+    nxt = next((ln for ln in after if ln.strip() and not ln.lstrip().startswith("#")), "")
+    out = re.escape(m.group("out"))
+    return (not _KEY_NOT_CMD.match(nxt) and _KEY_FP in nxt and re.search(out, nxt) is not None
+            and re.search(r"(?<![\w-])(sha256sum|shasum -a 256|openssl dgst -sha256)(?![\w-])", nxt) is not None)
 
 
 # Owner rule 48 (Oct 9: "New Wolfi packages get no 7-day wait; signature checks and archiving still apply"), advisor message Oct 15 (handoff 0452 addition):
@@ -918,7 +931,8 @@ def unmeasured_occurrences(files):
             for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):    # each downloader invocation on its own: a release URL elsewhere on the line excuses nothing
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
-                if re.search(r"\b(?:curl|wget)\b", seg) and not plain and not _key_fetch_ok(files, path, text, seg, flat) \
+                if re.search(r"\b(?:curl|wget)\b", seg) and not plain and not _key_fetch_ok(files, path, [" ".join(x.split()) for x in _lines[:_li]], flat,
+                                              [" ".join(x.split()) for x in _lines[_li + 1:_li + 12]]) \
                         and not _py_wolfi_download_ok(path, flat, [" ".join(x.split()) for x in _lines[_li + 1:_li + 12]], "\n".join(_lines[:_li])):
                     yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest() + ":" + _hide(seg)[:100]), flat, bashlike
             if path.endswith(".sh"):    # REQ-SUP-001-AC20: a script line that names an unpinned package; ruled like a text line, by the hash of the whole line
