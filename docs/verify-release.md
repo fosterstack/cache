@@ -33,6 +33,7 @@ Download the release files named below from the release page for `<TAG>`.
 The provenance is a SLSA provenance statement (predicate type https://slsa.dev/provenance/v1) signed by `<IDENTITY>`, issuer https://token.actions.githubusercontent.com. TO-VERIFY: the flags against a real bundle.
 
 ```sh
+# Not run before release.
 cosign verify-blob-attestation --bundle provenance.bundle.json \
   --type https://slsa.dev/provenance/v1 --check-claims=false \
   --certificate-identity <IDENTITY> \
@@ -41,27 +42,33 @@ cosign verify-blob-attestation --bundle provenance.bundle.json \
 
 ## 3. Digests
 
-The provenance names each image by digest. The first command succeeds only if it names the production image you set; the second lists every image and digest, so you can compare the -fips digest with yours. TO-VERIFY: the field names against a real bundle.
+The provenance names each image by digest. The first command succeeds only if the subject named image-production is the production image you set; the second lists every image and digest, so you can compare the -fips digest with yours. TO-VERIFY: the field names against a real bundle.
 
 ```sh
-jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == "https://slsa.dev/provenance/v1" and any(.subject[]; .digest.sha256 as $d | $ref | endswith("@sha256:" + $d))' provenance.bundle.json
+# Not run before release.
+jq -e --arg ref '<IMAGE_REF>' '.dsseEnvelope.payload | @base64d | fromjson | .predicateType == "https://slsa.dev/provenance/v1" and any(.subject[]; .name == "image-production" and (.digest.sha256 as $d | $ref | endswith("@sha256:" + $d)))' provenance.bundle.json
+# Not run before release.
 jq -r '.dsseEnvelope.payload | @base64d | fromjson | .subject[] | .name + " sha256:" + .digest.sha256' provenance.bundle.json
 ```
 
 ## 4. The SBOM and the inputs
 
-Each SBOM lists what is in an image; each lock lists what the build used. TO-VERIFY: the flags against a real bundle.
+Each SBOM lists what is in an image; each lock lists the packages the image was assembled from. TO-VERIFY: the flags against a real bundle, and the build's own inputs manifest, which is in Build's record and not a signed file of its own.
 
 ```sh
+# Not run before release.
 cosign verify-blob --bundle production.sbom.json.bundle \
   --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com production.sbom.json
+# Not run before release.
 cosign verify-blob --bundle fips.sbom.json.bundle \
   --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.sbom.json
+# Not run before release.
 cosign verify-blob --bundle production.full.lock.json.bundle \
   --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com production.full.lock.json
+# Not run before release.
 cosign verify-blob --bundle fips.full.lock.json.bundle \
   --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com fips.full.lock.json

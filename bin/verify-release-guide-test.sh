@@ -233,12 +233,18 @@ def needs_registry(segs):
             if image_ref(w): return True
             i += 1
     return False
+# A release asset is a file Sign or Release makes and publishes (provenance.bundle.json, <image>.sbom.json[.bundle], <image>.full.lock.json[.bundle], see
+# bin/release-assets.sh): Check holds Build's records and the candidate image, not these, so pipeline's planner cannot run a command that reads one.
+ASSET = re.compile(r"^(provenance\.bundle\.json|(production|fips)\.(sbom|full\.lock)\.json(\.bundle)?)$")
+def reads_asset(segs):
+    return any(ASSET.match(w) for s in segs for w in s)
 for c, ln, bo, segs in parsed:
     if not segs: continue
-    if needs_registry(segs) and c not in listed:
-        err("AC7", "line %d: `%s` needs a registry image and cannot run on a candidate, but the cannot-run list does not name it" % (ln+1, c))
-    if c in listed and not needs_registry(segs):
-        err("AC7", "line %d: `%s` is on the cannot-run list but needs no registry image (a runnable command is run, never excused)" % (ln+1, c))
+    unrunnable = needs_registry(segs) or reads_asset(segs)
+    if unrunnable and c not in listed:
+        err("AC7", "line %d: `%s` needs a registry image or a release asset file and cannot run on a candidate, but the cannot-run list does not name it" % (ln+1, c))
+    if c in listed and not unrunnable:
+        err("AC7", "line %d: `%s` is on the cannot-run list but needs no registry image and reads no release asset (a runnable command is run, never excused)" % (ln+1, c))
     if c in listed:
         j = ln - 1
         while j >= 0 and not lines[j].strip(): j -= 1
@@ -385,6 +391,7 @@ mutant "the -fips registry command not listed" "the cannot-run list does not nam
 mutant "gh attestation verify oci:// not listed" "the cannot-run list does not name it" 's.replace("jq -e", "gh attestation verify oci://<IMAGE_REF> --repo fosterstack/cache | jq -e")'
 mutant "a literal registry reference not listed" "the cannot-run list does not name it" 's.replace("jq -e", "cosign verify-attestation --type https://slsa.dev/provenance/v1 ghcr.io/fosterstack/cache:<TAG> | jq -e")'
 mutant "verify-blob on an image placeholder not listed" "the cannot-run list does not name it" 's.replace("sbom.json\n", "<IMAGE_REF_FIPS>\n")'
+mutant "a release-asset command not listed" "the cannot-run list does not name it" 's.replace("jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.bundle.json")'
 mutant "a stale cannot-run entry"       "a stale entry"                's.replace("--certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com\n```\n\n```sh\n# Not", "--certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-identity <IDENTITY>\n```\n\n```sh\n# Not")'
 mutant "a runnable command on the list" "needs no registry image"      's + " "' '[{"command": "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}, {"command": "cosign verify <IMAGE_REF_FIPS> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": "r"}, {"command": "jq -e '"'"'.subject[].digest.sha256'"'"' provenance.json", "reason": "r"}]'
 mutant "a list entry without a reason"  "not exactly {command, reason}" 's + " "' '[{"command": "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer https://token.actions.githubusercontent.com", "reason": ""}]'
