@@ -509,11 +509,44 @@ _ANY_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"]+")
 _LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
 
 
+_LIVE_FLAG_PLAIN = {"-f", "-s", "-S", "-L", "-fsSL", "-fsS", "-fSL", "-sSL", "-g", "--fail", "--silent", "--show-error", "--location", "--tlsv1.2"}
+_LIVE_FLAG_VALUE = {"--max-filesize": r"[0-9]+", "--max-time": r"[0-9]+", "--proto": r"=https", "-o": r"[A-Za-z0-9_./${}-]+", "--output": r"[A-Za-z0-9_./${}-]+"}
+
+
 def _live_fetch_line_ok(flat):
-    """Every URL on the bound line is https on the host packages.wolfi.dev exactly (no port, no userinfo, no trailing dot, no other scheme), and there is at least
-    one. A line with a URL built from a variable has no literal URL and is not this kind."""
-    urls = _ANY_URL.findall(flat)
-    return bool(urls) and all(_LIVE_URL.fullmatch(u) for u in urls)
+    """The bound line is exactly ONE curl command: curl or /usr/bin/curl, then only flags from a fixed list (with a plain value where one is taken), then exactly one
+    URL operand that is https on the host packages.wolfi.dev; optionally followed by `|| die "plain text" [digit]` or `|| exit N`. The line is split into shell words,
+    so quote concatenation cannot change a word after the check; a variable may appear only as part of the -o file name; no second command, pipe, redirection,
+    substitution, other operand or schemeless host is accepted."""
+    import shlex
+    left, sep, right = flat.partition("||")
+    if sep and not re.fullmatch(r'\s*(?:die(?: "[^"$`\\]*")?(?: [0-9]+)?|exit [1-9][0-9]*)\s*', right):
+        return False
+    if re.search(r"[;&|<>`]|\$\(", left):
+        return False
+    try:
+        w = shlex.split(left, posix=True)
+    except ValueError:
+        return False
+    if len(w) < 2 or w[0] not in ("curl", "/usr/bin/curl"):
+        return False
+    i, operands = 1, []
+    while i < len(w):
+        t = w[i]
+        if t in _LIVE_FLAG_PLAIN:
+            i += 1
+        elif t in _LIVE_FLAG_VALUE:
+            if i + 1 >= len(w) or not re.fullmatch(_LIVE_FLAG_VALUE[t], w[i + 1]) or (t not in ("-o", "--output") and "$" in w[i + 1]):
+                return False
+            i += 2
+        elif t.startswith("-"):
+            return False                               # an option outside the list (-x, -K, --resolve, --url, an attached value, a cluster not listed)
+        else:
+            operands.append(t)
+            i += 1
+    return len(operands) == 1 and _LIVE_URL.fullmatch(operands[0]) is not None
+
+
 MAX_RULED_COUNT = 100
 
 
