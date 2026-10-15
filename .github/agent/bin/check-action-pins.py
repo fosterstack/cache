@@ -1024,6 +1024,7 @@ def _command_words(toks):
 SCRIPT_MARK = "#@@" + secrets.token_hex(16) + "@@"   # a comment line between the scripts of one inlined job text: each script's own assignments count for it
 #                                                     alone; chosen per run, so no repository text can carry it (a script that wrote the line itself would
 #                                                     otherwise split its own function or branch in two)
+SOURCED_MARK = "#@@" + secrets.token_hex(16) + "-sourced@@"   # first line of a script that was sourced: it runs in its caller's shell, so no literal-variable inference
 _NO_NAME = {"_", "REPLY", "MAPFILE", "OPTARG", "OPTIND", "OPTERR", "COMPREPLY", "BASH_REMATCH", "PIPESTATUS", "RANDOM", "SECONDS", "LINENO", "PWD", "OLDPWD",
             "UID", "EUID", "PPID", "SHELLOPTS", "BASHOPTS", "PATH", "IFS", "HOME", "SHELL", "ENV", "BASH_ENV"}   # set by the shell or read by it: never a program name
 _CONST_PATH = re.compile(r"/[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)*")
@@ -1051,6 +1052,8 @@ def _literal_path_vars(script):
     nowhere else as a target (no export, read, for, declare, array, default-assigning expansion, second assignment), and no `$NAME`
     comes before the assignment (the caller's environment could have set it). name -> path; anything else is simply not in it, and a
     program named by such a variable stays refused."""
+    if SOURCED_MARK in script:
+        return {}                                        # sourced: the caller's namerefs, functions and variables reach it
     text = re.sub(r"\\\n", "", script)
     nc, bl, open_quote = _mask_shell(text)
     if open_quote or re.search(r"(?<![\w.-])(eval|source)(?![\w.-])|(^|[;&|(\s])\.\s+\S", bl, re.M):
@@ -1162,7 +1165,7 @@ def _commands(script, depth=0):
             if _base(w) in SHELLS and ops and not any(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a) for a in rest):
                 out.append(["__script__", ops[0]])
             elif (w == "source" or (w == "." and w == words[0])) and ops:     # command source x.sh too (r3)
-                out.append(["__script__", ops[0]])
+                out.append(["__script__", ops[0], "sourced"])
             elif ("/" in w or w.endswith(".sh")) and _base(w) not in TOOLS | SHELLS and not PKG_TOOL.match(_base(w)) \
                     and not re.search(r"[$*?\[]", w):
                 out.append(["__exec__", w])
@@ -2516,10 +2519,12 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             found.append("scripts nest deeper than this check reads (%s); refused" % path)
             continue
         content = tree.read(rel)
-        inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", _rewrite_consts(content)))))
+        inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", _rewrite_consts(
+            (SOURCED_MARK + "\n" if len(t) > 2 and t[2] == "sourced" else "") + content)))))
         cd = bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(inner)))
         more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases)
-        added.append(SCRIPT_MARK + "\n" + content + ("\n" + SCRIPT_MARK + "\n" + more if more else ""))
+        added.append(SCRIPT_MARK + "\n" + (SOURCED_MARK + "\n" if len(t) > 2 and t[2] == "sourced" else "") + content
+                     + ("\n" + SCRIPT_MARK + "\n" + more if more else ""))
         found += also
     return "\n".join(added), found
 
@@ -2576,7 +2581,7 @@ def check_runs(where_job, scripts, bad, tree=None):
         where, raw, shell = item[:3]
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
-        own = read(raw)
+        own = read(_rewrite_consts(raw))
         raw = _rewrite_consts(raw) + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own (the step's own text too, as written)
         text = read(raw)
         own_nc = _mask_shell(text)[0]         # the step's text AND the committed scripts it runs, without comments, for reading a literal value (r24)
