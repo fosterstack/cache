@@ -135,6 +135,8 @@ def check_manifest_blob(members, raw, layout, what, platform_arch=None):
         fail("the config of %s says architecture %r but the index lists the manifest as %r (the config must name its architecture)" % (what, cfg_arch, want_arch))
     if cfg_os != "linux":
         fail("the config of %s says os %r, not linux" % (what, cfg_os))
+    if man.get("schemaVersion") != 2:
+        fail("the manifest blob of %s has schemaVersion %r, not 2" % (what, man.get("schemaVersion")))
     if man.get("mediaType", MANIFEST_MT) != MANIFEST_MT:
         fail("the manifest blob of %s has the media type %r, not %s (its own media type must agree with its index entry)" % (what, man.get("mediaType"), MANIFEST_MT))
     layers = man.get("layers")   # an empty list is allowed (valid OCI); a missing or non-list value is not
@@ -167,6 +169,8 @@ def apko_layout(members, path):
         mans = top["manifests"]
     except (ValueError, KeyError, TypeError):
         fail("index.json in %s is not an OCI index" % path)
+    if top.get("schemaVersion") != 2:
+        fail("index.json in %s has schemaVersion %r, not 2" % (path, top.get("schemaVersion")))
     if top.get("mediaType") != INDEX_MT:
         fail("index.json in %s has the media type %r, not %s" % (path, top.get("mediaType"), INDEX_MT))
     check_manifests(mans, "index.json")
@@ -207,6 +211,8 @@ def standard_layout(members, path):
         idx = json.loads(members[name]); mans = idx["manifests"]
     except (ValueError, KeyError, TypeError):
         fail("the index blob %s is not an OCI index" % idx_digest)
+    if idx.get("schemaVersion") != 2 or top.get("schemaVersion") != 2:
+        fail("index.json or the index blob %s has a schemaVersion other than 2" % idx_digest)
     if idx.get("mediaType") != INDEX_MT:
         fail("the index blob %s has the media type %r, not %s" % (idx_digest, idx.get("mediaType"), INDEX_MT))
     check_manifests(mans, "the index blob")
@@ -645,34 +651,44 @@ def lock_main(argv):
 
 
 def check_config(path):
-    """the apko config's repositories are exactly /work/archive and /work/melange-repo, written plainly: no quoting, no escape sequence, no address
-    anywhere (a decoded YAML scalar could otherwise spell a live address the raw text does not show). Exit 2 on any refusal."""
+    """the apko config is read as a CLOSED line grammar, so no YAML decoding can differ from the text this check reads: blank lines, comments, 'key:',
+    'key: plain-scalar', '- plain-scalar' and '- key: plain-scalar', where a plain scalar is [A-Za-z0-9_./@=+-]+ (no quote, backslash, bracket, brace,
+    block-scalar indicator, anchor or tag). Anything else is refused (fail closed). Within that grammar: no '://' anywhere, no key that names a
+    repository other than 'repositories', and exactly one such list holding exactly /work/archive and /work/melange-repo. Exit 2 on any refusal."""
     try:
         text = open(path, newline="").read()
     except OSError as e:
         print(ASSEMBLER + ": cannot read the config %s: %s" % (path, e), file=sys.stderr); sys.exit(2)
     def refuse(msg):
         print(ASSEMBLER + ": the config %s %s; packages come only from the archive and the local melange repository" % (path, msg), file=sys.stderr); sys.exit(2)
-    if "://" in text or re.search(r"\\[uUxX0-7]", text):
-        refuse("names a live repository or address (or spells one with an escape sequence)")
-    lines = text.split("\n")
-    repos, in_block, indent = [], False, None
-    for ln in lines:
-        if re.match(r"^\s*#", ln) or not ln.strip():
+    if "\r" in text or "\t" in text:
+        refuse("holds a carriage return or a tab (not part of the plain grammar)")
+    PLAIN = r"[A-Za-z0-9_./@=+-]+"
+    KEY = r"[A-Za-z0-9_-]+"
+    forms = (r"\s*", r"\s*#.*", r"\s*%s:\s*" % KEY, r"\s*%s:\s+%s\s*" % (KEY, PLAIN), r"\s*- %s\s*" % PLAIN, r"\s*- %s:\s+%s\s*" % (KEY, PLAIN))
+    repos, in_block, indent, blocks = [], False, None, 0
+    for n, ln in enumerate(text.split("\n"), 1):
+        if "://" in ln and not re.match(r"\s*#", ln):
+            refuse("line %d names a live repository or address" % n)
+        if not any(re.fullmatch(f, ln) for f in forms):
+            refuse("line %d is outside the closed plain grammar (no quoting, escapes, brackets, block scalars or other YAML constructs): %r" % (n, ln.strip()[:60]))
+        if re.match(r"\s*#", ln) or not ln.strip():
             continue
+        if "://" in ln:
+            refuse("line %d names a live repository or address" % n)
+        km = re.match(r"\s*(?:- )?(%s):" % KEY, ln)
+        if km and "repositor" in km.group(1).lower() and km.group(1) != "repositories":
+            refuse("line %d has a repository-like key other than 'repositories'" % n)
         m = re.match(r"^(\s*)repositories:\s*$", ln)
         if m:
-            in_block, indent = True, len(m.group(1)); continue
+            blocks += 1; in_block, indent = True, len(m.group(1)); continue
         if in_block:
-            if len(ln) - len(ln.lstrip()) <= indent and not ln.lstrip().startswith("-"):
+            if len(ln) - len(ln.lstrip()) <= indent and not ln.lstrip().startswith("- "):
                 in_block = False
             else:
-                repos.append(ln)
-    for ln in repos:
-        if not re.fullmatch(r"\s*- /work/(archive|melange-repo)\s*", ln):
-            refuse("has a repositories entry other than /work/archive or /work/melange-repo, plainly written: %r" % ln.strip())
-    if sorted(l.strip() for l in repos) != ["- /work/archive", "- /work/melange-repo"]:
-        refuse("does not list exactly /work/archive and /work/melange-repo as its repositories")
+                repos.append(ln.strip())
+    if blocks != 1 or repos != ["- /work/archive", "- /work/melange-repo"]:
+        refuse("does not list exactly one repositories block of /work/archive and /work/melange-repo")
 
 
 def main():

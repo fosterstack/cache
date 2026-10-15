@@ -1703,10 +1703,25 @@ def assigned_in(ln):
             k += 1
     return out
 def leaks(code):
-    """a name read before the line that assigns it (a caller-supplied value would be read), at top level; a function body runs later and is skipped.
-    A default expansion ${x:-..}, ${x-..}, ${x:=..}, ${x:+..} needs an assignment on an EARLIER line (x=${x:-1} on one line reads the caller's x)."""
-    assigned, bad, depth, heredoc_end = set(), [], 0, None
-    for ln in strip(code):
+    """a name read before the line that assigns it, at top level, or, inside a function body (which runs later), a name assigned nowhere in the file
+    and not local to the function; a default expansion needs an earlier assignment; an assignment whose own right-hand side reads the name before any
+    earlier assignment is a caller read too. Python embedded in the script may read only the closed environment names."""
+    lines = strip(code)
+    global_assigned = set()
+    for ln in lines: global_assigned |= assigned_in(ln)
+    assigned, bad, depth, heredoc_end, fn_locals = set(), [], 0, None, set()
+    fn_assigned, d_, pre_end = set(), 0, None
+    for ln in lines:   # names assigned inside function bodies (a function runs when called: its globals are set by then)
+        if pre_end is not None:
+            if ln.strip() == pre_end: pre_end = None
+            continue
+        pm = re.search(r"<<-?\s*['\"]?([A-Za-z_]+)['\"]?\s*$", ln)
+        fo = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", ln)
+        if d_ > 0 or fo:
+            d_ += ln.count("{") - ln.count("}"); fn_assigned |= assigned_in(ln)
+            if d_ < 0: d_ = 0
+        if pm: pre_end = pm.group(1)
+    for ln in lines:
         if heredoc_end is not None:
             if ln.strip() == heredoc_end: heredoc_end = None
             continue
@@ -1714,15 +1729,28 @@ def leaks(code):
         fn_open = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", ln)
         in_fn = depth > 0 or fn_open is not None
         if in_fn: depth += ln.count("{") - ln.count("}")
+        if fn_open and depth <= 0: depth = 0
+        if not in_fn: fn_locals = set()
         now = assigned_in(ln)
-        if not in_fn:
-            for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)):
-                if v in assigned or v in SPECIAL: continue
-                dflt = re.search(r"\$\{" + v + r"(:-|:=|:\+|-|\+|=)", ln)
-                if v in now and not dflt: continue
-                bad.append("%s is read before it is assigned: %s" % (v, ln.strip()[:80]))
-        assigned |= now
+        for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)):
+            if v in SPECIAL: continue
+            dflt = re.search(r"\$\{" + v + r"(:-|:=|:\+|-|\+|=)", ln)
+            fm = re.search(r"(?<![A-Za-z0-9_$])" + v + r"=([^ ;|&]*)", ln)   # the FIRST assignment of the name on this line
+            forv = set(re.findall(r"\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b", ln)) | set(re.findall(r"\(\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", ln))
+            selfref = bool(fm) and v not in forv and re.search(r"[$]\{?" + v + r"\b", fm.group(1)) is not None
+            if in_fn:
+                if v in global_assigned or v in fn_locals or v in now: continue
+                bad.append("%s is read in a function body and assigned nowhere: %s" % (v, ln.strip()[:80])); continue
+            if v in assigned or v in fn_assigned: continue
+            if v in now and not dflt and not selfref: continue
+            bad.append("%s is read before it is assigned: %s" % (v, ln.strip()[:80]))
+        if in_fn: fn_locals |= now
+        else: assigned |= now
         if hm: heredoc_end = hm.group(1)
+    for m in re.finditer(r"os\.environ(?:\.get\(|\[)\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]|os\.getenv\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]", code):
+        v = m.group(1) or m.group(2)
+        if v not in ("ImageOS", "ImageVersion", "SOURCE_DATE_EPOCH"):
+            bad.append("embedded python reads the environment variable %s" % v)
     return bad
 if __name__ == "__main__":
     root = sys.argv[1]
@@ -1735,18 +1763,21 @@ if __name__ == "__main__":
     base = open("%s/bin/assemble-image.sh" % root).read()
     for label, mut in (("a lowercase caller default", base.replace("set -euo pipefail\n", "set -euo pipefail\nversion=${caller_version:-x}\n", 1)),
                        ("an uppercase caller read", base.replace("set -euo pipefail\n", "set -euo pipefail\nfoo=$CALLER_SETTING\n", 1)),
-                       ("a self-referential default before any assignment", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzz=${zzz:-1}\n", 1))):
+                       ("a self-referential default before any assignment", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzz=${zzz:-1}\n", 1)),
+                       ("a function-local lowercase default", base.replace("local errf=$tmp/apko.err rc", "local errf=${caller_error_log:-$tmp/apko.err} rc", 1)),
+                       ("an initialisation that reads the inherited value", base.replace("variant= version= archive=", "variant=$variant version= archive=", 1)),
+                       ("an embedded python environment read", base.replace("set -euo pipefail\n", "set -euo pipefail\n: \"$(os.environ.get('CALLER_X'))\"\n", 1))):
         if not leaks(mut):
             print("the check does not see %s" % label); rc = 1
     sys.exit(rc)
 P
-t "AC12" "the four image scripts read no caller variable beyond SOURCE_DATE_EPOCH, ImageOS and ImageVersion (read-order check, lower case included), and the check sees an added lowercase default, an uppercase read and a self-referential default" python3 "$work/closed.py" "$root"
+t "AC12" "the four image scripts read no caller variable beyond SOURCE_DATE_EPOCH, ImageOS and ImageVersion (read-order check over every identifier, function bodies and embedded python included), and the check sees six mutations: lowercase and uppercase reads, self-referential defaults, a function-local default, an initialisation from the inherited value, an embedded environment read" python3 "$work/closed.py" "$root"
 # B1 (seat B): a live address spelled with an escape sequence or quoting in the YAML is refused before any apko call
 for spell_ in '"\u0068ttps://packages.wolfi.dev/os"' '"/work/melange-repo"' '/work/archive # x' ; do :; done
 printf 'contents:\n  repositories:\n    - /work/archive\n    - "\\u0068ttps://packages.wolfi.dev/os"\n  keyring:\n    - /work/keyring/wolfi-signing.rsa.pub\n  packages:\n    - tzdata\n' >"$work/esc.yaml"
 sr "rule 26" "assemble refuses a config whose repository scalar spells a live address with an escape sequence (\\u0068ttps://...), before any apko call" 'live repository|escape' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/esc.yaml" --out "$(mo)"
 sed 's#- /work/melange-repo#- "/work/melange-repo"#' "$fx/apko.yaml" >"$work/quoted.yaml"
-sr "rule 26" "assemble refuses a config whose repositories are not written plainly (a quoted entry): the closed grammar refuses what it cannot read" 'repositories entry|plainly' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/quoted.yaml" --out "$(mo)"
+sr "rule 26" "assemble refuses a config whose repositories are not written plainly (a quoted entry): the closed grammar refuses what it cannot read" 'plain grammar' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/quoted.yaml" --out "$(mo)"
 # B2 (seat A) / B6 (seat B): two distinct hard links to one file are the same file for unpack's result files
 rm -rf "$work/unp-hl"; mkdir -p "$work/unp-hl"; : >"$work/unp-hl/one"; ln "$work/unp-hl/one" "$work/unp-hl/two"
 python3 "$OD" unpack "$oc/good.tar" "$work/unp-hl/out" "$work/unp-hl/one" "$work/unp-hl/two" >"$work/unp-hl/o.txt" 2>&1; hl_=$?
@@ -1812,6 +1843,40 @@ env -i PATH="$rpd" HOME="$work" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DA
 site_cache2=$(grep -Eo -- '--cache-dir [^ ]+' "$CALLS" | tail -1 | cut -d' ' -f2)
 t "AC12" "...and with the fixed path the same cleanup fallback runs: a 'sudo ... rm -rf' call is logged and the assembly's own status is unchanged (0)" bash -c "test \"\$(cat '$work/site.rc')\" = 0 && grep -q '^sudo .*rm -rf' '$CALLS'"
 chmod -R u+w "$(dirname "$site_cache2")" 2>/dev/null; rm -rf "$(dirname "$site_cache2")"
+# round 5: the config is read as a closed plain grammar, so YAML constructs the text scan could not decode are refused (both seats' counterexamples)
+printf 'contents:\n  repositories:\n    - /work/archive\n    - /work/melange-repo\n  runtime-repositories: ["https:\\\n    //example.invalid/os"]\n  packages:\n    - tzdata\n' >"$work/rt.yaml"
+sr "rule 26" "assemble refuses a config with an extra repository key whose flow value is a YAML line continuation spelling https://, before any apko call" 'plain grammar|repository-like' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/rt.yaml" --out "$(mo)"
+printf 'contents:\n  "repositories":\n    - "https:\\\n      //packages.wolfi.dev/os"\nannotations:\n  note: |\n    repositories:\n      - /work/archive\n      - /work/melange-repo\n' >"$work/qk.yaml"
+sr "rule 26" "assemble refuses a config with a quoted repositories key and a block scalar that merely contains the expected lines" 'plain grammar' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/qk.yaml" --out "$(mo)"
+t "AC1" "the committed configs and the fixture configs satisfy the closed grammar (check-config exits 0 for each)" bash -c "for f in '$root/build/apko.yaml' '$root/build/apko-fips.yaml' '$fx/apko.yaml' '$fx/apko-fips.yaml'; do python3 '$OD' check-config \"\$f\" || exit 1; done"
+# round 5 (seat A, R1): index and manifests carry schemaVersion 2
+python3 - "$work" <<'P'
+import hashlib, io, json, sys, tarfile
+work = sys.argv[1]
+H = lambda b: hashlib.sha256(b).hexdigest()
+def build(name, idx_sv=2, man_sv=2, top_sv=2):
+    blobs, mans = [], []
+    for arch in ("amd64", "arm64"):
+        cfg = json.dumps({"architecture": arch, "os": "linux"}, sort_keys=True).encode(); layer = ("layer-" + arch).encode()
+        man = json.dumps({"schemaVersion": man_sv, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)},
+                          "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:" + H(layer), "size": len(layer)}]}, sort_keys=True).encode()
+        blobs += [cfg, layer, man]
+        mans.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + H(man), "size": len(man), "platform": {"architecture": arch, "os": "linux"}})
+    idx = json.dumps({"schemaVersion": idx_sv, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": mans}, sort_keys=True).encode()
+    top = json.dumps({"schemaVersion": top_sv, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + H(idx), "size": len(idx)}]}, sort_keys=True).encode()
+    members = [("oci-layout", b'{"imageLayoutVersion":"1.0.0"}'), ("index.json", top), ("blobs/sha256/" + H(idx), idx)] + [("blobs/sha256/" + H(b), b) for b in blobs]
+    with tarfile.open("%s/%s.tar" % (work, name), "w") as t:
+        for n, b in members:
+            ti = tarfile.TarInfo(n); ti.size = len(b); ti.mode = 0o644; t.addfile(ti, io.BytesIO(b))
+build("oci-sv-idx", idx_sv=1); build("oci-sv-man", man_sv=1); build("oci-sv-top", top_sv=1)
+P
+for v_ in sv-idx sv-man sv-top; do
+  python3 "$OD" "$work/oci-$v_.tar" >"$work/oci-$v_.out" 2>&1; r_=$?
+  t "BT-002-AC1" "a layout whose $v_ carries schemaVersion 1 (hashes and sizes right) is refused naming schemaVersion" bash -c "test $r_ != 0 && grep -q 'schemaVersion' '$work/oci-$v_.out'"
+done
+# round 5 (seat B, R2): --digests-out may not be a generated result of the proof itself
+sf "rule 42" "sealed-proof: --digests-out inside the proof's own OUT directory is refused (it would overwrite a generated result)" 'inside the proof' "${spe[@]}" "$SP" --out "$work/dgo-out" --probe 'test -z "${FAKE_SEALED:-}"' --digests-out "$work/dgo-out/image/production.digest" "${sp_common[@]}"
 # ---- end verbatim sections ----
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

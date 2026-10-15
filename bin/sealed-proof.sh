@@ -136,6 +136,10 @@ if [ -n "$expect" ]; then
 fi
 [ -z "$digests_out" ] || [ -z "$expect" ] || { [ ! "$digests_out" -ef "$expect" ] || die "--digests-out and --expect are the same file (or hard links of one): the comparison would be made against the digests just written" 2; }
 if [ -n "$digests_out" ]; then
+  case $digests_out in "$out"|"$out"/*) die "--digests-out $digests_out is inside the proof's own output $out: it would overwrite a generated result" 2;; esac
+  for g_ in "$out"/image/*.digest "$out"/image/*.manifests "$out"/sealed-record.json; do
+    [ ! -e "$g_" ] || [ ! "$digests_out" -ef "$g_" ] || die "--digests-out is the same file as the generated $g_ (or a hard link of it)" 2
+  done
   [ ! -L "$digests_out" ] && { [ ! -e "$digests_out" ] || [ -f "$digests_out" ]; } || die "--digests-out $digests_out is a link or not a regular file; refusing to write through it" 2
   cp "$tmp/digests.txt" "$digests_out"
 fi
@@ -191,6 +195,7 @@ json.dump({"cut": "sudo unshare -n (network namespace without a route)",
            "runner": {"ImageOS": os.environ.get("ImageOS", "unknown"), "ImageVersion": os.environ.get("ImageVersion", "unknown")},
            "digests": digests, "archive_index": archive_index, "archive_index_record": idx,
            "build_repository_index": {sys.argv[9]: sys.argv[10]},
+           "binding_note": "the image was assembled from the supplied --melange-repo, not from the apk this build wrote to OUT/apk: the release chain's stage graph binds them (this record proves the two sealed steps separately)",
            "build_script": bs, "build_script_sha256": hashlib.sha256(open(bs, "rb").read()).hexdigest(),
            "assemble_script": as_, "assemble_script_sha256": hashlib.sha256(open(as_, "rb").read()).hexdigest(),
            "negatives": {"vendor-deleted": {"result": "failed-as-required", "reason": sys.argv[6]},
