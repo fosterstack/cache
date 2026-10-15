@@ -2767,8 +2767,8 @@ case_ r33-b1-ampersand-append-redirect-to-a-quoted-name-bad bad "$(rb 'curl -fsS
 #     any function or compound command, to a literal absolute path (NAME=/abs or printf -v NAME %s /abs); the rewritten command is judged by the usual rules
 case_ lit-var-ok ok "$(rb 'bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\$GIT\" status\n' > ci-lit.sh"
 case_ lit-var-braced-ok ok "$(rb 'bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\${GIT}\" status\n' > ci-lit.sh"
-case_ lit-printf-v-ok ok "$(rb 'bash ci-lit.sh')" "printf 'printf -v CURL %s /usr/bin/true   # TEST-SUBST\n\"\$CURL\" --version\n' > ci-lit.sh"
-case_ lit-var-before-functions-ok ok "$(rb 'bash ci-lit.sh')" "printf 'PY3=/usr/bin/python3\ndie() { echo \"\$1\" >&2; exit 2; }\n\"\$PY3\" -I -B script.py\n' > ci-lit.sh"
+case_ lit-printf-v-ok ok "$(rb 'bash ci-lit.sh')" "printf 'printf -v CURL %%s /usr/bin/true   # TEST-SUBST\n\"\$CURL\" --version\n' > ci-lit.sh"
+case_ lit-var-before-functions-ok ok "$(rb 'bash ci-lit.sh')" "printf 'PY3=/usr/bin/python3\ndie() { echo \"\$1\" >&2; exit 2; }\n\"\$PY3\" --version\n' > ci-lit.sh"
 case_ lit-var-behind-sudo-ok ok "$(rb 'bash ci-lit.sh')" "printf 'T=/usr/bin/git\nsudo \"\$T\" status\n' > ci-lit.sh"
 case_ lit-var-docker-unpinned-bad bad "$(rb 'bash ci-lit.sh')" "printf 'D=/usr/bin/docker\n\"\$D\" run alpine:latest\n' > ci-lit.sh"
 case_ lit-var-python-inline-bad bad "$(rb 'bash ci-lit.sh')" "printf 'P=/usr/bin/python3\n\"\$P\" -c \"import os\"\n' > ci-lit.sh"

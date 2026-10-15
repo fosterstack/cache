@@ -653,9 +653,15 @@ ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
 
 
+_DEFAULTED = set()      # every name a ${NAME:-word} / ${NAME:=word} / ... expansion was read away from: such a name is never a literal path
+
+
 def _expand_defaults(text):
+    def word(m):
+        _DEFAULTED.add(m.group(1))
+        return m.group(4)
     while True:   # each pass removes at least one ${...}: it ends
-        new = PARAM_WORD.sub(lambda m: m.group(4), text)
+        new = PARAM_WORD.sub(word, text)
         if new == text:
             return new
         text = new
@@ -1020,10 +1026,56 @@ def _command_words(toks):
     return words
 
 
+_CONSTS = {}     # name -> literal absolute path, for the script _commands() is reading (set at depth 0; handoff 0440 (1))
+_CONST_PATH = re.compile(r"/[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)*")
+
+
+def _literal_path_vars(script):
+    """The program variables a script holds in the ONE closed form (owner's rules 4 and 9 of Oct 14, advisor 0440 (1)): the script
+    assigns the name exactly once, at top level before any function, compound command, heredoc, eval or source, with `NAME=/abs/path`
+    or `printf -v NAME %s /abs/path` (a literal absolute path: no `..`, no variable, no substitution), the name is mentioned
+    nowhere else as a target (no export, read, for, declare, array, default-assigning expansion, second assignment), and no `$NAME`
+    comes before the assignment (the caller's environment could have set it). name -> path; anything else is simply not in it, and a
+    program named by such a variable stays refused."""
+    text = re.sub(r"\\\n", "", script)
+    nc, bl, open_quote = _mask_shell(text)
+    if open_quote or re.search(r"(?<![\w.-])(eval|source)(?![\w.-])|(^|[;&|(\s])\.\s+\S", bl, re.M):
+        return {}
+    found = {}
+    for m in re.finditer(r"^(?:([A-Za-z_]\w*)=|printf -v ([A-Za-z_]\w*) %s )(/[^\s;&|<>()$`\"'\\]*)[ \t]*$", nc, re.M):
+        name, path = m.group(1) or m.group(2), m.group(3)
+        if not _CONST_PATH.fullmatch(path) or any(c in ("..", ".") for c in path.split("/")):
+            continue
+        if re.search(r"<<|[{}()]|(?<![\w.-])(if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|coproc)(?![\w.-])",
+                     bl[:m.start()]):
+            continue                                     # not at top level: after a block, a function, a heredoc or a subshell
+        mentions = [x.start() for x in re.finditer(r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])", bl)
+                    if not bl[:x.start()].endswith(("$", "${"))]
+        if mentions != [m.start(1) if m.group(1) else m.start(2)]:
+            continue
+        if re.search(r"\$\{" + name + r"(:?[=+?-]|\[|[#%/^,@!])|\$\{!", nc):
+            continue                                     # a default-assigning or indirect expansion naming it
+        if re.search(r"\$\{?" + name + r"(?![A-Za-z0-9_])", nc[:m.start()]):
+            continue                                     # read before it was assigned
+        if name in _DEFAULTED:
+            continue                                     # a default or assigning expansion of it was read away before this text got here
+        found[name] = path
+    return found
+
+
+def _subst_consts(chunk):
+    for name, path in _CONSTS.items():
+        chunk = re.sub(r"\$\{" + name + r"\}|\$" + name + r"(?![A-Za-z0-9_])", lambda _m, p=path: p, chunk)
+    return chunk
+
+
 def _commands(script, depth=0):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
+    global _CONSTS
+    if depth == 0:
+        _CONSTS = _literal_path_vars(script)
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     out = []
     if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
@@ -1038,6 +1090,7 @@ def _commands(script, depth=0):
         out.append(["__too_deep__", "command substitutions"])   # never silently dropped (C02)
     for chunk in _split_commands(text):
         chunk = _skip_array_literal(chunk)
+        chunk = _subst_consts(chunk)
         toks = _tokens(chunk)
         if not toks or toks[0] in PRINTERS:
             continue
