@@ -1024,6 +1024,11 @@ def _command_words(toks):
 SCRIPT_MARK = "#@@" + secrets.token_hex(16) + "@@"   # a comment line between the scripts of one inlined job text: each script's own assignments count for it
 #                                                     alone; chosen per run, so no repository text can carry it (a script that wrote the line itself would
 #                                                     otherwise split its own function or branch in two)
+_LIT_TAINT = re.compile(
+    r"(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])set\s+-[A-Za-z]*a|allexport"
+    r"|(?<![\w.-])(read|mapfile|readarray|getopts|unset|printf\s+-v|let|select|eval)(?![\w.-])[^\n;&|]*\$"         # a variable names or feeds the target
+    r"|(?<![\w.-])(declare|typeset|local|export|readonly)\s+(-[A-Za-z]*n|[^\n;&|=]*\$)"                    # a nameref, or a name built from an expansion
+    r"|\(\(|\$\[")                                                                                          # arithmetic can assign
 SOURCED_MARK = "#@@" + secrets.token_hex(16) + "-sourced@@"   # first line of a script that was sourced: it runs in its caller's shell, so no literal-variable inference
 _NO_NAME = {n.upper() for n in """_ BASH BASHOPTS BASHPID BASH_ALIASES BASH_ARGC BASH_ARGV BASH_ARGV0 BASH_CMDS BASH_COMMAND BASH_COMPAT BASH_ENV
     BASH_EXECUTION_STRING BASH_LINENO BASH_LOADABLES_PATH BASH_REMATCH BASH_SOURCE BASH_SUBSHELL BASH_VERSINFO BASH_VERSION BASH_XTRACEFD CHILD_MAX
@@ -1059,6 +1064,8 @@ def _literal_path_vars(script):
     program named by such a variable stays refused."""
     if SOURCED_MARK in script:
         return {}                                        # sourced: the caller's namerefs, functions and variables reach it
+    if _LIT_TAINT.search(script):
+        return {}                                        # a computed write target, a nameref, allexport or a startup file: the name may be written where no mention shows
     if re.search(r"(?<![\w.-])enable(?![\w.-])", script):
         return {}                                        # enable -n can remove the builtin the assignment form relies on
     if "`" in script or re.search(r"(?<![\w.-])(printf|builtin|command|unset|trap)\s*\(\s*\)|(?<![\w.-])function\s+(printf|builtin|command|unset|trap)(?![\w.-])", script):
@@ -1095,6 +1102,11 @@ def _literal_path_vars(script):
             continue                                     # the end of the line before is an and-or list or a pipe: the assignment may never run, or runs in a subshell
         found[name] = path
     return found
+
+
+def _rewrite_step(script, shell):
+    """_rewrite_consts for a step's own text: only a step that bash runs (no shell key, or bash): `sh` is dash, which has no printf -v."""
+    return _rewrite_consts(script) if not shell or re.match(r"^bash(\s|$)", shell) else script
 
 
 def _rewrite_consts(script):
@@ -1172,7 +1184,7 @@ def _commands(script, depth=0):
             ops = [a for k, a in enumerate(rest) if not a.startswith(("-", "<", ">")) and not re.match(r"^[0-9]+[<>]", a)
                    and not (k > 0 and re.fullmatch(r"[-+][a-zA-Z]*[oO]", rest[k - 1]))]
             if _base(w) in SHELLS and ops and not any(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a) for a in rest):
-                out.append(["__script__", ops[0]])
+                out.append(["__script__", ops[0]] + ([] if _base(w) == "bash" else ["shell"]))   # only bash runs the printf -v form; sh is dash
             elif (w == "source" or (w == "." and w == words[0])) and ops:     # command source x.sh too (r3)
                 out.append(["__script__", ops[0], "sourced"])
             elif ("/" in w or w.endswith(".sh")) and _base(w) not in TOOLS | SHELLS and not PKG_TOOL.match(_base(w)) \
@@ -2472,7 +2484,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=(), inherit
     # a dot or source word anywhere in the calling text (`command . x`, `builtin source x`, `exec . x`, whatever wraps it): every script it runs is
     # treated as sourced, which closes the wrapper forms the command reader does not classify; so is a text that exports a function (the child imports it)
     sourced_any = inherited or bool(re.search(r"(?<![\w./$-])source(?![\w./-])|(^|[;&|(\s])\.\s+\S"
-                           r"|(?<![\w.-])(export|declare|typeset)\b[^\n;&|]*\s-[A-Za-z]*f|BASH_FUNC_", _unquoted(text), re.M))   # or exports a function: it reaches every child
+                           r"|(?<![\w.-])(export|declare|typeset)\b[^\n;&|]*\s-[A-Za-z]*f|BASH_FUNC_"
+                           r"|(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])set\s+-[A-Za-z]*a|allexport", _unquoted(text), re.M))   # or exports a function: it reaches every child
     dlnames = _downloaded_commands(job or text)
     if dlnames:
         for chunk in _split_commands(_cut_substitutions(text)[0]):
@@ -2533,9 +2546,10 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=(), inherit
             continue
         content = tree.read(rel)
         inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", _rewrite_consts(
-            (SOURCED_MARK + "\n" if len(t) > 2 and t[2] == "sourced" or sourced_any else "") + content)))))
+            (SOURCED_MARK + "\n" if len(t) > 2 and t[2] in ("sourced", "shell") or sourced_any else "") + content)))))
         cd = bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(inner)))
-        sourced = len(t) > 2 and t[2] == "sourced" or sourced_any      # a sourced script, or one whose caller exports a function, passes it on to every level below
+        sourced = len(t) > 2 and t[2] in ("sourced", "shell") or sourced_any or (
+            t[0] == "__exec__" and content.startswith("#!") and "bash" not in content.split("\n", 1)[0])      # a sourced script, or one whose caller exports a function, passes it on to every level below
         more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases, sourced)
         added.append(SCRIPT_MARK + "\n" + (SOURCED_MARK + "\n" if sourced else "") + content
                      + ("\n" + SCRIPT_MARK + "\n" + more if more else ""))
@@ -2555,7 +2569,7 @@ def check_runs(where_job, scripts, bad, tree=None):
     # committed scripts they run are part of it (Codex #164 r2, C11)
     job0 = "\n".join(read(item[1]) for item, ok in zip(scripts, posix) if ok)
     for item, ok in zip(scripts, posix):
-        marked = _drop_foreign_heredocs(_decode_dollar_quotes(_mark_defaults(_rewrite_consts(re.sub(r"\\\n", "", item[1])))))
+        marked = _drop_foreign_heredocs(_decode_dollar_quotes(_mark_defaults(_rewrite_step(re.sub(r"\\\n", "", item[1]), item[2]))))
         for t in (_commands(marked) if ok else []):
             if t[0] == "__variable_program__" and PARAM_WORD.search(item[1]):
                 bad.append(f"{item[0]}: a program is named by a variable with a default ({t[1]}); bash runs the "
@@ -2570,7 +2584,7 @@ def check_runs(where_job, scripts, bad, tree=None):
         # The word anywhere counts, quoted or nested in sh -c / eval: fail closed (Sonnet #164 r17, NEW-25)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(read(raw))))
         bases = item[6] if len(item) > 6 else ()
-        more, also = _run_scripts(read(_rewrite_consts(raw)), tree, moved, 0, where, job0, bases) if ok else ("", [])
+        more, also = _run_scripts(read(_rewrite_step(raw, item[2])), tree, moved, 0, where, job0, bases) if ok else ("", [])
         # each script is read on its own, as written (before ${NAME:-word} is read away): its literal-path variables are replaced in it alone
         inlined.append((_rewrite_consts(more), also))
 
@@ -2595,8 +2609,8 @@ def check_runs(where_job, scripts, bad, tree=None):
         where, raw, shell = item[:3]
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
-        own = read(_rewrite_consts(raw))
-        raw = _rewrite_consts(raw) + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own (the step's own text too, as written)
+        own = read(_rewrite_step(raw, shell))
+        raw = _rewrite_step(raw, shell) + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own (the step's own text too, as written)
         text = read(raw)
         own_nc = _mask_shell(text)[0]         # the step's text AND the committed scripts it runs, without comments, for reading a literal value (r24)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text)))
@@ -2935,9 +2949,9 @@ def check_file(tree, rel, pins, bad):
                 if isinstance(n, yaml.MappingNode):
                     for k, v in n.value:
                         if isinstance(k, yaml.ScalarNode) and k.value in ("DOCKER_HOST", "DOCKER_CONTEXT", "BUILDKIT_HOST",
-                                                                          "DOCKER_CONFIG"):
-                            bad.append(f"{rel}: an env block sets {k.value}, which points docker or buildx elsewhere; "
-                                       f"refused")
+                                                                          "DOCKER_CONFIG", "BASH_ENV", "ENV"):
+                            bad.append(f"{rel}: an env block sets {k.value}, which points docker or buildx elsewhere "
+                                       f"or makes every shell read a startup file; refused")
                         stack.append(v)
                 elif isinstance(n, yaml.SequenceNode):
                     stack.extend(n.value)
