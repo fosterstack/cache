@@ -3272,6 +3272,12 @@ curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"')"
 runck key-read-overwrites '{"times": {}}'
 CASE="the base URL variable overwritten by read is refused (exit 1)"
 check test "$rc" -eq 1
+newcase key-source-after-assign "$(keyscript key-source-after-assign 'WOLFI=https://packages.wolfi.dev/os
+. ./other.env
+curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"')"
+runck key-source-after-assign '{"times": {}}'
+CASE="a file sourced between the base URL assignment and the fetch is refused (exit 1)"
+check test "$rc" -eq 1
 newcase key-assign-in-function "$(keyscript key-assign-in-function 'f() {
 WOLFI=https://packages.wolfi.dev/os
 }
