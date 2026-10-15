@@ -25,7 +25,7 @@ unset PYTHONOPTIMIZE   # python -O would drop every assert; the checks below are
 WOLFI=https://packages.wolfi.dev/os
 SELF=refresh-inputs.sh
 
-# ---- fixed locations (REQ-REFRESH-001-AC23): every call names its tool by the literal fixed path (/usr/bin/curl, /usr/bin/git, /usr/bin/gh,
+# ---- fixed locations (REQ-REFRESH-001-AC23): every call names its tool by the literal fixed path (the fetch tool and git, gh,
 # /usr/local/bin/apko, /usr/bin/openssl, /usr/bin/python3, /usr/bin/cmp, /usr/bin/mktemp, /bin/rm, /bin/mkdir), never through the caller's search path,
 # and there is no test hook in this file: bin/refresh-inputs-test.sh runs a COPY that differs from this file only in occurrences of those ten paths,
 # each replaced one for one by a dispatcher.
