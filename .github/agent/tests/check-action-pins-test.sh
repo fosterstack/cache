@@ -2853,5 +2853,23 @@ case_ r3-exported-printf-function-bad bad "$(rb 'printf() { builtin printf -v "$
           bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
 case_ r3-own-printf-function-bad bad "$(rb 'bash ci-lit.sh')" "printf 'printf() { builtin printf -v \"\$2\" %%s /usr/bin/docker; }\nprintf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
 
+# --- review round 4 of PR 351 (both seats): the exported-function guard reads every option word and every recursion level, `enable` removes the builtin the
+#     assignment form relies on, and the shell-owned names are the whole list of the manual (COPROC, COPROC_PID, ...)
+case_ r4-declare-x-f-bad bad "$(rb 'printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          declare -x -f printf
+          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r4-typeset-x-f-bad bad "$(rb 'printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          typeset -x -f printf
+          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r4-export-p-f-bad bad "$(rb 'printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          export -p -f printf
+          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r4-exported-function-reaches-grandchild-bad bad "$(rb 'printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          export -f printf
+          bash ci-a.sh')" "printf 'bash ci-b.sh\n' > ci-a.sh; printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-b.sh"
+case_ r4-enable-n-printf-bad bad "$(rb 'bash ci-lit.sh')" "printf 'enable -n printf\nprintf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r4-coproc-shell-name-bad bad "$(rb 'bash ci-lit.sh')" "printf 'COPROC=/usr/bin/git\n\"\$COPROC\" run alpine:latest\n' > ci-lit.sh"
+case_ r4-coproc-pid-shell-name-bad bad "$(rb 'bash ci-lit.sh')" "printf 'COPROC_PID=/usr/bin/git\n\"\$COPROC_PID\" run alpine:latest\n' > ci-lit.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
