@@ -445,8 +445,8 @@ for spec in "m-crane|archive-push.sh|\"\$CRANE\" push \"\$tmp/layout\"|crane pus
   if cmp -s "$work/mt-$n/$f" "$CP/$f"; then bad AC9 "tool mutant $n equals the original"; continue; fi
   if python3 "$work/toolscan.py" "$work/mt-$n/$f" $TOOLS >/dev/null 2>&1; then bad AC9 "the tool-path scan misses the mutant $n"; else ok; fi
 done
-mkcopy "$work/mt-py" archive-pull.sh '"$PY3" -I -B "$VERIFY" unpack' '"$PY3" "$VERIFY" unpack'
-t AC9 "the -I -B assertion bites: a python3 call without them is found" bash -c "grep -v '^ *#' '$work/mt-py/archive-pull.sh' | grep -Eq '\"\\\$PY3\" +\"'"
+mkcopy "$work/mt-py" archive-pull.sh '"$PY3" -I -B '"$work/mt-py"'/archive-verify.py unpack' '"$PY3" '"$work/mt-py"'/archive-verify.py unpack'
+t AC9 "the -I -B assertion bites: a python3 call without them is found" bash -c "grep -v '^ *#' '$work/mt-py/archive-pull.sh' | grep -Eq '\"\\\$PY3\" +[^-]'"
 
 echo "archive-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

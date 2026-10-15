@@ -19,9 +19,6 @@ RM=/bin/rm                      # TEST-SUBST
 SELF=archive-push.sh
 die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 
-here=${BASH_SOURCE[0]%/*}
-[ "$here" != "${BASH_SOURCE[0]}" ] || here=.
-VERIFY=$(cd "$here" && pwd)/archive-verify.py
 
 dir=
 while [ $# -gt 0 ]; do
@@ -37,7 +34,7 @@ tmp=$("$MKTEMP" -d)
 cleanup() { "$RM" -rf "$tmp"; }
 trap cleanup EXIT
 
-ref=$("$PY3" -I -B "$VERIFY" pack --dir "$dir" --layout "$tmp/layout") || exit $?
+ref=$("$PY3" -I -B bin/archive-verify.py pack --dir "$dir" --layout "$tmp/layout") || exit $?   # TEST-SUBST
 digest=${ref#*@}
 
 out=$("$CRANE" push "$tmp/layout" "$ref") || die "crane push failed" 1

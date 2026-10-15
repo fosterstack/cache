@@ -18,9 +18,6 @@ RM=/bin/rm                      # TEST-SUBST
 SELF=archive-pull.sh
 die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 
-here=${BASH_SOURCE[0]%/*}
-[ "$here" != "${BASH_SOURCE[0]}" ] || here=.
-VERIFY=$(cd "$here" && pwd)/archive-verify.py
 
 pointer= out= want=
 while [ $# -gt 0 ]; do
@@ -39,7 +36,7 @@ if [ -n "$want" ]; then
   esac
 fi
 
-art=$("$PY3" -I -B "$VERIFY" artifact --pointer "$pointer") || exit $?
+art=$("$PY3" -I -B bin/archive-verify.py artifact --pointer "$pointer") || exit $?   # TEST-SUBST
 have=${art#*@}
 if [ -n "$want" ] && [ "$want" != "$have" ]; then die "the digest $want is not the one committed in $pointer ($have): refusing" 2; fi
 
@@ -50,4 +47,4 @@ cleanup() { "$RM" -rf "$tmp"; }
 trap cleanup EXIT
 
 "$CRANE" pull --format oci "$art" "$tmp/layout" || die "crane pull of $art failed" 1
-"$PY3" -I -B "$VERIFY" unpack --pointer "$pointer" --layout "$tmp/layout" --out "$out" || exit $?
+"$PY3" -I -B bin/archive-verify.py unpack --pointer "$pointer" --layout "$tmp/layout" --out "$out" || exit $?   # TEST-SUBST
