@@ -1291,7 +1291,7 @@
           "line": "    for p in (\"/usr/bin/openssl\", \"/opt/homebrew/bin/openssl\", \"/usr/local/bin/openssl\"):",
           "line_sha256": "5fead91decc79ed084017554a36c313c5f4ad61e372c7fc9802f9602c66c8dc3",
           "count": 1,
-          "why": "the three fixed locations the reader looks for openssl at, checked with isfile before any run; never searched on PATH"
+          "why": "the three fixed locations the reader looks for openssl at, each tested with os.access(p, os.X_OK) before any run; never searched on PATH"
         },
         {
           "rule": "deny",
