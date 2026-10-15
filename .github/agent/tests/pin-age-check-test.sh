@@ -3207,6 +3207,27 @@ for v in "run-script:bash vendor/example.test/dep/install.sh" "make-C:make -C ve
   CASE="a new script that names the vendored folder is refused: ${v%%:*} (exit 1)"
   check test "$rc" -eq 1
 done
+for v in "quote-split:bash ven\"\"dor/example.test/dep/install.sh" "backslash-split:bash ven\\dor/example.test/dep/install.sh" \
+         "bracket-letter:bash vendo[r]/example.test/dep/install.sh" "star-letter:bash v*ndor/example.test/dep/install.sh" \
+         "question-letter:bash vend?r/example.test/dep/install.sh" "quoted-hash:printf %s ' #'; bash vendor/example.test/dep/install.sh" \
+         "mod-word-not-go:ls mod vendor/example.test/dep" "mod-flag-path:ls -mod=vendor/example.test/dep" \
+         "yaml-hex-escape:bash \\x76endor/example.test/dep/install.sh" "yaml-unicode-escape:bash ven\\u0064or/example.test/dep/install.sh"; do
+  vfile "obf-${v%%:*}" .github/workflows/w.yml "${v#*:}"
+  CASE="a spelling of the vendored folder that the shell or YAML reads as vendor/ is refused: ${v%%:*} (exit 1)"
+  check test "$rc" -eq 1
+done
+# an executable surface the scan did not read (python helper, Makefile, Dockerfile) that names vendor/ is refused too
+for f in "bin/helper.py:import subprocess\nsubprocess.run(['bash', 'vendor/example.test/dep/install.sh'])" "Makefile:all:\n\tbash vendor/example.test/dep/install.sh" "build/docker/Dockerfile.probe:RUN sh vendor/example.test/dep/install.sh"; do
+  fp=${f%%:*}; body=${f#*:}
+  python3 - "$fp" "$body" <<'PY' > "$work/vc-surf.py"
+import json, sys
+print("import pathlib\nroot = pathlib.Path('.')\n(root / 'vendor/example.test/dep').mkdir(parents=True, exist_ok=True)\n(root / 'vendor/example.test/dep/install.sh').write_text('go install example.test/tool@v1.2.3\\n')\n"
+      "p = root / " + json.dumps(sys.argv[1]) + "\np.parent.mkdir(parents=True, exist_ok=True)\np.write_text(" + json.dumps(sys.argv[2].replace("\\n", "\n").replace("\\t", "\t") + "\n") + ")")
+PY
+  newcase vc-surf "$(cat "$work/vc-surf.py")"; runck vc-surf '{"times": {}}'
+  CASE="a python helper, Makefile or Dockerfile that names the vendored folder is refused: $fp (exit 1)"
+  check test "$rc" -eq 1
+done
 vfile flow-style .github/workflows/w.yml '{run: "bash vendor/example.test/dep/install.sh"}'
 CASE="a flow-style step that names the vendored folder is refused (exit 1)"
 check test "$rc" -eq 1
@@ -3228,7 +3249,7 @@ hits = [k for k, _, _ in m.unmeasured_occurrences(files) if k[1] == "a line that
 assert not hits, hits[:3]
 naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/")) and (p.startswith(".github/") or p.endswith(".sh"))
           and any(m._names_vendor(l) for l in t.split("\n"))}
-extra = set(m._VENDOR_NAMING_FILES) - naming - {"bin/vendor-provenance-test.sh"}
+extra = set(m._VENDOR_NAMING_FILES) - naming
 assert not extra, "listed but names nothing: %s" % sorted(extra)
 missing = naming - set(m._VENDOR_NAMING_FILES)
 assert not missing, "names vendor but not listed: %s" % sorted(missing)
