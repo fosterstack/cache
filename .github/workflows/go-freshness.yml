@@ -176,3 +176,88 @@ jobs:
             /tmp/mutation-req.json
             /tmp/mutation-req.log
           retention-days: 90
+
+  # The daily refresh of the build inputs (REQ-REFRESH-001-AC24 to AC31; owner's rules 4 to 9 of Oct 14). One job in this workflow, main only,
+  # on the daily schedule or by hand, never on a pull request. It looks for a newer version of every base package and build tool, adds what it
+  # finds to the package archive (verified by signature and checksum), opens a pull request on its own refresh/ branch that moves the build to the
+  # new versions, and stores the archive back in our own registry only if something changed. It never merges, never pushes to main.
+  # Its own token is read-only plus packages: write (the archive store); the pull request is opened with the auditor App's token, minted exactly
+  # as the check job mints it and handed to the two steps that open pull requests.
+  refresh:
+    name: refresh the build inputs and open the refresh pull request
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '23 6 * * *') }}
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false   # the App token, via gh, is the only push credential
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - name: install apko and crane at their fixed locations
+        run: |
+          set -euo pipefail
+          sudo ./bin/install-build-tools.sh apko /usr/local/bin
+          sudo chown "$(id -un)" /usr/local/bin
+          GOTOOLCHAIN=local GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+
+      - name: log in to our registry with the job's own token
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | /usr/local/bin/crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: pull the archive by its recorded digest
+        run: |
+          set -euo pipefail
+          [ -f build/archive.json ] || { echo "::error::build/archive.json is not committed: the archive has no recorded digest to pull" >&2; exit 2; }
+          ./bin/archive-pull.sh --pointer build/archive.json --out "$RUNNER_TEMP/archive"
+          find "$RUNNER_TEMP/archive" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum > "$RUNNER_TEMP/archive.before"
+
+      - name: mint the auditor App's token (exactly the auditor's scope)
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: refresh the inputs and open the refresh pull request
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          gh auth setup-git
+          git config user.name "$AUDITOR_APP_SLUG[bot]"
+          git config user.email "$AUDITOR_APP_SLUG[bot]@users.noreply.github.com"
+          ./bin/refresh-inputs.sh refresh --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive" --pr-author "$AUDITOR_APP_SLUG"
+
+      - name: check for a newer certified crypto module
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          ./bin/refresh-inputs.sh fips-module --go-root "$(go env GOROOT)" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG"
+
+      - name: store the archive when something changed
+        run: |
+          set -euo pipefail
+          after=$(find "$RUNNER_TEMP/archive" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum)
+          if [ "$after" = "$(cat "$RUNNER_TEMP/archive.before")" ]; then
+            echo "the archive is unchanged: nothing stored"
+          else
+            digest=$(./bin/archive-push.sh --dir "$RUNNER_TEMP/archive")
+            echo "the archive changed and was stored at ${digest}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi

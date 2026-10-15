@@ -161,13 +161,16 @@ if re.search(r"gh\s+pr\s+(merge|review|approve)|--auto\b|git\s+push[^\"]*\bmain\
 if rsteps and (rsteps[0].get("with") or {}).get("persist-credentials") != "false":
     bad.append("AC28: the refresh checkout keeps a credential")
 # AC31: every action reference in the refresh job is a commit digest with a tag comment (read from the file text: the loader drops comments)
-raw = open(sys.argv[1]).read().splitlines()
-inref = False
-for line in raw:
-    if re.match(r"^  refresh:", line): inref = True; continue
-    if inref and re.match(r"^  [A-Za-z0-9_-]+:", line): inref = False
-    if inref and re.search(r"^\s*-?\s*uses:", line) and not re.search(r"uses:\s*\S+@[0-9a-f]{40}\s+#\s*\S+", line):
-        bad.append("AC31: an action reference in the refresh job is not a commit digest with a tag comment: %s" % line.strip())
+# the judged copy may have been re-dumped (comments gone), so: a digest in the judged copy, and the tag comment in the tree's own file
+for label, path, need_comment in (("judged copy", sys.argv[1], False), ("tree file", os.path.join(tree, ".github/workflows/go-freshness.yml"), True)):
+    inref = False
+    for line in open(path).read().splitlines():
+        if re.match(r"^  refresh:", line): inref = True; continue
+        if inref and re.match(r"^  [A-Za-z0-9_-]+:", line): inref = False
+        if inref and re.search(r"^\s*-?\s*uses:", line):
+            pat = r"uses:\s*\S+@[0-9a-f]{40}(\s+#\s*\S+)" + ("" if need_comment else "?") + r"\s*$"
+            if not re.search(pat, line):
+                bad.append("AC31: an action reference in the refresh job (%s) is not a commit digest with a tag comment: %s" % (label, line.strip()))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -208,38 +211,6 @@ case_ key-through-outputs    bad "$C['outputs'] = {'k': '\${{ secrets.AUDITOR_AP
 case_ bump-gutted            bad "[s.__setitem__('run', ':') for s in $C['steps'] if 'go-bump-open-pr.sh' in (s.get('run') or '')]"
 case_ github-env-write       bad "[s.__setitem__('run', s['run'] + 'echo INPUT_PERMISSION-checks=write >> \"\$GITHUB_ENV\"\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ workflow-env           bad "d['env'] = {'INPUT_PERMISSION-checks': 'write'}"
-# the refresh job (AC24 to AC31)
-R='d["jobs"]["refresh"]'
-RSTEP="[s for s in %s['steps'] if s.get('name') == '%s'][0]"
-case_ refresh-wrong-env       bad "$R['environment'] = 'other'"
-case_ refresh-writes-contents bad "$R['permissions']['contents'] = 'write'"
-case_ refresh-more-perms      bad "$R['permissions']['id-token'] = 'write'"
-case_ refresh-on-pr-ref       bad "$R['if'] = \"\${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event.schedule == 'x' }}\""
-case_ refresh-pull-request-trigger bad "d['on']['pull_request'] = {}"
-case_ refresh-token-too-wide  bad "[s['with'].__setitem__('permission-packages', 'write') for s in $R['steps'] if str(s.get('uses','')).startswith('actions/create-github-app-token@')]"
-case_ refresh-token-extra-step bad "$R['steps'].append({'name': 'x', 'env': {'GH_TOKEN': '\${{ steps.app-token.outputs.token }}'}, 'run': 'true'})"
-case_ refresh-order-swapped   bad "a = $R['steps']; i = [k for k, s in enumerate(a) if s.get('name') == 'pull the archive by its recorded digest'][0]; a[i], a[i+1] = a[i+1], a[i]"
-case_ refresh-pull-by-tag     bad "[s.__setitem__('run', 'crane pull ghcr.io/x/archive:latest out') for s in $R['steps'] if s.get('name') == 'pull the archive by its recorded digest']"
-case_ refresh-push-always     bad "[s.__setitem__('run', './bin/archive-push.sh --dir \"\$RUNNER_TEMP/archive\"') for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
-case_ refresh-merges          bad "[s.__setitem__('run', s['run'] + 'gh pr merge --auto --squash\\n') for s in $R['steps'] if s.get('name') == 'refresh the inputs and open the refresh pull request']"
-case_ refresh-job-removed     bad "$R.clear(); d['jobs'].pop('refresh')"
-case_ refresh-push-in-check   bad "[s.__setitem__('run', s['run'] + './bin/archive-push.sh --dir x\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
-case_ refresh-checkout-cred   bad "$R['steps'][0].setdefault('with', {})['persist-credentials'] = 'true'"
-t=$(mk_tree refresh-file); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' > "$t/.github/workflows/refresh.yml"
-case_ refresh-workflow-added  bad "" "$t"
-t=$(mk_tree refresh-push-elsewhere); printf 'on: push\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ./bin/archive-push.sh --dir x\n' > "$t/.github/workflows/other.yml"
-case_ archive-push-other-workflow bad "" "$t"
-# an action reference that is a tag, not a digest, in the refresh job (the file text is judged, so write it into the copy)
-cp "$root/.github/workflows/go-freshness.yml" "$work/tagpin.yml"; python3 - "$work/tagpin.yml" <<'PY'
-import re, sys
-p = sys.argv[1]; s = open(p).read()
-i = s.index("\n  refresh:")
-head, tail = s[:i], s[i:]
-tail = re.sub(r"(uses: actions/checkout@)[0-9a-f]{40}(\s+# v[0-9.]+)", r"\1v7", tail, count=1)
-open(p, "w").write(head + tail)
-PY
-if out=$(judge "$work/tagpin.yml" "$root"); then got=ok; else got=bad; fi
-if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS refresh-action-by-tag → bad ($out)"; else failn=$((failn+1)); echo "FAIL refresh-action-by-tag → ok"; fi
 # Codex #157 r2 (SEC-157-02): a token print inside the executed script; a sidecar workflow minting the App token
 mk_tree() { local t="$work/tree-$1"; mkdir -p "$t/bin" "$t/.github/workflows"; cp "$root"/.github/workflows/*.yml "$t/.github/workflows/"; cp "$root/bin/go-bump-open-pr.sh" "$t/bin/"; echo "$t"; }
 t=$(mk_tree script-leak); printf '\nprintf %%s "$GH_TOKEN" | od -An -tx1\n' >> "$t/bin/go-bump-open-pr.sh"
@@ -267,5 +238,37 @@ t=$(mk_tree tojson-tab); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-late
 case_ tojson-tab             bad "" "$t"
 t=$(mk_tree tojson-newline); printf 'on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n        env:\n          S: |-\n            ${{ toJson\n            (secrets) }}\n' > "$t/.github/workflows/dump4.yml"
 case_ tojson-newline         bad "" "$t"
+# the refresh job (AC24 to AC31)
+R='d["jobs"]["refresh"]'
+RSTEP="[s for s in %s['steps'] if s.get('name') == '%s'][0]"
+case_ refresh-wrong-env       bad "$R['environment'] = 'other'"
+case_ refresh-writes-contents bad "$R['permissions']['contents'] = 'write'"
+case_ refresh-more-perms      bad "$R['permissions']['id-token'] = 'write'"
+case_ refresh-on-pr-ref       bad "$R['if'] = \"\${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event.schedule == 'x' }}\""
+case_ refresh-pull-request-trigger bad "d['on']['pull_request'] = {}"
+case_ refresh-token-too-wide  bad "[s['with'].__setitem__('permission-packages', 'write') for s in $R['steps'] if str(s.get('uses','')).startswith('actions/create-github-app-token@')]"
+case_ refresh-token-extra-step bad "$R['steps'].append({'name': 'x', 'env': {'GH_TOKEN': '\${{ steps.app-token.outputs.token }}'}, 'run': 'true'})"
+case_ refresh-order-swapped   bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('pull the archive by its recorded digest'); j = n.index('refresh the inputs and open the refresh pull request'); a[i], a[j] = a[j], a[i]"
+case_ refresh-pull-by-tag     bad "[s.__setitem__('run', 'crane pull ghcr.io/x/archive:latest out') for s in $R['steps'] if s.get('name') == 'pull the archive by its recorded digest']"
+case_ refresh-push-always     bad "[s.__setitem__('run', './bin/archive-push.sh --dir \"\$RUNNER_TEMP/archive\"') for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
+case_ refresh-merges          bad "[s.__setitem__('run', s['run'] + 'gh pr merge --auto --squash\\n') for s in $R['steps'] if s.get('name') == 'refresh the inputs and open the refresh pull request']"
+case_ refresh-job-removed     bad "$R.clear(); d['jobs'].pop('refresh')"
+case_ refresh-push-in-check   bad "[s.__setitem__('run', s['run'] + './bin/archive-push.sh --dir x\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
+case_ refresh-checkout-cred   bad "$R['steps'][0].setdefault('with', {})['persist-credentials'] = 'true'"
+t=$(mk_tree refresh-file); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' > "$t/.github/workflows/refresh.yml"
+case_ refresh-workflow-added  bad "" "$t"
+t=$(mk_tree refresh-push-elsewhere); printf 'on: push\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ./bin/archive-push.sh --dir x\n' > "$t/.github/workflows/other.yml"
+case_ archive-push-other-workflow bad "" "$t"
+# an action reference that is a tag, not a digest, in the refresh job (the file text is judged, so write it into the copy)
+cp "$root/.github/workflows/go-freshness.yml" "$work/tagpin.yml"; python3 - "$work/tagpin.yml" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+i = s.index("\n  refresh:")
+head, tail = s[:i], s[i:]
+tail = re.sub(r"(uses: actions/checkout@)[0-9a-f]{40}(\s+# v[0-9.]+)", r"\1v7", tail, count=1)
+open(p, "w").write(head + tail)
+PY
+if out=$(judge "$work/tagpin.yml" "$root"); then got=ok; else got=bad; fi
+if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS refresh-action-by-tag → bad ($out)"; else failn=$((failn+1)); echo "FAIL refresh-action-by-tag → ok"; fi
 echo "go-freshness-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
