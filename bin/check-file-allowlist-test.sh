@@ -112,7 +112,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 144, 6   # 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 150, 6   # 150: + the six bin/persona-uat* patterns (REQ-UAT-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -159,7 +159,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "e4899d070446fd94652c063b2d55ee562a9fdc2bc3270b6af6cae3070c288139"   # + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
+PINNED_SHA256 = "50490e35edb6eaa3fbb6160057d02a306854a989b22ed51c5fbb3d31c59bc139"   # + the six bin/persona-uat* patterns (REQ-UAT-001), the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -753,6 +753,8 @@ passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.
 runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "build/archive.json" "secret_scanning.yml"
 passfam "feature/x" "REQ-REL-009: .github/release-identity.json" ".github/release-identity.json"
 runeach fail "feature/x" "REQ-REL-009: release-identity near-miss refused" ".github/release-identity.json.bak" ".github/Release-Identity.json" ".github/release-identity.yaml" ".github/other.json" ".github/nested/release-identity.json" ".github/x/release-identity.json" "release-identity.json" ".github/release-identity.json " ".github/release-identityXjson" ".github/policy/../release-identity.json"
+passfam "feature/x" "REQ-UAT-001: the persona UAT driver, agent, provider, decrypt script, tests, recipient key, tool list and requirements" "bin/persona-uat.py" "bin/persona-uat-agent.py" "bin/persona-uat-provider.py" "bin/persona-uat-test.sh" "bin/persona-uat-wiring-test.sh" "bin/persona-uat-agent-test.sh" "bin/persona-uat-decrypt-test.sh" "bin/persona-uat-decrypt.sh" "bin/persona-uat-recipient.pem" "bin/persona-uat-tools.json" "bin/persona-uat-requirements.txt"
+runeach fail "feature/x" "REQ-UAT-001: near-miss siblings refused" "bin/persona-uat.sh" "bin/persona-uat-other.py" "bin/persona-uat-provider-test.sh" "bin/persona-uat-agent.sh" "bin/persona-uat-decrypt.py" "bin/persona-uat-recipient.key" "bin/persona-uat-recipient.pem.bak" "bin/persona-uat-tools.yaml" "bin/persona-uat-requirements.in" "bin/Persona-UAT.py" "bin/persona-uat-agent-wiring-test.sh"
 passfam "feature/x" "REQ-REL-004-AC5: the daily-rescan current-release test" "bin/rescan-current-only-test.sh"
 runeach fail "feature/x" "REQ-REL-004-AC5: rescan-current-only-test near-miss refused" "bin/rescan-current-only-test.sh.bak" "bin/rescan-current-only-test.shx" "bin/Rescan-Current-Only-Test.sh" "bin/sub/rescan-current-only-test.sh" "bin/rescan-current-only-test.py" "rescan-current-only-test.sh" "bin/rescan-current-only-test.sh "
 
