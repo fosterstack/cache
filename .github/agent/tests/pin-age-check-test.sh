@@ -3196,9 +3196,12 @@ for v in "ok:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/wolfi-signing
          "proxy-option:curl -q -fsSL -x http://p.example:3128 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
          "resolve-option:curl -q -fsSL --resolve packages.wolfi.dev:443:10.0.0.1 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
          "config-option:curl -q -fsSL -K /tmp/cfg -o /tmp/k https://packages.wolfi.dev/os/x:1" \
-         "ok-per-package-variable-path:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$p\":0" \
-         "ok-per-package-braced-variable:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\${p}\":0" \
-         "ok-per-package-concatenated-words:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\"\"\$p\":0" \
+         "ok-per-package-variable-path:curl -q -fsSL -g -o /tmp/k \"https://packages.wolfi.dev/os/\$p\":0" \
+         "ok-per-package-braced-variable:curl -q -fsSL -g -o /tmp/k \"https://packages.wolfi.dev/os/\${p}\":0" \
+         "ok-per-package-concatenated-words:curl -q -fsSL -g -o /tmp/k \"https://packages.wolfi.dev/os/\"\"\$p\":0" \
+         "per-package-variable-without-globoff:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$p\":1" \
+         "per-package-globoff-is-an-output-name:curl -q -fsSL -o -g \"https://packages.wolfi.dev/os/\$p\":1" \
+         "ok-literal-url-needs-no-globoff:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x:0" \
          "var-prefix-without-slash:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os\$p\":1" \
          "var-prefix-without-os:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/\$p\":1" \
          "two-variables:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$a\$b\":1" \
