@@ -461,8 +461,8 @@ def load(path):
         except (KeyError, TypeError, ValueError):
             die("malformed lock entry %d in %s (%s): name, version, architecture and the control and data checksums are required" % (i, path, e.get("name", "?") if isinstance(e, dict) else "?"), 2)
     seen = {}
-    for e in pk:   # a set comparison would silently merge a repeated entry: a lock names each (package, version, architecture) once
-        k = (e["name"], e["version"], e["architecture"])
+    for e in pk:   # a set comparison would silently merge a repeated entry: an entry that is the same in EVERY field is listed once at most
+        k = key(e)   # (entries that differ in a checksum are different entries: compare and arch-check report those by name)
         if k in seen:
             die("the lock file %s lists %s %s (%s) more than once" % (path, k[0], k[1], k[2]), 2)
         seen[k] = True
