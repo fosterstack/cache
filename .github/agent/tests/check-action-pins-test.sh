@@ -2831,5 +2831,15 @@ case_ r2-underscore-implicit-target-bad bad "$(rb 'bash ci-lit.sh')" "printf '_=
 case_ r2-variable-interpreter-reads-child-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/bash\n\"\$G\" ci-other.sh\n' > ci-lit.sh; printf 'docker run alpine:latest\n' > ci-other.sh"
 case_ r2-variable-interpreter-reads-child-ok ok "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/bash\n\"\$G\" ci-other.sh\n' > ci-lit.sh; printf 'git status\n' > ci-other.sh"
 
+# --- review round 2 of PR 351 (seat B): a sourced script runs in its caller's shell (a nameref or a function the caller defined reaches it), so no
+#     literal-variable inference applies to it; the closed form in a step's own run text is read like the same text in a script; a shell named by a variable
+#     that runs another committed script is read through a wrapper too
+case_ r2b-sourced-script-inherits-nameref-bad bad "$(rb 'declare -n G=H
+          source ci-lit.sh')" "printf 'G=/usr/bin/git\nH=/usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r2b-sourced-script-stays-refused-bad bad "$(rb 'source ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+case_ r2b-step-text-closed-form-ok ok "$(rb 'G=/usr/bin/git
+          "$G" status')"
+case_ r2b-wrapped-variable-shell-reads-child-bad bad "$(rb 'bash ci-lit.sh')" "printf 'SH=/bin/bash\nsudo \"\$SH\" ci-bad.sh\n' > ci-lit.sh; printf 'docker run alpine:latest\n' > ci-bad.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
