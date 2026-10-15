@@ -3157,5 +3157,24 @@ ok = tree("A", 'curl "' + url + 'x.tgz?download=${A}"')
 assert all(it.step for it in inv.inventory(ok).values()), sorted(inv.inventory(ok))   # fail-closed: no refinement for a quoted word that is the URL (advisor 0442)
 PY
 
+# --- DRAFT, awaits the owner's ratification (outbox 2026-10-15-cache2-vendored-tree-pin-age-vendor-scripts.md): the vendored tree is not inventoried ---
+vscript='#!/bin/sh\n$cmd docker run --rm --volume /x:/build generate:$GOOS\ngo run mksyscall.go\ncargo install ripgrep\n'
+newcase vnd1 "$(printf 'import pathlib\nd = pathlib.Path(\"vendor/golang.org/x/sys/unix\")\nd.mkdir(parents=True, exist_ok=True)\n(d / \"mkall.sh\").write_text(\"%s\")' "$vscript")"
+runck vnd1 '{"times": {}}'
+CASE="an upstream script added under the top-level vendor/ is not inventoried (exit 0)"
+check test "$rc" -eq 0
+newcase vnd2 "$(printf 'import pathlib\nd = pathlib.Path(\"pkg/vendor/unix\")\nd.mkdir(parents=True, exist_ok=True)\n(d / \"mkall.sh\").write_text(\"%s\")' "$vscript")"
+runck vnd2 '{"times": {}}'
+CASE="the same script under pkg/vendor/ (not the top-level vendor/) is still refused (exit 1)"
+check test "$rc" -eq 1
+newcase vnd3 "$(printf 'import pathlib\nd = pathlib.Path(\"vendor-x\")\nd.mkdir(parents=True, exist_ok=True)\n(d / \"mkall.sh\").write_text(\"%s\")' "$vscript")"
+runck vnd3 '{"times": {}}'
+CASE="the same script under vendor-x/ is still refused (exit 1)"
+check test "$rc" -eq 1
+newcase vnd4 "$(printf 'import pathlib\nd = pathlib.Path(\"Vendor\")\nd.mkdir(parents=True, exist_ok=True)\n(d / \"mkall.sh\").write_text(\"%s\")' "$vscript")"
+runck vnd4 '{"times": {}}'
+CASE="the same script under Vendor/ (another case) is still refused (exit 1)"
+check test "$rc" -eq 1
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
