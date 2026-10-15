@@ -784,6 +784,11 @@ _UNMEASURED = [
     (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
     (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements[\w.-]*\.txt(?:\s|$))\S+"), "a pip requirements file not named requirements*.txt"),
     (re.compile(r"\bdocker\s+build\s+[^\n]*https?://"), "a docker build from a URL"),
+    # the top-level vendor/ is skipped by this inventory because nothing runs from it (REQ-VEND-001): a line outside it that runs, sources or installs from it
+    # is refused here, so the exclusion cannot hide an executed script or an installed requirements file
+    (re.compile(r"(?:^|[\s;&|(\"'=])(?:(?:bash|sh|dash|zsh|ksh|source|\.|exec|python3?|node|perl|ruby|sudo|env|xargs)\s+(?:-\S+\s+)*|(?:go\s+(?:run|install)\s+)|"
+                r"(?:pip[0-9.]*\b[^\n;&|]*?\s(?:-r|--requirement)[\s=]*))[\"']?(?:\./)?vendor/\S"
+                r"|(?:^|[\s;&|(\"'])\./vendor/\S|^\s*vendor/\S+\.(?:sh|bash|py)\b"), "a vendored file run or installed from"),
 ]
 
 
