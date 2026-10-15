@@ -233,10 +233,17 @@ GOODINST = SYN_INST
 
 # --- prerequisites of the job (defined BEFORE common(), which calls them; the complete-workflow control below runs them through judge()) ----------------
 CRED_REF = re.compile(r"secrets\.|vars\.PERSONA_UAT|github\.token|ANTHROPIC_")
+# The pip that runs the SDK install is itself pinned (REQ-SUP-001-AC13, .github/agent/tests/pip-pin-test.sh): one step, in the form the other workflows use,
+# before the SDK install; the pin file is a path under .github/agent (the persona harness files are under bin/).
+PIN_PIP_RUN = ("python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r .github/agent/pip-requirements.txt\n"
+               "python3 -m pip --version")
+def is_pin_pip(x):
+    return str(x.get("run", "")).strip() == PIN_PIP_RUN
+
 STEP_ALLOW = {      # STRUCTURAL rule: a prerequisite step may carry only these keys (and, for checkout and the uploads, only these `with` options); anything else
                     # (if, continue-on-error, working-directory, shell, env, timeout-minutes, sparse-checkout, filter, fetch-depth, lfs, ...) can change what it does
     "checkout": ({"uses", "with", "name", "id"}, {"persist-credentials", "ref", "path"}),
-    "install": ({"run", "name", "id"}, None), "sdk": ({"run", "name", "id"}, None),
+    "install": ({"run", "name", "id"}, None), "sdk": ({"run", "name", "id"}, None), "pinpip": ({"run", "name", "id"}, None),
     "resolver": ({"run", "env", "name", "id"}, None),
     "identity": ({"uses", "with", "name", "id"}, {"script"}),
     "upload": ({"uses", "with", "if", "continue-on-error", "name", "id"}, {"name", "path", "if-no-files-found", "retention-days"}),
@@ -252,6 +259,7 @@ def step_kind(x, pre, weekly):
     if "nohup" in r and "ACTIONS_ID_TOKEN_REQUEST_URL" in r: return "refresher"
     if re.fullmatch(r'rm -f "?\$\{?RUNNER_TEMP\}?/anthropic-identity-token"?', r): return "cleanup"
     if install_re(pre).match(r): return "install"
+    if r == PIN_PIP_RUN: return "pinpip"
     if "pip install" in r and "persona-uat-requirements" in r: return "sdk"
     if weekly and "gh release view" in r: return "resolver"
     return None
@@ -458,11 +466,12 @@ def common(name, job, bad):
         is_install = isrun and install_re(pre).match(str(s.get("run", "")).strip()) is not None
         is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
                                          str(s.get("run", "")).strip()) is not None
+        is_pin = isrun and is_pin_pip(s)
         is_cleanup = step_kind(s, pre, name.startswith("weekly")) == "cleanup"
         is_refresher = step_kind(s, pre, name.startswith("weekly")) == "refresher"
         if i > di and "upload-artifact" not in str(s.get("uses", "")) and not is_cleanup:
             bad.append(f"{name}: a step after the driver other than the transcript upload and the identity token cleanup could alter the files before upload")
-        if i < di and isrun and not is_resolver and not is_boot and not is_install and not is_refresher:
+        if i < di and isrun and not is_resolver and not is_boot and not is_install and not is_refresher and not is_pin:
             bad.append(f"{name}: a run step before the driver other than the latest-release resolver, the one hash-pinned SDK install and the one pinned kind install (it could change what the driver sees)")
     judge_install(name, steps, d, pre, bad)
     judge_prereqs(name, job, steps, bad)
@@ -489,6 +498,9 @@ def common(name, job, bad):
     harness_co = [c for c in cos if not str((c.get("with", {}) or {}).get("path", ""))]
     if len(boots) != 1 or (harness_co and steps.index(boots[0]) < steps.index(harness_co[0])) or steps.index(boots[0]) > di:
         bad.append(f"{name}: expected exactly one hash-pinned SDK install, after the harness checkout and before the driver")
+    pins = [s for s in steps if is_pin_pip(s)]
+    if len(pins) != 1 or (len(boots) == 1 and steps.index(pins[0]) > steps.index(boots[0])):
+        bad.append(f"{name}: expected exactly one pinned-pip step (the hash-checked pip from .github/agent/pip-requirements.txt, then its version logged), before the SDK install")
     ups = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
     if len(ups) != 1:
         bad.append(f"{name}: expected exactly one transcript upload step, found {len(ups)}")
@@ -1007,7 +1019,7 @@ result(not good, "a clean source set is accepted by the source judge" + ("" if n
 def synth_steps(weekly):
     pre = ""
     cos = [{"uses": "actions/checkout@" + "0" * 40}, {"uses": "actions/checkout@" + "0" * 40, "with": {"path": "release-docs"}}] if weekly else [{"uses": "actions/checkout@" + "0" * 40}]
-    return pre, cos + [{"run": "./" + pre + "bin/install-scanner.sh kind"}, {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
+    return pre, cos + [{"run": "./" + pre + "bin/install-scanner.sh kind"}, {"run": PIN_PIP_RUN}, {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
                        {"run": "python3 " + pre + "bin/persona-uat.py --mode rc"}]
 for weekly in (False, True):
     pre, st = synth_steps(weekly)
@@ -1122,6 +1134,7 @@ def synth_persona_job(weekly):
                  "run": 'tag=$(gh release view --json tagName -q .tagName)\nd=$(docker buildx imagetools inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" --format \'{{.Manifest.Digest}}\')\n'
                         'echo "tag=$tag" >> "$GITHUB_OUTPUT"\necho "image=ghcr.io/${REGISTRY_OWNER}/cache@$d" >> "$GITHUB_OUTPUT"'}] if weekly else []
     steps = (resolver + co + [{"run": "./" + pre + "bin/install-scanner.sh kind"},
+             {"run": PIN_PIP_RUN},
              {"run": "python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + pre + "bin/persona-uat-requirements.txt"},
              {"uses": "actions/github-script@" + H40, "with": {"script": IDENT}}, {"run": REFRESHER}, synth_driver(weekly),
              {"if": "${{ always() }}", "uses": "actions/upload-artifact@" + H40, "with": {"name": "persona-uat-encrypted", "path": "persona-uat-out/*.cms", "if-no-files-found": "error"}},
@@ -1158,7 +1171,7 @@ for weekly in (False, True):
         judge_prereqs(nm, j, j["steps"], bd)
         result(any(expect in b for b in bd), f"caught: {name}{' (weekly)' if weekly else ''} (reason: {expect!r})" + ("" if any(expect in b for b in bd) else f"; saw {bd}"))
     co0 = lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", "")))
-    boot = lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", "")))
+    boot = lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", "")))
     pm("checkout with if: false", "checkout step is conditional", lambda j: co0(j).update({"if": "false"}))
     pm("checkout continue-on-error", "checkout step is conditional", lambda j: co0(j).update({"continue-on-error": "true"}))
     pm("SDK install continue-on-error: true", "SDK install step is conditional", lambda j: boot(j).update({"continue-on-error": "true"}))
@@ -1304,9 +1317,15 @@ mutate("rc job has no checkout", "actions/checkout step(s) before the driver", l
 mutate("rc job checks out after the driver", "actions/checkout step(s) before the driver",
        lambda j: (lambda c: (j["steps"].remove(c), j["steps"].insert(j["steps"].index(drv(j)) + 1, c)))(next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", "")))))
 mutate("release tags gain a negation", "push tags are not exactly", lambda j: None, "rel_tags")
-mutate("rc job loses its SDK install", "expected exactly one hash-pinned SDK install", lambda j: j.update(steps=[s for s in j["steps"] if "pip install" not in str(s.get("run", ""))]))
+mutate("rc job loses its SDK install", "expected exactly one hash-pinned SDK install", lambda j: j.update(steps=[s for s in j["steps"] if "persona-uat-requirements" not in str(s.get("run", ""))]))
+mutate("rc job loses its pinned-pip step", "expected exactly one pinned-pip step", lambda j: j.update(steps=[s for s in j["steps"] if not is_pin_pip(s)]))
+mutate("rc pinned-pip step runs after the SDK install", "expected exactly one pinned-pip step",
+       lambda j: (lambda b: (j["steps"].remove(b), j["steps"].insert(j["steps"].index(next(s for s in j["steps"] if "persona-uat-requirements" in str(s.get("run", "")))) + 1, b)))(next(s for s in j["steps"] if is_pin_pip(s))))
+mutate("rc pinned-pip step can be skipped (if)", "carries keys outside its allowlist", lambda j: next(s for s in j["steps"] if is_pin_pip(s)).update({"if": "false"}))
+mutate("rc pinned-pip step loses --require-hashes", "expected exactly one pinned-pip step",
+       lambda j: next(s for s in j["steps"] if is_pin_pip(s)).update(run=PIN_PIP_RUN.replace(" --require-hashes", "")))
 mutate("rc SDK install runs before the checkout", "expected exactly one hash-pinned SDK install",
-       lambda j: (lambda b: (j["steps"].remove(b), j["steps"].insert(0, b)))(next(s for s in j["steps"] if "pip install" in str(s.get("run", "")))))
+       lambda j: (lambda b: (j["steps"].remove(b), j["steps"].insert(0, b)))(next(s for s in j["steps"] if "persona-uat-requirements" in str(s.get("run", "")))))
 mutate("persona-uat is added to patch-failed.needs (a persona failure would open a public issue)", "lists persona-uat in needs", lambda d: d["jobs"]["patch-failed"].update(needs=["image", "promotion", "persona-uat"]), "rel_wf")
 def _tokvar(script):
     m = re.search(r"(?:const|let|var)\s+(\w+)\s*=\s*await\s+core\.getIDToken", script)
@@ -1390,14 +1409,14 @@ mutate("weekly docs checkout of another repository", "checkout of another reposi
 mutate("rc checkout takes ref main", "release-candidate checkout is not of the candidate commit", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(ref="main"))
 mutate("rc job-level if: false", "does not run only for v*-rc.* tags", lambda j: j.update({"if": "false"}))
 mutate("rc checkout with if: false", "checkout step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", ""))).update({"if": "false"}))
-mutate("rc SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"continue-on-error": "true"}))
+mutate("rc SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update({"continue-on-error": "true"}))
 mutate("rc runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}))
 mutate("rc matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}))
 mutate("rc kind install missing", "exactly one step", lambda j: j["steps"].remove(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))))
 mutate("rc kind install before the checkout", "BEFORE the checkout", lambda j: j["steps"].insert(0, j["steps"].pop(j["steps"].index(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))))))
 mutate("weekly job-level if: false", "does not run only on the Monday cron", lambda j: j.update({"if": "false"}), "fresh")
 mutate("weekly checkout with if: false", "checkout step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "actions/checkout" in str(x.get("uses", ""))).update({"if": "false"}), "fresh")
-mutate("weekly SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"continue-on-error": "true"}), "fresh")
+mutate("weekly SDK install continue-on-error: true", "SDK install step is conditional or non-fatal", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update({"continue-on-error": "true"}), "fresh")
 mutate("weekly runs-on windows-latest", "not an ubuntu runner", lambda j: j.update({"runs-on": "windows-latest"}), "fresh")
 mutate("weekly matrix duplicating the job", "strategy/matrix", lambda j: j.update({"strategy": {"matrix": {"n": ["1", "2"]}}}), "fresh")
 mutate("weekly kind install missing", "exactly one step", lambda j: j["steps"].remove(next(x for x in j["steps"] if "install-scanner" in str(x.get("run", "")))), "fresh")
@@ -1407,7 +1426,7 @@ mutate("rc driver step has no identity token file path", "is not exactly ${{ run
 mutate("rc identity step never awaits the token", "does not mint (await)",
        lambda j: (lambda s_: s_["with"].update(script=s_["with"]["script"].replace("await core.getIDToken", "core.getIDToken")))(next(s for s in j["steps"] if "github-script" in str(s.get("uses", "")))))
 mutate("rc SDK install without hashes", "a run step before the driver other than",
-       lambda j: next(s for s in j["steps"] if "pip install" in str(s.get("run", ""))).update(run="python3 -m pip install anthropic"))
+       lambda j: next(s for s in j["steps"] if "persona-uat-requirements" in str(s.get("run", ""))).update(run="python3 -m pip install anthropic"))
 mutate("tools: all nine point at one image", "not distinct images", lambda t: t.update({k: t["shell"] for k in t}), "tools")
 mutate("tools: jenkins names another image", "does not name its own official image", lambda t: t.update(jenkins=t["shell"]), "tools")
 mutate("weekly job leaves the persona-uat environment", "does not run in the persona-uat environment", lambda j: j.pop("environment"), "fresh")
@@ -1511,7 +1530,7 @@ result(not bd_, "a decrypt script that downloads exactly the upload's name passe
 mutate("rc job-level env aliases a secret", "job-level env", lambda j: j.setdefault("env", {}).update(HARMLESS="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"))
 mutate("rc job-level env writes a model name", "job-level env", lambda j: j.setdefault("env", {}).update(M=VEND))
 mutate("weekly job-level env aliases a secret", "job-level env", lambda j: j.setdefault("env", {}).update(HARMLESS="${{ secrets.ANTHROPIC_WORKSPACE_ID }}"), "fresh")
-mutate("rc SDK install step aliases a secret in its env", "step other than the driver", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update(env={"X": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}"}))
+mutate("rc SDK install step aliases a secret in its env", "step other than the driver", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update(env={"X": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}"}))
 mutate("rc identity step aliases the owner's variable in its env", "step other than the driver", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).update(env={"X": "${{ vars.PERSONA_UAT_MODEL }}"}))
 mutate("weekly upload step carries a model name in its env", "step other than the driver", lambda j: next(x for x in j["steps"] if "upload-artifact" in str(x.get("uses", ""))).update(env={"X": VEND}), "fresh")
 mutate("rc job default shell is not bash", "default shell is not plain bash", lambda j: j.update(defaults={"run": {"shell": "pwsh"}}))
@@ -1523,8 +1542,8 @@ for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} checkout with a filter", "options outside its allowlist", lambda j: co(j).setdefault("with", {}).update({"filter": "tree:0"}), w)
     mutate(f"{lab} checkout with fetch-depth", "options outside its allowlist", lambda j: co(j).setdefault("with", {}).update({"fetch-depth": "1"}), w)
     mutate(f"{lab} checkout with a working-directory", "carries keys outside its allowlist", lambda j: co(j).update({"working-directory": "/tmp"}), w)
-    mutate(f"{lab} SDK install with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"working-directory": "/tmp"}), w)
-    mutate(f"{lab} SDK install with a shell", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update({"shell": "pwsh"}), w)
+    mutate(f"{lab} SDK install with a working-directory", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update({"working-directory": "/tmp"}), w)
+    mutate(f"{lab} SDK install with a shell", "carries keys outside its allowlist", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update({"shell": "pwsh"}), w)
 mutate("weekly docs checkout with sparse-checkout", "options outside its allowlist", lambda j: _docs_checkout(j).setdefault("with", {}).update({"sparse-checkout": "bin"}), "fresh")
 
 # --- round 4 (amendment 0215): results stay private: ONE encrypted artifact family, no plaintext upload, no private key in CI, no issue ------------------------
@@ -1538,7 +1557,7 @@ for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} an artifact name built from a result", "artifact name", lambda j: up(j)["with"].update(name="persona-uat-${{ steps.driver.outcome }}"), w)
     mutate(f"{lab} an artifact name that names a persona result", "artifact name", lambda j: up(j)["with"].update(name="Persona UAT blocking"), w)
     mutate(f"{lab} a second upload step (plaintext)", "exactly one transcript upload", lambda j: j["steps"].append({"if": "${{ always() }}", "uses": "actions/upload-artifact@" + "b" * 40, "with": {"name": "persona-uat-plain", "path": "persona-uat-out", "if-no-files-found": "error"}}), w)
-    mutate(f"{lab} a step reads a secret holding the private key", "private key", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update(env={"K": "${{ secrets.PERSONA_UAT_PRIVATE_KEY }}"}), w)
+    mutate(f"{lab} a step reads a secret holding the private key", "private key", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update(env={"K": "${{ secrets.PERSONA_UAT_PRIVATE_KEY }}"}), w)
     mutate(f"{lab} a step writes a private key file", "private key", lambda j: j["steps"].insert(0, {"run": 'echo "$K" > persona-uat.key'}), w)
     mutate(f"{lab} a step decrypts in CI", "private key", lambda j: j["steps"].append({"run": "openssl cms -decrypt -inkey persona-uat.key -in persona-uat-out/a.cms"}), w)
     mutate(f"{lab} a step names a private-key block", "private key", lambda j: j["steps"].insert(0, {"run": "printf '%s' '-----BEGIN ' 'PRIVATE KEY-----'; echo PRIVATE KEY"}), w)
@@ -1606,7 +1625,7 @@ for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} the cleanup step is not always()", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"][-1].update({"if": "${{ success() }}"}), w)
     mutate(f"{lab} the cleanup step is not the last step", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"].append({"run": "true"}), w)
     mutate(f"{lab} the cleanup step removes another file", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"][-1].update(run='rm -f "${RUNNER_TEMP}/other"'), w)
-    mutate(f"{lab} pip install without --break-system-packages (PEP 668 refuses it on the hosted runner)", "expected exactly one hash-pinned SDK install", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update(run=next(x for x in j["steps"] if "pip install" in str(x.get("run", "")))["run"].replace(" --break-system-packages", "")), w)
+    mutate(f"{lab} pip install without --break-system-packages (PEP 668 refuses it on the hosted runner)", "expected exactly one hash-pinned SDK install", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update(run=next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", "")))["run"].replace(" --break-system-packages", "")), w)
 for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} the default model id arrives as a VARIABLE (printed in the step header)", "is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_MODEL="${{ vars.PERSONA_UAT_MODEL }}"), w)
     mutate(f"{lab} the compliance model id arrives as a VARIABLE", "is not exactly secrets.PERSONA_UAT_COMPLIANCE_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_COMPLIANCE_MODEL="${{ vars.PERSONA_UAT_COMPLIANCE_MODEL }}"), w)
@@ -1614,7 +1633,7 @@ for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} a literal model id on the driver step (compliance)", "is not exactly secrets.PERSONA_UAT_COMPLIANCE_MODEL", lambda j: drv(j)["env"].update(PERSONA_UAT_COMPLIANCE_MODEL=VEND), w)
     mutate(f"{lab} the model id missing from the driver step", "is not exactly secrets.PERSONA_UAT_MODEL", lambda j: drv(j)["env"].pop("PERSONA_UAT_MODEL"), w)
     mutate(f"{lab} the token budget delivered as a secret", "is not exactly vars.PERSONA_UAT_TOKEN_BUDGET", lambda j: drv(j)["env"].update(PERSONA_UAT_TOKEN_BUDGET="${{ secrets.PERSONA_UAT_TOKEN_BUDGET }}"), w)
-    mutate(f"{lab} the model id also in another step's env", "names a model id", lambda j: next(x for x in j["steps"] if "pip install" in str(x.get("run", ""))).update(env={"M": "${{ secrets.PERSONA_UAT_MODEL }}"}), w)
+    mutate(f"{lab} the model id also in another step's env", "names a model id", lambda j: next(x for x in j["steps"] if "persona-uat-requirements" in str(x.get("run", ""))).update(env={"M": "${{ secrets.PERSONA_UAT_MODEL }}"}), w)
     mutate(f"{lab} the model id in a run step's text", "names a model id", lambda j: j["steps"].insert(0, {"run": 'echo "${{ secrets.PERSONA_UAT_MODEL }}"'}), w)
     mutate(f"{lab} the model id in the job-level env", "names a model id", lambda j: j.setdefault("env", {}).update(M="${{ secrets.PERSONA_UAT_MODEL }}"), w)
     mutate(f"{lab} the compliance model id in the identity step's script", "names a model id", lambda j: next(x for x in j["steps"] if "github-script" in str(x.get("uses", ""))).setdefault("with", {}).update(script=IDENT + "// ${{ secrets.PERSONA_UAT_COMPLIANCE_MODEL }}"), w)
