@@ -3099,6 +3099,54 @@ requirements:
         then: "it names curl, git, gh, apko, openssl, python3, cmp and mktemp by fixed absolute path (never through the caller's search path), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it only in the lines marked TEST-SUBST (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-REFRESH-001-AC24
+        given: "the repository's workflows"
+        when: "the daily refresh job exists"
+        then: "it is one job named refresh in the existing .github/workflows/go-freshness.yml and no workflow file was added (rule 5; owner Oct 14 rule 5)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC25
+        given: ".github/workflows/go-freshness.yml"
+        when: "it runs on its daily schedule or by workflow_dispatch"
+        then: "the refresh job runs once per run, on no other trigger (never on a pull_request), and does nothing on any ref other than main (owner Oct 14 rule 5)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC26
+        given: "a refresh run"
+        when: "the refresh job's steps run"
+        then: "the Wolfi signing key is checked first (a change stops everything for a human, before any other step); then the package archive is fetched by its recorded fingerprint; then the step looks for a newer version of every base package and build tool, downloads each, checks its signature and checksum, adds it to the archive; then it checks whether a newer certified crypto module exists; then it stores the archive back only if something changed (owner Oct 14 rule 6, in his words)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC27
+        given: "the refresh job"
+        when: "it pulls or stores the archive"
+        then: "it uses bin/archive-pull.sh by the digest committed in build/archive.json and bin/archive-push.sh, the store happens only in this job and only after verification passed, no other workflow calls archive-push.sh, and each tool is called by its fixed path with no test switch (owner Oct 14 rules 6 and 9)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC28
+        given: "the refresh job's permissions block"
+        when: "the job runs"
+        then: "the job's own token permissions are those of the existing go bump job (contents: read, the pull request opened with the auditor App's token minted exactly as that job mints it) plus packages: write for storing the archive in our own registry, and nothing else; no new secret, account, environment or ruleset; the top-level permissions stay contents: read (owner Oct 14 rule 8)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC29
+        given: "the refresh job found any update"
+        when: "it finishes"
+        then: "it opens a pull request on its own refresh/ branch that moves the build to the new versions, targeting main; the job never merges or approves it, never pushes to main or to any branch not under refresh/, and opens nothing and pushes nothing when nothing changed; with a refresh pull request already open it opens no second (owner Oct 14 rule 7, in his words)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC30
+        given: "the live Wolfi signing key differs from the archived one"
+        when: "the refresh job runs"
+        then: "it exits 3 saying a human must look, opens no pull request, stores nothing, and its later steps do not run (rule 6, first step)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC31
+        given: "bin/go-freshness-wiring-test.sh"
+        when: "it runs"
+        then: "it lists the refresh job as a consumer of the auditor App's credential, requires the jobs of go-freshness.yml to be exactly check, mutation and refresh, requires every action reference in the refresh job to be a commit digest with a tag comment, and fails on a copy that changes any of AC24 to AC30's properties"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-ARCHIVE-001
     title: The archive is pushed, pulled and checked by digest, with no way around the pointer
     statement: >
