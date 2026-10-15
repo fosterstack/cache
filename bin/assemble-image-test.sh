@@ -321,7 +321,7 @@ PYM
   rm -rf "$work/rp-open-$k_-$v_"; restricted_path_dir "$work/rp-open-$k_-$v_" $IMG_RP_CORE && ln -s "$stubs/uname" "$work/rp-open-$k_-$v_/uname" \
     && case $tool_ in python3) ln -s "$py_abs" "$work/rp-open-$k_-$v_/python3";; bash) ln -s "$bash_abs" "$work/rp-open-$k_-$v_/bash";; *) ln -s "$rpw/$tool_" "$work/rp-open-$k_-$v_/$tool_";; esac
   o2_=$(mo); rp_proof $k_ "$am" "$work/rp-open-$k_-$v_" "$o2_"
-  t "AC12" "$sc_: with the tool on the search path the same $tool_ mutant completes (so the restricted path is what makes it fail)" bash -c "{ test \"\$(cat '$work/rp.rc')\" = 0 && test -s '$o2_/$rec_'; } || { cp '$work/rp.log' $TMPDIR/p5-open-$k_-$v_.log; exit 1; }"
+  t "AC12" "$sc_: with the tool on the search path the same $tool_ mutant completes (so the restricted path is what makes it fail)" bash -c "{ test \"\$(cat '$work/rp.rc')\" = 0 && test -s '$o2_/$rec_'; } || { tail -3 '$work/rp.log'; exit 1; }"
 done
 [ -z "${P5_RP_ONLY:-}" ] || { echo "image-rp-only: $pass passed, $failn failed"; [ "$failn" -eq 0 ]; exit; }
 t "rule 38b" "assemble-image.sh exists and is executable" test -x "$AI"
@@ -531,8 +531,8 @@ sr "rule 31" "a plain APKINDEX.tar.gz whose bytes are not the recorded digest is
 
 # ---- P5 round 1 (Opus): B1-B3 and residuals (tests first) ---------------------------------------------------------------------------------------
 # AC3 / R8: the /work links are made with ln -sfn, and apko build is told not to detect VCS
-sd "rule 26" "assemble makes /work/archive, /work/melange-repo and /work/keyring with sudo ln -sT (no -f: an existing link is an error, not replaced)" '^sudo ln -sT [^ ]+ /work/archive$' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
-t "rule 26" "...all three links, in the logged calls" bash -c "grep -Eq '^sudo ln -sT [^ ]+ /work/melange-repo\$' '$CALLS' && grep -Eq '^sudo ln -sT [^ ]+ /work/keyring\$' '$CALLS'"
+sd "rule 26" "assemble makes /work/archive, /work/melange-repo and /work/keyring with sudo ln -sT (no -f: an existing link is an error, not replaced)" '^sudo ln -sT [^ ]+ [/]work/archive$' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 26" "...all three links, in the logged calls" bash -c "grep -Eq '^sudo ln -sT [^ ]+ [/]work/melange-repo\$' '$CALLS' && grep -Eq '^sudo ln -sT [^ ]+ [/]work/keyring\$' '$CALLS'"
 sd "rule 31" "apko build is given --vcs=false (no VCS URL is detected or embedded)" '^apko build .*--vcs=false' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
 # M20: --version is X.Y.Z or X.Y.Z-rc.N, nothing else (it is substituted into the config and the image tag)
 # advisor 0393 (Oct 12): exactly the chain's grammar: X.Y.Z, X.Y.Z-rcN (N digits, no leading zero, no dot) and the one snapshot version 0.0.0-rc.1
@@ -552,7 +552,7 @@ srb "rule 28" "a tampered fscache apk in the melange repo is caught by verifying
 # M5 / R5 (test hook ASSEMBLE_WORK_DIR replaces /work for the pre-checks): an existing real directory, or any existing link or lock, is refused
 mkdir -p "$work/wd1/archive"
 sr "rule 26" "/work/archive exists and is a real directory -> refused, nothing replaced" 'not a symlink|exists' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd1" "$AI" "${ai_args[@]}" --out "$(mo)"
-mkdir -p "$work/wd2"; ln -s /tmp "$work/wd2/keyring"
+mkdir -p "$work/wd2" "$work/wd2-target"; ln -s "$work/wd2-target" "$work/wd2/keyring"
 sr "rule 26" "a /work link left by another run (a symlink to a different target) is refused: no two runs share /work" 'another|already|exists' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd2" "$AI" "${ai_args[@]}" --out "$(mo)"
 mkdir -p "$work/wd3/.assemble.lock"
 sr "rule 26" "an assembly lock directory in /work means another run is in progress -> refused" 'another|lock|in progress' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd3" "$AI" "${ai_args[@]}" --out "$(mo)"
