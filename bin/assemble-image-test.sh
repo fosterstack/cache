@@ -1711,6 +1711,7 @@ def leaks(code):
     for ln in lines: global_assigned |= assigned_in(ln)
     assigned, bad, depth, heredoc_end, fn_locals = set(), [], 0, None, set()
     fn_assigned, d_, pre_end = set(), 0, None
+    fn_assigned_before = set()
     for ln in lines:   # names assigned inside function bodies (a function runs when called: its globals are set by then)
         if pre_end is not None:
             if ln.strip() == pre_end: pre_end = None
@@ -1739,14 +1740,23 @@ def leaks(code):
             forv = set(re.findall(r"\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b", ln)) | set(re.findall(r"\(\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", ln))
             selfref = bool(fm) and v not in forv and re.search(r"[$]\{?" + v + r"\b", fm.group(1)) is not None
             if in_fn:
+                if dflt and v not in assigned and v not in fn_locals and v not in fn_assigned_before: 
+                    bad.append("%s has a default expansion in a function and no earlier assignment: %s" % (v, ln.strip()[:80])); continue
                 if v in global_assigned or v in fn_locals or v in now: continue
                 bad.append("%s is read in a function body and assigned nowhere: %s" % (v, ln.strip()[:80])); continue
             if v in assigned or v in fn_assigned: continue
             if v in now and not dflt and not selfref: continue
             bad.append("%s is read before it is assigned: %s" % (v, ln.strip()[:80]))
-        if in_fn: fn_locals |= now
+        if in_fn: fn_locals |= now; fn_assigned_before |= now
         else: assigned |= now
         if hm: heredoc_end = hm.group(1)
+    for ln in lines:
+        if re.search(r"\bdeclare\s+-[a-zA-Z]*[pxfF]|\btypeset\s+-|\bcompgen\s+-[ve]|\bexport\s+-p|\bprintenv\b|\$\{![A-Za-z_]|\[\[?\s+-v\s|\benv\s*\||\bset\s*\||\bread\s+-[a-z]*r?\s+[A-Za-z_]+\s*<\s*/proc", ln):
+            bad.append("an environment introspection form: %s" % ln.strip()[:80])
+        for am in re.finditer(r"\$\(\(([^)]*)\)\)|(?<![$])\(\(([^)]*)\)\)", ln):
+            for v in re.findall(r"(?<![A-Za-z0-9_$#])([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()", am.group(1) or am.group(2) or ""):
+                if v not in assigned and v not in fn_assigned and v not in SPECIAL and not v.isdigit():
+                    bad.append("%s is read in an arithmetic expression before any assignment: %s" % (v, ln.strip()[:80]))
     for m in re.finditer(r"os\.environ(?:\.get\(|\[)\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]|os\.getenv\(\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]", code):
         v = m.group(1) or m.group(2)
         if v not in ("ImageOS", "ImageVersion", "SOURCE_DATE_EPOCH"):
@@ -1766,6 +1776,9 @@ if __name__ == "__main__":
                        ("a self-referential default before any assignment", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzz=${zzz:-1}\n", 1)),
                        ("a function-local lowercase default", base.replace("local errf=$tmp/apko.err rc", "local errf=${caller_error_log:-$tmp/apko.err} rc", 1)),
                        ("an initialisation that reads the inherited value", base.replace("variant= version= archive=", "variant=$variant version= archive=", 1)),
+                       ("a builtin inspection of a caller variable", base.replace("set -euo pipefail\n", "set -euo pipefail\nif declare -p AUDIT_UNLISTED_SETTING >/dev/null 2>&1; then exit 0; fi\n", 1)),
+                       ("a function-local self-default", base.replace("local errf=$tmp/apko.err rc", "local errf=${errf:-$tmp/apko.err} rc", 1)),
+                       ("an arithmetic read of a caller variable", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzn=$((CALLER_COUNT + 1))\n", 1)),
                        ("an embedded python environment read", base.replace("set -euo pipefail\n", "set -euo pipefail\n: \"$(os.environ.get('CALLER_X'))\"\n", 1))):
         if not leaks(mut):
             print("the check does not see %s" % label); rc = 1
@@ -1773,7 +1786,6 @@ if __name__ == "__main__":
 P
 t "AC12" "the four image scripts read no caller variable beyond SOURCE_DATE_EPOCH, ImageOS and ImageVersion (read-order check over every identifier, function bodies and embedded python included), and the check sees six mutations: lowercase and uppercase reads, self-referential defaults, a function-local default, an initialisation from the inherited value, an embedded environment read" python3 "$work/closed.py" "$root"
 # B1 (seat B): a live address spelled with an escape sequence or quoting in the YAML is refused before any apko call
-for spell_ in '"\u0068ttps://packages.wolfi.dev/os"' '"/work/melange-repo"' '/work/archive # x' ; do :; done
 printf 'contents:\n  repositories:\n    - /work/archive\n    - "\\u0068ttps://packages.wolfi.dev/os"\n  keyring:\n    - /work/keyring/wolfi-signing.rsa.pub\n  packages:\n    - tzdata\n' >"$work/esc.yaml"
 sr "rule 26" "assemble refuses a config whose repository scalar spells a live address with an escape sequence (\\u0068ttps://...), before any apko call" 'live repository|escape' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/esc.yaml" --out "$(mo)"
 sed 's#- /work/melange-repo#- "/work/melange-repo"#' "$fx/apko.yaml" >"$work/quoted.yaml"
@@ -1790,7 +1802,7 @@ ln "$work/exp-old.txt" "$work/exp-hard.txt"
 sf "rule 39" "sealed-proof: a --digests-out that is a hard link of the --expect file is refused too" 'same file|differ' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --expect "$work/exp-old.txt" --digests-out "$work/exp-hard.txt" "${sp_common[@]}"
 # B7 (seat B): the lock the build consumes is the lock apko lock made, with our apk and both architectures
 run_s "${aie[@]}" STUB_CAPTURE_LOCK="$work/consumed.lock.json" "$AI" "${ai_args[@]}" --out "$(mo)"
-t "AC3" "the file apko build is given has exactly the bytes apko lock produced, holds our apk (fscache) for both architectures and every base package for both" python3 - "$work/consumed.lock.json" "$FL" <<'P'
+t "AC3" "the file apko build is given has exactly the content (parsed JSON equal) of the lock apko lock produced, holds our apk (fscache) for both architectures and every base package for both" python3 - "$work/consumed.lock.json" "$FL" <<'P'
 import json, sys
 got = json.load(open(sys.argv[1])); want = json.load(open(sys.argv[2]))
 assert got == want, "the consumed lock is not the generated one"
@@ -1877,6 +1889,48 @@ for v_ in sv-idx sv-man sv-top; do
 done
 # round 5 (seat B, R2): --digests-out may not be a generated result of the proof itself
 sf "rule 42" "sealed-proof: --digests-out inside the proof's own OUT directory is refused (it would overwrite a generated result)" 'inside the proof' "${spe[@]}" "$SP" --out "$work/dgo-out" --probe 'test -z "${FAKE_SEALED:-}"' --digests-out "$work/dgo-out/image/production.digest" "${sp_common[@]}"
+# round 6: Unicode line breaks, malformed blob names, path spellings of --digests-out, and the inherited-value behaviour of every variable the assembler assigns
+for brk_ in '\xc2\x85' '\xe2\x80\xa8' '\xe2\x80\xa9'; do
+  { sed -n '1,14p' "$fx/apko.yaml" | grep -v '^$'; printf '# audit fixture%b  runtime-repositories:%b    - https://example.invalid/os\n' "$brk_" "$brk_"; sed -n '15,$p' "$fx/apko.yaml"; } >"$work/brk.yaml"
+  sr "rule 26" "assemble refuses a config carrying a Unicode line break (YAML reads it as a newline, the text scan did not), before any apko call" 'outside printable ASCII|Unicode line break' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/brk.yaml" --out "$(mo)"
+done
+python3 - "$work" <<'P'
+import hashlib, io, json, sys, tarfile
+work = sys.argv[1]
+src = tarfile.open(work + "/oci-ok.tar")
+for name, bad_name in (("oci-badname", "blobs/sha256/invalid"), ("oci-upper", "blobs/sha256/" + "A" * 64), ("oci-short", "blobs/sha256/" + "a" * 63)):
+    with tarfile.open("%s/%s.tar" % (work, name), "w") as d:
+        for m in src.getmembers():
+            d.addfile(m, src.extractfile(m) if m.isfile() else None)
+        ti = tarfile.TarInfo(bad_name); ti.size = 1; ti.mode = 0o644; d.addfile(ti, io.BytesIO(b"x"))
+P
+for v_ in badname upper short; do
+  python3 "$OD" "$work/oci-$v_.tar" >"$work/oci-$v_.out" 2>&1; r1_=$?
+  python3 "$OD" unpack "$work/oci-$v_.tar" "$work/unp-$v_" "$work/unp-$v_.digest" "$work/unp-$v_.manifests" >"$work/oci-$v_.u.out" 2>&1; r2_=$?
+  t "BT-002-AC1" "a layout with a blob-namespace member named '$v_' (not 64 lowercase hex digits) is refused by the digest-only read and by unpack, naming the member" bash -c "test $r1_ != 0 && test $r2_ != 0 && grep -q 'blob namespace' '$work/oci-$v_.out'"
+done
+# --digests-out by every spelling that reaches the proof's own results: dot components and doubled slashes resolve away before the containment check
+for spell_ in dots slashes; do
+  oo_="$work/dgo2-$spell_"; rm -rf "$oo_"
+  case $spell_ in
+    dots) tgt_="$work/./dgo2-$spell_/image/production.full.lock.json";;
+    slashes) tgt_="$work//dgo2-$spell_/image/production.full.lock.json";;
+  esac
+  sf "rule 42" "sealed-proof: --digests-out spelled with $spell_ that resolves into the proof's own OUT is refused (it would overwrite a generated result)" 'inside the proof|same file' "${spe[@]}" "$SP" --out "$oo_" --probe 'test -z "${FAKE_SEALED:-}"' --digests-out "$tgt_" "${sp_common[@]}"
+done
+# every lowercase and uppercase variable the assembler assigns, given a hostile inherited value, changes nothing: the same digest as the control run
+python3 - "$root/bin/assemble-image.sh" >"$work/poison.names" <<'P'
+import re, sys
+s = open(sys.argv[1]).read()
+names = set(re.findall(r"(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*)\+?=", "\n".join(l for l in s.split("\n") if not l.lstrip().startswith("#"))))
+names |= set(re.findall(r"\blocal\s+([A-Za-z_][A-Za-z0-9_ ]*)", s))
+skip = {"PATH", "IFS", "HOME", "SHELL", "PWD", "OLDPWD", "BASH_ENV", "ENV", "SOURCE_DATE_EPOCH", "ImageOS", "ImageVersion"}
+print(" ".join(sorted(n for n in names if n not in skip and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n))))
+P
+poison_env=(); for n_ in $(cat "$work/poison.names"); do poison_env+=("$n_=/poison/$n_"); done
+poison_out=$(mo)
+run_s "${aie[@]}" "${poison_env[@]}" "$AI" "${ai_args[@]}" --out "$poison_out"
+t "AC12" "every variable the assembler assigns, set to a hostile value in the environment ($(wc -w <"$work/poison.names") names), leaves the result unchanged: exit 0 and the same image digest as the control run" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(cat '$poison_out/production.digest')\" = '$ref_out'"
 # ---- end verbatim sections ----
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -406,6 +406,10 @@ def read_digests(path):
     if "index.json" not in members:
         fail("%s has no index.json" % path)
     for name in sorted(members):   # a blob nothing refers to is still a blob: every one must hash to its name (the unpack path checks the same)
+        if name.startswith("blobs/") and not re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", name):
+            fail("%s: %s is in the blob namespace but is not blobs/sha256/<64 lowercase hex digits>" % (path, name))
+        if name.startswith("sha256:") and not re.fullmatch(r"sha256:[0-9a-f]{64}", name):
+            fail("%s: %s is named like a blob but is not sha256:<64 lowercase hex digits>" % (path, name))
         m = re.fullmatch(r"blobs/sha256/([0-9a-f]{64})", name) or BLOB_NAME.fullmatch(name)
         if m and hashlib.sha256(members[name]).hexdigest() != m.group(1):
             fail("%s: %s does not hash to its name" % (path, name))
@@ -661,8 +665,8 @@ def check_config(path):
         print(ASSEMBLER + ": cannot read the config %s: %s" % (path, e), file=sys.stderr); sys.exit(2)
     def refuse(msg):
         print(ASSEMBLER + ": the config %s %s; packages come only from the archive and the local melange repository" % (path, msg), file=sys.stderr); sys.exit(2)
-    if "\r" in text or "\t" in text:
-        refuse("holds a carriage return or a tab (not part of the plain grammar)")
+    if re.search(r"[^\x20-\x7e\n]", text):   # pure printable ASCII and LF: YAML also breaks lines at U+0085, U+2028 and U+2029, tabs and CR are not plain
+        refuse("holds a character outside printable ASCII and newline (a tab, a carriage return or a Unicode line break is not part of the plain grammar)")
     PLAIN = r"[A-Za-z0-9_./@=+-]+"
     KEY = r"[A-Za-z0-9_-]+"
     forms = (r"\s*", r"\s*#.*", r"\s*%s:\s*" % KEY, r"\s*%s:\s+%s\s*" % (KEY, PLAIN), r"\s*- %s\s*" % PLAIN, r"\s*- %s:\s+%s\s*" % (KEY, PLAIN))

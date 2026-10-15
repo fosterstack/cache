@@ -136,10 +136,16 @@ if [ -n "$expect" ]; then
 fi
 [ -z "$digests_out" ] || [ -z "$expect" ] || { [ ! "$digests_out" -ef "$expect" ] || die "--digests-out and --expect are the same file (or hard links of one): the comparison would be made against the digests just written" 2; }
 if [ -n "$digests_out" ]; then
-  case $digests_out in "$out"|"$out"/*) die "--digests-out $digests_out is inside the proof's own output $out: it would overwrite a generated result" 2;; esac
-  for g_ in "$out"/image/*.digest "$out"/image/*.manifests "$out"/sealed-record.json; do
-    [ ! -e "$g_" ] || [ ! "$digests_out" -ef "$g_" ] || die "--digests-out is the same file as the generated $g_ (or a hard link of it)" 2
-  done
+  # the destination is compared by its PHYSICAL location (dot components, doubled slashes, relative spellings and symlinked directories resolve away) and
+  # by inode against every regular file the proof wrote
+  case $digests_out in */*) dd_dir=${digests_out%/*}; dd_base=${digests_out##*/};; *) dd_dir=.; dd_base=$digests_out;; esac
+  [ -n "$dd_dir" ] || dd_dir=/
+  dd_phys=$(cd -P -- "$dd_dir" 2>/dev/null && pwd -P) || die "--digests-out $digests_out: its directory does not exist" 2
+  out_phys=$(cd -P -- "$out" && pwd -P)
+  case $dd_phys/ in "$out_phys"/*) die "--digests-out $digests_out is inside the proof's own output $out: it would overwrite a generated result" 2;; esac
+  while IFS= read -r -d '' g_; do
+    [ ! "$dd_phys/$dd_base" -ef "$g_" ] || die "--digests-out is the same file as the generated $g_ (or a hard link of it)" 2
+  done < <(find "$out_phys" -type f -print0)
   [ ! -L "$digests_out" ] && { [ ! -e "$digests_out" ] || [ -f "$digests_out" ]; } || die "--digests-out $digests_out is a link or not a regular file; refusing to write through it" 2
   cp "$tmp/digests.txt" "$digests_out"
 fi
