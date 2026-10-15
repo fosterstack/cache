@@ -143,7 +143,7 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 def tree_files(root, rev):
     """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
     def wanted(n):
-        return (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
+        return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
                 or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
                 or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
     out = {}
@@ -791,7 +791,7 @@ def tree_scripts(root, rev):
     """{path: text} for every shell script at a revision (rev None: the working tree): where a download or install can hide outside the workflows."""
     out = {}
     if rev is None:
-        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh") and not n.startswith(".github/agent/")]
+        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh") and not n.startswith((".github/agent/", "vendor/"))]
         for n in names:
             try:
                 out[n] = open(f"{root}/{n}").read()
@@ -802,7 +802,7 @@ def tree_scripts(root, rev):
         return out
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
-        if n.endswith(".sh") and not n.startswith(".github/agent/"):
+        if n.endswith(".sh") and not n.startswith((".github/agent/", "vendor/")):
             blob = meta.split()[2]
             if blob not in _BLOBS:
                 _BLOBS[blob] = git(root, "cat-file", "blob", blob)
@@ -841,7 +841,7 @@ def unmeasured_occurrences(files):
     line, not to the one downloader segment the key hashes. bashlike is False when the line holds whitespace other than a space or a tab, or was joined from
     a backslash-newline continuation: bash reads such a line differently from this flattening, so no row may ever match it."""
     for path, text in sorted(files.items()):
-        if not (path.startswith(".github/") or path.endswith(".sh")) or path.startswith(".github/agent/"):
+        if not (path.startswith(".github/") or path.endswith(".sh")) or path.startswith((".github/agent/", "vendor/")):
             continue  # .github/agent/ is covered by the independent second review (and its tests quote such commands as fixtures)
         mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
         tainted = mark in text
