@@ -1206,7 +1206,7 @@ for n, l in enumerate(open(sys.argv[1]).read().split("\n"), 1):
     m = re.search(r"<<'(\w+)'", l)
     if m: inh = m.group(1)
     if l.lstrip().startswith("#"): continue
-    if re.search(r"(?:^|[;&|(]|\$\(|\bthen |\bdo |\belse )\s*(?:rm|mkdir|dirname|cat|sed|ls|wc)\s", re.sub(r"#\s*TEST-SUBST.*$", "", l)): bad.append("%d: %s" % (n, l.strip()[:100]))
+    if re.search(r"(?:^|[;&|(]|\$\(|\bthen |\bdo |\belse )\s*(?:rm|mkdir|dirname|cat|sed|ls|wc|tr|sort|head|tail|cut|awk|find|xargs|grep|basename|date|env|touch|cp|mv|tee|uniq|test)\s", re.sub(r"#\s*TEST-SUBST.*$", "", l)): bad.append("%d: %s" % (n, l.strip()[:100]))
 assert not bad, bad
 P
 # B (AC22): a legacy plain pointer must be a signed index BEFORE any early exit, also when it equals the record
@@ -1272,5 +1272,21 @@ mkrepo; rm -rf "$work/ar-boot"; printf 'wolfi-signing.rsa.pub sha256:%s\nwolfi-s
 run_s2 env "${rfe[@]:1}" "$RF" bootstrap --repo-dir "$work/rp" --archive "$work/ar-boot"
 t "AC30" "bootstrap: a repeated or malformed key line is exit 3 and writes nothing" bash -c "test \"\$(cat '$work/rc')\" = 3 && ! test -e '$work/ar-boot'"
 
+# key-check (the first step of the daily job, before any tool is installed, any registry is touched or any token is minted): the live key must be the pinned one
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" key-check --repo-dir "$work/rp"
+t "AC26" "key-check: a live key whose sha256 is the pinned line passes (exit 0) and writes nothing" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'pinned' '$work/log'"
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(printf 'b%.0s' $(seq 1 64))" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" key-check --repo-dir "$work/rp"
+t "AC30" "key-check: a live key that is not the pinned one stops (exit 3, a human must look)" bash -c "test \"\$(cat '$work/rc')\" = 3 && grep -qi 'human' '$work/log'"
+mkrepo; rm -f "$work/rp/build/locks/archive-keys.sha256"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" key-check --repo-dir "$work/rp"
+t "AC30" "key-check: no pinned key line is exit 3 (never trust on first use)" bash -c "test \"\$(cat '$work/rc')\" = 3"
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\nwolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" key-check --repo-dir "$work/rp"
+t "AC30" "key-check: a repeated key line is exit 3" bash -c "test \"\$(cat '$work/rc')\" = 3"
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" key-check --repo-dir "$work/rp" --archive "$work/ar"
+t "AC30" "key-check takes no archive: --archive is refused (exit 2), nothing is read from or written to an archive" bash -c "test \"\$(cat '$work/rc')\" = 2"
 echo "refresh-inputs-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

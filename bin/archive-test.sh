@@ -7,7 +7,7 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root" || exit 1   # the scripts name their helper as bin/archive-verify.py: they run from the repository root, as in production
-work=$(mktemp -d); trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "${work:?}"' EXIT
+work=$(mktemp -d) && [ -d "$work" ] || { echo "archive-test: cannot create a scratch directory" >&2; exit 1; }; trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "${work:?}"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); }
 bad() { failn=$((failn+1)); echo "FAIL [$1] $2"; true; }
@@ -456,5 +456,34 @@ done
 mkcopy "$work/mt-py" archive-pull.sh "$work/tools/python3 -I -B bin/archive-verify.py unpack" "$work/tools/python3 bin/archive-verify.py unpack"
 t AC9 "the -I -B assertion bites: a python3 call without them is found" bash -c "grep -v '^ *#' '$work/mt-py/archive-pull.sh' | grep -Eq 'tools/python3 +[^-]'"
 
+# ---- round 1 of the second review: strict syntax (fullmatch) and extraction cleanup -----------------------------------------------
+t AC3 "names, digests and artifact references with a trailing newline are refused (the validators use fullmatch, never a $ that accepts a position before a final newline)" python3 - "$VER" <<'P'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("av", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert m.safe_name("x86_64/pkg-1.0-r0.apk"), "fixture"
+assert not m.safe_name("x86_64/pkg-1.0-r0.apk\n"), "a name with a trailing newline was accepted"
+assert not m.HEX.fullmatch("a" * 64 + "\n") and m.HEX.fullmatch("a" * 64)
+assert not m.ARTIFACT.fullmatch("ghcr.io/fosterstack/cache-archive@sha256:" + "a" * 64 + "\n")
+P
+t AC6 "an extraction that fails after the first file leaves no <out>.stage and no <out> behind" python3 - "$VER" "$work/ptr.json" "$work/layout-keep" "$work/o-stagefail" <<'P'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("av", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ptr, layout, out = sys.argv[2:5]
+n = [0]; real = os.chmod
+def flaky(p, mode, *a, **k):
+    n[0] += 1
+    if n[0] == 2: raise OSError("disk full (injected)")
+    return real(p, mode, *a, **k)
+os.chmod = flaky
+try:
+    m.cmd_unpack({"--pointer": ptr, "--layout": layout, "--out": out})
+except BaseException:
+    pass
+else:
+    raise SystemExit("the injected failure did not stop the extraction")
+assert n[0] >= 2, "the injection point was never reached"
+assert not os.path.lexists(out + ".stage"), "the stage directory was left behind"
+assert not os.path.lexists(out), "a partial output was left behind"
+P
 echo "archive-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

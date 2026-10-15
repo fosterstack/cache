@@ -134,6 +134,11 @@ if len(rmint) != 1 or rmint[0].get("with") != want or rmint[0].get("id") != "app
 rusers = [s.get("name") for s in rsteps if "steps.app-token.outputs.token" in str(s)]
 if rusers != ["refresh the inputs (stage the pull request)", "check for a newer certified crypto module", "open the pull requests"]:
     bad.append("AC28: the App token reaches steps other than the three refresh steps: %s" % rusers)
+KEYCHK = "check the live Wolfi key against the pinned one"
+if len(rnames) < 2 or rnames[1] != KEYCHK if rnames else True:
+    bad.append("AC26/AC30: the live key is not checked against the pinned one in the first step after the checkout (before tool installation, registry login, archive retrieval and token minting)")
+elif "./bin/refresh-inputs.sh key-check " not in "".join(str(x.get("run", "")) for x in rsteps if x.get("name") == KEYCHK) or any(x.get("if") for x in rsteps if x.get("name") == KEYCHK):
+    bad.append("AC26/AC30: the key check step does not call refresh-inputs.sh key-check, or carries an if")
 ORDER = ["pull the archive by its recorded digest", "refresh the inputs (stage the pull request)",
          "check for a newer certified crypto module", "store the archive when something changed", "open the pull requests"]
 BOOT = "bootstrap the archive from the pined Wolfi key".replace("pined", "pinned")
@@ -263,6 +268,9 @@ case_ refresh-token-extra-step bad "$R['steps'].append({'name': 'x', 'env': {'GH
 case_ refresh-order-swapped   bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('pull the archive by its recorded digest'); j = n.index('refresh the inputs (stage the pull request)'); a[i], a[j] = a[j], a[i]"
 case_ refresh-pull-by-tag     bad "[s.__setitem__('run', 'crane pull ghcr.io/x/archive:latest out') for s in $R['steps'] if s.get('name') == 'pull the archive by its recorded digest']"
 case_ refresh-bootstrap-always bad "[s.pop('if', None) for s in $R['steps'] if s.get('name') == 'bootstrap the archive from the pinned Wolfi key']"
+case_ refresh-keycheck-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'check the live Wolfi key against the pinned one']"
+case_ refresh-keycheck-late bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('check the live Wolfi key against the pinned one'); a.insert(n.index('pull the archive by its recorded digest'), a.pop(i))"
+case_ refresh-keycheck-if bad "[s.__setitem__('if', 'always()') for s in $R['steps'] if s.get('name') == 'check the live Wolfi key against the pinned one']"
 case_ refresh-bootstrap-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'bootstrap the archive from the pinned Wolfi key']"
 case_ refresh-pr-before-store bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('store the archive when something changed'); j = n.index('open the pull requests'); a[i], a[j] = a[j], a[i]"
 case_ refresh-opens-in-refresh bad "[s.__setitem__('run', s['run'].replace(' --plan-dir', '')) for s in $R['steps'] if s.get('name') == 'refresh the inputs (stage the pull request)']"
