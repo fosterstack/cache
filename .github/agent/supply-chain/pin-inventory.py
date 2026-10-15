@@ -338,7 +338,7 @@ def _asset_word(text, start):
         if stack and stack[-1][0] == "'":
             if c == "'":
                 stack.pop()
-            elif i >= start and depth == d0 and len(stack) == s0 and stack[-1][2] < start and (c.isspace() or c in ";|&<>)"):
+            elif i >= start and depth == d0 and len(stack) == s0 and stack[-1][2] < start and (c.isspace() or c in ";|&<>" or (c == ")" and d0 > 0)):
                 break                          # a single-quoted program string (bash -c 'curl url/x.tgz -o x'): the name ends at its own word boundary
         elif in_string:                      # inside double quotes, not inside a substitution
             if i >= start and depth == d0 and len(stack) == s0 and stack and stack[-1][1] == d0 and stack[-1][2] < start and c.isspace():
@@ -371,6 +371,61 @@ def _asset_word(text, start):
                 break
         i += 1
     return text[start:i]
+
+
+def _nested_program(text, pos):
+    """True when `pos` sits inside a quoted PROGRAM string (bash -c '...', sh -c "...", eval "...") whose outermost quote also holds a $, a backtick or a
+    command separator (; && || |): the inner program's own word boundaries are not read here, so a release URL in it is refused as unresolved (closed
+    fail-closed, advisor 0080: parse the inner program or refuse it; this refuses it). A position inside a $( ) or backtick substitution is NOT this case:
+    the name reader parses code there. A quoted string with nothing dynamic in it is an ordinary quoted word."""
+    i = text.rfind("\n", 0, pos) + 1
+    stack, bt = [], False                  # open contexts, innermost last: "'", '"', "$("; and whether backticks are open
+    while i < pos:
+        c = text[i]
+        top = stack[-1] if stack else None
+        if top == "'":
+            if c == "'":
+                stack.pop()
+        elif c == "\\":
+            i += 2; continue
+        elif c == "`":
+            bt = not bt
+        elif c == "$" and text[i + 1:i + 2] == "(":
+            stack.append("$("); i += 1
+        elif c == ")" and top == "$(":
+            stack.pop()
+        elif c == '"' and top == '"':
+            stack.pop()
+        elif c in "'\"" and top != "'":
+            stack.append(c)
+        i += 1
+    if bt or "$(" in stack or not stack or stack[0] not in "'\"":
+        return False
+    q = stack[0]
+    start = pos
+    # the outermost quote's span: from its opening (rescan) to its closing after pos
+    k, st = text.rfind("\n", 0, pos) + 1, []
+    while k < pos:
+        c = text[k]
+        top = st[-1] if st else None
+        if top == "'":
+            if c == "'": st.pop()
+        elif c == "\\": k += 2; continue
+        elif c == "$" and text[k + 1:k + 2] == "(": st.append("$("); k += 1
+        elif c == ")" and top == "$(": st.pop()
+        elif c == '"' and top == '"': st.pop()
+        elif c in "'\"" and top != "'":
+            st.append(c)
+            if len(st) == 1: start = k
+        k += 1
+    j, n = pos, len(text)
+    while j < n:
+        if text[j] == "\\" and q == '"':
+            j += 2; continue
+        if text[j] == q:
+            break
+        j += 1
+    return bool(re.search(r"[$`;|]|&&", text[start + 1:j]))
 
 
 _ENV_CTX = [""]
@@ -521,7 +576,9 @@ def _step_items(node, out, labels):
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
             sums = sorted(set(re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", run)) | set(_JOB_SUMS[0]))   # checksums, not image digests
             word = _asset_word(run, m.start(4))
-            asset = word if ("$" in word or "`" in word) else m.group(4)   # the name goes on past a quote or a space inside $( ): it is a name behind a variable too
+            asset = word if ("$" in word or "`" in word) else m.group(4)
+            if "$" not in asset and "`" not in asset and _nested_program(run, m.start(4)):
+                asset += "$(nested program)"      # a URL in a quoted program string that is dynamic: unresolved, refused (the inner shell's boundaries are not parsed)   # the name goes on past a quote or a space inside $( ): it is a name behind a variable too
             out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), asset + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest() if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
         for tail in _pip_tails(run):
             for p in _PIP_PIN.finditer(tail):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
