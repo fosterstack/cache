@@ -2929,5 +2929,15 @@ case_ r7-variable-downloader-keeps-installed-program-rule-bad bad "$(rb 'C=/usr/
           sudo install -m 0755 /tmp/tool /usr/local/bin/tool
           bash ci-lit.sh')" "printf 'tool --version\n' > ci-lit.sh"
 
+# --- review round 9 of PR 351 (advisor: fix the four ordinary forms of round 8 only; the four rare-feature ones are residuals by class)
+case_ r9-explicit-shell-bash-ok ok "$(printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - shell: bash\n        run: bash ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+case_ r9-explicit-shell-bash-e-ok ok "$(printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - shell: bash -eo pipefail {0}\n        run: bash ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+case_ r9-job-default-shell-bash-ok ok "$(printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: bash\n    steps:\n      - run: bash ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+case_ r9-escaped-quote-in-prompt-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/usr/bin/git\nread -r -p \"Program \\\\\"git|docker\\\\\": \" \"\$1\" <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r9-compact-printf-v-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nprintf -vG %%s /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r9-compact-read-a-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nread -aG <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r9-assignment-text-in-nested-quote-bad bad "$(rb 'bash ci-lit.sh')" "printf 'config=\"\$(printf \x27%%s\\\\n\x27 \"\nG=/usr/bin/git\n\")\"\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r9-substitution-before-assignment-stays-ok ok "$(rb 'bash ci-lit.sh')" "printf 'd=\$(pwd)\nG=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
