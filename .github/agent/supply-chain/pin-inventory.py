@@ -836,6 +836,43 @@ def _line_ids(text):
     return ids
 
 
+# Exception 2 of the owner's three (Oct 15, ratify/2026-10-15-download-age-three-exceptions.md; advisor limits, handoff 0452). Hard-coded here, never read
+# from the scripts: a list a script supplies would let that script widen its own exception.
+_KEY_URL = "https://packages.wolfi.dev/os/wolfi-signing.rsa.pub"
+_KEY_BASE = "https://packages.wolfi.dev/os"
+_KEY_FP = "build/locks/archive-keys.sha256"
+_KEY_BAD_OPTS = re.compile(r"(?<![\w-])(--url|--connect-to|--resolve|-x|--proxy|-K|--config|--next|-T|--upload-file)(?![\w-])")
+
+
+def _key_fetch_ok(files, path, text, seg, flat):
+    """The signing-key fetch: ONE curl or wget of exactly the fixed Wolfi key URL (literally, or as "$VAR/wolfi-signing.rsa.pub" with VAR assigned exactly once at line
+    start to the fixed base URL), written to a named file, on a line with no pipe, no second URL and no option that changes the destination, in a script that
+    compares bytes with the committed build/locks/archive-keys.sha256 AFTER the fetch and before anything else uses them. Anything else stays a download."""
+    if not path.endswith(".sh") or _KEY_FP not in files or "|" in flat:
+        return False
+    m = re.search(r"(?<![\w./-])(curl|wget)(?![\w-])", seg)
+    if not m or _KEY_BAD_OPTS.search(seg):
+        return False
+    if not re.search(r"(?<![\w-])(-[A-Za-z]*o|--output|-O|--output-document)(?![\w-])", seg) and not re.search(r"\s-[A-Za-z]*[oO]\b", seg):
+        return False                                   # no named output file: the bytes would go to the shell or the terminal
+    urls = re.findall(r"https?://[^\s'\"]+", seg)
+    varurls = re.findall(r"\$\{?([A-Za-z_]\w*)\}?/wolfi-signing\.rsa\.pub", seg)
+    if len(urls) + len(varurls) != 1:
+        return False
+    if urls:
+        if urls[0] != _KEY_URL:
+            return False
+    else:
+        assigns = re.findall(r"(?m)^[ \t]*(?:export[ \t]+)?" + re.escape(varurls[0]) + r"=(\S*)[ \t]*$", text)
+        if len(assigns) != 1 or assigns[0].strip("'\"") != _KEY_BASE:
+            return False
+        if len(re.findall(r"(?<![\w])" + re.escape(varurls[0]) + r"\+?=", text)) != 1:
+            return False                               # a second write of the variable anywhere (read, export, +=)
+    at = text.find(seg)
+    after = text[at + len(seg):] if at >= 0 else ""
+    return _KEY_FP in after and bool(re.search(r"sha256sum|openssl[ \t]+dgst|shasum|\bcmp\b", after))
+
+
 def unmeasured_occurrences(files):
     """Each unmeasured occurrence as (key, the WHOLE flattened line it was found in, bashlike): the line binds a ruled-text row (REQ-SUP-001-AC16) to the
     line, not to the one downloader segment the key hashes. bashlike is False when the line holds whitespace other than a space or a tab, or was joined from
@@ -855,7 +892,7 @@ def unmeasured_occurrences(files):
             for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):    # each downloader invocation on its own: a release URL elsewhere on the line excuses nothing
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
-                if re.search(r"\b(?:curl|wget)\b", seg) and not plain:
+                if re.search(r"\b(?:curl|wget)\b", seg) and not plain and not _key_fetch_ok(files, path, text, seg, flat):
                     yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest() + ":" + _hide(seg)[:100]), flat, bashlike
             if path.endswith(".sh"):    # REQ-SUP-001-AC20: a script line that names an unpinned package; ruled like a text line, by the hash of the whole line
                 probe = []
