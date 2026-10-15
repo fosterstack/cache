@@ -3181,5 +3181,33 @@ runck vnd4 '{"times": {}}'
 CASE="the same script under Vendor/ (another case) is still refused (exit 1)"
 check test "$rc" -eq 1
 
+# --- review round 5 of PR 358 (both seats): the vendor/ skip is safe only while nothing outside vendor/ runs or installs from it; a line that does is refused (exit 1)
+vcase() { # NAME 'CALLER LINE' want: base has no caller, head adds one workflow step
+  python3 - "$1" "$2" <<'PY' > "$work/vc-$1.py"
+import json, sys
+name, line = sys.argv[1:3]
+print("import pathlib\nroot = pathlib.Path('.')\n(root / 'vendor/example.test/dep').mkdir(parents=True, exist_ok=True)\n"
+      "(root / 'vendor/example.test/dep/install.sh').write_text('go install example.test/tool@v1.2.3\\n')\n"
+      "(root / 'vendor/example.test/dep/requirements.txt').write_text('left-pad==1.2.3\\n')\n"
+      "(root / '.github/workflows').mkdir(parents=True, exist_ok=True)\n"
+      "(root / '.github/workflows/w.yml').write_text('on: push\\njobs:\\n  j:\\n    runs-on: ubuntu-latest\\n    steps:\\n      - run: ' + " + json.dumps(line) + " + '\\n')")
+PY
+  newcase "vc-$1" "$(cat "$work/vc-$1.py")"; runck "vc-$1" '{"times": {}}'
+}
+for v in "run-script:bash vendor/example.test/dep/install.sh" \
+         "run-dotslash:./vendor/example.test/dep/install.sh" \
+         "source-script:source vendor/example.test/dep/install.sh" \
+         "pip-requirements:pip install --require-hashes -r vendor/example.test/dep/requirements.txt" \
+         "go-run:go run vendor/example.test/dep/tool.go"; do
+  vcase "${v%%:*}" "${v#*:}"
+  CASE="a workflow step that runs or installs from vendor/ is refused: ${v%%:*} (exit 1)"
+  check test "$rc" -eq 1
+done
+for v in "build-mod-vendor:go build -mod=vendor ./cmd/fscache" "vendor-check:bash bin/vendor-check.sh" "list:ls vendor/"; do
+  vcase "ok-${v%%:*}" "${v#*:}"
+  CASE="a plain mention of vendor/ that does not run or install from it is not refused: ${v%%:*} (exit 0)"
+  check test "$rc" -eq 0
+done
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
