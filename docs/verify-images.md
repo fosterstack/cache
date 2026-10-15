@@ -5,11 +5,11 @@ GitHub's own CI — not by us claiming it, by a chain you can check yourself
 in under a minute, with `cosign` and `gh` plus standard tools (`curl`,
 `sed`, `jq`, `base64`, `sha256sum` or `shasum`).
 
-The pull and the cosign commands below are fully anonymous. The
-`gh attestation verify` commands are not — they read GitHub's attestation
-API and need a token even for a public repo (see the note under "Verify
-the whole chain"). Resolve the current release once and the rest
-parameterize themselves:
+Every command for v0.3.0 and later below is `cosign`, `sha256sum` and `jq` <!-- pinned: historical -->
+and is fully anonymous: no GitHub token, no registry login. Only the
+`gh attestation verify` commands of the earlier chain (marked "before
+v0.3.0") read GitHub's attestation API and need a token. Resolve the <!-- pinned: historical -->
+current release once and the rest parameterize themselves:
 
 ```sh
 VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest \
@@ -76,13 +76,78 @@ From v0.3.0 the chain is five stages (Build, Sign, Rebuild, Check, Release; <!--
 see [`RELEASING.md`](../RELEASING.md)). Each stage verifies the signed record
 of the one before it, and the records are attached to the release so you can
 verify them too: the Witness records of Build (`build-collection.json`,
-`digests.json`, `items.json`), Rebuild (`rebuild-collection.json`,
+`digests.json`, `items.json`, `admission-baseline.json`), Rebuild (`rebuild-collection.json`,
 `verdict.json`) and Check (`scanners-collection.json`,
 `acceptance-collection.json`, `runtime-collection.json`,
 `arm64-collection.json`). `release-manifest.json`, the OpenVEX, CSAF and
 inspector-filters files are covered by the signed `release-files.sha256`;
 the archives are covered by the signed `checksums.txt`. The commands for
 those two lists are in [`RELEASING.md`](../RELEASING.md#archives-and-metadata-files).
+
+### The signed evidence files
+
+Beside the images, the Release stage's `release-sign` step signs each of these
+files keyless, under `stage-promote.yml` at the release tag, with a Rekor
+entry, and the release carries the file with its bundle:
+`<variant>.sbom.json` and `<variant>.full.lock.json` for `production` and
+`fips`, `vendor-evidence.json`, `dependency-list.json`, `policy.json` (its
+bundle is `release-policy.bundle`), `checksums.txt` and
+`release-files.sha256`. Verify one the same way as `checksums.txt` in
+section 4: `cosign verify-blob --bundle FILE.bundle` with the pinned
+identity. How to verify a Witness record itself (the `*-collection.json`
+files) is in the release guide ([v0.3.0 release guide](verify-release.md)); the <!-- pinned: historical -->
+commands there are TO-VERIFY until a release candidate has run them.
+
+### The release manifest
+
+**Verifying the release manifest.** The promotion workflow attaches the
+release manifest as a cosign attestation (predicate type
+`https://fosterstack.com/attestations/release-manifest/v1`) to each public
+image digest (production and `-fips`; releases before v0.3.0 also `-debug`) on GHCR, which is authoritative, and <!-- pinned: historical -->
+on the Docker Hub mirror (best effort), BEFORE the GitHub release is
+published.
+The attestation exists from v0.2.1 on (v0.1.0 has none, so the command below fails there) and v0.3.0 and later attach it too, signed by `stage-promote.yml` in the Release stage's `release-sign` step; `release-manifest.json` is also a release file covered by the signed `release-files.sha256`. <!-- pinned: historical -->
+The `release-manifest.json` on the release page is the same
+content. It has no separate signature file, and `gh attestation verify
+<file>` does not apply to it: it is an attestation on the image, so verify
+it on the image (anonymous, no token):
+
+```sh
+cosign verify-attestation \
+  --type https://fosterstack.com/attestations/release-manifest/v1 \
+  --certificate-identity-regexp "^https://github\.com/fosterstack/cache/\.github/workflows/stage-promote\.yml@refs/tags/v${VER}$" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/fosterstack/cache:${VER} > manifest-att.json
+```
+
+The OpenVEX, CSAF and inspector-filters files on the release page have no
+signature of their own. They are covered by the sha256 values recorded in the
+signed manifest, and by the signed `release-files.sha256` (the `cosign
+verify-blob` and `sha256sum -c` commands for that list are in
+[`RELEASING.md`](../RELEASING.md#archives-and-metadata-files)). Check the
+downloaded files against the manifest:
+
+```sh
+gh release download v${VER} --repo fosterstack/cache \
+  -p 'fosterstack-cache*' -p release-manifest.json
+
+jq -r '.payload' manifest-att.json | base64 -d \
+  | jq -r '.predicate.vex[] | "\(.sha256)  \(.file)"' > vex.sha256
+sha256sum -c vex.sha256    # or: shasum -a 256 -c vex.sha256
+```
+
+Each line must print `OK`. (`base64 -d` works on GNU coreutils and on
+macOS 14 and later; on older macOS use `base64 -D`.)
+
+### The Docker Hub mirror
+
+The same images, same digests, are mirrored at
+`docker.io/fosterstack/cache` for tooling that defaults to Docker Hub.
+GHCR is canonical. Everything on this page verifies identically against
+either registry, because verification is keyed to the digest, not the
+registry. One practical note: Docker Hub rate-limits anonymous pulls by
+the **puller's** IP and login (not by anything we control) — if you hit
+a limit, authenticate with any free Docker account or pull from GHCR.
 
 ### Releases before v0.3.0 <!-- pinned: historical -->
 
@@ -127,42 +192,6 @@ The individual statements, all verifiable with the same command shape
 | `https://fosterstack.com/attestations/release-authorization/v1` | the authorization stage | the whole graph above verified; this digest is approved for this version |
 | `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results (REQ-REL-001/002): the anonymous verification and every-tag anonymous pull passed for this digest |
 
-**Verifying the release manifest.** The promotion workflow attaches the
-release manifest as a cosign attestation (predicate type
-`https://fosterstack.com/attestations/release-manifest/v1`) to each public
-image digest (production, debug, fips) on GHCR, which is authoritative, and
-on the Docker Hub mirror (best effort), BEFORE the GitHub release is
-published.
-This attestation exists for the releases of the earlier chain, v0.2.1 up to v0.2.x (v0.1.0 has none, so the command below fails there; v0.3.0 and later attach `release-manifest.json` as a release file covered by `release-files.sha256` instead). <!-- pinned: historical -->
-The `release-manifest.json` on the release page is the same
-content. It has no separate signature file, and `gh attestation verify
-<file>` does not apply to it: it is an attestation on the image, so verify
-it on the image (anonymous, no token):
-
-```sh
-cosign verify-attestation \
-  --type https://fosterstack.com/attestations/release-manifest/v1 \
-  --certificate-identity-regexp "^https://github\.com/fosterstack/cache/\.github/workflows/stage-promote\.yml@refs/tags/v${VER}$" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/fosterstack/cache:${VER} > manifest-att.json
-```
-
-The OpenVEX, CSAF and inspector-filters files on the release page have no
-signature of their own. Today they are covered by the sha256 values
-recorded in the signed manifest. Check the downloaded files against them:
-
-```sh
-gh release download v${VER} --repo fosterstack/cache \
-  -p 'fosterstack-cache*' -p release-manifest.json
-
-jq -r '.payload' manifest-att.json | base64 -d \
-  | jq -r '.predicate.vex[] | "\(.sha256)  \(.file)"' > vex.sha256
-sha256sum -c vex.sha256    # or: shasum -a 256 -c vex.sha256
-```
-
-Each line must print `OK`. (`base64 -d` works on GNU coreutils and on
-macOS 14 and later; on older macOS use `base64 -D`.)
-
 **Resolving the deferred release ACs.** Because the release manifest is
 attached BEFORE publication, its `ac_results` shows the two publication
 ACs (`REQ-REL-001-AC1`, `REQ-REL-002-AC1`) as
@@ -200,16 +229,6 @@ per-scanner types track that list, not this table.
 `release-manifest.json` on the release page carries the same evidence in
 one file: every digest, both registry references, per-AC results, and
 the Rekor log indexes.
-
-### The Docker Hub mirror
-
-The same images, same digests, are mirrored at
-`docker.io/fosterstack/cache` for tooling that defaults to Docker Hub.
-GHCR is canonical. Everything on this page verifies identically against
-either registry, because verification is keyed to the digest, not the
-registry. One practical note: Docker Hub rate-limits anonymous pulls by
-the **puller's** IP and login (not by anything we control) — if you hit
-a limit, authenticate with any free Docker account or pull from GHCR.
 
 ## 3. Which tags to verify
 
