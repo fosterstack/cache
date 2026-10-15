@@ -2893,5 +2893,18 @@ jobs:
     steps:
       - run: bash ci-lit.sh" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
 
+# --- review round 6 of PR 351 (both seats): every option word, quote-aware boundaries, continuation lines, interpreter and set options, a DEBUG trap
+case_ r6-declare-split-nameref-options-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/usr/bin/git\ndeclare -g -n r=\"\$1\"\nr=/usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r6-read-prompt-with-pipe-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/usr/bin/git\nread -p \"Program (git|docker): \" \"\$1\" <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r6-continued-read-target-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/usr/bin/git\nread \\\\\n \"\$1\" <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r6-bash-a-reaches-grandchild-bad bad "$(rb 'bash -a ci-a.sh')" "printf 'printf() { builtin printf -v \"\$2\" %%s /usr/bin/docker; }\nbash ci-b.sh\n' > ci-a.sh; printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-b.sh"
+case_ r6-set-e-a-bad bad "$(rb 'set -e -a
+          printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r6-interactive-bash-bad bad "$(rb 'bash -i ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+case_ r6-debug-trap-bad bad "$(rb 'bash ci-lit.sh')" "printf 'shopt -s extdebug\ntrap \x27false\x27 DEBUG\nG=/usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r6-exit-trap-stays-ok ok "$(rb 'bash ci-lit.sh')" "printf 'trap \x27true\x27 EXIT\nG=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+case_ r6-bash-e-u-pipefail-stays-ok ok "$(rb 'bash -euo pipefail ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
