@@ -321,23 +321,28 @@ def cmd_evidence(argv):
            "govulncheck": {"sha256": hashlib.sha256(graw).hexdigest()},
            "date": {"epoch": int(date), "utc": day}}
     text = json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n"
-    chain, d = [], out_dir.rstrip("/") or "."       # the missing directories, nearest the existing ancestor last; made one at a time, only what THIS run makes is ever removed
+    chain, d = [], out_dir.rstrip("/") or "."       # the missing directories (nearest the existing ancestor last); the existing ancestor is opened once and held
     while not os.path.lexists(d):
         chain.append(d)
         d = os.path.dirname(d) or "."
-    created, dfd, name = [], None, None
+    names = [os.path.basename(p) for p in reversed(chain)]
+    opened, made, name = [], [], None                # opened: every directory descriptor this run holds; made: (parent descriptor, name) of each directory this run's mkdir created
     try:
-        for p in reversed(chain):
+        cur = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+        opened.append(cur)
+        for n in names:                              # every create, open and remove below is relative to a held descriptor, never to a path that can be retargeted
             try:
-                os.mkdir(p)
-            except FileExistsError:         # another run made it first: not ours
-                continue
-            created.append(p)
-        dfd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY)   # every file operation below goes through this open directory, never through a path that can be retargeted
-        for _ in range(8):                  # a temporary file this run creates itself (exclusive, unpredictable name), replaced into place only once complete
+                os.mkdir(n, dir_fd=cur)
+                made.append((cur, n))
+            except FileExistsError:                  # another run made it first: not ours
+                pass
+            nxt = os.open(n, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=cur)
+            opened.append(nxt)
+            cur = nxt
+        for _ in range(8):                           # a temporary file this run creates itself (exclusive, unpredictable name), replaced into place only once complete
             cand = ".vendor-evidence.json.tmp-" + os.urandom(8).hex()
             try:
-                fd = os.open(cand, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=dfd)
+                fd = os.open(cand, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=cur)
             except FileExistsError:
                 continue
             name = cand
@@ -348,22 +353,25 @@ def cmd_evidence(argv):
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(name, "vendor-evidence.json", src_dir_fd=dfd, dst_dir_fd=dfd)
+        os.replace(name, "vendor-evidence.json", src_dir_fd=cur, dst_dir_fd=cur)
     except BaseException:
-        if name is not None and dfd is not None:    # only a file this run created, in the directory it was created in
+        if name is not None:                         # only a file this run created, in the directory it was created in
             try:
-                os.unlink(name, dir_fd=dfd)
+                os.unlink(name, dir_fd=cur)
             except OSError:
                 pass
-        for p in reversed(created):                 # only directories this run made, innermost first; one that cannot be removed does not stop the rest
+        for parent, n in reversed(made):             # only directories this run made, innermost first; one that cannot be removed does not stop the rest
             try:
-                os.rmdir(p)
+                os.rmdir(n, dir_fd=parent)
             except OSError:
                 pass
         raise
     finally:
-        if dfd is not None:
-            os.close(dfd)
+        for fd in reversed(opened):                  # a read-only directory descriptor holds nothing to flush: a close error never replaces the real outcome
+            try:
+                os.close(fd)
+            except OSError:
+                pass
     return 0
 
 
