@@ -132,10 +132,11 @@ rmint = [s for s in rsteps if str(s.get("uses", "")).startswith("actions/create-
 if len(rmint) != 1 or rmint[0].get("with") != want or rmint[0].get("id") != "app-token":
     bad.append("AC28: the refresh job does not mint the App token exactly as the check job does: %s" % [s.get("with") for s in rmint])
 rusers = [s.get("name") for s in rsteps if "steps.app-token.outputs.token" in str(s)]
-if rusers != ["refresh the inputs and open the refresh pull request", "check for a newer certified crypto module"]:
-    bad.append("AC28: the App token reaches steps other than the two refresh steps: %s" % rusers)
-ORDER = ["pull the archive by its recorded digest", "refresh the inputs and open the refresh pull request",
-         "check for a newer certified crypto module", "store the archive when something changed"]
+if rusers != ["refresh the inputs (stage the pull request)", "check for a newer certified crypto module", "open the pull requests"]:
+    bad.append("AC28: the App token reaches steps other than the three refresh steps: %s" % rusers)
+ORDER = ["pull the archive by its recorded digest", "refresh the inputs (stage the pull request)",
+         "check for a newer certified crypto module", "store the archive when something changed", "open the pull requests"]
+BOOT = "bootstrap the archive from the pined Wolfi key".replace("pined", "pinned")
 pos = [rnames.index(n) if n in rnames else -1 for n in ORDER]
 if -1 in pos or pos != sorted(pos):
     bad.append("AC26: the refresh steps are missing or out of the ratified order: %s" % [n for n in rnames])
@@ -143,8 +144,19 @@ def run_of(n):
     return "".join(str(s.get("run", "")) for s in rsteps if s.get("name") == n)
 if not re.search(r"(^|\s)\./bin/archive-pull\.sh --pointer build/archive\.json --out ", run_of(ORDER[0])):
     bad.append("AC27: the archive is not pulled by the committed pointer with bin/archive-pull.sh")
-if "./bin/refresh-inputs.sh refresh " not in run_of(ORDER[1]) or "./bin/refresh-inputs.sh fips-module " not in run_of(ORDER[2]):
-    bad.append("AC26: the refresh steps do not call refresh-inputs.sh refresh and fips-module")
+if "./bin/refresh-inputs.sh refresh " not in run_of(ORDER[1]) or "./bin/refresh-inputs.sh fips-module " not in run_of(ORDER[2]) \
+        or "--plan-dir" not in run_of(ORDER[1]) or "--plan-dir" not in run_of(ORDER[2]):
+    bad.append("AC26: the refresh steps do not call refresh-inputs.sh refresh and fips-module with --plan-dir (the pull request is opened after the archive is stored)")
+if "./bin/refresh-inputs.sh open-pr " not in run_of(ORDER[4]) or "--plan-dir" not in run_of(ORDER[4]):
+    bad.append("AC29: the pull requests are not opened by refresh-inputs.sh open-pr from the plan")
+boot = [s for s in rsteps if s.get("name") == BOOT]
+pull = [s for s in rsteps if s.get("name") == ORDER[0]]
+if len(boot) != 1 or "./bin/refresh-inputs.sh bootstrap " not in str(boot[0].get("run", "")) or "hashFiles('build/archive.json') == ''" not in str(boot[0].get("if", "")):
+    bad.append("AC26: the bootstrap step is missing, or runs when build/archive.json exists")
+if len(pull) != 1 or "hashFiles('build/archive.json') != ''" not in str(pull[0].get("if", "")):
+    bad.append("AC27: the pull step does not run exactly when build/archive.json exists")
+if rnames.index(BOOT) > rnames.index(ORDER[1]) if BOOT in rnames and ORDER[1] in rnames else True:
+    bad.append("AC26: the bootstrap step does not come before the refresh step")
 if "./bin/archive-push.sh --dir " not in run_of(ORDER[3]) or "changed" not in run_of(ORDER[3]):
     bad.append("AC27: the archive is not stored by bin/archive-push.sh only when something changed")
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
@@ -248,10 +260,14 @@ case_ refresh-on-pr-ref       bad "$R['if'] = \"\${{ github.event_name == 'pull_
 case_ refresh-pull-request-trigger bad "d['on']['pull_request'] = {}"
 case_ refresh-token-too-wide  bad "[s['with'].__setitem__('permission-packages', 'write') for s in $R['steps'] if str(s.get('uses','')).startswith('actions/create-github-app-token@')]"
 case_ refresh-token-extra-step bad "$R['steps'].append({'name': 'x', 'env': {'GH_TOKEN': '\${{ steps.app-token.outputs.token }}'}, 'run': 'true'})"
-case_ refresh-order-swapped   bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('pull the archive by its recorded digest'); j = n.index('refresh the inputs and open the refresh pull request'); a[i], a[j] = a[j], a[i]"
+case_ refresh-order-swapped   bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('pull the archive by its recorded digest'); j = n.index('refresh the inputs (stage the pull request)'); a[i], a[j] = a[j], a[i]"
 case_ refresh-pull-by-tag     bad "[s.__setitem__('run', 'crane pull ghcr.io/x/archive:latest out') for s in $R['steps'] if s.get('name') == 'pull the archive by its recorded digest']"
+case_ refresh-bootstrap-always bad "[s.pop('if', None) for s in $R['steps'] if s.get('name') == 'bootstrap the archive from the pinned Wolfi key']"
+case_ refresh-bootstrap-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'bootstrap the archive from the pinned Wolfi key']"
+case_ refresh-pr-before-store bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('store the archive when something changed'); j = n.index('open the pull requests'); a[i], a[j] = a[j], a[i]"
+case_ refresh-opens-in-refresh bad "[s.__setitem__('run', s['run'].replace(' --plan-dir', '')) for s in $R['steps'] if s.get('name') == 'refresh the inputs (stage the pull request)']"
 case_ refresh-push-always     bad "[s.__setitem__('run', './bin/archive-push.sh --dir \"\$RUNNER_TEMP/archive\"') for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
-case_ refresh-merges          bad "[s.__setitem__('run', s['run'] + 'gh pr merge --auto --squash\\n') for s in $R['steps'] if s.get('name') == 'refresh the inputs and open the refresh pull request']"
+case_ refresh-merges          bad "[s.__setitem__('run', s['run'] + 'gh pr merge --auto --squash\\n') for s in $R['steps'] if s.get('name') == 'refresh the inputs (stage the pull request)']"
 case_ refresh-job-removed     bad "$R.clear(); d['jobs'].pop('refresh')"
 case_ refresh-push-in-check   bad "[s.__setitem__('run', s['run'] + './bin/archive-push.sh --dir x\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ refresh-checkout-cred   bad "$R['steps'][0].setdefault('with', {})['persist-credentials'] = 'true'"
