@@ -184,8 +184,10 @@ assert e == {"schema": "fosterstack/vendor-evidence/v1", "mode": "vendor",
              "date": {"epoch": 1790000000, "utc": "2026-09-21"}}, e
 PY
 
-GV="$root/.github/agent/fixtures/govulncheck/gv-01.json"
-t AC7 "evidence accepts govulncheck's own output, a stream of JSON messages (the repository's scanner fixture), and hashes its original bytes" python3 - "$bin_vp" "$F7" "$GV" "$work/ev7-stream" <<'PY'
+# a stream of the shape govulncheck -json writes (config, SBOM, a finding; pretty-printed, one object after another); built here so this file names no auditor path
+GV="$work/gv-stream.json"
+printf '{\n  "config": {\n    "protocol_version": "v1.0.0",\n    "scanner_name": "govulncheck",\n    "scan_mode": "source"\n  }\n}\n{\n  "SBOM": {\n    "modules": [\n      {\n        "path": "stdlib",\n        "version": "v1.27.0"\n      }\n    ]\n  }\n}\n{\n  "finding": {\n    "osv": "GO-2026-0001",\n    "trace": [\n      {\n        "module": "stdlib"\n      }\n    ]\n  }\n}\n' >"$GV"
+t AC7 "evidence accepts govulncheck's own output, a stream of JSON messages (a pretty-printed multi-object stream), and hashes its original bytes" python3 - "$bin_vp" "$F7" "$GV" "$work/ev7-stream" <<'PY'
 import hashlib, json, subprocess, sys
 bp, fx, gv, out = sys.argv[1:5]
 r = subprocess.run(["python3", bp, "evidence", "--out", out, "--provenance", fx + "/prov.json", "--govulncheck", gv, "--date", "1790000000"], capture_output=True, text=True)
@@ -432,7 +434,7 @@ for f in bin/vendor-provenance.py; do
   t AC11 "$f has a shebang and mode 100755 in git" bash -c "[ -e '$f' ] && head -1 '$f' | grep -q '^#!' && git ls-files -s '$f' | grep -q '^100755'"
   t AC11 "$f assigns none of PATH IFS BASH_ENV ENV LD_* PYTHON*" bash -c "[ -e '$f' ] && ! grep -Eq '(^|[^A-Za-z0-9_])(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)[+]?=' '$f'"
   t AC11 "$f runs no python3 -c and no here-document interpreter" bash -c "[ -e '$f' ] && ! grep -Eq 'python3? +-c|python3? +-( |$)|<<' '$f'"
-  t AC11 "$f builds no command word by substitution" bash -c "[ -e '$f' ] && ! grep -Eq '^[[:space:]]*(\\\$\\(|\\\`)' '$f'"
+  t AC11 "$f builds no command word by substitution" bash -c "[ -e '$f' ] && ! grep -Eq '^[[:space:]]*\\\$\\(' '$f' && ! grep -q '^[[:space:]]*[\`]' '$f'"
 done
 rc AC11 "vendor-provenance.py exits 2 outside the repository root (valid absolute inputs, so only the directory can refuse)" 2 \
    bash -c "cd '$work' && python3 '$bin_vp' check --vendor-dir '$F7/vendor' --go-sum '$F7/go.sum' --provenance '$F7/prov.json'"
