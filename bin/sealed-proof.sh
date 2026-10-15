@@ -90,9 +90,15 @@ fi
 if ! "$SUDO" "$BASHBIN" -c "$probe" >/dev/null 2>&1; then
   die "control failed: the probe works as the user but not under plain 'sudo' (no namespace), so a failure inside 'sudo unshare -n' would prove nothing (sudo)"
 fi
-if "$SUDO" "$UNSHARE" -n "$BASHBIN" -c "$probe" >/dev/null 2>&1; then
+# the namespace itself must work: a failing probe inside proves nothing if `unshare -n` could not run a command at all
+if ! "$SUDO" "$UNSHARE" -n "$BASHBIN" -c : >/dev/null 2>&1; then
+  die "control inconclusive: 'sudo unshare -n' could not run a command at all, so a probe failing inside proves nothing (unshare)"
+fi
+inside_rc=0; "$SUDO" "$UNSHARE" -n "$BASHBIN" -c "$probe" >/dev/null 2>&1 || inside_rc=$?
+if [ "$inside_rc" = 0 ]; then
   die "the probe reached outside from inside 'sudo unshare -n': the network cut leaks (escaped)"
 fi
+case $inside_rc in 126|127) die "control inconclusive: the probe could not be run inside the namespace (exit $inside_rc); a probe that cannot start proves nothing (probe)";; esac
 
 cp -RP "$src" "$tmp/src-copy"; inside_tmp "$tmp/src-copy"   # the throwaway copies and their guards come FIRST, before any driver runs
 cp -RP "$archive" "$tmp/arch-nopkg"; inside_tmp "$tmp/arch-nopkg"
@@ -133,6 +139,24 @@ fi
 # the builder's OWN refusal: the last line that starts with the builder's name must say vendor is missing
 vendor_reason=$(grep -E '^build-apk\.sh: ' "$tmp/neg1.log" | tail -n 1 || true)
 case $vendor_reason in *"$tmp/src-copy/vendor is missing"*) ;; *) tail -3 "$tmp/neg1.log" >&2; die "the build failed with vendor/ deleted, but its own last message is not the 'vendor is missing' refusal (got: ${vendor_reason:-none}); an unrelated failure proves nothing about rule 41 (vendor)";; esac
+# rule 41, build level: one package the build declares (a line of --melange-lock) is deleted from a copy of the repository the build was given
+# (--repo): the real build must fail and say which package it could not select
+brepo= block= barch=
+for ((i = 0; i + 1 < ${#bwords[@]}; i++)); do
+  case ${bwords[$i]} in --repo) brepo=${bwords[$((i + 1))]};; --melange-lock) block=${bwords[$((i + 1))]};; --arch) barch=${bwords[$((i + 1))]};; esac
+done
+[ -n "$brepo" ] && [ -n "$block" ] && [ -n "$barch" ] || die "--build-args must give --repo, --melange-lock and --arch: the proof removes a declared package from the build repository (rule 41)" 2
+bpin=$(grep -E '^[A-Za-z0-9][A-Za-z0-9._+-]*=[A-Za-z0-9][A-Za-z0-9._+~-]*$' "$block" | LC_ALL=C sort | head -n 1) || true
+[ -n "$bpin" ] || die "the melange lock $block has no package=version line to remove from the build repository" 2
+bvictim=$barch/${bpin%%=*}-${bpin#*=}.apk
+[ -f "$brepo/$bvictim" ] && [ ! -L "$brepo/$bvictim" ] || die "the build's first declared package $bvictim is not a regular file in the build repository $brepo"
+cp -RP "$brepo" "$tmp/repo-nopkg"; inside_tmp "$tmp/repo-nopkg"; inside_tmp "$(dirname "$tmp/repo-nopkg/$bvictim")"; rm -f "$tmp/repo-nopkg/$bvictim"
+bwords_nopkg=("${bwords[@]}"); for ((i = 0; i + 1 < ${#bwords_nopkg[@]}; i++)); do [ "${bwords_nopkg[$i]}" = --repo ] && bwords_nopkg[$((i + 1))]=$tmp/repo-nopkg; done
+if "$BASHBIN" bin/build-apk.sh "${bwords_nopkg[@]}" --source-dir "$src" --out "$tmp/neg-build2" >"$tmp/neg3.log" 2>&1; then
+  die "the build still succeeded with the declared package $bvictim deleted from its repository: the build is not sealed to its declared inputs (package)"
+fi
+build_package_reason=$(grep -F -- "${bpin%%=*}" "$tmp/neg3.log" | tail -n 1 || true)
+[ -n "$build_package_reason" ] || { tail -3 "$tmp/neg3.log" >&2; die "the build failed with $bvictim deleted, but nothing it printed names ${bpin%%=*} (an unrelated failure proves nothing about rule 41)"; }
 rm -f "$tmp/arch-nopkg/$victim"
 if "$BASHBIN" bin/assemble-image.sh "${awords[@]}" --archive "$tmp/arch-nopkg" --out "$tmp/neg-image" >"$tmp/neg2.log" 2>&1; then
   die "the image assembly still succeeded with an archived package deleted: not sealed to the archive (package)"
@@ -141,7 +165,7 @@ package_reason=$(grep -E '^(assemble-image|apko-lock)\.sh: ' "$tmp/neg2.log" | g
 [ -n "$package_reason" ] || { tail -3 "$tmp/neg2.log" >&2; die "the image assembly failed with a package deleted, but its message does not name $(basename "$victim") (reason: an unrelated failure proves nothing about rule 41; package)"; }
 
 # ---- rule 42: the record ----
-"$PY3" -I -B - "$out/sealed-record.json" "$tmp/digests.txt" bin/build-apk.sh bin/assemble-image.sh build/locks/archive-index.sha256 "$vendor_reason" "$package_reason" <<'PY'
+"$PY3" -I -B - "$out/sealed-record.json" "$tmp/digests.txt" bin/build-apk.sh bin/assemble-image.sh build/locks/archive-index.sha256 "$vendor_reason" "$package_reason" "$build_package_reason" <<'PY'
 import hashlib, json, os, sys
 digests = dict(l.split(" ", 1) for l in open(sys.argv[2]).read().splitlines())
 bs, as_, idx = sys.argv[3:6]
@@ -153,7 +177,8 @@ json.dump({"cut": "sudo unshare -n (network namespace without a route)",
            "build_script": bs, "build_script_sha256": hashlib.sha256(open(bs, "rb").read()).hexdigest(),
            "assemble_script": as_, "assemble_script_sha256": hashlib.sha256(open(as_, "rb").read()).hexdigest(),
            "negatives": {"vendor-deleted": {"result": "failed-as-required", "reason": sys.argv[6]},
-                         "package-deleted": {"result": "failed-as-required", "reason": sys.argv[7]}}},
+                         "package-deleted": {"result": "failed-as-required", "reason": sys.argv[7]},
+                         "build-package-deleted": {"result": "failed-as-required", "reason": sys.argv[8]}}},
           open(sys.argv[1], "w"), indent=1, sort_keys=True)
 open(sys.argv[1], "a").write("\n")
 PY

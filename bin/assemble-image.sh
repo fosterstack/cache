@@ -41,6 +41,7 @@ set -euo pipefail
 PY3=/usr/bin/python3                 # TEST-SUBST
 SUDO=/usr/bin/sudo                   # TEST-SUBST
 UNSHARE=/usr/bin/unshare             # TEST-SUBST
+BASHBIN=/bin/bash                    # TEST-SUBST
 APKO=/usr/local/bin/apko             # TEST-SUBST (the chain installs it there)
 ENVBIN=/usr/bin/env                  # TEST-SUBST
 WORKDIR=/work                        # TEST-SUBST (the fixed path the config and the locks name, rule 31)
@@ -74,6 +75,8 @@ esac
 for pair in "--config:$config" "--base-lock:$baselock"; do
   [ "$(printf '%s' "${pair#*:}" | LC_ALL=C tr -d '\040-\176'; printf x)" = x ] || die "${pair%%:*} holds a control character or a byte outside printable ASCII (a newline, a C1 control or any byte >= 0x80); refusing, the path arguments are plain ASCII text"
 done
+# the version grammar first, with the shell alone: a bad --version is refused before any tool, python included
+[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$ || $version = 0.0.0-rc.1 ]] || die "--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 (numbers without leading zeros; not '$version')"
 for pair in "--archive:$archive" "--melange-repo:$melrepo" "--keyring-dir:$keydir" "--out:$out" "--render-dir:$render"; do
   [ "$(printf '%s' "${pair#*:}" | LC_ALL=C tr -d '\040-\176'; printf x)" = x ] || die "${pair%%:*} holds a control character or a byte outside printable ASCII (a newline, a C1 control or any byte >= 0x80); refusing, the path arguments are plain ASCII text"
   [ "${pair%%:*}" = --render-dir ] && [ -z "${pair#*:}" ] && continue   # no render directory given: a private temporary one is used
@@ -110,7 +113,7 @@ done
 keyrec=build/locks/archive-keys.sha256
 [ -f "$keyrec" ] || die "the key record $keyrec is missing: cannot tell which keys the keyring directory must hold"
 "$PY3" -I -B bin/oci-digest.py check-keys "$keyrec" "$keydir" || exit 2
-bash bin/apko-lock.sh verify-archive --lock "$baselock" --archive "$archive" || die "the archive does not satisfy the base lock $baselock (see above)"
+"$BASHBIN" bin/apko-lock.sh verify-archive --lock "$baselock" --archive "$archive" || die "the archive does not satisfy the base lock $baselock (see above)"
 # the archive's package index must be the one the repository recorded (build/locks/archive-index.sha256: one "<arch> sha256:<hex>" line
 # per architecture, written by the refresh job), so an old commit never silently resolves against a newer index (rules 31, 47)
 idxrec=build/locks/archive-index.sha256
@@ -181,7 +184,7 @@ sealed() {
   local errf=$tmp/apko.err rc
   set +e
   # the working directory is the render directory (apko records the config path as typed, in the lock and in the image: a random temp path would make two builds differ)
-  ( cd "$rdir" && "$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" "$@" ) 2>"$errf"
+  ( cd "$rdir" && "$SUDO" "$ENVBIN" "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" "$UNSHARE" -n "$APKO" "$@" ) >"$errf" 2>&1
   rc=$?
   set -e
   cat "$errf" >&2   # the file is complete when the command has exited; no race with a process substitution
@@ -201,9 +204,9 @@ full=$tmp/$variant.full.lock.json
 sealed lock "$(basename "$rendered")" --cache-dir "$tmp/apko-cache" --output "$full"
 
 # ---- 4. the full lock must be the base lock plus our apk ----
-bash bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg" || die "the full lock's package entries differ from the base lock (see above); not building" 2
-bash bin/apko-lock.sh arch-check "$full" || die "the full lock resolves different versions per architecture (see above); not building" 2
-bash bin/apko-lock.sh verify-archive --lock "$full" --archive "$archive" --melange-repo "$melrepo" || die "the full lock does not verify against the archive and the melange repository (see above)" 2
+"$BASHBIN" bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg" || die "the full lock's package entries differ from the base lock (see above); not building" 2
+"$BASHBIN" bin/apko-lock.sh arch-check "$full" || die "the full lock resolves different versions per architecture (see above); not building" 2
+"$BASHBIN" bin/apko-lock.sh verify-archive --lock "$full" --archive "$archive" --melange-repo "$melrepo" || die "the full lock does not verify against the archive and the melange repository (see above)" 2
 cp "$full" "$out/$variant.full.lock.json"
 
 # ---- 5. one offline build for both architectures ----

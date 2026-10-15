@@ -18,6 +18,8 @@
 #       relative to DIR, byte-sorted) of every file in the archive (packages, indexes, the Wolfi key, the Go tarballs).
 #       exit 0 | 1 a package of L is not in the archive (names it) or the archive is unreadable | 2 bad input
 set -euo pipefail
+
+PY3=/usr/bin/python3                 # TEST-SUBST
 # the checks themselves live in bin/oci-digest.py (one committed helper, so this entry names only a literal path); run from the repository root
 [ -f bin/oci-digest.py ] || { echo "apko-lock.sh: run from the repository root (bin/oci-digest.py not found)" >&2; exit 2; }
-python3 bin/oci-digest.py lock "$@"
+"$PY3" -I -B bin/oci-digest.py lock "$@"

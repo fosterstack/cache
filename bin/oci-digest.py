@@ -383,6 +383,10 @@ def read_digests(path):
         fail("cannot read %s: %s" % (path, e))
     if "index.json" not in members:
         fail("%s has no index.json" % path)
+    for name in sorted(members):   # a blob nothing refers to is still a blob: every one must hash to its name (the unpack path checks the same)
+        m = re.fullmatch(r"blobs/sha256/([0-9a-f]{64})", name) or BLOB_NAME.fullmatch(name)
+        if m and hashlib.sha256(members[name]).hexdigest() != m.group(1):
+            fail("%s: %s does not hash to its name" % (path, name))
     if "oci-layout" in members:
         try:
             lay = json.loads(members["oci-layout"])
@@ -430,6 +434,12 @@ def load(path):
             ok(all(isinstance(e[p]["checksum"], str) for p in ("control", "data")))
         except (KeyError, TypeError, ValueError):
             die("malformed lock entry %d in %s (%s): name, version, architecture and the control and data checksums are required" % (i, path, e.get("name", "?") if isinstance(e, dict) else "?"), 2)
+    seen = {}
+    for e in pk:   # a set comparison would silently merge a repeated entry: a lock names each (package, version, architecture) once
+        k = (e["name"], e["version"], e["architecture"])
+        if k in seen:
+            die("the lock file %s lists %s %s (%s) more than once" % (path, k[0], k[1], k[2]), 2)
+        seen[k] = True
     return d, pk
 
 
@@ -553,7 +563,12 @@ def verify_archive(argv):
     if "--lock" not in o or "--archive" not in o:
         die("usage: verify-archive --lock L --archive DIR [--melange-repo DIR]", 2)
     _, pk = load(o["--lock"])
+    if not pk:
+        die("the lock file %s lists no package; an empty lock proves nothing about the archive" % o["--lock"], 2)
     repos = [o["--archive"]] + ([o["--melange-repo"]] if "--melange-repo" in o else [])
+    for r in repos:
+        if not os.path.isdir(r):
+            die("%s is not a directory (the archive and the melange repository must exist)" % r, 2)
     used = set()
     for e in sorted(pk, key=lambda e: (e["architecture"], e["name"], e["version"])):
         rel = "%s/%s-%s.apk" % (e["architecture"], e["name"], e["version"])

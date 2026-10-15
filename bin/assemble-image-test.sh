@@ -32,7 +32,7 @@ air="$work/air"; rm -rf "$air"; mkdir -p "$air/bin"
 for f in "$root"/bin/*; do [ "$(basename "$f")" = assemble-image.sh ] || ln -s "$f" "$air/bin/$(basename "$f")"; done
 python3 "$work/mkcopy.py" "$AI_PROD" "$air/bin/assemble-image.sh" \
   'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' 'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' \
-  'APKO=${TEST_APKO:-'"$stubs"'/apko}' 'ENVBIN='"$(command -v env)" 'WORKDIR=${TEST_WORKDIR:-/work}' 'RENDER_DIR=${TEST_RENDER_DIR:-}' \
+  'APKO=${TEST_APKO:-'"$stubs"'/apko}' 'BASHBIN='"$(command -v bash)" 'ENVBIN='"$(command -v env)" 'WORKDIR=${TEST_WORKDIR:-/work}' 'RENDER_DIR=${TEST_RENDER_DIR:-}' \
   || { echo "FIXTURE SETUP FAILED: assemble-image copy"; exit 1; }
 chmod +x "$air/bin/assemble-image.sh"
 cat >"$work/ai.sh" <<WRAP
@@ -62,7 +62,7 @@ case "\$variant" in fips) cf=apko-fips.yaml; lk=apko-fips.base.lock.json;; *) cf
 [ \$have_bl = 1 ] && put "\$bl" "\$air/build/locks/\$lk"
 [ \$have_ir = 1 ] && put "\$ir" "\$air/build/locks/archive-index.sha256"
 [ \$have_kr = 1 ] && put "\$kr" "\$air/build/locks/archive-keys.sha256"
-cd "\$air" && exec bash bin/assemble-image.sh "\${args[@]}"
+cd "\$air" && exec "$(command -v bash)" bin/assemble-image.sh "\${args[@]}"
 WRAP
 chmod +x "$work/ai.sh"; AI="$work/ai.sh"
 export ImageOS=ubuntu24 ImageVersion=20261004.327.1   # sealed-proof refuses to run without the runner image (rule 42); tests that need it unset say so
@@ -72,6 +72,9 @@ export ImageOS=ubuntu24 ImageVersion=20261004.327.1   # sealed-proof refuses to 
 # $LP_PROD and $SP_PROD are the production files (static checks read those).
 LP_PROD="$LP"; SP_PROD="$SP"
 rm -f "$air/bin/lock-proof.sh" "$air/bin/sealed-proof.sh"   # they are links to the production files: never write through them
+rm -f "$air/bin/apko-lock.sh"
+python3 "$work/mkcopy.py" "$root/bin/apko-lock.sh" "$air/bin/apko-lock.sh" 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' || { echo "FIXTURE SETUP FAILED: apko-lock copy"; exit 1; }
+chmod +x "$air/bin/apko-lock.sh"
 python3 "$work/mkcopy.py" "$LP_PROD" "$air/bin/lock-proof.sh" 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
   || { echo "FIXTURE SETUP FAILED: lock-proof copy"; exit 1; }
 python3 "$work/mkcopy.py" "$SP_PROD" "$air/bin/sealed-proof.sh" 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
@@ -103,11 +106,11 @@ def put(src, dst):
 def put_exe(src, name):
     p = proot + "/bin/" + name
     os.remove(p); shutil.copy2(src, p)
-def put_negative_only(src, name, marker):
+def put_negative_only(src, name, *markers):
     """the stand-in driver runs only in the proof's negative runs (their paths hold MARKER); every other call gets the real copy"""
     real = proot + "/bin/" + name + ".real"
     os.rename(proot + "/bin/" + name, real)
-    open(proot + "/bin/" + name, "w").write('#!/bin/bash\nhere=$(cd "$(dirname "$0")" && pwd)\ncase " $* " in *"%s"*) exec "%s" "$@";; esac\nexec bash "$here/%s.real" "$@"\n' % (marker, ab(src), name))
+    open(proot + "/bin/" + name, "w").write('#!/bin/bash\nhere=$(cd "$(dirname "$0")" && pwd)\ncase " $* " in %s) exec "%s" "$@";; esac\nexec bash "$here/%s.real" "$@"\n' % ("|".join('*"%s"*' % m for m in markers), ab(src), name))
     os.chmod(proot + "/bin/" + name, 0o755)
 def fixture_opts(words, variant):
     """pull the options the assembler no longer has out of WORDS and put them where the fixture root keeps them"""
@@ -143,7 +146,7 @@ else:
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--build-script": put_negative_only(args[i + 1], "build-apk.sh", "/src-copy"); i += 2
+        if a == "--build-script": put_negative_only(args[i + 1], "build-apk.sh", "/src-copy", "/repo-nopkg"); i += 2
         elif a == "--assemble-script": put_negative_only(args[i + 1], "assemble-image.sh", "/arch-nopkg"); i += 2
         elif a == "--build-args":
             w = shlex.split(args[i + 1]); j = 0; keep = []
@@ -232,6 +235,47 @@ t "rule 37" "committed base lock (fips): the same" python3 "$work/lib.py" locksh
 ai_args=(--variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --apko-config "$fx/apko.yaml" --base-lock "$BL" --index-record "$idxrec" --key-record "$keyrec")
 aif_args=(--variant fips --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo-fips" --keyring-dir "$fx/keyring" --apko-config "$fx/apko-fips.yaml" --base-lock "$fx/base-fips.lock.json" --index-record "$idxrec" --key-record "$keyrec")
 aie=(env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json")
+# ===== REQ-IMAGE-001-AC12 (rule 1), run-time proof (REQ-BUILDAPK-001-AC9's method): the image assembly runs with a search path that holds only the
+# coreutils it uses and a uname that says Linux; the privileged tools are the fixed-path stubs. A tool called by its bare name is not found. ============
+IMG_RP_CORE="awk basename cat cp cut dirname find grep head ln ls mkdir mktemp mv rm rmdir sed sort tail tr wc cmp readlink"
+rpd="$work/imgrp"; rps="$work/imgrp-stub"; rpw="$work/imgrp-wrap"; mkdir -p "$rpw"
+restricted_path_dir "$rpd" $IMG_RP_CORE && ln -s "$stubs/uname" "$rpd/uname" || { echo "FIXTURE SETUP FAILED: image restricted path"; exit 1; }
+restricted_path_dir "$rps" $IMG_RP_CORE env python3 openssl chmod date || { echo "FIXTURE SETUP FAILED: image stub path"; exit 1; }
+for w in sudo unshare apko; do restricted_stub_copy "$stubs/$w" "$rpw/$w" "$rps" || { echo "FIXTURE SETUP FAILED: image stub copy $w"; exit 1; }; done
+t "AC12" "the restricted directory holds the coreutils and uname and none of python3, sudo, unshare, apko, sha256sum, openssl, git, bash, env" bash -c "
+  for n in python3 sudo unshare apko sha256sum shasum openssl git bash env; do [ ! -e '$rpd'/\$n ] || exit 1; done
+  for n in $IMG_RP_CORE uname; do [ -x '$rpd'/\$n ] || exit 1; done"
+# rp_ai <air> <out> [args...]: the wrapper of that fixture root, started with the restricted search path
+rp_wrapper() { sed "s#^air=\"[^\"]*\"#air=\"$1\"#" "$work/ai.sh" >"$2"; chmod +x "$2"; }
+rp_ai() { local w=$1 out=$2; shift 2; : >"$CALLS"
+  env -i PATH="$rpd" HOME="$work" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" \
+    TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_APKO="$rpw/apko" "$w" "${ai_args[@]}" --out "$out" "$@" >"$work/rp.log" 2>&1 </dev/null; echo $? >"$work/rp.rc"; }
+rp_out=$(mo); rp_ai "$work/ai.sh" "$rp_out"
+t "AC12" "assemble-image.sh: the control run with PATH holding only the coreutils completes (exit 0, a digest is written)" bash -c "[ \"\$(cat '$work/rp.rc')\" = 0 ] && [ -s '$rp_out/production.digest' ]"
+run_s "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"; ref_out=$(grep -Eo 'sha256:[0-9a-f]{64}' "$work/log" | head -1)
+t "AC12" "assemble-image.sh: it completes exactly as the run with the ordinary search path does (the same image digest)" bash -c "[ -n '$ref_out' ] && [ \"\$(cat '$rp_out/production.digest')\" = '$ref_out' ]"
+# call-site mutants: every call of one fixed-path variable written as the bare tool name; the same mutant completes when the tool is on the path
+for pair in PY3:python3 SUDO:sudo UNSHARE:unshare; do
+  v=${pair%%:*}; tool=${pair##*:}; am="$work/air-mut-$v"; rm -rf "$am"; cp -RP "$air" "$am"
+  python3 - "$am/bin/assemble-image.sh" "$v" "$tool" <<'PYM'
+import sys
+p, v, tool = sys.argv[1:4]
+s = open(p).read()
+n = s.count('"$%s"' % v)
+assert n > 0, v
+open(p, "w").write(s.replace('"$%s"' % v, tool))
+PYM
+  rp_wrapper "$am" "$work/ai-mut-$v.sh"
+  mo_=$(mo); rp_ai "$work/ai-mut-$v.sh" "$mo_"
+  t "AC12" "assemble-image.sh: with $tool called by its bare name the restricted run fails (exit non-zero, not completed, '$tool' not found)" bash -c "[ \"\$(cat '$work/rp.rc')\" != 0 ] && [ ! -s '$mo_/production.digest' ] && grep -Eqi '$tool.*(not found|No such file)|(not found|No such file).*$tool' '$work/rp.log'"
+  rm -rf "$work/rp-open-$v"; restricted_path_dir "$work/rp-open-$v" $IMG_RP_CORE && ln -s "$stubs/uname" "$work/rp-open-$v/uname" \
+    && if [ "$tool" = python3 ]; then ln -s "$(command -v python3)" "$work/rp-open-$v/python3"; else ln -s "$rpw/$tool" "$work/rp-open-$v/$tool"; fi
+  mo_=$(mo); : >"$CALLS"
+  env -i PATH="$work/rp-open-$v" HOME="$work" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" \
+    TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_APKO="$rpw/apko" "$work/ai-mut-$v.sh" "${ai_args[@]}" --out "$mo_" >"$work/rp.log" 2>&1 </dev/null; echo $? >"$work/rp.rc"
+  t "AC12" "assemble-image.sh: with the tool on the search path the same $tool mutant completes (so the restricted path is what makes it fail)" bash -c "[ \"\$(cat '$work/rp.rc')\" = 0 ] && [ -s '$mo_/production.digest' ]"
+done
+[ -z "${P5_RP_ONLY:-}" ] || { echo "image-rp-only: $pass passed, $failn failed"; [ "$failn" -eq 0 ]; exit; }
 t "rule 38b" "assemble-image.sh exists and is executable" test -x "$AI"
 sd "rule 33" "[production] runs apko build" '^apko build ' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
 sd "rule 33" "[fips] runs apko build" '^apko build ' "${aie[@]}" "$AI" "${aif_args[@]}" --out "$(mo)"
@@ -354,7 +398,7 @@ sf "rule 31" "assemble-image.sh refuses an image layout with no index.json" 'ind
 
 # ===== rules 38a 38b 39 40 41 42: the sealed build proofs =================================================================
 sp_common=(--source-dir "$src" --archive "$fx/archive" --build-args "--variant standard --arch x86_64 --version 0.3.0 --repo $fx/envrepo --keyring $kr --go-archive $fx/archive/go --melange-lock $fx/melange.lock --recipe $fx/melange.yaml" --assemble-args "--variant production --version 0.3.0 --melange-repo $fx/melrepo --keyring-dir $fx/keyring --apko-config $fx/apko.yaml --base-lock $BL --index-record $idxrec --key-record $keyrec")
-spe=(env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_LOCK="$FL" ImageOS=ubuntu24 ImageVersion=20261004.327.1)
+spe=(env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_LOCK="$FL" STUB_REQUIRE_REPO=1 ImageOS=ubuntu24 ImageVersion=20261004.327.1)
 sp1=$(mo); run_s "${spe[@]}" "$SP" --out "$sp1" --probe 'test -z "${FAKE_SEALED:-}"' --digests-out "$work/digests.txt" "${sp_common[@]}"
 t "rule 40" "sealed-proof: a probe that cannot get out passes (control reaches outside, blocked inside)" test "$(rc)" = 0
 t "rule 42" "sealed-proof: the record says how the network was cut (sudo unshare -n)" bash -c "grep -Eq 'unshare -n' '$sp1/sealed-record.json'"
@@ -1131,7 +1175,7 @@ t "chain" "assemble-image.sh has a shebang and mode 100755 in git" bash -c "head
 nogrep "chain" "assemble-image.sh never assigns PATH, IFS, BASH_ENV or ENV (the judge never waives an assignment)" '(^|[^A-Za-z_$])(export +)?(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)=' "$AI"
 nogrep "chain" "assemble-image.sh has no python3 -c and no python3 - heredoc (helper code lives in a committed, listed file)" 'python3? +-c |python3? +-( |$)|<<.?PY' "$AI"
 nogrep "chain" "assemble-image.sh calls no interpreter, script or tool through a variable path: no \$here/ or \$root/ command words, no \"\$lk\", no \$(...) command word" '\$here/|\$\{here\}|\$root/|"\$lk"|^ *\$\(|command -v' "$AI_PROD"
-t "chain" "assemble-image.sh names its helpers by literal repo-root-relative paths (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py)" bash -c "grep -Fq 'bash bin/apko-lock.sh' '$AI_PROD' && grep -Fq -- ' -I -B bin/oci-digest.py' '$AI_PROD' && grep -Fq -- ' -I -B bin/net-probe.py' '$AI_PROD'"
+t "chain" "assemble-image.sh names its helpers by literal repo-root-relative paths (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py)" bash -c "grep -Eq 'BASHBIN. bin/apko-lock[.]sh' '$AI_PROD' && grep -Fq -- ' -I -B bin/oci-digest.py' '$AI_PROD' && grep -Fq -- ' -I -B bin/net-probe.py' '$AI_PROD'"
 # run from anywhere but the repository root: exit 2 naming the root, before any tool
 mkdir -p "$work/elsewhere"; : >"$CALLS"
 ( cd "$work/elsewhere" && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" bash "$air/bin/assemble-image.sh" "${ai_args[@]}" --out "$work/elsewhere/o" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
@@ -1262,6 +1306,83 @@ for opt in --apko-config --base-lock --render-dir --index-record --key-record; d
     else bad AC10 "assemble-image.sh $opt${mode:+ (test mode set)} is not refused as an unknown option (exit $rc: $(tail -1 "$log" | cut -c1-160))"; fi
   done
 done
+# ===== review round 1 of PR 352: the findings of both seats, one test each (tests first, then the fix; both are in this commit series) =================
+# B2: the TEST-SUBST lines of a production script are plain assignments (a tool path, /work, a render directory): nothing else can hide on a substituted
+# line, and each tested copy differs from the production file on those lines only
+t "AC12" "every TEST-SUBST line of the five scripts is one plain assignment (NAME=value, no ; & | ( ) \` or \$( ) and each copy differs from its production file only on those lines" python3 - "$root" "$air" <<'P'
+import re, sys
+root, air = sys.argv[1:3]
+bad = []
+for name in ("assemble-image.sh", "lock-proof.sh", "sealed-proof.sh", "apko-lock.sh", "build-apk.sh"):
+    prod = open("%s/bin/%s" % (root, name)).read().split("\n")
+    copy = open("%s/bin/%s" % (air, name)).read().split("\n")
+    if len(prod) != len(copy):
+        bad.append("%s: %d lines in production, %d in the copy" % (name, len(prod), len(copy))); continue
+    for i, (a, b) in enumerate(zip(prod, copy), 1):
+        marked = re.search(r"#\s*TEST-SUBST", a) is not None
+        if marked:
+            m = re.match(r"^[A-Z][A-Z0-9_]*=([^;&|()`$]|\$PWD|\$\{?[A-Z]+)*\s+#\s*TEST-SUBST", a)
+            if not m:
+                bad.append("%s:%d: %r is not a plain assignment" % (name, i, a[:80]))
+        elif a != b:
+            bad.append("%s:%d differs outside a TEST-SUBST line" % (name, i))
+print("\n".join(bad))
+sys.exit(1 if bad else 0)
+P
+# B5/B6: a blob nothing refers to must still hash to its name; a repeated lock entry is refused, not merged
+python3 - "$oc/good.tar" "$work/orphan.tar" <<'P'
+import io, sys, tarfile
+src, dst = sys.argv[1:3]
+with tarfile.open(src) as s, tarfile.open(dst, "w") as d:
+    for m in s.getmembers():
+        d.addfile(m, s.extractfile(m) if m.isfile() else None)
+    ti = tarfile.TarInfo("blobs/sha256/" + "0" * 64); ti.size = 1; ti.mode = 0o644
+    d.addfile(ti, io.BytesIO(b"x"))
+P
+python3 "$OD" "$oc/good.tar" >"$work/dg-good.out" 2>&1; dg_good=$?
+python3 "$OD" "$work/orphan.tar" >"$work/dg-orphan.out" 2>&1; dg_orphan=$?
+t "AC1" "oci-digest.py TAR (digest only): the good tar succeeds and a tar with one corrupt UNREFERENCED blob is refused, naming the blob (the unpack path already did)" bash -c "test $dg_good = 0 && test $dg_orphan != 0 && grep -q 'does not hash to its name' '$work/dg-orphan.out'"
+python3 - "$BL" "$work/dup.lock.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1])); d["contents"]["packages"].append(dict(d["contents"]["packages"][0]))
+json.dump(d, open(sys.argv[2], "w"))
+P
+( cd "$air" && bash bin/apko-lock.sh arch-check "$work/dup.lock.json" >"$work/dup.out" 2>&1; echo $? >"$work/dup.rc" )
+t "AC4" "apko-lock.sh arch-check refuses a lock that lists one package twice (exit 2, naming 'more than once'): a set comparison would have merged it" bash -c "test \"\$(cat '$work/dup.rc')\" = 2 && grep -q 'more than once' '$work/dup.out'"
+( cd "$air" && bash bin/apko-lock.sh verify-archive --lock "$work/dup.lock.json" --archive "$work/no-such-archive" >"$work/dup2.out" 2>&1; echo $? >"$work/dup2.rc" )
+python3 - "$BL" "$work/empty.lock.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1])); d["contents"]["packages"] = []
+json.dump(d, open(sys.argv[2], "w"))
+P
+( cd "$air" && bash bin/apko-lock.sh verify-archive --lock "$work/empty.lock.json" --archive "$work/no-such-archive" >"$work/empty.out" 2>&1; echo $? >"$work/empty.rc" )
+t "AC5" "apko-lock.sh verify-archive refuses an EMPTY lock (it would verify nothing) and a lock against an archive directory that is not there" bash -c "test \"\$(cat '$work/empty.rc')\" != 0 && grep -qi 'no package\|empty' '$work/empty.out'"
+# B8: a relative --archive, --out, --melange-repo and --keyring-dir mean the same thing for lock-proof as for the assembler (the proof changes directory)
+rm -rf "$air/build"; cp -RP "$root/build" "$air/build"; cp "$fx/apko.yaml" "$air/build/apko.yaml"; cp "$BL" "$air/build/locks/apko.base.lock.json"
+cp "$idxrec" "$air/build/locks/archive-index.sha256"; cp "$keyrec" "$air/build/locks/archive-keys.sha256"
+rm -rf "$air/rel"; mkdir -p "$air/rel"; cp -R "$fx/archive" "$air/rel/archive"; cp -R "$fx/melrepo" "$air/rel/melrepo"; cp -R "$fx/keyring" "$air/rel/keyring"
+lpr_out="$air/rel/out"
+run_s "${aie[@]}" bash -c 'cd "$0" && exec "$@"' "$air" "$air/bin/lock-proof.sh" --out rel/out --archive rel/archive -- --variant production --version 0.3.0 --melange-repo rel/melrepo --keyring-dir rel/keyring
+t "AC12" "lock-proof.sh with RELATIVE --archive, --out, --melange-repo and --keyring-dir: the positive control and the four cases pass and the record is written where --out says" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -s '$lpr_out/lock-proof.json'"
+rm -rf "$air/build" "$air/rel"
+# B4: an inconclusive control is not a proof: the probe that cannot start inside the namespace, and a namespace that cannot run a command at all
+sf "rule 40" "sealed-proof: a probe that exits 127 inside the namespace is inconclusive, not 'blocked' (the proof fails naming the probe)" 'inconclusive' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}" || exit 127' "${sp_common[@]}"
+sf "rule 40" "sealed-proof: when 'sudo unshare -n' cannot run a command at all the control is inconclusive (the proof fails naming unshare)" 'inconclusive' env TEST_UNSHARE=unshare-is-not-installed "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+# B3: the build-level package negative (rule 41): a declared package deleted from the build's own repository must stop the real build, and the record names it
+spo2=$(mo); run_s "${spe[@]}" STUB_REQUIRE_REPO=1 "$SP" --out "$spo2" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+t "rule 41" "sealed-proof: a declared package deleted from the build repository makes the real build fail (the melange stub selects its pinned packages), and the record names the build negative" bash -c "test \"\$(cat '$work/rc')\" = 0 && python3 - '$spo2/sealed-record.json' <<'P'
+import json, sys
+n = json.load(open(sys.argv[1]))['negatives']['build-package-deleted']
+assert n['result'] == 'failed-as-required' and n['reason'], n
+P"
+cat >"$work/vendor-only.sh" <<'S'
+#!/bin/bash
+d=; while [ $# -gt 0 ]; do [ "$1" = --source-dir ] && d=$2; shift; done
+case "$d" in */src-copy) echo "build-apk.sh: $d/vendor is missing" >&2; exit 2;; esac
+exit 0
+S
+chmod +x "$work/vendor-only.sh"
+sf "rule 41" "sealed-proof: if the build still succeeds with a declared package deleted from its repository the proof fails naming the package" 'package' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/vendor-only.sh" "${sp_common[@]}"
 # ---- end verbatim sections ----
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

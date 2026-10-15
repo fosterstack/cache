@@ -659,11 +659,12 @@ print(os.environ.get("STUB_NETTEXT") or ("dial tcp 192.0.2.1:443: connect: " + o
 P
 exit $?; fi
 [ -n "${STUB_FAIL:-}" ] && { echo "stub: compile error: undefined: foo" >&2; exit 1; }
-arch= out=./packages cache= src= recipe=
+arch= out=./packages cache= src= recipe= repoapp=
 while [ $# -gt 0 ]; do case $1 in
   --arch) arch=$2; shift 2;; --out-dir) out=$2; shift 2;; --cache-dir) cache=$2; shift 2;; --source-dir) src=$2; shift 2;;
   --signing-key) STUB_SIGNKEY=$2; shift 2;;
-  --runner|--keyring-append|--repository-append|--build-date|--workspace-dir|--apk-cache-dir|-k|-r|--env-file|--vars-file|--namespace) shift 2;;
+  --repository-append) repoapp=$2; shift 2;;
+  --runner|--keyring-append|--build-date|--workspace-dir|--apk-cache-dir|-k|-r|--env-file|--vars-file|--namespace) shift 2;;
   -*) shift;; *) recipe=$1; shift;; esac; done
 echo "ENV SDE=${SOURCE_DATE_EPOCH-unset}" >>"$CALLS"
 [ -n "${STUB_LOCKED_CACHE:-}" ] && [ -n "$cache" ] && { mkdir -p "$cache/x/y" && : >"$cache/x/y/f" && chmod 500 "$cache/x/y" "$cache/x"; }   # a tree the invoking user cannot remove (the cleanup fallback)
@@ -671,6 +672,11 @@ echo "ENV CACHE=$( [ -n "$cache" ] && ls "$cache" 2>/dev/null | tr '\n' ' ')" >>
 echo "ENV SECRETS=$(env | grep -Ec '(TOKEN|SECRET|PRIVATE|SIGNING_KEY)')" >>"$CALLS"
 echo "ENVNAMES=$(env | cut -d= -f1 | grep -Ev '^(STUB_|FAKE_|CALLS$|ImageOS$|ImageVersion$|PWD$|SHLVL$|_$|OLDPWD$)' | sort | tr '\n' ' ')" >>"$CALLS"
 [ -d "$src/vendor" ] || { echo "stub melange: go build: no vendor directory" >&2; exit 1; }
+if [ -n "${STUB_REQUIRE_REPO:-}" ] && [ -n "$repoapp" ]; then   # like melange: every pinned environment package must be selectable from the repository it was given
+  while IFS= read -r pin; do
+    [ -f "$repoapp/$arch/${pin%%=*}-${pin#*=}.apk" ] || { echo "ERROR: unable to select packages: ${pin%%=*} (no such package in $repoapp)" >&2; exit 1; }
+  done < <(sed -n 's/^ *- \([A-Za-z0-9._+-]*=[A-Za-z0-9._+~-]*\) *$/\1/p' "$recipe")
+fi
 STUB_SIGNKEY="${STUB_SIGNKEY:-}" STUB_SRC="$src" python3 "$STUB_LIB" stubbuild "$recipe" "$out" "$arch" "$cache"
 EOF
 cat >"$stubs/apko" <<'EOF'

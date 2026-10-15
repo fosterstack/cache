@@ -48,7 +48,13 @@ for x_ in "$a_" "$o_"; do q_=$x_; while [[ $q_ == ./* ]]; do q_=${q_#./}; done; 
 [ ! -L "$o_" ] || die "--out $out is a symlink; refusing (the results would be written through it)" 2
 [ ! -L "$a_" ] || die "--archive $archive is a symlink; refusing (the copies of the proof would be made through it)"
 [ -x "$here/assemble-image.sh" ] || die "assembly script not executable: $here/assemble-image.sh"
+# the assembler runs from a copy of the repository root: every path the caller gave is made absolute against the caller's directory first
+case $archive in /*) ;; *) archive=$PWD/$archive;; esac
+case $out in /*) ;; *) out=$PWD/$out;; esac
 pass=("$@")
+for ((i = 0; i + 1 < ${#pass[@]}; i++)); do   # the directories the assembler is given: absolute, as the working directory changes
+  case ${pass[$i]} in --melange-repo|--keyring-dir) case ${pass[$((i + 1))]} in /*) ;; *) pass[$((i + 1))]=$PWD/${pass[$((i + 1))]};; esac;; esac
+done
 for a in "${pass[@]}"; do case $a in --archive|--out|--render-dir|--apko-config|--base-lock|--index-record|--key-record) die "$a after --: this option is supplied by the proof; a forwarded value could be printed back by the assembler and mistaken for a reason" 2;; esac; done
 variant=
 for ((i = 0; i < ${#pass[@]}; i++)); do
