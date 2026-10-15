@@ -149,9 +149,12 @@ macOS 14 and later; on older macOS use `base64 -D`.)
 
 The same images, same digests, are mirrored at
 `docker.io/fosterstack/cache` for tooling that defaults to Docker Hub.
-GHCR is canonical. Everything on this page verifies identically against
-either registry, because verification is keyed to the digest, not the
-registry. One practical note: Docker Hub rate-limits anonymous pulls by
+GHCR is canonical. The image signatures are made in both registries and
+verify identically against either one, because verification is keyed to the
+digest, not the registry. The one exception is the release-manifest
+attestation: it is required on GHCR, but on Docker Hub it is attached on a
+best-effort basis (the release step warns and continues when Docker Hub
+refuses it), so verify the manifest attestation against GHCR. One practical note: Docker Hub rate-limits anonymous pulls by
 the **puller's** IP and login (not by anything we control) — if you hit
 a limit, authenticate with any free Docker account or pull from GHCR.
 
