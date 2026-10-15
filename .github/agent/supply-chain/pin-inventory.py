@@ -873,6 +873,8 @@ def _key_fetch_ok(files, path, before, flat, after):
             top.append(ln)
         else:
             return False                               # no assignment before the fetch
+        if any(re.search(r"(?:^|[;&|(\s])(?:source|\.)\s+\S", ln) for ln in before):
+            return False                               # a sourced file could rewrite the variable
         mentions = [ln for ln in before + after if re.search(r"(?<![\w$])" + name + r"(?![\w])", ln)]
         assigns = [ln for ln in mentions if re.search(r"^\s*(?:export\s+)?" + name + r"=", ln)]
         if len(assigns) != 1:
