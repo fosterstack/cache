@@ -2906,5 +2906,28 @@ case_ r6-debug-trap-bad bad "$(rb 'bash ci-lit.sh')" "printf 'shopt -s extdebug\
 case_ r6-exit-trap-stays-ok ok "$(rb 'bash ci-lit.sh')" "printf 'trap \x27true\x27 EXIT\nG=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
 case_ r6-bash-e-u-pipefail-stays-ok ok "$(rb 'bash -euo pipefail ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
 
+# --- review round 7 of PR 351 (both seats)
+case_ r7-set-ae-cluster-bad bad "$(rb 'set -ae
+          printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r7-set-aeu-cluster-bad bad "$(rb 'set -aeu
+          printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r7-wait-p-target-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/usr/bin/git\nsleep 0.1 &\nwait -n -p \"\$1\"\n\"\$G\" status\n' > ci-lit.sh"
+case_ r7-multiline-prompt-target-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/usr/bin/git\nread -r -p \"Choose a program:\n> \" \"\$1\" <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r7-step-shell-bash-a-bad bad "$(printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - shell: bash -a {0}\n        run: |\n          printf() { builtin printf -v "$2" %%s /usr/bin/docker; }\n          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r7-env-block-shellopts-bad bad "on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    env:
+      SHELLOPTS: allexport
+    steps:
+      - run: bash ci-lit.sh" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+case_ r7-variable-downloader-keeps-installed-program-rule-bad bad "$(rb 'C=/usr/bin/curl
+          "$C" -fsSL https://example.invalid/tool -o /tmp/tool
+          sudo install -m 0755 /tmp/tool /usr/local/bin/tool
+          bash ci-lit.sh')" "printf 'tool --version\n' > ci-lit.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
