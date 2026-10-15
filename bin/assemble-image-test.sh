@@ -1309,6 +1309,12 @@ lpr=$(mo); run_s "${aie[@]}" "$LP" --out "$lpr" --archive "$fx/archive" "${lp_ar
 t "chain" "lock-proof.sh runs from the repository root and its positive control passes" test "$(rc)" = 0
 spr=$(mo); run_s "${spe[@]}" "$SP" --out "$spr" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
 t "chain" "sealed-proof.sh runs from the repository root and passes" test "$(rc)" = 0
+# the script's own directory is read without dirname (a data-form case split, REQ-IMAGE-001-AC7 file-list scan): both spellings of its path name the same root
+air_real=$(cd "$air" && pwd -P)
+hr_slash=$(cd "$air" && env -i PATH="$PATH" bash ./bin/assemble-image.sh 2>&1 || true)
+hr_bare=$(cd "$air/bin" && env -i PATH="$PATH" bash assemble-image.sh 2>&1 || true)
+t "AC7" "assemble-image.sh invoked as ./bin/assemble-image.sh from the root finds the root (no refusal about the working directory)" bash -c '! printf %s "$1" | grep -q "runs from the repository root"' _ "$hr_slash"
+t "AC7" "assemble-image.sh invoked with no slash in its path (from bin/) takes its directory as . and names the real root, never /" bash -c 'printf %s "$1" | grep -qF "repository root ($2)" && ! printf %s "$1" | grep -qF "repository root (/)"' _ "$hr_bare" "$air_real"
 t "chain" "the test runs from the repository root (the harness changes into it, as the chain runs everything)" test "$(pwd -P)" = "$(cd "$root" && pwd -P)"
 
 # ===== optional: the release chain's own binder over both variants' output (set CHAIN_BINDER_DIR to a directory holding the chain's
