@@ -216,10 +216,20 @@ jobs:
           printf '%s' "$REGISTRY_TOKEN" | /usr/local/bin/crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
 
       - name: pull the archive by its recorded digest
+        if: ${{ hashFiles('build/archive.json') != '' }}
         run: |
           set -euo pipefail
-          [ -f build/archive.json ] || { echo "::error::build/archive.json is not committed: the archive has no recorded digest to pull" >&2; exit 2; }
           ./bin/archive-pull.sh --pointer build/archive.json --out "$RUNNER_TEMP/archive"
+          find "$RUNNER_TEMP/archive" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum > "$RUNNER_TEMP/archive.before"
+
+      # The one state with no archive: build/archive.json is absent on main. The live Wolfi key must be the one pinned in
+      # build/locks/archive-keys.sha256 (a difference, a missing or repeated line stops for a human: exit 3); the refresh step then
+      # builds the archive from the committed base locks. Any other state (a pointer that is unreadable or does not resolve) fails closed above.
+      - name: bootstrap the archive from the pinned Wolfi key
+        if: ${{ hashFiles('build/archive.json') == '' }}
+        run: |
+          set -euo pipefail
+          ./bin/refresh-inputs.sh bootstrap --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive"
           find "$RUNNER_TEMP/archive" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum > "$RUNNER_TEMP/archive.before"
 
       - name: mint the auditor App's token (exactly the auditor's scope)
@@ -232,16 +242,13 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: refresh the inputs and open the refresh pull request
+      - name: refresh the inputs (stage the pull request)
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          gh auth setup-git
-          git config user.name "$AUDITOR_APP_SLUG[bot]"
-          git config user.email "$AUDITOR_APP_SLUG[bot]@users.noreply.github.com"
-          ./bin/refresh-inputs.sh refresh --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive" --pr-author "$AUDITOR_APP_SLUG"
+          ./bin/refresh-inputs.sh refresh --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive" --pr-author "$AUDITOR_APP_SLUG" --plan-dir "$RUNNER_TEMP/plan"
 
       - name: check for a newer certified crypto module
         env:
@@ -249,9 +256,12 @@ jobs:
           AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          ./bin/refresh-inputs.sh fips-module --go-root "$(go env GOROOT)" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG"
+          ./bin/refresh-inputs.sh fips-module --go-root "$(go env GOROOT)" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG" --plan-dir "$RUNNER_TEMP/plan"
 
+      # Stored first (rule 6, last step), so the pull request that moves the build to the new versions can carry the new pointer (rule 7).
+      # Only when something changed; an archive that no pull request points to is harmless.
       - name: store the archive when something changed
+        id: store
         run: |
           set -euo pipefail
           after=$(find "$RUNNER_TEMP/archive" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum)
@@ -259,5 +269,26 @@ jobs:
             echo "the archive is unchanged: nothing stored"
           else
             digest=$(./bin/archive-push.sh --dir "$RUNNER_TEMP/archive")
+            echo "digest=${digest}" >> "$GITHUB_OUTPUT"
             echo "the archive changed and was stored at ${digest}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: open the pull requests
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          STORED_DIGEST: ${{ steps.store.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$RUNNER_TEMP/plan" ]; then
+            echo "nothing planned: no pull request"
+            exit 0
+          fi
+          gh auth setup-git
+          git config user.name "$AUDITOR_APP_SLUG[bot]"
+          git config user.email "$AUDITOR_APP_SLUG[bot]@users.noreply.github.com"
+          if [ -n "$STORED_DIGEST" ]; then
+            ./bin/refresh-inputs.sh open-pr --plan-dir "$RUNNER_TEMP/plan" --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive" --archive-digest "$STORED_DIGEST"
+          else
+            ./bin/refresh-inputs.sh open-pr --plan-dir "$RUNNER_TEMP/plan" --repo-dir "$GITHUB_WORKSPACE"
           fi
