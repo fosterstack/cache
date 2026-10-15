@@ -340,6 +340,47 @@ assert open(B + "/" + name).read() == "other directory's file\n", "the other dir
 assert os.listdir(A) == [], os.listdir(A)
 PY
 
+t AC8 "an ancestor symlink retargeted mid-run: this run's directories are removed where it made them, the other run's same-named directory stays" python3 - "$bin_vp" "$F7" "$work/ev8-anc" <<'PY'
+import importlib.util, os, sys
+bp, fx, base = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("vp", bp); vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+A, B = base + "/A", base + "/B"; os.makedirs(A); os.makedirs(B + "/new"); os.symlink(A, base + "/link")
+real = os.replace
+def retarget_then_fail(*a, **k):
+    os.unlink(base + "/link"); os.symlink(B, base + "/link")
+    raise OSError(28, "No space left on device")
+os.replace = retarget_then_fail
+try:
+    rc = vp.main(["evidence", "--out", base + "/link/new", "--provenance", fx + "/prov.json", "--govulncheck", fx + "/govuln.json", "--date", "1790000000"])
+finally:
+    os.replace = real
+assert rc == 1, rc
+assert os.listdir(A) == [], os.listdir(A)
+assert os.listdir(B) == ["new"] and os.listdir(B + "/new") == [], (os.listdir(B), os.listdir(B + "/new"))
+PY
+t AC8 "a failure to close the output directory never hides the original error, and never fails a published file" python3 - "$bin_vp" "$F7" "$work/ev8-close" <<'PY'
+import importlib.util, io, os, sys
+bp, fx, base = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("vp", bp); vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+os.makedirs(base)
+args = ["--provenance", fx + "/prov.json", "--govulncheck", fx + "/govuln.json", "--date", "1790000000"]
+real_close, real_replace, real_err = os.close, os.replace, sys.stderr
+def bad_close(fd): real_close(fd); raise OSError(5, "close-cleanup EIO")
+def boom(*a, **k): raise OSError(28, "replace-original ENOSPC")
+os.close, os.replace, sys.stderr = bad_close, boom, io.StringIO()
+try:
+    rc = vp.main(["evidence", "--out", base + "/one"] + args); msg = sys.stderr.getvalue()
+finally:
+    os.close, os.replace, sys.stderr = real_close, real_replace, real_err
+assert rc == 1 and "replace-original" in msg and "close-cleanup" not in msg, (rc, msg)
+os.close = bad_close
+try:
+    rc = vp.main(["evidence", "--out", base + "/two"] + args)
+finally:
+    os.close = real_close
+assert rc == 0 and os.path.isfile(base + "/two/vendor-evidence.json"), rc
+PY
+
 # ===== AC9: determinism ========================================================================
 ev "$work/d1" >/dev/null 2>&1; ev "$work/d2" >/dev/null 2>&1; ev "$work/d3" 1790000001 >/dev/null 2>&1
 t AC9 "two runs are byte-identical" bash -c "[ -s '$work/d1/vendor-evidence.json' ] && cmp -s '$work/d1/vendor-evidence.json' '$work/d2/vendor-evidence.json'"
