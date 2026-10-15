@@ -2823,6 +2823,11 @@ rm -rf "$work/bi2"; cp -R "$work/bi" "$work/bi2"
 rc=0; python3 "$chk" --root "$work/bi2" --base HEAD~2 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/bi2.out" 2>&1 || rc=$?
 CASE="AC21: a list the pull request itself adds under --root exempts nothing (the default list is the base branch's copy beside the script): exit 1"
 check test "$rc" -eq 1
+# a missing default list lists nothing: a copy of the supply-chain dir with no .github/policy/base-inputs.json beside it exempts nothing and is not an error
+rm -rf "$work/nl"; mkdir -p "$work/nl/.github/agent"; cp -R "$(dirname "$chk")" "$work/nl/.github/agent/supply-chain"
+rc=0; python3 "$work/nl/.github/agent/supply-chain/$(basename "$chk")" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/nl.out" 2>&1 || rc=$?
+CASE="AC21: with no default list file at all, nothing is exempted and the check runs (exit 1, both record files still items; never exit 2, never exempt)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL tool:file:' "$work/nl.out")" -eq 2
 CASE="AC21: only a checksum or version FILE item can be exempted: a download of the same path text from a workflow stays an item"
 check python3 - "$chk" <<'PY'
 import importlib.util, sys
