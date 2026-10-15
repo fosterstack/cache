@@ -381,6 +381,24 @@ finally:
 assert rc == 0 and os.path.isfile(base + "/two/vendor-evidence.json"), rc
 PY
 
+t AC10 "--out / and --out /// open the root directory, never the working directory, and write nothing before that open fails" python3 - "$bin_vp" "$F7" <<'PY'
+import importlib.util, os, sys
+bp, fx = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("vp", bp); vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+real_open = os.open
+for out in ("/", "///"):
+    seen = []
+    def spy(path, flags, *a, **k):
+        seen.append(path)
+        raise OSError(13, "stop before any creation")
+    os.open = spy
+    try:
+        rc = vp.main(["evidence", "--out", out, "--provenance", fx + "/prov.json", "--govulncheck", fx + "/govuln.json", "--date", "1790000000"])
+    finally:
+        os.open = real_open
+    assert rc == 1 and seen == ["/"], (out, rc, seen)
+PY
+
 # ===== AC9: determinism ========================================================================
 ev "$work/d1" >/dev/null 2>&1; ev "$work/d2" >/dev/null 2>&1; ev "$work/d3" 1790000001 >/dev/null 2>&1
 t AC9 "two runs are byte-identical" bash -c "[ -s '$work/d1/vendor-evidence.json' ] && cmp -s '$work/d1/vendor-evidence.json' '$work/d2/vendor-evidence.json'"
