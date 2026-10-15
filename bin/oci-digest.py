@@ -117,11 +117,15 @@ def check_manifest_blob(members, raw, layout, what, platform_arch=None):
     cdig = need(cfg, "digest", what + " config")
     want_arch = None if platform_arch is None else platform_arch
     hexd = sha256_hex(cdig, what + " config")
+    if cfg.get("mediaType") != CONFIG_MT:
+        fail("the config descriptor of %s has the media type %r, not %s" % (what, cfg.get("mediaType"), CONFIG_MT))
     cname = ("sha256:" + hexd) if layout == "apko" else ("blobs/sha256/" + hexd)
     if cname not in members:
         fail("the config blob %s of %s is missing from the tar" % (cname, what))
     if hashlib.sha256(members[cname]).hexdigest() != hexd:
         fail("the config blob %s of %s does not hash to its name" % (cname, what))
+    if cfg.get("size") != len(members[cname]):
+        fail("the config descriptor of %s says size %r but the blob %s holds %d bytes" % (what, cfg.get("size"), cname, len(members[cname])))
     try:
         cfg_arch = json.loads(members[cname]).get("architecture")
     except (ValueError, AttributeError):
@@ -143,6 +147,10 @@ def check_manifest_blob(members, raw, layout, what, platform_arch=None):
             fail("the layer blob %s of %s is missing from the tar" % (lhex, what))
         if hashlib.sha256(members[found[0]]).hexdigest() != lhex:
             fail("the layer blob %s of %s does not hash to its name" % (found[0], what))
+        if layer.get("mediaType") not in LAYER_MTS:
+            fail("the layer descriptor %s of %s has the media type %r, not an OCI layer type" % (lhex, what, layer.get("mediaType")))
+        if layer.get("size") != len(members[found[0]]):
+            fail("the layer descriptor %s of %s says size %r but the blob holds %d bytes" % (lhex, what, layer.get("size"), len(members[found[0]])))
 
 
 def blob_in(members, digest, what):
@@ -282,6 +290,8 @@ def check_index(rec, arch_dir):
     return found
 
 
+CONFIG_MT = "application/vnd.oci.image.config.v1+json"
+LAYER_MTS = ("application/vnd.oci.image.layer.v1.tar", "application/vnd.oci.image.layer.v1.tar+gzip", "application/vnd.oci.image.layer.v1.tar+zstd")
 BLOB_NAME = re.compile(r"(?:sha256:)?([0-9a-f]{64})(?:\.tar\.gz)?")
 
 
@@ -559,9 +569,9 @@ def verify_apk(path, e):
 
 
 def verify_archive(argv):
-    o = opts(argv, ("--lock", "--archive", "--melange-repo"))
+    o = opts(argv, ("--lock", "--archive", "--melange-repo", "--index-record"))
     if "--lock" not in o or "--archive" not in o:
-        die("usage: verify-archive --lock L --archive DIR [--melange-repo DIR]", 2)
+        die("usage: verify-archive --lock L --archive DIR [--melange-repo DIR] [--index-record REC]", 2)
     _, pk = load(o["--lock"])
     if not pk:
         die("the lock file %s lists no package; an empty lock proves nothing about the archive" % o["--lock"], 2)
@@ -579,8 +589,9 @@ def verify_archive(argv):
                 break
         else:
             die("%s is not in the archive%s (needed by the lock)" % (rel, " or the melange repository" if len(repos) > 1 else ""))
+    recorded = check_index(o["--index-record"], o["--archive"]) if "--index-record" in o else {}   # the archive's index is the RECORDED one (a moved pointer is not consulted)
     for r, a in sorted(used):
-        ix = os.path.join(r, a, "APKINDEX.tar.gz")
+        ix = recorded[a] if (r == o["--archive"] and a in recorded) else os.path.join(r, a, "APKINDEX.tar.gz")
         if not os.path.isfile(ix):
             die("%s/%s/APKINDEX.tar.gz is missing; assembly needs the package index" % (r, a))
         if os.path.getsize(ix) == 0:

@@ -22,12 +22,15 @@
 set -euo pipefail
 
 # every tool is called by a fixed absolute path held in a variable (REQ-IMAGE-001-AC12); the tests substitute exactly these lines
+HOST_OS=$OSTYPE                     # TEST-SUBST (the shell's own, so the host guard runs no tool)
 PY3=/usr/bin/python3                 # TEST-SUBST
 SUDO=/usr/bin/sudo                   # TEST-SUBST
-here=$(cd "$(dirname "$0")" && pwd)
+BASHBIN=/bin/bash                    # TEST-SUBST
+case ${BASH_SOURCE[0]} in */*) here_=${BASH_SOURCE[0]%/*};; *) here_=.;; esac   # the script's own directory without running dirname
+here=$(cd "$here_" && pwd)
 die() { echo "lock-proof.sh: $1" >&2; exit "${2:-2}"; }
 
-[ "$(uname -s)" = Linux ] || die "refusing to run on $(uname -s): this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
+[[ $HOST_OS == linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 # the chain runs everything from the repository root, and the drivers it calls refuse anywhere else (exit 2): run it as  bash bin/lock-proof.sh ...  from there
 [ "$(pwd -P)" = "$(cd "$here/.." && pwd -P)" ] || die "usage: run bin/lock-proof.sh from the repository root ($(cd "$here/.." && pwd -P)), not from $(pwd -P)" 2
 
@@ -48,12 +51,14 @@ for x_ in "$a_" "$o_"; do q_=$x_; while [[ $q_ == ./* ]]; do q_=${q_#./}; done; 
 [ ! -L "$o_" ] || die "--out $out is a symlink; refusing (the results would be written through it)" 2
 [ ! -L "$a_" ] || die "--archive $archive is a symlink; refusing (the copies of the proof would be made through it)"
 [ -x "$here/assemble-image.sh" ] || die "assembly script not executable: $here/assemble-image.sh"
-# the assembler runs from a copy of the repository root: every path the caller gave is made absolute against the caller's directory first
-case $archive in /*) ;; *) archive=$PWD/$archive;; esac
-case $out in /*) ;; *) out=$PWD/$out;; esac
+# the assembler runs from a copy of the repository root: every directory the caller gave is resolved to its physical absolute path first (the caller's
+# spelling was already checked above), so ./x and ../x mean here what they mean to the assembler
+absdir() { (cd -P -- "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"; }
+archive=$(absdir "$archive")
+case $out in */*) out=$(absdir "${out%/*}")/${out##*/};; *) out=$(absdir .)/$out;; esac
 pass=("$@")
 for ((i = 0; i + 1 < ${#pass[@]}; i++)); do   # the directories the assembler is given: absolute, as the working directory changes
-  case ${pass[$i]} in --melange-repo|--keyring-dir) case ${pass[$((i + 1))]} in /*) ;; *) pass[$((i + 1))]=$PWD/${pass[$((i + 1))]};; esac;; esac
+  case ${pass[$i]} in --melange-repo|--keyring-dir) pass[$((i + 1))]=$(absdir "${pass[$((i + 1))]}");; esac
 done
 for a in "${pass[@]}"; do case $a in --archive|--out|--render-dir|--apko-config|--base-lock|--index-record|--key-record) die "$a after --: this option is supplied by the proof; a forwarded value could be printed back by the assembler and mistaken for a reason" 2;; esac; done
 variant=
@@ -90,7 +95,7 @@ mkrepo() {
 }
 run() { # <name> <archive> [temp config]: the assembler runs from its own repository root copy with the committed inputs
   mkrepo "$1" "${3:-}"
-  ( cd "$tmp/repo-$1" && ./bin/assemble-image.sh --archive "$2" --out "$tmp/out-$1" "${pass[@]}" ) >"$tmp/$1.log" 2>&1 && rc=0 || rc=$?
+  ( cd "$tmp/repo-$1" && "$BASHBIN" bin/assemble-image.sh --archive "$2" --out "$tmp/out-$1" "${pass[@]}" ) >"$tmp/$1.log" 2>&1 && rc=0 || rc=$?
 }
 
 # the victim: the first package of the BASE LOCK by (name, architecture)
@@ -105,6 +110,10 @@ for k in ("name", "version"):
 print("%s/%s-%s.apk" % (e["architecture"], e["name"], e["version"]))
 PY
 ) || die "cannot read the base lock $baselock"
+# 0. the positive control
+run control "$archive"
+[ "$rc" = 0 ] || { tail -5 "$tmp/control.log" >&2; die "positive control failed: the untouched archive and config did not assemble (exit $rc); a proof that cannot succeed proves nothing" 1; }
+
 [ ! -L "$archive/$victim" ] || die "the victim $victim in the archive is a symlink; refusing (the proof must never write through a link)"
 [ -f "$archive/$victim" ] || die "the base lock's first package $victim is not in the archive (the positive control passed, so this is a bad lock-proof setup)"
 vname=$(basename "$victim"); arch_dir=$(dirname "$victim")
@@ -123,10 +132,6 @@ if not b:
     raise SystemExit("the victim apk is empty")
 b[len(b) // 2] ^= 0xFF; open(p, "wb").write(bytes(b))
 PY
-
-# 0. the positive control
-run control "$archive"
-[ "$rc" = 0 ] || { tail -5 "$tmp/control.log" >&2; die "positive control failed: the untouched archive and config did not assemble (exit $rc); a proof that cannot succeed proves nothing" 1; }
 
 results=()
 expect() { # <name> <archive> <temp config or -> <reason regex>

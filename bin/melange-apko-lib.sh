@@ -273,7 +273,7 @@ def fixtures(fx):
         open("%s/archive/%s/APKINDEX.tar.gz" % (fx, a), "wb").write(b"index-" + a.encode())
         for n, v in ENVPK:
             P[("env", n, v, a)] = mkapk("%s/envrepo/%s/%s-%s.apk" % (fx, a, n, v), n, v, {"usr/share/%s/data" % n: ("%s-%s" % (n, a)).encode()}, signer="wolfi-signing.rsa.pub")
-        open("%s/envrepo/%s/APKINDEX.tar.gz" % (fx, a), "wb").write(b"index-" + a.encode())
+        open("%s/envrepo/%s/APKINDEX.tar.gz" % (fx, a), "wb").write(b"envrepo-index-" + a.encode())
         for n, mel in (("fscache", "melrepo"), ("fscache-fips", "melrepo-fips")):
             P[(n, "0.3.0-r0", a)] = mkapk("%s/%s/%s/%s-0.3.0-r0.apk" % (fx, mel, a, n), n, "0.3.0-r0", {"usr/bin/fscache": ("bin-%s-%s" % (n, a)).encode()})
             open("%s/%s/%s/APKINDEX.tar.gz" % (fx, mel, a), "wb").write(b"index-" + a.encode())
@@ -412,16 +412,18 @@ def stuboci(out, lockfile, salt, sde, tamper=False, noindex=False):
     blobs, mans = [], []
     for arch in ("amd64", "arm64"):
         cfg = json.dumps({"architecture": arch, "os": "linux", "seed": seed}, sort_keys=True).encode()
+        layer = ("layer-bytes-%s-%s" % (arch, seed)).encode()   # a non-empty layer: an assembler that drops layers would no longer pass
         man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)}, "layers": []}, sort_keys=True).encode()
-        blobs += [(H(cfg), cfg), (H(man), man)]
+                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)},
+                          "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:" + H(layer), "size": len(layer)}]}, sort_keys=True).encode()
+        blobs += [(H(cfg), cfg), (H(layer), layer), (H(man), man)]
         mans.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + H(man), "size": len(man), "platform": {"architecture": arch, "os": "linux"}})
     idx = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": mans}, sort_keys=True).encode()
     blobs.append((H(idx), idx))
     top = json.dumps({"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + H(idx), "size": len(idx)}]}, sort_keys=True).encode()
     members = [("oci-layout", b'{"imageLayoutVersion":"1.0.0"}')] + ([] if noindex else [("index.json", top)])
     for i, (h, b) in enumerate(blobs):
-        members.append(("blobs/sha256/" + h, b + b"X" if tamper and i == 1 else b))   # tamper: a manifest blob whose bytes no longer hash to its name
+        members.append(("blobs/sha256/" + h, b + b"X" if tamper and i == 2 else b))   # tamper: a manifest blob whose bytes no longer hash to its name
     open(out, "wb").write(tarb(members))
 def stubapkotar(out, tamper=False, seed=""):
     # the shape real apko v1.4.6 writes (real-run finding Oct 9): blobs are top-level members named sha256:<hex>, index.json is the
@@ -430,9 +432,11 @@ def stubapkotar(out, tamper=False, seed=""):
     members, mans = [], []
     for arch in ("amd64", "arm64"):
         cfg = json.dumps(dict({"architecture": arch, "os": "linux"}, **({"seed": seed} if seed else {})), sort_keys=True).encode()
+        layer = ("layer-bytes-%s-%s" % (arch, seed)).encode()
         man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)}, "layers": []}, sort_keys=True).encode()
-        members += [("sha256:" + H(cfg), cfg), ("sha256:" + H(man), man + b"X" if tamper and arch == "arm64" else man)]
+                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)},
+                          "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:" + H(layer), "size": len(layer)}]}, sort_keys=True).encode()
+        members += [("sha256:" + H(cfg), cfg), ("sha256:" + H(layer), layer), ("sha256:" + H(man), man + b"X" if tamper and arch == "arm64" else man)]
         mans.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + H(man), "size": len(man), "platform": {"architecture": arch, "os": "linux"}})
     idx = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": mans}).encode()
     members += [("manifest.json", b"[]"), ("index.json", idx)]
@@ -444,6 +448,12 @@ def lockshape(path, variant):
     assert {"wolfi-baselayout", "ca-certificates-bundle", "tzdata"} <= names, sorted(names)
     assert not any(n.startswith("fscache") for n in names), "base lock holds our apk"
     for a in ARCHS: assert any(e["architecture"] == a for e in pk), a
+    seen = {}
+    for e in pk: seen.setdefault(e["name"], {}).setdefault(e["architecture"], []).append(e["version"])
+    for n, by in sorted(seen.items()):   # every package is locked for BOTH architectures, once each, at one version
+        assert sorted(by) == sorted(ARCHS), (n, sorted(by))
+        assert all(len(v) == 1 for v in by.values()), (n, by)
+        assert len({v[0] for v in by.values()}) == 1, (n, by)
     for e in pk:
         assert e["control"]["checksum"].startswith("sha1-") and e["data"]["checksum"].startswith("sha256-") and e["checksum"].startswith("Q1"), e["name"]
         assert e["url"].startswith("/work/archive/"), e["url"]

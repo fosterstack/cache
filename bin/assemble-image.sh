@@ -38,6 +38,7 @@
 set -euo pipefail
 
 # every tool is called by a fixed absolute path held in a variable (REQ-IMAGE-001-AC12); the tests substitute exactly these lines
+HOST_OS=$OSTYPE                     # TEST-SUBST (the shell's own, so the host guard runs no tool)
 PY3=/usr/bin/python3                 # TEST-SUBST
 SUDO=/usr/bin/sudo                   # TEST-SUBST
 UNSHARE=/usr/bin/unshare             # TEST-SUBST
@@ -47,11 +48,12 @@ ENVBIN=/usr/bin/env                  # TEST-SUBST
 WORKDIR=/work                        # TEST-SUBST (the fixed path the config and the locks name, rule 31)
 RENDER_DIR=                          # TEST-SUBST (empty: a private temporary directory; the tests keep the rendered config)
 
-root=$(cd "$(dirname "$0")/.." && pwd -P)
+case ${BASH_SOURCE[0]} in */*) here_=${BASH_SOURCE[0]%/*};; *) here_=.;; esac   # the script's own directory without running dirname
+root=$(cd "$here_/.." && pwd -P)
 die() { echo "assemble-image.sh: $1" >&2; exit "${2:-2}"; }
 is_empty_dir() { "$PY3" -I -B bin/oci-digest.py is-empty "$1" 2>/dev/null; }   # a directory that cannot be listed is not empty
 
-[ "$(uname -s)" = Linux ] || die "refusing to run on $(uname -s): this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
+[[ $HOST_OS == linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 [ "$(pwd -P)" = "$root" ] || die "assemble-image.sh runs from the repository root ($root), not from $(pwd -P): the helpers are named by repo-root-relative paths" 2
 
 variant= version= archive= melrepo= keydir= out= render=$RENDER_DIR
@@ -71,10 +73,8 @@ case $variant in
   production) pkg=fscache; config=build/apko.yaml; baselock=build/locks/apko.base.lock.json;;
   fips) pkg=fscache-fips; config=build/apko-fips.yaml; baselock=build/locks/apko-fips.base.lock.json;;
 esac
-# a symlink as a ROOT (archive, melange repo, keyring directory, out) is refused: copies and writes would go through it
-for pair in "--config:$config" "--base-lock:$baselock"; do
-  [ "$(printf '%s' "${pair#*:}" | LC_ALL=C tr -d '\040-\176'; printf x)" = x ] || die "${pair%%:*} holds a control character or a byte outside printable ASCII (a newline, a C1 control or any byte >= 0x80); refusing, the path arguments are plain ASCII text"
-done
+# a symlink as a ROOT (archive, melange repo, keyring directory, out) is refused: copies and writes would go through it (the config and the base lock are
+# committed constants now: no caller value reaches them, so there is nothing to check there)
 # the version grammar first, with the shell alone: a bad --version is refused before any tool, python included
 [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$ || $version = 0.0.0-rc.1 ]] || die "--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 (numbers without leading zeros; not '$version')"
 for pair in "--archive:$archive" "--melange-repo:$melrepo" "--keyring-dir:$keydir" "--out:$out" "--render-dir:$render"; do
@@ -113,12 +113,12 @@ done
 keyrec=build/locks/archive-keys.sha256
 [ -f "$keyrec" ] || die "the key record $keyrec is missing: cannot tell which keys the keyring directory must hold"
 "$PY3" -I -B bin/oci-digest.py check-keys "$keyrec" "$keydir" || exit 2
-"$BASHBIN" bin/apko-lock.sh verify-archive --lock "$baselock" --archive "$archive" || die "the archive does not satisfy the base lock $baselock (see above)"
 # the archive's package index must be the one the repository recorded (build/locks/archive-index.sha256: one "<arch> sha256:<hex>" line
 # per architecture, written by the refresh job), so an old commit never silently resolves against a newer index (rules 31, 47)
 idxrec=build/locks/archive-index.sha256
 [ -f "$idxrec" ] || die "the index record $idxrec is missing: cannot tell which package index the archive must hold"
 "$PY3" -I -B bin/oci-digest.py check-index "$idxrec" "$archive" >/dev/null || exit 2
+"$BASHBIN" bin/apko-lock.sh verify-archive --lock "$baselock" --archive "$archive" --index-record "$idxrec" || die "the archive does not satisfy the base lock $baselock (see above)"
 for a in x86_64 aarch64; do
   [ -f "$melrepo/$a/$pkg-$apkver-r0.apk" ] || die "the melange repository $melrepo has no $a/$pkg-$apkver-r0.apk (our apk)"
   [ -f "$melrepo/$a/APKINDEX.tar.gz" ] || die "the melange repository $melrepo has no $a/APKINDEX.tar.gz"
@@ -206,7 +206,7 @@ sealed lock "$(basename "$rendered")" --cache-dir "$tmp/apko-cache" --output "$f
 # ---- 4. the full lock must be the base lock plus our apk ----
 "$BASHBIN" bin/apko-lock.sh compare "$baselock" "$full" --apk "$pkg" || die "the full lock's package entries differ from the base lock (see above); not building" 2
 "$BASHBIN" bin/apko-lock.sh arch-check "$full" || die "the full lock resolves different versions per architecture (see above); not building" 2
-"$BASHBIN" bin/apko-lock.sh verify-archive --lock "$full" --archive "$archive" --melange-repo "$melrepo" || die "the full lock does not verify against the archive and the melange repository (see above)" 2
+"$BASHBIN" bin/apko-lock.sh verify-archive --lock "$full" --archive "$archive" --melange-repo "$melrepo" --index-record "$idxrec" || die "the full lock does not verify against the archive and the melange repository (see above)" 2
 cp "$full" "$out/$variant.full.lock.json"
 
 # ---- 5. one offline build for both architectures ----

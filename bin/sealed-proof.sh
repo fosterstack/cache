@@ -6,7 +6,8 @@
 #                   --build-args 'build-apk.sh arguments' --assemble-args 'assemble-image.sh arguments'
 #                   [--digests-out FILE] [--expect FILE]
 #
-# The probe is a shell command that SUCCEEDS when it can reach outside (rule 40). Control: it must succeed in the runner and fail
+# The probe is a shell command that exits 0 when it can reach outside and exactly 1 when it cannot (rule 40); any other status is
+# inconclusive (a killed or unstartable probe proves nothing). Control: it must succeed in the runner and fail
 # inside `sudo unshare -n`; a probe that fails outside too proves nothing (exit 1 naming "control"), and one that succeeds inside
 # means the seal leaks (exit 1, "reached outside"). Then (rule 39) bin/build-apk.sh and bin/assemble-image.sh run for real
 # (--build-args and --assemble-args supply their arguments; this script adds --source-dir, --archive and --out), and their
@@ -25,14 +26,16 @@
 set -euo pipefail
 
 # every tool is called by a fixed absolute path held in a variable (REQ-IMAGE-001-AC12); the tests substitute exactly these lines
+HOST_OS=$OSTYPE                     # TEST-SUBST (the shell's own, so the host guard runs no tool)
 PY3=/usr/bin/python3                 # TEST-SUBST
 SUDO=/usr/bin/sudo                   # TEST-SUBST
 UNSHARE=/usr/bin/unshare             # TEST-SUBST
 BASHBIN=/bin/bash                    # TEST-SUBST
-here=$(cd "$(dirname "$0")" && pwd)
+case ${BASH_SOURCE[0]} in */*) here_=${BASH_SOURCE[0]%/*};; *) here_=.;; esac   # the script's own directory without running dirname
+here=$(cd "$here_" && pwd)
 die() { echo "sealed-proof.sh: $1" >&2; exit "${2:-1}"; }
 
-[ "$(uname -s)" = Linux ] || die "refusing to run on $(uname -s): this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
+[[ $HOST_OS == linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 # the chain runs everything from the repository root, and the drivers it calls refuse anywhere else (exit 2): run it as  bash bin/sealed-proof.sh ...  from there
 [ "$(pwd -P)" = "$(cd "$here/.." && pwd -P)" ] || die "usage: run bin/sealed-proof.sh from the repository root ($(cd "$here/.." && pwd -P)), not from $(pwd -P)" 2
 
@@ -98,7 +101,7 @@ inside_rc=0; "$SUDO" "$UNSHARE" -n "$BASHBIN" -c "$probe" >/dev/null 2>&1 || ins
 if [ "$inside_rc" = 0 ]; then
   die "the probe reached outside from inside 'sudo unshare -n': the network cut leaks (escaped)"
 fi
-case $inside_rc in 126|127) die "control inconclusive: the probe could not be run inside the namespace (exit $inside_rc); a probe that cannot start proves nothing (probe)";; esac
+[ "$inside_rc" = 1 ] || die "control inconclusive: inside the namespace the probe exited $inside_rc, not 1 (the status of a probe that could not reach out); a killed, unstartable or erroring probe proves nothing (probe)"
 
 cp -RP "$src" "$tmp/src-copy"; inside_tmp "$tmp/src-copy"   # the throwaway copies and their guards come FIRST, before any driver runs
 cp -RP "$archive" "$tmp/arch-nopkg"; inside_tmp "$tmp/arch-nopkg"
@@ -117,7 +120,9 @@ compgen -G "$imgdir/*.digest" >/dev/null || die "no digests were produced: the i
 {
   for apk in $(cd "$apkdir" && find . -name '*.apk' -type f | sort); do
     n=$(basename "$apk" .apk)
-    echo "apk-$n $("$PY3" -I -B bin/apk-tool.py digest "$apkdir/$apk" | sed 's/^sha256://')"
+    d=$("$PY3" -I -B bin/apk-tool.py digest "$apkdir/$apk") || die "the apk digest of $apk could not be computed (see above)"
+    d=${d#sha256:}; [[ $d =~ ^[0-9a-f]{64}$ ]] || die "the apk digest of $apk is not 64 hex digits ($d)"
+    echo "apk-$n $d"
   done
   for d in "$imgdir"/*.digest; do
     v=$(basename "$d" .digest)
@@ -126,7 +131,10 @@ compgen -G "$imgdir/*.digest" >/dev/null || die "no digests were produced: the i
   done
 } >"$tmp/digests.txt"
 [ -s "$tmp/digests.txt" ] || die "no digests were produced"
-[ -z "$digests_out" ] || cp "$tmp/digests.txt" "$digests_out"
+if [ -n "$digests_out" ]; then
+  [ ! -L "$digests_out" ] && { [ ! -e "$digests_out" ] || [ -f "$digests_out" ]; } || die "--digests-out $digests_out is a link or not a regular file; refusing to write through it" 2
+  cp "$tmp/digests.txt" "$digests_out"
+fi
 if [ -n "$expect" ]; then
   cmp -s "$tmp/digests.txt" "$expect" || { diff "$expect" "$tmp/digests.txt" >&2 || true; die "the digests differ from the expected ones in $expect: the build is not reproducible"; }
 fi
@@ -150,12 +158,18 @@ bpin=$(grep -E '^[A-Za-z0-9][A-Za-z0-9._+-]*=[A-Za-z0-9][A-Za-z0-9._+~-]*$' "$bl
 [ -n "$bpin" ] || die "the melange lock $block has no package=version line to remove from the build repository" 2
 bvictim=$barch/${bpin%%=*}-${bpin#*=}.apk
 [ -f "$brepo/$bvictim" ] && [ ! -L "$brepo/$bvictim" ] || die "the build's first declared package $bvictim is not a regular file in the build repository $brepo"
+[ -f "$brepo/$barch/APKINDEX.tar.gz" ] && [ ! -L "$brepo/$barch/APKINDEX.tar.gz" ] && [ -s "$brepo/$barch/APKINDEX.tar.gz" ] || die "the build repository $brepo has no regular, non-empty $barch/APKINDEX.tar.gz: the record must name the index the build used"
+build_index=$("$PY3" -I -B -c 'import hashlib,sys;print("sha256:"+hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$brepo/$barch/APKINDEX.tar.gz") || die "cannot hash the build repository index"
 cp -RP "$brepo" "$tmp/repo-nopkg"; inside_tmp "$tmp/repo-nopkg"; inside_tmp "$(dirname "$tmp/repo-nopkg/$bvictim")"; rm -f "$tmp/repo-nopkg/$bvictim"
 bwords_nopkg=("${bwords[@]}"); for ((i = 0; i + 1 < ${#bwords_nopkg[@]}; i++)); do [ "${bwords_nopkg[$i]}" = --repo ] && bwords_nopkg[$((i + 1))]=$tmp/repo-nopkg; done
 if "$BASHBIN" bin/build-apk.sh "${bwords_nopkg[@]}" --source-dir "$src" --out "$tmp/neg-build2" >"$tmp/neg3.log" 2>&1; then
   die "the build still succeeded with the declared package $bvictim deleted from its repository: the build is not sealed to its declared inputs (package)"
 fi
-build_package_reason=$(grep -F -- "${bpin%%=*}" "$tmp/neg3.log" | tail -n 1 || true)
+# the build's own "cannot select that package" diagnostic must name the package (a line that merely mentions the name, such as a permission
+# error, is not the reason); apk prints the name on the line after "unable to select packages" in some versions, so that form counts too
+miss_re='unable to select|no such package|nothing provides|not found|is missing|cannot find'
+build_package_reason=$(grep -Ei -- "$miss_re" "$tmp/neg3.log" | grep -F -- "${bpin%%=*}" | tail -n 1 || true)
+if [ -z "$build_package_reason" ] && grep -Eqi -- 'unable to select packages' "$tmp/neg3.log"; then build_package_reason=$(grep -F -- "${bpin%%=*}" "$tmp/neg3.log" | tail -n 1 || true); fi
 [ -n "$build_package_reason" ] || { tail -3 "$tmp/neg3.log" >&2; die "the build failed with $bvictim deleted, but nothing it printed names ${bpin%%=*} (an unrelated failure proves nothing about rule 41)"; }
 rm -f "$tmp/arch-nopkg/$victim"
 if "$BASHBIN" bin/assemble-image.sh "${awords[@]}" --archive "$tmp/arch-nopkg" --out "$tmp/neg-image" >"$tmp/neg2.log" 2>&1; then
@@ -165,7 +179,7 @@ package_reason=$(grep -E '^(assemble-image|apko-lock)\.sh: ' "$tmp/neg2.log" | g
 [ -n "$package_reason" ] || { tail -3 "$tmp/neg2.log" >&2; die "the image assembly failed with a package deleted, but its message does not name $(basename "$victim") (reason: an unrelated failure proves nothing about rule 41; package)"; }
 
 # ---- rule 42: the record ----
-"$PY3" -I -B - "$out/sealed-record.json" "$tmp/digests.txt" bin/build-apk.sh bin/assemble-image.sh build/locks/archive-index.sha256 "$vendor_reason" "$package_reason" "$build_package_reason" <<'PY'
+"$PY3" -I -B - "$out/sealed-record.json" "$tmp/digests.txt" bin/build-apk.sh bin/assemble-image.sh build/locks/archive-index.sha256 "$vendor_reason" "$package_reason" "$build_package_reason" "$barch" "$build_index" <<'PY'
 import hashlib, json, os, sys
 digests = dict(l.split(" ", 1) for l in open(sys.argv[2]).read().splitlines())
 bs, as_, idx = sys.argv[3:6]
@@ -174,6 +188,7 @@ json.dump({"cut": "sudo unshare -n (network namespace without a route)",
            "control": {"outside": "reached", "inside": "blocked"},
            "runner": {"ImageOS": os.environ.get("ImageOS", "unknown"), "ImageVersion": os.environ.get("ImageVersion", "unknown")},
            "digests": digests, "archive_index": archive_index, "archive_index_record": idx,
+           "build_repository_index": {sys.argv[9]: sys.argv[10]},
            "build_script": bs, "build_script_sha256": hashlib.sha256(open(bs, "rb").read()).hexdigest(),
            "assemble_script": as_, "assemble_script_sha256": hashlib.sha256(open(as_, "rb").read()).hexdigest(),
            "negatives": {"vendor-deleted": {"result": "failed-as-required", "reason": sys.argv[6]},
