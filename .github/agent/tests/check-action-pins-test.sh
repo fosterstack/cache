@@ -2841,5 +2841,17 @@ case_ r2b-step-text-closed-form-ok ok "$(rb 'G=/usr/bin/git
           "$G" status')"
 case_ r2b-wrapped-variable-shell-reads-child-bad bad "$(rb 'bash ci-lit.sh')" "printf 'SH=/bin/bash\nsudo \"\$SH\" ci-bad.sh\n' > ci-lit.sh; printf 'docker run alpine:latest\n' > ci-bad.sh"
 
+# --- review round 3 of PR 351 (both seats): classes closed fail-closed. Backticks anywhere in the script, every shell-owned name (GROUPS, DIRSTACK, ...),
+#     `command .` and any dot or source in the calling text, and a function that can stand in for printf (defined in the script, or exported by the job)
+case_ r3-backtick-assignment-bad bad "$(rb 'bash ci-lit.sh')" "printf 'x=\`\nG=/usr/bin/git\n\`\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r3-groups-shell-array-bad bad "$(rb 'bash ci-lit.sh')" "printf 'GROUPS=/usr/bin/git\n\"\$GROUPS\" run alpine:latest\n' > ci-lit.sh"
+case_ r3-dirstack-shell-array-bad bad "$(rb 'bash ci-lit.sh')" "printf 'DIRSTACK=/usr/bin/git\n\"\$DIRSTACK\" run alpine:latest\n' > ci-lit.sh"
+case_ r3-command-dot-sourced-bad bad "$(rb 'declare -n G=H
+          command . ./ci-lit.sh')" "printf 'G=/usr/bin/git\nH=/usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r3-exported-printf-function-bad bad "$(rb 'printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          export -f printf
+          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r3-own-printf-function-bad bad "$(rb 'bash ci-lit.sh')" "printf 'printf() { builtin printf -v \"\$2\" %%s /usr/bin/docker; }\nprintf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
