@@ -2768,7 +2768,7 @@ case_ r33-b1-ampersand-append-redirect-to-a-quoted-name-bad bad "$(rb 'curl -fsS
 case_ lit-var-ok ok "$(rb 'bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\$GIT\" status\n' > ci-lit.sh"
 case_ lit-var-braced-ok ok "$(rb 'bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\${GIT}\" status\n' > ci-lit.sh"
 case_ lit-printf-v-ok ok "$(rb 'bash ci-lit.sh')" "printf 'printf -v CURL %%s /usr/bin/true   # TEST-SUBST\n\"\$CURL\" --version\n' > ci-lit.sh"
-case_ lit-var-before-functions-ok ok "$(rb 'bash ci-lit.sh')" "printf 'PY3=/usr/bin/python3\ndie() { echo \"\$1\" >&2; exit 2; }\n\"\$PY3\" --version\n' > ci-lit.sh"
+case_ lit-var-before-functions-no-inference-since-r10-bad bad "$(rb 'bash ci-lit.sh')" "printf 'PY3=/usr/bin/python3\ndie() { echo \"\$1\" >&2; exit 2; }\n\"\$PY3\" --version\n' > ci-lit.sh"
 case_ lit-var-behind-sudo-ok ok "$(rb 'bash ci-lit.sh')" "printf 'T=/usr/bin/git\nsudo \"\$T\" status\n' > ci-lit.sh"
 case_ lit-var-docker-unpinned-bad bad "$(rb 'bash ci-lit.sh')" "printf 'D=/usr/bin/docker\n\"\$D\" run alpine:latest\n' > ci-lit.sh"
 case_ lit-var-python-inline-bad bad "$(rb 'bash ci-lit.sh')" "printf 'P=/usr/bin/python3\n\"\$P\" -c \"import os\"\n' > ci-lit.sh"
@@ -2795,7 +2795,7 @@ case_ lit-var-eval-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\neva
 
 case_ lit-two-calls-ok ok "$(rb 'bash ci-lit.sh
           bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\$GIT\" status\n' > ci-lit.sh"
-case_ lit-two-scripts-ok ok "$(rb 'bash ci-a.sh
+case_ lit-two-scripts-no-inference-since-r10-bad bad "$(rb 'bash ci-a.sh
           bash ci-b.sh')" "printf 'GIT=/usr/bin/git\ndie() { exit 2; }\n\"\$GIT\" status\n' > ci-a.sh; printf 'GIT=/usr/bin/git\ndie() { exit 2; }\n\"\$GIT\" log\n' > ci-b.sh"
 case_ lit-script-nested-ok ok "$(rb 'bash ci-a.sh')" "printf 'GIT=/usr/bin/git\nbash ci-b.sh\n\"\$GIT\" status\n' > ci-a.sh; printf 'GIT=/usr/bin/git\n\"\$GIT\" log\n' > ci-b.sh"
 case_ lit-other-script-reads-bad bad "$(rb 'bash ci-a.sh
@@ -2903,7 +2903,7 @@ case_ r6-set-e-a-bad bad "$(rb 'set -e -a
           bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
 case_ r6-interactive-bash-bad bad "$(rb 'bash -i ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
 case_ r6-debug-trap-bad bad "$(rb 'bash ci-lit.sh')" "printf 'shopt -s extdebug\ntrap \x27false\x27 DEBUG\nG=/usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
-case_ r6-exit-trap-stays-ok ok "$(rb 'bash ci-lit.sh')" "printf 'trap \x27true\x27 EXIT\nG=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+case_ r6-exit-trap-stays-no-inference-since-r10-bad bad "$(rb 'bash ci-lit.sh')" "printf 'trap \x27true\x27 EXIT\nG=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
 case_ r6-bash-e-u-pipefail-stays-ok ok "$(rb 'bash -euo pipefail ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
 
 # --- review round 7 of PR 351 (both seats)
@@ -2937,6 +2937,15 @@ case_ r9-escaped-quote-in-prompt-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/
 case_ r9-compact-printf-v-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nprintf -vG %%s /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
 case_ r9-compact-read-a-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nread -aG <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
 case_ r9-assignment-text-in-nested-quote-bad bad "$(rb 'bash ci-lit.sh')" "printf 'config=\"\$(printf \x27%%s\\\\n\x27 \"\nG=/usr/bin/git\n\")\"\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+
+# --- review round 9 of PR 351, shrunk by the advisor's pre-decision (Oct 15): a fail-open hold on a NEW ordinary form shrinks the inference to the plain form:
+#     a script with a function, a trap or any builtin that writes variables gets none; a startup variable written through $GITHUB_ENV in any step of the job ends it
+case_ r10-github-env-bash-env-bad bad "$(rb 'echo "BASH_ENV=./ci-env.sh" >> "$GITHUB_ENV"
+      - run: bash ci-lit.sh')" "printf 'readonly G=/usr/bin/docker\n' > ci-env.sh; printf 'G=/usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r10-escaped-delimiter-computed-read-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/usr/bin/git\nread -r -p git\\\\|docker \"\$1\" <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r10-function-in-script-no-inference-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\ndie() { exit 2; }\n\"\$G\" status\n' > ci-lit.sh"
+case_ r10-trap-in-script-no-inference-bad bad "$(rb 'bash ci-lit.sh')" "printf 'trap \x27true\x27 EXIT\nG=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+case_ r10-local-builtin-no-inference-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nf=1\nlocal x=1\n\"\$G\" status\n' > ci-lit.sh"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
