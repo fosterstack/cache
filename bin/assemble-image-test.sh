@@ -5,6 +5,66 @@
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
+cd "$root"
+unset GITHUB_ACTIONS   # the suite is the same on a runner (where it is set) and on a workstation
+# The production scripts have NO test hook (REQ-IMAGE-001-AC12): the tests below run a COPY of bin/assemble-image.sh in which exactly the lines ending
+# in TEST-SUBST are replaced (tool locations, the /work directory, the render directory), inside a FIXTURE REPOSITORY ROOT ($work/air) whose build/
+# directory is the real one with the config, the base lock and the two records the test names put in place of the committed ones (REQ-IMAGE-001-AC10:
+# the script has no option for them). $AI is the wrapper that does that; $AI_PROD is the production file (static checks read it).
+cat >"$work/mkcopy.py" <<'PY'
+import re, sys
+src, out = sys.argv[1:3]
+subst = dict(a.split("=", 1) for a in sys.argv[3:])
+seen, res = set(), []
+for ln in open(src).read().split("\n"):
+    m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=.*#\s*TEST-SUBST", ln)
+    if m:
+        n = m.group(1)
+        if n not in subst: sys.exit("no substitution given for %s" % n)
+        seen.add(n); res.append("%s=%s   # TEST-SUBST" % (n, subst[n]))
+    else:
+        res.append(ln)
+if seen != set(subst): sys.exit("substitutions with no TEST-SUBST line: %s" % sorted(set(subst) - seen))
+open(out, "w").write("\n".join(res))
+PY
+AI_PROD="$AI"
+air="$work/air"; rm -rf "$air"; mkdir -p "$air/bin"
+for f in "$root"/bin/*; do [ "$(basename "$f")" = assemble-image.sh ] || ln -s "$f" "$air/bin/$(basename "$f")"; done
+python3 "$work/mkcopy.py" "$AI_PROD" "$air/bin/assemble-image.sh" \
+  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' 'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' \
+  'APKO=${TEST_APKO:-'"$stubs"'/apko}' 'ENVBIN='"$(command -v env)" 'WORKDIR=${TEST_WORKDIR:-/work}' 'RENDER_DIR=${TEST_RENDER_DIR:-}' \
+  || { echo "FIXTURE SETUP FAILED: assemble-image copy"; exit 1; }
+chmod +x "$air/bin/assemble-image.sh"
+cat >"$work/ai.sh" <<WRAP
+#!/bin/bash
+# the test wrapper of bin/assemble-image.sh: the options the script no longer has become files of the fixture repository root; the work and render
+# directories become the copy's substituted variables
+air="$air"; root="$root"
+OLDPWD_AI=\$(pwd -P)
+absp() { case "\$1" in /*) printf '%s' "\$1";; *) printf '%s' "\$OLDPWD_AI/\$1";; esac; }
+args=(); cfg=; bl=; ir=; kr=; have_cfg=0; have_bl=0; have_ir=0; have_kr=0; variant=
+while [ \$# -gt 0 ]; do
+  case "\$1" in
+    --apko-config) cfg=\$(absp "\$2"); have_cfg=1; shift 2;;
+    --base-lock) bl=\$(absp "\$2"); have_bl=1; shift 2;;
+    --index-record) ir=\$(absp "\$2"); have_ir=1; shift 2;;
+    --key-record) kr=\$(absp "\$2"); have_kr=1; shift 2;;
+    --render-dir) export TEST_RENDER_DIR=\$(absp "\$2"); shift 2;;
+    --variant) variant="\$2"; args+=("\$1" "\$2"); shift 2;;
+    *) args+=("\$1"); shift;;
+  esac
+done
+[ -z "\${ASSEMBLE_WORK_DIR:-}" ] || export TEST_WORKDIR="\$ASSEMBLE_WORK_DIR"
+rm -rf "\$air/build"; cp -RP "\$root/build" "\$air/build"
+put() { rm -f "\$2"; if [ -e "\$1" ] || [ -L "\$1" ]; then cp -P "\$1" "\$2"; fi; }
+case "\$variant" in fips) cf=apko-fips.yaml; lk=apko-fips.base.lock.json;; *) cf=apko.yaml; lk=apko.base.lock.json;; esac
+[ \$have_cfg = 1 ] && put "\$cfg" "\$air/build/\$cf"
+[ \$have_bl = 1 ] && put "\$bl" "\$air/build/locks/\$lk"
+[ \$have_ir = 1 ] && put "\$ir" "\$air/build/locks/archive-index.sha256"
+[ \$have_kr = 1 ] && put "\$kr" "\$air/build/locks/archive-keys.sha256"
+cd "\$air" && exec bash bin/assemble-image.sh "\${args[@]}"
+WRAP
+chmod +x "$work/ai.sh"; AI="$work/ai.sh"
 # ---- begin verbatim sections ----
 export FSCACHE_TEST_MODE=1   # the overrides below (--apko-config, --base-lock, --index-record, --key-record, --*-script) work only in test mode
 # ---- P5 round 1: the archive's index must be the one recorded in build/locks/archive-index.sha256 (fixture record) ------------------------------------
@@ -34,8 +94,8 @@ se() { local ac=$1 d=$2 want=$3 kw=$4; shift 4; $RUNNER "$@"; if [ "$(rc)" = "$w
 # sx <rule> <desc> <rc-test> <cmd...>: exit status satisfies the test ('ne4' = non-zero, not 4, not 127)
 # (setup copied from a section of another PR's file)
 sx() { local ac=$1 d=$2 m=$3; shift 3; $RUNNER "$@"; local r; r=$(rc); if [ "$r" != 0 ] && [ "$r" != 4 ] && [ "$r" != 127 ] && toolrun; then ok; else bad "$ac" "$d (exit $r)"; fi; }
-t "rule 11" "the drivers never call docker build, buildx or goreleaser" bash -c "test -f '$BA' && test -f '$AI' && ! grep -Eq 'docker +(buildx|build)|goreleaser' '$BA' '$AI'"
-t "rule 11" "the drivers never use qemu or emulation (each arch builds natively)" bash -c "test -f '$BA' && test -f '$AI' && ! grep -Eqi 'qemu|binfmt|--platform' '$BA' '$AI'"
+t "rule 11" "the drivers never call docker build, buildx or goreleaser" bash -c "test -f '$BA' && test -f '$AI_PROD' && ! grep -Eq 'docker +(buildx|build)|goreleaser' '$BA' '$AI_PROD'"
+t "rule 11" "the drivers never use qemu or emulation (each arch builds natively)" bash -c "test -f '$BA' && test -f '$AI_PROD' && ! grep -Eqi 'qemu|binfmt|--platform' '$BA' '$AI_PROD'"
 # ===== host guard (owner, Oct 9): no real privileged tool is reachable on a non-Linux host ============================================
 for drv in "$BA" "$AI" "$SP" "$LP"; do
   [ -f "$drv" ] || { bad "host guard" "$(basename "$drv") exists"; continue; }
@@ -43,11 +103,11 @@ for drv in "$BA" "$AI" "$SP" "$LP"; do
   if [ "$(rc)" = 2 ] && grep -Eqi 'Linux' "$work/log" && ! grep -Eq '^(sudo|sysctl|unshare|melange|apko) ' "$CALLS"; then ok; else bad "host guard" "$(basename "$drv") exits 2 naming Linux, before any sudo/sysctl/unshare/melange/apko call, on a non-Linux host (exit $(rc))"; fi
 done
 
-t "rule 20" "no scanner (syft, trivy, grype, bomber, scout) makes or gates an SBOM in the drivers or the module tool" bash -c "test -f '$BA' && test -f '$AI' && test -f '$GS' && ! grep -Eqi '\\b(syft|trivy|grype|bomber|cyclonedx|scout)\\b' '$BA' '$AI' '$GS'"
-nogrep "rule 17" "image assembly, lock tooling and refresh never reference the release key" 'APK_RELEASE_SIGNING_KEY|release\.rsa( |$|")' "$AI" "$LK" "$RF"
+t "rule 20" "no scanner (syft, trivy, grype, bomber, scout) makes or gates an SBOM in the drivers or the module tool" bash -c "test -f '$BA' && test -f '$AI_PROD' && test -f '$GS' && ! grep -Eqi '\\b(syft|trivy|grype|bomber|cyclonedx|scout)\\b' '$BA' '$AI_PROD' '$GS'"
+nogrep "rule 17" "image assembly, lock tooling and refresh never reference the release key" 'APK_RELEASE_SIGNING_KEY|release\.rsa( |$|")' "$AI_PROD" "$LK" "$RF"
 
 # ===== rule 19: signatures are always checked ============================================================================
-nogrep "rule 19" "the skip-signatures switches appear in no workflow, recipe, config or driver" 'ignore-signatures|allow-untrusted|--insecure' $root/.github/workflows/*.yml "$root/build/melange.yaml" "$root/build/melange-fips.yaml" "$root/build/apko.yaml" "$root/build/apko-fips.yaml" "$BA" "$AI" "$LK" "$RF"   # melange pkg/cli/build.go:86, apko internal/cli/build.go:143 and lock.go:115
+nogrep "rule 19" "the skip-signatures switches appear in no workflow, recipe, config or driver" 'ignore-signatures|allow-untrusted|--insecure' $root/.github/workflows/*.yml "$root/build/melange.yaml" "$root/build/melange-fips.yaml" "$root/build/apko.yaml" "$root/build/apko-fips.yaml" "$BA" "$AI_PROD" "$LK" "$RF"   # melange pkg/cli/build.go:86, apko internal/cli/build.go:143 and lock.go:115
 t "rule 19" "apko configs carry the Wolfi key and the assembly key (each package checked against the right key)" y apko-keys "$root/build/apko.yaml"
 t "rule 19" "apko-fips.yaml: the same two keys" y apko-keys "$root/build/apko-fips.yaml"
 
@@ -99,9 +159,9 @@ for v in production fips; do
   t "rule 31" "[$v] the digest follows the built image (a different image gives a different digest)" bash -c "test -s '$o/$v.digest' && test -s '$o3/$v.digest' && ! cmp -s '$o/$v.digest' '$o3/$v.digest'"
 done
 sd "rule 33" "the -fips image is assembled from the -fips config" 'apko-fips\.yaml|fscache-fips' "${aie[@]}" "$AI" "${aif_args[@]}" --out "$(mo)"
-t "rule 25" "assemble-image.sh picks build/apko.yaml for production and build/apko-fips.yaml for fips by default" bash -c "grep -q 'apko-fips.yaml' '$AI' && grep -q 'apko.yaml' '$AI'"
+t "rule 25" "assemble-image.sh picks build/apko.yaml for production and build/apko-fips.yaml for fips by default" bash -c "grep -q 'apko-fips.yaml' '$AI_PROD' && grep -q 'apko.yaml' '$AI_PROD'"
 rd2="$work/render2"; mkdir -p "$rd2"
-t "rule 25" "--render-dir writes the config with the version, no @FSCACHE_VERSION@ left" bash -c "env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' PATH='$stubs':\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' '$AI' ${ai_args[*]} --render-dir '$rd2' --out $(mo) >/dev/null 2>&1; f=\$(ls '$rd2'/*.yaml | head -1); test -n \"\$f\" && ! grep -q @FSCACHE_VERSION@ \$f && grep -Eq 'fscache=0\\.3\\.0-r0' \$f"
+t "rule 25" "--render-dir writes the config with the version, no @FSCACHE_VERSION@ left" bash -c "env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' PATH='$stubs':\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' '$AI_PROD' ${ai_args[*]} --render-dir '$rd2' --out $(mo) >/dev/null 2>&1; f=\$(ls '$rd2'/*.yaml | head -1); test -n \"\$f\" && ! grep -q @FSCACHE_VERSION@ \$f && grep -Eq 'fscache=0\\.3\\.0-r0' \$f"
 # refusals: nothing may run
 sr "rule 31" "assemble refuses without SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
 sr "rule 31" "assemble refuses a non-numeric SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env SOURCE_DATE_EPOCH=never STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
@@ -377,7 +437,7 @@ VICTIM=$(python3 -c 'import json,sys;e=sorted(json.load(open(sys.argv[1]))["cont
 printf '#!/bin/sh\nfor a in "$@"; do case "$a" in %s) exit 0;; esac; done\necho "assemble-image.sh: some reason: %s does not match APKINDEX missing live repository" >&2; exit 1\n' "$fx/archive" "$VICTIM" >"$work/exit1.sh"; chmod +x "$work/exit1.sh"
 sf "rule 36" "lock-proof: a refusal with exit 1 instead of the named refusal exit 2 is not 'failed as required'" 'not the named refusal exit 2' "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/exit1.sh" "${lp_args[@]}"
 lpo2=$(mo); run_s "${aie[@]}" "$LP" --out "$lpo2" --archive "$fx/archive" "${lp_args[@]}"
-t "rule 36" "lock-proof (real assembly): the record holds the positive control, the assembly script path and its sha256, and each case's reason and exit code" bash -c "python3 - '$lpo2/lock-proof.json' '$AI' <<'P'
+t "rule 36" "lock-proof (real assembly): the record holds the positive control, the assembly script path and its sha256, and each case's reason and exit code" bash -c "python3 - '$lpo2/lock-proof.json' '$AI_PROD' <<'P'
 import hashlib, json, sys
 d = json.load(open(sys.argv[1])); ai = sys.argv[2]
 assert d['positive_control'] == 'ok', d
@@ -400,7 +460,7 @@ sr "rule 36" "lock-proof refuses --assemble-script outside test mode (exit 2)" '
 # sealed-proof: scripts only in test mode, recorded; unknown runner version refused outside test mode; quoted args; epoch overflow
 sf "rule 41" "sealed-proof refuses --build-script outside test mode" 'are allowed only in test mode' env -u FSCACHE_TEST_MODE ImageOS=ubuntu24 ImageVersion=20260901 "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/alwaysok.sh" "${sp_common[@]}"
 spo=$(mo); run_s "${spe[@]}" "$SP" --out "$spo" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
-t "rule 42" "sealed-proof: the record says whether test mode was on, and names the two driver scripts with their sha256" bash -c "python3 - '$spo/sealed-record.json' '$BA' '$AI' <<'P'
+t "rule 42" "sealed-proof: the record says whether test mode was on, and names the two driver scripts with their sha256" bash -c "python3 - '$spo/sealed-record.json' '$BA' '$AI_PROD' <<'P'
 import hashlib, json, sys
 d = json.load(open(sys.argv[1]))
 assert d['test_mode'] is True, d
@@ -897,7 +957,7 @@ sr "rule 31" "assemble refuses a byte >= 0x80 in a path argument (named)" 'contr
 # a value such as -P or - must not be read as an option of cd
 # (the script runs from the repository root only, so the directory named -P is made in the root for the run and removed at once)
 mkdir -p "$root/-P"; cp -R "$fx/keyring/." "$root/-P/"
-run_s bash -c "cd '$root' && exec env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' '$AI' --variant production --version 0.3.0 --keyring-dir -P --apko-config '$fx/apko.yaml' --base-lock '$BL' --melange-repo '$fx/melrepo' --key-record '$keyrec' --archive '$fx/archive' --index-record '$idxrec' --out '$(mo)'"
+run_s bash -c "cd '$root' && exec env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' '$AI_PROD' --variant production --version 0.3.0 --keyring-dir -P --apko-config '$fx/apko.yaml' --base-lock '$BL' --melange-repo '$fx/melrepo' --key-record '$keyrec' --archive '$fx/archive' --index-record '$idxrec' --out '$(mo)'"
 t "rule 31" "assemble-image: --keyring-dir '-P' is the directory named -P (cd -P -- is used, not read as an option): success" test "$(cat "$work/rc")" = 0
 rm -rf "$root/-P"
 # a CRLF index record is refused by the assembler too
@@ -966,11 +1026,11 @@ done
 o=$(mo); run_s "${aie[@]}" "$AI" "${ai_args[@]}" --out "$o"; run_s "${aie[@]}" "$AI" "${aif_args[@]}" --out "$o"
 t "chain" "the fips call into the same --out leaves the production result untouched (both layouts, digests and SBOMs are there)" bash -c "test -d '$o/production' && test -d '$o/fips' && test -s '$o/production.digest' && test -s '$o/fips.digest' && test -s '$o/production-sbom/sbom.json' && test -s '$o/fips-sbom/sbom.json' && ! cmp -s '$o/production.digest' '$o/fips.digest'"
 # structure: what the release chain's script judge can list (advisor 0393 item 8 / handoff: no PATH or IFS assignment, no python3 -c or python3 - heredoc, no variable-path interpreter call, literal repo-root paths)
-t "chain" "assemble-image.sh has a shebang and mode 100755 in git" bash -c "head -n 1 '$AI' | grep -Fxq '#!/usr/bin/env bash' && git -C '$root' ls-files -s bin/assemble-image.sh | grep -q '^100755'"
+t "chain" "assemble-image.sh has a shebang and mode 100755 in git" bash -c "head -n 1 '$AI_PROD' | grep -Fxq '#!/usr/bin/env bash' && git -C '$root' ls-files -s bin/assemble-image.sh | grep -q '^100755'"
 nogrep "chain" "assemble-image.sh never assigns PATH, IFS, BASH_ENV or ENV (the judge never waives an assignment)" '(^|[^A-Za-z_$])(export +)?(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)=' "$AI"
 nogrep "chain" "assemble-image.sh has no python3 -c and no python3 - heredoc (helper code lives in a committed, listed file)" 'python3? +-c |python3? +-( |$)|<<.?PY' "$AI"
 nogrep "chain" "assemble-image.sh calls no interpreter, script or tool through a variable path: no \$here/ or \$root/ command words, no \"\$lk\", no \$(...) command word" '\$here/|\$\{here\}|\$root/|"\$lk"|^ *\$\(|command -v' "$AI"
-t "chain" "assemble-image.sh names its helpers by literal repo-root-relative paths (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py)" bash -c "grep -Fq 'bash bin/apko-lock.sh' '$AI' && grep -Fq 'python3 bin/oci-digest.py' '$AI' && grep -Fq 'python3 bin/net-probe.py' '$AI'"
+t "chain" "assemble-image.sh names its helpers by literal repo-root-relative paths (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py)" bash -c "grep -Fq 'bash bin/apko-lock.sh' '$AI_PROD' && grep -Fq 'python3 bin/oci-digest.py' '$AI_PROD' && grep -Fq 'python3 bin/net-probe.py' '$AI_PROD'"
 # run from anywhere but the repository root: exit 2 naming the root, before any tool
 mkdir -p "$work/elsewhere"; : >"$CALLS"
 ( cd "$work/elsewhere" && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$work/elsewhere/o" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
@@ -1030,7 +1090,7 @@ rm -rf "$work/stubs-noapko"; cp -R "$stubs" "$work/stubs-noapko"; rm -f "$work/s
 : >"$CALLS"
 ( PATH="$work/stubs-noapko:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" FSCACHE_TEST_MODE=1 STUB_LOCK_FIPS="$fx/full-fips.lock.json" "$AI" "${ai_args[@]}" --out "$(mo)" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
 if [ "$(rc)" = 1 ] && grep -Eq 'apko is not installed \(the chain installs it before this step\)' "$work/log"; then ok; else bad "chain" "no apko on PATH: exit 1 saying 'apko is not installed (the chain installs it before this step)' (exit $(rc): $(tail -n 2 "$work/log" | tr '\n' ' '))"; fi
-t "chain" "no refusal, comment or message of assemble-image.sh, oci-digest.py, apko-lock.sh or net-probe.py names bin/install-build-tools.sh" bash -c "! grep -n 'install-build-tools' '$AI' '$OD' '$LK' '$NP'"
+t "chain" "no refusal, comment or message of assemble-image.sh, oci-digest.py, apko-lock.sh or net-probe.py names bin/install-build-tools.sh" bash -c "! grep -n 'install-build-tools' '$AI_PROD' '$OD' '$LK' '$NP'"
 
 # ===== advisor (Oct 12): the proofs run as the chain will run them: from the repository root only ====================================
 # lock-proof.sh and sealed-proof.sh exit 2 naming the repository root, before any tool, from anywhere else; from the root they work

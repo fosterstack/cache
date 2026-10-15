@@ -44,6 +44,7 @@ UNSHARE=/usr/bin/unshare             # TEST-SUBST
 APKO=/usr/local/bin/apko             # TEST-SUBST (the chain installs it there)
 ENVBIN=/usr/bin/env                  # TEST-SUBST
 WORKDIR=/work                        # TEST-SUBST (the fixed path the config and the locks name, rule 31)
+RENDER_DIR=                          # TEST-SUBST (empty: a private temporary directory; the tests keep the rendered config)
 
 root=$(cd "$(dirname "$0")/.." && pwd -P)
 die() { echo "assemble-image.sh: $1" >&2; exit "${2:-2}"; }
@@ -52,7 +53,7 @@ is_empty_dir() { "$PY3" -I -B bin/oci-digest.py is-empty "$1" 2>/dev/null; }   #
 [ "$(uname -s)" = Linux ] || die "refusing to run on $(uname -s): this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 [ "$(pwd -P)" = "$root" ] || die "assemble-image.sh runs from the repository root ($root), not from $(pwd -P): the helpers are named by repo-root-relative paths" 2
 
-variant= version= archive= melrepo= keydir= out= render=
+variant= version= archive= melrepo= keydir= out= render=$RENDER_DIR
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || die "missing value for $1"
   case $1 in
