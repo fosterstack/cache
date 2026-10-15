@@ -3170,7 +3170,7 @@ requirements:
       - id: REQ-REFRESH-001-AC23
         given: "bin/refresh-inputs.sh"
         when: "it is read and run"
-        then: "it names curl, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by fixed absolute path (never through the caller's search path; no other utility is called by bare name, cat, sed and dirname being builtins or parameter expansions instead), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it only in the lines marked TEST-SUBST (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
+        then: "it names curl, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path; no other utility is called by bare name, cat, sed and dirname being builtins or parameter expansions instead), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it ONLY in occurrences of those ten fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REFRESH-001-AC24
@@ -3284,7 +3284,7 @@ requirements:
       - id: REQ-ARCHIVE-001-AC9
         given: "bin/archive-push.sh, bin/archive-pull.sh and bin/archive-verify.py"
         when: "they are read and run"
-        then: "the shell scripts name crane, python3, mktemp and rm by fixed absolute path held in a variable (never through the caller's search path, also not inside nested substitutions or quoted words), every python3 runs as python3 -I -B, there is no test hook (no test-mode variable), and bin/archive-test.sh runs a copy that differs from each file only in the lines marked TEST-SUBST (rules 27, 44; same form as REQ-BUILDAPK-001-AC3 and REQ-REFRESH-001-AC23; PROPOSED by the helper: this AC needs the owner's ratification)"
+        then: "the shell scripts name crane, python3, mktemp and rm by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path, also not inside nested substitutions or quoted words), every python3 runs as python3 -I -B, there is no test hook (no test-mode variable), and bin/archive-test.sh runs a copy that differs from each file ONLY in occurrences of those four fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 27, 44; same form as REQ-BUILDAPK-001-AC3 and REQ-REFRESH-001-AC23; PROPOSED by the helper: this AC needs the owner's ratification)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-IMAGE-001
