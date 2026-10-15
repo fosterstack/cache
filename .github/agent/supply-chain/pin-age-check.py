@@ -474,6 +474,7 @@ def _occurrences(root, rev):
     out = {}
     for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_surfaces(root, rev), **inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
         lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
+        _LINE_TEXT[lh] = flat
         per = out.setdefault(k, {})
         per[lh] = per.get(lh, 0) + 1
     return out
@@ -500,6 +501,67 @@ def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised
 # the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the pull request's tree (--root).
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
+TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
+LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): "   # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
+DOWNLOAD_FORM = "a download"
+_LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
+# the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash included, so the host cannot change) followed by
+# exactly ONE variable and nothing else
+_LIVE_URL_VAR = re.compile(r"https://packages\.wolfi\.dev/os/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
+_ANY_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"]+")
+_LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
+
+
+_LIVE_FLAG_PLAIN = {"-f", "-s", "-S", "-L", "-fsSL", "-fsS", "-fSL", "-sSL", "-g", "--globoff", "--fail", "--silent", "--show-error", "--location", "--tlsv1.2"}
+_LIVE_FLAG_VALUE = {"--max-filesize": r"[0-9]+", "--max-time": r"[0-9]+", "--proto": r"=https", "-o": r"[A-Za-z0-9_./${}-]+", "--output": r"[A-Za-z0-9_./${}-]+"}
+
+
+def _live_fetch_line_ok(flat):
+    """The bound line is exactly ONE curl command: curl or /usr/bin/curl, then only flags from a fixed list (with a plain value where one is taken), then exactly one
+    URL operand that is https on the host packages.wolfi.dev; optionally followed by `|| die "plain text" [digit]` or `|| exit N`. The line is split into shell words,
+    so quote concatenation cannot change a word after the check; a variable may appear only as part of the -o file name; no second command, pipe, redirection,
+    substitution, other operand or schemeless host is accepted."""
+    import shlex
+    left, sep, right = flat.partition("||")
+    if sep and not re.fullmatch(r'\s*(?:die(?: "[^"$`\\]*")?(?: [0-9]+)?|exit [1-9][0-9]*)\s*', right):
+        return False
+    if re.search(r"[;&|<>`]|\$\(", left):
+        return False
+    try:
+        w = shlex.split(left, posix=True)
+    except ValueError:
+        return False
+    if len(w) < 3 or w[0] not in ("curl", "/usr/bin/curl") or w[1] not in ("-q", "--disable"):
+        return False                                   # -q first: no default .curlrc (CURL_HOME) can add a URL or an option
+    raw = re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s"']+)+""", left)
+    if len(raw) != len(w):
+        return False
+    for rt in raw:
+        # an expansion, brace, glob or tilde may appear only inside double quotes: unquoted, the shell splits it into several words
+        if re.search(r"[$`{}*?\[\]~]", re.sub(r'"[^"]*"|\'[^\']*\'', "", rt)):
+            return False
+    i, operands, globoff = 2, [], False
+    while i < len(w):
+        t = w[i]
+        if t in _LIVE_FLAG_PLAIN:
+            globoff = globoff or t in ("-g", "--globoff")
+            i += 1
+        elif t in _LIVE_FLAG_VALUE:
+            if i + 1 >= len(w) or not re.fullmatch(_LIVE_FLAG_VALUE[t], w[i + 1]) or (t not in ("-o", "--output") and "$" in w[i + 1]):
+                return False
+            i += 2
+        elif t.startswith("-"):
+            return False                               # an option outside the list (-x, -K, --resolve, --url, an attached value, a cluster not listed)
+        else:
+            operands.append(t)
+            i += 1
+    if len(operands) != 1:
+        return False
+    if _LIVE_URL_VAR.fullmatch(operands[0]) is not None:
+        return globoff                                  # curl itself expands {a,b} and [1-2] in a URL: a variable operand is one transfer only with -g
+    return _LIVE_URL.fullmatch(operands[0]) is not None
+
+
 MAX_RULED_COUNT = 100
 
 
@@ -644,6 +706,10 @@ def _run(a, moved, fx, now):
         # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
+        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING)) for r in rs):
+            rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
+        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
+            rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
