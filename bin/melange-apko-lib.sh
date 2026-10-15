@@ -684,7 +684,7 @@ echo "ENVNAMES=$(env | cut -d= -f1 | grep -Ev '^(STUB_|FAKE_|CALLS$|ImageOS$|Ima
 [ -d "$src/vendor" ] || { echo "stub melange: go build: no vendor directory" >&2; exit 1; }
 if [ -n "${STUB_REQUIRE_REPO:-}" ] && [ -n "$repoapp" ]; then   # like melange: every pinned environment package must be selectable from the repository it was given
   while IFS= read -r pin; do
-    [ -f "$repoapp/$arch/${pin%%=*}-${pin#*=}.apk" ] || { echo "ERROR: unable to select packages: ${pin%%=*} (no such package in $repoapp)" >&2; exit 1; }
+    [ -f "$repoapp/$arch/${pin%%=*}-${pin#*=}.apk" ] || { echo "ERROR: unable to select packages:" >&2; echo "  ${pin%%=*}-${pin#*=} (no such package):" >&2; exit 1; }
   done < <(sed -n 's/^ *- \([A-Za-z0-9._+-]*=[A-Za-z0-9._+~-]*\) *$/\1/p' "$recipe")
 fi
 STUB_SIGNKEY="${STUB_SIGNKEY:-}" STUB_SRC="$src" python3 "$STUB_LIB" stubbuild "$recipe" "$out" "$arch" "$cache"

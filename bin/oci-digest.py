@@ -178,6 +178,8 @@ def apko_layout(members, path):
             fail("%s is missing from the image tar (a per-architecture manifest)" % name)
         if hashlib.sha256(members[name]).hexdigest() != hexd:
             fail("%s does not hash to its name (sha256:%s, a per-architecture manifest)" % (name, hashlib.sha256(members[name]).hexdigest()))
+        if m.get("size") != len(members[name]):
+            fail("the manifest descriptor %s says size %r but the blob holds %d bytes" % (name, m.get("size"), len(members[name])))
         check_manifest_blob(members, members[name], "apko", name, m["platform"]["architecture"])
         lines.append("%s %s" % (m["platform"]["architecture"], m["digest"]))
     return lines
@@ -199,6 +201,8 @@ def standard_layout(members, path):
         fail("%s is missing from the layout (the index)" % name)
     if hashlib.sha256(members[name]).hexdigest() != idx_digest.split(":")[1]:
         fail("%s does not hash to its name (the index)" % name)
+    if entries[0].get("size") != len(members[name]):
+        fail("the index descriptor in index.json says size %r but the index blob holds %d bytes" % (entries[0].get("size"), len(members[name])))
     try:
         idx = json.loads(members[name]); mans = idx["manifests"]
     except (ValueError, KeyError, TypeError):
@@ -215,6 +219,8 @@ def standard_layout(members, path):
             fail("%s is missing from the layout (a per-architecture manifest)" % mn)
         if hashlib.sha256(members[mn]).hexdigest() != m["digest"].split(":")[1]:
             fail("%s does not hash to its name (a per-architecture manifest)" % mn)
+        if m.get("size") != len(members[mn]):
+            fail("the manifest descriptor %s says size %r but the blob holds %d bytes" % (m["digest"], m.get("size"), len(members[mn])))
         check_manifest_blob(members, members[mn], "standard", mn, m["platform"]["architecture"])
         lines.append("%s %s" % (m["platform"]["architecture"], m["digest"]))
     return lines
@@ -641,6 +647,14 @@ def lock_main(argv):
 def main():
     a = sys.argv[1:]
     if len(a) == 5 and a[0] == "unpack":
+        for side in (a[3], a[4]):   # the two result files: never through a link, never inside the layout directory, never the same file
+            if os.path.islink(side) or (os.path.lexists(side) and not os.path.isfile(side)):
+                fail("%s is a link or not a regular file; refusing to write through it" % side)
+        if os.path.realpath(a[3]) == os.path.realpath(a[4]):
+            fail("the digest file and the manifests file are the same file")
+        for side in (a[3], a[4]):
+            if os.path.realpath(side).startswith(os.path.realpath(a[2]) + os.sep):
+                fail("%s is inside the layout directory %s (it would be mixed into the image)" % (side, a[2]))
         lines, members, standard = read_digests(a[1])
         write_layout(members, standard, a[2])
         with open(a[3], "w") as fh:

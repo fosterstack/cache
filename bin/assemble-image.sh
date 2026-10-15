@@ -38,7 +38,7 @@
 set -euo pipefail
 
 # every tool is called by a fixed absolute path held in a variable (REQ-IMAGE-001-AC12); the tests substitute exactly these lines
-HOST_OS=$OSTYPE                     # TEST-SUBST (the shell's own, so the host guard runs no tool)
+HOST_OS=${BASH_VERSINFO[5]}          # TEST-SUBST (the running bash's own build host, read-only and not importable from the environment: no tool, no caller input)
 PY3=/usr/bin/python3                 # TEST-SUBST
 SUDO=/usr/bin/sudo                   # TEST-SUBST
 UNSHARE=/usr/bin/unshare             # TEST-SUBST
@@ -53,7 +53,7 @@ root=$(cd "$here_/.." && pwd -P)
 die() { echo "assemble-image.sh: $1" >&2; exit "${2:-2}"; }
 is_empty_dir() { "$PY3" -I -B bin/oci-digest.py is-empty "$1" 2>/dev/null; }   # a directory that cannot be listed is not empty
 
-[[ $HOST_OS == linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
+[[ $HOST_OS == *linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 [ "$(pwd -P)" = "$root" ] || die "assemble-image.sh runs from the repository root ($root), not from $(pwd -P): the helpers are named by repo-root-relative paths" 2
 
 variant= version= archive= melrepo= keydir= out= render=$RENDER_DIR

@@ -22,7 +22,7 @@
 set -euo pipefail
 
 # every tool is called by a fixed absolute path held in a variable (REQ-IMAGE-001-AC12); the tests substitute exactly these lines
-HOST_OS=$OSTYPE                     # TEST-SUBST (the shell's own, so the host guard runs no tool)
+HOST_OS=${BASH_VERSINFO[5]}          # TEST-SUBST (the running bash's own build host, read-only and not importable from the environment: no tool, no caller input)
 PY3=/usr/bin/python3                 # TEST-SUBST
 SUDO=/usr/bin/sudo                   # TEST-SUBST
 BASHBIN=/bin/bash                    # TEST-SUBST
@@ -30,7 +30,7 @@ case ${BASH_SOURCE[0]} in */*) here_=${BASH_SOURCE[0]%/*};; *) here_=.;; esac   
 here=$(cd "$here_" && pwd)
 die() { echo "lock-proof.sh: $1" >&2; exit "${2:-2}"; }
 
-[[ $HOST_OS == linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
+[[ $HOST_OS == *linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 # the chain runs everything from the repository root, and the drivers it calls refuse anywhere else (exit 2): run it as  bash bin/lock-proof.sh ...  from there
 [ "$(pwd -P)" = "$(cd "$here/.." && pwd -P)" ] || die "usage: run bin/lock-proof.sh from the repository root ($(cd "$here/.." && pwd -P)), not from $(pwd -P)" 2
 

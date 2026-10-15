@@ -26,7 +26,7 @@
 set -euo pipefail
 
 # every tool is called by a fixed absolute path held in a variable (REQ-IMAGE-001-AC12); the tests substitute exactly these lines
-HOST_OS=$OSTYPE                     # TEST-SUBST (the shell's own, so the host guard runs no tool)
+HOST_OS=${BASH_VERSINFO[5]}          # TEST-SUBST (the running bash's own build host, read-only and not importable from the environment: no tool, no caller input)
 PY3=/usr/bin/python3                 # TEST-SUBST
 SUDO=/usr/bin/sudo                   # TEST-SUBST
 UNSHARE=/usr/bin/unshare             # TEST-SUBST
@@ -35,7 +35,7 @@ case ${BASH_SOURCE[0]} in */*) here_=${BASH_SOURCE[0]%/*};; *) here_=.;; esac   
 here=$(cd "$here_" && pwd)
 die() { echo "sealed-proof.sh: $1" >&2; exit "${2:-1}"; }
 
-[[ $HOST_OS == linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
+[[ $HOST_OS == *linux* ]] || die "refusing to run on $HOST_OS: this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself" 2
 # the chain runs everything from the repository root, and the drivers it calls refuse anywhere else (exit 2): run it as  bash bin/sealed-proof.sh ...  from there
 [ "$(pwd -P)" = "$(cd "$here/.." && pwd -P)" ] || die "usage: run bin/sealed-proof.sh from the repository root ($(cd "$here/.." && pwd -P)), not from $(pwd -P)" 2
 
@@ -165,11 +165,12 @@ bwords_nopkg=("${bwords[@]}"); for ((i = 0; i + 1 < ${#bwords_nopkg[@]}; i++)); 
 if "$BASHBIN" bin/build-apk.sh "${bwords_nopkg[@]}" --source-dir "$src" --out "$tmp/neg-build2" >"$tmp/neg3.log" 2>&1; then
   die "the build still succeeded with the declared package $bvictim deleted from its repository: the build is not sealed to its declared inputs (package)"
 fi
-# the build's own "cannot select that package" diagnostic must name the package (a line that merely mentions the name, such as a permission
-# error, is not the reason); apk prints the name on the line after "unable to select packages" in some versions, so that form counts too
-miss_re='unable to select|no such package|nothing provides|not found|is missing|cannot find'
-build_package_reason=$(grep -Ei -- "$miss_re" "$tmp/neg3.log" | grep -F -- "${bpin%%=*}" | tail -n 1 || true)
-if [ -z "$build_package_reason" ] && grep -Eqi -- 'unable to select packages' "$tmp/neg3.log"; then build_package_reason=$(grep -F -- "${bpin%%=*}" "$tmp/neg3.log" | tail -n 1 || true); fi
+# the build's own "cannot select that package" diagnostic must name EXACTLY the removed package on one line that says it cannot be found: the
+# name as a whole token (busybox-extras and a cache for busybox are not busybox), optionally followed by its version (-1.2-r3 or =1.2-r3)
+bname=${bpin%%=*}
+bname_re=$(printf '%s' "$bname" | sed 's/[][\.*^$+?(){}|/]/\\&/g')
+tok_re="(^|[^A-Za-z0-9._+-])${bname_re}(-[0-9][A-Za-z0-9._+~-]*|=[A-Za-z0-9._+~-]+)?([^A-Za-z0-9._+-]|\$)"
+build_package_reason=$(grep -Ei -- 'no such package|nothing provides|unable to select|not found' "$tmp/neg3.log" | grep -E -- "$tok_re" | grep -Ei -- 'no such package|nothing provides|not found|unable to select' | tail -n 1 || true)
 [ -n "$build_package_reason" ] || { tail -3 "$tmp/neg3.log" >&2; die "the build failed with $bvictim deleted, but nothing it printed names ${bpin%%=*} (an unrelated failure proves nothing about rule 41)"; }
 rm -f "$tmp/arch-nopkg/$victim"
 if "$BASHBIN" bin/assemble-image.sh "${awords[@]}" --archive "$tmp/arch-nopkg" --out "$tmp/neg-image" >"$tmp/neg2.log" 2>&1; then
