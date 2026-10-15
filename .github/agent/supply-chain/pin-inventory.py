@@ -234,7 +234,7 @@ def _uses(u, node, out, labels):
         it = Item("action", _local_name(raw), "(local)")
         keys = ("with",) if _LOCAL_CALL.match(u) else ("with", "env")        # a local action also gets the calling step's env; a local workflow call keeps its with: only (its job-level identity is set where its jobs are read)
         callctx = {k: node[k] for k in keys if isinstance(node.get(k), dict) and node[k]}
-        if keys != ("with",) and _ENV_CTX[0].replace("null", ""):      # an absent env/matrix is json "null": no context, no change of key
+        if keys != ("with",) and _ENV_PRESENT[0]:      # no env and no matrix: no context, no change of key
             callctx["inherited"] = _ENV_CTX[0]      # the workflow's and job's env and the job's matrix: a composite reads them too
         if callctx:
             payload = callctx["with"] if list(callctx) == ["with"] else callctx      # with: alone hashes as it always has (a local workflow call's row identity)
@@ -338,7 +338,11 @@ def _asset_word(text, start):
         if stack and stack[-1][0] == "'":
             if c == "'":
                 stack.pop()
+            elif i >= start and depth == d0 and len(stack) == s0 and stack[-1][2] < start and (c.isspace() or c in ";|&<>)"):
+                break                          # a single-quoted program string (bash -c 'curl url/x.tgz -o x'): the name ends at its own word boundary
         elif in_string:                      # inside double quotes, not inside a substitution
+            if i >= start and depth == d0 and len(stack) == s0 and stack and stack[-1][1] == d0 and stack[-1][2] < start and c.isspace():
+                break                        # a double-quoted program string: the name ends at whitespace
             if c == "\\" and i + 1 < n:
                 i += 1
             elif c == '"':
@@ -362,7 +366,7 @@ def _asset_word(text, start):
             elif c == ")" and depth > 0:
                 depth -= 1
             elif c in "'\"":
-                stack.append((c, depth))
+                stack.append((c, depth, i))
             elif i >= start and depth == d0 and len(stack) <= s0 and (c.isspace() or c in ";|&<>)"):
                 break
         i += 1
@@ -370,6 +374,8 @@ def _asset_word(text, start):
 
 
 _ENV_CTX = [""]
+_ENV_PRESENT = [False]    # the workflow or the job sets an env or a matrix: only then does a local action call inherit context
+_JOB_RUNS = [[]]          # the run texts of the steps of the job being read (a step can hand a name to a later one through GITHUB_ENV)
 _INPUT_CTX = [""]   # a composite action's input definitions: part of a release asset's identity only (never of another item's key)
 _TREE = [frozenset()]   # the paths of the tree being inventoried that are read as workflows: a local reusable-workflow call is judged against it (REQ-SUP-001-AC19)
 _FILES = [{}]           # and their text
@@ -410,7 +416,10 @@ def _assign_context(joined, raw):
     export A=x, declare -r A=), so a later one, an indirect one (A=$B) and spacing inside a continued value are all part of a download's identity."""
     byname, order = {}, 0
     for jl, rl in zip(joined, raw):
-        for name in set(m.group(1) for m in _ASSIGN_ANY.finditer(jl)):
+        names = set(m.group(1) for m in _ASSIGN_ANY.finditer(jl))
+        if "=" in jl or re.search(r"\b(?:printf\s+-v|read|mapfile|readarray|declare|typeset|local|export|readonly|eval|let|unset|getopts|set)\b", jl):
+            names |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", jl))     # printf -v A, read A, eval "A=...": any word of such a line may be a name it writes
+        for name in names:
             byname.setdefault(name, []).append((order, jl, rl))
         order += 1
     def refs(t):
@@ -455,7 +464,16 @@ def _step(node, out, labels):
     if isinstance(run, str):
         legacy = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
         legacy_tag = "step:" + hashlib.sha256(legacy.encode("utf-8", "replace")).hexdigest()       # the identity every other placeholder item has always had: its key must not move
-        ctx = node.get("_raw", run) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0] + "\0" + json.dumps(node.get("_assign")) + "\0" + _INPUT_CTX[0]   # a release asset's NAME behind a variable: the RAW step text and every assignment it can read
+        sib = []
+        if _JOB_RUNS[0] and any(("$" in (it.path or "") or "`" in (it.path or "")) or it.rawid for it in out[n0:]):
+            read = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", run)) | set(w for b in re.findall(r"\$\{([^}]*)\}", run) for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", b))
+            for other in _JOB_RUNS[0]:
+                if other == run:
+                    continue
+                for ln in other.split("\n"):
+                    if read & set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ln)):
+                        sib.append(ln)      # an earlier step's line that mentions a name this step reads (echo ASSET=$B >> "$GITHUB_ENV")
+        ctx = node.get("_raw", run) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0] + "\0" + json.dumps(node.get("_assign")) + "\0" + _INPUT_CTX[0] + "\0" + json.dumps(sorted(set(sib)))   # a release asset's NAME behind a variable: the RAW step text and every assignment it can read
         k = 0
         for it in out[n0:]:
             if (("$" in (it.path or "") or "`" in (it.path or "")) or it.rawid) and not it.step:
@@ -558,6 +576,8 @@ def _walk(node, out, labels, path="", in_step=False):
                 top_env = json.dumps(node.get("env"), sort_keys=True, default=str) + json.dumps(node.get("on"), sort_keys=True, default=str)   # a called workflow's input defaults count
                 for job in v.values():
                     _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
+                    _ENV_PRESENT[0] = bool(node.get("env")) or (isinstance(job, dict) and bool(job.get("env") or job.get("strategy")))
+                    _JOB_RUNS[0] = [st.get("run") for st in (job.get("steps") if isinstance(job, dict) and isinstance(job.get("steps"), list) else []) if isinstance(st, dict) and isinstance(st.get("run"), str)]
                     _JOB_SUMS[0] = re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", json.dumps(job, default=str)) if isinstance(job, dict) else []   # a checksum in ANY step of the job (a separate verify step) belongs to the job's downloads
                     n0 = len(out)
                     _walk(job, out, labels, "job:" + k)
@@ -570,6 +590,8 @@ def _walk(node, out, labels, path="", in_step=False):
                             for it in mine:          # a local reusable-workflow call: what it passes in is part of that call's identity
                                 it.step = "with:" + hashlib.sha256(json.dumps(job.get("with"), sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()
                 _ENV_CTX[0] = ""
+                _ENV_PRESENT[0] = False
+                _JOB_RUNS[0] = []
                 _JOB_SUMS[0] = []
                 continue
             _walk(v, out, labels, k, in_step=(k == "steps"))
