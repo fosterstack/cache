@@ -150,6 +150,9 @@ def stage_text(family):
         out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
         if sp.get("setup_go"): out += "      - name: install Go (pinned by checksum)\n        run: %s\n" % S.INSTALL_GO
         for tl in sp.get("tools", ()): out += "      - name: install %s (pinned by checksum)\n        run: %s\n" % (tl.rsplit(" ", 1)[1], tl)
+        # REQ-CHAIN-004-AC16: every job that builds from the archive installs crane (pinned) and pulls the archive by its committed digest, before the downloads
+        out += "      - name: install crane (pinned by checksum)\n        run: %s\n" % S.INSTALL_CRANE
+        out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
@@ -307,6 +310,22 @@ st s_bt_tool   "004-AC3 a third build tool through the same installer" "download
 st s_bt_dest   "004-AC3 the installer given another destination" "install-build-tools.sh melange" 'install-build-tools.sh melange' 'install-build-tools.sh melange /tmp/bin'
 st s_bt_env    "004-AC3 an env on the installer step (a token or secret could reach it before admission)" "install-build-tools.sh apko" "$APKINST" '      - name: install apko (pinned by checksum)\n        env:\n          K: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh apko\n'
 st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
+# REQ-CHAIN-004-AC16 (advisor ACs 10-13 of Oct 15, owner rules 3 and 9): the archive is pulled by the committed digest, by the pinned crane, before anything builds
+CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash bin/install-scanner.sh crane\n'
+PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'
+PULLRUN='run: bash bin/archive-pull.sh --pointer build/archive.json --out archive'
+st s_ar_gone    "AC16 the archive pull is missing from Build's apk job (build-apk.sh --repo archive would find nothing)" "archive-pull.sh" "$PULLSTEP" ''
+st s_ar_crane   "AC16 the crane install is missing (the pull needs the pinned tool)" "install-scanner.sh crane" "$CRANEINST" ''
+st s_ar_order   "AC16 the pull before the crane install" "install-scanner.sh crane" "$CRANEINST$PULLSTEP" "$PULLSTEP$CRANEINST"
+st s_ar_digest  "AC16 the pull names a digest of its own (only the committed one is allowed)" "archive-pull.sh" "$PULLRUN" "$PULLRUN --digest sha256:0000000000000000000000000000000000000000000000000000000000000000"
+st s_ar_out     "AC16 the pull into another directory than archive" "archive-pull.sh" "$PULLRUN" 'run: bash bin/archive-pull.sh --pointer build/archive.json --out arch'
+st s_ar_ptr     "AC16 the pull reads another pointer than build/archive.json" "archive-pull.sh" "$PULLRUN" 'run: bash bin/archive-pull.sh --pointer archive.json --out archive'
+st s_ar_soft    "AC16 a pull that may fail (continue-on-error)" "archive-pull.sh" "$PULLSTEP" "$PULLSTEP        continue-on-error: true\n"
+st s_ar_ortrue  "AC16 a pull whose failure is swallowed" "archive-pull.sh" "$PULLRUN" "$PULLRUN || true"
+st s_ar_env     "AC16 an env on the pull step (a token could reach it before admission)" "archive-pull.sh" "$PULLSTEP" "$PULLSTEP        env:\n          GH_TOKEN: x\n"
+st s_ar_if      "AC16 an if on the pull step (a skipped pull is a build with no archive)" "archive-pull.sh" 'name: pull the archive by its committed digest\n' 'name: pull the archive by its committed digest\n        if: always()\n'
+st s_ar_cdest   "AC16 crane installed to another directory (archive-pull.sh names /usr/local/bin/crane)" "install-scanner.sh crane" 'install-scanner.sh crane' 'install-scanner.sh crane /tmp/bin'
+st s_ar_bycrane "AC16 the archive fetched by a crane command in the stage instead of archive-pull.sh" "archive-pull.sh" "$PULLRUN" 'run: crane pull ghcr.io/fosterstack/archive:latest archive'
 st s_go_other "AC4 the Go install line names another target" "install-scanner.sh go" 'install-scanner.sh go' 'install-scanner.sh go 1.20'
 st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
 st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
@@ -713,6 +732,16 @@ d["scripts"] = d["scripts"][1:]
 json.dump(d, open(sys.argv[2], "w"))
 PY
 expect caught "AC3 a script that is not a row of chain-scripts.json is refused" "not a row" listed "$work/chain-scripts-short.json" "$work/listed"
+# REQ-CHAIN-004-AC16: the two files the stage's pull step runs are rows of the committed list with their committed sha256
+python3 - "$root/.github/policy/chain-scripts.json" "$work/ar-nosha.json" "$work/ar-norow.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+e = json.loads(json.dumps(d)); [r.update(sha256="0" * 64) for r in e["scripts"] if r["path"] == "bin/archive-pull.sh"]; json.dump(e, open(sys.argv[2], "w"))
+f = json.loads(json.dumps(d)); f["scripts"] = [r for r in f["scripts"] if r["path"] != "bin/archive-verify.py"]; json.dump(f, open(sys.argv[3], "w"))
+PY
+expect ok     "AC16 the real chain-scripts.json lists bin/archive-pull.sh and bin/archive-verify.py with their committed sha256" "" archive-listed "$root/.github/policy/chain-scripts.json" "$root"
+expect caught "AC16 archive-pull.sh listed with a sha256 that is not the committed file's" "sha256" archive-listed "$work/ar-nosha.json" "$root"
+expect caught "AC16 archive-verify.py (run by the pull) is not a row of chain-scripts.json" "not a row" archive-listed "$work/ar-norow.json" "$root"
 # ---- the job graph of release.yml (REQ-CHAIN-005-AC5) -----------------------------------------------------------------------------------------
 expect ok "005-AC5 fixture: build -> sign -> check, rebuild beside them, (rebuild, check, sign) -> release; other jobs ignored" "" graph "$work/release.yml"
 gr() { replace "$work/release.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" graph "$work/$1.yml"; return 0; }
