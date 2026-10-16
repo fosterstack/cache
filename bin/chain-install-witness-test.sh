@@ -99,9 +99,10 @@ fi
 # tools/govulncheck (go.mod + go.sum), built with the repo's pinned Go (<dest-dir>/fscache-go/bin/go, which `install-scanner.sh go` made) under
 # GOTOOLCHAIN=local, CGO_ENABLED=0 and the module proxy named in the script (never one from the caller's environment); the module has no vendor/ directory, so Go's own
 # default (read-only modules) applies and the build sets no GOFLAGS at all, and none of the caller's reaches it. Offline: a fake go.
-gv="$work/gv"; mkdir -p "$gv/dest/fscache-go/bin" "$gv/repo/tools/govulncheck" "$gv/nogo" "$gv/repo-nosum/tools/govulncheck" "$gv/repo-nomod/tools"
+gv="$work/gv"; mkdir -p "$gv/dest/fscache-go/bin" "$gv/repo/tools/govulncheck" "$gv/nogo" "$gv/repo-nosum/tools/govulncheck" "$gv/repo-nomod/tools" "$gv/repo-vendor/tools/govulncheck/vendor"
 cp "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$gv/repo/tools/govulncheck/" 2> /dev/null || { printf 'module x\n' > "$gv/repo/tools/govulncheck/go.mod"; printf 'x\n' > "$gv/repo/tools/govulncheck/go.sum"; }
 cp "$gv/repo/tools/govulncheck/go.mod" "$gv/repo-nosum/tools/govulncheck/"
+cp "$gv/repo/tools/govulncheck/go.mod" "$gv/repo/tools/govulncheck/go.sum" "$gv/repo-vendor/tools/govulncheck/"
 cat > "$gv/dest/fscache-go/bin/go" <<'EOF'
 #!/usr/bin/env bash
 . "$(dirname "$0")/.env"      # the installer runs the build in a clean environment (env -i): the test's own settings come from this file
@@ -149,6 +150,7 @@ gvins "govulncheck: no Go toolchain at <dest>/fscache-go is a pipeline failure a
 gvins "govulncheck: a toolchain that is not the pinned Go version is refused" "$gv/repo" "$gv/dest" "go.*PIPELINE failure|PIPELINE failure.*go" GV_GOVER=go1.26.0
 gvins "govulncheck: a missing tools/govulncheck/go.sum is refused (the h1 hashes are the pin)" "$gv/repo-nosum" "$gv/dest" "go\\.sum.*PIPELINE failure|PIPELINE failure.*go\\.sum"
 gvins "govulncheck: no tools/govulncheck module at all is refused" "$gv/repo-nomod" "$gv/dest" "tools/govulncheck.*PIPELINE failure|PIPELINE failure.*tools/govulncheck"
+gvins "govulncheck: a tools/govulncheck/vendor directory is refused (vendor mode does not check contents against go.sum), and nothing is installed" "$gv/repo-vendor" "$gv/dest" "vendor.*PIPELINE failure|PIPELINE failure.*vendor"
 gvins "govulncheck: a failing build is a pipeline failure and installs nothing" "$gv/repo" "$gv/dest" "build.*PIPELINE failure|PIPELINE failure.*build" GV_BUILD_RC=1
 gvins "govulncheck: a built binary that reports another version than the module pins is refused" "$gv/repo" "$gv/dest" "version.*PIPELINE failure|PIPELINE failure.*version" GV_REPORTS=v9.9.9
 # the pin is ONE version in two places that Dependabot moves separately (it bumps tools/govulncheck/go.mod and go.sum; ci.yml's `go install ...@vX` is by hand): the
@@ -194,7 +196,7 @@ else bad "govulncheck: a version token matching the pin as a pattern was accepte
 if ! grep -Eq '\$\{(GOPROXY|GOFLAGS|GOTOOLCHAIN|GOSUMDB|GONOSUMDB|GOPRIVATE|GOWORK)' "$sut" && [ "$(grep -c 'GOPROXY=https://proxy.golang.org' "$sut")" = 1 ] && ! grep -q 'GOSUMDB=off' "$sut"; then
   ok "govulncheck: the proxy is one literal in the script, no Go environment variable is read from the caller, and the checksum database stays on"
 else bad "govulncheck: the installer reads the Go environment from the caller, names another proxy or turns the checksum database off"; fi
-EXPECT=40
+EXPECT=41
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
