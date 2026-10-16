@@ -1939,6 +1939,56 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
 
+  - id: REQ-REL-010
+    title: Our OpenVEX is attached to each published image index for Docker Scout
+    statement: >
+      The final image index that Sign signs and Release publishes shall carry our OpenVEX as attestation children, one per
+      platform, and nothing after Sign shall change any digest. Owner, RATIFIED Oct 3: "Docker main path as attestation!!!!!
+      We want that and we tell users it's the easiest path for seeing scanner omit findings that are just noise." Owner,
+      RATIFIED Oct 7: every change to our published VEX cuts an automatic patch release.
+    source: [bin/vex-index.py, .github/workflows/stage-build.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: advisor reading Oct 16 of the owner's Oct 3 and Oct 7 rules (ops outbox 2026-10-16-ops-v030-scout-vex-plan.md section 3; handoff 0470); the ACs state what it takes to meet his words
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-010-AC1
+        given: "Build's image layouts and the tag's .vex/ OpenVEX file"
+        when: "Build writes digests.json"
+        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's exact bytes and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-010-AC2
+        given: "the same inputs"
+        when: "Build and Rebuild each make the final index"
+        then: "the two are byte-identical (Rebuild's comparison covers it)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-010-AC3
+        given: "the final index"
+        when: "its attestation children are removed"
+        then: "every platform image and the index's other entries are byte-identical to what Build made without them"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-010-AC4
+        given: "Sign's digest list"
+        when: "Release publishes"
+        then: "the digest customers pull equals the digest the signature, provenance and release manifest name, and no step after Sign attaches, adds or changes an attestation (an attempt is refused)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-010-AC5
+        given: "a changed OpenVEX for an already published version"
+        when: "the pipeline runs"
+        then: "it makes no change to that version's image; the change reaches images only through the next automatic patch release"
+        verification: { method: unit, release_blocking: false }
+        status: proposed
+      - id: REQ-REL-010-AC6
+        given: "the published final index"
+        when: "Docker Scout scans it by tag and by exact digest with our author"
+        then: "it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image"
+        verification: { method: acceptance-release-artifact, release_blocking: false }
+        status: proposed
+
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >
