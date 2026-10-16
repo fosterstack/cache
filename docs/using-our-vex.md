@@ -23,7 +23,7 @@ Set the version you run:
 VER=X.Y.Z
 ```
 
-Look up the image digest you run (`cache:${VER}` is the production image; use the tag of the variant you run):
+Look up the image digest you run (`cache:${VER}` is the production image; for the FIPS image use `cache:${VER}-fips` in this command):
 
 ```sh
 DIGEST=$(docker buildx imagetools inspect "ghcr.io/fosterstack/cache:${VER}" --format '{{.Manifest.Digest}}')
@@ -54,6 +54,7 @@ jq -r '.vex[] | "\(.sha256)  \(.file)"' release-manifest.verified.json | sha256s
 ```
 
 Every line must say `OK`. If `cosign` reports an error, or a line says `FAILED`, stop: do not load the files.
+On macOS use `shasum -a 256 -c` in place of `sha256sum -c`, and `base64 -D` in place of `base64 -d` before macOS 14.
 
 ## 2. Load them into your scanner
 
