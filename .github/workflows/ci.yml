@@ -50,6 +50,8 @@ jobs:
         run: go mod verify
       - name: vendor/ is what go mod vendor regenerates
         run: bash bin/vendor-check.sh
+      - name: dependency-provenance.json lists the modules of vendor/ with the hashes of go.sum (REQ-VEND-001-AC4)
+        run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json
 
   # test-strategy.md §6: the coverage RATCHET. Fails when total statement
   # coverage of non-excluded Go code drops below the committed floor
@@ -321,9 +323,17 @@ jobs:
       - name: apk build driver and release signing regressions
         run: bash bin/build-apk-test.sh
 
+      - name: input refresh script regressions
+        run: bash bin/refresh-inputs-test.sh
+
+      - name: archive push, pull and verify regressions
+        run: bash bin/archive-test.sh
+
       - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
         run: python3 bin/gen-recipes.py --check
 
+      - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
+        run: bash bin/vendor-provenance-test.sh </dev/null
       - name: image assembly, lock proof and sealed proof regressions
         run: bash bin/assemble-image-test.sh
 
