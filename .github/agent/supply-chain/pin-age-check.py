@@ -924,9 +924,9 @@ def _has_cr(root, rev, path):
     key = (root, rev, path)
     if key not in _RAW_CR:
         try:
-            raw = subprocess.run(["git", "-C", root, "show", f"{rev}:{path}"], capture_output=True, check=True).stdout if rev is not None else open(os.path.join(root, path), "rb").read()
+            raw = subprocess.run(["git", "-C", root, "show", f"{rev}:{path}"], capture_output=True, check=True, timeout=120).stdout if rev is not None else open(os.path.join(root, path), "rb").read()
             _RAW_CR[key] = b"\r" in raw
-        except (OSError, subprocess.CalledProcessError):
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             _RAW_CR[key] = True
     return _RAW_CR[key]
 
