@@ -1222,7 +1222,7 @@ def signed_index(path, text):
 moved = json.load(open(work + "/ff-mel-moved.json"))
 for a in ("x86_64", "aarch64"):
     os.makedirs("%s/%s" % (ffl, a))
-    for src in (fx + "/live/" + a, fx + "/envrepo/" + a):
+    for src in (fx + "/live/" + a, fx + "/envrepo/" + a, fx + "/archive/" + a):
         for f in os.listdir(src):
             if f.endswith(".apk") and not os.path.exists("%s/%s/%s" % (ffl, a, f)):
                 shutil.copy("%s/%s" % (src, f), "%s/%s/%s" % (ffl, a, f))
@@ -1236,7 +1236,7 @@ for a in ("x86_64", "aarch64"):
     text = open("%s/itext-%s" % (fx, a), "rb").read().decode()
     extra = "".join("C:%s\nP:%s\nV:%s\n\n" % (e["checksum"], e["name"], e["version"]) for e in moved["contents"]["packages"] if e["architecture"] == a and e["name"] == "busybox")
     signed_index("%s/%s/APKINDEX.tar.gz" % (ffl, a), (text.rstrip("\n") + "\n\n" + extra).encode())
-    noold = "\n\n".join(st for st in text.split("\n\n") if "P:busybox\nV:%s\n" % bbv not in st)
+    noold = "\n\n".join(st for st in text.split("\n\n") if not {"P:busybox", "V:" + bbv} <= set(st.split("\n")))
     signed_index("%s/%s/APKINDEX-noold.tar.gz" % (ffl, a), (noold.rstrip("\n") + "\n\n" + extra).encode())
 P
 ffrun() {   # $1 = live fetch dir; the live melange resolution has moved busybox on, the production lock is unchanged
@@ -1247,7 +1247,7 @@ ffempty() { mkrepo; /bin/rm -f "$work/rp/build/locks/archive-index.sha256" "$wor
 ffempty; ffrun "$ffl"
 t "AC32" "first fill: an archive with only the key, no build/archive.json, a committed melange.lock version the live resolution moved past, still served and listed in the signed live index: exit 0 and the old version is archived, byte for byte" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -f '$work/ar/x86_64/busybox-$ffbv.apk' && cmp -s '$work/ar/x86_64/busybox-$ffbv.apk' '$ffl/x86_64/busybox-$ffbv.apk'"
 t "AC32" "first fill: the old version was fetched (its package file name is in the fetch log)" bash -c "grep -q 'busybox-$ffbv.apk' '$CALLS'"
-ffempty; : >"$work/ar/x86_64/stray.apk"; ffrun "$ffl"
+ffempty; mkdir -p "$work/ar/x86_64"; : >"$work/ar/x86_64/stray.apk"; ffrun "$ffl"
 t "AC32" "first fill mutant: an archive that holds anything beside the key never takes the first-fill path: exit 1 naming the old version, which is not fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'busybox-$ffbv' '$work/log' && ! grep -q 'busybox-$ffbv.apk' '$CALLS'"
 ffempty; printf '{"version":1}\n' >"$work/rp/build/archive.json"; ffrun "$ffl"
 t "AC32" "first fill mutant: a build/archive.json in the repository never takes the first-fill path: exit 1, the old version is not fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q 'busybox-$ffbv.apk' '$CALLS'"
