@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 88 |
-| Acceptance criteria | 353 |
+| Acceptance criteria | 354 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 332 |
+| ACs with mapped evidence | 333 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
@@ -1214,6 +1214,7 @@ Once a day a job shall re-make the image lock files and re-resolve melange's bui
 | REQ-REFRESH-001-AC29 | Given the refresh job found any update; when it finishes; then it opens a pull request on its own refresh/ branch that moves the build to the new versions, targeting main; the job never merges or approves it, never pushes to main or to any branch not under refresh/, and opens nothing and pushes nothing when nothing changed; with a refresh pull request already open it opens no second (owner Oct 14 rule 7, in his words) | unit |  | approved | 2 item(s) |
 | REQ-REFRESH-001-AC30 | Given the live Wolfi signing key differs from the archived one; when the refresh job runs; then it exits 3 saying a human must look, opens no pull request, stores nothing, and its later steps do not run (rule 6, first step) | unit |  | approved | 2 item(s) |
 | REQ-REFRESH-001-AC31 | Given bin/go-freshness-wiring-test.sh; when it runs; then it lists the refresh job as a consumer of the auditor App's credential, requires the jobs of go-freshness.yml to be exactly check, mutation and refresh, requires every action reference in the refresh job to be a commit digest with a tag comment, and fails on a copy that changes any of AC24 to AC30's properties | unit |  | approved | 1 item(s) |
+| REQ-REFRESH-001-AC32 | Given an archive that holds nothing but keys/wolfi-signing.rsa.pub and a repository whose main has no build/archive.json (the first fill), and a package version that the committed production lock, the committed FIPS lock or the committed build/locks/melange.lock names and the live resolution no longer does; when bin/refresh-inputs.sh refresh runs; then it also fetches that version if Wolfi still serves it and archives it only after verifying it: a version named by a committed production or FIPS lock against that lock's checksums, exactly as any package; a version named only by the committed melange.lock (name=version, no checksums) against the checksum listed for the same name, version and architecture in the live package index, after that index's signature was verified against the archived key, and against the integrity floor of a whole package; a version that is not served, has no entry in the live index, or whose checksum differs stops the job (exit 1, naming the package) with nothing written; with an archive that holds anything else, or with a build/archive.json in the repository, no such version is ever fetched and a missing one stops the job as AC17 says (rules 27, 44; advisor reading Oct 16 under the owner's Oct 13 latitude: the only state in which the committed versions can never already be in the archive) | unit |  | approved | 1 item(s) |
 
 ## ARCHIVE
 
