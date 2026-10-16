@@ -7,7 +7,7 @@
  "branch-sweep-test.sh": 156,
  "chain-bind-test.sh": 97,
  "chain-build-admit-test.sh": 135,
- "chain-build-wiring-test.sh": 728,
+ "chain-build-wiring-test.sh": 741,
  "chain-check-scripts-test.sh": 309,
  "chain-check-wiring-test.sh": 269,
  "chain-hostile-test.sh": 253,
@@ -17,7 +17,7 @@
  "chain-records-test.sh": 97,
  "chain-release-metadata-test.sh": 100,
  "chain-release-scripts-test.sh": 385,
- "chain-release-wiring-test.sh": 219,
+ "chain-release-wiring-test.sh": 222,
  "chain-sign-wiring-test.sh": 1327,
  "chain-snapshot-test.sh": 160,
  "chain-verify-test.sh": 816,
@@ -53,6 +53,7 @@
  "verify-release-guide-test.sh": 69,
  "vex-both-scanners-test.sh": 7,
  "vex-forms-test.sh": 64,
+ "vex-index-test.sh": 1159,
  "vex-scope-test.sh": 7,
  "workflow-consolidation-test.sh": 80
 }

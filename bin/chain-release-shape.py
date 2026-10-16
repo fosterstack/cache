@@ -213,6 +213,11 @@ def stage(path):
     if ws != ["W:" + s for s in STEPS]:
         bad.append("the witnessed steps must be exactly %s, in this order, found %s" % (STEPS, [w[2:] for w in ws]))
     last_w = max((i for i, k in enumerate(kinds) if k.startswith("W:")), default=-1)
+    first_w = min((i for i, k in enumerate(kinds) if k.startswith("W:")), default=-1)
+    if first_w >= 0 and any(not k.startswith("W:") for k in kinds[first_w:last_w + 1]):
+        bad.append("between the first and the last Witness step there must be Witness steps only (an install, a download or an upload in between is refused): %s" % kinds[first_w:last_w + 1])
+    if any(k.startswith("install:") for k in kinds[5:]):
+        bad.append("between the checkout and the downloads exactly the four installs are allowed, and no install after them: %s" % kinds)
     if any(k != "up" for k in kinds[last_w + 1:]) or not ups:
         bad.append("only uploads may follow the witnessed steps, and there must be at least one")
     text = open(path).read()
