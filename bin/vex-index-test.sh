@@ -3185,6 +3185,65 @@ def _(arg):
     ok(not any(k.startswith("blobs/sha256/") and k not in t0 and not k.endswith("d" * 64) for k in new), "a blob of this run was left behind: %r" % new)
 
 
+def _replace_dir(rel):
+    def f(d, fx):
+        moved = d + "-moved-" + rel.replace("/", "_")
+        os.rename(os.path.join(d, rel), moved)
+        os.makedirs(os.path.join(d, rel, "sha256") if rel == "blobs" else os.path.join(d, rel))
+    return f
+
+
+def _replace_layout_root(d, fx):
+    os.rename(d, d + "-moved-root")
+    shutil.copytree(d + "-moved-root", d, symlinks=True)
+
+
+@param("LAYOUT", "a directory of the layout replaced by another one while the tool works (blobs/, blobs/sha256/, the layout itself; at either step) fails the run and commits nothing", [
+    (k, (f, when)) for k, f in (("blobs/", _replace_dir("blobs")), ("blobs/sha256/", _replace_dir("blobs/sha256")), ("the layout directory", _replace_layout_root))
+    for when in ("after the first blob", "in the last pass")])
+def _(arg):
+    swap, when = arg
+    fx = mk_fx()
+    d, _b = mk_layout(fx)
+    vb = wr(os.path.join(sb(), "vex.json"), vex_real())
+    m = _load_tool()
+    state = {"done": False, "hash_calls": 0}
+    real_create, real_hash = m.create_file, m.hash_blobs
+
+    def once():
+        if not state["done"]:
+            state["done"] = True
+            swap(d, fx)
+    if when == "after the first blob":
+        def create(dir_fd, name, data):
+            real_create(dir_fd, name, data)
+            if not name.endswith(".tmp"):
+                once()
+        m.create_file = create
+    else:
+        def hashing(blobs):
+            state["hash_calls"] += 1
+            out = real_hash(blobs)
+            if state["hash_calls"] == 2:
+                once()
+            return out
+        m.hash_blobs = hashing
+    old, sys.argv = sys.argv, ["vex-index", "layout", "--layout", d, "--vex", vb]
+    code = None
+    try:
+        try:
+            m.main()
+        except SystemExit as e:
+            code = e.code
+    finally:
+        sys.argv = old
+    ok(state["done"], "the change was never made (harness)")
+    ok(code not in (0, None), "the run must fail, got %r" % (code,))
+    top = json.loads(rd(os.path.join(d, "index.json")))      # what is reachable by the layout's name
+    ok(top["manifests"][0]["digest"] == dg(fx.bytes), "a final index must not be reachable by the layout's name")
+
+
+
 @case("AC3", "verify needs --base (the exclusion of D from the attestations cannot be checked without it)")
 def _():
     fx = mk_fx()

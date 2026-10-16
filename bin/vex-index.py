@@ -807,9 +807,30 @@ def read_index_blob(blobs, entry, limit):
     return data
 
 
-def layout_state_problem(layout_fd, blobs, files, blob_sizes):
+def same_directory(fd, parent_fd, name):
+    """the directory entry name of parent_fd (no symlink followed) is the very directory fd holds open"""
+    try:
+        now, held = os.stat(name, dir_fd=parent_fd, follow_symlinks=False), os.fstat(fd)
+    except OSError:
+        return False
+    return stat.S_ISDIR(now.st_mode) and (now.st_dev, now.st_ino) == (held.st_dev, held.st_ino)
+
+
+def directories_held(layout_fd, blobs, root_path):
+    """the layout, its blobs/ and blobs/sha256/ are still, by name, the directories this run holds open"""
+    parent_fd, name = open_parent(root_path)
+    try:
+        root_ok = same_directory(layout_fd, parent_fd, name)
+    finally:
+        os.close(parent_fd)
+    return root_ok and same_directory(blobs.root_fd, layout_fd, "blobs") and same_directory(blobs.sha_fd, blobs.root_fd, "sha256")
+
+
+def layout_state_problem(layout_fd, blobs, files, blob_sizes, root_path):
     """why the layout is not exactly the expected state (top-level files by name with their bytes, blobs with their sizes), or None;
     the blobs are hashed first and every listing and file is read after that, so a change during the hashing is seen too"""
+    if not directories_held(layout_fd, blobs, root_path):
+        return "a directory of the layout was replaced while it was open"
     if hash_blobs(blobs) != blob_sizes:
         return "the blobs are not the expected ones"
     if list_directory(layout_fd, "the layout") != dict({name: stat.S_IFREG for name in files}, blobs=stat.S_IFDIR):
@@ -821,6 +842,8 @@ def layout_state_problem(layout_fd, blobs, files, blob_sizes):
     for name, data in files.items():
         if read_regular(layout_fd, name, MAX_INDEX_BYTES, name) != data:
             return "%s is not the expected file" % name
+    if not directories_held(layout_fd, blobs, root_path):      # once more after the hashing and reading
+        return "a directory of the layout was replaced while it was open"
     return None
 
 
@@ -857,12 +880,12 @@ def command_layout(args):
                 create_file(blobs.sha_fd, hex_of(digest), data)
                 created.append(hex_of(digest))
         sizes = dict(before, **{hex_of(d): len(planned[d]) for d in planned})
-        problem = layout_state_problem(layout_fd, blobs, dict(snapshot, **{tmp: top_out}), sizes)
+        problem = layout_state_problem(layout_fd, blobs, dict(snapshot, **{tmp: top_out}), sizes, args.layout)
         if problem:
             raise Refuse("the layout changed while this run was working (%s); nothing was committed" % problem)
         os.rename(tmp, "index.json", src_dir_fd=layout_fd, dst_dir_fd=layout_fd)
         tmp_made = False
-        problem = layout_state_problem(layout_fd, blobs, {"oci-layout": snapshot["oci-layout"], "index.json": top_out}, sizes)
+        problem = layout_state_problem(layout_fd, blobs, {"oci-layout": snapshot["oci-layout"], "index.json": top_out}, sizes, args.layout)
         if problem:
             raise Refuse("the layout changed during the commit (%s); it is not trustworthy" % problem)
     except BaseException:
