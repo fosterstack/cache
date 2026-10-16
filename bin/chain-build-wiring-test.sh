@@ -1258,6 +1258,20 @@ for image in ("production", "fips"):
     atts = [k for k in kids if (k.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"]
     assert len(kids) == 4 and len(atts) == 2, image                                  # two platforms, one attestation child each
     assert kids[:2] == json.loads(open("%s/%s/blobs/sha256/%s" % (d, layout, base.split(":")[1]), "rb").read())["manifests"], image   # AC3: the original entries first and unchanged
+    # "content" cannot drift into "roughly the same" (advisor, Oct 16): every attestation's statement holds the VEX document whole, and a copy of the file with ONE value changed
+    # (a statement's impact text, then the document's version) is refused by the layout check
+    doc = json.load(open(d + "/" + vex))
+    blob = lambda dg: open("%s/%s/blobs/sha256/%s" % (d, layout, dg.split(":")[1]), "rb").read()
+    for att in atts:
+        manifest = json.loads(blob(att["digest"]))
+        statement = json.loads(blob(manifest["layers"][0]["digest"]))
+        assert statement["predicate"] == doc, "%s: an attestation does not hold the whole VEX document" % image
+    for label, edit in (("impact text", lambda x: x["statements"][0].__setitem__("impact_statement", str(x["statements"][0].get("impact_statement", "")) + " changed")),
+                        ("document version", lambda x: x.__setitem__("version", x["version"] + 1))):
+        other = json.loads(json.dumps(doc)); edit(other)
+        json.dump(other, open(d + "/other-vex.json", "w"))
+        r = subprocess.run([sys.executable, "bin/vex-index.py", "verify-layout", "--layout", layout, "--vex", "other-vex.json", "--base-digest", base], cwd=d, capture_output=True, text=True)
+        assert r.returncode == 2, "%s: a VEX file with a changed %s was accepted by verify-layout" % (image, label)
 PY
   then ok "REQ-REL-010-AC1/AC3 $t assemble $v: each image's index is the final index (one attestation child per platform, the rest as built), and Build records its digest"
   else bad "REQ-REL-010-AC1/AC3 $t assemble $v: rc=$rc, the final index is not what the VEX attach must leave"
