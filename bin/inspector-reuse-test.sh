@@ -270,6 +270,19 @@ put("ref-null", lambda s: [c.__setitem__("bom-ref", None) for c in s["components
 put("ref-empty", lambda s: [c.__setitem__("bom-ref", "") for c in s["components"] if c.get("bom-ref") == aff])
 put("ref-num", lambda s: [c.__setitem__("bom-ref", 7) for c in s["components"] if c.get("bom-ref") == aff])
 PY
+# every component of the answer must be usable by both readers (Codex #188 r5): a purl that is not a string, a component with neither purl nor name, a non-object member
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+f = json.load(open(w + "/f-vuln.json"))
+def put(name, mut):
+    g = json.loads(json.dumps(f)); mut(g["sbom"]["components"]); json.dump(g, open("%s/v-bad-%s.json" % (w, name), "w"))
+put("comp-purlnum", lambda cs: cs.append({"bom-ref": "extra1", "purl": 5, "name": "x"}))
+put("comp-noident", lambda cs: cs.append({"bom-ref": "extra2"}))
+put("comp-notobj", lambda cs: cs.append("extra3"))
+put("comp-namenum", lambda cs: cs.append({"bom-ref": "extra4", "name": 7}))
+PY
+for n in comp-purlnum comp-noident comp-notobj comp-namenum; do vtry "an answer carrying a component the readers cannot use ($n)" 1 "$w/v-bad-$n.json"; done
 for n in ref-dup ref-dangling ref-null ref-empty ref-num; do vtry "an answer whose component references are not unique, not strings, or do not resolve ($n)" 1 "$w/v-bad-$n.json"; done
 vtry "an empty file" 1 "$w/m4.json"
 ls "$w" | grep -q "findings" && bad "validate: wrote something" || ok "validate: writes nothing"

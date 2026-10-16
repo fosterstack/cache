@@ -130,7 +130,7 @@ def check_answer(path, req_pairs):
     sbom = doc.get("sbom") if isinstance(doc, dict) else None
     if not isinstance(sbom, dict) or sbom.get("bomFormat") != "CycloneDX" or not isinstance(sbom.get("components"), list):
         raise ValueError("not a ScanSbom envelope")
-    if not set(req_pairs) <= set(component_pairs(sbom["components"], False)):
+    if not set(req_pairs) <= set(component_pairs(sbom["components"], True)):
         raise ValueError("the answer does not cover the requested inventory")
     # a findings field that is present must be a list of objects that each carry an id: anything else would read as "no findings" in the gate
     # (`or []`), so it is refused here (fail closed); an absent field is the service's answer for an image without findings
