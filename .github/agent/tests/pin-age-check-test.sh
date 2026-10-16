@@ -3162,6 +3162,103 @@ ok = tree("A", 'curl "' + url + 'x.tgz?download=${A}"')
 assert all(it.step for it in inv.inventory(ok).values()), sorted(inv.inventory(ok))   # fail-closed: no refinement for a quoted word that is the URL (advisor 0442)
 PY
 
+# --- handoff 0452, exception 1 (owner ratified Oct 15, ratify/2026-10-15-download-age-three-exceptions.md): the vendored tree is not inventoried ---
+vscript='#!/bin/sh\n$cmd docker run --rm --volume /x:/build generate:$GOOS\ngo run mksyscall.go\ncargo install ripgrep\n'
+newcase vnd1 "$(printf 'import pathlib\nd = pathlib.Path(\"vendor/golang.org/x/sys/unix\")\nd.mkdir(parents=True, exist_ok=True)\n(d / \"mkall.sh\").write_text(\"%s\")' "$vscript")"
+runck vnd1 '{"times": {}}'
+CASE="an upstream script added under the top-level vendor/ is not inventoried (exit 0)"
+check test "$rc" -eq 0
+newcase vnd2 "$(printf 'import pathlib\nd = pathlib.Path(\"pkg/vendor/unix\")\nd.mkdir(parents=True, exist_ok=True)\n(d / \"mkall.sh\").write_text(\"%s\")' "$vscript")"
+runck vnd2 '{"times": {}}'
+CASE="the same script under pkg/vendor/ (not the top-level vendor/) is still refused (exit 1)"
+check test "$rc" -eq 1
+newcase vnd3 "$(printf 'import pathlib\nd = pathlib.Path(\"vendor-x\")\nd.mkdir(parents=True, exist_ok=True)\n(d / \"mkall.sh\").write_text(\"%s\")' "$vscript")"
+runck vnd3 '{"times": {}}'
+CASE="the same script under vendor-x/ is still refused (exit 1)"
+check test "$rc" -eq 1
+newcase vnd4 "$(printf 'import pathlib\nd = pathlib.Path(\"Vendor\")\nd.mkdir(parents=True, exist_ok=True)\n(d / \"mkall.sh\").write_text(\"%s\")' "$vscript")"
+runck vnd4 '{"times": {}}'
+CASE="the same script under Vendor/ (another case) is still refused (exit 1)"
+check test "$rc" -eq 1
+
+# --- the vendor/ skip is safe only while nothing outside vendor/ runs or installs from it. Held by a FILE-LEVEL rule (advisor, Oct 15, after eight rounds on command
+#     scanning): a non-comment line of a scanned file outside vendor/ that names the vendored folder is refused unless the file is one of the exact listed paths.
+vfile() { # NAME PATH 'LINE': base has no such file; head adds PATH (a .sh script, or a workflow step line) naming LINE
+  python3 - "$1" "$2" "$3" <<'PY' > "$work/vc-$1.py"
+import json, sys
+name, path, line = sys.argv[1:4]
+body = ("on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: " + line + "\n") if path.endswith(".yml") else ("#!/bin/sh\n" + line + "\n")
+print("import pathlib\nroot = pathlib.Path('.')\n(root / 'vendor/example.test/dep').mkdir(parents=True, exist_ok=True)\n"
+      "(root / 'vendor/example.test/dep/install.sh').write_text('go install example.test/tool@v1.2.3\\n')\n"
+      "p = root / " + json.dumps(path) + "\np.parent.mkdir(parents=True, exist_ok=True)\np.write_text(" + json.dumps(body) + ")")
+PY
+  newcase "vc-$1" "$(cat "$work/vc-$1.py")"; runck "vc-$1" '{"times": {}}'
+}
+for v in "run-script:bash vendor/example.test/dep/install.sh" "make-C:make -C vendor/example.test/dep" "python-module:python3 -m vendor.example.test.dep.run" \
+         "cd-group:(cd vendor/example.test/dep \&\& make)" "sudo-long:sudo --user root bash vendor/example.test/dep/install.sh" \
+         "abs-env:/usr/bin/env bash vendor/example.test/dep/install.sh" "process-subst:diff expected.txt <(bash vendor/example.test/dep/generate.sh)" \
+         "sed-program:sed -f vendor/example.test/dep/transform.sed input.txt" "redirect-first:2>/dev/null bash vendor/example.test/dep/install.sh" \
+         "pip-constraint:pip install -r requirements.txt -c vendor/example.test/dep/constraints.txt" "docker-bare:docker build vendor" \
+         "list-only:ls vendor/" "cp-bare:cp -R vendor /tmp/v" "quoted-assign:CFLAGS=\"-O2 -g\" bash vendor/example.test/dep/install.sh"; do
+  vfile "${v%%:*}" .github/workflows/w.yml "${v#*:}"
+  CASE="a new workflow step that names the vendored folder is refused, whatever the command: ${v%%:*} (exit 1)"
+  check test "$rc" -eq 1
+  vfile "sh-${v%%:*}" tools/new.sh "${v#*:}"
+  CASE="a new script that names the vendored folder is refused: ${v%%:*} (exit 1)"
+  check test "$rc" -eq 1
+done
+for v in "quote-split:bash ven\"\"dor/example.test/dep/install.sh" "backslash-split:bash ven\\dor/example.test/dep/install.sh" \
+         "bracket-letter:bash vendo[r]/example.test/dep/install.sh" "star-letter:bash v*ndor/example.test/dep/install.sh" \
+         "question-letter:bash vend?r/example.test/dep/install.sh" "quoted-hash:printf %s ' #'; bash vendor/example.test/dep/install.sh" \
+         "mod-word-not-go:ls mod vendor/example.test/dep" "mod-flag-path:ls -mod=vendor/example.test/dep" \
+         "yaml-hex-escape:bash \\x76endor/example.test/dep/install.sh" "yaml-unicode-escape:bash ven\\u0064or/example.test/dep/install.sh"; do
+  vfile "obf-${v%%:*}" .github/workflows/w.yml "${v#*:}"
+  CASE="a spelling of the vendored folder that the shell or YAML reads as vendor/ is refused: ${v%%:*} (exit 1)"
+  check test "$rc" -eq 1
+done
+# an executable surface the scan did not read (python helper, Makefile, Dockerfile) that names vendor/ is refused too
+for f in "bin/helper.py:import subprocess\nsubprocess.run(['bash', 'vendor/example.test/dep/install.sh'])" "Makefile:all:\n\tbash vendor/example.test/dep/install.sh" "build/docker/Dockerfile.probe:RUN sh vendor/example.test/dep/install.sh"; do
+  fp=${f%%:*}; body=${f#*:}
+  python3 - "$fp" "$body" <<'PY' > "$work/vc-surf.py"
+import json, sys
+print("import pathlib\nroot = pathlib.Path('.')\n(root / 'vendor/example.test/dep').mkdir(parents=True, exist_ok=True)\n(root / 'vendor/example.test/dep/install.sh').write_text('go install example.test/tool@v1.2.3\\n')\n"
+      "p = root / " + json.dumps(sys.argv[1]) + "\np.parent.mkdir(parents=True, exist_ok=True)\np.write_text(" + json.dumps(sys.argv[2].replace("\\n", "\n").replace("\\t", "\t") + "\n") + ")")
+PY
+  newcase vc-surf "$(cat "$work/vc-surf.py")"; runck vc-surf '{"times": {}}'
+  CASE="a python helper, Makefile or Dockerfile that names the vendored folder is refused: $fp (exit 1)"
+  check test "$rc" -eq 1
+done
+vfile flow-style .github/workflows/w.yml '{run: "bash vendor/example.test/dep/install.sh"}'
+CASE="a flow-style step that names the vendored folder is refused (exit 1)"
+check test "$rc" -eq 1
+for v in "tool-flag:go build -mod=vendor ./cmd/fscache" "go-mod-vendor:go mod vendor" "vendor-check:bash bin/vendor-check.sh" "comment:# vendor/ is skipped"; do
+  vfile "ok-${v%%:*}" tools/new.sh "${v#*:}"
+  CASE="a line that does not name the vendored folder (the tool's own words, a comment) is not refused: ${v%%:*} (exit 0)"
+  check test "$rc" -eq 0
+done
+vfile trailing-comment tools/new.sh 'ls /tmp # vendor/x'
+CASE="text after a # is still read (a quoted # is not a comment): a trailing mention is refused, the conservative side (exit 1)"
+check test "$rc" -eq 1
+vfile listed-file bin/vendor-check.sh 'ls vendor/'
+CASE="a file on the exact list may name the vendored folder (exit 0)"
+check test "$rc" -eq 0
+python3 - "$root" <<'PY'
+import importlib.util, sys
+sys.path.insert(0, ".")
+root = sys.argv[1]
+spec = importlib.util.spec_from_file_location("pi", root + "/.github/agent/supply-chain/pin-inventory.py"); m = importlib.util.module_from_spec(spec); sys.modules["pi"] = m; spec.loader.exec_module(m)
+files = {**m.tree_surfaces(root, None), **m.tree_files(root, None), **m.tree_scripts(root, None)}
+hits = [k for k, _, _ in m.unmeasured_occurrences(files) if k[1] == "a line that names the vendored folder"]
+assert not hits, hits[:3]
+naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/"))
+          and any(m._names_vendor(l) for l in t.split("\n"))}
+extra = set(m._VENDOR_NAMING_FILES) - naming
+assert not extra, "listed but names nothing: %s" % sorted(extra)
+missing = naming - set(m._VENDOR_NAMING_FILES)
+assert not missing, "names vendor but not listed: %s" % sorted(missing)
+PY
+CASE="today's tree passes the rule and the exact list holds no path that names nothing"
+check test $? -eq 0
 # --- advisor ruling Oct 15 (owner rule 48 of Oct 9 and exception 2 of Oct 15): one narrow ruled-row kind for a LIVE fetch from the fixed host. A row of form `a download`
 #     carries one of two rulings: the convention `text, not a command: ...` (a line that only mentions a tool), or `live fetch, owner ratified (Oct 9 rule 48 / Oct 15
 #     exception 2): ...`, honored ONLY when every URL on the bound line is https on the host packages.wolfi.dev exactly. Any other ruling text on a download row rules nothing. Rows are read from the base branch only and bound to the file and the whole-line hash, so any edit of the line voids the row.

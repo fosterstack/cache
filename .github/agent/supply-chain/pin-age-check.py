@@ -472,7 +472,7 @@ def _occurrences(root, rev):
     """{key: {whole-line hash: occurrences}}. A line bash reads differently from the flattening (whitespace other than space or tab, a continuation) gets
     a group no row can name ('unruled:' + its hash)."""
     out = {}
-    for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
+    for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_surfaces(root, rev), **inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
         lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
         _LINE_TEXT[lh] = flat
         per = out.setdefault(k, {})
