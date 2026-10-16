@@ -1801,7 +1801,8 @@ class Prune(unittest.TestCase):  # AC22-AC24
         shutil.rmtree(wt)
         p = self.run_prune("--apply")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertNotIn("wt", sh("git", "worktree", "list", cwd=self.w).stdout.replace("work", ""))
+        listed = [ln[len("worktree "):] for ln in sh("git", "worktree", "list", "--porcelain", cwd=self.w).stdout.split("\n") if ln.startswith("worktree ")]
+        self.assertNotIn(os.path.realpath(wt), [os.path.realpath(x) for x in listed])
         self.assertFalse(self.exists("feat/wt"))
 
     def test_ac24_default_is_dry_run_and_changes_nothing(self):
