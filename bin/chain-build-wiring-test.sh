@@ -858,6 +858,51 @@ gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a
        "    needs: [build, sign, rebuild, check, release]" "    needs: [build]" "patch-failed must need exactly"
 gr g45 "005-AC5 the dry-run dispatch input is a string (inputs.dry-run == true would be false and skip the dry run)" \
        "      dry-run:\n        type: boolean" "      dry-run:\n        type: string" "must be type: boolean"
+# REQ-SCAN-012 (the rule-12 live tests of our VEX files): release.yml may hold exactly two non-chain jobs that federate into the dedicated live-test accounts.
+# lj builds release.yml with both jobs inserted before `decide`, optionally mutates ONE text in them, and runs the judge on it.
+LJ_RC_IF="\${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+LJ_FINAL_IF="\${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+LJ_JOBS="  live-test:\n    needs: [check]\n    if: $LJ_RC_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc\n  live-test-release:\n    needs: [release]\n    if: $LJ_FINAL_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final\n"
+lj() { # lj NAME LABEL OLD NEW ok|caught WORD   (OLD empty: no mutation)
+  python3 - "$work/release.yml" "$work/lj-$1.yml" "$3" "$4" "$LJ_JOBS" <<'PY' || { bad "mutation did not apply (lj-$1): $3"; return 0; }
+import sys
+src, dst, old, new, jobs = sys.argv[1:6]
+conv = lambda s: s.replace("\\n", "\n")
+jobs = conv(jobs)
+if old:
+    old, new = conv(old), conv(new)
+    assert old in jobs, "pattern not in the live-test jobs: " + old
+    jobs = jobs.replace(old, new, 1)
+text = open(src).read()
+assert "  decide:" in text
+open(dst, "w").write(text.replace("  decide:", jobs + "  decide:", 1))
+PY
+  expect "$5" "$2" "$6" graph "$work/lj-$1.yml"
+}
+lj ok  "REQ-SCAN-012 the two exact live-test jobs (rc after check, final after release; environment live-test; id-token write) pass" "" "" ok ""
+lj p1  "REQ-SCAN-012 live-test with a write it does not need (packages)" "      id-token: write\n    steps:\n      - run: echo rc" "      id-token: write\n      packages: write\n    steps:\n      - run: echo rc" caught "exactly the permissions"
+lj p2  "REQ-SCAN-012 live-test with no id-token (less than it needs: refused)" "      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" "      contents: read\n    steps:\n      - run: echo rc" caught "exactly the permissions"
+lj e1  "REQ-SCAN-012 live-test in the agent environment (the App secrets live there)" "  live-test:\n    needs: [check]\n    if: $LJ_RC_IF\n    runs-on: ubuntu-latest\n    environment: live-test" "  live-test:\n    needs: [check]\n    if: $LJ_RC_IF\n    runs-on: ubuntu-latest\n    environment: agent" caught "must name exactly environment: live-test"
+lj e2  "REQ-SCAN-012 live-test-release in the release environment (the publish credentials)" "    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final" "    runs-on: ubuntu-latest\n    environment: release\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final" caught "must name exactly environment: live-test"
+lj e3  "REQ-SCAN-012 live-test without an environment" "    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" "    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" caught "must name exactly environment: live-test"
+lj n1  "REQ-SCAN-012 live-test that needs only build (it would run before Check)" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [build]" caught "live-test must need exactly"
+lj n2  "REQ-SCAN-012 live-test that also needs sign" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check, sign]" caught "live-test must need exactly"
+lj n3  "REQ-SCAN-012 live-test-release that needs check (it would run before the release is published)" "  live-test-release:\n    needs: [release]" "  live-test-release:\n    needs: [check]" caught "live-test-release must need exactly"
+lj i1  "REQ-SCAN-012 live-test with no dry-run guard in its if (a valid condition missing only that guard)" " && !inputs.dry-run }}\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" " }}\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc" caught "must carry exactly the if"
+lj i2  "REQ-SCAN-012 live-test-release that also runs on a release candidate (no -rc exclusion)" " && !contains(github.ref_name, '-rc') && !inputs.dry-run }}" " && !inputs.dry-run }}" caught "must carry exactly the if"
+lj i3  "REQ-SCAN-012 live-test that is always() (it would run on any ref, a schedule included)" "if: $LJ_RC_IF" "if: always()" caught "must carry exactly the if"
+lj u1  "REQ-SCAN-012 live-test given a job-level uses" "  live-test:\n    needs: [check]" "  live-test:\n    uses: ./.github/workflows/ci.yml\n    needs: [check]" caught "job-level uses"
+lj s1  "REQ-SCAN-012 live-test using a secret (the App's secrets and the publish credentials are not for it)" "      - run: echo rc" "      - run: echo \${{ secrets.GH_APP_KEY }}" caught "may not use secrets."
+lj x1  "REQ-SCAN-012 a third job of the same kind (live-test-fast) beside the two permitted ones is not allowed" "  live-test-release:\n    needs: [release]" "  live-test-fast:\n    needs: [release]\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo x\n  live-test-release:\n    needs: [release]" caught "not one of the five chain jobs"
+lj s2  "REQ-SCAN-012 live-test reading the secrets context by index (a bracket expression)" "      - run: echo rc" "      - run: echo \${{ secrets['AUDIT_SENTINEL'] }}" caught "may not use secrets"
+lj s3  "REQ-SCAN-012 live-test passing the whole secrets context (toJSON)" "      - run: echo rc" "      - run: echo \${{ toJSON(secrets) }}" caught "may not use secrets"
+lj s4  "REQ-SCAN-012 live-test-release reading the secrets context in an env value" "      - run: echo final" "      - run: echo final\n        env:\n          X: \${{ secrets ['K'] }}" caught "may not use secrets"
+lj s5  "REQ-SCAN-012 live-test with the secrets reference split over lines inside the expression" "      - run: echo rc" "      - run: |-\n          echo \${{\n          secrets.AUDIT_SENTINEL\n          }}" caught "may not use secrets"
+lj s6  "REQ-SCAN-012 live-test-release with a tab before the secrets reference" "      - run: echo final" "      - run: \"echo \${{\\tsecrets.K }}\"" caught "may not use secrets"
+lj s7  "REQ-SCAN-012 live-test with the context spelled in capitals (contexts are case-insensitive)" "      - run: echo rc" "      - run: echo \${{ SECRETS.K }}" caught "may not use secrets"
+# a duplicated mapping key is refused before any spec is read (a YAML loader keeps the LAST of two equal keys, so a first, wider definition would be hidden)
+lj d1  "REQ-SCAN-012 two definitions of live-test (the first in the release environment with a write) are refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    environment: release\n    permissions:\n      contents: write\n    steps:\n      - run: echo first\n  live-test:\n    needs: [check]" caught "duplicate"
+lj d2  "REQ-SCAN-012 a key given twice inside a job is refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    needs: [check]" caught "duplicate"
 gr g46 "005-AC5 the dry-run dispatch input has no type (the default is string)" "      dry-run:\n        type: boolean\n        default: false" \
        "      dry-run:\n        default: false" "must be type: boolean"
 replace "$work/release.yml" "$work/g47.yml" "  workflow_dispatch:\n    inputs:\n      dry-run:\n        type: boolean\n        default: false\n" "" \
@@ -2094,7 +2139,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=717
+EXPECT=740
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -586,11 +586,30 @@ SIGN_WITH = {"digests": "${{ needs.build.outputs.digests }}"}
 # patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
 PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
+LIVE_TEST_RC_IF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+LIVE_TEST_FINAL_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 DECIDE_IF = "${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+# The secrets context in any spelling (secrets.X, secrets['X'], toJSON(secrets), secrets ['X']): the word itself, not the dotted form only.
+# Contexts are case-insensitive and an expression may span lines or hold tabs, so every DECODED string of the job (keys too) is searched, never its JSON text.
+SECRETS_CONTEXT = re.compile(r"\bsecrets\b", re.IGNORECASE)
+
+
+def names_secrets(obj):
+    if isinstance(obj, str):
+        return bool(SECRETS_CONTEXT.search(obj))
+    if isinstance(obj, dict):
+        return any(names_secrets(k) or names_secrets(v) for k, v in obj.items())
+    if isinstance(obj, (list, tuple)):
+        return any(names_secrets(v) for v in obj)
+    return False
 NON_CHAIN = {
     "decide": {"perm": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}, "agent": True, "if": DECIDE_IF},
     "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
     "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": sorted(CHAIN)},
+    # The rule-12 live tests of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing
+    # else), after Check on a release candidate and after Release on a final tag; they publish nothing, hold no secrets., and cannot run in the dry run.
+    "live-test": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["check"], "if": LIVE_TEST_RC_IF},
+    "live-test-release": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["release"], "if": LIVE_TEST_FINAL_IF},
 }
 HOSTILE = {"perm": {"contents": "read"}, "agent": False}
 
@@ -600,8 +619,24 @@ def needs_of(job):
     return [] if needs is None else ([needs] if isinstance(needs, str) else list(needs))
 
 
+class _NoDuplicateKeys(yaml.BaseLoader):
+    """A YAML loader keeps the LAST of two equal mapping keys, so a first, wider definition of a job (or of a key inside one) would be invisible to the specs
+    below. Every mapping key is unique or the file is refused (fail closed)."""
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(None, None, "duplicate mapping key %r" % (key,), key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def graph(path):
-    d = yaml.load(read_exact(path), Loader=yaml.BaseLoader)
+    try:
+        d = yaml.load(read_exact(path), Loader=_NoDuplicateKeys)
+    except yaml.YAMLError as e:
+        return ["%s cannot be read as a workflow: %s" % (path, str(e).replace("\n", " ")[:160])]
     jobs, bad = d.get("jobs") or {}, []
     if d.get("permissions") != {"contents": "read"}:
         bad.append("workflow-level permissions must be exactly contents: read (every job asks for what it needs), got %s" % d.get("permissions"))
@@ -659,9 +694,12 @@ def graph(path):
         if spec["agent"]:
             if job.get("environment", "agent") != "agent":
                 bad.append("job %s may name only environment: agent, got %r" % (name, job["environment"]))
+        elif spec.get("env"):
+            if job.get("environment") != spec["env"]: bad.append("job %s must name exactly environment: %s, got %r" % (name, spec["env"], job.get("environment")))
+            if names_secrets(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
         else:
             if "environment" in job: bad.append("job %s may not name an environment (the App secrets live in agent), got %r" % (name, job["environment"]))
-            if "secrets." in json.dumps(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
+            if names_secrets(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
         if "if" in spec and job.get("if") != spec["if"]:
             bad.append("job %s must carry exactly the if %s, got %r" % (name, spec["if"], job.get("if")))
         if "needs" in spec and sorted(needs_of(job)) != spec["needs"]:

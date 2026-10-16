@@ -1152,18 +1152,25 @@ requirements:
   - id: REQ-PLAT-001
     title: Binary platform matrix
     statement: >
-      Every release shall ship static (CGO_ENABLED=0) binaries for
-      linux/amd64, linux/arm64, darwin/amd64, and darwin/arm64, and
-      FIPS-variant binaries for the two Linux platforms only.
-    source: [README.md "Supported platforms", docs/install.md, .goreleaser.yaml]
+      Every release shall ship static (CGO_ENABLED=0) standard and
+      FIPS-variant binaries for linux/amd64 and linux/arm64. No macOS or
+      Windows binaries are shipped; the release notes say so and point
+      macOS users to the container image.
+    source: [README.md "Supported platforms", docs/install.md, docs/docker-deploy.md, RELEASING.md, docs/next-release-notes.md, bin/build-archives.py]
     tier: community
     introduced: v0.1.0
     confidence: documented
+    origin: >
+      Amended for v0.3.0 from the owner's decision of Oct 9 2026, verbatim
+      "drop mac, linux only." (ops/docs/ratify/2026-10-09-v030-owner-answers.md);
+      the amended text was accepted by the advisor at step 5 on Oct 11 2026.
+      The v0.2.x baselines (requirements/releases/v0.2.*.yaml) are frozen
+      and unchanged: they keep the six-archive text.
     acceptance_criteria:
       - id: REQ-PLAT-001-AC1
         given: a release's artifact set
         when: it is enumerated
-        then: exactly the six archives exist and each binary executes on its platform (or a documented equivalent)
+        then: exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64), no darwin or windows archive exists, and each binary executes on its platform (or a documented equivalent)
         verification: { method: acceptance-release-artifact, release_blocking: true }
         status: approved
 
@@ -1502,7 +1509,7 @@ requirements:
       pipeline rather than passing silently; main's latest candidate shall be
       rescanned daily; and the Go toolchain shall be kept on its latest patch
       by an automated bump.
-    source: [.github/workflows/scan.yml, bin/inspector-gate.py, .github/policy/required-checks.json, .github/workflows/main-candidate-rescan.yml, .github/workflows/go-freshness.yml, bin/rescan-statement.py]
+    source: [.github/workflows/scan.yml, bin/inspector-gate.py, bin/inspector-reuse.py, .github/policy/required-checks.json, .github/workflows/main-candidate-rescan.yml, .github/workflows/go-freshness.yml, bin/rescan-statement.py]
     tier: community
     introduced: v0.2.1
     origin: audit-2026-09-15; v0.2.0 release-pipeline scan failure
@@ -1549,6 +1556,13 @@ requirements:
         when: "the daily rescan looks for its tracking issue"
         then: "it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue'"
         verification: { method: unit, release_blocking: false }
+        status: approved
+      # Why the SBOM and not the image digest: every commit stamps its id into the binary, so digests never repeat.
+      - id: REQ-REL-004-AC8
+        given: "an image whose SBOM component list (package names and versions only, sorted, no timestamps, serial numbers or our own module's version) hashes the same as one Amazon Inspector already scanned the same UTC day"
+        when: the scan check or the rescan would call Amazon Inspector for it
+        then: "it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ"
+        verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
   - id: REQ-REL-005
@@ -2205,8 +2219,13 @@ requirements:
     source: [.vex/fosterstack-cache.openvex.json]
     tier: community
     introduced: v0.3.0
-    origin: scanner-panel rule 10 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
+    origin: scanner-panel rule 10 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md). AC5 to AC8 are advisor step 5 Oct 11 (handoff 0389).
     confidence: implementation-only
+    notes: >
+      AC5: the digest file has two variants, production and fips (v0.3.0 ships no :debug image). The generator must know the key set {production, fips} to refuse a third key or a missing one; the digests come only from the file.
+      AC6: "repeats a key" needs an explicit check, because Python's json.load keeps the last of two equal keys and says nothing.
+      AC7: the variants are walked in a fixed order and the children in a fixed order, so the key order of the digest file does not reach the output.
+      AC8: the test no longer reads stage-promote.yml step names; AC3's check reads main-candidate-rescan.yml contents, not step names.
     acceptance_criteria:
       - id: REQ-SCAN-010-AC1
         given: "a release"
@@ -2231,6 +2250,30 @@ requirements:
         when: "it is published"
         then: "it says the upload is a preview feature"
         verification: { method: inspection, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-010-AC5
+        given: "a digest file, passed to the generator by its path: a JSON object with exactly two keys, production and fips; each value an object with exactly two keys, index and children; children an object with exactly two keys, linux/amd64 and linux/arm64; every digest a string of sha256: followed by 64 lower-case hexadecimal characters"
+        when: "the three VEX forms are generated"
+        then: "the forms name exactly the six digests in that file and no other image digest. The generator checks the file's shape and key set only. It does not check that the digests are the ones Build verified; that check belongs to the release workflow and is tested there. The generator reads no registry and opens no network connection."
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-SCAN-010-AC6
+        given: "a digest file that is not a JSON object; that repeats a key at any level; that has a key other than production and fips, or lacks either; whose variant value is not an object with exactly the keys index and children; whose children lack linux/amd64 or linux/arm64 or have any other key; that has any digest which is not a string of sha256: followed by 64 lower-case hexadecimal characters; or that names the same digest twice"
+        when: "the forms are generated"
+        then: "generation stops with a non-zero exit before any form file is written, no form file is created or changed in the output directory, and the error names the key path (for example fips.children.linux/arm64) or the value at fault"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-SCAN-010-AC7
+        given: "the same OpenVEX file, the same digest file content and the same version"
+        when: "the forms are generated twice, at different times, with a different time zone, locale or SOURCE_DATE_EPOCH, or from a digest file with the same content in a different key order"
+        then: "both runs give byte-identical form files. No date, time or run identifier comes from the clock or the environment; the only dates are the ones the OpenVEX file carries"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-SCAN-010-AC8
+        given: "the REQ-SCAN-010 test"
+        when: "it runs"
+        then: "it proves AC1-AC7 against the generator and the OpenVEX file alone. It reads no workflow file's step names or step order. Where the forms are generated, that the signed release record covers them, and that the digests are Build's verified ones are proven by the release workflow's own test. AC3's check of the rescan workflow's contents (it filters against the OpenVEX file and uses no derived form) stays"
+        verification: { method: unit, release_blocking: true }
         status: approved
 
   - id: REQ-SCAN-011
@@ -3652,6 +3695,12 @@ requirements:
         then: "release-sign.sh makes the four metadata files before its first signature: the OpenVEX file is copied from the checkout of the tag, the CSAF and inspector-filters files are made by bin/vex-forms.py from that one file and release-metadata/vex-images.json, release-manifest.json by bin/release-metadata.py manifest; bin/release-metadata.py images writes {production:{index,children{linux/amd64,linux/arm64}},fips:{...}} only from Build's verified digests.json and items.json and images/<variant>.digest and .manifests (a third key, a missing key, a value that is not sha256:<64 hex>, an index, child, lock or SBOM that is not Build's verified item, or a repeated, missing, unknown or malformed child line is refused, naming the file or key); the manifest is deterministic (no clock), keeps `.images[].variant` and `.images[].digest` with both registry references, records the sha256 of the three VEX files, records the requirements baseline of the release (path requirements/releases/<baseline>.yaml, its version and sha256): the tag's own for an owner-signed tag, and for a CI patch tag the baseline version admission recorded (Build's admission-baseline.json, a product of Build's signed record that release-verify binds and release-metadata.py baseline reads: for this tag and this commit, vX.Y.Z, not newer than the tag), never a version Release chooses itself, and the sha256 of test-evidence/mappings.yaml (a missing or symlinked file, a baseline version that is not vX.Y.Z, and an admission-baseline.json that is missing, forged or not admission's choice, are refused), lists the archives and apks as Build attested them and is refused for a version that is not vX.Y.Z; release-files.sha256 lists exactly the four files in order and is signed keyless with a Rekor entry (bundle release-files.sha256.bundle); a gate refuses a symlink, a missing checksums.txt, checksums.txt.bundle, release-files.sha256, release-files.sha256.bundle or metadata file, an extra, missing or altered line, and an asset covered by nothing (covered: in checksums.txt or release-files.sha256, a bundle of an asset, a file with its own bundle, an apk, a Witness record, Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and provenance.bundle.json (the record the Sign stage signed; the bundle carries its signature), and a release without Sign's three files is refused), runs before the upload and again on what the release stores, and a v0.3.0 release without the four files is refused"
         verification: { method: unit, release_blocking: true }
         status: approved
+      - id: REQ-CHAIN-007-AC20
+        given: "the commands of docs/verify-release.cannot-run.json after a publish, and the assets just downloaded from the published release into release-published/ (rule 79 as amended by the owner Oct 10, \"run those commands right after publishing\"; advisor ruling B, Oct 15)"
+        when: "bin/release-postverify.py runs them"
+        then: "release-published/ must be a directory, else the run fails before anything runs; every command runs with that directory as its working directory, so the guide's bare file names resolve as they do for a customer, and a command that names a file absent from it fails the run after all have run; a command made only of jq is accepted only when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run time only after that verify exited 0 (a jq-only command with no earlier verify of the same file, with no file operand, with an option that reads other files or loads a program, or listed before its verify is refused and nothing runs; one whose earlier verify failed is not run and fails the run); the form rule for every other command (a pipe of verify forms and jq with at least one verify form, no other shell syntax) and every other refusal are unchanged"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-BUILDTOOLS-002
     title: The image digest is the OCI index digest and a sealed namespace is checked by a probe
     statement: >
@@ -3873,4 +3922,64 @@ requirements:
         when: "it runs"
         then: "every tool it names (python3, sudo, unshare, apko, sha256sum, openssl, git) is called by a fixed absolute path held in a variable, every python3 call is python3 -I -B, it reads no caller variable beyond a closed list it names, and it has no test hook: the production file is the file the tests run (rule 1). STATED RESIDUAL: the starting environment and the coreutils search path are the invoking stage's (same text as REQ-BUILDAPK-001-AC3)"
         verification: { method: unit, release_blocking: false }
+        status: approved
+  - id: REQ-GUIDE-001
+    title: The v0.3.0 customer verification guide
+    statement: >
+      The v0.3.0 customer verification guide (docs/verify-release.md) shall be one page of at most 500 words and at most 10 commands, using only cosign, gh and jq, that verifies signatures, digests, provenance, the SBOM and the inputs for both images (production and -fips); Witness records are extra evidence outside the ten commands; the page claims nothing the chain does not back; the owner reads it cold and a second reader tests it.
+    source: [v0.3.0 rule 78 (GUIDE-24), docs/verify-release.md, docs/verify-release.cannot-run.json, bin/verify-release-guide-test.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rule 78 (GUIDE-24; owner, Oct 9 2026; ops/docs/ratify/2026-10-09-v030-rules.md), with rule 79 (GUIDE-25, CI runs every guide command against the latest release candidate) behind AC7 and AC8. AC1 to AC8 accepted (advisor step 5, Oct 10 2026). AC2's placeholder list is <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG> and <IDENTITY>, the four placeholders pipeline's AC7 run recognises; <IDENTITY> is the signing identity (coordinator, Oct 10 2026) and <IMAGE_REF_FIPS> the -fips image by digest (coordinator, Oct 10 2026; advisor, no objection).
+    confidence: documented
+    notes: >
+      The command format is the one pipeline's AC7 run (bin/check-guide.sh, REQ-CHAIN-006-AC7) reads: a command is a line of a ```sh fenced block (a line ending in a backslash joins the next, so a continued command counts once; a pipeline counts once), a pipeline of cosign verify, cosign verify-attestation, cosign verify-blob, cosign verify-blob-attestation, gh attestation verify and jq with no other shell syntax. A verify command whose operand is an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>, oci://..., or a literal registry reference) needs a registry image and cannot run on a candidate, which Check holds as a file: it is listed, with its reason, in docs/verify-release.cannot-run.json, marked "Not run before release" on the page, and keeps the page from being final (AC7) until the owner decides rule 79's open case. The page test checks "in the order a customer runs them" only as "a file is verified before jq reads it"; the full order is judged by AC8's readers. The page is not linked from the README or any other page until v0.3.0 is live; docs/verify-images.md stays the guide for v0.2.x and gets a pointer to this page only when it is final.
+    acceptance_criteria:
+      - id: REQ-GUIDE-001-AC1
+        given: "the v0.3.0 customer verification guide"
+        when: "its words (prose and code counted) and its shell commands are counted"
+        then: "the page docs/verify-release.md exists and has at most 500 words (prose and code counted) and at most 10 shell commands in total"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-GUIDE-001-AC2
+        given: "the commands of docs/verify-release.md"
+        when: "a customer, or pipeline's AC7 run, runs them"
+        then: "every command is in a fenced sh block, runs unattended (no prompt, no editor, no pager) given only the placeholders <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG> and <IDENTITY> defined once at the top, and the commands are in the order a customer runs them"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-GUIDE-001-AC3
+        given: "the commands of docs/verify-release.md"
+        when: "their command words are read"
+        then: "the commands use only cosign, gh and jq (plus POSIX shell builtins and pipes)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-GUIDE-001-AC4
+        given: "the commands of docs/verify-release.md"
+        when: "a customer runs them against a v0.3.0 release"
+        then: "the commands verify, each by at least one command: signatures, digests, provenance, the SBOM and the inputs"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-GUIDE-001-AC5
+        given: "docs/verify-release.md"
+        when: "it is read"
+        then: "both images are covered, production and -fips, and no -debug image"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-GUIDE-001-AC6
+        given: "docs/verify-release.md"
+        when: "it is read"
+        then: "Witness records appear only as a pointer outside the ten commands, and no build-chain tool name appears other than cosign, gh and jq (matrix AC47)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-GUIDE-001-AC7
+        given: "docs/verify-release.md, in draft or final"
+        when: "it is checked before it is made final"
+        then: "the page makes no claim the chain does not back: every command in it has been executed against a candidate image by pipeline's AC7 run, and any command not yet runnable is marked TO-VERIFY in the draft and the page cannot be final while a TO-VERIFY mark remains"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-GUIDE-001-AC8
+        given: "docs/verify-release.md, complete"
+        when: "it is accepted"
+        then: "the owner reads the page cold once; a second reader follows it on a clean machine; and pipeline's AC7 run executes every command against a candidate"
+        verification: { method: manual, release_blocking: false }
         status: approved

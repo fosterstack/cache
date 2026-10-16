@@ -407,6 +407,8 @@ jobs:
         run: bash bin/chain-check-scripts-test.sh
       - name: "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)"
         run: bash bin/chain-check-wiring-test.sh
+      - name: "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)"
+        run: bash bin/verify-release-guide-test.sh </dev/null
       - name: "the pinned crane install (REQ-CHAIN-007-AC7)"
         run: bash bin/chain-install-crane-test.sh
       - name: "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)"
@@ -443,6 +445,8 @@ jobs:
         run: bash bin/rescan-current-only-test.sh
       - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
         run: bash bin/panel-wiring-test.sh
+      - name: same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)
+        run: bash bin/inspector-reuse-test.sh
       - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
         run: bash .github/agent/tests/k8s-harness-fence-test.sh
       - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)

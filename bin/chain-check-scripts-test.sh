@@ -234,6 +234,10 @@ mkdist "${FOUR[@]}" fscache_0.3.0_windows_amd64.zip; want_fail "PLAT-001-AC1 a w
 mkdist "${FOUR[@]}" fscache_0.3.0_Darwin_amd64.zip; want_fail "PLAT-001-AC1 a darwin file in any case fails" darwin "${SCAN[@]}"
 mkdist "${FOUR[@]:0:3}"; want_fail "PLAT-001-AC1 a missing archive fails" "exactly the four" "${SCAN[@]}"
 mkdist "${FOUR[@]:0:3}" fscache-fips_0.4.0_linux_arm64.tar.gz; want_fail "PLAT-001-AC1 four files that are not the four archives of one version fail" "exactly the four" "${SCAN[@]}"
+# the platform lines of the documents (factual lines only): the README table lists no darwin or windows binary, the next release's notes say so once with the container-image pointer
+docs_root="$(cd "$(dirname "$0")/.." && pwd)"
+if ! grep -E '^\| (FIPS binaries|Binaries) .*(darwin|windows)' "$docs_root/README.md" > /dev/null 2>&1; then ok "PLAT-001-AC1 the README binary table lists no darwin or windows platform"; else bad "PLAT-001-AC1 the README binary table lists no darwin or windows platform"; fi
+if [ ! -f "$docs_root/docs/next-release-notes.md" ] || [ "$(grep -c 'No macOS or Windows binaries are shipped; use the container image' "$docs_root/docs/next-release-notes.md")" = 1 ]; then ok "PLAT-001-AC1 the next release's notes carry the Linux-only line once (or the release flow has moved it to the changelog)"; else bad "PLAT-001-AC1 the next release's notes carry the Linux-only line once (or the release flow has moved it to the changelog)"; fi
 mkdist "${FOUR[@]}"
 mkfake grype 1 120
 want_fail "AC4 a scanner reports findings: the script fails naming it" grype "${SCAN[@]}"
@@ -974,7 +978,7 @@ if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G no go.mod in the working direc
 printf 'module example.com/a\n' > "$gvt/go.mod"
 if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.py" 2> /dev/null && [ -f "$root/bin/check-govulncheck.py" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
 else bad "G bin/check-govulncheck.py is missing or names a signing tool or credential"; fi
-EXPECT=305
+EXPECT=307
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

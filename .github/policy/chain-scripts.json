@@ -55,7 +55,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "eda54a31cd768fd72f7106f37a25be4d78708562a7023fb953c07b0f4caca0ba",
+      "sha256": "06731c66ba8c4fd35b5b2fcdfffd509cab58d331ea919463e1591cac98933d02",
       "tools": [
         "at",
         "curl",
@@ -1081,7 +1081,14 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "aafd50f630f2d0d718d8fb84e5af533b41dff49938beb0e8f108eab3c5088ed3"
+      "sha256": "8a030a98d013b754c5c8e9806bac1c98e1adf4cdced1ca71aaa17516a5f42b76",
+      "env_mentions": [
+        {
+          "name": "ENV",
+          "text": "m.group(1) == \"ENV\"",
+          "why": "REQ-CHAIN-007-AC20: the jq filter grammar REFUSES the variable named ENV (a jq-only command may not read the environment); the literal is the refusal test, and no environment is read or set"
+        }
+      ]
     },
     {
       "path": "bin/release-metadata.py",
@@ -1103,7 +1110,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "86b95375aefdfa64ff682244012ed3643b5699b1b9bbfc18321070209532354c",
+      "sha256": "6463dbd0ff912140d6d57b6ce01593c4cd9436dde4995c04a0954c63b811fa0d",
       "exceptions": [
         {
           "rule": "deny",
