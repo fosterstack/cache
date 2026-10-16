@@ -49,10 +49,30 @@ def sha256_file(path):
 
 
 def write_atomic(path, text):
+    """Write the target file through a temporary file beside it that nobody else can have placed: an earlier entry at the target's name plus .part (a stale file, a planted symlink) is removed first
+    (a symlink is removed itself, never followed), the file is then created exclusively without following links, and renamed into place; a directory or anything
+    that cannot be removed or created is a refusal."""
     tmp = path + ".part"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        refuse("%s exists and cannot be removed" % tmp)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except OSError:
+        refuse("%s cannot be created exclusively" % tmp)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def digests_of(path):
@@ -333,9 +353,8 @@ def cmd_gate(a):
         same_as(a)
 
 
-def cmd_bind_archives(a):
-    """BIND (REQ-CHAIN-007-AC9, round 1 B3): DIST holds exactly the four Linux archives Build recorded, each hashing to the digest of Build's digests.json
-    (item archive-linux-ARCH / archive-fips-linux-ARCH for fscache_VER_linux_ARCH.tar.gz / fscache-fips_VER_linux_ARCH.tar.gz). Nothing is written."""
+def bound_archives(a):
+    """The check of bind-archives, returning {archive name: sha256 hex} of what it hashed: a caller that needs the hashes uses these, never a second read."""
     ver = a.version
     try:
         with open(a.digests) as f:
@@ -351,13 +370,22 @@ def cmd_bind_archives(a):
         gone = sorted(i for i, n in want.items() if n not in have)
         extra = sorted(n for n in have if n not in want.values())
         refuse("%s does not hold exactly the four archives Build recorded (missing: %s; not recorded: %s)" % (a.dist, ", ".join(gone) or "none", ", ".join(extra) or "none"))
+    out = {}
     for item, name in sorted(want.items()):
         p = os.path.join(a.dist, name)
         if os.path.islink(p) or not os.path.isfile(p):
             refuse("%s is not a regular file" % p)
-        got = "sha256:" + sha256_file(p)
-        if digests.get(item) != got:
-            refuse("%s (%s) is %s, Build's digests.json records %s: refusing to attach it" % (name, item, got, digests.get(item)))
+        hx = sha256_file(p)
+        if digests.get(item) != "sha256:" + hx:
+            refuse("%s (%s) is sha256:%s, Build's digests.json records %s: refusing to attach it" % (name, item, hx, digests.get(item)))
+        out[name] = hx
+    return out
+
+
+def cmd_bind_archives(a):
+    """BIND (REQ-CHAIN-007-AC9, round 1 B3): DIST holds exactly the four Linux archives Build recorded, each hashing to the digest of Build's digests.json
+    (item archive-linux-ARCH / archive-fips-linux-ARCH for fscache_VER_linux_ARCH.tar.gz / fscache-fips_VER_linux_ARCH.tar.gz). Nothing is written."""
+    bound_archives(a)
 
 
 def cmd_checksums(a):
@@ -366,9 +394,8 @@ def cmd_checksums(a):
     newline, through a temporary file renamed into place. Any refusal exits 1 and writes nothing."""
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", a.version or ""):
         refuse("version %r is not X.Y.Z (a release candidate has no checksums file)" % a.version)
-    cmd_bind_archives(a)
-    names = sorted((n for n in os.listdir(a.dist) if n.endswith(".tar.gz")), key=lambda n: n.encode())
-    write_atomic(a.out, "".join("%s  %s\n" % (sha256_file(os.path.join(a.dist, n)), n) for n in names))
+    bound = bound_archives(a)      # the names and hashes the check itself read: the lines come from these, nothing is listed or hashed a second time
+    write_atomic(a.out, "".join("%s  %s\n" % (bound[n], n) for n in sorted(bound, key=lambda n: n.encode())))
 
 
 RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"     # decide's tagger identity (release.yml): the one tagger of a generated patch tag

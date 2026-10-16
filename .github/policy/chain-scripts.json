@@ -1075,7 +1075,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "e48ec90a6331a9b5fceea5503aadc147f20332c99cbdfc45877822477c9a99bd"
+      "sha256": "7eeee19a6933128d8112965cd25c639f1488c97973b47bde52d4d92aa795cd45"
     },
     {
       "path": "bin/vex-forms.py",
