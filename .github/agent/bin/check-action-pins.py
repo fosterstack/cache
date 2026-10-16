@@ -2579,6 +2579,7 @@ def _unsafe_downloads(text):
             queue += inner
             cut = re.sub(r"&>>", ">>", cut)                   # `cmd &> file` is a redirection of cmd: the split at & must not detach it
             cut = re.sub(r"&>|>\|", ">", cut)
+            cut = re.sub(r"(?<![\w&>])(\d*)>&(?=[ \t]*[^\s\d&>-])", r"\1>", cut)    # `cmd >& file` writes the file; `>&2`, `2>&1` and `>&-` duplicate or close a descriptor
             for chunk in _split_commands(cut):
                 chunk = re.sub(r"\$'([^']*)'", r"'\1'", chunk)       # an ANSI-C quoted word is a literal word here (its escapes are not read)
                 toks = _tokens(chunk)
@@ -2668,7 +2669,7 @@ def check_runs(where_job, scripts, bad, tree=None):
                 assigned = len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext))
                 if (excl[2] is None and assigned == 0) or (excl[2] is not None and ftext.count(excl[2]) == 1 and assigned == 1):
                     continue
-            for cmd, why in _unsafe_downloads(read(item[1])):
+            for cmd, why in _unsafe_downloads(_drop_foreign_heredocs(re.sub(r"\\\n", "", item[1]))):      # the raw text: `${X:-default}` must not be replaced by its default before the downloader is read
                 bad.append(f"{item[0]}: this job runs a committed script, and `{cmd[:80]}` is a download that is not demonstrably writing to standard output or "
                            f"/dev/null ({why}); a download can overwrite a committed script before it runs, so the destination is never trusted, refused "
                            f"(REQ-REL-005-AC3)")
