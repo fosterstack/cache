@@ -283,6 +283,28 @@
       "key": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
       "line": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
       "ruling": "text, not a command: the fetch tool's fixed-path line of the daily input refresh job, a printf -v of a constant path, replaced by a stub in the test copy; the Wolfi live fetch it names is ruled by owner rule 48 (no 7-day hold on Wolfi) and verified per rules 32 and 28; handoff 0429/0432"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "26a5a54c945cc5c970b1cef963189599c19aecbbdcde47efa806d1a93b7a073c",
+      "line": "94a55f0539c5ddd3f26ba667b6f7750d592fc7af407bd3578b85616caa2f34c6",
+      "ruling": "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): the live package index download (one per run) in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "37b5b58e137deed9a347cabe279ad987c5c4cb3cd044515862b8f606adec8a8d",
+      "line": "a0bb5343d7024d3efc65996ba905f9ceb1e29e4327006543726b192feb6cfff6",
+      "ruling": "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): the per-package download in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "90d3436c2e7e40c9fa82f5f090b7268ec8275db601fb196821051f5aee448301",
+      "line": "d793285ee57677f99a8a6d0dba7d38a8c6de084b71c27dc2c33134f72688cf86",
+      "count": 4,
+      "ruling": "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): the signing-key fetch (four copies of the same line: key-check, archive-key-check, bootstrap, refresh) in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
     }
   ]
 }
