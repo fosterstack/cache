@@ -18,6 +18,11 @@ export SOURCE_DATE_EPOCH
 ./bin/assemble-image.sh --variant production --version 0.0.0-rc.1 --archive archive --melange-repo melange-repo --keyring-dir keyring \
   --out out
 ./bin/assemble-image.sh --variant fips --version 0.0.0-rc.1 --archive archive --melange-repo melange-repo --keyring-dir keyring --out out
+# the release's OpenVEX becomes attestation children of each image index (REQ-REL-010-AC1), before items-merge writes the digests Sign signs
+python3 bin/vex-index.py layout --layout out/production --vex .vex/fosterstack-cache.openvex.json
+python3 bin/vex-index.py sidecar --layout out/production --vex .vex/fosterstack-cache.openvex.json --digest-file out/production.digest
+python3 bin/vex-index.py layout --layout out/fips --vex .vex/fosterstack-cache.openvex.json
+python3 bin/vex-index.py sidecar --layout out/fips --vex .vex/fosterstack-cache.openvex.json --digest-file out/fips.digest
 python3 bin/build-archives.py --melange-repo melange-repo --version 0.0.0-rc.1 --out dist
 python3 bin/chain-verify.py items-merge --fragment rapk/ubuntu-24.04/items-apk.json --fragment rapk/ubuntu-24.04-arm/items-apk.json \
   --images out --archives dist --version 0.0.0-rc.1 --archive archive --items items.json

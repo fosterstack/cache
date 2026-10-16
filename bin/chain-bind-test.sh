@@ -339,7 +339,7 @@ def refused(label, d, result, cause, name=None):
 
 d = merge_tree("m1")
 rc, out, err = do_merge(d)
-expected_items, expected_digests = h.expected(d, "assemble", "items", "v0.3.0"), h.expected(d, "assemble", "digests", "v0.3.0")
+expected_items, expected_digests = h.expected(d, "assemble", "items", "v0.3.0", vex=False), h.expected(d, "assemble", "digests", "v0.3.0", vex=False)
 got_items = json.load(open(d + "/items.json")) if os.path.exists(d + "/items.json") else None
 got_digests = json.load(open(d + "/digests.json")) if os.path.exists(d + "/digests.json") else None
 check("items-merge: items.json is exactly the oracle's 29 items",
@@ -481,12 +481,12 @@ refused("items-merge: one architecture only (aarch64 missing) is refused and nam
 d = merge_tree("m8", "v0.0.0-rc.1")
 rc, out, err = do_merge(d, tag="v0.0.0-rc.1")
 check("items-merge: a snapshot build's files (version 0.0.0-rc.1, archives fscache_0.0.0-rc.1_linux_*) merge to the oracle's items",
-      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.0.0-rc.1"),
+      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.0.0-rc.1", vex=False),
       "exit %s %s" % (rc, err[:100]))
 d = merge_tree("m7", "v0.3.0-rc1")
 rc, out, err = do_merge(d, tag="v0.3.0-rc1")
 check("items-merge: a release candidate's files merge to the oracle's items (PROPOSED names)",
-      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc1"),
+      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc1", vex=False),
       "exit %s %s" % (rc, err[:100]))
 
 # ---- admission-baseline (REQ-CHAIN-007-AC19, advisor ruling B, Oct 12): the baseline admission chose, as a file of Build's own record ----------------------

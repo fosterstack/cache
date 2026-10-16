@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5 — the flags; PR 1's verify cases cover the identity
 # Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
@@ -1238,6 +1238,57 @@ PY
   then ok "AC9 $t assemble $v: digests.json passes PR 1's schema and equals items.json for the same names"
   else bad "AC9 $t assemble $v: digests.json off-schema or unequal to items.json"
   fi
+  mk "$d" assemble "$s" "$mode" "$v"; rc=$(run_stage "$d" assemble "$mode" "$v")
+  if [ "$rc" = 0 ] && python3 - "$d" "$harness" "$v" <<'PY'
+import importlib.util, json, os, subprocess, sys
+d, harness, tag = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("h", harness); h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
+vex = ".vex/fosterstack-cache.openvex.json"
+items = json.load(open(d + "/items.json"))
+for image in ("production", "fips"):
+    base = h.image_outputs(image, tag)["digest"]                      # the built index, from the oracle
+    layout = "out/" + image
+    r = subprocess.run([sys.executable, "bin/vex-index.py", "verify-layout", "--layout", layout, "--vex", vex, "--base-digest", base], cwd=d, capture_output=True, text=True)
+    assert r.returncode == 0, "%s: verify-layout: %s" % (image, r.stderr)           # AC1: exactly one attestation child per platform carrying the file; AC3: the rest unchanged
+    top = json.load(open("%s/%s/index.json" % (d, layout)))
+    final = top["manifests"][0]["digest"]
+    assert final != base and items["image-" + image] == final == open("%s/out/%s.digest" % (d, image)).read().strip(), image   # the digest Build records is the final index's
+    fb = open("%s/%s/blobs/sha256/%s" % (d, layout, final.split(":")[1]), "rb").read()
+    kids = json.loads(fb)["manifests"]
+    atts = [k for k in kids if (k.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"]
+    assert len(kids) == 4 and len(atts) == 2, image                                  # two platforms, one attestation child each
+    assert kids[:2] == json.loads(open("%s/%s/blobs/sha256/%s" % (d, layout, base.split(":")[1]), "rb").read())["manifests"], image   # AC3: the original entries first and unchanged
+    # "content" cannot drift into "roughly the same" (advisor, Oct 16): every attestation's statement holds the VEX document whole, and a copy of the file with ONE value changed
+    # (a statement's impact text, then the document's version) is refused by the layout check
+    doc = json.load(open(d + "/" + vex))
+    blob = lambda dg: open("%s/%s/blobs/sha256/%s" % (d, layout, dg.split(":")[1]), "rb").read()
+    for att in atts:
+        manifest = json.loads(blob(att["digest"]))
+        statement = json.loads(blob(manifest["layers"][0]["digest"]))
+        assert statement["predicate"] == doc, "%s: an attestation does not hold the whole VEX document" % image
+    for label, edit in (("impact text", lambda x: x["statements"][0].__setitem__("impact_statement", str(x["statements"][0].get("impact_statement", "")) + " changed")),
+                        ("document version", lambda x: x.__setitem__("version", x["version"] + 1))):
+        other = json.loads(json.dumps(doc)); edit(other)
+        json.dump(other, open(d + "/other-vex.json", "w"))
+        r = subprocess.run([sys.executable, "bin/vex-index.py", "verify-layout", "--layout", layout, "--vex", "other-vex.json", "--base-digest", base], cwd=d, capture_output=True, text=True)
+        assert r.returncode == 2, "%s: a VEX file with a changed %s was accepted by verify-layout" % (image, label)
+PY
+  then ok "REQ-REL-010-AC1/AC3 $t assemble $v: each image's index is the final index (one attestation child per platform, the rest as built), and Build records its digest"
+  else bad "REQ-REL-010-AC1/AC3 $t assemble $v: rc=$rc, the final index is not what the VEX attach must leave"
+  fi
+  if [ "$v" = v0.3.0 ]; then
+    for what in missing empty notjson; do
+      mk "$d" assemble "$s" "$mode" "$v"
+      case "$what" in missing) rm "$d/.vex/fosterstack-cache.openvex.json" ;; empty) printf '{}' > "$d/.vex/fosterstack-cache.openvex.json" ;;
+                      notjson) printf 'not json' > "$d/.vex/fosterstack-cache.openvex.json" ;; esac
+      rc=$(run_stage "$d" assemble "$mode" "$v")
+      if [ "$rc" != 0 ] && [ ! -e "$d/digests.json" ] && [ ! -e "$d/items.json" ]; then
+        ok "REQ-REL-010-AC1 $t assemble: a VEX file that is $what stops Build before digests.json is written"
+      else
+        bad "REQ-REL-010-AC1 $t assemble: a VEX file that is $what -> rc=$rc digests=$([ -e "$d/digests.json" ] && echo written || echo absent)"
+      fi
+    done
+  fi
   if [ "$v" = v0.3.0 ]; then
     mk "$d" assemble "$s" "$mode" "$v"; rc=$(run_stage "$d" assemble "$mode" "$v" FAKE_VERIFY_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
     if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls" && [ ! -e "$d/digests.json" ]; then
@@ -1326,6 +1377,17 @@ PY
       ok "005-AC3 $t rebuild-assemble: a differing Build item blocks the job and the verdict names it"
     else
       bad "005-AC3 $t rebuild-assemble: differing item -> rc=$rc"
+    fi
+    mk "$d" rebuild-assemble "$s" "$mode" "$v"
+    python3 - "$d/.vex/fosterstack-cache.openvex.json" <<'PY'
+import json, sys
+p = sys.argv[1]; doc = json.load(open(p)); doc["version"] = doc["version"] + 1; json.dump(doc, open(p, "w"))
+PY
+    rc=$(run_stage "$d" rebuild-assemble "$mode" "$v")
+    if [ "$rc" != 0 ] && jq -e '.equal == false' "$d/witness-rebuild/verdict.json" > /dev/null 2>&1 && grep -q 'image-production' "$d/stage.err"; then
+      ok "REQ-REL-010-AC2 $t rebuild-assemble: a VEX file that differs from Build's changes the final index and Rebuild's comparison blocks on the image digest"
+    else
+      bad "REQ-REL-010-AC2 $t rebuild-assemble: a different VEX file -> rc=$rc"
     fi
     mk "$d" rebuild-assemble "$s" "$mode" "$v"
     rc=$(run_stage "$d" rebuild-assemble "$mode" "$v" FAKE_VERIFY_RC=1)
@@ -1574,7 +1636,7 @@ for tag in fixture real; do
     fi
   done
 done
-cases_of() { case "$1" in apk) echo 16;; assemble) echo 16;; rebuild-apk) echo 3;; rebuild-assemble) echo 8;; esac; }    # cases one kind runs for both versions
+cases_of() { case "$1" in apk) echo 16;; assemble) echo 21;; rebuild-apk) echo 3;; rebuild-assemble) echo 9;; esac; }    # cases one kind runs for both versions
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in apk assemble rebuild-apk rebuild-assemble; do
@@ -2107,6 +2169,28 @@ expect ok "AC2 no real stage file or stage script names witness run" "" directwi
        "$root/.github/workflows/stage-reproducibility.yml" "$root"/bin/build-stage-*.sh
 expect ok "AC3 the five real scripts are rows of .github/policy/chain-scripts.json with their sha256" "" listed \
        "$root/.github/policy/chain-scripts.json" "$root"
+if python3 - "$root" <<'PY'
+import glob, json, os, sys
+root = sys.argv[1]
+allowed = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
+           "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
+           "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
+named = set()
+for pattern in (".github/workflows/*.yml", ".github/policy/*.json", "bin/*.sh", "bin/*.py"):
+    for path in glob.glob(os.path.join(root, pattern)):
+        if "vex-index" in open(path, errors="replace").read():
+            named.add(os.path.relpath(path, root))
+stray = sorted(named - allowed)
+assert not stray, "named outside Build's and Rebuild's assemble scripts: %s" % stray       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
+ci = [row.strip() for row in open(root + "/.github/workflows/ci.yml") if "vex-index" in row]
+assert all(row.startswith("run: bash bin/vex-index-test.sh") or row.startswith("- name:") for row in ci), ci      # CI runs the tool's TEST and nothing else of it
+rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
+users = sorted(p for p, r in rows.items() if "bin/vex-index.py" in r["runs"])
+assert users == sorted(p for p in allowed if p.startswith("bin/build-stage-")), users
+PY
+then ok "REQ-REL-010-AC4/AC5 only Build's and Rebuild's four assemble scripts run bin/vex-index.py: no Sign, Release, maintenance or patch-release file names it, so nothing attaches after Sign and no published version is touched"
+else bad "REQ-REL-010-AC4/AC5 a file outside Build's and Rebuild's assemble scripts names or runs bin/vex-index.py"
+fi
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
 expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
 expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/main-candidate-rescan.yml"
@@ -2115,7 +2199,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=728
+EXPECT=741
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

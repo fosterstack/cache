@@ -1766,6 +1766,14 @@ requirements:
         then: it opens, or updates, one "required-check drift" issue
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      # Source: advisor reading Oct 16, Astra release review (R5: the vendor job and the marker-gate job exist and run but are not in the committed required-check list, which
+      # build-admit.py iterates and the guard compares with main's ruleset); owner's Oct 13 latitude: adding required checks only tightens. A new criterion.
+      - id: REQ-DEP-002-AC3
+        given: the committed list .github/policy/required-checks.json and the jobs of .github/workflows/ci.yml
+        when: the list is read
+        then: it names the job vendor once with scope push and the job marker-gate once with scope pull_request, each with integration ID 15368 (GitHub Actions), and ci.yml has a job of each name; the ruleset on main follows only by the owner's change in the GitHub UI, and until then the guard of AC1 is red, which is the stated failure mode
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
 
   - id: REQ-DEP-003
     title: Patch and minor bumps merge on green
@@ -1990,6 +1998,56 @@ requirements:
         when: "the notes are generated (patch-decide notes) or the changelog is written (patch-decide changelog)"
         then: "a source is refused outright, never decoded, escaped or rewritten, when any line of it holds (1) a '<' followed by a letter, '/', '!' or '?'; (2) the shape of a Markdown link reference definition: up to three spaces, '[', a label, ']' and ':'; (3) a character reference: '&#' digits ';', '&#x' or '&#X' hex digits ';', or '&' a letter, letters or digits and ';'; or (4) the text '-----BEGIN '; and (5) two entries whose published lines are the same line are refused before any entry is dropped as already published or cleared from docs/next-release-notes.md; the refusal message names the file and line of each offending source line (both, for a collision); on a refusal the command exits 2 and writes nothing, so no patch tag is cut (notes) or no changelog PR is opened (changelog)"
         verification: { method: unit, release_blocking: false }
+        status: approved
+
+  - id: REQ-REL-010
+    title: Our OpenVEX is attached to each published image index for Docker Scout
+    statement: >
+      The final image index that Sign signs and Release publishes shall carry our OpenVEX as attestation children, one per
+      platform, and nothing after Sign shall change any digest. Owner, RATIFIED Oct 3: "Docker main path as attestation!!!!!
+      We want that and we tell users it's the easiest path for seeing scanner omit findings that are just noise." Owner,
+      RATIFIED Oct 7: every change to our published VEX cuts an automatic patch release.
+    source: [bin/vex-index.py, .github/workflows/stage-build.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: ACs accepted by the advisor, step 5, Oct 16 2026, as the advisor's reading of the owner's Oct 3 and Oct 7 rules (the owner's own words are quoted in the statement; the ACs are not his; ops outbox 2026-10-16-ops-v030-scout-vex-plan.md section 3; handoff 0470); the ACs state what it takes to meet his words
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-010-AC1
+        given: "Build's image layouts and the tag's .vex/ OpenVEX file"
+        when: "Build writes digests.json"
+        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content (the same OpenVEX document, which the in-toto statement of the attestation holds as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index) and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC2
+        given: "the same inputs"
+        when: "Build and Rebuild each make the final index"
+        then: "the two are byte-identical (Rebuild's comparison covers it)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC3
+        given: "the final index"
+        when: "its attestation children are removed"
+        then: "every platform image and the index's other entries are byte-identical to what Build made without them"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC4
+        given: "Sign's digest list"
+        when: "Release publishes"
+        then: "the digest customers pull equals the digest the signature, provenance and release manifest name, and no step after Sign attaches, adds or changes an attestation (an attempt is refused)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC5
+        given: "a changed OpenVEX for an already published version"
+        when: "the pipeline runs"
+        then: "it makes no change to that version's image; the change reaches images only through the next automatic patch release"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC6
+        given: "the published final index"
+        when: "Docker Scout scans it by tag and by exact digest with our author"
+        then: "it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image"
+        verification: { method: acceptance-release-artifact, release_blocking: false }
         status: approved
 
   - id: REQ-SCAN-001
@@ -3634,10 +3692,13 @@ requirements:
       THE WITNESS WRAPPING is the one seam shared with PR 2 and 3 (owner's rule 68 amendment, Oct 9, and the readability request): every Witness step runs through the single helper bin/witnessed.sh STEP SCRIPT with timeout -k 20 540 inside it; the stage file never repeats Witness flags. Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify) so that a credential reaches only the step that needs it and a step stays far below the ten-minute Fulcio certificate.
       PROPOSED/UNVERIFIED: the script names and command lines of bin/release-*.sh; the tool that re-signs an apk with the stored key (melange sign is assumed; cache-3f's apk-tool.py signer reports assembly.rsa.pub, release.rsa.pub or unsigned and is fixed by cache's tests); the copy tool (crane, pinned by checksum through bin/install-scanner.sh); the registry-state check before publishing; the artifact names images and apks; the floating tags (REQ-REL-009 moves them for finals only); and that cosign's bundle for a sign-blob holds a Rekor entry (tlogEntries) in the shape PR 1 verifies; that PR 1's stage-start accepts --rekor-stub for Sign's provenance (else one more verify line); the crane entry of bin/install-scanner.sh (version, asset names, CRANE_BASE_URL; tested by bin/chain-install-crane-test.sh). The environment named release restricted to v* tags is the owner's setting (note only, no test). This PR cannot be run end to end before PRs 1 to 3 exist.
     acceptance_criteria:
+      # Source: advisor reading Oct 16, Astra release review (R4: release-apks runs release-sign-apks.sh, which needs melange, but the Release job never installed it); owner's Oct 13 latitude.
+      # Earlier wording of the changed fragment, kept here: "...a digest-pinned checkout (persist-credentials false and nothing else), one step per tool each running
+      # `bash bin/install-scanner.sh witness`, `bash bin/install-scanner.sh cosign` or `bash bin/install-scanner.sh crane`, digest-pinned downloads of named artifacts..."
       - id: REQ-CHAIN-007-AC1
         given: "stage-promote.yml"
         when: "it is parsed"
-        then: "it is a reusable workflow with exactly one job, release, on a fresh GitHub-hosted runner, in the environment named release, with permissions exactly contents write, packages write and id-token write and no container, services, env, defaults, strategy, needs or inherited secrets; its steps are exactly, in this order, a digest-pinned checkout (persist-credentials false and nothing else), one step per tool each running `bash bin/install-scanner.sh witness`, `bash bin/install-scanner.sh cosign` or `bash bin/install-scanner.sh crane`, digest-pinned downloads of named artifacts into explicit paths outside bin/ and .github/ (among them the artifact check-results into check-results/, Check's govulncheck stream), then the six witnessed steps release-verify, release-apks, release-publish, release-sign, release-assets and release-postverify (rule 79 as amended by the owner on Oct 10), each one line `bash bin/witnessed.sh STEP bin/STEP.sh` and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition `if: ${{ !contains(github.ref_name, '-') }}` (a release candidate ends after release-verify, AC14); bin/witnessed.sh accepts exactly these six step names besides the ones of Build, Rebuild and Check and writes each record to witness-STEP/STEP-collection.json, then digest-pinned uploads of named artifacts; no third-party action runs after Witness starts and no build command, docker login, or action other than checkout, download-artifact and upload-artifact appears"
+        then: "it is a reusable workflow with exactly one job, release, on a fresh GitHub-hosted runner, in the environment named release, with permissions exactly contents write, packages write and id-token write and no container, services, env, defaults, strategy, needs or inherited secrets; its steps are exactly, in this order, a digest-pinned checkout (persist-credentials false and nothing else), one step per tool each running `bash bin/install-scanner.sh witness`, `bash bin/install-scanner.sh cosign` or `bash bin/install-scanner.sh crane`, then one more step running `bash bin/install-build-tools.sh melange` (the pinned melange binary that cache's bin/release-sign-apks.sh, run by release-apks, requires at /usr/local/bin/melange; it is installed before any credential exists, with no env and no secret, exactly as Build's apk job installs it), digest-pinned downloads of named artifacts into explicit paths outside bin/ and .github/ (among them the artifact check-results into check-results/, Check's govulncheck stream), then the six witnessed steps release-verify, release-apks, release-publish, release-sign, release-assets and release-postverify (rule 79 as amended by the owner on Oct 10), each one line `bash bin/witnessed.sh STEP bin/STEP.sh` and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition `if: ${{ !contains(github.ref_name, '-') }}` (a release candidate ends after release-verify, AC14); bin/witnessed.sh accepts exactly these six step names besides the ones of Build, Rebuild and Check and writes each record to witness-STEP/STEP-collection.json, then digest-pinned uploads of named artifacts; no third-party action runs after Witness starts and no build command, docker login, or action other than checkout, download-artifact and upload-artifact appears"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC2
