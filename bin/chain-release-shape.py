@@ -31,6 +31,7 @@ STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "r
 INSTALLS = ["witness", "cosign", "crane"]
 MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-AC1 (Astra R4): the one build tool Release needs, for release-sign-apks.sh; the fourth install, after crane
 DOWN = {"witness-build", "witness-rebuild", "witness-check", "witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"}   # Build's and Rebuild's real artifact names (AC17)
+VERIFY_DOWN = {"witness-build", "digests", "items", "admission-baseline", "witness-rebuild", "witness-check", "witness-check-arm64", "check-results", "provenance"}   # what release-verify reads
 UP = {"release-evidence", "witness-release", "witness-release-verify"}
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
@@ -78,6 +79,19 @@ OLD = ["bin/authorize-acceptance-check.py", "bin/authorize-acceptance-check-test
 
 def load(path):
     return yaml.load(open(path), Loader=yaml.BaseLoader)
+
+
+def has_expression(obj):
+    """True when any decoded string (a key or a value, however nested) holds a GitHub expression opener. The protected steps (the whole verify job and every release step up to and
+    including release-verify) carry NO expression at all: that closes every spelling of a read of a secret or of the job token (dotted, bracket, whole-context, function-wrapped)
+    instead of matching spellings."""
+    if isinstance(obj, str):
+        return "${{" in obj
+    if isinstance(obj, dict):
+        return any(has_expression(k) or has_expression(v) for k, v in obj.items())
+    if isinstance(obj, list):
+        return any(has_expression(x) for x in obj)
+    return False
 
 
 def run_of(step):
@@ -133,8 +147,14 @@ def verify_job(j):
     if not ups or ups != list(range(len(kinds) - len(ups), len(kinds))):
         bad.append("verify job: only uploads may follow release-verify, and there must be at least one")
     upl = [(x.get("with") or {}) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/upload-artifact@")]
-    if upl != [{"name": "witness-release-verify", "path": "witness-release-verify"}]:
-        bad.append("verify job: its one upload must be exactly name witness-release-verify with path witness-release-verify (the Witness record of release-verify; the release job's own upload is witness-release): %s" % upl)
+    if upl != [{"name": "witness-release-verify", "path": "witness-release-verify", "if-no-files-found": "error"}]:
+        bad.append("verify job: its one upload must be exactly name witness-release-verify, path witness-release-verify and if-no-files-found error (the Witness record of release-verify; a missing record fails the job; the release job's own upload is witness-release): %s" % upl)
+    for x in j.get("steps") or []:
+        w = x.get("with") or {}
+        if str(x.get("uses", "")).startswith("actions/download-artifact@") and (w.get("name") not in VERIFY_DOWN or re.match(r"^witness-release-verify(/|$)", w.get("path", ""))):
+            bad.append("verify job: a download of %r into %r is not one of the records and files release-verify reads (nothing else may reach the directory that is uploaded)" % (w.get("name"), w.get("path")))
+    if has_expression(j.get("steps")):
+        bad.append("verify job: no step may hold an expression (${{ }}): the job reads no secret, no token and no context")
     return bad
 
 
@@ -242,7 +262,7 @@ def credentials(path):
     bad, seen_verify = [], False
     if vj is None:
         bad.append("no verify job found")
-    elif j_names_credential(vj):
+    elif j_names_credential(vj) or has_expression(vj.get("steps")):
         bad.append("a step up to release-verify has an env or names a secret or token: the verify job must hold no credential (it holds contents read and id-token write only)")
     j = jobs.get("release") or {}
     for s in j.get("steps") or []:
@@ -250,7 +270,7 @@ def credentials(path):
         name = r.split()[2] if r.startswith("bash bin/witnessed.sh ") and len(r.split()) > 3 else None
         blob = yaml.dump(s)
         if not seen_verify:
-            if env is not None or CRED_RE.search(blob):
+            if env is not None or CRED_RE.search(blob) or has_expression(s):
                 bad.append("a step up to release-verify has an env or names a secret or token: %s" % (r or s.get("uses", "")))
             seen_verify = name == "release-verify"
             continue

@@ -947,7 +947,7 @@
         "bin/chain-verify.py"
       ],
       "signs": false,
-      "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no credential exists in this step",
+      "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
       "sha256": "9f064b81de90907e21d78f9cdf70eb731feb5c327d5b3fd72101df03448389dd",
       "exceptions": [
         {
