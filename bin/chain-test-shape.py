@@ -561,7 +561,18 @@ LIVE_TEST_RC_IF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.
 LIVE_TEST_FINAL_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 DECIDE_IF = "${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 # The secrets context in any spelling (secrets.X, secrets['X'], toJSON(secrets), secrets ['X']): the word itself, not the dotted form only.
-SECRETS_CONTEXT = re.compile(r"\bsecrets\b")
+# Contexts are case-insensitive and an expression may span lines or hold tabs, so every DECODED string of the job (keys too) is searched, never its JSON text.
+SECRETS_CONTEXT = re.compile(r"\bsecrets\b", re.IGNORECASE)
+
+
+def names_secrets(obj):
+    if isinstance(obj, str):
+        return bool(SECRETS_CONTEXT.search(obj))
+    if isinstance(obj, dict):
+        return any(names_secrets(k) or names_secrets(v) for k, v in obj.items())
+    if isinstance(obj, (list, tuple)):
+        return any(names_secrets(v) for v in obj)
+    return False
 NON_CHAIN = {
     "decide": {"perm": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}, "agent": True, "if": DECIDE_IF},
     "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
@@ -656,10 +667,10 @@ def graph(path):
                 bad.append("job %s may name only environment: agent, got %r" % (name, job["environment"]))
         elif spec.get("env"):
             if job.get("environment") != spec["env"]: bad.append("job %s must name exactly environment: %s, got %r" % (name, spec["env"], job.get("environment")))
-            if SECRETS_CONTEXT.search(json.dumps(job)): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
+            if names_secrets(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
         else:
             if "environment" in job: bad.append("job %s may not name an environment (the App secrets live in agent), got %r" % (name, job["environment"]))
-            if SECRETS_CONTEXT.search(json.dumps(job)): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
+            if names_secrets(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
         if "if" in spec and job.get("if") != spec["if"]:
             bad.append("job %s must carry exactly the if %s, got %r" % (name, spec["if"], job.get("if")))
         if "needs" in spec and sorted(needs_of(job)) != spec["needs"]:
