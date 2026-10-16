@@ -784,6 +784,152 @@ with tempfile.TemporaryDirectory() as _t:
 # the runner does this check on the real image, before any push (static: the order of the lines)
 i_chk, i_push = run_text.find("fixture-check"), run_text.find('push_copy "$FIXTURE_SRC"')
 check("the runner exports the fixture and runs fixture-check on its package list before it pushes the fixture", 0 < i_chk < i_push and "--image-tar" in run_text, (i_chk, i_push))
+# --- PR-C: the Docker Scout leg (scanner-panel rule 12; REQ-REL-010-AC6; advisor, Oct 16). Part A, the python helpers.
+VI = load("vi", "bin/vex-index.py")
+real_vex = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))
+DHREPO = "docker.io/fosterstack-live/cache-live-test"
+sv = L.scout_vex(real_vex, images, FIX, "CVE-2023-9999", DHREPO)
+sadded = [s for s in sv["statements"] if s not in real_vex["statements"]]
+check("scout-vex: the shipped statements unchanged plus one not_affected statement for the fixture in the Docker Hub test repository",
+      sv["statements"][:len(real_vex["statements"])] == real_vex["statements"] and len(sadded) == 1 and sadded[0]["status"] == "not_affected"
+      and sadded[0]["vulnerability"]["name"] == "CVE-2023-9999"
+      and sadded[0]["products"] == [{"@id": "pkg:oci/cache@%s?repository_url=%s" % (FIX, DHREPO)}], sadded)
+check("scout-vex: the document keeps our author (Scout applies only statements of an author the scan names)", sv["author"] == real_vex["author"])
+try:
+    VI.check_vex(json.dumps(sv).encode()); got = "accepted"
+except Exception as e:
+    got = "refused: %s" % e
+check("scout-vex: the attached document passes the attestation tool's own OpenVEX check", got == "accepted", got)
+check("scout author pattern: the anchored, escaped author of the shipped file (the same as bin/scout-vex-scan.sh)", L.scout_author_pattern(real_vex) == "^FosterStack LLC$", L.scout_author_pattern(real_vex))
+check("scout author pattern: regex characters of the author are escaped",
+      L.scout_author_pattern({"author": "A.B (x) [y]*"}) == r"^A\.B \(x\) \[y\]\*$", L.scout_author_pattern({"author": "A.B (x) [y]*"}))
+for why, doc in (("no author", {}), ("a blank author", {"author": "  "}), ("a non-string author", {"author": 5})):
+    try:
+        L.scout_author_pattern(doc); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("scout author pattern refuses %s" % why, got == "refused", got)
+sh_author = subprocess.run(["bash", "-c", 'author=$(jq -er .author "$0/.vex/fosterstack-cache.openvex.json"); printf "^%s\\$" "$(printf %s "$author" | sed \'s/[][\\.*^$+?(){}|/]/\\\\&/g\')"', root],
+                           capture_output=True, text=True).stdout
+check("scout author pattern equals the shell script's computation", L.scout_author_pattern(real_vex) == sh_author, sh_author)
+
+# wrap-index: a single-platform image pulled as an OCI layout becomes the one-child index the attestation tool needs (the pinned fixture is a single image)
+import hashlib as _h
+def _dg(b): return "sha256:" + _h.sha256(b).hexdigest()
+def single_layout(d, arch="amd64"):
+    cfg = json.dumps({"architecture": arch, "os": "linux", "rootfs": {"type": "layers", "diff_ids": []}}).encode()
+    layer = b"layer-bytes"
+    man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                      "config": {"mediaType": "application/vnd.docker.container.image.v1+json", "digest": _dg(cfg), "size": len(cfg)},
+                      "layers": [{"mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip", "digest": _dg(layer), "size": len(layer)}]}).encode()
+    os.makedirs(os.path.join(d, "blobs", "sha256"))
+    for b in (cfg, layer, man):
+        open(os.path.join(d, "blobs", "sha256", _dg(b)[7:]), "wb").write(b)
+    open(os.path.join(d, "oci-layout"), "w").write('{"imageLayoutVersion":"1.0.0"}')
+    open(os.path.join(d, "index.json"), "w").write(json.dumps({"schemaVersion": 2, "manifests": [{
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json", "digest": _dg(man), "size": len(man)}]}))
+    return _dg(man)
+with tempfile.TemporaryDirectory() as t:
+    t = os.path.realpath(t)      # the attestation tool refuses a path through a symlink (macOS /var is one)
+    lay = os.path.join(t, "layout"); os.makedirs(lay); os.chmod(lay, 0o755)
+    man_dg = single_layout(lay)
+    dg_index = L.wrap_index(lay)
+    top = json.load(open(os.path.join(lay, "index.json")))
+    d_bytes = open(os.path.join(lay, "blobs", "sha256", dg_index[7:]), "rb").read()
+    d_doc = json.loads(d_bytes)
+    check("wrap-index: the layout's one descriptor is an OCI image index whose blob is present and hashes to its name",
+          len(top["manifests"]) == 1 and top["manifests"][0]["mediaType"] == "application/vnd.oci.image.index.v1+json"
+          and top["manifests"][0]["digest"] == dg_index == _dg(d_bytes) and top["manifests"][0]["size"] == len(d_bytes), top)
+    check("wrap-index: the index holds the image as its one child, with the platform read from the image's own config",
+          d_doc["schemaVersion"] == 2 and d_doc["mediaType"] == "application/vnd.oci.image.index.v1+json" and len(d_doc["manifests"]) == 1
+          and d_doc["manifests"][0]["digest"] == man_dg and d_doc["manifests"][0]["platform"] == {"architecture": "amd64", "os": "linux"}, d_doc)
+    vpath = os.path.join(t, "vex.json"); json.dump(real_vex, open(vpath, "w")); os.chmod(vpath, 0o644)
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-index.py"), "layout", "--layout", lay, "--vex", vpath], capture_output=True, text=True)
+    check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", r.returncode == 0, r.stderr[-300:])
+def _already_index(lay):
+    open(os.path.join(lay, "index.json"), "w").write(json.dumps({"schemaVersion": 2, "manifests": [
+        {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + "a" * 64, "size": 5}]}))
+def _two_descriptors(lay):
+    open(os.path.join(lay, "index.json"), "w").write(json.dumps({"schemaVersion": 2, "manifests": [
+        {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + "a" * 64, "size": 5}] * 2}))
+for why, mutate in (("a layout that already holds an index", _already_index), ("a layout with two descriptors", _two_descriptors)):
+    with tempfile.TemporaryDirectory() as t:
+        lay = os.path.join(t, "layout"); os.makedirs(lay); single_layout(lay); mutate(lay)
+        before = open(os.path.join(lay, "index.json")).read()
+        try:
+            L.wrap_index(lay); got = "accepted"
+        except ValueError:
+            got = "refused"
+        check("wrap-index refuses %s and leaves the layout alone" % why, got == "refused" and open(os.path.join(lay, "index.json")).read() == before, got)
+
+# the Docker Hub test repository is swept through the Hub API: fixed host, bearer token from the login, no redirect, every tag deleted and proven gone
+class HubFake:
+    def __init__(self, tags, fail_login=False, fail_delete=(), keep=()):
+        self.tags, self.calls, self.fail_login, self.fail_delete, self.keep = list(tags), [], fail_login, set(fail_delete), set(keep)
+    def __call__(self, req, timeout=None):
+        m, u = req.get_method(), req.full_url
+        self.calls.append((m, u, req.get_header("Authorization"), req.data))
+        if m == "POST" and u == "https://hub.docker.com/v2/users/login":
+            if self.fail_login: raise urllib.error.HTTPError(u, 401, "no", {}, io.BytesIO(b""))
+            return FakeResp(b'{"token": "jwt-1"}')
+        base = "https://hub.docker.com/v2/repositories/fosterstack-live/cache-live-test/tags"
+        if m == "GET" and u.startswith(base + "?"):
+            page2 = "page=2" in u
+            names = self.tags[:2] if not page2 else self.tags[2:]
+            nxt = (base + "?page_size=2&page=2") if (not page2 and len(self.tags) > 2) else None
+            return FakeResp(json.dumps({"results": [{"name": n} for n in names], "next": nxt}).encode())
+        if m == "DELETE" and u.startswith(base + "/"):
+            name = u[len(base) + 1:].rstrip("/")
+            if name in self.fail_delete: raise urllib.error.HTTPError(u, 500, "boom", {}, io.BytesIO(b""))
+            if name not in self.keep: self.tags = [x for x in self.tags if x != name]
+            return FakeResp(b"")
+        raise urllib.error.HTTPError(u, 404, "unexpected %s %s" % (m, u), {}, io.BytesIO(b""))
+hub = HubFake(["a", "b", "c"])
+L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", hub)
+check("hub sweep: login once, every tag deleted with the login's token, the list read again and found empty",
+      sum(1 for c in hub.calls if c[0] == "POST") == 1 and sorted(c[1].rsplit("/", 2)[-2] for c in hub.calls if c[0] == "DELETE") == ["a", "b", "c"]
+      and hub.tags == [] and all(c[2] == "Bearer jwt-1" for c in hub.calls if c[0] != "POST"), [(c[0], c[1][-30:]) for c in hub.calls])
+check("hub sweep: the login sends the username and the token, nothing else", json.loads([c for c in hub.calls if c[0] == "POST"][0][3]) == {"username": "user", "password": "tok"})
+for why, h in (("a failed login", HubFake(["a"], fail_login=True)), ("a failed delete", HubFake(["a", "b"], fail_delete=["a"])), ("a tag that is still there", HubFake(["a"], keep=["a"]))):
+    try:
+        L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", h); got = "returned"
+    except (urllib.error.HTTPError, RuntimeError, ValueError):
+        got = "raised"
+    check("hub sweep fails on %s" % why, got == "raised", got)
+h2 = HubFake(["a", "b", "c"], fail_delete=["a"])
+try:
+    L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", h2)
+except Exception:
+    pass
+check("hub sweep: the other tags were deleted although one failed", h2.tags == ["a"], h2.tags)
+for why, repo, user, tok in (("another registry path", "a/b/c", "u", "t"), ("a dot-dot", "../x", "u", "t"), ("an upper-case name", "Foo/bar", "u", "t"), ("no slash", "cache", "u", "t"),
+                             ("a docker.io prefix", "docker.io/ns/name", "u", "t"), ("no user", "ns/name", "", "t"), ("no token", "ns/name", "u", "")):
+    try:
+        L.hub_sweep(repo, user, tok, HubFake([])); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("hub sweep refuses %s" % why, got == "refused", got)
+def hub_next_elsewhere(req, timeout=None):
+    if req.get_method() == "POST": return FakeResp(b'{"token": "jwt-1"}')
+    return FakeResp(b'{"results": [{"name": "a"}], "next": "https://evil.example/v2/x"}')
+try:
+    L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", hub_next_elsewhere); got = "followed"
+except (ValueError, RuntimeError):
+    got = "refused"
+check("hub sweep never follows a next page on another host", got == "refused", got)
+
+# scout-delta: the informational probe of the Build layout (never a verdict)
+def gl(*ids): return {"vulnerabilities": [{"identifiers": [{"value": i}], "location": {"dependency": {"package": {"name": "p"}, "version": "1"}}} for i in ids]}
+with tempfile.TemporaryDirectory() as t:
+    bp, ap = os.path.join(t, "b.json"), os.path.join(t, "a.json")
+    json.dump(gl("CVE-1", "CVE-2", "CVE-3"), open(bp, "w")); json.dump(gl("CVE-2", "CVE-3"), open(ap, "w"))
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-delta", "--before", bp, "--after", ap], capture_output=True, text=True)
+    check("scout-delta: the notice says how many findings each scan reported and which our statements dropped",
+          r.returncode == 0 and "3" in r.stdout and "2" in r.stdout and "CVE-1" in r.stdout and "::notice::" in r.stdout, (r.returncode, r.stdout, r.stderr))
+    json.dump(gl("CVE-1"), open(ap, "w"))
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-delta", "--before", bp, "--after", os.path.join(t, "missing.json")], capture_output=True, text=True)
+    check("scout-delta: an unreadable report is a notice, never a failure (information only)", r.returncode == 0 and "::notice::" in r.stdout, (r.returncode, r.stdout, r.stderr))
+
 print("vex-live-test: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

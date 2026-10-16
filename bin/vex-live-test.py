@@ -13,7 +13,7 @@ live test. bin/vex-live-run.sh does the cloud calls; this file decides what they
 - pick-scope:    the package Inspector reports that CVE in, and the decoy CVE (owner Oct 16: every Inspector rule names its package)
 - release:       on main, the newest published release that carries the rule-10 files
 """
-import argparse, copy, importlib.util, json, os, re, sys
+import hashlib, argparse, copy, importlib.util, json, os, re, sys
 
 REPO_PURL = "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache"
 PREFIX, TEST_PREFIX = "fosterstack-cache-", "fosterstack-cache-livetest-"
@@ -583,6 +583,128 @@ def release_under_test(releases):
     return max(ok, key=_semver) if ok else None
 
 
+# ---- the Docker Scout leg (scanner-panel rule 12; REQ-REL-010-AC6)
+def scout_vex(vex, images, fixture_digest, cve, repository):
+    """The document attached to the fixture image for the Scout leg: the real statements unchanged plus the one test-only statement for the fixture in the Docker Hub
+    test repository (the same document fixture_vex makes for the other scanners, with the test repository's name in its product)."""
+    return fixture_vex(vex, images, fixture_digest, cve, repository)[0]
+
+
+def scout_author_pattern(vex):
+    """The anchored, escaped author of the file, as the --vex-author pattern: Scout applies only statements whose author matches (its default is Docker's own).
+    The same computation as bin/scout-vex-scan.sh."""
+    author = vex.get("author") if isinstance(vex, dict) else None
+    if not isinstance(author, str) or not author.strip():
+        raise ValueError("the OpenVEX file has no author")
+    return "^" + re.sub(r"([\[\]\\.*^$+?(){}|/])", r"\\\1", author) + "$"
+
+
+OCI_INDEX_TYPE = "application/vnd.oci.image.index.v1+json"
+IMAGE_MANIFEST_TYPES = ("application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json")
+
+
+def _blob(layout, digest):
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest or ""):
+        raise ValueError("not a sha256 digest: %r" % (digest,))
+    with open(os.path.join(layout, "blobs", "sha256", digest[7:]), "rb") as fh:
+        data = fh.read()
+    if "sha256:" + hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError("blob %s does not hash to its name" % digest)
+    return data
+
+
+def wrap_index(layout):
+    """A single image pulled as an OCI layout becomes a layout whose one descriptor is an OCI image index holding that image as its one child (the platform read
+    from the image's own config): the shape the attestation tool needs. Refuses anything that is not exactly one image manifest. Returns the index digest."""
+    try:
+        top = json.load(open(os.path.join(layout, "index.json")))
+        entries = top["manifests"]
+        if top.get("schemaVersion") != 2 or not isinstance(entries, list) or len(entries) != 1 or entries[0].get("mediaType") not in IMAGE_MANIFEST_TYPES:
+            raise ValueError("the layout's index.json must hold exactly one image manifest")
+        entry = entries[0]
+        man = json.loads(_blob(layout, entry["digest"]))
+        cfg = json.loads(_blob(layout, man["config"]["digest"]))
+        osn, arch = cfg.get("os"), cfg.get("architecture")
+    except (OSError, KeyError, TypeError, AttributeError) as e:
+        raise ValueError("not a layout of one image: %s" % e)
+    except json.JSONDecodeError as e:
+        raise ValueError("not a layout of one image: %s" % e)
+    if not isinstance(osn, str) or not osn or not isinstance(arch, str) or not arch:
+        raise ValueError("the image's config names no os and architecture")
+    child = {"mediaType": entry["mediaType"], "digest": entry["digest"], "size": entry["size"], "platform": {"architecture": arch, "os": osn}}
+    data = json.dumps({"schemaVersion": 2, "mediaType": OCI_INDEX_TYPE, "manifests": [child]}, sort_keys=True, separators=(",", ":")).encode()
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    blob_path = os.path.join(layout, "blobs", "sha256", digest[7:])
+    fd = os.open(blob_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    tmp = os.path.join(layout, "index.json.wrap.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    with os.fdopen(fd, "w") as fh:
+        json.dump({"schemaVersion": 2, "manifests": [{"mediaType": OCI_INDEX_TYPE, "digest": digest, "size": len(data)}]}, fh)
+    os.rename(tmp, os.path.join(layout, "index.json"))
+    return digest
+
+
+HUB_HOST = "hub.docker.com"
+HUB_REPO = re.compile(r"[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*")
+
+
+def hub_request(url, method, token, body=None, opener=None):
+    """One call to the Docker Hub API (an API call for data): the fixed host over https, no redirect, a bearer token (none for the login). Raises on an HTTP error."""
+    import urllib.parse, urllib.request
+    p = urllib.parse.urlsplit(url)
+    if p.scheme != "https" or p.hostname != HUB_HOST or p.username is not None or p.password is not None or p.port not in (None, 443):
+        raise ValueError("not a Docker Hub URL: %r" % url[:80])
+    if method not in ("GET", "POST", "DELETE"):
+        raise ValueError("method %r is not GET, POST or DELETE" % method)
+    headers = {"Content-Type": "application/json"} if body is not None else {}
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(url, method=method, headers=headers, data=json.dumps(body).encode() if body is not None else None)
+    with (opener or _opener().open)(req, timeout=60) as r:
+        return r.read().decode("utf-8")
+
+
+def hub_sweep(repository, user, token, opener=None):
+    """Delete every tag of the dedicated Docker Hub test repository and prove the repository empty. A failed delete does not stop the others; any failure, or a tag
+    left, raises at the end."""
+    if not HUB_REPO.fullmatch(repository or ""):
+        raise ValueError("not a Docker Hub repository name (namespace/name): %r" % (repository,))
+    if not user or not token or any(c.isspace() for c in user):
+        raise ValueError("the Docker Hub user and the push token are both needed")
+    base = "https://%s/v2/repositories/%s/tags" % (HUB_HOST, repository)
+    jwt = json.loads(hub_request("https://%s/v2/users/login" % HUB_HOST, "POST", None, {"username": user, "password": token}, opener))["token"]
+
+    def tags():
+        names, url = [], base + "?page_size=100"
+        while url:
+            if not url.startswith(base):
+                raise ValueError("the tag list points away from the repository: %r" % url[:80])
+            page = json.loads(hub_request(url, "GET", jwt, None, opener))
+            names += [r["name"] for r in page["results"]]
+            url = page.get("next")
+        return names
+    failures = []
+    for name in tags():
+        try:
+            hub_request("%s/%s/" % (base, name), "DELETE", jwt, None, opener)
+        except Exception as e:
+            failures.append("%s: %s" % (name, e))
+    left = tags()
+    if failures or left:
+        raise RuntimeError("the Docker Hub test repository was not emptied: %d delete failures %s, %d tags left %s" % (len(failures), failures[:3], len(left), left[:5]))
+
+
+def scout_delta(before, after):
+    """(findings before, findings after, CVEs our statements dropped) of two Scout GitLab reports; for the informational probe only."""
+    def ids(path):
+        doc = json.load(open(path))
+        return {v["identifiers"][0]["value"] for v in doc["vulnerabilities"]}
+    b, a = ids(before), ids(after)
+    return len(b), len(a), sorted(b - a)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="vex-live-test")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -638,6 +760,22 @@ def main(argv=None):
     sg.add_argument("name", choices=STATE_KEYS)
     fl = sub.add_parser("field", help="print one field of the JSON read from stdin (names: one per line; next: the next page token or empty)")
     fl.add_argument("key", choices=("names", "next"))
+    sv = sub.add_parser("scout-vex", help="the document attached to the fixture for the Scout leg")
+    sv.add_argument("--openvex", required=True)
+    sv.add_argument("--images", required=True)
+    sv.add_argument("--fixture-digest", required=True)
+    sv.add_argument("--cve", required=True)
+    sv.add_argument("--repository", required=True)
+    sv.add_argument("--out", required=True)
+    sa = sub.add_parser("scout-author", help="print the --vex-author pattern of the shipped file")
+    sa.add_argument("--openvex", required=True)
+    wi = sub.add_parser("wrap-index", help="wrap the one image of an OCI layout in an OCI image index; prints the index digest")
+    wi.add_argument("--layout", required=True)
+    hs = sub.add_parser("hub-sweep", help="delete every tag of the Docker Hub test repository (DOCKERHUB_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN in the environment)")
+    hs.add_argument("--repository", required=True)
+    sd = sub.add_parser("scout-delta", help="the informational notice for two Scout reports")
+    sd.add_argument("--before", required=True)
+    sd.add_argument("--after", required=True)
     r = sub.add_parser("release")
     r.add_argument("--releases", required=True, help="gh release list --json tagName,isDraft + assets names")
     a = ap.parse_args(argv)
@@ -645,6 +783,29 @@ def main(argv=None):
         import subprocess
         tok = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True, check=True).stdout.strip()
         sys.stdout.write(ca_request(a.url, a.method, tok))
+        return 0
+    if a.cmd == "scout-vex":
+        json.dump(scout_vex(json.load(open(a.openvex)), json.load(open(a.images)), a.fixture_digest, a.cve, a.repository), open(a.out, "w"), indent=1)
+        return 0
+    if a.cmd == "scout-author":
+        print(scout_author_pattern(json.load(open(a.openvex))))
+        return 0
+    if a.cmd == "wrap-index":
+        print(wrap_index(a.layout))
+        return 0
+    if a.cmd == "hub-sweep":
+        try:
+            hub_sweep(a.repository, os.environ.get("DOCKERHUB_USERNAME", ""), os.environ.get("DOCKERHUB_TEST_PUSH_TOKEN", ""))
+        except (ValueError, RuntimeError, OSError, KeyError) as e:
+            print("::error::Docker Hub sweep: %s" % e, file=sys.stderr)
+            return 1
+        return 0
+    if a.cmd == "scout-delta":
+        try:
+            nb, na, dropped = scout_delta(a.before, a.after)
+            print("::notice::Scout with our author on the Build layout: %d findings with Docker's authors only, %d with ours; dropped by our statements: %s" % (nb, na, ", ".join(dropped) or "none"))
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+            print("::notice::Scout probe of the Build layout gave no readable report (%s); information only" % e)
         return 0
     if a.cmd == "plan":
         skip = json.load(open(a.skip_cannot_run))["blocks"] if a.skip_cannot_run else ()
