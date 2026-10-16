@@ -1973,11 +1973,14 @@ for r in rows:
     line = LIVE[r["line"]]
     assert r["file"] == "bin/refresh-inputs.sh" and r["form"] == "a download", r
     segs = re.split(r"\s*(?:;|&&|\|\||\|)\s*", line)
-    assert r["key"] in {H(s) for s in segs}, ("the key is not a segment of the line", r)
+    assert r["key"] == H(segs[0]) and segs[0].startswith("/usr/bin/curl "), ("the key is not the hash of the curl segment", r)
+    assert r["key"] != H(segs[1]), ("the key is the hash of the error handler", r)
+    assert segs[1].startswith("die "), segs[1]
     assert ac._live_fetch_line_ok(line), ("the checker's live-fetch rule refuses the line", line)
     other = line.replace("/usr/bin/curl", "/usr/bin/other", 1)
     assert not ac._live_fetch_line_ok(other), ("another program is accepted", other)
 assert next(r for r in rows if r["line"] == H(KEY))["count"] == 4
+assert [r.get("count", 1) for r in sorted(rows, key=lambda r: r["line"])] == [c for _, c in sorted((h, 4 if h == H(KEY) else 1) for h in LIVE)], "the counts are exactly 4, 1, 1"
 PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
