@@ -47,17 +47,30 @@ check("the Google command is GUIDE_GOOGLE_COMMAND verbatim",
       V.GUIDE_GOOGLE_COMMAND.replace("<file>", '"%s"' % csaf) in code)
 check("the Google step sets every variable it reads", all(re.search(r"(?m)^%s=" % v, code) for v in ("VER", "IMAGE", "DIGEST")))
 check("Grype reads the OpenVEX file", re.search(r"grype \S+ --vex %s" % re.escape(openvex), code) is not None)
-# Docker Scout: the page makes no Scout claim and gives no Scout command until our OpenVEX is attached to the published image and a live scan of the real image
-# has shown Scout applying it (owner Oct 3: "the guide leads with it only after the live test"; REQ-REL-010). Scout's local-file flag (--vex-location) applies
-# nothing on Scout 1.24 to 1.26 (rules.md:158-160), so it must not appear either.
-check("no Docker Scout command or claim is made yet", re.search(r"(?i)scout", doc) is None and "--vex-location" not in doc and "--vex-author" not in doc)
+# Docker Scout (REQ-REL-010, PR-C): the section is DRAFT and GATED. It makes no claim a customer can rely on until a live scan of the real published index has shown Scout applying
+# our attestation (REQ-REL-010-AC6; owner Oct 3: "the guide leads with it only after the live test"): it carries the gate marker, and the commit that removes the marker is the one that
+# follows that passing run. Scout's local-file flag (--vex-location) applies nothing on Scout 1.24 to 1.26 (rules.md:158-160), so it never appears.
+import json
+sc = re.search(r"(?ms)^### Docker Scout\n(.*?)(?=^## |^### |\Z)", doc)
+check("the page has a Docker Scout section", sc is not None)
+scout_sec = sc.group(1) if sc else ""
+check("the Scout section carries the gate marker until AC6 has passed", "<!-- gated: REQ-REL-010-AC6 -->" in scout_sec)
+scout_blocks = [b for b in blocks if "docker scout" in b]
+check("the page has exactly one Scout command, inside the Scout section", len(scout_blocks) == 1 and scout_blocks[0] in scout_sec, len(scout_blocks))
+author = json.loads(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")).read())["author"] if os.path.exists(os.path.join(root, ".vex/fosterstack-cache.openvex.json")) else ""
+pattern = "^" + re.sub(r"([\[\]\\.*^$+?(){}|/])", r"\\\1", author) + "$"
+check("the Scout command names our author as the anchored, escaped pattern (Scout applies only statements of an author the scan names) and the image by digest",
+      scout_blocks and scout_blocks[0] == "docker scout cves --vex-author '%s' \"registry://ghcr.io/fosterstack/cache@${DIGEST}\"\n" % pattern, scout_blocks)
+check("no Scout local-file flag anywhere", "--vex-location" not in doc)
+check("the Scout section says nothing is loaded (the attestation is on the image) and why the author is named", "needs no file" in scout_sec and "author" in scout_sec)
+check("the stay-current part says there is nothing to reload for Scout", re.search(r"(?i)docker scout:\*\* nothing to (load|reload)", doc) is not None)
 # the blocks that need a published release or a registry are listed by exact text for the live test (rule 79 precedent: docs/verify-release.cannot-run.json)
 import json
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
 blocks_all = re.findall(r"```sh\n(.*?)```", doc, re.S)
 check("the cannot-run list holds blocks of the page, each exactly once", all(blocks_all.count(b) == 1 for b in cr["blocks"]) and len(set(cr["blocks"])) == len(cr["blocks"]))
-need = [b for b in blocks_all if "imagetools inspect" in b or ("cu" + "rl -fsSLO") in b or "cosign verify-attestation" in b or re.search(r"grype \"ghcr\.io/", b)]
-check("the cannot-run list is exactly the blocks that read a release or a registry (digest, download, verify, and the Grype scan of the published image)", cr["blocks"] == need, (len(cr["blocks"]), len(need)))
+need = [b for b in blocks_all if "imagetools inspect" in b or ("cu" + "rl -fsSLO") in b or "cosign verify-attestation" in b or re.search(r"grype \"ghcr\.io/", b) or "docker scout cves" in b]
+check("the cannot-run list is exactly the blocks that read a release or a registry (digest, download, verify, and the Grype and Scout scans of the published image)", cr["blocks"] == need, (len(cr["blocks"]), len(need)))
 # Codex #381 r2: the page serves the FIPS image too (its tag is X.Y.Z-fips, RELEASING.md) and a macOS reader (shasum for sha256sum; base64 -D before macOS 14)
 check("the page tells a FIPS reader to use the -fips tag of the image", re.search(r"\$\{VER\}-fips", doc) is not None)
 check("the page gives the macOS alternatives for the checksum and base64 commands", "shasum -a 256 -c" in doc and "base64 -D" in doc)
