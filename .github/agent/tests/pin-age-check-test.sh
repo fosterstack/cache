@@ -1924,7 +1924,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b": "printf -v CURL %s /usr/bin/curl # TEST-SUBST",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call"]   # those name an item, not a text line (AC19)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and not r["ruling"].startswith("live fetch, owner ratified (")]   # those name an item, not a text line (AC19); a live fetch row is a command, checked by its own inventory (the next case)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -1956,6 +1956,28 @@ for r in rows:
             c = c[2:]                                                    # a case pattern: word)
         if c:
             assert c[0] in SAFE, ("not a harmless command", c, r)
+PY
+CASE="every committed live-fetch row is one of the three fetch lines of bin/refresh-inputs.sh: the test holds each line's text, its hashes match the row, the checker's own live-fetch rule accepts it, and the same line with another program is refused"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
+import hashlib, importlib.util, json, re, sys
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
+spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+FLAGS = "-q -fsSL -g --max-filesize {n} --max-time {t} --proto =https --tlsv1.2 -o"
+KEY = '/usr/bin/curl ' + FLAGS.format(n=65536, t=60) + ' "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1'
+PKG = '/usr/bin/curl ' + FLAGS.format(n=536870912, t=900) + ' "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download a package from live Wolfi" 1'
+IDX = '/usr/bin/curl ' + FLAGS.format(n=268435456, t=600) + ' "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download the live package index" 1'
+LIVE = {H(l): l for l in (KEY, PKG, IDX)}
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith(ac.LIVE_RULING)]
+assert sorted(r["line"] for r in rows) == sorted(LIVE), ("the live rows are not exactly the three fetch lines", [r["line"][:12] for r in rows])
+for r in rows:
+    line = LIVE[r["line"]]
+    assert r["file"] == "bin/refresh-inputs.sh" and r["form"] == "a download", r
+    segs = re.split(r"\s*(?:;|&&|\|\||\|)\s*", line)
+    assert r["key"] in {H(s) for s in segs}, ("the key is not a segment of the line", r)
+    assert ac._live_fetch_line_ok(line), ("the checker's live-fetch rule refuses the line", line)
+    other = line.replace("/usr/bin/curl", "/usr/bin/other", 1)
+    assert not ac._live_fetch_line_ok(other), ("another program is accepted", other)
+assert next(r for r in rows if r["line"] == H(KEY))["count"] == 4
 PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
@@ -1991,7 +2013,7 @@ for r in rows:
     assert set(r) - {"count"} == {"file", "form", "key", "line", "ruling"} and (type(r.get("count", 1)) is int and 1 <= r.get("count", 1) <= 100), r
     assert re.fullmatch(r"[0-9a-f]{64}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
-    pre = next((x for x in ("text, not a command: ", "harness assertion: ") if r["ruling"].startswith(x)), None)
+    pre = next((x for x in ("text, not a command: ", "harness assertion: ", ac.LIVE_RULING) if r["ruling"].startswith(x)), None)
     assert re.fullmatch(r"[0-9a-f]{64}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
 

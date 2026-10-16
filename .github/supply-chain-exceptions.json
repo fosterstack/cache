@@ -285,41 +285,6 @@
       "ruling": "text, not a command: the fetch tool's fixed-path line of the daily input refresh job, a printf -v of a constant path, replaced by a stub in the test copy; the Wolfi live fetch it names is ruled by owner rule 48 (no 7-day hold on Wolfi) and verified per rules 32 and 28; handoff 0429/0432"
     },
     {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "77c4986b0cafb21f3dc55acac3dd20fba8b64253ad0486519db7a0645c4de899",
-      "line": "77c4986b0cafb21f3dc55acac3dd20fba8b64253ad0486519db7a0645c4de899",
-      "ruling": "text, not a command: Python source inside the shell test's quoted heredoc (it reads bin/refresh-inputs.sh as data to prove every live fetch line is in the ruled grammar); bash never parses it and it downloads nothing"
-    },
-    {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "7d234779e5d507c7da11c0ce04380325d35c5fd5fcf342e50c8a522326c61ec5",
-      "line": "7d234779e5d507c7da11c0ce04380325d35c5fd5fcf342e50c8a522326c61ec5",
-      "ruling": "text, not a command: Python source inside the shell test's quoted heredoc (it reads bin/refresh-inputs.sh as data to prove every live fetch line is in the ruled grammar); bash never parses it and it downloads nothing"
-    },
-    {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "9181f6d44a5a8e3cdff8b7634533d154e0e2a308b54a1d4b89d00c31d00ab4ca",
-      "line": "c109eba5fd39abc35cb33f4143e550e7ed2ada3eb7186cdb6f66c4f501346c6c",
-      "ruling": "text, not a command: Python source inside the shell test's quoted heredoc (it reads bin/refresh-inputs.sh as data to prove every live fetch line is in the ruled grammar); bash never parses it and it downloads nothing"
-    },
-    {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "c596dacabcf40e32646129576bfcb21c1ac5d4fb56d0903f864c19e28c38d57c",
-      "line": "c596dacabcf40e32646129576bfcb21c1ac5d4fb56d0903f864c19e28c38d57c",
-      "ruling": "text, not a command: Python source inside the shell test's quoted heredoc (it reads bin/refresh-inputs.sh as data to prove every live fetch line is in the ruled grammar); bash never parses it and it downloads nothing"
-    },
-    {
-      "file": "bin/refresh-inputs-test.sh",
-      "form": "a download",
-      "key": "d4ad2876347e813ece74246e7e0a0bdcdb9d7d837208f81556e5beef82d978c2",
-      "line": "d4ad2876347e813ece74246e7e0a0bdcdb9d7d837208f81556e5beef82d978c2",
-      "ruling": "text, not a command: Python source inside the shell test's quoted heredoc (it reads bin/refresh-inputs.sh as data to prove every live fetch line is in the ruled grammar); bash never parses it and it downloads nothing"
-    },
-    {
       "file": "bin/refresh-inputs.sh",
       "form": "a download",
       "key": "26a5a54c945cc5c970b1cef963189599c19aecbbdcde47efa806d1a93b7a073c",
