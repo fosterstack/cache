@@ -143,6 +143,18 @@ rusers = [s.get("name") for s in rsteps if "steps.app-token.outputs.token" in st
 if rusers != ["refresh the inputs (stage the pull request)", "check for a newer certified crypto module", "open the pull requests"]:
     bad.append("AC28: the App token reaches steps other than the three refresh steps: %s" % rusers)
 KEYCHK = "check the live Wolfi key against the pinned one"
+ARCHKEY = "check the live Wolfi key against the pulled archive"
+BOOT_NAME = "bootstrap the archive from the pinned Wolfi key"
+PULL_NAME = "pull the archive by its recorded digest"
+_names = [n for n in rnames if n]
+if ARCHKEY not in rnames or not (rnames.index(ARCHKEY) > max(rnames.index(n) for n in ("pull the archive by its recorded digest", "bootstrap the archive from the pinned Wolfi key") if n in rnames)) \
+        or [x for x in rsteps if str(x.get("uses", "")).startswith("actions/create-github-app-token@")] and rnames.index(ARCHKEY) > next(k for k, x in enumerate(rsteps) if str(x.get("uses", "")).startswith("actions/create-github-app-token@")):
+    bad.append("AC30: the live key is not compared with the pulled archive's key after the archive is pulled or seeded and before the token is minted")
+elif "./bin/refresh-inputs.sh archive-key-check " not in "".join(str(x.get("run", "")) for x in rsteps if x.get("name") == ARCHKEY) or any(x.get("if") for x in rsteps if x.get("name") == ARCHKEY):
+    bad.append("AC30: the archive key check step does not call refresh-inputs.sh archive-key-check, or carries an if")
+for x in rsteps:
+    if x.get("name") not in (BOOT_NAME, PULL_NAME) and re.search(r"always\(\)|failure\(\)|cancelled\(\)", str(x.get("if", ""))):
+        bad.append("AC30: the refresh step %r runs after a failure (%s); a stop must stop every later step" % (x.get("name"), x.get("if")))
 if len(rnames) < 2 or rnames[1] != KEYCHK if rnames else True:
     bad.append("AC26/AC30: the live key is not checked against the pinned one in the first step after the checkout (before tool installation, registry login, archive retrieval and token minting)")
 elif "./bin/refresh-inputs.sh key-check " not in "".join(str(x.get("run", "")) for x in rsteps if x.get("name") == KEYCHK) or any(x.get("if") for x in rsteps if x.get("name") == KEYCHK):
@@ -233,6 +245,10 @@ case_ refresh-or-instead-and bad "$R['if'] = $R['if'].replace(\"' && (\", \"' ||
 case_ store-unconditional    bad "[s.__setitem__('run', 'set -euo pipefail\\n./bin/archive-push.sh --dir \"\$RUNNER_TEMP/archive\" # changed\\n') for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
 case_ store-if-inverted      bad "[s.__setitem__('run', s['run'].replace('if [ \"\$after\" = ', 'if [ \"\$after\" != ')) for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
 # Codex #345 r4: overlapping runs, the daily schedule itself, and a stop that is allowed to continue
+case_ archive-keycheck-removed bad "$R['steps'] = [s for s in $R['steps'] if s.get('name') != 'check the live Wolfi key against the pulled archive']"
+case_ archive-keycheck-if      bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check the live Wolfi key against the pulled archive']"
+case_ archive-keycheck-late    bad "$R['steps'].append($R['steps'].pop([k for k, s in enumerate($R['steps']) if s.get('name') == 'check the live Wolfi key against the pulled archive'][0]))"
+case_ later-step-always        bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
 case_ refresh-no-concurrency  bad "$R.pop('concurrency', None)"
 case_ refresh-cancel-in-prog  bad "$R['concurrency'] = {'group': 'refresh-inputs', 'cancel-in-progress': True}"
 case_ refresh-other-group     bad "$R['concurrency'] = {'group': 'refresh-inputs-' + '\${{ github.run_id }}', 'cancel-in-progress': False}"

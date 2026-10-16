@@ -241,6 +241,11 @@ jobs:
           ./bin/refresh-inputs.sh bootstrap --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive"
           find "$RUNNER_TEMP/archive" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum > "$RUNNER_TEMP/archive.before"
 
+      - name: check the live Wolfi key against the pulled archive
+        run: |
+          set -euo pipefail
+          ./bin/refresh-inputs.sh archive-key-check --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive"
+
       - name: mint the auditor App's token (exactly the auditor's scope)
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0

@@ -63,14 +63,13 @@ def norm(x):
         if z == y:
             return y
         y = z
-fips = sys.argv[1].startswith("refresh/fips-module-")
 for pr in json.load(open(sys.argv[3])):
     h = pr.get("headRefName", "")
     who = (pr.get("author") or {}).get("login") or ""
     if pr.get("isCrossRepository") or not h.startswith("refresh/") or (sys.argv[2] and norm(who) != norm(sys.argv[2])):
         continue
-    if h.startswith("refresh/fips-module-") == fips:
-        print("an earlier pull request (#%s, %s) of this kind is already open; opening no second one" % (pr.get("number"), h)); sys.exit(4)
+    # AC29 names no kind: any refresh/ pull request of this repository stops a second one
+    print("an earlier pull request (#%s, %s) is already open; opening no second one" % (pr.get("number"), h)); sys.exit(4)
 PY
   [ "$_rc" != 4 ] || return 0
   [ "$_rc" = 0 ] || die "cannot read the open pull request list; changing nothing" 1
@@ -107,6 +106,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$repo" ] && [ -d "$repo" ] || die "--repo-dir must be an existing directory"
 case $cmd in key-check) [ -z "$archive$goroot$pr_author$plan_dir$archive_digest" ] || die "key-check takes only --repo-dir";; esac
+case $cmd in archive-key-check) { [ -n "$archive" ] && [ -d "$archive" ]; } || die "archive-key-check needs --archive (the pulled or seeded archive)"; [ -z "$goroot$pr_author$plan_dir$archive_digest" ] || die "archive-key-check takes only --repo-dir and --archive";; esac
 case $cmd in refresh|fips-module) [ -n "$pr_author" ] || die "--pr-author is required (the Auditor App's name; gh reports it as app/<name>, both spellings are accepted): without it a stranger's pull request on a refresh/ branch could be counted";; esac
 
 tmp=$(/usr/bin/mktemp -d)
@@ -114,6 +114,33 @@ cleanup() { local rc=$?; set +e; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $r
 trap cleanup EXIT
 
 case $cmd in
+archive-key-check)
+  # After the archive is pulled or seeded and before the App token is minted: the live Wolfi signing key must be the pinned key AND the key the archive
+  # holds (keys/wolfi-signing.rsa.pub); the stop then precedes every later step also when the archive carries another key (rule 6, AC30). A difference, a missing or a repeated line stops for a human (exit 3, rule 6); nothing is written.
+  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" "$archive" <<'PY' || exit $?
+import hashlib, re, sys
+repo, live, archive = sys.argv[1:4]
+def stop(msg):
+    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
+try:
+    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
+except (OSError, UnicodeError):
+    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
+mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
+if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
+    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
+if hashlib.sha256(open(live, "rb").read()).hexdigest() != mine[0].split("sha256:")[1]:
+    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
+try:
+    archived = open(archive + "/keys/wolfi-signing.rsa.pub", "rb").read()
+except OSError:
+    stop("the archive holds no keys/wolfi-signing.rsa.pub")
+if archived != open(live, "rb").read():
+    stop("the live Wolfi signing key differs from the key in the archive")
+print("archive-key-check: the live Wolfi signing key is the pinned one and the archive's key")
+PY
+  ;;
 key-check)
   # The first step of the daily job, before any tool is installed, any registry is touched or any token is minted: the live Wolfi signing key must be
   # the key pinned in build/locks/archive-keys.sha256. A difference, a missing or a repeated line stops for a human (exit 3, rule 6); nothing is written.
@@ -313,7 +340,7 @@ def open_prs_guard(kind):
                        cwd=repo, capture_output=True, text=True)
     if r.returncode != 0:
         fail("cannot list the open pull requests (gh pr list failed); changing nothing, pushing nothing, opening nothing")
-    pfx = "refresh/fips-module-" if kind == "fips-module" else "refresh/"
+    pfx = "refresh/"   # AC29 names no kind: a package refresh and a certified-module pull request stop each other
     try:
         prs = json.loads(r.stdout)
     except ValueError:
@@ -324,7 +351,7 @@ def open_prs_guard(kind):
         if pr.get("isCrossRepository") or (PR_AUTHOR and norm_login(who) != norm_login(PR_AUTHOR)):
             continue
         num, head = pr.get("number"), pr.get("headRefName", "")
-        if head.startswith(pfx) and not (kind == "refresh" and head.startswith("refresh/fips-module-")):
+        if head.startswith(pfx):
             msg = "an earlier pull request (#%s, %s) of this kind is still open (already open); changing nothing, pushing nothing and opening no second one (it is merged or closed first)" % (num, head)
             print(msg)
             if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -1021,7 +1048,7 @@ def open_prs_guard(kind):
                        cwd=repo, capture_output=True, text=True)
     if r.returncode != 0:
         fail_gh("cannot list the open pull requests (gh pr list failed); changing nothing, pushing nothing, opening nothing")
-    pfx = "refresh/fips-module-" if kind == "fips-module" else "refresh/"
+    pfx = "refresh/"   # AC29 names no kind: a package refresh and a certified-module pull request stop each other
     try:
         prs = json.loads(r.stdout)
     except ValueError:
@@ -1032,7 +1059,7 @@ def open_prs_guard(kind):
         if pr.get("isCrossRepository") or (PR_AUTHOR and norm_login(who) != norm_login(PR_AUTHOR)):
             continue
         num, head = pr.get("number"), pr.get("headRefName", "")
-        if head.startswith(pfx) and not (kind == "refresh" and head.startswith("refresh/fips-module-")):
+        if head.startswith(pfx):
             msg = "an earlier pull request (#%s, %s) of this kind is still open (already open); changing nothing, pushing nothing and opening no second one (it is merged or closed first)" % (num, head)
             print(msg)
             if os.environ.get("GITHUB_STEP_SUMMARY"):

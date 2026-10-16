@@ -646,7 +646,10 @@ mkrepo; : >"$work/summary.md"; run_s4 env GITHUB_STEP_SUMMARY="$work/summary.md"
 t "rule 49" "refresh: ...and the stall is visible: the log and the job summary name that PR's number (#41)" bash -c "grep -q '#41' '$work/log' && grep -q '#41' '$work/summary.md'"
 t "rule 49" "refresh: an EARLIER refresh PR (a different change) is still open -> no push and no second PR (at most one open refresh PR; the next daily run continues after it is merged or closed)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'earlier' '$work/log' && ! grep -Eq '^git( -C [^ ]+)? push|^gh pr create' '$CALLS'"
 mkrepo; run_s4 env GH_STUB_OPEN="refresh/fips-module-v1.1.0-deadbeef" "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-t "rule 49" "refresh: an open FIPS-module PR does not block the input refresh PR" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q '^gh pr create' '$CALLS'"
+t "AC29" "refresh: an open FIPS-module PR blocks the input refresh PR (AC29 names no kind: with a refresh pull request already open it opens no second): no branch, no push, no PR" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'earlier' '$work/log' && ! grep -Eq '^git( -C [^ ]+)? (push|checkout -b)|^gh pr create' '$CALLS'"
+echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"; fr
+run_s4 env GH_STUB_OPEN="refresh/00000000" "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
+t "AC29" "fips-module: an open input-refresh PR blocks the FIPS-module PR (the reverse of the case above): no push, no PR" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -Eq '^git( -C [^ ]+)? push|^gh pr create' '$CALLS'"
 # bootstrap: nothing changed but the index record is missing -> the record is written from the verified live index (a PR carries it)
 mkrepo; rm -f "$work/rp/build/locks/archive-index.sha256"
 run_s4 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
@@ -787,7 +790,7 @@ import re, sys
 s = open(sys.argv[1]).read()
 lines = [l for l in s.split("\n") if "/usr/bin/curl" in l and not l.lstrip().startswith("#")]
 shell = [l for l in lines if l.lstrip().startswith("/usr/bin/curl ")]
-assert len(shell) == len(lines) and len(lines) == 5, "every curl is a shell line (3 key fetches, packages, index): %d of %d" % (len(shell), len(lines))
+assert len(shell) == len(lines) and len(lines) == 6, "every curl is a shell line (4 key fetches, packages, index): %d of %d" % (len(shell), len(lines))
 g = re.compile(r'^\s+/usr/bin/curl -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
 bad = [l for l in lines if not g.match(l)]
 assert not bad, bad
@@ -1275,6 +1278,9 @@ t "AC29" "open-pr asks for the open pull requests again just before creating one
 mkrepo; rm -rf "$work/plan"; run_s2 "${rfn[@]}" "$RF" refresh --plan-dir "$work/plan" --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 run_s4 env GH_STUB_FAIL=1 "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp"
 t "AC29" "open-pr: when the list of open pull requests cannot be read it opens nothing (exit 1, an unknown state is not no pull request)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -Eq '^gh pr create|^git( -C [^ ]+)? push' '$CALLS'"
+mkrepo; rm -rf "$work/plan"; run_s2 "${rfn[@]}" "$RF" refresh --plan-dir "$work/plan" --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+run_s4 env GH_STUB_OPEN="refresh/fips-module-v1.1.0-deadbeef" "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp"
+t "AC29" "open-pr: an open FIPS-module PR also stops an input-refresh branch just before creation (any refresh/ pull request counts)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -Eq '^gh pr create|^git( -C [^ ]+)? (push|checkout)' '$CALLS'"
 rm -rf "$work/plan-empty"; mkdir -p "$work/plan-empty"
 mkrepo; run_s2 "$RF" open-pr --plan-dir "$work/plan-empty" --repo-dir "$work/rp"
 t "AC29" "open-pr with an empty plan opens nothing and exits 0 saying so" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q '^gh pr create' '$CALLS' && grep -qi 'nothing' '$work/log'"
@@ -1334,6 +1340,18 @@ t "AC30" "key-check: a repeated key line is exit 3" bash -c "test \"\$(cat '$wor
 mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" key-check --repo-dir "$work/rp" --archive "$work/ar"
 t "AC30" "key-check takes no archive: --archive is refused (exit 2), nothing is read from or written to an archive" bash -c "test \"\$(cat '$work/rc')\" = 2"
+# archive-key-check (after the archive is pulled or seeded, before the token is minted): the live key must be the pinned one AND the archive's own key (Codex #345 r5: the stop precedes every later step also when the archive holds a different key)
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" archive-key-check --repo-dir "$work/rp" --archive "$work/ar"
+t "AC30" "archive-key-check: the live key is the pinned one and the archive's key (exit 0, nothing written)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'archive' '$work/log'"
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"; printf 'another key\n' >"$work/ar/keys/wolfi-signing.rsa.pub"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" archive-key-check --repo-dir "$work/rp" --archive "$work/ar"
+t "AC30" "archive-key-check: the live key matches the pin but the archive holds a different key: exit 3, a human must look" bash -c "test \"\$(cat '$work/rc')\" = 3 && grep -qi 'human' '$work/log'"
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"; rm -f "$work/ar/keys/wolfi-signing.rsa.pub"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" archive-key-check --repo-dir "$work/rp" --archive "$work/ar"
+t "AC30" "archive-key-check: the archive holds no Wolfi key: exit 3" bash -c "test \"\$(cat '$work/rc')\" = 3"
+mkrepo; run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" archive-key-check --repo-dir "$work/rp"
+t "AC30" "archive-key-check needs --archive (exit 2)" bash -c "test \"\$(cat '$work/rc')\" = 2"
 # refresh: the live key's sha256 is checked against build/locks/archive-keys.sha256 right after the fetch and before any use (and the byte compare with the archived key stays)
 mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(printf 'c%.0s' $(seq 1 64))" >"$work/rp/build/locks/archive-keys.sha256"; before=$(treehash "$work/ar" "$work/rp")
 run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
