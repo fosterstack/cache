@@ -1243,6 +1243,10 @@ mappings:
       - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC21
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
   - ac: REQ-VEND-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }

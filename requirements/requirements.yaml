@@ -3751,6 +3751,14 @@ requirements:
         then: "release-published/ must be a directory, else the run fails before anything runs; every command runs with that directory as its working directory, so the guide's bare file names resolve as they do for a customer, and a command that names a file absent from it fails the run after all have run; a command made only of jq is accepted only when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run time only after that verify exited 0 (a jq-only command with no earlier verify of the same file, with no file operand, with an option that reads other files or loads a program, or listed before its verify is refused and nothing runs; one whose earlier verify failed is not run and fails the run); the form rule for every other command (a pipe of verify forms and jq with at least one verify form, no other shell syntax) and every other refusal are unchanged"
         verification: { method: unit, release_blocking: false }
         status: approved
+      # Source: advisor reading Oct 16, Astra release review (R3: nothing produced dist/checksums.txt, which AC9 attaches and release-sign.sh signs); owner's Oct 13 latitude.
+      # A new criterion: no earlier wording is replaced.
+      - id: REQ-CHAIN-007-AC21
+        given: "the four Linux archives in dist/ that Build uploaded, Build's verified digests.json, and the Release scripts"
+        when: "release-sign.sh runs"
+        then: "before its first signature it runs `python3 bin/release-metadata.py bind-archives` (dist holds exactly the four archives Build recorded, each with the digest of digests.json) and then `python3 bin/release-metadata.py checksums --version V --dist dist --out dist/checksums.txt`, which writes checksums.txt as one line `<sha256>  <name>` (two spaces) for each of the four archives, in byte order of the names, ending in a newline, with no other line, through a temporary file renamed into place; an archive that is missing, extra, symlinked or different from the recorded digest, or a version that is not vX.Y.Z, is a refusal (exit 1, naming the archive) and nothing is written or signed; no producer other than this command makes checksums.txt (Build and Rebuild do not write it, it is not an item of items.json), and no test creates the file it signs"
+        verification: { method: unit, release_blocking: true }
+        status: approved
   - id: REQ-BUILDTOOLS-002
     title: The image digest is the OCI index digest and a sealed namespace is checked by a probe
     statement: >
