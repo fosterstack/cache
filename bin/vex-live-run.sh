@@ -293,6 +293,7 @@ scout_leg() {   # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as
       scout_judge scout.pub.before.json scout.pub.after.json "$target" "$what" || return 1
     done
   fi
+  if [ "$MODE" != rc ]; then guide scout || return 1; fi   # the page's own Scout command, as written (nothing is published on a release candidate)
   echo "Docker Scout leg passed: ${CVE} on the fixture, ${target:-no statement of ours reported} on our production image"
 }
 [ "${VEX_LIVE_TEST_LIB:-}" = 1 ] && return 0

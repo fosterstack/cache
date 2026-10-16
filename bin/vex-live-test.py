@@ -22,7 +22,7 @@ SETTINGS = ("VER", "IMAGE")
 SEVERITY = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 SECTIONS = [("settings", None), ("digest", "imagetools inspect"), ("download", "curl -fsSLO"),
             ("verify", "cosign verify-attestation"), ("grype", "grype "),
-            ("inspector", "create-filter"), ("google", "load-vex"), ("inspector-remove", "delete-filter")]
+            ("inspector", "create-filter"), ("google", "load-vex"), ("scout", "docker scout cves"), ("inspector-remove", "delete-filter")]
 
 
 def _forms():
@@ -93,8 +93,8 @@ def guide_blocks(text, skip=(), pins=None):
         if texts.count(s) != 1:
             raise ValueError("a cannot-run entry is not exactly one block of the guide: %r" % s[:60])
     skipped = [b for b in out if b["text"] in set(skip)]
-    if any(b["section"] not in ("digest", "download", "verify", "grype") for b in skipped):
-        raise ValueError("only a digest, download, verify or published-image Grype block may be skipped on a release candidate")
+    if any(b["section"] not in ("digest", "download", "verify", "grype", "scout") for b in skipped):
+        raise ValueError("only a digest, download, verify or published-image Grype or Scout block may be skipped on a release candidate")
     return [b for b in out if b["text"] not in set(skip)] if skip else out
 
 

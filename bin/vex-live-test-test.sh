@@ -110,7 +110,8 @@ check("SEC-387 an HTML comment that opens and closes on one line (the pinned mar
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
 rc_blocks = L.guide_blocks(guide, skip=cr["blocks"])
 check("the rc plan is the page's plan minus exactly the listed blocks, in order", [b["text"] for b in rc_blocks] == [b["text"] for b in blocks if b["text"] not in cr["blocks"]])
-check("the rc plan has no digest, download, verify or published-image Grype block", not {"digest", "download", "verify", "grype"} & {b["section"] for b in rc_blocks})
+check("the rc plan has no digest, download, verify or published-image Grype or Scout block", not {"digest", "download", "verify", "grype", "scout"} & {b["section"] for b in rc_blocks})
+check("the full plan has the Scout block, after the Google blocks' section order of the page", "scout" in {b["section"] for b in blocks})
 check("the rc plan keeps the Inspector and Google blocks and the removal", {"inspector", "google", "inspector-remove"} <= {b["section"] for b in rc_blocks})
 try:
     L.guide_blocks(guide, skip=cr["blocks"] + ["not a block of the page\n"]); got = "accepted"
@@ -121,7 +122,7 @@ try:
     L.guide_blocks(guide, skip=[b["text"] for b in blocks if b["section"] == "inspector"]); got = "accepted"
 except ValueError:
     got = "refused"
-check("a cannot-run list that skips an Inspector or Google block is refused (only digest, download, verify and the published-image Grype scan may be skipped)", got == "refused", got)
+check("a cannot-run list that skips an Inspector or Google block is refused (only digest, download, verify and the published-image Grype and Scout scans may be skipped)", got == "refused", got)
 
 # --- the test copy of the Inspector file (advisor 0098): tag + prefix, and exactly the fixture's own filters
 images = {v: {"index": "sha256:" + c * 64, "children": {"linux/amd64": "sha256:" + d * 64, "linux/arm64": "sha256:" + e * 64}}
@@ -1054,7 +1055,7 @@ case "$*" in
         body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0-rc1; ' % mode
                 + 'FIXTURE_SRC=docker.io/library/debian@%s; FIX=%s; RUN=live-1-1; CVE=%s; ' % (fx_man, fx_man, LEG_CVE)
                 + "echo '{\"production\": {\"index\": \"%s\", \"children\": {\"linux/amd64\": \"sha256:%s\", \"linux/arm64\": \"sha256:%s\"}}}' > images.json; " % (prod_man, "2" * 64, "3" * 64)
-                + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" 2>/dev/null")
+                + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null")
         e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src, CANDIDATE_DIR=os.path.join(lt, "cand"))
         e.update(env or {})
         return sh(body, {"crane": CRANE, "docker": SCOUT}, e)
@@ -1087,7 +1088,10 @@ case "$*" in
     rc, out = leg(["{}"] * 2 + OK_FIX + OK_PROD, extra='PUSHES=49; ')
     check("scout leg: the leg's pushes count against the 50 of the run (a second push beyond 50 fails it)", "leg-rc=0" not in out and "more than 50 pushes" in out, (rc, out[-300:]))
     rc, out = leg(OK_FIX + OK_PROD + OK_FIX[:0] + [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B"), gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")], mode="release",
-                  extra='tag=v0.3.0; ')
+                  extra='tag=v0.3.0; guide() { echo "guide $1" >> "$RUNNER_TEMP/guide.log"; }; ')
+    check("scout leg (release): the page's own Scout block runs as written (section scout); a release candidate never runs it", "guide scout" in out, out[-300:])
+    rc2, out2 = leg(["{}", "{}"] + OK_FIX + OK_PROD)
+    check("scout leg (rc): the page's Scout block is not run (nothing is published)", "guide scout" not in out2 and "leg-rc=0" in out2, out2[-300:])
     sc = [l for l in out.split("\n") if l.startswith("scout cves")]
     check("scout leg (release): the published index is also scanned by tag and by exact digest, with Docker's authors and with ours",
           "leg-rc=0" in out and any("registry://ghcr.io/fosterstack/cache:0.3.0" in l for l in sc) and any("registry://ghcr.io/fosterstack/cache@" + prod_man in l for l in sc)
