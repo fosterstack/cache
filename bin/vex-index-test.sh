@@ -3266,6 +3266,54 @@ def _(arg):
 
 
 
+
+@param("LAYOUT", "layout refuses a layout whose top-level files (oci-layout, index.json) or whose parent directories another account could change, and still works under umask 002", [
+    ("oci-layout, world-writable", ("file", "oci-layout")), ("index.json, group-writable", ("file", "index.json")),
+    ("the parent directory, world-writable and not sticky", ("parent", None)), ("the grandparent directory, group-writable", ("grandparent", None))])
+def _(arg):
+    kind, name = arg
+    fx = mk_fx()
+    s = sb()
+    os.makedirs(os.path.join(s, "up"))
+    d, _b = mk_layout(fx, s=os.path.join(s, "up", "mid"))
+    parent, grand = os.path.dirname(d), os.path.dirname(os.path.dirname(d))
+    target, bad, good = {"file": (os.path.join(d, name or ""), 0o666 if name == "oci-layout" else 0o664, 0o644), "parent": (parent, 0o777, 0o755),
+                         "grandparent": (grand, 0o775, 0o755)}[kind]
+    os.chmod(target, bad)
+    t0 = tree(d, full=True)
+    r = lay(d, vex_real())
+    os.chmod(target, good)
+    try:
+        ok(r.rc == 2 and ("private" in r.err or "above the layout" in r.err), "wanted a refusal naming the permissions, got rc=%d %s" % (r.rc, (r.out + r.err).strip()[:200]))
+        eq(tree(d, full=True), t0, "the layout must be untouched")
+        r = lay(d, vex_real())
+        ok(r.rc == 0, "control: private again, accepted: rc=%d %s" % (r.rc, r.err.strip()[:200]))
+    finally:
+        os.chmod(grand, 0o755)
+
+
+@case("LAYOUT", "layout works under umask 002 and 000 (the files it creates never carry group or other write)")
+def _():
+    for mask in (0o002, 0o000):
+        fx = mk_fx()
+        d, _b = mk_layout(fx)
+        vb = wr(os.path.join(sb(), "vex.json"), vex_real())
+        old = os.umask(mask)
+        try:
+            r = run(["layout", "--layout", d, "--vex", vb])
+        finally:
+            os.umask(old)
+        ok(r.rc == 0, "umask %03o: rc=%d %s" % (mask, r.rc, (r.out + r.err).strip()[:200]))
+        for base, dirs, files in os.walk(d):
+            for n in files:
+                p = os.path.join(base, n)
+                if os.path.getmtime(p) and os.stat(p).st_mode & 0o022 and hx(dg(rd(p))) == n:
+                    raise Fail("%s is group or other writable" % p)
+        r = lay(d, vex_real(), cmd="verify-layout", extra=("--base-digest", dg(fx.bytes)))
+        ok(r.rc == 0, "umask %03o: verify-layout: rc=%d %s" % (mask, r.rc, r.err.strip()[:200]))
+
+
+
 @case("AC3", "verify needs --base (the exclusion of D from the attestations cannot be checked without it)")
 def _():
     fx = mk_fx()

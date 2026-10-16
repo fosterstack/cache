@@ -441,6 +441,20 @@ def check_path(path):
     return path
 
 
+def require_trusted_ancestors(path):
+    """every directory above path is owned by this user or by root and cannot be used by others to rename or replace what is below it
+    (not writable by group or others, or sticky)"""
+    here = os.path.dirname(os.path.abspath(path))
+    while True:
+        info = os.stat(here)
+        if info.st_uid not in (os.geteuid(), 0) or (info.st_mode & 0o022 and not info.st_mode & stat.S_ISVTX):
+            raise Refuse("%s, above the layout, could be used by another account to replace it (it must be owned by this user or root and not writable by group or others, or sticky)" % here)
+        parent = os.path.dirname(here)
+        if parent == here:
+            return
+        here = parent
+
+
 def open_directory(path, dir_fd=None):
     try:
         return os.open(check_path(path) if dir_fd is None else path, DIR_FLAGS, dir_fd=dir_fd)
@@ -457,8 +471,9 @@ def open_parent(path):
         raise Refuse("cannot open the directory of %s: %s" % (path, err.strerror))
 
 
-def read_regular(dir_fd, name, limit, what):
-    """the bytes of a regular file inside an open directory, refusing anything else and anything above limit"""
+def read_regular(dir_fd, name, limit, what, private=False):
+    """the bytes of a regular file inside an open directory, refusing anything else and anything above limit (with private: and a file
+    that another account could change)"""
     if name in ("", ".", ".."):
         raise Refuse("%s is not a file name" % what)
     try:
@@ -468,6 +483,8 @@ def read_regular(dir_fd, name, limit, what):
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise Refuse("%s is not a regular file" % what)
+        if private:
+            require_private(fd, what)
         chunks, total = [], 0
         while True:
             try:
@@ -501,7 +518,7 @@ def list_directory(dir_fd, what):
 
 
 def create_file(dir_fd, name, data):
-    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o666, dir_fd=dir_fd)
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=dir_fd)
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
@@ -712,13 +729,14 @@ def open_layout(layout):
     layout_fd = open_directory(layout)
     try:
         require_private(layout_fd, "the layout directory")
+        require_trusted_ancestors(layout)
         if list_directory(layout_fd, "the layout") != LAYOUT_TOP:
             raise Refuse("the layout must hold exactly oci-layout, index.json and blobs/ (regular files and a directory, no links)")
-        marker_bytes = read_regular(layout_fd, "oci-layout", 1024, "oci-layout")
+        marker_bytes = read_regular(layout_fd, "oci-layout", 1024, "oci-layout", private=True)
         marker = load_json(marker_bytes, "oci-layout")
         if marker != {"imageLayoutVersion": "1.0.0"}:
             raise Refuse("oci-layout is not exactly imageLayoutVersion 1.0.0")
-        top_bytes = read_regular(layout_fd, "index.json", MAX_INDEX_BYTES, "index.json")      # read once: what is parsed is what is compared later
+        top_bytes = read_regular(layout_fd, "index.json", MAX_INDEX_BYTES, "index.json", private=True)      # read once: what is parsed is what is compared later
         top = load_json(top_bytes, "the layout's index.json")
         entries = top.get("manifests") if isinstance(top, dict) else None
         if not isinstance(top, dict) or top.get("schemaVersion") != 2 or not isinstance(entries, list) or len(entries) != 1:
@@ -860,7 +878,7 @@ def layout_state_problem(layout_fd, blobs, files, blob_sizes, root_path):
     if {name: stat.S_IFREG for name in blob_sizes} != list_directory(blobs.sha_fd, "blobs/sha256"):
         return "blobs/sha256 is not the expected directory"
     for name, data in files.items():
-        if read_regular(layout_fd, name, MAX_INDEX_BYTES, name) != data:
+        if read_regular(layout_fd, name, MAX_INDEX_BYTES, name, private=True) != data:
             return "%s is not the expected file" % name
     if not directories_held(layout_fd, blobs, root_path):      # once more after the hashing and reading
         return "a directory of the layout was replaced while it was open"
