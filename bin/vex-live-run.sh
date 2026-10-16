@@ -73,7 +73,18 @@ notes_of() {   # <uri prefix>: the names of every VULNERABILITY_ASSESSMENT note 
 sweep_ecr() {
   local rc=0 out lst r pass n chunk
   local repo=${ECR#*/}
-  for pass in 1 2 3; do   # indexes first, then the children they held
+  # ECR refuses to delete an image a manifest list still references, so the manifest lists go first (found by their media type), then everything else
+  out=$(aws ecr describe-images --region "$REGION" --repository-name "$repo" --output json) \
+    || { echo "::error::cannot describe the test ECR repository" >&2; return 1; }
+  lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind ecr-indexes <<<"$out") || return 1
+  while read -r chunk; do
+    [ -n "$chunk" ] || continue
+    r=$(aws ecr batch-delete-image --region "$REGION" --repository-name "$repo" --image-ids "$chunk" --output json) \
+      || { echo "::error::ECR delete of the manifest lists failed" >&2; rc=1; continue; }
+    n=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind ecr-delete <<<"$r") || { rc=1; continue; }
+    [ "$n" = 0 ] || { echo "::error::ECR could not delete ${n} manifest lists" >&2; rc=1; }
+  done <<<"$lst"
+  for pass in 1 2 3; do   # then the rest
     out=$(aws ecr list-images --region "$REGION" --repository-name "$repo" --output json) \
       || { echo "::error::cannot list the test ECR repository" >&2; return 1; }
     lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind ecr <<<"$out") || return 1

@@ -408,6 +408,16 @@ def inventory(kind, doc, prefix=""):
             ds.append(i["imageDigest"])
         ds = sorted(set(ds))
         return [[{"imageDigest": d} for d in ds[k:k + 100]] for k in range(0, len(ds), 100)]
+    if kind == "ecr-indexes":   # describe-images: the digests of the manifest lists (ECR refuses to delete an image a manifest list still references, so these go first)
+        need(isinstance(doc, dict) and isinstance(doc.get("imageDetails"), list), "no imageDetails list")
+        ds = []
+        for i in doc["imageDetails"]:
+            need(isinstance(i, dict) and s_(i.get("imageDigest")) and i["imageDigest"].startswith("sha256:") and s_(i.get("imageManifestMediaType")),
+                 "an image without its digest or media type")
+            if "manifest.list" in i["imageManifestMediaType"] or "image.index" in i["imageManifestMediaType"]:
+                ds.append(i["imageDigest"])
+        ds = sorted(set(ds))
+        return [[{"imageDigest": d} for d in ds[k:k + 100]] for k in range(0, len(ds), 100)]
     if kind == "gar":
         need(isinstance(doc, list), "not a list")
         for i in doc:
@@ -499,7 +509,7 @@ def main(argv=None):
     c.add_argument("--reports", required=True)
     c.add_argument("--openvex", required=True, help="our statements: their CVEs are never the fixture's")
     iv = sub.add_parser("inventory", help="read one listing from stdin, strictly")
-    iv.add_argument("--kind", required=True, choices=("ecr", "gar", "filters", "notes", "ecr-delete"))
+    iv.add_argument("--kind", required=True, choices=("ecr", "ecr-indexes", "gar", "filters", "notes", "ecr-delete"))
     iv.add_argument("--prefix", default="")
     j = sub.add_parser("judge")
     j.add_argument("--kind", choices=("grype", "google", "inspector"), required=True)

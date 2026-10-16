@@ -501,6 +501,7 @@ check("a block that changes VER cannot change the test's value", rc != 0 or "VER
 # SEC-169-08/09: the sweep fails when it cannot list or delete, pages through notes, and empties the test repositories
 OKAWS = r"""case "$*" in
   *"ecr list-images"*) echo '{"imageIds": []}' ;;
+  *"ecr describe-images"*) echo '{"imageDetails": []}' ;;
   *"inspector2 list-filters"*) echo '{"filters": []}' ;;
   *) echo '{}' ;; esac"""
 OKGC = 'case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) echo "[]" ;; esac'
@@ -510,6 +511,7 @@ GC_FAIL_DEL = r"""case "$*" in *"auth print-access-token"*) echo tok ;; *"images
   *"images delete"*) touch "$RUNNER_TEMP/del"; exit 42 ;; esac"""
 # Codex #387 r2: an ECR per-image failure on an early pass is recorded for good too
 AWS_ECR_FAIL = r"""case "$*" in
+  *"ecr describe-images"*) echo '{"imageDetails": []}' ;;
   *"ecr list-images"*) if [ -f "$RUNNER_TEMP/del" ]; then echo '{"imageIds": []}'; else echo '{"imageIds": [{"imageDigest": "sha256:aaaa"}]}'; fi ;;
   *"ecr batch-delete-image"*) if [ -f "$RUNNER_TEMP/first" ]; then touch "$RUNNER_TEMP/del"; echo '{"failures": [], "imageIds": [{"imageDigest": "sha256:aaaa"}]}'; else touch "$RUNNER_TEMP/first"; echo '{"failures": [{"imageId": {"imageDigest": "sha256:aaaa"}, "failureCode": "KmsError"}], "imageIds": []}'; fi ;;
   *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac"""
@@ -517,8 +519,33 @@ rc, out = sh("sweep", {"aws": AWS_ECR_FAIL, "gcloud": OKGC, "ca-transport": OKCU
 check("SEC-387 sweep fails when an ECR per-image delete failed on an early pass and a later pass succeeded", rc != 0, (rc, out[-300:]))
 # Codex #387 r3 (P2): one failing listing does not stop the cleanup of the other resource families; every failure is kept and the sweep fails at the end
 CALLS = r"""echo "$0 $*" >> "$RUNNER_TEMP/calls"; """
-AWS_ECR_DOWN = CALLS + r"""case "$*" in *"ecr list-images"*) exit 42 ;; *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac"""
+AWS_ECR_DOWN = CALLS + r"""case "$*" in *"ecr describe-images"*) exit 42 ;; *"ecr list-images"*) exit 42 ;; *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac"""
 GC_LOG = CALLS + r"""case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) echo "[]" ;; esac"""
+# Codex #387 r5 (P2): ECR refuses to delete an image that a manifest list still references, so the indexes go first (found by their media type), then the rest
+IDX, CHILD = "sha256:" + "1" * 64, "sha256:" + "2" * 64
+AWS_ECR_INDEX = CALLS + ("""IDX=%s; CH=%s
+case "$*" in
+  *"ecr describe-images"*) if [ -f "$RUNNER_TEMP/idxdel" ]; then echo '{"imageDetails": [{"imageDigest": "'$CH'", "imageManifestMediaType": "application/vnd.oci.image.manifest.v1+json"}]}';
+    else echo '{"imageDetails": [{"imageDigest": "'$IDX'", "imageManifestMediaType": "application/vnd.oci.image.index.v1+json"}, {"imageDigest": "'$CH'", "imageManifestMediaType": "application/vnd.oci.image.manifest.v1+json"}]}'; fi ;;
+  *"ecr list-images"*) if [ -f "$RUNNER_TEMP/chdel" ]; then echo '{"imageIds": []}'; elif [ -f "$RUNNER_TEMP/idxdel" ]; then echo '{"imageIds": [{"imageDigest": "'$CH'"}]}'; else echo '{"imageIds": [{"imageDigest": "'$IDX'"}, {"imageDigest": "'$CH'"}]}'; fi ;;
+  *"ecr batch-delete-image"*)
+    had=0; [ -f "$RUNNER_TEMP/idxdel" ] && had=1
+    case "$*" in *$IDX*) touch "$RUNNER_TEMP/idxdel"; ok='{"imageDigest": "'$IDX'"}' ;; *) ok="" ;; esac
+    case "$*" in *$CH*) if [ "$had" = 1 ]; then touch "$RUNNER_TEMP/chdel"; ok="${ok:+$ok, }"'{"imageDigest": "'$CH'"}'; fail="";
+                         else fail='{"imageId": {"imageDigest": "'$CH'"}, "failureCode": "ImageReferencedByManifestList"}'; fi ;; *) fail="" ;; esac
+    echo '{"failures": ['"$fail"'], "imageIds": ['"$ok"']}' ;;
+  *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac""" % (IDX, CHILD))
+rc, out = sh("sweep", {"aws": AWS_ECR_INDEX, "gcloud": OKGC, "ca-transport": OKCURL})
+check("SEC-387 ECR: the manifest list is deleted before the image it references, so the sweep passes without any recorded failure", rc == 0, (rc, out[-400:]))
+for why, doc, ok in [("indexes found by media type", '{"imageDetails": [{"imageDigest": "sha256:a", "imageManifestMediaType": "application/vnd.oci.image.index.v1+json"}, {"imageDigest": "sha256:b", "imageManifestMediaType": "application/vnd.oci.image.manifest.v1+json"}]}', True),
+                     ("a Docker manifest list too", '{"imageDetails": [{"imageDigest": "sha256:a", "imageManifestMediaType": "application/vnd.docker.distribution.manifest.list.v2+json"}]}', True),
+                     ("an image without its media type", '{"imageDetails": [{"imageDigest": "sha256:a"}]}', False), ("no list", '{}', False)]:
+    r = subprocess.run(["python3", os.path.join(root, "bin/vex-live-test.py"), "inventory", "--kind", "ecr-indexes"], input=doc, capture_output=True, text=True)
+    check("inventory ecr-indexes: %s is %s" % (why, "read" if ok else "refused"), (r.returncode == 0) == ok, r.stderr[-120:])
+r = subprocess.run(["python3", os.path.join(root, "bin/vex-live-test.py"), "inventory", "--kind", "ecr-indexes"],
+                   input='{"imageDetails": [{"imageDigest": "sha256:a", "imageManifestMediaType": "application/vnd.oci.image.index.v1+json"}, {"imageDigest": "sha256:b", "imageManifestMediaType": "application/vnd.oci.image.manifest.v1+json"}]}', capture_output=True, text=True)
+check("inventory ecr-indexes returns only the index digests", "sha256:a" in r.stdout and "sha256:b" not in r.stdout, r.stdout)
+
 rc, out = sh('sweep || echo SWEEP_FAILED; cat "$RUNNER_TEMP/calls"', {"aws": AWS_ECR_DOWN, "gcloud": GC_LOG, "ca-transport": OKCURL})
 check("SEC-387 an ECR listing failure does not skip the Google, Inspector and note cleanup, and the sweep still fails",
       "SWEEP_FAILED" in out and "images list" in out and "inspector2 list-filters" in out, (rc, out[-400:]))
