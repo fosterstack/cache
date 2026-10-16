@@ -287,6 +287,26 @@ try:
 except urllib.error.HTTPError:
     got = "raised"
 check("ca: an HTTP error is an error, never an empty answer", got == "raised", got)
+# Codex #387 r1: a redirect is never followed (the bearer header would travel to the redirect target): the default opener refuses it
+import http.server, threading
+hits = []
+class RedirectHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        hits.append((self.path, self.headers.get("Authorization")))
+        if self.path == "/start":
+            self.send_response(302); self.send_header("Location", "/target"); self.end_headers()
+        else:
+            self.send_response(200); self.end_headers(); self.wfile.write(b"target")
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), RedirectHandler)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+import urllib.request
+try:
+    L._opener().open(urllib.request.Request("http://127.0.0.1:%d/start" % srv.server_port, headers={"Authorization": "Bearer tok"}), timeout=5); got = "followed"
+except urllib.error.HTTPError as e:
+    got = "refused %d" % e.code
+srv.shutdown()
+check("ca: a redirect is refused and the target is never requested", got == "refused 302" and [h[0] for h in hits] == ["/start"], (got, hits))
 try:
     L.ca_request(CA, "GET", "", opener_ok); got = "accepted"
 except ValueError:

@@ -268,6 +268,16 @@ def inventory(kind, doc, prefix=""):
 CA_HOST = "containeranalysis.googleapis.com"
 
 
+def _opener():
+    """urllib's default opener with redirects switched off: a 3xx is an HTTPError, so the bearer header never travels to a redirect target."""
+    import urllib.request
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+    return urllib.request.build_opener(NoRedirect)
+
+
 def ca_request(url, method, token, opener=None):
     """One call to the Container Analysis API (an API call for data, not a software download): the fixed host over https, the bearer token, GET or DELETE
     only. An HTTP error is raised, never turned into an empty answer. Returns the body as text."""
@@ -280,7 +290,7 @@ def ca_request(url, method, token, opener=None):
     if not token:
         raise ValueError("no access token")
     req = urllib.request.Request(url, method=method, headers={"Authorization": "Bearer " + token})
-    with (opener or urllib.request.urlopen)(req, timeout=60) as r:
+    with (opener or _opener().open)(req, timeout=60) as r:
         return r.read().decode("utf-8")
 
 
