@@ -1924,7 +1924,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b": "printf -v CURL %s /usr/bin/curl # TEST-SUBST",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call"]   # those name an item, not a text line (AC19)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -1986,14 +1986,126 @@ calls = [r for r in allrows if r["form"] == "a local reusable workflow call"]   
 for r in calls:
     assert r["key"] == r["line"] and re.fullmatch(r"[0-9a-f]{64}", r["key"]) and r["file"].startswith(".github/workflows/") and r["ruling"].startswith("local reusable workflow call; "), r
 rows = [r for r in allrows if r["form"] != "a local reusable workflow call"]
-forms = {"a download"} | {w for _, w in ac.inv._UNMEASURED}
+forms = {"a download", ac.UNPINNED_FORM} | {w for _, w in ac.inv._UNMEASURED}
 for r in rows:
-    assert set(r) - {"count"} == {"file", "form", "key", "line", "ruling"} and (type(r.get("count", 1)) is int and 1 <= r.get("count", 1) <= 100), r
+    assert set(r) - {"count", "context", "proof"} == {"file", "form", "key", "line", "ruling"} and (type(r.get("count", 1)) is int and 1 <= r.get("count", 1) <= 100), r
+    assert ("proof" not in r or "context" in r) and r.get("context", "comment") in ac.CONTEXTS and (r.get("proof", "x").strip() != "" and type(r.get("proof", "x")) is str), r
     assert re.fullmatch(r"[0-9a-f]{64}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
     pre = next((x for x in ("text, not a command: ", "harness assertion: ") if r["ruling"].startswith(x)), None)
     assert re.fullmatch(r"[0-9a-f]{64}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
+
+# --- REQ-SUP-001-AC16, the optional row field `context` (advisor, Oct 16; owner's plain-forms rule): a ruled row may carry context = comment | assignment | heredoc |
+# pystring, and proof (a text). A row WITH a context rules its line ONLY when the checker proves the context from the head file at scan time; otherwise the row rules
+# NOTHING (it never falls back to the old behaviour). A context only ever NARROWS. Rows without a context behave exactly as before (every case above). -------------
+ctxrun() { # NAME CONTENT CONTEXT [PROOF] -> rc, $work/ctx.out: bin/ctx.sh = CONTENT in the head commit; every row comes from the REAL scan and carries the context
+  newcase "$1" "$(pyw bin/ctx.sh "$2")"
+  rtrows "$work/$1" "$work/ctx-$1.tmp.json" all
+  python3 - "$work/ctx-$1.tmp.json" "$work/ctx-$1.json" "$3" "${4:-}" <<'PY'
+import json, sys
+src, out, ctx, proof = sys.argv[1:5]
+d = json.load(open(src))
+assert d["unmeasured_text"], "the fixture produced no unmeasured line"
+for r in d["unmeasured_text"]:
+    if ctx: r["context"] = ctx
+    if proof: r["proof"] = proof
+json.dump(d, open(out, "w"))
+PY
+  rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --json "$work/ctx.json" --exceptions "$work/ctx-$1.json" >"$work/ctx.out" 2>&1 || rc=$?
+}
+ctxyes() { ctxrun n "$2" "$3" "${4:-}"; CASE="AC16 context $3: $1: ruled (exit 0)"; check test "$rc" -eq 0; check grep -q 'ruled text' "$work/ctx.out"; }
+ctxno()  { ctxrun n "$2" "$3" "${4:-}"; CASE="AC16 context $3: $1: rules NOTHING (exit 1, the line fails as unmeasured)"; check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/ctx.sh' "$work/ctx.out"; }
+SH=$'#!/bin/sh\n'
+# comment
+ctxyes "a comment line" "$SH# curl https://e.example/x"$'\n' comment
+ctxno "code that mentions curl" "${SH}echo curl https://e.example/x"$'\n' comment
+ctxno "a trailing comment after code" "${SH}true # curl https://e.example/x"$'\n' comment
+ctxno "a comment line joined to the line before by a continuation" "${SH}true \\"$'\n'"# curl https://e.example/x"$'\n' comment
+# assignment
+ctxyes "one plain double-quoted assignment" "${SH}CASE=\"mentions curl https://e.example/x\""$'\n' assignment
+ctxyes "one plain single-quoted assignment" "${SH}CASE='mentions curl https://e.example/x'"$'\n' assignment
+ctxno "a command substitution" "${SH}X=\$(curl https://e.example/x)"$'\n' assignment
+ctxno "backticks" "${SH}X=\`curl https://e.example/x\`"$'\n' assignment
+ctxno "a substitution inside a default" "${SH}X=\"\${Y:-\$(curl https://e.example/x)}\""$'\n' assignment
+ctxno "an arithmetic or process substitution" "${SH}X=<(curl https://e.example/x)"$'\n' assignment
+ctxno "a second command after a semicolon" "${SH}X=a; curl https://e.example/x"$'\n' assignment
+ctxno "an environment prefix that runs the program" "${SH}X=a curl https://e.example/x"$'\n' assignment
+ctxno "an unterminated quote" "${SH}X=\"curl https://e.example/x"$'\n' assignment
+ctxno "not an assignment at all" "${SH}echo \"curl https://e.example/x\""$'\n' assignment
+# heredoc (the opener is not an interpreter)
+HD=$'cat >"$d/f" <<\'EOF\'\ncurl https://e.example/x\nEOF\n'
+ctxyes "a quoted-delimiter heredoc fed to cat" "$SH$HD" heredoc
+ctxyes "a double-quoted delimiter" "${SH}"$'cat <<"EOF"\ncurl https://e.example/x\nEOF\n' heredoc
+ctxyes "a backslash delimiter" "${SH}"$'cat <<\\EOF\ncurl https://e.example/x\nEOF\n' heredoc
+ctxyes "<<- with a tab-indented terminator" "${SH}"$'cat <<-\'EOF\'\n\tcurl https://e.example/x\n\tEOF\n' heredoc
+ctxno "an UNQUOTED delimiter (the shell expands the body)" "${SH}"$'cat <<EOF\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "the line after the terminator (outside the heredoc)" "${SH}"$'cat <<\'EOF\'\nok\nEOF\ncurl https://e.example/x\n' heredoc
+ctxno "a heredoc with no terminator" "${SH}"$'cat <<\'EOF\'\ncurl https://e.example/x\n' heredoc
+for op in "bash" "sh" "dash" "zsh" "ksh" "ash" "eval" "source /dev/stdin" ". /dev/stdin" "xargs -I{} echo" "exec cat" "python3 -" "python -" "node" "perl" "ruby" "awk -f -" "cat | sh" "cat | bash -s" "env bash" "sudo sh"; do
+  ctxno "a heredoc whose command line names '$op'" "${SH}$op <<'EOF'"$'\ncurl https://e.example/x\nEOF\n' heredoc
+done
+ctxno "a heredoc inside a command substitution" "${SH}x=\$(cat <<'EOF'"$'\ncurl https://e.example/x\nEOF\n)\n' heredoc
+ctxno "a heredoc opened by a shell function the file defines" "${SH}runit() { sh; }"$'\nrunit <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+for use in 'bash "$d/x.sh"' 'sh "$d/x.sh"' 'source "$d/x.sh"' '. "$d/x.sh"' 'chmod +x "$d/x.sh"' '"$d/x.sh"' 'python3 "$d/x.sh"' 'exec "$d/x.sh"' 'chmod 755 "$d/x.sh"'; do
+  ctxno "the heredoc is written to a file that is later used as: $use" "${SH}"$'cat >"$d/x.sh" <<\'EOF\'\ncurl https://e.example/x\nEOF\n'"$use"$'\n' heredoc
+done
+ctxyes "the written file is only read (cat) later" "${SH}"$'cat >"$d/x.sh" <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat "$d/x.sh"\n' heredoc
+# pystring: the line lies in a Python program run from a quoted heredoc, only inside string constants or comments, and the program never executes a string
+PY=$'python3 - <<\'PY\'\nx = ["curl https://e.example/x"]\nprint(x)\nPY\n'
+ctxyes "a pure program, the text in a string" "$SH$PY" pystring
+ctxyes "a pure program: the word eval only inside a string" "${SH}"$'python3 - <<\'PY\'\nx = ["eval \'curl https://e.example/x\'"]\nPY\n' pystring
+ctxyes "a pure program: a multi-line triple-quoted string" "${SH}"$'python3 - <<\'PY\'\nx = """\ncurl https://e.example/x\n"""\nPY\n' pystring
+ctxyes "a pure program: the text in a comment" "${SH}"$'python3 - <<\'PY\'\n# curl https://e.example/x\nPY\n' pystring
+ctxyes "a pure program with a stdin argument and a wrapper" "${SH}"$'check python3 - "$a" <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "the command text in code position (a name wget)" "${SH}"$'python3 - <<\'PY\'\nwget = 1  # curl https://e.example/x\nPY\n' pystring
+ctxno "a program that is not valid Python" "${SH}"$'python3 - <<\'PY\'\nthis is not python curl https://e.example/x\nPY\n' pystring
+ctxno "an unquoted delimiter" "${SH}"$'python3 - <<PY\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "python -c with the heredoc as stdin data" "${SH}"$'python3 -c "import sys; exec(sys.stdin.read())" <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "a shell as the opener" "${SH}"$'bash - <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "the program's output piped to a shell" "${SH}"$'python3 - <<\'PY\' | sh\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "the program's output substituted" "${SH}"$'eval "$(python3 - <<\'PY\'\nx = "curl https://e.example/x"\nPY\n)"\n' pystring
+ctxno "a line outside the program" "${SH}"$'python3 - <<\'PY\'\nx = 1\nPY\ncurl https://e.example/x\n' pystring
+for use in 'bash "$d/g.sh"' 'source "$d/g.sh"' '. "$d/g.sh"' 'chmod +x "$d/g.sh"' '"$d/g.sh"' 'python3 "$d/g.sh"'; do
+  ctxno "the program's output file is later used as: $use" "${SH}"$'python3 - >"$d/g.sh" <<\'PY\'\nprint("curl https://e.example/x")\nPY\n'"$use"$'\n' pystring
+done
+ctxyes "the program's output file is only read later" "${SH}"$'python3 - >"$d/g.json" <<\'PY\'\nprint("curl https://e.example/x")\nPY\ncat "$d/g.json"\n' pystring
+# an impure program (it can run something): refused unless the row says honestly that it rests on review
+IMP="ast-strings-only; program runs subprocess; read-only use attested by review"
+for imp in 'import subprocess' 'from subprocess import run' 'import os; os.system("true")' 'import os; os.popen("true")' 'import os; os.execv("/bin/true", [])' 'exec("1")' 'eval("1")' 'compile("1", "x", "exec")' '__import__("os")' 'import importlib' 'import pty; pty.spawn("true")' 'getattr(object, "x", None)'; do
+  ctxno "an impure program ($imp) with no honest proof label" "${SH}"$'python3 - <<\'PY\'\n'"$imp"$'\nx = "curl https://e.example/x"\nPY\n' pystring
+  ctxyes "the same impure program ($imp) with the review-attested label" "${SH}"$'python3 - <<\'PY\'\n'"$imp"$'\nx = "curl https://e.example/x"\nPY\n' pystring "$IMP"
+done
+ctxno "an impure program whose label does not say it rests on review" "${SH}"$'python3 - <<\'PY\'\nimport subprocess\nx = "curl https://e.example/x"\nPY\n' pystring "ast-strings-only"
+ctxno "an impure program: the command text in code position even with the label" "${SH}"$'python3 - <<\'PY\'\nimport subprocess\nwget = 1  # curl https://e.example/x\nPY\n' pystring "$IMP"
+# a context the file does not name, a non-text value, a proof without a context: the file is malformed (exit 2), never "nothing ruled" and never "everything ruled"
+newcase cx "$(pyw bin/ctx.sh "${SH}# curl https://e.example/x"$'\n')"
+for bad in '"context": "shell"' '"context": ""' '"context": 5' '"context": ["comment"]' '"proof": "x"' '"context": "comment", "proof": 7' '"context": "comment", "proof": ""' '"context": null'; do
+  rtrows "$work/cx" "$work/ctx-bad.tmp.json" all
+  python3 - "$work/ctx-bad.tmp.json" "$work/ctx-bad.json" "$bad" <<'PY'
+import json, sys
+src, out, frag = sys.argv[1:4]
+d = json.load(open(src)); extra = json.loads("{" + frag + "}")
+for r in d["unmeasured_text"]: r.update(extra)
+json.dump(d, open(out, "w"))
+PY
+  rc=0; python3 "$chk" --root "$work/cx" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/ctx-bad.json" >"$work/ctx.out" 2>&1 || rc=$?
+  CASE="AC16 context: a malformed context/proof ($bad) stops the check: exit 2, never a pass"; check test "$rc" -eq 2
+done
+# a context row on a path that is not a shell script rules nothing
+newcase cy "$(pyw .github/workflows/x.yml $'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          # curl https://e.example/x\n          true\n')"
+rtrows "$work/cy" "$work/ctx-y.tmp.json" all
+python3 - "$work/ctx-y.tmp.json" "$work/ctx-y.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d["unmeasured_text"]: r["context"] = "comment"
+json.dump(d, open(sys.argv[2], "w"))
+PY
+rc=0; python3 "$chk" --root "$work/cy" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/ctx-y.json" >"$work/ctx.out" 2>&1 || rc=$?
+CASE="AC16 context: a context row on a workflow file (not a shell script) rules nothing: exit 1"; check test "$rc" -eq 1
+# the same proof governs the unpinned-package form (pin-audit shares ruled_unpinned_lines)
+ctxyes "an unpinned-install mention in a comment" "${SH}# pip install requests"$'\n' comment
+ctxno "an unpinned install in code with a comment context" "${SH}pip install requests"$'\n' comment
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
