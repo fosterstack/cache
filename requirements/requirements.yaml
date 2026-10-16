@@ -1766,6 +1766,14 @@ requirements:
         then: it opens, or updates, one "required-check drift" issue
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      # Source: advisor reading Oct 16, Astra release review (R5: the vendor job and the marker-gate job exist and run but are not in the committed required-check list, which
+      # build-admit.py iterates and the guard compares with main's ruleset); owner's Oct 13 latitude: adding required checks only tightens. A new criterion.
+      - id: REQ-DEP-002-AC3
+        given: the committed list .github/policy/required-checks.json and the jobs of .github/workflows/ci.yml
+        when: the list is read
+        then: it names the job vendor once with scope push and the job marker-gate once with scope pull_request, each with integration ID 15368 (GitHub Actions), and ci.yml has a job of each name; the ruleset on main follows only by the owner's change in the GitHub UI, and until then the guard of AC1 is red, which is the stated failure mode
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
 
   - id: REQ-DEP-003
     title: Patch and minor bumps merge on green
