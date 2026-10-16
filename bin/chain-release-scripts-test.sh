@@ -481,6 +481,10 @@ ARC21 = sorted((("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("
 cs21 = os.path.join(t21, "dist/checksums.txt")
 check(rc21 == 0 and os.path.exists(cs21) and open(cs21).read() == "".join("%s  %s\n" % (hashlib.sha256(c).hexdigest(), n) for n, c in ARC21),
       "AC21 release-sign makes dist/checksums.txt from the four archives (the test did not make it), in byte order, and signs that file", "rc=%s %s" % (rc21, first(se21)))
+tp = tree(); victim = os.path.join(tp, "dist/fscache_0.3.0_linux_amd64.tar.gz"); vb = open(victim, "rb").read()
+os.symlink(victim, os.path.join(tp, "dist/checksums.txt.part")); rcp, sop, sep = run(tp, "release-sign", creds=REG)
+check(rcp == 0 and open(victim, "rb").read() == vb and not os.path.islink(os.path.join(tp, "dist/checksums.txt")),
+      "AC21 round 1: a symlink planted at dist/checksums.txt.part does not make release-sign overwrite an archive or sign a symlink", "rc=%s %s" % (rcp, first(sep)))
 for label, mutate in (("a missing archive", lambda t: os.remove(os.path.join(t, "dist/fscache_0.3.0_linux_arm64.tar.gz"))),
                       ("an archive that is not the recorded bytes", lambda t: open(os.path.join(t, "dist/fscache_0.3.0_linux_amd64.tar.gz"), "wb").write(b"other")),
                       ("an extra archive", lambda t: open(os.path.join(t, "dist/fscache_0.3.0_linux_riscv.tar.gz"), "wb").write(b"x"))):
@@ -803,7 +807,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "384"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "385"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

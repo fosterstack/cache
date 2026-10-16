@@ -240,11 +240,23 @@ for label, mutate, word in (("a missing archive", lambda d: os.remove(d + "/" + 
 for bad_v in ("0.3.0-rc1", "v0.3.0", "0.3", ""):
     t = ck_tree(); r = ck_run(t, bad_v)
     check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 the version %r is refused: only X.Y.Z, and nothing is written" % bad_v, "rc=%s %s" % (r[0], r[2][:100]))
+# round 1 (Codex seat B, a reproduced blocker): the temporary file is never a path someone else can pre-place. A planted symlink checksums.txt.part must not make the
+# command write through it (it overwrote an archive after the archives were checked), and a stale regular .part is replaced, never extended or kept
+t = ck_tree(); victim = t + "/dist/" + ARCS[0][1]; before = open(victim, "rb").read()
+os.symlink(victim, t + "/dist/checksums.txt.part"); r = ck_run(t)
+check(r[0] == 0 and open(victim, "rb").read() == before and not os.path.islink(t + "/dist/checksums.txt") and open(t + "/dist/checksums.txt").read() == WANT
+      and not os.path.lexists(t + "/dist/checksums.txt.part"),
+      "AC21 a planted symlink at checksums.txt.part is not written through: the archive keeps its bytes, checksums.txt is a regular file with the right lines, no .part is left", "rc=%s %s" % (r[0], r[2][:140]))
+t = ck_tree(); open(t + "/dist/checksums.txt.part", "w").write("stale part\n"); r = ck_run(t)
+check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and not os.path.lexists(t + "/dist/checksums.txt.part"),
+      "AC21 a stale regular checksums.txt.part is replaced, not kept or extended", "rc=%s" % r[0])
+t = ck_tree(); os.mkdir(t + "/dist/checksums.txt.part"); r = ck_run(t)
+check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 a directory at checksums.txt.part is a refusal (exit 1), and nothing is written", "rc=%s %s" % (r[0], r[2][:120]))
 t21 = ac("REQ-CHAIN-007", 21)["then"]
 check("bin/release-metadata.py bind-archives" in t21 and "bin/release-metadata.py checksums" in t21 and "no test creates the file it signs" in t21,
       "text: REQ-CHAIN-007-AC21 names the bind and the checksums command and says no test creates the signed file")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "97"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "100"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY
