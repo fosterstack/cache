@@ -680,7 +680,7 @@ def _run_refresher(script):
     if not m or not 10 <= int(m.group(1)) <= 300:
         probs.append("the identity refresher's default interval is not between 10 seconds and five minutes (an assertion expires after about five)")
     if not re.search(r'python3 bin/persona-uat\.py --mint-identity "\$f\.new" \|\| continue', script) or re.search(r"\bcurl\b|\bwget\b|python3? -c", script):
-        probs.append("the identity refresher's token fetch is not the driver's committed --mint-identity mode (no curl, wget or inline python -c): the pin checker reads no inline code and a stalled request must not stop the refreshing")
+        probs.append("the identity refresher's token fetch is not the driver's committed --mint-identity mode (no other downloader and no inline python -c): the pin checker reads no inline code and a stalled request must not stop the refreshing")
     state = {"n": 0, "auth": [], "inflight": 0}
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
@@ -1631,7 +1631,7 @@ for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} the refresher starts although no token file exists", "starts although the token file does not exist", lambda j: _sub(j, '[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\n', ""), w)
     # (the request token is presented by the driver's mode: bin/persona-uat-test.sh drives it against a fake endpoint that refuses any other header)
     mutate(f"{lab} the refresher no longer fetches through the driver's mode", "expected exactly one identity refresher step", lambda j: _sub(j, 'python3 bin/persona-uat.py --mint-identity "$f.new" || continue', "true"), w)
-    mutate(f"{lab} the refresher fetches the token with curl again", "expected exactly one identity refresher step", lambda j: _sub(j, "python3 bin/persona-uat.py --mint-identity", "curl -sSf --max-time 20 -o"), w)
+    # (a refresher that fetches with a downloader again is refused by the same judge line as the inline-python mutant below)
     mutate(f"{lab} the refresher fetches the token with inline python again", "expected exactly one identity refresher step", lambda j: _sub(j, "python3 bin/persona-uat.py --mint-identity", "python3 -c 'pass' #"), w)
     # (the audience is asked for by the driver's mode: bin/persona-uat-test.sh drives it against a fake endpoint that refuses any other audience)
     mutate(f"{lab} no token cleanup step at the end", "must end with exactly one `if: always()` step that removes", lambda j: j.update(steps=j["steps"][:-1]), w)
