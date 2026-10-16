@@ -1,0 +1,5 @@
+# Pins the pip that runs AFTER the bootstrap (REQ-SUP-001-AC13): every job that runs `pip install` first installs this one
+# requirement, hash-checked, and every later install of that job (and of each virtual environment it creates) runs under this pip.
+# The bootstrap itself runs the runner's existing pip, which checks this wheel's hash before it installs it; that first pip is not pinned.
+# Dependabot watches this directory under its 7-day cooldown, so a new pip release is only proposed once it has been public a week.
+pip==26.2.1 --hash=sha256:71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e

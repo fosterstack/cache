@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3
 # Matrix-first EFFECT-OBSERVING failing suite for the daily CVE auditor
 # (.github/agent/docs/cve-auditor-matrix.md). Round-7 hardening after the second review
 # pass. Fixtures are inputs only, in neutral files with no prose; the mapping from
@@ -36,6 +37,7 @@ NOCALL="$F/adjudicator/fail-on-call.py"
 GH="$F/adjudicator/fake-github-api.py"
 YAML="$PY $F/testlib/yamlshape.py"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+export TMPDIR="$WORK"   # every tempfile/mktemp a case makes lands in the cleaned-up work dir (no fixed system temp path)
 LEDGER="$WORK/model.ledger"; export AUDITOR_MODEL_LEDGER="$LEDGER"
 # The live delivery path merges suppressions into GITHUB_WORKSPACE (default: cwd = this checkout).
 # Every case runs against a throwaway workspace instead, so the suite never rewrites the real
@@ -747,9 +749,9 @@ run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false
   baserb="$(grep -cE 'auditor/base-rebuild' "$shim" 2>/dev/null)"; baserb="${baserb:-0}"
   goget="$(grep -cE '^go get ' "$shim" 2>/dev/null)"; goget="${goget:-0}"
   tidy="$(grep -cE '^go mod tidy' "$shim" 2>/dev/null)"; tidy="${tidy:-0}"
-  addonly="$(grep -cE '^git add go\.mod go\.sum$' "$shim" 2>/dev/null)"; addonly="${addonly:-0}"
+  addonly="$(grep -cE '^gh api graphql createCommitOnBranch auditor/bump-[^ ]+ -- go\.mod go\.sum$' "$shim" 2>/dev/null)"; addonly="${addonly:-0}"
   { [ "$bump" -ge 1 ] 2>/dev/null && [ "$baserb" -eq 0 ] 2>/dev/null && [ "$goget" -ge 1 ] 2>/dev/null && [ "$tidy" -ge 1 ] 2>/dev/null && [ "$addonly" -ge 1 ] 2>/dev/null; } \
-    && ok || no "draft bump PR delivered via go get/tidy + go.mod/go.sum only; base rebuild is not a PR" "bump=$bump base_rebuild_prs=$baserb goget=$goget tidy=$tidy add_gomod_gosum=$addonly"; }
+    && ok || no "draft bump PR delivered via go get/tidy + a signed API commit of go.mod/go.sum only; base rebuild is not a PR" "bump=$bump base_rebuild_prs=$baserb goget=$goget tidy=$tidy signed_commit_gomod_gosum=$addonly"; }
 
 begin "req12-ac3-workflow-invokes-the-entrypoint-with-dryrun" "the workflow's run step invokes auditor-run.py with the dispatch dry_run input"
 if ! have "$WF"; then no "$WF present" "absent"; else
@@ -1239,30 +1241,40 @@ rptnames="$(sed -n '/## 6\./,/^$/p' "$o/report.md" | grep -ciE 'anthropic|claude
 ########################################################################
 echo "=== Round 16 corrections — issues token, test-image PR gating ==="
 
-begin "r16-issues-use-job-token-pr-uses-app-token" "gh issue calls carry the JOB (issues) token; git push / gh pr create carry the App token — verified via fake gh/git on PATH"
+begin "r16-issues-use-job-token-pr-uses-app-token" "gh issue calls carry the JOB (issues) token; the signed API commit / gh pr create carry the App token (and no git commit or git push runs) — verified via fake gh/git on PATH"
 o="$WORK/r16t"; rm -rf "$o"; fb="$WORK/r16t-bin"; rm -rf "$fb"; mkdir -p "$fb"; glog="$WORK/r16t-gh.log"; rm -f "$glog"
+# the delivery commit is made THROUGH THE API (signed by GitHub): the fake gh answers the ref and createCommitOnBranch calls, and the fake git
+# answers `status`/`rev-parse` and records every command so the case can prove no `git commit` / `git push` ran
+gitlog="$WORK/r16t-git.log"; rm -f "$gitlog"
 cat > "$fb/gh" <<EOF
 #!/usr/bin/env bash
 echo "GH_TOKEN=\${GH_TOKEN} ARGS=\$*" >> "$glog"
 if [ "\$1" = "issue" ] && [ "\$2" = "list" ]; then echo "[]"; fi
 if [ "\$1" = "pr" ] && [ "\$2" = "create" ]; then echo "https://github.com/OWNER/REPO/pull/1"; fi
+case "\$2" in */git/ref/heads/*) echo '{"object":{"sha":"cccccccccccccccccccccccccccccccccccccccc"}}';; esac
+if [ "\$1" = "api" ] && [ "\$2" = "graphql" ]; then cat >/dev/null; echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","signature":{"isValid":true,"state":"VALID"}}}}}'; fi
 exit 0
 EOF
-cat > "$fb/git" <<'EOF'
+cat > "$fb/git" <<EOF
 #!/usr/bin/env bash
+echo "\$*" >> "$gitlog"
+if [ "\$1" = "status" ]; then printf ' M .vex/fosterstack-cache.openvex.json\\0'; fi
+if [ "\$1" = "rev-parse" ]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi
 exit 0
 EOF
 chmod +x "$fb/gh" "$fb/git"
 # the real-gh path merges suppressions into GITHUB_WORKSPACE (default: cwd = this repo) — point
 # it at a throwaway copy so the suite never rewrites the real .vex/.snyk/.auditor (REQ-AUD-18).
 ws="$WORK/r16t-ws"; rm -rf "$ws"; mkdir -p "$ws"; cp -R .vex "$ws/"
-env PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP_TOKEN_123 AUDITOR_ISSUES_TOKEN=JOB_TOKEN_456 \
+env PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" GITHUB_REPOSITORY=OWNER/REPO AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP_TOKEN_123 AUDITOR_ISSUES_TOKEN=JOB_TOKEN_456 \
   "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 issuejob="$(grep 'ARGS=issue' "$glog" | grep -c 'GH_TOKEN=JOB_TOKEN_456')"; issuejob="${issuejob:-0}"
 issueapp="$(grep 'ARGS=issue' "$glog" | grep -c 'GH_TOKEN=APP_TOKEN_123')"; issueapp="${issueapp:-0}"
 prapp="$(grep 'ARGS=pr create' "$glog" | grep -c 'GH_TOKEN=APP_TOKEN_123')"; prapp="${prapp:-0}"
-{ [ "$issuejob" -ge 1 ] 2>/dev/null && eq "$issueapp" "0" && [ "$prapp" -ge 1 ] 2>/dev/null; } \
-  && ok || no "issue calls use job token, pr create uses app token" "issue_job=$issuejob issue_app=$issueapp pr_app=$prapp"
+commitapp="$(grep 'ARGS=api graphql' "$glog" | grep -c 'GH_TOKEN=APP_TOKEN_123')"; commitapp="${commitapp:-0}"
+gitwrite="$(grep -cE '^(commit|push)( |$)' "$gitlog" 2>/dev/null)"; gitwrite="${gitwrite:-0}"
+{ [ "$issuejob" -ge 1 ] 2>/dev/null && eq "$issueapp" "0" && [ "$prapp" -ge 1 ] 2>/dev/null && [ "$commitapp" -ge 1 ] 2>/dev/null && eq "$gitwrite" "0"; } \
+  && ok || no "issue calls use job token, pr create and the signed API commit use app token, no git commit/push" "issue_job=$issuejob issue_app=$issueapp pr_app=$prapp commit_app=$commitapp git_commit_or_push=$gitwrite"
 
 begin "r16-exactly-one-gh-token-key-in-driver-env" "the driver step's env block declares GH_TOKEN exactly once"
 n="$(awk '/name: Run the auditor/{f=1} f&&/^        run:/{f=0} f&&/GH_TOKEN:/{c++} END{print c+0}' "$WF")"
@@ -1336,8 +1348,8 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-owner
 begin "ol7-delivery-carries-accepted-items" "the suppression delivery commits .auditor/accepted-items.json (the release gate's inventory)"
 o="$WORK/ol7"; shim="$WORK/ol7.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
-ai="$(grep -c 'git add .*\.auditor/accepted-items.json' "$shim" 2>/dev/null)"; ai="${ai:-0}"
-{ [ "$ai" -ge 1 ] 2>/dev/null; } && ok || no "delivery git-adds .auditor/accepted-items.json" "add_lines=$ai"
+ai="$(grep -c 'createCommitOnBranch .*\.auditor/accepted-items.json' "$shim" 2>/dev/null)"; ai="${ai:-0}"
+{ [ "$ai" -ge 1 ] 2>/dev/null; } && ok || no "delivery's signed API commit carries .auditor/accepted-items.json" "add_lines=$ai"
 
 begin "ol9-narrative-model-name-withheld" "a narrative containing a vendor/model name is rejected; the report shows 'conclusion withheld', no name persisted"
 o="$WORK/ol9"; rm -rf "$o"
@@ -2024,11 +2036,11 @@ r7="$("$PY" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
+import os,shutil,tempfile
 purl="pkg:deb/debian/lib@1"; sc=((policy.VEX_PRODUCT,),(purl,))
 env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
-     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr1-7out","ts":"2026-09-23T00:00:00Z","dry":True,"digest":"sha256:x",
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(tempfile.mkdtemp(),"out"),"ts":"2026-09-23T00:00:00Z","dry":True,"digest":"sha256:x",
      "carried_expiry":{("CVE-2099-1303",sc):"2026-09-23"},"today":"2026-09-23"}
-import os,shutil; shutil.rmtree("/tmp/refr1-7out",ignore_errors=True)
 f={"scanner":"grype","finding_id":"CVE-2099-1303","purl":purl,"aliases":["CVE-2099-1303"],"package":"lib","fixed_version":None,"severity":"Medium","extra":{}}
 row,_=R._dispose("CVE-2099-1303",[f],["CVE-2099-1303"],env,[])
 print("OK" if row["section"]==3 and row.get("reopened_expired")=="2026-09-23" else "BAD:%s"%(row["section"]))' 2>/dev/null)"
@@ -2219,9 +2231,9 @@ begin "refr3-6-pullable-fix-lifts-carried-suppression" "when a fix becomes pulla
 res="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-shutil.rmtree("/tmp/refr3-6",ignore_errors=True)
+import os,tempfile; OUT3=os.path.join(tempfile.mkdtemp(),"out")
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((R.policy.VEX_PRODUCT,),(purl,))
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr3-6","ts":"t","dry":True,"digest":"x","carried_expiry":{("CVE-2099-1801",sc):"2026-10-30"},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":OUT3,"ts":"t","dry":True,"digest":"x","carried_expiry":{("CVE-2099-1801",sc):"2026-10-30"},"today":"2026-09-24"}
 f={"scanner":"grype","finding_id":"CVE-2099-1801","purl":purl,"aliases":["CVE-2099-1801"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
 row,_=R._dispose("CVE-2099-1801",[f],["CVE-2099-1801"],env,[])
 print("OK" if row["section"]==1 and row.get("reopened_scope") else "BAD:%s"%row["section"])' 2>/dev/null | tail -1)"
@@ -2303,14 +2315,14 @@ r4="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((R.policy.VEX_PRODUCT,),(purl,))
-gv="/tmp/refr4-4-gvc.json"
+import os,tempfile; T4=tempfile.mkdtemp(); gv=os.path.join(T4,"gvc.json")
 open(gv,"w").write("\n".join([
   "{\"config\":{\"scan_level\":\"symbol\"}}",
   "{\"SBOM\":{\"roots\":[\"example.org/lib\"],\"modules\":[{\"path\":\"example.org/lib\",\"version\":\"v1.0.0\"}]}}",
   "{\"finding\":{\"osv\":\"GO-2099-3004\",\"trace\":[{\"module\":\"example.org/lib\",\"version\":\"v1.0.0\",\"package\":\"example.org/lib/x\"}]}}"]))
 def env(cs):
-    shutil.rmtree("/tmp/refr4-4out",ignore_errors=True)
-    return {"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr4-4out","ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":cs,"today":"2026-09-24"}
+    shutil.rmtree(os.path.join(T4,"out"),ignore_errors=True)
+    return {"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(T4,"out"),"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":cs,"today":"2026-09-24"}
 f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-3004","purl":purl,"aliases":["GO-2099-3004","CVE-2099-3004"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
 carried,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env({("CVE-2099-3004",sc)}),[])
 fresh,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env(set()),[])
@@ -3253,32 +3265,96 @@ RQ
 )"
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
-begin "req18-ac3-review-loop-before-merge" "a change under .github/agent/ passes the review gate ONLY with a record bound to its exact content where both vendors are clear; no record, a stale record (content changed after review) or an open blocker fails; a change outside .github/agent/ needs none"
-RG="$repo/$BIN/auditor-review-gate.py"; rg="$WORK/req18-ac3"; rm -rf "$rg"; mkdir -p "$rg/.github/agent/bin" "$rg/src"
-gt(){ git -C "$rg" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
-gate(){ ( cd "$rg" && "$PY" "$RG" --base "$1" >/dev/null 2>&1 ); echo $?; }
-mkrec(){ ( cd "$rg" && t="$("$PY" "$RG" --print-tree)" && mkdir -p .github/agent/reviews && "$PY" - "$t" "$1" <<'RR'
-import json,sys
-t,blk=sys.argv[1],int(sys.argv[2]); ev="ab"*32
-rv={"codex":{"vendor":"openai","blockers_open":0,"evidence_sha256":ev},
-    "sonnet":{"vendor":"anthropic","blockers_open":blk,"evidence_sha256":ev}}
-json.dump({"schema":"auditor-review-record/v1","tree":t,"change":"test","rounds":[{"round":1,"reviewers":rv}],
-           "stop":{"codex":"clear","sonnet":"clear" if blk==0 else "blocked"}},open(".github/agent/reviews/%s.json"%t,"w"))
-RR
-) && gt add -A && gt commit -qm rec; }
-echo a > "$rg/.github/agent/bin/x.py"; echo s > "$rg/src/y"; gt init -q; gt add -A; gt commit -qm base; base="$(git -C "$rg" rev-parse HEAD)"
-echo b > "$rg/src/y"; gt commit -qam outside; outside="$(gate "$base")"
-echo b > "$rg/.github/agent/bin/x.py"; gt commit -qam change; norec="$(gate "$base")"
-mkrec 1; blocked="$(gate "$base")"
-mkrec 0; clear="$(gate "$base")"
-echo c > "$rg/.github/agent/bin/x.py"; gt commit -qam fixup; stale="$(gate "$base")"
-# an unchanged-content rename OUT of .github/agent/ is still an auditor change (rename detection
-# would otherwise report only the new, outside path)
-mkrec 0; base2="$(git -C "$rg" rev-parse HEAD)"; gt mv .github/agent/bin/x.py src/x.py; gt commit -qm moveout; moved="$(gate "$base2")"
-mkrec 0; base3="$(git -C "$rg" rev-parse HEAD)"; mkdir -p "$rg/.github/agent/reviews"; echo "print(1)" > "$rg/.github/agent/reviews/not-a-record.py"; gt add -A; gt commit -qm smuggle; smuggled="$(gate "$base3")"
-{ eq "$outside" "0" && eq "$norec" "1" && eq "$blocked" "1" && eq "$clear" "0" && eq "$stale" "1" && eq "$moved" "1" && eq "$smuggled" "1"; } \
-  && ok || no "gate: outside=0 no-record=1 open-blocker=1 clear=0 stale=1 moved-out=1 non-record-under-reviews=1" "outside=$outside no_record=$norec blocked=$blocked clear=$clear stale=$stale moved_out=$moved smuggled=$smuggled"
+begin "req18-ac3-no-record-requirement" "no change needs a review record in this repository: the record-judging script is gone, and the trusted verdict (judge and sweep) runs the action-pin checker, the allowlist guard, the pin-wiring judge and the scanner guard and nothing else over the head"
+nr="$(python3 - <<'NR'
+import os,re
+gate=".github/agent/bin/auditor-review-gate.py"
+src=open(".github/workflows/agent-review-gate.yml").read()
+tools=("check-action-pins.py --verify-tags --git","bin/check-file-allowlist.sh","pin-wiring-test.sh","bin/scan-no-workflow-call-test.sh")
+code="\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+ok=(not os.path.exists(gate) and "auditor-review-gate.py" not in src and "--subs-rev" not in src
+    and all(code.count(t)==2 for t in tools) and "reviews/" not in src)
+print("OK" if ok else "BAD")
+NR
+)"
+eq "$nr" "OK" && ok || no "no review-record script; the verdict runs the four checks in judge and sweep" "state=$nr"
 
+begin "req18-ac3-verdict-runs-and-propagates" "the judge and the sweep, run as written with recording stand-ins for the four checks, publish success only when the pin checker, the allowlist guard, the pin-wiring judge and the scanner guard ALL exit 0, call each check, and fail when any one fails"
+vp="$(python3 - <<'VP'
+import sys, os, subprocess, tempfile, itertools, shutil
+sys.path.insert(0, ".github/agent/fixtures/testlib")
+import pyyaml as yaml
+d = yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))
+def step(job, key):
+    r = [x for x in d["jobs"][job]["steps"] if key in x.get("name", "")]
+    return r[0]["run"] if len(r) == 1 else None
+judge_run = step("judge", "review gate and pin check")
+sweep_run = step("sweep", "judge and publish every open PR")
+if not judge_run or not sweep_run:
+    print("BAD missing step"); sys.exit()
+def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
+gitenv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
+              GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+root = tempfile.mkdtemp(prefix="verdict-")
+try:
+    src = os.path.join(root, "src"); fx = os.path.join(root, "fx")
+    os.makedirs(src)
+    sh("git", "-C", src, "init", "-q"); open(os.path.join(src, "f"), "w").write("x")
+    subprocess.run(["git", "-C", src, "add", "-A"], check=True, env=gitenv)
+    subprocess.run(["git", "-C", src, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=gitenv, capture_output=True)
+    sha = sh("git", "-C", src, "rev-parse", "HEAD")
+    sh("git", "-C", src, "update-ref", "refs/pull/7/head", sha)
+    sh("git", "clone", "-q", src, fx)
+    for rel, body in {
+        ".github/agent/bin/check-action-pins.py": "import os,sys\nopen(os.environ['CALLS'],'a').write('pins\\n')\nsys.exit(int(os.environ['STUB_PINS']))\n",
+        "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\nexit \"$STUB_ALLOW\"\n",
+        ".github/agent/tests/pin-wiring-test.sh": "echo wiring >> \"$CALLS\"\nexit \"$STUB_WIRING\"\n",
+        "bin/scan-no-workflow-call-test.sh": "echo scan >> \"$CALLS\"\nexit \"$STUB_SCAN\"\n",
+    }.items():
+        f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True); open(f, "w").write(body)
+    os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
+    stubbin = os.path.join(root, "stubbin"); os.makedirs(stubbin)
+    gh = os.path.join(stubbin, "gh")
+    open(gh, "w").write('#!/bin/sh\n'
+        'case "$1 $2" in\n'
+        '"pr list") echo "7 %s feature owner/repo" ;;\n'
+        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate") echo none ;;\n'
+        '"api repos/o/r/check-runs") for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
+        '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
+        'esac\n' % (sha, sha))
+    os.chmod(gh, 0o755)
+    bad = []
+    for pins, allow, wiring, scan in itertools.product((0, 1), repeat=4):
+        allpass = (pins, allow, wiring, scan) == (0, 0, 0, 0)
+        for which, run in (("judge", judge_run), ("sweep", sweep_run)):
+            calls = os.path.join(root, "calls"); out = os.path.join(root, "out"); tmp = os.path.join(root, "tmp")
+            for f in (calls, out): open(f, "w").close()
+            os.makedirs(tmp, exist_ok=True)
+            env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, RUNNER_TEMP=tmp, HEAD_SHA=sha,
+                       GITHUB_HEAD_REF="feature", GITHUB_BASE_REF="main", GITHUB_HEAD_REPO="owner/repo",
+                       GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
+                       STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_WIRING=str(wiring), STUB_SCAN=str(scan),
+                       PATH=stubbin + ":" + os.environ["PATH"])
+            r = subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
+            c = open(calls).read().split()
+            tag = "%s pins=%d allow=%d wiring=%d scan=%d" % (which, pins, allow, wiring, scan)
+            if which == "judge":
+                v = open(out).read().strip()
+                if sorted(c) != ["allow", "pins", "scan", "wiring"]: bad.append(tag + " calls=%s" % c)
+                if v != ("verdict=success" if allpass else "verdict=failure"): bad.append(tag + " out=%s" % v)
+                if (r.returncode == 0) != allpass: bad.append(tag + " rc=%d" % r.returncode)
+            else:
+                pub = [x for x in c if x.startswith("conclusion=")]
+                if pub != ["conclusion=success" if allpass else "conclusion=failure"]: bad.append(tag + " published=%s" % pub)
+                if "pins" not in c or (allpass and sorted(x for x in c if not x.startswith("conclusion=")) != ["allow", "pins", "scan", "wiring"]):
+                    bad.append(tag + " calls=%s" % c)
+                if any("unexpected" in x for x in c): bad.append(tag + " unexpected gh call")
+    print("OK" if not bad else "BAD " + "; ".join(bad[:4]))
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+VP
+)"
+eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all four checks exit 0" "$vp"
 
 begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"
 wg="$(python3 - <<'WG'
@@ -3300,8 +3376,9 @@ ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited"
     and j.get("permissions")=={"contents":"read"} and "secrets." not in yaml.safe_dump(j) and main_only in str(j.get("if"))
     and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
     and "refs/pull/${PR}/head:refs/remotes/pr/head" in jr and '[ "$got" = "$HEAD_SHA" ] ||' in jr
-    and 'git merge-base HEAD "$HEAD_SHA"' in jr and "base.sha" not in yaml.safe_dump(j)
-    and "python3 .github/agent/bin/auditor-review-gate.py --base" in jr and "checkout" not in jr and "pip install" not in jr
+    and "base.sha" not in yaml.safe_dump(j) and "auditor-review-gate.py" not in jr
+    and 'check-action-pins.py --verify-tags --git "$HEAD_SHA"' in jr and "PIN_WIRING_JUDGE_GIT=\"$HEAD_SHA\"" in jr
+    and "checkout" not in jr and "pip install" not in jr
     # publisher: agent-env App token (checks only), no PR data, not on cancellation
     and p.get("needs")=="judge" and p.get("environment")=="agent" and p.get("permissions")=={}
     and "!cancelled()" in str(p.get("if")) and main_only in str(p.get("if")) and scoped(tok(p))
@@ -3311,8 +3388,9 @@ ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited"
     and w.get("environment")=="agent" and "pull_request_target" not in str(w.get("if")) and "schedule" in str(w.get("if"))
     and len(wco)==1 and (wco[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (wco[0].get("with") or {})
     and scoped(tok(w)) and 'refs/remotes/pr/${n}' in wr and '= "$sha" ] || continue' in wr
-    and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and 'git merge-base HEAD "$sha"' in wr
-    and "python3 .github/agent/bin/auditor-review-gate.py --base" in wr and "checkout" not in wr and "statuses" not in src)
+    and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and "auditor-review-gate.py" not in wr
+    and 'check-action-pins.py --verify-tags --git "$sha"' in wr and "PIN_WIRING_JUDGE_GIT=\"$sha\"" in wr
+    and "checkout" not in wr and "statuses" not in src)
 # the auditor's own mint of the same App never includes checks
 a=yaml.safe_load(open(".github/workflows/auditor.yml"))
 mints=[x for jb in a["jobs"].values() for x in jb.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
@@ -3560,15 +3638,15 @@ rows=[row("CVE-1","example.org/a","0.16.0","0.22.0"), row("CVE-1","example.org/b
       row("CVE-2","example.org/a","v0.17.3","v0.22.0")]                                             # same target as CVE-1/a
 e1=run(rows)
 L=open(log).read().splitlines()
-creates=[l for l in L if l.startswith("gh pr create")]; pushes=[l for l in L if l.startswith("git push")]
+creates=[l for l in L if l.startswith("gh pr create")]; pushes=[l for l in L if l.startswith("gh api graphql createCommitOnBranch")]; unsigned=[l for l in L if l.startswith(("git commit","git push"))]
 branches=sorted({l.split(" --head ")[1].split()[0] for l in creates})
-first_ok=(e1==[] and branches==["auditor/bump-example.org-a-0.22.0","auditor/bump-example.org-b-1.2.0"] and len(creates)==2 and len(pushes)==2
+first_ok=(e1==[] and branches==["auditor/bump-example.org-a-0.22.0","auditor/bump-example.org-b-1.2.0"] and len(creates)==2 and len(pushes)==2 and not unsigned
           and any("CVE-1, CVE-2" in l for l in creates if "example.org-a" in l)
           and rows[0]["fix_pr_url"]==rows[2]["fix_pr_url"]!=rows[1]["fix_pr_url"])
 n0=len(L)
 e2=run([dict(r, fix_pr_url=None, action="") for r in rows])                        # identical second run
 L2=open(log).read().splitlines()[n0:]
-second_ok=(e2==[] and not any(l.startswith(("git push","gh pr create","gh pr edit")) for l in L2)
+second_ok=(e2==[] and not any(l.startswith(("gh api graphql","git push","gh pr create","gh pr edit")) for l in L2)
            and sorted(l for l in L2 if l.startswith("UNCHANGED"))==["UNCHANGED auditor/bump-example.org-a-0.22.0","UNCHANGED auditor/bump-example.org-b-1.2.0"])
 n1=n0+len(L2)
 e3=run([dict(r, fix_pr_url=None, action="") for r in rows]+[row("CVE-3","example.org/b","1.1.0","1.2.0")])   # new CVE, known target

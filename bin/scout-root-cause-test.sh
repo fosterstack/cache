@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-004-AC2
+# proves: REQ-SCAN-004-AC2, REQ-CHAIN-006-AC10
 # The Docker Scout root-cause round (advisor 0120/0121/0122): the documents are vexctl's shape; the matrix holds Docker's
 # documented control and changes one field at a time (author flag, directory vs file, *.vex.json vs our file name,
 # subcomponent), then our forms, on Scout 1.26.0 and the two previous minors; the judge needs the target finding in the
@@ -69,8 +69,9 @@ print("scout-root-cause: %d passed, %d failed" % (passed, failed)); sys.exit(1 i
 PY
 # the runner writes only the scratch package: any other target is refused before anything runs, and the workflow names it
 pass=0; fail=0
+scratch=$(mktemp -d); e2e=; e4=; trap 'rm -rf "$scratch" "${e2e:-}" "${e4:-}"' EXIT
 for target in ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache-scout-probe2 docker.io/fosterstack/cache; do
-  if out=$(SCOUT_DIR=/nonexistent PROBE_REPO="$target" RELEASE_TAG=x bash "$here/scout-root-cause.sh" "$(mktemp -d)" 2>&1); then
+  if out=$(SCOUT_DIR=/nonexistent PROBE_REPO="$target" RELEASE_TAG=x bash "$here/scout-root-cause.sh" "$scratch" 2>&1); then
     echo "FAIL: $target accepted"; fail=$((fail+1))
   elif grep -q "refusing to write to $target" <<<"$out"; then echo "ok: $target refused"; pass=$((pass+1))
   else echo "FAIL: $target: $out"; fail=$((fail+1)); fi
@@ -116,7 +117,7 @@ cat > "$e2e/skopeo" <<'STUB'
 #!/usr/bin/env bash
 echo "skopeo $*" >> "$LOG"
 case "$1" in
-  inspect) echo '{"manifests": []}' ;;
+  inspect) echo "{\"manifests\": [], \"attached\": $(grep -c '^docker scout attestation add' "$LOG" 2>/dev/null || echo 0)}" ;;   # the index changes once an attestation was attached
 esac
 STUB
 cat > "$e2e/install" <<'STUB'
@@ -133,8 +134,27 @@ no_scan=$(grep -c '^scan(' "$here/scout-root-cause.sh" || true)
 if [ "$no_scan" -eq 0 ]; then echo "ok: the scan() wrapper is gone"; pass=$((pass+1))
 else echo "FAIL: scan() wrapper still defined"; fail=$((fail+1)); fi
 cves=$(grep -c '^docker scout cves' "$LOG" 2>/dev/null || true)
-if [ "${cves:-0}" -eq 36 ]; then echo "ok: 36 docker scout cves invocations (2 attestation-path + 3 control-after + 1 release-author + 6 version warm-up + 24 matrix)"; pass=$((pass+1))
-else echo "FAIL: expected 36 docker scout cves invocations, got ${cves:-0}"; fail=$((fail+1)); fi
+if [ "${cves:-0}" -eq 38 ]; then echo "ok: 38 docker scout cves invocations (2 attestation-path + 3 control-after + 1 control exact post-attachment digest + 1 release-author + 1 release exact post-attachment digest + 6 version warm-up + 24 matrix)"; pass=$((pass+1))
+else echo "FAIL: expected 38 docker scout cves invocations, got ${cves:-0}"; fail=$((fail+1)); fi
+# advisor 0214: the attestation path is judged on the POST-attachment index scanned by its EXACT new digest with --vex-author
+# (the index digest changes when the attestation is attached, so signing must come after attaching): the control and the release copy
+n_exact=$(grep -cE '^docker scout cves --format gitlab --vex-author .* registry://ghcr.io/fosterstack/cache-scout-probe@sha256:[0-9a-f]{64}$' "$LOG" || true)
+if [ "${n_exact:-0}" -eq 2 ]; then echo "ok: the control and the release copy are each scanned by their exact post-attachment digest with --vex-author"; pass=$((pass+1))
+else echo "FAIL: expected 2 exact-digest scans with --vex-author, got ${n_exact:-0}"; fail=$((fail+1)); fi
+if grep -qF 'docker scout attestation list registry://ghcr.io/fosterstack/cache-scout-probe:release' "$LOG"; then echo "ok: the release copy's attestations are listed (why it got no attestation child)"; pass=$((pass+1))
+else echo "FAIL: the release copy's attestation list is not recorded"; fail=$((fail+1)); fi
+# the exact-digest scan names the digest AFTER attaching, never the pre-attach one (the stub's index changes once an attestation is added)
+for t in control release; do
+  b=$(cat "$e2e/out/attest/$t.before"); x=$(grep -o "scan $t by its exact post-attachment digest \`sha256:[0-9a-f]*" "$e2e/out/summary.md" | grep -o '[0-9a-f]\{64\}$')
+  # and the digest in the ACTUAL scout command equals the one reported (a script reporting the new digest while scanning the old one fails)
+  if [ "$t" = control ]; then va='^author@example\.com$'; else va='^FosterStack LLC$'; fi
+  c=$(grep -F -- "--vex-author $va registry://ghcr.io/fosterstack/cache-scout-probe@sha256:" "$LOG" | grep -o '[0-9a-f]\{64\}$' | tail -1)
+  if [ -n "$x" ] && [ "$x" != "$b" ] && [ "$c" = "$x" ]; then echo "ok: the $t exact-digest scan names, in the command itself, a digest different from the pre-attach one"; pass=$((pass+1))
+  else echo "FAIL: the $t exact-digest scan is missing or names the pre-attach digest ($x vs $b)"; fail=$((fail+1)); fi
+done
+for want in "control-after-exact-digest" "release-after-exact-digest"; do
+  if [ -e "$e2e/out/attest/$want.json" ]; then echo "ok: $want.json recorded"; pass=$((pass+1)); else echo "FAIL: $want.json missing"; fail=$((fail+1)); fi
+done
 if grep -qF 'docker scout cves --format gitlab registry://ghcr.io/fosterstack/cache-scout-probe:control' "$LOG"; then
   echo "ok: the control-before scan still names the scratch package over the registry"; pass=$((pass+1))
 else echo "FAIL: the control-before scan invocation is missing or changed"; fail=$((fail+1)); fi
@@ -156,16 +176,32 @@ case "$1 $2" in
   "scout version") echo "v1.26.0" ;;
 esac
 STUB
+# the chain's own copy tool (crane, by digest; rule 64 and the advisor's Oct 12 ruling): the probe adds the attestation manifest to a copy of the index with it
+cat > "$e4/crane" <<'STUB'
+#!/usr/bin/env bash
+echo "crane $*" >> "$LOG"
+if [ "$1 $2" = "index append" ] && [ -n "${FAIL_CREATE:-}" ]; then echo "ERROR: boom"; exit 1; fi
+STUB
 cp "$e2e/skopeo" "$e4/skopeo" 2>/dev/null || true
 cat > "$e4/skopeo" <<'STUB'
 #!/usr/bin/env bash
 echo "skopeo $*" >> "$LOG"
 case "$1" in
-  inspect) echo '{"manifests": []}' ;;
+  inspect)
+    att=$(grep -c '^docker scout attestation add' "$LOG" 2>/dev/null || true); att=${att:-0}
+    case "$*" in
+      *:child-a*) if grep -q 'attestation add .*:child-a' "$LOG"; then
+                    echo '{"manifests": [{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":567,"annotations":{"vnd.docker.reference.type":"attestation-manifest","vnd.docker.reference.digest":"sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab"},"platform":{"architecture":"unknown","os":"unknown"}}, {"digest":"sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab","platform":{"os":"linux","architecture":"amd64"}}]}'
+                  else echo '{"manifests": []}'; fi ;;
+      *:multi-built*) b=$(grep -c '^crane index append' "$LOG" 2>/dev/null || true)
+                      if [ "${b:-0}" -gt 0 ]; then echo "{\"manifests\": [{\"digest\":\"sha256:aaaa\",\"annotations\":{\"vnd.docker.reference.type\":\"attestation-manifest\"}}], \"built\": $b}"
+                      else echo "{\"manifests\": [], \"built\": 0, \"attached\": $att}"; fi ;;
+      *) echo "{\"manifests\": [], \"attached\": $att}" ;;
+    esac ;;
 esac
 STUB
 cp "$e2e/install" "$e4/install" 2>/dev/null || printf '#!/usr/bin/env bash\n: > "${@: -1}"\n' > "$e4/install"
-chmod +x "$e4/docker" "$e4/skopeo" "$e4/install"
+chmod +x "$e4/docker" "$e4/crane" "$e4/skopeo" "$e4/install"
 mkdir -p "$e4/home"
 SCOUT_DIR="$e4" PROBE_REPO=ghcr.io/fosterstack/cache-scout-probe RELEASE_TAG=0.1.0 LOG="$LOG4" HOME="$e4/home" \
   PATH="$e4:$PATH" bash "$here/scout-root-cause.sh" "$e4/out" > "$e4/run.log" 2>&1 || true
@@ -178,7 +214,62 @@ done
 if grep -qF 'pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache' "$e4/out/attest/ours-published.vex.json" && grep -qF 'pkg:docker/ghcr.io/fosterstack/cache-scout-probe@ours-probe-tag' "$e4/out/attest/ours-probe-tag.vex.json" \
    && grep -qF 'CVE-2023-4911' "$e4/out/attest/ours-published.vex.json"; then echo "ok: the two documents carry our product forms and the target CVE"; pass=$((pass+1))
 else echo "FAIL: the probe documents are wrong"; fail=$((fail+1)); fi
+n_ours=$(grep -cF -- '--vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe@sha256:' "$LOG4" || true)
+if [ "${n_ours:-0}" -eq 5 ]; then echo "ok: our statement is also scanned by an exact digest: once per form, plus the multi-platform index, its amd64 child and the built index"; pass=$((pass+1))
+else echo "FAIL: expected 5 exact-digest scans with our author (2 forms + multi index + child + built index), got ${n_ours:-0}"; fail=$((fail+1)); fi
 if grep -q 'ghcr.io/fosterstack/cache-scout-probe:ours-' "$LOG4" && ! grep -E 'skopeo copy .*docker://ghcr.io/fosterstack/cache:' "$LOG4" | grep -qE 'docker://ghcr.io/fosterstack/cache:[0-9a-z.-]+$'; then
   echo "ok: only the scratch package is written to"; pass=$((pass+1)); else echo "FAIL: a write outside the scratch package"; fail=$((fail+1)); fi
+# advisor 0214 (probe 2): a MULTI-PLATFORM index (debian 12.0's manifest list; its amd64 child is the fixture) that HAS the target: our
+# statement is attached to a scratch copy; index digest/children recorded before and after, the index scanned by tag and by exact digest
+# and the amd64 child scanned by digest, all with our author; the attestations listed. The default run (no target) tries nothing.
+MULTI=sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b
+if grep -qF "skopeo copy -q --all docker://docker.io/library/debian@$MULTI docker://ghcr.io/fosterstack/cache-scout-probe:multi" "$LOG4" \
+   && grep -qF "docker scout attestation add --file $e4/out/attest/multi.vex.json --predicate-type https://openvex.dev/ns/v0.2.0 ghcr.io/fosterstack/cache-scout-probe:multi" "$LOG4"; then
+  echo "ok: the multi-platform index is copied to its own scratch tag and our statement attached"; pass=$((pass+1))
+else echo "FAIL: the multi-platform copy or attachment is missing"; fail=$((fail+1)); fi
+if grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe:multi' "$LOG4" \
+   && grep -qE '^docker scout cves --format gitlab --vex-author \^FosterStack\\ LLC\$ registry://ghcr.io/fosterstack/cache-scout-probe@sha256:[0-9a-f]{64}$' "$LOG4" \
+   && grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab' "$LOG4"; then
+  echo "ok: the multi-platform index is scanned by tag and by exact digest, and its amd64 child by digest, with our author"; pass=$((pass+1))
+else echo "FAIL: the multi-platform scans are missing"; fail=$((fail+1)); fi
+if grep -qF 'docker scout attestation list registry://ghcr.io/fosterstack/cache-scout-probe:multi' "$LOG4" && grep -q 'multi-platform index' "$e4/out/summary.md"; then
+  echo "ok: the multi-platform attestations are listed and the result is in the summary"; pass=$((pass+1))
+else echo "FAIL: the multi-platform attestation list or summary is missing"; fail=$((fail+1)); fi
+if [ -e "$e2e/out/attest/multi.vex.json" ] || grep -q 'multi' "$LOG"; then echo "FAIL: a fixture without the target tried the multi-platform probe"; fail=$((fail+1))
+else echo "ok: a fixture without the target tries no multi-platform probe"; pass=$((pass+1)); fi
+# advisor 0221 (probe 3): the attestation-manifest child BUILT into a multi-platform index (Scout's own attach reports success on an index
+# and stores nothing): Scout attaches to a copy of the amd64 child (it rewrites a single image into an index with an attestation-manifest
+# child), that child's manifest is added to a copy of the original index with `crane index append` (both by digest), and the
+# built index is scanned by tag and by exact digest with our author; its children and attestations are recorded. No target, no attempt.
+CHILD_FIX=sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab
+if grep -qF "skopeo copy -q docker://docker.io/library/debian@$CHILD_FIX docker://ghcr.io/fosterstack/cache-scout-probe:child-a" "$LOG4" \
+   && grep -qF "docker scout attestation add --file $e4/out/attest/built.vex.json --predicate-type https://openvex.dev/ns/v0.2.0 ghcr.io/fosterstack/cache-scout-probe:child-a" "$LOG4"; then
+  echo "ok: the amd64 child is copied to its own scratch tag and our statement attached to it"; pass=$((pass+1))
+else echo "FAIL: the child copy or its attachment is missing"; fail=$((fail+1)); fi
+if grep -qF 'crane index append ghcr.io/fosterstack/cache-scout-probe@sha256:3d868b5eb908155f3784317b3dda2941df87bbbbaa4608f84881de66d9bb297b -m ghcr.io/fosterstack/cache-scout-probe@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -t ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG4" \
+   && grep -qF 'vnd.docker.reference.type' "$e4/out/attest/built-descriptor.json" \
+   && grep -qF 'vnd.docker.reference.digest' "$e4/out/attest/built-descriptor.json" && grep -qF 'sha256:aaaaaaaa' "$e4/out/attest/built-descriptor.json"; then
+  echo "ok: the attestation manifest is added to a copy of the original index with crane, both named by digest"; pass=$((pass+1))
+else echo "FAIL: the crane append step or the descriptor is wrong"; fail=$((fail+1)); fi
+if grep -qF 'docker scout cves --format gitlab --vex-author ^FosterStack\ LLC$ registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG4" \
+   && grep -qF 'docker scout attestation list registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG4" && grep -q 'built index' "$e4/out/summary.md"; then
+  echo "ok: the built index is scanned by tag with our author, its attestations listed, the result in the summary"; pass=$((pass+1))
+else echo "FAIL: the built index scans or summary are missing"; fail=$((fail+1)); fi
+bx=$(grep -c '^crane ' "$LOG" || true)
+if [ "${bx:-0}" -eq 0 ] && ! grep -q 'child-a' "$LOG"; then echo "ok: a fixture without the target builds no index"; pass=$((pass+1))
+else echo "FAIL: a fixture without the target tried the built-index probe"; fail=$((fail+1)); fi
+# a FAILED create leaves the copied original at the tag: it must be reported inconclusive and never scanned as the built index
+LOG5="$e4/docker5.log"
+FAIL_CREATE=1 SCOUT_DIR="$e4" PROBE_REPO=ghcr.io/fosterstack/cache-scout-probe RELEASE_TAG=0.1.0 LOG="$LOG5" HOME="$e4/home" \
+  PATH="$e4:$PATH" bash "$here/scout-root-cause.sh" "$e4/out5" > "$e4/run5.log" 2>&1 || true
+if grep -q 'inconclusive (the create failed' "$e4/out5/summary.md" && ! grep -qF 'registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG5" \
+   && ! grep -q 'attestation list registry://ghcr.io/fosterstack/cache-scout-probe:multi-built' "$LOG5"; then
+  echo "ok: a failed create is inconclusive and the unchanged copy is never scanned as the built index"; pass=$((pass+1))
+else echo "FAIL: a failed create was scanned or not reported inconclusive"; fail=$((fail+1)); fi
+# rule 61: nothing in the probe names buildx or imagetools any more, and every source it hands crane is a digest (a tag could move between the read and the append)
+if ! grep -qE 'buildx|imagetools' "$LOG4" && ! grep -E '^crane ' "$LOG4" | grep -qE ' -m [^ @]+:[A-Za-z0-9._-]+( |$)' \
+   && ! grep -qE 'buildx|imagetools' "$here/scout-root-cause.sh"; then
+  echo "ok: no buildx or imagetools call, and every crane source is named by digest"; pass=$((pass+1))
+else echo "FAIL: a buildx or imagetools call remains, or a crane source is named by a tag"; fail=$((fail+1)); fi
 rm -rf "$e2e" "$e4"
 echo "scout-root-cause guard: $pass passed, $fail failed"; [ "$fail" -eq 0 ]

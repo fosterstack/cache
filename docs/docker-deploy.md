@@ -96,11 +96,17 @@ It must be smaller than the volume. A value that looks like 20 GiB but is
 actually 20 MiB (`20971520`) produces constant eviction and a hit rate that
 never climbs — which reads like "the cache isn't helping" rather than a typo.
 `/statusz` shows the parsed cap next to current usage, which is the fastest way
-to catch it. The server evicts least-recently-used entries once it
-reaches the cap and never grows past it, so the headroom absorbs
-filesystem overhead and in-flight uploads rather than runaway growth.
-Leaving `FSCACHE_MAX_BYTES` at its `0` (unbounded) default on a small
-volume is the one configuration that will fill your disk.
+to catch it. The server stores an entry first and then evicts
+least-recently-used entries, so the cache is normally kept at or under the cap
+after each write, and the disk can briefly hold more while uploads are in
+flight. Those in-flight bytes sit outside the cap and outside `/statusz`: up to
+`FSCACHE_MAX_CONCURRENT_UPLOADS` uploads (32 by default; `0` removes the bound)
+at once, each at most the smaller of `FSCACHE_MAX_BODY_BYTES` (1 GiB by
+default) and the cap. The ~20% headroom above assumes typical entries of tens
+of megabytes; on a small volume, lower `FSCACHE_MAX_CONCURRENT_UPLOADS` or
+`FSCACHE_MAX_BODY_BYTES` so that product fits in the headroom. Leaving
+`FSCACHE_MAX_BYTES` at its `0` (unbounded) default on a small volume is the
+most common way to fill your disk.
 
 **At the larger end, the network matters more than the CPU.** Throughput
 and round-trip latency between the cache and your CI runners set your hit
@@ -151,6 +157,11 @@ consequence of the zero-CVE-surface design — see
 [Scanning FosterStack in your compliance pipeline](scanning.md) for why
 there's no shell in the image in the first place.
 
+`/healthz` is liveness only and never reports disk trouble. To be told about a
+full or read-only data directory, alert on the `fscache_store_writable`,
+`fscache_store_free_bytes` and `fscache_put_errors_total` metrics (see the
+alerting examples in [Kubernetes](kubernetes.md)).
+
 ## Configuration
 
 All configuration is environment variables (see the main
@@ -159,7 +170,7 @@ All configuration is environment variables (see the main
 `/home/nonroot/data` in the image), `FSCACHE_MAX_BYTES`,
 `FSCACHE_USERNAME` / `FSCACHE_PASSWORD`, `FSCACHE_MAX_BODY_BYTES`.
 
-Three more:
+Four more:
 
 - **Read-only credentials** — `FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD`, an
   optional second username/password pair that can read cache entries but not
@@ -175,9 +186,37 @@ Three more:
   `X-FSCache-Reject: entry-exceeds-cache-cap`, and nothing is evicted to make
   room. Gradle and Maven builds carry on; the oversized output simply isn't
   cached.
+- **HTTPS from the server itself** — `FSCACHE_TLS_CERT` / `FSCACHE_TLS_KEY`,
+  a PEM certificate file (it may hold the chain) and its private key file,
+  required together and unset by default. With both set, the server serves
+  HTTPS only, on `FSCACHE_ADDR`, with TLS 1.2 as the minimum version, and
+  HTTP/2 is not offered. A plain-HTTP request to that port gets `400`, and
+  `/healthz` checks move to `https://`. Mount the files read-only, for example
+  `-v /etc/fscache/tls:/etc/fscache/tls:ro` with
+  `-e FSCACHE_TLS_CERT=/etc/fscache/tls/tls.crt -e FSCACHE_TLS_KEY=/etc/fscache/tls/tls.key`.
+  Each file may be at most 1 MiB. The files are read only at startup: replace
+  them, then restart the container. Terminating TLS in a reverse proxy in front
+  of the server remains the other option, and needs neither variable.
+  If clients cannot connect over TLS, check from the client side:
+  `openssl s_client -connect HOST:PORT -alpn http/1.1` (shows the certificate
+  chain, the negotiated version and cipher, and the alert). The server does not
+  log handshake failures at the default log level.
 
 A bad numeric value in any of these stops the server at startup with a message
 naming the variable, rather than silently falling back to a default.
+
+The server checks everything before it touches the data directory. A bad or
+already-taken `FSCACHE_ADDR` stops the start with a message naming
+`FSCACHE_ADDR` and the address, and leaves `FSCACHE_DATA_DIR` exactly as it
+was (nothing created, no marker written). The listen socket is opened first
+and answers only once the stores are ready, so after a crash, when the server
+reconciles the stores before serving, connections that arrive meanwhile are
+accepted by the kernel and wait in the listen backlog until it finishes. A
+build client waits up to its read timeout instead of getting
+connection-refused. Docker has no probe of its own here (the image ships no
+`HEALTHCHECK`), so nothing restarts the container during that window. On
+Kubernetes it is the liveness probe that can restart the pod; see
+[Kubernetes](kubernetes.md#startup-and-reconcile).
 
 Configuration is flags and environment only, on purpose. There is no settings
 page and no runtime reconfiguration, which means the running server always
@@ -224,12 +263,20 @@ docker volume rm fscache-data
 
 **Kubernetes**
 
-Delete the PersistentVolumeClaim — or scale to zero, delete the claim, and
-scale back up. Either way the pod comes back with a fresh volume.
+Scale to zero, delete the PersistentVolumeClaim, create it again from the
+PersistentVolumeClaim manifest in [Kubernetes](kubernetes.md#persistentvolumeclaim),
+then scale back up. A Deployment does not recreate a claim you deleted, so
+without the re-apply the pod stays `Pending` with "persistentvolumeclaim
+fscache-data not found". After the re-apply the pod comes back with a fresh,
+empty volume. Save the PersistentVolumeClaim block from the Kubernetes page as
+`fscache-pvc.yaml` first; if you kept all four manifests in one file as that page
+suggests, apply that file instead (re-applying the unchanged Secret, Deployment
+and Service is harmless).
 
 ```sh
 kubectl scale deploy/fscache --replicas=0
 kubectl delete pvc fscache-data
+kubectl apply -f fscache-pvc.yaml   # the PersistentVolumeClaim block from kubernetes.md, saved as fscache-pvc.yaml
 kubectl scale deploy/fscache --replicas=1
 ```
 
@@ -279,55 +326,42 @@ entries in this index, so nothing else should appear here — see
 [Verify our images](verify-images.md).
 
 There are no darwin or windows images: containers on those platforms run a
-Linux VM, and it pulls `linux/*` like any other Linux host. For a native
-macOS binary, see [Install FosterStack Cache](install.md).
+Linux VM, and it pulls `linux/*` like any other Linux host. There is no native
+macOS binary from v0.3.0 either; on a Mac, run the image. <!-- pinned: historical -->
 
-## Troubleshooting with the `:debug` image
+## Troubleshooting without a shell in the image
 
 The production image has no shell, so `docker exec ... sh` into it fails.
 That is deliberate — see [Platforms and multi-arch images](#platforms-and-multi-arch-images)
-above and the [variant docs](verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect).
-When you need a shell, run the `:debug` tag, which is the same binary on a
-base that adds busybox.
-
-**The shell is at `/busybox/sh`, not `/bin/sh`.** Distroless keeps busybox
-under `/busybox/` and ships no `/bin/sh`, no bash, and no package manager.
-If you have used Debian, RHEL, Amazon Linux, Alpine or Wolfi images, this
-is the one thing that will trip you up.
+above and the [variant docs](verify-images.md#the-images-have-no-shell).
+From v0.3.0 there is no `:debug` image (it is only on earlier releases, see <!-- pinned: historical -->
+[verify-images.md](verify-images.md#releases-before-v030)): you bring the
+tools in a separate container that shares the server's namespaces.
 
 ```sh
-# a throwaway shell in the debug image
-docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
+# a throwaway toolbox that sees the server's network and processes
+docker run --rm -it --pid=container:<name> --network=container:<name> \
+  busybox:stable sh
 
-# same, with your cache volume attached, to inspect what the server sees
-docker run -it --entrypoint /busybox/sh \
-  -v fscache-data:/home/nonroot ghcr.io/fosterstack/cache:debug
+# the blob volume, read-only, to inspect what the server sees
+docker run --rm -it -v fscache-data:/data:ro busybox:stable \
+  sh -c 'du -sh /data; ls -la /data/data/blobs'
 ```
 
-Inside, useful things to check:
+Inside the first one, the server is `localhost:8080`:
 
 ```sh
-ls -la /home/nonroot/data/blobs     # is the blob store where you think it is?
-du -sh /home/nonroot/data           # how big has the cache grown?
-wget -qO- http://localhost:8080/healthz   # only if you exec into a RUNNING container
+wget -qO- http://localhost:8080/healthz
 ```
 
-To get a shell in a container that is already running, swap the deployment
-to the `:debug` tag first — you cannot exec a shell into the production
-image, because there is not one to exec. On Kubernetes, with a pod running
-the `:debug` tag:
+On Kubernetes, attach an ephemeral container to the running pod:
 
 ```sh
-kubectl exec -it <pod> -- /busybox/sh
+kubectl debug -it <pod> --image=busybox:stable --target=<container>
 ```
 
-`/busybox` is on the image `PATH`, so bare `sh` also resolves. The full
-path is shown first because it works regardless of how the container was
-invoked.
-
-These run as the image's default user, uid 65532 (`nonroot`). Do not add
-`--user=root`: clusters that enforce `runAsNonRoot` reject it, and root
-would not show you what the server process sees.
+The toolbox image is yours to choose and pin; it is not part of the release
+and is not covered by its signatures.
 
 ## Not a container shop? Bare binary + systemd
 

@@ -30,11 +30,7 @@ ALLOW_PATTERNS=(
   '^docs/[A-Za-z0-9._-]+\.json$'
 
   # Build, lint, scan and release configuration.
-  '^\.(gitignore|golangci\.yml|goreleaser\.yaml|grype\.yaml|ko\.yaml|gremlins\.yaml)$'
-
-  # Image-assembly Dockerfiles (release chain stage 3): COPY-only, FROM
-  # pinned image:tag@sha256, watched by Dependabot's docker ecosystem.
-  '^build/docker/Dockerfile\.[a-z]+$'
+  '^\.(gitignore|golangci\.yml|grype\.yaml|ko\.yaml|gremlins\.yaml)$'
 
   # CI/CD. Note these are ALSO gated in autoMode soft_deny — the allowlist
   # says a workflow file may live here, not that it may change freely.
@@ -62,6 +58,10 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
+  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites (a committed Python file run with -I), its test, and the committed floors.
+  '^bin/suite-guard(-test)?\.sh$'
+  '^bin/suite-guard-run\.py$'
+  '^test-evidence/suite-floors\.json$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
@@ -74,13 +74,21 @@ ALLOW_PATTERNS=(
   '^bin/check-file-allowlist-test\.sh$'
   '^bin/vex-forms\.py$'
   '^bin/vex-forms-test\.sh$'
+  '^bin/vex-index\.py$'
+  '^bin/vex-index-test\.sh$'
+  '^bin/fips-image-posture\.py$'
+  '^bin/branch-sweep\.py$'
+  '^bin/branch_sweep_test\.py$'
+  '^bin/branch-sweep-test\.sh$'
+  '^bin/scan-no-workflow-call-test\.sh$'
+  '^bin/local-prune\.sh$'
+  '^\.github/branch-keep\.json$'
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
-  '^bin/authorize-acceptance-check\.py$'
-  '^bin/authorize-acceptance-check-test\.sh$'
   '^bin/rescan-statement\.py$'
   '^bin/rescan-statement-test\.sh$'
+  '^bin/rescan-current-only-test\.sh$'
   '^bin/analyze-egress-trace\.py$'
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
@@ -97,6 +105,7 @@ ALLOW_PATTERNS=(
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
   '^bin/release-patch-wiring-test\.sh$'
+  '^bin/acceptance-maven-413-test\.sh$'
   '^bin/admission-tag-signer\.py$'
   '^bin/admission-tag-signer-test\.sh$'
   '^bin/panel-test\.sh$'
@@ -117,6 +126,51 @@ ALLOW_PATTERNS=(
   '^bin/vex-scope-test\.sh$'
   '^bin/go-bump-open-pr\.sh$'
   '^bin/go-bump-open-pr-test\.sh$'
+  # The v0.3.0 release chain, Sign boundary (PR 1): the verifier, its tests, the hostile dry-run step and the signer table the
+  # tests share; the Sigstore PUBLIC trust material the release policy pins (exact names: a private key never matches); results/
+  # holds the dry run's per-attempt rows (.gitkeep only, the rows come from the run)
+  '^bin/chain-verify\.py$'
+  '^bin/chain_(common|hostile)\.py$'
+  '^bin/chain-hostile-step\.sh$'
+  '^bin/chain-(verify|hostile|records|sign-wiring)-test\.sh$'
+  '^bin/chain-test-signers\.(py|json)$'
+  '^\.github/policy/cosign-signing-config\.json$'
+  '^\.github/policy/(fulcio-chain|tsa-chain)\.pem$'
+  '^\.github/policy/rekor\.pub$'
+  '^results/\.gitkeep$'
+  # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
+  # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
+  # suites with their two test helpers
+  '^bin/witnessed\.sh$'
+  '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble|refuse-mode)\.sh$'
+  '^bin/build-(admit|archives|version-check)\.py$'
+  '^bin/chain_items\.py$'
+  '^bin/chain-admission-old-steps\.txt$'
+  '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
+  '^bin/chain-(test-(harness|shape)|known-red)\.py$'
+  '^test-evidence/known-red\.json$'
+  # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
+  # suite), the kind installer, and the Check suites with their shape judge
+  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
+  '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
+  '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
+  '^bin/acceptance-k8s-(manifests|smoke)\.py$'
+  '^bin/install-kind\.sh$'
+  '^bin/chain-check-(scripts|wiring)-test\.sh$'
+  '^bin/chain-check-shape\.py$'
+  # Check's source scan of the product module (ruling G, Oct 12): the script, and the committed tool module whose go.sum pins govulncheck (tools/govulncheck).
+  '^bin/check-govulncheck\.py$'
+  '^tools/govulncheck/go\.(mod|sum)$'
+  # The rc-proof marker helper (REQ-CHAIN-001-AC6): the one definition of the chain-file set.
+  '^bin/chain-bytes-sha\.py$'
+  # The marker-only pull request gate (REQ-CHAIN-001-AC6, slice 4b-6): the script and its suite.
+  '^bin/marker-(pr-gate\.py|gate-test\.sh)$'
+  # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
+  '^bin/release-(verify|apks|publish|sign|assets|postverify)\.sh$'
+  '^bin/release-(postverify|metadata|layout)\.py$'
+  '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
+  '^bin/chain-release-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
@@ -134,9 +188,6 @@ ALLOW_PATTERNS=(
   '^\.github/agent/test-requirements\.txt$'
   '^\.github/agent/coverage-exclusions\.txt$'
   '^\.github/agent/docs/[A-Za-z0-9._-]+\.md$'
-  # REQ-AUD-18 AC3: review-loop records, one per reviewed .github/agent/ content hash, read by
-  # .github/agent/bin/auditor-review-gate.py (run from main by .github/workflows/agent-review-gate.yml).
-  '^\.github/agent/reviews/[0-9a-f]{64}\.json$'
   # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
   # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
   '^\.github/agent/prompts/[A-Za-z0-9._-]+\.md$'
@@ -146,6 +197,9 @@ ALLOW_PATTERNS=(
   # The hash-pinned adjudicator SDK requirements (anthropic + transitive tree), installed
   # with --require-hashes on real/schedule runs; bumped by the pip ecosystem in dependabot.yml.
   '^\.github/agent/adjudicator-requirements\.txt$'
+  # pip itself, pinned and hash-checked for CI (REQ-SUP-001-AC13); one requirement, bumped by the pip
+  # ecosystem in dependabot.yml under the 7-day cooldown.
+  '^\.github/agent/pip-requirements\.txt$'
 
   # Daily CVE auditor — matrix-first TEST FIXTURES backing
   # docs/cve-auditor-matrix.md and tests/auditor-matrix-test.sh (both under .github/agent/): real
@@ -174,6 +228,67 @@ ALLOW_PATTERNS=(
   '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/(go\.(mod|sum)|[A-Za-z0-9._-]+\.go)\.fixture$'
   '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
   '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
+
+  # The vendored dependency tree (REQ-VEND-001): names only. Every component starts with a letter, digit, _, +, ~ or @ (no dot
+  # component, no .github, no .git), so a name is judged here and the CONTENT is judged by bin/vendor-check.sh, which the required
+  # `vendor` job in ci.yml runs on every pull request: this pattern never lands without that check.
+  '^vendor/([A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*/)*[A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*$'
+
+  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ has its own subtree pattern above (REQ-VEND-001).
+  # Vendoring: the dependency record (root), the regenerate-and-compare script, the provenance tool, their test.
+  '^dependency-provenance\.json$'
+  '^bin/vendor-check\.sh$'
+  '^bin/vendor-provenance\.py$'
+  '^bin/vendoring-test\.sh$'
+  # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
+  # (build/apko.yaml, build/apko-fips.yaml).
+  '^build/melange(-fips)?\.yaml$'
+  # The one template both melange recipes are generated from (bin/gen-recipes.py).
+  '^build/melange\.yaml\.tmpl$'
+  '^build/apko(-fips)?\.yaml$'
+  # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
+  '^build/locks/apko(-fips)?\.base\.lock\.json$'
+  '^build/locks/melange\.lock$'
+  # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
+  '^build/locks/archive-keys\.sha256$'
+  '^build/locks/archive-index\.sha256$'
+  # The certified Go Cryptographic Module the FIPS recipe is generated with (build/locks/fips-module.txt): one of the two data files the daily job edits.
+  '^build/locks/fips-module\.txt$'
+  # Signing keys: build/keys/assembly.rsa and build/keys/assembly.rsa.pub (the committed, non-secret assembly
+  # key pair, rule 22) and build/keys/release.rsa.pub (the release public key).
+  '^build/keys/assembly\.rsa(\.pub)?$'
+  '^build/keys/release\.rsa\.pub$'
+  # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
+  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
+  '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom)\.py$'
+  # The shared test library and the split build-chain tests.
+  '^bin/melange-apko-lib\.sh$'
+  '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
+  # OCI digest and network-probe tools.
+  '^bin/(oci-digest|net-probe)\.py$'
+  # The build-apk driver's helper and the sealed-environment list it reads (REQ-BUILDAPK-001): the former inline Python
+  # of bin/build-apk.sh, and the closed rule-23 variable list as data.
+  '^bin/build-apk-helper\.py$'
+  '^build/sealed-env\.json$'
+  # Archive scripts: push, pull (.sh) and verify (.py).
+  '^bin/archive-(push|pull)\.sh$'
+  '^bin/archive-verify\.py$'
+  # Secret-scanning configuration (paths-ignore for the committed non-secret assembly key).
+  # NOTE: only the PATH is gated here, not the file's content. The PR that adds .github/secret_scanning.yml must pin
+  # its content (an exact-content test) and add it to the guarded list.
+  '^\.github/secret_scanning\.yml$'
+  # The supply-chain harness manifest (PR #210).
+  '^\.github/agent/supply-chain/harness-manifest\.json$'
+  # The release identity record.
+  # NOTE: only the PATH is gated here, not the file's content. The PR that adds .github/release-identity.json must
+  # pin its content (an exact-content test) and add it to the guarded list.
+  '^\.github/release-identity\.json$'
+  # The v0.3.0 customer verification guide (docs/verify-release.md), its list of commands that cannot run on a
+  # candidate (docs/verify-release.cannot-run.json) and its page checker (bin/verify-release-guide-test.sh), REQ-GUIDE-001.
+  '^docs/verify-release\.md$'
+  '^docs/verify-release\.cannot-run\.json$'
+  '^bin/verify-release-guide-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
@@ -214,15 +329,94 @@ SUPPRESSION_PATTERNS=(
 # Resolve the branch under check: the PR HEAD (source) branch on pull_request,
 # else the pushed ref, else the local branch (pre-commit hook). Empty resolves
 # to a non-auditor branch, i.e. suppression paths stay blocked by default.
-_branch="${GITHUB_HEAD_REF:-}"
-[ -n "$_branch" ] || _branch="${GITHUB_REF_NAME:-}"
-[ -n "$_branch" ] || _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-case "$_branch" in
-  auditor/*|main) ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}") ;;
-esac
+# GITHUB_HEAD_REF is only the head branch NAME, and a fork can name its branch anything, so:
+#   pull_request event (GITHUB_HEAD_REF set): the auditor lane only if the branch is auditor/* AND the
+#     head repository is this repository (GITHUB_HEAD_REPO == GITHUB_REPOSITORY; either missing =>
+#     not the same repo, fail closed). A PR head named `main` is never special.
+#   otherwise (push, or the pre-commit hook): auditor/* or main by the pushed ref / local branch.
+_suppression_free=1
+if [ -n "${GITHUB_HEAD_REF:-}" ]; then
+  case "$GITHUB_HEAD_REF" in
+    auditor/*)
+      if [ -n "${GITHUB_REPOSITORY:-}" ] && [ "${GITHUB_HEAD_REPO:-}" = "$GITHUB_REPOSITORY" ]; then
+        _suppression_free=0
+      fi ;;
+  esac
+else
+  _branch="${GITHUB_REF_NAME:-}"
+  [ -n "$_branch" ] || _branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  case "$_branch" in
+    auditor/*|main) _suppression_free=0 ;;
+  esac
+fi
+if [ "$_suppression_free" -eq 0 ]; then
+  ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")
+fi
+
+# Any other branch (feature PRs, bots, the pre-commit hook on a local branch) may CONTAIN a
+# suppression file but may not ADD or CHANGE one: a suppression path passes only if it exists at the
+# merge base with the base branch and is identical there (content and mode, via the index, which is
+# what a commit would record and what CI's checkout equals). Base = $GITHUB_BASE_REF, else main.
+# Anything that cannot be resolved (missing ref, shallow clone, no merge base) is NOT allowed.
+_base_name="${GITHUB_BASE_REF:-main}"
+_merge_base=""      # resolved lazily, once, only if a suppression path shows up
+_merge_base_tried=0
+_merge_base_err=""
+# ALLOWLIST_HEAD_REV=<full hex commit sha>: judge that commit instead of the checkout (HEAD and the index);
+# for a caller that only has the change as git objects. Set but not a resolvable commit => not allowed.
+_rev="${ALLOWLIST_HEAD_REV:-}"
+_head_rev=HEAD
+_resolve_merge_base() {
+  _merge_base_tried=1
+  if [ -n "$_rev" ]; then
+    if ! [[ "$_rev" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || ! git rev-parse --verify --quiet "$_rev^{commit}" >/dev/null 2>&1; then
+      _merge_base_err="ALLOWLIST_HEAD_REV is not a commit here"; return 1
+    fi
+    _head_rev="$_rev"
+  fi
+  if ! [[ "$_base_name" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || [[ "$_base_name" == *..* ]]; then
+    _merge_base_err="base ref name '$_base_name' is not usable"; return 1
+  fi
+  local ref="refs/remotes/origin/$_base_name"
+  if ! git rev-parse --verify --quiet "$ref^{commit}" >/dev/null 2>&1; then
+    _merge_base_err="base ref origin/$_base_name does not exist here (shallow or partial fetch?)"; return 1
+  fi
+  # --all: a criss-cross history has several merge bases and the file must be unchanged against EVERY one
+  if ! _merge_base="$(git merge-base --all "$_head_rev" "$ref" 2>/dev/null)" || [ -z "$_merge_base" ]; then
+    _merge_base=""; _merge_base_err="no merge base between $_head_rev and origin/$_base_name (shallow clone?)"; return 1
+  fi
+}
+# 0 only when $1 is present at the merge base and the index holds identical content and mode.
+_suppression_unchanged() {
+  [ "$_merge_base_tried" -eq 1 ] || _resolve_merge_base || true
+  [ -n "$_merge_base" ] || return 1
+  local mb
+  if [ -n "$_rev" ]; then
+    git cat-file -e "$_rev:$1" 2>/dev/null || return 1
+  else
+    git ls-files --error-unmatch -- "$1" >/dev/null 2>&1 || return 1
+  fi
+  while IFS= read -r mb; do
+    [ -n "$mb" ] || continue
+    git cat-file -e "$mb:$1" 2>/dev/null || return 1
+    if [ -n "$_rev" ]; then
+      git diff --quiet "$mb" "$_rev" -- "$1" 2>/dev/null || return 1
+    else
+      git diff --cached --quiet "$mb" -- "$1" 2>/dev/null || return 1
+    fi
+  done <<< "$_merge_base"
+  return 0
+}
+
+# the script's own git pathspecs are literal paths, never globs or magic
+export GIT_LITERAL_PATHSPECS=1
+
+# ALLOWLIST_NUL=1: the list on stdin is NUL-delimited (git ls-tree -z), so a path with a newline is one path
+_delim=$'\n'
+[ "${ALLOWLIST_NUL:-}" = 1 ] && _delim=''
 
 blocked=()
-while IFS= read -r path; do
+while IFS= read -r -d "$_delim" path || [ -n "$path" ]; do
   [ -z "$path" ] && continue
   ok=0
   for pattern in "${ALLOW_PATTERNS[@]}"; do
@@ -231,6 +425,14 @@ while IFS= read -r path; do
       break
     fi
   done
+  if [ "$ok" -eq 0 ] && [ "$_suppression_free" -eq 1 ]; then
+    for pattern in "${SUPPRESSION_PATTERNS[@]}"; do
+      if [[ "$path" =~ $pattern ]] && _suppression_unchanged "$path"; then
+        ok=1
+        break
+      fi
+    done
+  fi
   if [ "$ok" -eq 0 ]; then
     blocked+=("$path")
   fi
@@ -241,6 +443,11 @@ if [ "${#blocked[@]}" -gt 0 ]; then
   for f in "${blocked[@]}"; do
     echo "  $f" >&2
   done
+  if [ -n "$_merge_base_err" ]; then
+    echo "" >&2
+    echo "suppression paths on this branch are allowed only if unchanged since the merge base;" >&2
+    echo "could not establish that: $_merge_base_err (failing closed)." >&2
+  fi
   echo "" >&2
   echo "fosterstack/cache is a PUBLIC repo. If a file genuinely belongs here," >&2
   echo "add a pattern to ALLOW_PATTERNS in bin/check-file-allowlist.sh." >&2

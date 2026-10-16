@@ -9,24 +9,70 @@ name: Reserved branch guard
 on:
   push:
     branches: ['auditor/**']
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'list what the branch sweep would delete and delete nothing'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
   guard:
+    if: github.event_name == 'push'
     name: only-the-app-pushes-auditor-lane
     runs-on: ubuntu-latest
     steps:
       - name: reject any pusher that is not the delivery App
+        env:
+          ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
-          actor='${{ github.actor }}'
-          echo "pusher of an auditor/* branch: ${actor}"
-          case "${actor}" in
+          echo "pusher of an auditor/* branch: ${ACTOR}"
+          case "${ACTOR}" in
             fosterstack-automation\[bot\]|fosterstack-automation)
               echo "ok: the delivery App owns the auditor/* lane" ;;
             *)
-              echo "::error::auditor/* is the auditor's delivery lane — only the fosterstack-automation App may push it (got ${actor}). Development branches must use feat/ or req/." >&2
+              echo "::error::auditor/* is the auditor's delivery lane — only the fosterstack-automation App may push it (got ${ACTOR}). Development branches must use feat/ or req/." >&2
               exit 1 ;;
           esac
+
+  sweep:
+    name: sweep-stale-branches
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_DRY_RUN: ${{ inputs.dry-run }}
+          BRANCH_SWEEP_LOG: ${{ runner.temp }}/branch-sweep.log
+        run: |
+          set -euo pipefail
+          # The shell decides, on the raw values and case-sensitively (an expression's == ignores case): only a
+          # schedule, or a dispatch whose input is exactly the string false, deletes; anything else is a dry run.
+          flag=
+          if [ "${EVENT_NAME:-}" = schedule ] || { [ "${EVENT_NAME:-}" = workflow_dispatch ] && [ "${INPUT_DRY_RUN:-}" = false ]; }; then
+            flag=--apply
+          fi
+          python3 bin/branch-sweep.py ${flag}
+      - name: keep the log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: branch-sweep-log
+          path: ${{ runner.temp }}/branch-sweep.log
+          retention-days: 90
+          if-no-files-found: ignore

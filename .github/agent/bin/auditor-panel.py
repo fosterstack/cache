@@ -18,10 +18,10 @@ This step, run by auditor.yml right after the rescan, judges them:
 Public text names the seats ("vendor A", "vendor B", "primary", "second"); vendor and model names live only in the
 environment's secrets (rule 8(b), rule 14, REQ-AUD-6 AC1).
 """
-import argparse, copy, datetime, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
+import argparse, copy, datetime, hashlib, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auditorlib import policy  # noqa: E402
+from auditorlib import policy, signed_commit  # noqa: E402
 
 SEATS = ("A", "B")
 DEBATE_ROUNDS = (2, 3, 4)
@@ -596,11 +596,55 @@ def _pick_manifest(idx, blob, arch):
     return None
 
 
+class _Layout:
+    """An OCI image layout DIRECTORY (Build's images artifact: images/<variant>/ with oci-layout, index.json, blobs/sha256/<hex>), read with the small
+    surface the readers use from a tar: extractfile(name).read() and getmember(name). Only index.json and blobs/sha256/<64 hex> are readable; a symlink,
+    a directory without an oci-layout file (a docker-save shape) or any other name is refused. The old archive file is not read: the digest would not
+    be the one Build recorded."""
+
+    def __init__(self, path):
+        if os.path.islink(path) or not os.path.isdir(path):
+            raise OSError("%s is not an OCI layout directory" % os.path.basename(path))
+        if not os.path.isfile(os.path.join(path, "oci-layout")):
+            raise ValueError("%s has no oci-layout file: not an OCI layout (a docker-save shape?)" % os.path.basename(path))
+        self.root = path
+
+    def _path(self, name):
+        if name != "index.json" and not re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", name):
+            raise KeyError(name)
+        p = os.path.join(self.root, name)
+        if os.path.islink(p) or not os.path.isfile(p):
+            raise KeyError(name)
+        return p
+
+    def _bytes(self, name):
+        """The blob's bytes, re-hashed against the sha256 in its file name (fail closed on a mismatch: the digest is the evidence's identity)."""
+        p = self._path(name)
+        with open(p, "rb") as fh:
+            data = fh.read()
+        if name.startswith("blobs/sha256/") and hashlib.sha256(data).hexdigest() != name.rsplit("/", 1)[1]:
+            raise ValueError("blob %s does not hash to its name" % name.rsplit("/", 1)[1][:12])
+        return data
+
+    def extractfile(self, name):
+        return io.BytesIO(self._bytes(name))
+
+    def getmember(self, name):
+        self._bytes(name)
+        return self._path(name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def read_image(archive, arch):
     """The image's final filesystem facts from an OCI archive: every path, the dpkg status records, and the bytes
     of executables carrying Go build information. Layers apply in order; whiteouts remove paths."""
     paths, status, gobins = set(), {}, {}
-    with tarfile.open(archive) as t:
+    with _Layout(archive) as t:
         def blob(d):
             return t.extractfile("blobs/" + d.replace(":", "/")).read()
         man = _pick_manifest(json.loads(t.extractfile("index.json").read()), blob, arch)
@@ -690,7 +734,7 @@ class Bundles:
         if img not in self.cache:
             variant, _, arch = img.rpartition("-")
             try:
-                facts = self.read(os.path.join(self.oci_dir, variant + ".oci"), arch)
+                facts = self.read(os.path.join(self.oci_dir, variant), arch)
                 self.cache[img] = (facts, self.buildinfo(facts["gobins"]))
             except (OSError, ValueError, KeyError, tarfile.TarError) as e:
                 self.cache[img] = None
@@ -948,10 +992,11 @@ def rescan_binding(path, oci_dir):
         return None, "no rescan binding (run, scanned head, main's head, conclusion) in %s" % path
     digests = {}
     for name in sorted(os.listdir(oci_dir)) if os.path.isdir(oci_dir) else []:
-        if not name.endswith(".oci"):
-            continue
+        p = os.path.join(oci_dir, name)
+        if os.path.islink(p) or not os.path.isdir(p) or not os.path.isfile(os.path.join(p, "oci-layout")):
+            continue        # only an OCI layout directory is evidence: an archive file or a docker-save shape is not
         try:
-            with tarfile.open(os.path.join(oci_dir, name)) as t:
+            with _Layout(p) as t:
                 idx = json.loads(t.extractfile("index.json").read())
                 ds = [m["digest"] for m in idx.get("manifests") or [] if DIGEST.match(str(m.get("digest", "")))]
                 # every manifest the index names must itself be readable — a syntactically valid digest over a blob
@@ -962,7 +1007,7 @@ def rescan_binding(path, oci_dir):
             ds = []
         if not ds:
             return None, "the rescan's evidence %s has no image digest" % name
-        digests[name[:-4]] = ", ".join(ds)
+        digests[name] = ", ".join(ds)
     if not digests:
         return None, "the rescan's evidence has no image digest (%s)" % oci_dir
     return dict({k: b[k] for k in keys}, digests=digests), None
@@ -996,7 +1041,7 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
             unreadable.append(img)
             continue
         try:
-            read_image(os.path.join(a.oci, variant + ".oci"), arch)
+            read_image(os.path.join(a.oci, variant), arch)
         except (OSError, ValueError, KeyError, tarfile.TarError):
             unreadable.append(img)
     if unreadable:
@@ -1291,7 +1336,7 @@ def cmd_deliver(a, run=subprocess.run):
         sys.stderr.write("::error::auditor-panel: nothing to deliver (no judgment in %s)\n" % a.out)
         return 2
     real = (not a.dry_run) and os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
-    plan, branch = [], "auditor/panel"
+    plan, branch, notes = [], "auditor/panel", []
     # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip stays on the day it was first
     # opened, falls further behind, and can never merge under strict up-to-date checks. The open PR's branch is only READ: its files carry forward.
     base = os.environ.get("GITHUB_SHA") or "HEAD"
@@ -1328,9 +1373,24 @@ def cmd_deliver(a, run=subprocess.run):
         if armed == "true":
             _sh(["gh", "pr", "merge", "--disable-auto", existing], plan, real, run)
     if changed:
-        _sh(["git", "-C", a.repo, "add", "--"] + changed, plan, real, run)
-        _sh(["git", "-C", a.repo, "commit", "-m", "Scanner panel audits, %s (rules 7-9, 13, 14)" % a.today], plan, real, run)
-        _sh(["git", "-C", a.repo, "push", "--force", "origin", "HEAD:refs/heads/" + branch], plan, real, run)
+        # the commit is made THROUGH THE API with the App's token so GitHub signs it (main requires signed commits; a `git commit` here is unsigned
+        # and left the PR BLOCKED). No `git commit`, no `git push`: the branch is created or force-reset onto `base`, then ONE commit is made on it.
+        message = "Scanner panel audits, %s (rules 7-9, 13, 14)" % a.today
+        if real:
+            if not os.environ.get("GITHUB_REPOSITORY"):
+                raise RuntimeError("auditor-panel: GITHUB_REPOSITORY is not set; cannot make the signed delivery commit")
+            def recorded(cmd, **kw):                    # the plan records each API call (never the file contents sent on stdin)
+                plan.append(cmd)
+                return run(cmd, **kw)
+            try:
+                pushed = signed_commit.commit_via_api(os.environ["GITHUB_REPOSITORY"], branch, base, message,
+                                                      signed_commit.read_changes(a.repo, changed), run=recorded, notes=notes)
+                for n in notes:                         # a temporary ref that could not be deleted: not fatal, never silent
+                    print("warning: auditor-panel: " + public(n))
+            except signed_commit.CommitError as e:
+                raise RuntimeError("auditor-panel: %s" % public(e))
+        else:
+            plan.extend(signed_commit.planned_commands(os.environ.get("GITHUB_REPOSITORY") or "OWNER/REPO", branch, base))
         body = public("The daily scanner panel's audits of the rescan's unique findings (%s).\n\n%s" % (
             a.today, "\n".join("- " + c for c in changed)))
         if existing:
@@ -1347,11 +1407,10 @@ def cmd_deliver(a, run=subprocess.run):
             pass                # nothing was delivered today: nothing is armed or disarmed on the strength of old content
         elif allowed:           # only content THIS run delivered is armed
             target = existing or branch
-            if changed and existing and real:   # arm only the head THIS run pushed: another run's later push must never inherit this run's arming
-                pushed = _sh(["git", "-C", a.repo, "rev-parse", "HEAD"], plan, real, run).strip()
-                now_head = _sh(["gh", "api", "repos/{owner}/{repo}/pulls/%s" % existing, "--jq", ".head.sha"], plan, real, run).strip()
+            if changed and real:   # arm only the head THIS run made and GitHub verified, on a new PR as on an existing one: another run's later push must never inherit this run's arming
+                now_head = _sh(["gh", "pr", "view", target, "--json", "headRefOid", "--jq", ".headRefOid"], plan, real, run).strip()
                 if now_head != pushed:
-                    raise RuntimeError("auditor-panel: the PR's head is %s, not the %s this run pushed (another run replaced it): not arming auto-merge" % (now_head[:12], pushed[:12]))
+                    raise RuntimeError("auditor-panel: the PR's head is %s, not the verified %s (head changed since it was verified, or it could not be read): not arming auto-merge" % (now_head[:12], pushed[:12]))
             _sh(["gh", "pr", "ready", target], plan, real, run)
             _sh(["gh", "pr", "merge", "--auto", "--squash", target], plan, real, run)
         elif existing:          # no longer allowed (a profile entry arrived, or the switch is off): disarm it if armed
@@ -1381,7 +1440,7 @@ def cmd_deliver(a, run=subprocess.run):
             _sh(["gh", "issue", "create", "--title", OWNER_TITLE, "--label", policy.OWNER_LABEL,
                  "--assignee", policy.OWNER_LOGIN, "--body", body], plan, real, run, env=ienv)
     with open(os.path.join(a.out, "plan.json"), "w") as fh:
-        json.dump(scrub({"real": real, "changed": changed, "commands": plan}), fh, indent=1)
+        json.dump(scrub({"real": real, "changed": changed, "commands": plan, "notes": [public(n) for n in notes]}), fh, indent=1)
     print("auditor-panel: delivered (%s): %d path(s), %d command(s)" % ("real" if real else "plan only", len(changed), len(plan)))
     return 0
 

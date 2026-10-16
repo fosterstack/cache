@@ -36,18 +36,18 @@ Create `.mvn/maven-build-cache-config.xml`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<cache xmlns="http://maven.apache.org/BUILD-CACHE-CONFIG/1.2.0"
+<cache xmlns="http://maven.apache.org/BUILD-CACHE-CONFIG/1.0.0"
        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-       xsi:schemaLocation="http://maven.apache.org/BUILD-CACHE-CONFIG/1.2.0 https://maven.apache.org/xsd/build-cache-config-1.2.0.xsd">
+       xsi:schemaLocation="http://maven.apache.org/BUILD-CACHE-CONFIG/1.0.0 https://maven.apache.org/xsd/build-cache-config-1.0.0.xsd">
   <configuration>
     <enabled>true</enabled>
+    <!-- FosterStack Cache — remote Maven build cache.
+         https://github.com/fosterstack/cache
+         Default @id is "cache" if omitted -->
+    <remote enabled="true" id="fosterstack-cache" saveToRemote="true">
+      <url>https://cache.example.com/</url>
+    </remote>
   </configuration>
-  <!-- FosterStack Cache — remote Maven build cache.
-       https://github.com/fosterstack/cache
-       Default @id is "cache" if omitted -->
-  <remote enabled="true" id="fosterstack-cache">
-    <url>https://cache.example.com/</url>
-  </remote>
 </cache>
 ```
 
@@ -56,6 +56,11 @@ host is exactly the shape of an exfiltration finding, and a security reviewer �
 or an AI assistant reviewing the repo in isolation — that sees it without
 context is right to flag it. One comment means every copy of the config
 explains itself wherever it ends up.
+
+`<remote>` must sit inside `<configuration>` (as a sibling Maven aborts with
+"Unrecognised tag: 'remote'"), and `saveToRemote="true"` is what makes this
+build upload: without it the extension only reads from the remote and nothing
+is ever stored.
 
 Replace `https://cache.example.com/` with your server's URL — a trailing
 slash matters (the extension appends its own path segments to it, same as
@@ -91,6 +96,14 @@ mvn install
 First run populates the cache; subsequent runs from a clean checkout (or
 `mvn clean install`) should show cache hits in the build log for
 unchanged modules.
+
+The extension also keeps a local cache folder, `~/.m2/build-cache`.
+Deleting the project's `target` or a project-level `build-cache` folder
+does not clear it, so a rebuild can be served from that local folder
+without touching the server. To force a restore from the server, delete
+`~/.m2/build-cache` (not the project's `target`). The proof that the
+server served a hit is its own counter, not the build log alone:
+`fscache_cache_hits_total` on `/metrics`, or the hit count on `/statusz`.
 
 ## Support boundary
 

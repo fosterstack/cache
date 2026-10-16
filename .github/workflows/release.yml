@@ -1,18 +1,12 @@
 name: Release
 
-# The release chain (release-chain-design.md): build once, verify by
-# digest, promote by digest. Each stage is a reusable workflow with its
-# own OIDC identity; one signed predicate per stage on exit, one
-# verification per stage on entry; subjects are sha256 digests emitted
-# by the stage that produced the bytes, never resolved from a registry
-# after the fact. Tag mode is the only path that pushes anything, and
-# promotion (the final stage) is the only path that can make anything
-# public — and only after the authorization stage has verified the
-# whole graph. Releases build ONLY here; `goreleaser release` (without
-# --snapshot) is never invoked anywhere else.
+# The release chain (release-chain-design.md; v0.3.0 rules 50 to 71): build once, verify by digest, publish by digest. Each stage is a reusable
+# workflow with its own OIDC identity; one signed record per stage (Witness, and Sign's provenance), one verification per stage on entry; subjects
+# are sha256 digests emitted by the stage that produced the bytes, never resolved from a registry after the fact. Tag mode is the only path that
+# pushes anything, and Release (the final stage) is the only path that can make anything public, and only after it has verified every earlier
+# stage's record. Releases build ONLY here, by the chain below; nothing else builds or publishes a release.
 #
-# admission -> build -> image -> reproducibility -> { scans, acceptance }
-#           -> authorization -> promotion
+# build -> { sign, rebuild } ; { build, sign } -> check ; { check, rebuild, sign } -> release
 
 on:
   push:
@@ -24,18 +18,19 @@ on:
       - main
   schedule:
     - cron: '47 9 * * *'   # daily, after the rescan (07:41) and the auditor (08:23)
+  # The dry run of the v0.3.0 chain (PR 1: the Sign boundary): a manual run on a branch that runs the hostile Build step and judges
+  # what it tried; it neither tags nor publishes (every other job below carries `!inputs.dry-run`).
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'run the hostile-step dry run (no tag, no publish)'
+        type: boolean
+        default: false
 
-# Caller grants must COVER every called job's requests, or the run is a
-# startup_failure with zero jobs. checks/statuses: read are for the
-# admission stage's required-check verification.
+# Every job asks for what it needs (v0.3.0 rule 56: only the Release job holds write access to packages and the repository's releases). The
+# workflow default is read-only; a caller's grants must COVER what the called stage requests, or the run is a startup_failure with zero jobs.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  packages: write
-  checks: read
-  statuses: read
-  pull-requests: read   # admission verifies pull_request-scoped checks on the merged-PR head (R01)
+  contents: read
 
 jobs:
   # ---------------------------------------------------------------------------------------------------------------
@@ -44,7 +39,7 @@ jobs:
   # a removed critical/high finding on push, else at most once a day, rule 2), signs the tag keylessly with gitsign under
   # THIS workflow's identity (rule 3), and pushes it with the auditor App's token, whose tag push starts the chain below.
   decide:
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     # one decision at a time: a push and the daily run never both cut the same day (queued, never cancelled)
     concurrency:
       group: patch-decide
@@ -64,6 +59,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      # REQ-CHAIN-001-AC6: no patch decision proceeds unless the committed marker names a recorded green rc-tag run of exactly these chain files (a missing marker
+      # fails this step, so the job ends before anything is decided, scanned or tagged)
+      - name: the rc-proof marker validates for this commit
+        run: python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"
 
       - name: install the pinned tools (gitsign; grype)
         run: |
@@ -105,24 +105,20 @@ jobs:
           # every variant of the release must scan: one that cannot is "unknown" (no at-once cut), never an empty
           # release (Codex #159 r1, B2)
           ver="${SINCE#v}"; rel=(); ok=1
-          for t in "$ver" "$ver-debug" "$ver-fips"; do
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
             if grype "ghcr.io/${GITHUB_REPOSITORY}:${t}" -o json > "$RUNNER_TEMP/rel-${t}.json"; then rel+=("$RUNNER_TEMP/rel-${t}.json")
             else echo "::warning::the release image ${t} could not be scanned"; ok=0; fi
           done
           # each scan goes to the decision on its own and is validated there — no aggregation that turns a malformed
           # document into an empty one; a base-image failure is the base's alone (Codex #159 r2, B2 / NEW-1)
           rel_args=(); for f in "${rel[@]}"; do rel_args+=(--release-grype "$f"); done
-          base_arg=(); base_ok=1
-          if bases=$(grep -h -o -E '^FROM [^ ]+@sha256:[0-9a-f]{64}' build/docker/Dockerfile.* | awk '{print $2}' | sort -u) && [ -n "$bases" ]; then
-            for b in $bases; do
-              f="$RUNNER_TEMP/base-$(echo "$b" | sha256sum | cut -c1-12).json"
-              if grype "$b" -o json > "$f"; then base_arg+=(--base-grype "$f"); else base_ok=0; fi
-            done
-            [ "$base_ok" = 1 ] || base_arg=()           # no base evidence: no deb finding counts as removed
-            [ "$base_ok" != 1 ] || touch "$RUNNER_TEMP/base-ok"
-          fi
+          # Rules 61 and 62: no base image exists (the image is assembled by apko from committed locks), so none is scanned and no distribution package
+          # finding counts as removed (unknown never counts). The base inputs are the committed locks and records of .github/policy/base-inputs.json; the
+          # ones that moved since the release are printed here, and bin/patch-decide.py classifies a commit from the same list (the base-input-changed signal).
+          python3 bin/patch-decide.py base-moved --base-inputs .github/policy/base-inputs.json --since "$SINCE" > "$RUNNER_TEMP/base-moved.txt" || exit 1
+          cat "$RUNNER_TEMP/base-moved.txt" >> "$GITHUB_STEP_SUMMARY"
           if [ "$ok" != 1 ] || ! python3 bin/patch-decide.py removed "${rel_args[@]}" --gomod go.mod \
-               "${base_arg[@]}" --out "$RUNNER_TEMP/removed.json"; then
+               --out "$RUNNER_TEMP/removed.json"; then
             touch "$RUNNER_TEMP/removed-unknown"
           fi
 
@@ -228,13 +224,14 @@ jobs:
             echo "::error::the latest release could not be scanned: its fixes cannot be listed, so no patch"; exit 1
           fi
           ver="${SINCE#v}"
-          var=(--variant-grype "=$RUNNER_TEMP/rel-${ver}.json" --variant-grype "debug=$RUNNER_TEMP/rel-${ver}-debug.json"
-               --variant-grype "fips=$RUNNER_TEMP/rel-${ver}-fips.json")
-          base=(); if [ -f "$RUNNER_TEMP/base-ok" ]; then for f in "$RUNNER_TEMP"/base-*.json; do base+=(--base-grype "$f"); done; fi
+          var=()
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
+            v="${t#"$ver"}"; var+=(--variant-grype "${v#-}=$RUNNER_TEMP/rel-${t}.json")   # "", "debug" or "fips": the variant name the notes use
+          done
           old=(); if git show "${SINCE}:.vex/fosterstack-cache.openvex.json" > "$RUNNER_TEMP/vex-old.json" 2>/dev/null; then
             old=(--vex-old "$RUNNER_TEMP/vex-old.json"); fi
           { git for-each-ref 'refs/tags/v*' --format='%(contents)'; cat docs/quality/releases/CHANGELOG.md 2>/dev/null || true; } > "$RUNNER_TEMP/published.txt"
-          python3 bin/patch-decide.py notes --version "$VERSION" "${var[@]}" --gomod go.mod "${base[@]}" "${old[@]}" \
+          python3 bin/patch-decide.py notes --version "$VERSION" "${var[@]}" --gomod go.mod "${old[@]}" \
             --vex-new .vex/fosterstack-cache.openvex.json --next-notes docs/next-release-notes.md \
             --published "$RUNNER_TEMP/published.txt" --out "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"
@@ -276,7 +273,7 @@ jobs:
   # in one generated PR that auto-merges on green (required checks; never a push to main). Its own App token.
   patch-notes:
     needs: decide
-    if: ${{ needs.decide.outputs.tagged == 'true' }}
+    if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:
@@ -301,136 +298,191 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           VERSION: ${{ needs.decide.outputs.version }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          gh auth setup-git
           git fetch --no-tags origin "+refs/tags/${VERSION}:refs/tags/${VERSION}"
           git cat-file tag "$VERSION" | python3 bin/patch-decide.py tag-notes > "$RUNNER_TEMP/notes.md"
           python3 bin/patch-decide.py changelog --notes "$RUNNER_TEMP/notes.md" --changelog docs/quality/releases/CHANGELOG.md \
             --next-notes docs/next-release-notes.md
           branch="patch-notes/${VERSION}"
-          git config user.name "${APP_SLUG}[bot]"
-          git config user.email "${APP_SLUG}[bot]@users.noreply.github.com"
-          git switch -c "$branch"
-          git add docs/quality/releases/CHANGELOG.md
-          [ ! -f docs/next-release-notes.md ] || git add docs/next-release-notes.md
-          git commit -q -m "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared"
-          git push origin "$branch"
-          gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
-            --body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8; advisor 0130/0135): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
-          gh pr merge --auto --squash "$branch"
+          # The commit is made through the GitHub API so GitHub signs it (main requires signed commits; a `git commit` here would be unsigned and
+          # its PR would stay blocked). Its parent is the commit the generated files were computed from: the checkout of main (a branch checkout,
+          # so HEAD is main's tip at checkout time). A newer main tip as parent would carry these files over edits made since.
+          base=$(git rev-parse HEAD)
+          paths=(--path docs/quality/releases/CHANGELOG.md)
+          [ ! -f docs/next-release-notes.md ] || paths+=(--path docs/next-release-notes.md)
+          oid=$(python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "$branch" --base "$base" --prefix patch-notes/ \
+            --message "Release notes for ${VERSION}: docs/quality/releases/CHANGELOG.md, next-release-notes cleared" "${paths[@]}")
+          # RESIDUALS (documented, not handled here): (1) moving the live branch is not atomic: a writer between the head re-read and the forced
+          # ref update can be overwritten (inherited from the signed-commit helper, #190; one run per tag; the branch name is not a reserved lane, so this is a residual);
+          # (2) a rerun after the notes were published and merged can prepend the same changelog entry again (no already-published detection).
+          # Re-runnable, bound to what THIS job made: the PR is the open one from this branch INTO main, in THIS repository (a fork PR with the same
+          # branch name is ignored), exactly one, kept by NUMBER, and its head must be the commit the helper just made ($oid); auto-merge is enabled
+          # only for that head (--match-head-commit). Any other state is a refusal.
+          own='[.[] | select(.isCrossRepository == false)]'
+          count=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | length")
+          [ "$count" -le 1 ] || { echo "more than one open PR from $branch into main; refusing" >&2; exit 1; }
+          if [ "$count" -eq 0 ]; then
+            gh pr create --base main --head "$branch" --title "Release notes for ${VERSION}" \
+              --body "Generated after the ${VERSION} patch tag (REQ-REL-009 AC8; advisor 0130/0135): its notes on top of docs/quality/releases/CHANGELOG.md, the published entries removed from docs/next-release-notes.md."
+          fi
+          number=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].number")
+          head=$(gh pr list --head "$branch" --base main --state open --json number,headRefOid,isCrossRepository --jq "$own | .[0].headRefOid")
+          [[ "$number" =~ ^[0-9]+$ ]] || { echo "no open PR from $branch into main; refusing" >&2; exit 1; }
+          [ "$head" = "$oid" ] || { echo "the open PR's head is not the commit this job made; refusing" >&2; exit 1; }
+          gh pr merge --auto --squash --match-head-commit "$oid" "$number"
+          # main's ruleset requires up-to-date branches: a PR that is BEHIND main is brought up to date (a failure of the update is not an error)
+          state=$(gh pr view "$number" --json mergeStateStatus --jq .mergeStateStatus) || state=unknown
+          if [ "$state" = "BEHIND" ]; then
+            gh pr update-branch "$number" || true
+          fi
 
-  admission:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-    uses: ./.github/workflows/stage-admission.yml
-
+  # ---------------------------------------------------------------------------------------------------------------
+  # The v0.3.0 chain (PR 2: Build and Rebuild; REQ-CHAIN-004, REQ-CHAIN-005). Build, Sign and Rebuild carry the rules of
+  # bin/chain-build-wiring-test.sh (an exact grammar for this graph). The gate G is the same text on build and sign: the chain
+  # starts on a v* tag PUSH, or in a dry-run dispatch on any branch (a manual dispatch on an existing v* tag is not a release
+  # run). Rebuild has no `if`: it runs after Build through `needs`, and a skipped Build skips it.
+  # Check (PR 3) replaced the old scans, acceptance and authorization jobs; Release (PR 4) replaced the old promotion job.
   build:
-    needs: admission
-    uses: ./.github/workflows/stage-build.yml
-    with:
-      mode: release
-      admission-artifact: ${{ needs.admission.outputs.admission-artifact }}
-
-  image:
-    needs: build
-    uses: ./.github/workflows/stage-image.yml
-    with:
-      mode: release
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-
-  reproducibility:
-    needs: [build, image]
-    uses: ./.github/workflows/stage-reproducibility.yml
-    with:
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      digests: ${{ needs.image.outputs.digests }}
-
-  scans:
-    needs: [build, image, reproducibility]
-    uses: ./.github/workflows/stage-verify.yml
-    with:
-      digests: ${{ needs.image.outputs.digests }}
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-    secrets: inherit
-
-  acceptance-artifacts:
-    needs: [build, image, reproducibility]
-    uses: ./.github/workflows/stage-acceptance-artifacts.yml
-    with:
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      mode: candidates
-      digests: ${{ needs.image.outputs.digests }}
-
-  acceptance:
-    needs: [image, reproducibility]
-    uses: ./.github/workflows/acceptance.yml
-    with:
-      image-ref: ghcr.io/${{ github.repository_owner }}/cache-candidates@${{ fromJSON(needs.image.outputs.digests).production }}
-
-  acceptance-egress:
-    needs: [image, reproducibility]
-    uses: ./.github/workflows/stage-acceptance-egress.yml
-    with:
-      digests: ${{ needs.image.outputs.digests }}
-
-  acceptance-k8s:
-    needs: [image, reproducibility]
-    uses: ./.github/workflows/stage-acceptance-k8s.yml
-    with:
-      digests: ${{ needs.image.outputs.digests }}
-
-  acceptance-predicate:
-    needs: [admission, image, acceptance-artifacts, acceptance, acceptance-egress, acceptance-k8s]
-    uses: ./.github/workflows/stage-acceptance-predicate.yml
-    with:
-      digests: ${{ needs.image.outputs.digests }}
-      artifacts-results: ${{ needs.acceptance-artifacts.outputs.results }}
-      gradle-results: ${{ needs.acceptance.outputs.gradle-results }}
-      maven-results: ${{ needs.acceptance.outputs.maven-results }}
-      egress-results: ${{ needs.acceptance-egress.outputs.results }}
-      k8s-results: ${{ needs.acceptance-k8s.outputs.results }}
-      baseline-version: ${{ needs.admission.outputs.baseline }}
-
-  authorization:
-    needs: [admission, build, image, scans, acceptance-predicate]
-    # The caller grants what stage-authorize's `authorize` job needs (a reusable workflow cannot
-    # raise its caller's grant, R01): contents:read, id-token:write to sign the release-
-    # authorization predicate, and issues:read so it can read the owner-decision issue acceptance
-    # state (REQ-AUD-11). The workflow-level default omits issues:read, so declare it here.
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     permissions:
       contents: read
-      packages: read
+      checks: read
+      statuses: read
+      pull-requests: read
       id-token: write
-      attestations: write
-      issues: read
-    uses: ./.github/workflows/stage-authorize.yml
+    uses: ./.github/workflows/stage-build.yml
     with:
-      digests: ${{ needs.image.outputs.digests }}
-      admission-artifact: ${{ needs.admission.outputs.admission-artifact }}
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
+      hostile: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}   # the hostile Build step runs on a push of a release-candidate tag only (advisor 0383)
 
-  promotion:
-    needs: [admission, build, image, authorization]
-    uses: ./.github/workflows/stage-promote.yml
+  # The Sign job of v0.3.0 (rule 52): its own workflow file, called only from here, with the digests.json text Build wrote.
+  sign:
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
     with:
-      baseline-version: ${{ needs.admission.outputs.baseline }}
-      digests: ${{ needs.image.outputs.digests }}
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-    secrets: inherit
+      digests: ${{ needs.build.outputs.digests }}
+
+  # Rebuild (rule 54): fresh runners rebuild everything Build built and compare every item; its only output is the verdict.
+  rebuild:
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-reproducibility.yml
+
+  # Check (rules 55, 58, 70; REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate
+  # digests, as three Witness steps. It needs Build only (it verifies Build's record on entry; Release verifies Sign's) and runs beside Rebuild and Sign, never after them.
+  check:
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-verify.yml
+
+  # Release (rules 56, 57, 64, 69, 71; REQ-CHAIN-007): the only job that holds a registry credential, the apk signing key or write access to packages and
+  # releases. It needs exactly Check, Rebuild and Sign (rule 70; it reaches Build through Check), has no `if` that survives a failed or skipped predecessor
+  # (a dry run publishes nothing, a branch run is not a release, and a skipped Build skips it through `needs`), passes no secrets to the stage (the environment named release holds them)
+  # and creates no tag.
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [check, rebuild, sign]
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/stage-promote.yml
+
+  # The dry run's judges (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL
+  # verifier against the policy made for this run's own ref, and one positive control (this run's genuine Sign output) must be
+  # ACCEPTED by the same policy. The outcome of an attempt is the verifier's own exit code, captured per attempt, never a field
+  # the hostile step wrote. A dry run neither tags nor publishes.
+  hostile-verify:
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hostile-attempts
+          path: attempts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-build
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: provenance
+          path: provenance
+      - name: make the policy for this run's own ref
+        run: python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json
+      - name: attempt mint_sign_cert
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json --policy policy.json 2> /tmp/mint_sign_cert.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt mint_sign_cert --exit-code "$rc" --stderr /tmp/mint_sign_cert.err --out results/mint_sign_cert.json
+      - name: attempt read_sign_token
+        run: |
+          rc=0
+          python3 bin/chain-verify.py hostile-material --kind token --file attempts/read_sign_token.txt 2> /tmp/read_sign_token.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt read_sign_token --exit-code "$rc" --stderr /tmp/read_sign_token.err --out results/read_sign_token.json
+      - name: attempt read_sign_key
+        run: |
+          rc=0
+          python3 bin/chain-verify.py hostile-material --kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json 2> /tmp/read_sign_key.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt read_sign_key --exit-code "$rc" --stderr /tmp/read_sign_key.err --out results/read_sign_key.json
+      - name: attempt hand_sign_code
+        run: |
+          rc=0
+          python3 bin/chain-verify.py check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json 2> /tmp/hand_sign_code.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt hand_sign_code --exit-code "$rc" --stderr /tmp/hand_sign_code.err --out results/hand_sign_code.json
+      - name: attempt forge_provenance
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/forge_provenance.json --policy policy.json 2> /tmp/forge_provenance.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt forge_provenance --exit-code "$rc" --stderr /tmp/forge_provenance.err --out results/forge_provenance.json
+      - name: positive control (this run's genuine Sign output must be accepted)
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=$?
+          python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "$rc" --stderr /tmp/positive_control.err --out results/positive_control.json
+      - name: collect the rows
+        run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hostile-results
+          path: hostile-results.json
+
+  hostile-verdict:
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: hostile-results
+          path: hostile-results
+      - name: every hostile attempt refused with its own cause, the positive control accepted
+        run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
 
   # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
   patch-failed:
-    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [admission, build, image, reproducibility, scans, acceptance-artifacts, acceptance,
-            acceptance-egress, acceptance-k8s, acceptance-predicate, authorization, promotion]
+    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
+    needs: [build, sign, rebuild, check, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -444,3 +496,5 @@ jobs:
         run: |
           gh issue create --title "auditor: release ${GITHUB_REF_NAME} failed" \
             --body "The release run for ${GITHUB_REF_NAME} failed and is abandoned (no retry). The next daily run tries again once the cause is fixed. Run: ${RUN_URL}"
+# edited
+# edited

@@ -27,10 +27,15 @@
     "list, `pr_gate`: Grype + Amazon Inspector (inspector-sbomgen SBOM sent to",
     "inspector-scan:ScanSbom by OIDC role assumption; no stored secret). Trivy",
     "and OSV-Scanner leave the PR gate; govulncheck stays the Go authority.",
+    "`source_scanners` (advisor Oct 12, ruling G): the Go source scan of the release chain's",
+    "Check stage, run once on the tagged checkout by bin/check-govulncheck.py; its",
+    "stream is a product of the scanners record that Release binds and hands to the",
+    "dependency evidence step. It is not a per-image scanner, so it is not in `scanners`.",
     "`scanners` above is unchanged: it still drives the release chain",
     "(stage-verify/stage-authorize), the rescans and the daily auditor's",
     "candidate, until the candidate-panel handoff moves them."
   ],
   "scanners": [ "grype", "osv-scanner" ],
+  "source_scanners": [ "govulncheck" ],
   "pr_gate": [ "grype", "inspector" ]
 }

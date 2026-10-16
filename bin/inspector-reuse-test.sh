@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-004-AC5
-# Same-day reuse of Amazon Inspector results (REQ-REL-004-AC5). Offline; bash on macOS and Linux.
+# proves: REQ-REL-004-AC8
+# Same-day reuse of Amazon Inspector results (REQ-REL-004-AC8). Offline; bash on macOS and Linux.
 #   A. bin/inspector-reuse.py: key (the SBOM's package names and versions, never a timestamp, serial number, purl
 #      qualifier or our own module's version; the full sha256), decide / store (the stored file must be Inspector's
 #      ScanSbom ENVELOPE and its own inventory must equal the requested SBOM's; same UTC day; no links; atomic, fsync).
@@ -949,24 +949,24 @@ mksbom "$sim/sboms/cand-debug-amd64.json" urn:uuid:d1 2026-10-06T01:00:00Z v1 bu
 reset_rescan
 run_step "$sim/rescan-step.sh" 2026-10-06; rc=$?
 expect "rescan run 1: step exits 0" 0 "$rc"
-expect "rescan run 1: three inventories, three ScanSbom calls (the other three images reuse them)" 3 "$(calls)"
-expect "rescan run 1: the tally has a findings file for all six images" "6 6" "$(scans) $(valid_scans)"
-expect "rescan run 1: fresh=3" 3 "$(fresh)"
+expect "rescan run 1: two inventories, two ScanSbom calls (the other two images reuse them)" 2 "$(calls)"
+expect "rescan run 1: the tally has a findings file for all four images" "4 4" "$(scans) $(valid_scans)"
+expect "rescan run 1: fresh=2" 2 "$(fresh)"
 run_step "$sim/rescan-step.sh" 2026-10-06; rc=$?
 expect "rescan same day again: no ScanSbom call at all" 0 "$(calls)"
-expect "rescan same day again: the tally still has a findings file for all six" "6 6" "$(scans) $(valid_scans)"
+expect "rescan same day again: the tally still has a findings file for all four" "4 4" "$(scans) $(valid_scans)"
 expect "rescan same day again: fresh=0" 0 "$(fresh)"
 run_step "$sim/rescan-step.sh" 2026-10-07
-expect "rescan a different UTC day: calls for each distinct inventory" 3 "$(calls)"
+expect "rescan a different UTC day: calls for each distinct inventory" 2 "$(calls)"
 mksbom "$sim/sboms/cand-fips-amd64.json" urn:uuid:f1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 openssl@4
 mksbom "$sim/sboms/cand-fips-arm64.json" urn:uuid:f2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 openssl@4
 run_step "$sim/rescan-step.sh" 2026-10-06
 expect "rescan a different hash: one fresh call (both fips children share the new inventory)" 1 "$(calls)"
-expect "rescan a different hash: the tally still has all six" "6 6" "$(scans) $(valid_scans)"
+expect "rescan a different hash: the tally still has all four" "4 4" "$(scans) $(valid_scans)"
 for f in "$sim"/tmp/inspector-cache/2026-10-06/*.findings.json; do : > "$f"; done
 run_step "$sim/rescan-step.sh" 2026-10-06
-expect "rescan corrupted (emptied) stored results: every distinct inventory calls again" 3 "$(calls)"
-expect "rescan corrupted stored results: the tally still has all six" "6 6" "$(scans) $(valid_scans)"
+expect "rescan corrupted (emptied) stored results: every distinct inventory calls again" 2 "$(calls)"
+expect "rescan corrupted stored results: the tally still has all four" "4 4" "$(scans) $(valid_scans)"
 reset_rescan
 run_step "$sim/rescan-step.sh" 2026-10-06 1
 expect "rescan ScanSbom fails: nothing stored, fresh=0, no findings file left to be mistaken for a result" "|0|0" "$(ls -A "$sim/tmp/inspector-cache" 2>/dev/null)|$(fresh)|$(scans)"
@@ -984,9 +984,9 @@ bad_answer_rescan() { # mode -> "rc scans stored"
 # --- the rescan across UTC midnight: after the first stored result the clock reads D+1
 reset_rescan
 run_step "$sim/rescan-step.sh" 2026-10-06 "" 2026-10-07; rc=$?
-expect "rescan midnight: step exits 0, the later images do not reuse day D's entry (production x2, debug x1, fips x1 = 4 calls)" "0 4" "$rc $(calls)"
-expect "rescan midnight: day D holds the first image's answer only; D+1 the rest" "1 3" "$(ls "$sim/tmp/inspector-cache/2026-10-06" | wc -l | tr -d ' ') $(ls "$sim/tmp/inspector-cache/2026-10-07" | wc -l | tr -d ' ')"
-expect "rescan midnight: the tally has all six" "6 6" "$(scans) $(valid_scans)"
+expect "rescan midnight: step exits 0, the later images do not reuse day D's entry (production x2, fips x1 = 3 calls)" "0 3" "$rc $(calls)"
+expect "rescan midnight: day D holds the first image's answer only; D+1 the rest" "1 2" "$(ls "$sim/tmp/inspector-cache/2026-10-06" | wc -l | tr -d ' ') $(ls "$sim/tmp/inspector-cache/2026-10-07" | wc -l | tr -d ' ')"
+expect "rescan midnight: the tally has all four" "4 4" "$(scans) $(valid_scans)"
 
 # --- the rescan: findings carried by a REUSED result reach the REAL panel tally
 tally_count() { # -> number of findings (CVE-2099-0001) the tally attributes to Inspector
@@ -1004,16 +1004,16 @@ rescan_case() { # script-file -> "rc1 rc2 calls2 tally-findings-after-reuse"
   run_step "$1" 2026-10-06; r2=$?
   echo "$r1 $r2 $(calls) $t1 $(tally_count)"
 }
-expect "rescan findings: a fresh run and a REUSED run (no call) both put the vulnerability into the tally for all six images" "0 0 0 6 6" "$(rescan_case "$sim/rescan-step.sh")"
+expect "rescan findings: a fresh run and a REUSED run (no call) both put the vulnerability into the tally for all four images" "0 0 0 4 4" "$(rescan_case "$sim/rescan-step.sh")"
 mresc() { # name python-mutation
   mutate "$2" < "$sim/rescan-raw.sh" | sandbox > "$sim/rescan-mut.sh" || { bad "rescan mutation $1 did not apply"; return; }
   got=$(rescan_case "$sim/rescan-mut.sh")
-  if [ "$got" != "0 0 0 6 6" ]; then ok "rescan mutation caught by the findings case: $1 ($got)"; else bad "rescan mutation NOT caught: $1"; fi
+  if [ "$got" != "0 0 0 4 4" ]; then ok "rescan mutation caught by the findings case: $1 ($got)"; else bad "rescan mutation NOT caught: $1"; fi
 }
 mresc "the reuse branch writes a fixed clean document" "$M_FIXED_CLEAN"
 mresc "the reuse branch copies the SBOM instead of the findings" "$M_SBOM_RESCAN"
 
-expect "rescan day crossing: the first response is NOT stored, the next images call again and store under D+1 only; every image still has its fresh findings in the tally (4 calls)" "0 4 0 3 6 6" "$(daycross_rescan)"
+expect "rescan day crossing: the first response is NOT stored, the next images call again and store under D+1 only; every image still has its fresh findings in the tally (3 calls)" "0 3 0 2 4 4" "$(daycross_rescan)"
 for m in bare sbom other; do
   expect "rescan a rejected ScanSbom answer ($m): no scan.json is left for the tally (did not run), nothing stored" "0 0 0" "$(bad_answer_rescan $m)"
 done
@@ -1061,7 +1061,7 @@ collide_rescan() {
   run_step "${SCRIPT:-$sim/rescan-step.sh}" 2026-10-06; r=$?
   echo "$r $(calls) $(scans)"
 }
-expect "rescan collision: col1's stored answer planted under col2's key is NOT reused for col2 (one call, then the other five reuse the fresh one; six scan.json)" "0 1 6" "$(collide_rescan)"
+expect "rescan collision: col1's stored answer planted under col2's key is NOT reused for col2 (one call, then the other three reuse the fresh one; four scan.json)" "0 1 4" "$(collide_rescan)"
 mksbom "$sim/sboms/cand-production-amd64.json" urn:uuid:p1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1
 mksbom "$sim/sboms/cand-production-arm64.json" urn:uuid:p2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1
 mksbom "$sim/sboms/cand-debug-amd64.json"      urn:uuid:d1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 gdb@13
@@ -1099,10 +1099,8 @@ if which == "scan":
     IF_SDAY = "always() && matrix.scanner == 'inspector'"
     IF_SAVE = "always() && matrix.scanner == 'inspector' && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "scanner", "Amazon Inspector scan every loaded image", "python3 bin/inspector-gate.py"
-    perms = {"top": {"contents": "read"}, "build": {"contents": "read", "id-token": "write", "attestations": "write", "packages": "write"},
-             "assemble": {"contents": "read", "id-token": "write", "attestations": "write", "packages": "write"},
-             "assemble-b": {"contents": "read", "id-token": "write", "attestations": "write", "packages": "write"},
-             "artifact-acceptance": {"contents": "read", "packages": "read"}, "reproducibility": None, "scanners": None,
+    perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"},
+             "rebuild": {"contents": "read", "id-token": "write"}, "reproducibility": None, "scanners": None,
              "scanner": {"contents": "read", "id-token": "write"}, "scan": None}
 else:
     triggers = {"schedule": [{"cron": "41 7 * * *"}], "workflow_dispatch": {}}
@@ -1111,8 +1109,7 @@ else:
     IF_SDAY = "always()"
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "panel-inspector", "Amazon Inspector every image", None
-    perms = {"top": {"contents": "read"}, "build": {"contents": "read", "id-token": "write", "attestations": "write"},
-             "assemble": {"contents": "read", "packages": "write", "id-token": "write", "attestations": "write"},
+    perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"},
              "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read"},
              "scout-root-cause": {"contents": "read", "packages": "write"}, "panel-inspector": {"contents": "read", "id-token": "write"},
              "panel-google": {"contents": "read", "id-token": "write"}, "panel": {"contents": "read", "issues": "write"},

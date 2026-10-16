@@ -56,8 +56,16 @@ def run(cmd, **kw):
         for i, x in enumerate(cmd):
             if x == "--label" and cmd[i + 1] not in labels:
                 return types.SimpleNamespace(returncode=1, stdout="", stderr="could not add label: '%s' not found" % cmd[i + 1])
+    if cmd[:2] == ["gh", "api"]:       # the signed delivery's API calls (advisor 0209): a ref read, the commit mutation, the PR head
+        if "graphql" in cmd:
+            return types.SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": "b" * 40, "signature": {"isValid": True, "state": "VALID"}}}}}))
+        if any("git/ref/heads" in x for x in cmd) and "--method" not in cmd:
+            return types.SimpleNamespace(returncode=0, stderr="", stdout=("c" * 40 + "\n") if "--jq" in cmd else json.dumps({"object": {"sha": "c" * 40}}))
+    if cmd[:3] == ["gh", "pr", "view"]:
+        return types.SimpleNamespace(returncode=0, stderr="", stdout=("b" * 40 + "\n") if "--jq" in cmd else json.dumps({"headRefOid": "b" * 40, "autoMergeRequest": None}))
     return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
+os.environ["GITHUB_REPOSITORY"] = "o/r"; os.environ["GITHUB_SHA"] = "a" * 40
 ss = os.path.join(d, "state-source"); open(ss, "w").write("")       # a real delivery needs the state-source record (here: no open PR was read)
 a = types.SimpleNamespace(out=d, repo=repo, today="2026-10-05", dry_run=False, state_source=ss)
 res = {"calls": calls}
@@ -200,16 +208,19 @@ L="$GH_STATE/labels"; mkdir -p "$L"
 case "$1 $2" in
   "label create") [ "${GH_DENY_LABELS:-}" = 1 ] && { echo "HTTP 403" >&2; exit 1; }; [ -e "$L/$3" ] && { echo "label with name \"$3\" already exists" >&2; exit 1; }; : >"$L/$3"; exit 0 ;;
   "issue list") exit 0 ;;
+  "api --paginate") echo '[]'; exit 0 ;;   # the tracking-issue lookup reads every page: an empty list
   "issue create") prev=""; for a in "$@"; do [ "$prev" = --label ] && [ ! -e "$L/$a" ] && { echo "could not add label: '$a' not found" >&2; exit 1; }; prev="$a"; done; echo created >"$GH_STATE/created"; exit 0 ;;
 esac
 exit 0
 SH
 chmod +x "$work/ghbin/gh"
 runbash() { # <name> <pre-existing labels...>; env GH_DENY_LABELS passes through
-  local n=$1; shift; export GH_STATE="$work/gs-$n"; rm -rf "$GH_STATE"; mkdir -p "$GH_STATE/labels" /tmp/panel-out
+  local n=$1; shift; export GH_STATE="$work/gs-$n"; rm -rf "$GH_STATE"; mkdir -p "$GH_STATE/labels" "$work/panel-out"
+  # the workflow step hard-codes the runner's panel directory; run a copy pointed at the temp dir (the original stays for the drift checks)
+  sed "s#/tmp/panel-out#$work/panel-out#g" "$work/rescan-step.sh" >"$work/rescan-run.sh"
   for l in "$@"; do : >"$GH_STATE/labels/$l"; done
-  printf 'finding body\n' >/tmp/panel-out/issue.md
-  rc=0; PATH="$work/ghbin:$PATH" GITHUB_SHA=abc RUN_URL=http://x bash -e "$work/rescan-step.sh" >/dev/null 2>"$GH_STATE/err" || rc=$?
+  printf 'finding body\n' >"$work/panel-out/issue.md"
+  rc=0; (cd "$root" && PATH="$work/ghbin:$PATH" GITHUB_REPOSITORY=o/r GITHUB_SHA=abc RUN_URL=http://x bash -e "$work/rescan-run.sh") >/dev/null 2>"$GH_STATE/err" || rc=$?
 }
 runbash none
 CASE="rescan workflow (gh step): starting from NO labels the tracking issue is created (the stateful gh refuses it unless daily-rescan and security exist first)"
@@ -227,8 +238,9 @@ const fs = require("fs");
 const [, , scriptPath, mode, outPath] = process.argv;
 const labels = new Set(mode === "both" ? ["daily-rescan", "security"] : []);
 const calls = [];
-const github = { rest: { issues: {
-  listForRepo: async () => ({ data: [] }),
+const listForRepo = async () => ({ data: [] });
+const github = { paginate: async (fn, p) => (await fn(p)).data, rest: { issues: {
+  listForRepo,
   createComment: async () => ({}),
   createLabel: async ({ name }) => {
     calls.push("createLabel:" + name);

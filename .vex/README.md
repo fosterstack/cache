@@ -19,14 +19,15 @@ from someone quietly turning a scanner down.
 ## How it is consumed
 
 One document, many statements: adding an exception appends to `statements[]` and
-increments the document's `version`. Both scanners read this file in the release
-gate and in the daily rescan, so an exception applies identically at release time and
+increments the document's `version`. The findings of both scanners (the list is
+[`.github/policy/scanners.json`](../.github/policy/scanners.json)) are held to this file in the
+release gate and in the daily rescan, so an exception applies identically at release time and
 for the life of the shipped bytes:
 
 | Scanner | How |
 |---|---|
-| Trivy | `TRIVY_VEX` environment variable |
-| Grype | `vex:` input to `anchore/scan-action` |
+| Grype | reads the document itself: `--vex` on the `grype` command (`bin/check-scan.sh` in the release gate, the daily rescan's Grype step) |
+| OSV-Scanner | cannot read it; its findings are held to the document by a statement match: in the release gate through `bin/check-osv-vex.py`, in the daily rescan through `bin/rescan-statement.py`. A finding is excepted only when a `not_affected` or `fixed` statement names its vulnerability (or an alias), the release image or the Go product, and, when the statement names subcomponents, the finding's package and version |
 
 It ships as a release asset, so anyone auditing an artifact gets our claims alongside
 the SBOM and the provenance rather than having to take the scan result on faith.

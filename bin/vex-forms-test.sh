@@ -5,6 +5,7 @@
 # OpenVEX statement; the Inspector file carries one rule per suppressible statement (not_affected, fixed) and none for
 # affected or under_investigation. Offline: no network, no cloud call.
 set -euo pipefail
+TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
 python3 - "$here/vex-forms.py" "$root" <<'PY'
 import importlib.util, json, os, sys, tempfile
@@ -79,9 +80,11 @@ except AssertionError as e:
     ok = e
 check("the CSAF passes the checks Google's loader makes", ok is True, ok)
 try:                                # the real loader's own checks too, when the SDK is installed (not on CI runners)
-    import glob, ast, types
-    src = next(iter(glob.glob("/opt/homebrew/share/google-cloud-sdk/lib/googlecloudsdk/command_lib/artifacts/vex_util.py")
-                    + glob.glob("/usr/lib/google-cloud-sdk/lib/googlecloudsdk/command_lib/artifacts/vex_util.py")), None)
+    import ast, types
+    _sdk = os.environ.get("GCLOUD_SDK_LIB")          # opt-in: the SDK's lib dir (no probing of fixed system install locations)
+    src = os.path.join(_sdk, "googlecloudsdk/command_lib/artifacts/vex_util.py") if _sdk else None
+    if src and not os.path.isfile(src):
+        src = None
     if src:
         tree = ast.parse(open(src).read())
         fns = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in ("_Validate", "_ValidateVulnerability"))
@@ -181,21 +184,17 @@ if src:
 rescan = open(os.path.join(root, ".github/workflows/main-candidate-rescan.yml")).read()
 check("the rescan filters grype, docker scout and the tally against the OpenVEX file",
       rescan.count(".vex/fosterstack-cache.openvex.json") >= 3 and "inspector-filters" not in rescan and "csaf" not in rescan.lower())
-# --- the release wiring (advisor 0077 check 1): generated BEFORE the signed manifest, which records all three sha256
-import yaml
-steps = yaml.load(open(os.path.join(root, ".github/workflows/stage-promote.yml")), Loader=yaml.BaseLoader)["jobs"]["promote"]["steps"]
-names = [x.get("name", "") for x in steps]
-gen = next((i for i, n in enumerate(names) if n.startswith("generate the VEX in three forms")), None)
-man = next((i for i, n in enumerate(names) if n.startswith("assemble release-manifest.json")), None)
-up = next((i for i, n in enumerate(names) if n.startswith("create the draft release")), None)
-check("the three forms are generated before the manifest that the release signs", gen is not None and man is not None and gen < man, (gen, man))
-grun = steps[gen]["run"] if gen is not None else ""
-check("generated from the one OpenVEX file by bin/vex-forms.py", "python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json" in grun)
-mrun = steps[man]["run"] if man is not None else ""
-check("the manifest records all three files' sha256", all(k in mrun for k in ("vex_openvex_sha", "vex_inspector_sha", "vex_csaf_sha", "vex: [")))
-urun = steps[up]["run"] if up is not None else ""
-check("the release uploads the three files the manifest hashed", all(f in urun for f in (
-    "/tmp/vex/fosterstack-cache.openvex.json", "fosterstack-cache-${ver}.inspector-filters.json", "fosterstack-cache-${ver}.csaf.json")))
+# --- the release wiring (advisor 0077 check 1): generated BEFORE the signed manifest, which records all three sha256.
+# From v0.3.0 the Release stage's committed scripts do it: bin/release-sign.sh makes the files and signs the list, bin/release-assets.sh attaches them.
+sign = open(os.path.join(root, "bin/release-sign.sh")).read()
+assets = open(os.path.join(root, "bin/release-assets.sh")).read()
+gen = sign.find("python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json")
+man = sign.find("python3 bin/release-metadata.py manifest")
+lst = sign.find("python3 bin/release-metadata.py list")
+check("the three forms are generated before the manifest that the release signs", gen != -1 and man != -1 and gen < man < lst, (gen, man, lst))
+check("generated from the one OpenVEX file by bin/vex-forms.py", gen != -1 and "--out-dir release-metadata" in sign[gen:man])
+check("the manifest records all three files' sha256 (it reads the directory the forms were written to)", "--vex-dir release-metadata" in sign[man:lst])
+check("the release uploads the three files the manifest hashed", "release-metadata/fosterstack-cache*.json" in assets and "release-metadata/release-manifest.json" in assets)
 # --- Codex #165 r2: SEC-165-01 (version wildcards, qualifiers), SEC-165-07 (component identity), SEC-165-02 (titles),
 #     SEC-165-06 (the Google step binds the chosen digest; exactly one branch matches)
 def pkgst(cve, status, purl):
@@ -233,7 +232,8 @@ check("SEC-165-06 the guide renames exactly the chosen digest's branch", len(nam
       and DIG in named[0]["product"]["product_identification_helper"]["purl"], [b["name"] for b in mine["product_tree"]["branches"]][:3])
 check("SEC-165-06 the guide loads with --uri set to the image path at that digest", ("--uri=%s@%s" % (IMAGE, DIG)) in out.stdout, out.stdout)
 try:                                # the installed SDK's own parser, as gcloud runs it, when present (not on CI runners)
-    L = next((x for x in ("/opt/homebrew/share/google-cloud-sdk/lib", "/usr/lib/google-cloud-sdk/lib") if os.path.isdir(x)), None)
+    L = os.environ.get("GCLOUD_SDK_LIB")             # opt-in, as above
+    L = L if L and os.path.isdir(L) else None
     if L:
         sys.path[:0] = [L, L + "/third_party"]
         from googlecloudsdk.command_lib.artifacts import vex_util as VU

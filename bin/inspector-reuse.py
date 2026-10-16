@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Same-day reuse of Amazon Inspector results (REQ-REL-004-AC5).
+# Same-day reuse of Amazon Inspector results (REQ-REL-004-AC8).
 #
 #   key SBOM.json                  print the key (full sha256, 64 hex) of the SBOM's package inventory
 #   decide DIR DATE SBOM.json      print "reuse" and the stored path, or "call"

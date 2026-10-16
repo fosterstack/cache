@@ -1,10 +1,10 @@
 name: Daily main-candidate rescan
 
-# The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), every PUBLISHED
-# release's digests (the manifests and rescan jobs at the end). main's candidate is never pushed to a package; this builds it from source through the
+# The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), the CURRENT
+# published release's digests only (the manifests and rescan jobs at the end; REQ-REL-004-AC5). main's candidate is never pushed to a package; this builds it from source through the
 # same build + image-assembly stages the release chain uses, then runs the scanner panel (scanner-panel rules
-# 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the six
-# images, Google Artifact Analysis on the three variants on linux/amd64, tallied together by bin/panel.py —
+# 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the four
+# images (production and fips, each on both architectures), Google Artifact Analysis on the two variants on linux/amd64, tallied together by bin/panel.py —
 # package counts and quorum, the published VEX as the only exception, "seen by N of M", a tracking issue for
 # findings seen by two or more scanners; unique findings are listed for the daily auditor, whose run audits them
 # right after this one (REQ-REL-004-AC3, amended Oct 2; rule 9, owner Oct 3). Trivy and Snyk are no longer run by the panel; scanner-reports below still hands the daily auditor
@@ -22,38 +22,27 @@ permissions:
   contents: read
 
 jobs:
+  # The candidate build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, no tag and no admission; the callers' grants are a static ceiling (no write but id-token).
   build:
     uses: ./.github/workflows/stage-build.yml
     permissions:
       contents: read
+      checks: read
+      statuses: read
+      pull-requests: read
       id-token: write
-      attestations: write
     with:
       mode: snapshot
-
-  assemble:
-    needs: build
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    uses: ./.github/workflows/stage-image.yml
-    with:
-      mode: pr
-      dist-artifact: dist-snapshot
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      upload-oci: true
 
   # ---------------------------------------------------------------------------------------------------------
   # The scanner panel (scanner-panel rules 1-9, ratified Oct 2; REQ-SCAN-001..009). Four scanner jobs, each
   # leaving its raw output per image for the tally; the set of images is written here, never computed:
-  # Grype, Docker Scout and Amazon Inspector scan all six images; Google scans the three variants on
+  # Grype, Docker Scout and Amazon Inspector scan all four images (production and fips on both architectures); Google scans the two variants on
   # linux/amd64 only. Trivy and Snyk are not in the panel (rule 1). A scanner job that fails leaves fewer
   # outputs, which the tally counts as "did not run" (rule 3) — never as clean.
   panel-grype:
-    name: panel — Grype (six images)
-    needs: [build, assemble]
+    name: panel — Grype (four images)
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -63,7 +52,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install grype (pinned by checksum)
         run: ./bin/install-scanner.sh grype
@@ -71,11 +60,12 @@ jobs:
         run: |
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
           grype db update >/dev/null 2>&1 || true
-          for v in production debug fips; do
+          for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
+              skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
               grype "docker:${ref}" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
                 || echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"
             done
@@ -88,8 +78,8 @@ jobs:
           if-no-files-found: warn
 
   panel-scout:
-    name: panel — Docker Scout (six images)
-    needs: [build, assemble]
+    name: panel — Docker Scout (four images)
+    needs: [build]
     runs-on: ubuntu-latest
     environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
     permissions:
@@ -100,7 +90,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install docker-scout (pinned by checksum)
         run: |
@@ -202,10 +192,10 @@ jobs:
       - name: Docker Scout every image, given our VEX (rule 4)
         run: |
           set -uo pipefail
-          for v in production debug fips; do
+          for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
+              skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
               docker scout sbom --format json "local://${ref}" > "${d}/sbom.json" \
                 && ./bin/scout-vex-scan.sh "${ref}" .vex/fosterstack-cache.openvex.json "${d}/cves.json" \
                 || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
@@ -242,7 +232,7 @@ jobs:
           sudo systemctl restart docker
           docker info -f '{{ .DriverStatus }}'
 
-      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0 (each pinned by checksum) and skopeo
+      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0, crane and skopeo (each pinned by checksum, skopeo from apt)
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/scout" "$HOME/.docker/cli-plugins"
@@ -253,6 +243,8 @@ jobs:
           mv "$RUNNER_TEMP/docker-scout/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.26.0"
           mv "$RUNNER_TEMP/docker-scout-1.25.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.25.0"
           mv "$RUNNER_TEMP/docker-scout-1.24.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.24.0"
+          # the chain's own copy tool appends the attestation manifest to the scratch index (bin/scout-root-cause.sh: crane index append), by digest
+          ./bin/install-scanner.sh crane
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
 
       - name: log in to Docker Hub (read-only token) and GHCR (this job's token)
@@ -280,8 +272,8 @@ jobs:
           retention-days: 30
 
   panel-inspector:
-    name: panel — Amazon Inspector (six images)
-    needs: [build, assemble]
+    name: panel — Amazon Inspector (four images)
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -295,7 +287,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install inspector-sbomgen (pinned by checksum)
         run: ./bin/install-scanner.sh inspector-sbomgen
@@ -305,7 +297,7 @@ jobs:
           role-to-assume: ${{ env.INSPECTOR_ROLE }}
           aws-region: ${{ env.INSPECTOR_REGION }}
           role-session-name: cache-panel-${{ github.run_id }}
-      # Same-day reuse of Amazon Inspector results (REQ-REL-004-AC5): keyed by the SBOM's package inventory (bin/inspector-reuse.py),
+      # Same-day reuse of Amazon Inspector results (REQ-REL-004-AC8): keyed by the SBOM's package inventory (bin/inspector-reuse.py),
       # stored in the Actions cache, one entry per UTC day per run. The restore key never matches exactly, so restore-keys
       # picks the newest same-day entry; a run that only reused saves nothing. Same-repo runs only (no fork reads or writes).
       - name: Amazon Inspector - today's date (UTC) for the same-day reuse
@@ -323,13 +315,13 @@ jobs:
         run: |
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
-          # Same-day reuse (REQ-REL-004-AC5): an inventory Inspector already scanned today is copied from the cache
+          # Same-day reuse (REQ-REL-004-AC8): an inventory Inspector already scanned today is copied from the cache
           # to scan.json; anything else calls ScanSbom once and stores the answer. The tally reads scan.json either way.
           cdir=/tmp/inspector-cache; fresh=0; mkdir -p "$cdir"
-          for v in production debug fips; do
+          for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
+              skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
               if ! inspector-sbomgen container --image "${ref}" --outfile "${d}/sbom.cdx.json" --disable-progress-bar; then
                 echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; continue
               fi
@@ -373,8 +365,8 @@ jobs:
           if-no-files-found: warn
 
   panel-google:
-    name: panel — Google Artifact Analysis (three variants, linux/amd64)
-    needs: [build, assemble]
+    name: panel — Google Artifact Analysis (two variants, linux/amd64)
+    needs: [build]
     runs-on: ubuntu-latest
     # The scanner identity admits main only as `push` or through the main-only `agent` environment; this
     # job runs on `schedule`, so it takes the environment (ops/terraform/gcp; no secret is read here).
@@ -388,7 +380,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: federated identity (rule 2; the identifiers are repository variables)
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -401,13 +393,13 @@ jobs:
         with:
           version: '587.0.0'
           install_components: local-extract
-      - name: Google on-demand scan of the three variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
+      - name: Google on-demand scan of the two variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
         run: |
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
-          for v in production debug fips; do
+          for v in production fips; do
             ref="ghcr.io/fosterstack/cache:cand-${v}-amd64"; d="/tmp/panel/google/${v}-amd64"; mkdir -p "$d"
-            skopeo copy --override-arch amd64 --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
+            skopeo copy --override-arch amd64 --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
             if gcloud artifacts docker images scan "${ref}" --additional-package-types=GO --format=json --log-http \
                  > "${d}/scan.json" 2> "${d}/http.log"; then
               python3 bin/panel.py google-packages "${d}/http.log" > "${d}/packages.json"
@@ -461,7 +453,7 @@ jobs:
           [ -s /tmp/panel-out/issue.md ] || exit 0
           title="Daily scanner panel: findings on main"
           { cat /tmp/panel-out/issue.md; echo; echo "commit \`${GITHUB_SHA}\` — run ${RUN_URL}"; } > /tmp/panel-out/issue-body.md
-          n=$(gh issue list --state open --label daily-rescan --json number,title --jq "[.[] | select(.title == \"${title}\")][0].number // empty")
+          n=$(python3 bin/rescan-statement.py find-issue --title "$title")   # every page of the open daily-rescan issues (the issue list command reads only 30)
           if [ -n "$n" ]; then gh issue comment "$n" --body-file /tmp/panel-out/issue-body.md
           else
             # `gh issue create --label X` fails when X does not exist, and a lost tracking issue is a lost finding: make sure both
@@ -492,7 +484,7 @@ jobs:
   # candidate is red still hands the auditor its inputs.
   scanner-reports:
     name: scanner reports for the daily auditor (non-gating)
-    needs: [build, assemble]
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -500,7 +492,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install scanners (pinned by checksum)
         run: for s in grype trivy osv-scanner; do ./bin/install-scanner.sh "$s" || true; done
@@ -514,12 +506,12 @@ jobs:
           python3 - <<'PY'
           import json, subprocess, os
           digs = {}
-          for v in ("production", "debug", "fips"):
-              oci = "/tmp/oci/%s.oci" % v
+          for v in ("production", "fips"):
+              oci = "/tmp/oci/%s" % v
               if not os.path.exists(oci):
                   continue
               ref = "ghcr.io/fosterstack/cache:cand-%s" % v
-              subprocess.run(["skopeo", "copy", "oci-archive:%s" % oci, "docker-daemon:%s" % ref], check=False)
+              subprocess.run(["skopeo", "copy", "oci:%s" % oci, "docker-daemon:%s" % ref], check=False)
               d = subprocess.run(["skopeo", "inspect", "--format", "{{.Digest}}", "docker-daemon:%s" % ref],
                                  capture_output=True, text=True).stdout.strip()
               if d:
@@ -540,8 +532,8 @@ jobs:
           path: /tmp/reports
 
   # ---------------------------------------------------------------------------------------------------------------
-  # Merged from daily-rescan.yml (workflow consolidation 3 of 4, owner RATIFIED Oct 2): the daily rescan of every
-  # PUBLISHED release's digests (release-chain-design.md §3) — enumerate the release manifests and the legacy inventory,
+  # Merged from daily-rescan.yml (workflow consolidation 3 of 4, owner RATIFIED Oct 2): the daily rescan of the CURRENT
+  # PUBLISHED release's digests (current release only, owner Oct 9) (release-chain-design.md §3) — enumerate the current release's manifest (or legacy inventory entry),
   # then scan each (release, variant, scanner) digest at the release gate's policy, VEX the only exception. It runs under
   # this file's ONE schedule, so the auditor never selects a rescan run that lacks the candidate.
   manifests:
@@ -562,71 +554,92 @@ jobs:
         run: |
           set -euo pipefail
           scanners=$(jq -c '.scanners' .github/policy/scanners.json)
-          : > /tmp/targets.jsonl
+          w="${RUNNER_TEMP:-/tmp}"
+          : > "$w/targets.jsonl"
 
-          # F12: legacy releases that predate release-manifest.json are
-          # covered from a committed inventory, so the daily rescan never
-          # silently stops covering the current public release.
-          jq -c --argjson scanners "$scanners" \
-            '.releases[] as $r | $r.images[] as $img | $scanners[] as $s |
-             {release: $r.version, variant: $img.variant, digest: $img.digest, scanner: $s, source: "legacy-inventory"}' \
-            .github/policy/legacy-releases.json >> /tmp/targets.jsonl
-          legacy_versions=$(jq -r '[.releases[].version] | join(" ")' .github/policy/legacy-releases.json)
-
-          # Manifest-bearing releases: enumerate ASSETS first, so we can
-          # tell an intentional legacy absence (no manifest asset) from a
-          # FAILED read of a manifest that is present (F13).
+          # The daily rescan covers the CURRENT release only (owner, Oct 9 2026; scanner-panel rules, "the daily rescan
+          # covers the current release only", REQ-REL-004-AC5): the latest published release by SEMANTIC VERSION, not by
+          # date. A draft, a prerelease and a tag that is not exactly vMAJOR.MINOR.PATCH are never current. A release that
+          # stops being current is no longer scanned, so no issue is opened or reopened for it.
           #
-          # R12: capture the release list with an EXPLICIT exit check. A
-          # `for tag in $(gh release list ...)` swallows the command
-          # substitution's failure (set -e does not catch it there), so an
-          # API outage would drop every manifest-bearing release while the
-          # legacy inventory kept the job green. Fail loudly instead; an
-          # empty-but-successful list (no releases yet) is fine.
-          if ! gh release list --limit 100 --json tagName,isDraft > /tmp/releases.json; then
+          # R12: capture the release list with an EXPLICIT exit check. A `for tag in $(gh release list ...)` swallows the
+          # command substitution's failure (set -e does not catch it there), so an API outage would look like "no
+          # release". Fail loudly instead; an empty-but-successful list is the no-release case below.
+          if ! gh release list --limit 1000 --json tagName,isDraft,isPrerelease > "$w/releases.json"; then
             echo "::error::could not enumerate releases (gh release list failed) - refusing to rescan a partial inventory" >&2
             exit 1
           fi
-          jq -e 'type == "array"' /tmp/releases.json >/dev/null \
+          jq -e 'type == "array"' "$w/releases.json" >/dev/null \
             || { echo "::error::gh release list did not return a JSON array" >&2; exit 1; }
-          for tag in $(jq -r '.[] | select(.isDraft | not) | .tagName' /tmp/releases.json); do
-            case " $legacy_versions " in *" $tag "*) continue ;; esac
-            has_manifest=$(gh release view "$tag" --json assets \
-              --jq '[.assets[] | select(.name == "release-manifest.json")] | length')
-            if [ "$has_manifest" -eq 0 ]; then
-              echo "note: ${tag} has no release-manifest.json asset and is not in the legacy inventory — skipping (add it to legacy-releases.json if it must be scanned)"
-              continue
-            fi
-            # The asset exists: a failed download/parse is an ERROR, not
-            # an empty result that would erase the release from coverage.
-            if ! gh release download "$tag" -p release-manifest.json -O "/tmp/m-${tag}.json"; then
-              echo "::error::release-manifest.json is present on ${tag} but could not be downloaded — refusing to drop it from the rescan" >&2
-              exit 1
-            fi
-            jq empty "/tmp/m-${tag}.json" 2>/dev/null \
-              || { echo "::error::release-manifest.json on ${tag} is not valid JSON" >&2; exit 1; }
-            imgcount=$(jq '.images | length' "/tmp/m-${tag}.json")
-            [ "$imgcount" -ge 1 ] || { echo "::error::release-manifest.json on ${tag} lists no images" >&2; exit 1; }
-            jq -c --arg tag "$tag" --argjson scanners "$scanners" \
-              '.images[] as $img | $scanners[] as $s |
-               {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s, source: "release-manifest"}' \
-              "/tmp/m-${tag}.json" >> /tmp/targets.jsonl
-          done
+          # gh returns at most --limit releases, newest-created first. A list that REACHES the limit may have cut the current
+          # release off (it can be the oldest by creation date), so it is an error, never a wrong or an empty day.
+          if [ "$(jq 'length' "$w/releases.json")" -ge 1000 ]; then
+            echo "::error::release list reached the limit of 1000: the current release may be hidden - refusing to pick from a truncated list" >&2
+            exit 1
+          fi
+          current=$(jq -r '[.[] | select((.isDraft | not) and (.isPrerelease | not)
+                                         and (.tagName | test("^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$")))
+                            | .tagName]
+                           | sort_by(ltrimstr("v") | split(".") | map(tonumber)) | last // empty' "$w/releases.json")
 
-          targets=$(jq -s -c '.' /tmp/targets.jsonl)
+          if [ -z "$current" ]; then
+            echo "note: no published release (every tag is a draft, a prerelease or not vMAJOR.MINOR.PATCH) - nothing to rescan today"
+          else
+            echo "current release: ${current} (the only release the daily rescan covers)"
+            # F12: a legacy release that predates release-manifest.json is covered from the committed inventory while it
+            # is the current release.
+            if jq -e --arg v "$current" '[.releases[] | select(.version == $v)] | length > 0' \
+                 .github/policy/legacy-releases.json >/dev/null; then
+              jq -c --arg v "$current" --argjson scanners "$scanners" \
+                '.releases[] | select(.version == $v) as $r | $r.images[] as $img | $scanners[] as $s |
+                 {release: $r.version, variant: $img.variant, digest: $img.digest, scanner: $s, source: "legacy-inventory"}' \
+                .github/policy/legacy-releases.json >> "$w/targets.jsonl"
+            else
+              # Enumerate ASSETS first, so an absent manifest is told from a FAILED read of one that is present (F13).
+              # The current release without a manifest is an ERROR: the one release we cover must never silently drop out.
+              has_manifest=$(gh release view "$current" --json assets \
+                --jq '[.assets[] | select(.name == "release-manifest.json")] | length') \
+                || { echo "::error::could not read the assets of release ${current} (gh release view failed) - refusing to rescan nothing" >&2; exit 1; }
+              if [ "$has_manifest" -eq 0 ]; then
+                echo "::error::the current release ${current} has no release-manifest.json asset and is not in the legacy inventory - refusing to rescan nothing" >&2
+                exit 1
+              fi
+              tag="$current"
+              if ! gh release download "$tag" -p release-manifest.json -O "/tmp/m-${tag}.json"; then
+                echo "::error::release-manifest.json is present on ${current} but could not be downloaded - refusing to drop it from the rescan" >&2
+                exit 1
+              fi
+              jq -e 'type == "object"' "/tmp/m-${tag}.json" >/dev/null 2>&1 \
+                || { echo "::error::release-manifest.json on ${current} is not valid JSON" >&2; exit 1; }
+              imgcount=$(jq '.images | length' "/tmp/m-${tag}.json")
+              [ "$imgcount" -ge 1 ] || { echo "::error::release-manifest.json on ${current} lists no images" >&2; exit 1; }
+              jq -c --arg tag "$current" --argjson scanners "$scanners" \
+                '.images[] as $img | $scanners[] as $s |
+                 {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s, source: "release-manifest"}' \
+                "/tmp/m-${tag}.json" >> "$w/targets.jsonl"
+            fi
+          fi
+
+          targets=$(jq -s -c '.' "$w/targets.jsonl")
           # Every matrix value reaches the rescan job: each must have its exact shape, or no matrix is emitted — a release
           # manifest's data never becomes shell source (Codex #160 pin pass, B78-01)
           TARGET_SHAPE='all(.[]; (.release | test("^v[0-9]+[.][0-9]+[.][0-9]+(-rc[.][0-9]+)?$")) and (.variant | test("^[a-z0-9][a-z0-9-]{0,31}$")) and (.digest | test("^sha256:[0-9a-f]{64}$")) and (.scanner | test("^[a-z0-9][a-z0-9-]{0,31}$")))'
           jq -e "$TARGET_SHAPE" <<<"$targets" > /dev/null \
             || { echo "::error::a rescan target has a malformed release, variant, digest or scanner - refusing to emit the matrix" >&2; exit 1; }
-          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
           n=$(jq 'length' <<<"$targets")
-          # There is ALWAYS at least the legacy inventory, so an empty set
-          # means the inventory itself is broken - fail, do not no-op.
+          # No published release is a quiet day, not a failed one: an empty matrix and any=false skip the rescan job.
+          # A current release with no targets (empty legacy images, no scanners, no manifest images) is NOT a quiet day: fail closed.
           if [ "$n" -eq 0 ]; then
-            echo "::error::no rescan targets at all - the legacy inventory is empty or unreadable" >&2
-            exit 1
+            if [ -n "$current" ]; then
+              echo "::error::current release ${current} produced no rescan targets" >&2
+              exit 1
+            fi
+            echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "no published release: the rescan matrix is empty"
+            exit 0
           fi
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
           echo "any=true" >> "$GITHUB_OUTPUT"
           echo "rescanning ${n} (release, variant, scanner) targets"
 
@@ -664,13 +677,15 @@ jobs:
         run: |
           set -euo pipefail
           echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
+          # the chain's own copy tool reads the candidate index, by digest (pinned by checksum; it uses the docker login above)
+          ./bin/install-scanner.sh crane
           ref="ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}"
           : > /tmp/children.txt
           # A FAILED or MALFORMED enumeration must REJECT the run (B04): a
           # lost platform inventory must never be silently downgraded to a
           # single-arch index scan. Only a VALID manifest that genuinely has
           # no platform children falls back to "scan the index as itself".
-          if ! docker buildx imagetools inspect --raw "$ref" > /tmp/index.json 2>/tmp/inspect.err; then
+          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then
             echo "::error::could not inspect ${ref} to enumerate platform children — refusing to rescan on an unknown platform inventory" >&2
             cat /tmp/inspect.err >&2 || true
             exit 1
@@ -885,10 +900,11 @@ jobs:
             const title = `Daily rescan: findings in ${t.release} ${t.variant} @${short} (${t.scanner})`;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = `The daily rescan found new findings.\n\n- release: \`${t.release}\`\n- variant: \`${t.variant}\`\n- digest: \`${t.digest}\`\n- scanner: \`${t.scanner}\`\n- statement artifact: \`rescan-${t.release}-${t.variant}-${t.scanner}\` on ${runUrl}\n\nThese bytes have not changed since release — this is a newly-disclosed CVE against previously-shipped code, the case the 24-48h response SLA targets. Per policy: if an upstream fix exists, ship the version bump; if not, publish a VEX statement and mitigation.`;
-            const { data: existing } = await github.rest.issues.listForRepo({
-              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan',
+            // every page of the open daily-rescan issues (one page is 30): a tracking issue on a later page must be found, not duplicated; pull requests are not tracking issues
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', labels: 'daily-rescan', per_page: 100,
             });
-            const match = existing.find(i => i.title === title);
+            const match = existing.find(i => !i.pull_request && i.title === title);
             if (match) {
               await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: match.number, body });
             } else {

@@ -4,6 +4,8 @@
 unmapped:
   - ac: REQ-PROTO-003-AC2
     reason: no http-integration test for PUT / returning 400 has been mapped since the baseline (Sep 11); the owner decides
+  # Note: AC8 of REQ-TLS-001 reads "first log line" as the startup record when an earlier warning applies
+  # (advisor reading, Oct 11); wording alignment of this AC is the owner's call.
   - ac: REQ-OBS-004-AC1
     reason: no component test asserts the startup line's six fields; none mapped since the baseline (Sep 11); the owner decides
   - ac: REQ-PLAT-004-AC1
@@ -34,3 +36,7 @@ unmapped:
     reason: "proven by the first real patch release; the customer suppression files depend on scanner-panel rule 10, a later PR"
   - ac: REQ-REL-009-AC12
     reason: "the lane's process rule (both step-8 records say no behavior change before it applies patch-fix): CI cannot tell the owner's label from the lane's, since both act through the owner's account; each application is recorded in the lane's report with both reviewers' findings"
+# The -debug clauses of REQ-PLAT-002-AC1 and REQ-PLAT-003-AC1 have no subject - owner Oct 9: drop debug; AC text is in the owner wording batch.
+# They cannot be listed above: the validator refuses a residual that is also mapped, and both ACs are mapped for production and -fips (Check, PR 3).
+  - ac: REQ-GUIDE-001-AC8
+    reason: "manual acceptance not done yet: the owner's cold reading, the second reader on a clean machine, and pipeline's AC7 run executing every command against a candidate; recorded as manual evidence in mappings.yaml when each is done"

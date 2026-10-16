@@ -3,9 +3,10 @@
 (register row 78). A tag or branch reference fails. Fails closed: a file it cannot parse, or a
 reference it cannot classify, is a finding.
 
-It lives under .github/agent/ so that changing it needs the two-vendor review record
-(auditor-review-gate.py): the enforcement cannot be loosened by an ordinary merge. The gate runs the
-DEFAULT branch's copy over a PR head read as git objects (--git), never checked out.
+It lives under .github/agent/, whose changes the independent second review clears before merge
+(REQ-AUD-018 AC3; enforced outside this repository): the enforcement cannot be loosened by an ordinary
+merge. The gate runs the DEFAULT branch's copy over a PR head read as git objects (--git), never
+checked out.
 
 What is read: every file under .github/workflows/ (a non-.yml/.yaml file there is itself a finding),
 every other .yml/.yaml under .github/, and every action.yml/action.yaml (any case) anywhere. A
@@ -45,10 +46,11 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              signed Ubuntu archive, PyYAML for this checker) are distribution packages, not actions —
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
-  The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256
+  The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
+             frozen set of exactly two digests while cache PR #316 is bootstrapped; a later change leaves one)
              (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
-             until this file is updated — a change under .github/agent/, so it needs the review record:
-             the enforcement cannot be removed from its caller by an ordinary merge either.
+             until this file is updated — a change under .github/agent/, so it needs the independent
+             second review: the enforcement cannot be removed from its caller by an ordinary merge either.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
   Executor images: a pinned action that runs a container image of its own must be given that image
              by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
@@ -72,9 +74,14 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
 
 Scope (advisor 0080): ubuntu runners only. Every job that runs steps must name an ubuntu runner literally
 (ubuntu-latest, ubuntu-<version>, ubuntu-<version>-arm); any other runs-on — Windows, macOS, self-hosted labels, a
-group, an expression, none — is a finding, so a bypass that needs another runner OS is closed by that refusal. Inside
-the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown options,
-a program name built by a substitution — d$()ocker). A program named only through a shell variable ("$gosec") is
+group, an expression, none — is a finding, so a bypass that needs another runner OS is closed by that refusal.
+ONE expression runner is accepted (REQ-REL-005-AC2, advisor-approved read-back Oct 9, pin matrix):
+`runs-on: ${{ matrix.<key> }}` over a strategy that is a matrix of exactly that one key, a literal non-empty list of
+plain-string labels from the closed set {ubuntu-24.04, ubuntu-24.04-arm} (and, beside it, only `fail-fast: true|false`).
+Such a job reads as bash like any ubuntu job; every other form (see literal_matrix_runner) is a runs-on finding, and a
+key given twice in a job, its strategy or its matrix is a finding with the key named.
+Inside the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown
+options, a program name built by a substitution — d$()ocker). A program named only through a shell variable ("$gosec") is
 outside the check today: the repository uses it (ci.yml, go-freshness.yml), so failing it closed is an outbox question.
 
 The boundary: the owner's instruction of Sep 30 (handoff 0023), "no exceptions, anywhere", and "every finding
@@ -154,8 +161,6 @@ Outside this check, each a documented exclusion with its reason (row 78):
     --iidfile; the build itself (FROM lines, context, Dockerfile) is still fully checked;
   - a committed TEST HARNESS a step runs (tests/, *-test.sh): its probes are the very constructs this check refuses,
     as fixture data; it is not read recursively (it is committed and reviewed like any diff);
-  - /tmp/smoke-assert.sh in stage-acceptance-k8s.yml: the documented smoke commands of docs/kubernetes.md
-    (committed, reviewed), written by the step's own python heredoc; they assert against the kind cluster;
   - `runs-on` labels: GitHub-hosted runner images are GitHub's to build and cannot be named by digest;
   - Go tools installed by module version (`go install …@vX.Y.Z`): the module proxy serves them checksum-verified
     against the Go checksum database, so a version names fixed bytes;
@@ -194,7 +199,7 @@ COMMENT = re.compile(r"[ \t]+#[ \t]*(v[0-9][0-9A-Za-z.+-]*)[ \t]*")
 ACTIONS = {
     "actions/attest": "node: signs attestations; no image run",
     "actions/attest-build-provenance": "composite over actions/attest; no image run",
-    "actions/cache": "node: restores/saves one directory (restore and save subactions; REQ-REL-004-AC5); no image run",
+    "actions/cache": "node: restores/saves one directory (restore and save subactions; REQ-REL-004-AC8); no image run",
     "actions/checkout": "node: git checkout",
     "actions/create-github-app-token": "node: mints a token",
     "actions/dependency-review-action": "node: GitHub API diff review",
@@ -225,7 +230,12 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-GATE_WORKFLOW_SHA256 = "e2a5938e14aa50c3b1a14d04c0b6ef299d1d43117329476effd6486cdf652631"
+# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO for the bootstrap of
+# cache PR #316 (scanner guard): main's gate workflow and #316's; a later change removes main's old one, leaving one
+GATE_WORKFLOW_SHA256 = frozenset({
+    "adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d",   # main's gate workflow before #316
+    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # the gate workflow of cache PR #316
+})
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
 EXECUTOR_ALLOWED = {
@@ -244,10 +254,25 @@ EXECUTOR_INPUTS = {
 
 
 class StrLoader(yaml.SafeLoader):
-    """Every plain scalar is a string; GitHub reads `uses: 1.0` as the string "1.0"."""
+    """Every plain scalar is a string; GitHub reads `uses: 1.0` as the string "1.0". Every node also records whether the source
+    wrote an explicit YAML tag on it (REQ-REL-005-AC2: the matrix path refuses any, even `!!seq` or `!!map`, which name the
+    default type and so leave no trace in the node's resolved tag)."""
 
 
 StrLoader.yaml_implicit_resolvers = {}
+
+
+def _records_explicit_tag(compose):
+    def compose_node(self, anchor):
+        explicit = self.peek_event().tag is not None     # None: no tag in the source; `!` and every written tag are not None
+        node = compose(self, anchor)
+        node.explicit_tag = explicit
+        return node
+    return compose_node
+
+
+for _kind in ("compose_scalar_node", "compose_sequence_node", "compose_mapping_node"):
+    setattr(StrLoader, _kind, _records_explicit_tag(getattr(yaml.SafeLoader, _kind)))
 
 
 # ---------------------------------------------------------------------------- the tree read
@@ -2187,18 +2212,12 @@ def _drop_foreign_heredocs(text):
     return "\n".join(out)
 
 
-# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023):
-# Fenced (advisor 0084 (4)): exactly these two files of that one workflow; bin/k8s-harness-fence-test.sh proves both
-# are written only from docs/kubernetes.md at the checked-out commit (no env, no network, no other input), and any
-# other eval of a variable, anywhere, is refused by the variable-program rule.
-GENERATED_OK = {
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
-        "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
-        "heredoc; they assert against the kind cluster and fetch nothing",
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/pf-forward.sh"):
-        "the documented kubectl port-forward command of docs/kubernetes.md, written by the same heredoc; run verbatim "
-        "because rule 12 tests the customer's commands exactly as published",
-}
+# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): none now. The two generated scripts of the
+# Kubernetes harness (/tmp/pf-forward, /tmp/smoke-assert; advisor 0084 (4)) were excluded while the harness was a workflow step; it is now Check's
+# listed scripts (bin/acceptance-k8s.sh runs them, bin/acceptance-k8s-smoke.py writes them), which are judged by the chain judges, and the fence
+# facts are proven there by .github/agent/tests/k8s-harness-fence-test.sh. Any other eval of a variable, anywhere, is refused by the
+# variable-program rule; the branch below stays and is proven with an injected entry in that test.
+GENERATED_OK = {}
 
 
 BASE_SHA_REF = "${{ github.event.pull_request.base.sha }}"
@@ -2644,7 +2663,7 @@ def run_scripts(doc):
                 inherited = _default_shell(j) or _default_shell(doc)
                 ro = {key_of(kk): vv for kk, vv in j.value}.get("runs-on")
                 ro_text = yaml.serialize(ro) if ro is not None else ""
-                if inherited is None and ("windows" in ro_text.lower() or "${{" in ro_text):
+                if inherited is None and not known_ubuntu_labels(j) and ("windows" in ro_text.lower() or "${{" in ro_text):
                     inherited = "pwsh"   # NEW-10: a Windows (or not statically known) runner's default shell is pwsh
                 inherited_wd = _default_wd(j) or _default_wd(doc)
                 for kk, vv in j.value:
@@ -2660,6 +2679,94 @@ def run_scripts(doc):
 
 UBUNTU_RUNNER = re.compile(r"^ubuntu-(latest|[0-9]+\.[0-9]+)(-arm)?$")
 
+# ---- REQ-REL-005-AC2: the literal-label runner matrix (advisor-approved read-back Oct 9, pin matrix) ----
+# The v0.3.0 Build and Rebuild run their per-architecture jobs as a matrix of the two native GitHub-hosted labels. That one form is
+# accepted, and nothing looser (the owner's pin-checker scope: plain forms only). The label set is closed on purpose: adding a
+# runner is a reviewed edit of this file.
+MATRIX_RUNNER_LABELS = frozenset({"ubuntu-24.04", "ubuntu-24.04-arm"})
+MATRIX_RUNS_ON = re.compile(r"\$\{\{ matrix\.([A-Za-z_][A-Za-z0-9_-]*) \}\}")
+STR_TAG = "tag:yaml.org,2002:str"          # the tag of a plain scalar here (every scalar is read as a string; an explicit tag changes it)
+
+
+def repeated_keys(node):
+    """AC2: the keys a mapping names more than once, in file order (YAML keeps the last copy; GitHub rejects the file)."""
+    seen, repeated = set(), []
+    for k, _ in node.value if isinstance(node, yaml.MappingNode) else []:
+        name = key_of(k)
+        if name is not None and name in seen and name not in repeated:
+            repeated.append(name)
+        seen.add(name)
+    return repeated
+
+
+def plain_str(node):
+    return isinstance(node, yaml.ScalarNode) and node.tag == STR_TAG
+
+
+def untagged(node):
+    """AC2 (Codex round 1 at 643db58, fail closed per advisor 0080): the source wrote no explicit YAML tag on the node. A node
+    that StrLoader did not read carries no record and counts as tagged."""
+    return not getattr(node, "explicit_tag", True)
+
+
+def exact_map(node):
+    """A mapping's entries by their exact key text, or None if it is not a mapping, the mapping carries an explicit tag, or a key
+    is not a plain string written without a tag."""
+    if (not isinstance(node, yaml.MappingNode) or not untagged(node)
+            or not all(plain_str(k) and untagged(k) for k, _ in node.value)):
+        return None
+    return {k.value: v for k, v in node.value}
+
+
+def plain_literal(node, allowed):
+    """AC2: a scalar written plainly (no quotes, no explicit tag, not a block scalar) whose text is exactly one of `allowed`.
+    The source span must be as long as the value: a quoted or tagged `"true"` / `!!str true` spans more than its text."""
+    return (plain_str(node) and node.style is None and node.value in allowed
+            and node.end_mark.pointer - node.start_mark.pointer == len(node.value))
+
+
+def known_ubuntu_labels(job):
+    """AC2: True when the job's runs-on is exactly one `${{ matrix.<key> }}` (a full match: no text or second expression
+    around it, no index or property) and the matrix lists, under that key, only labels of MATRIX_RUNNER_LABELS, so the steps
+    surely run on an ubuntu runner and are judged as bash EVEN IF the rest of the shape is refused (Codex round 1, M1).
+    Anything that could add another runner or make the reading ambiguous is False: a key given twice in the job, its strategy
+    or its matrix, a key spelled include or exclude in any letter case, an include entry beside the key, an explicit YAML tag
+    on the job, runs-on, the strategy, the matrix, a key in them or the label list (only !!str on a label resolves to the
+    plain string and is read as one; Codex round 1 at 643db58). False leaves the steps
+    under pwsh, never a silent bash."""
+    entries = exact_map(job)
+    if entries is None or repeated_keys(job):
+        return False
+    runs_on = entries.get("runs-on")
+    named = MATRIX_RUNS_ON.fullmatch(runs_on.value) if plain_str(runs_on) and untagged(runs_on) else None
+    strategy = exact_map(entries.get("strategy"))
+    if not named or strategy is None or repeated_keys(entries["strategy"]):
+        return False
+    matrix = exact_map(strategy.get("matrix"))
+    if matrix is None or repeated_keys(strategy["matrix"]):
+        return False
+    key = named.group(1)
+    if key.lower() in ("include", "exclude") or any(name.lower() == "include" for name in matrix):
+        return False
+    labels = matrix.get(key)
+    return (isinstance(labels, yaml.SequenceNode) and untagged(labels) and bool(labels.value)
+            and all(plain_str(label) and label.value in MATRIX_RUNNER_LABELS for label in labels.value))
+
+
+def literal_matrix_runner(job):
+    """AC2: the ONE accepted expression runner: known_ubuntu_labels, a strategy of only the matrix plus, optionally,
+    `fail-fast` with the plain literal true or false, and a matrix of exactly the runs-on key. Anything else is False, which
+    leaves the job to the ordinary runs-on rule (a finding)."""
+    if not known_ubuntu_labels(job):
+        return False
+    entries = exact_map(job)
+    strategy = exact_map(entries["strategy"])
+    if set(strategy) - {"matrix", "fail-fast"}:
+        return False
+    if "fail-fast" in strategy and not plain_literal(strategy["fail-fast"], ("true", "false")):
+        return False
+    return list(exact_map(strategy["matrix"])) == [MATRIX_RUNS_ON.fullmatch(entries["runs-on"].value).group(1)]
+
 
 def check_runners(where, doc, bad):
     """The checker's scope is ubuntu runners (advisor 0080, closing the open-ended OS classes fail-closed): every job
@@ -2671,13 +2778,31 @@ def check_runners(where, doc, bad):
         return
     for k, j in jobs.value:
         jm = {key_of(kk): vv for kk, vv in j.value} if isinstance(j, yaml.MappingNode) else {}
+        strategy = jm.get("strategy")
+        matrix = {key_of(kk): vv for kk, vv in strategy.value}.get("matrix") if isinstance(strategy, yaml.MappingNode) else None
+        for part, node in ((f"{where}.jobs.{k.value}", j), (f"{where}.jobs.{k.value}.strategy", strategy),
+                           (f"{where}.jobs.{k.value}.strategy.matrix", matrix)):
+            for key in repeated_keys(node):           # AC2: YAML keeps the last copy and GitHub rejects the file
+                bad.append(f"{part}: duplicate key {key!r}; a key is given once")
         if "uses" in jm:
             continue                                  # a reusable-workflow call has no runner of its own
+        if literal_matrix_runner(j):
+            continue                                  # AC2: the one accepted expression runner
         ro = jm.get("runs-on")
         if not (isinstance(ro, yaml.ScalarNode) and UBUNTU_RUNNER.fullmatch(ro.value.strip())):
             shown = ro.value if isinstance(ro, yaml.ScalarNode) else ("missing" if ro is None else "not a plain label")
             bad.append(f"{where}.jobs.{k.value}.runs-on: {shown!r} is not an ubuntu runner; this check covers ubuntu "
                        f"runners only and refuses any other")
+
+
+def job_keys_are_names(rel, doc, bad):
+    """Codex round 1, L3: every key under `jobs` is a scalar name. A list or mapping used as a job key is a finding (not a crash
+    in the job loops, which build paths from the name). Returns False when it made that finding."""
+    jobs = {key_of(k): v for k, v in doc.value}.get("jobs") if isinstance(doc, yaml.MappingNode) else None
+    if isinstance(jobs, yaml.MappingNode) and not all(isinstance(k, yaml.ScalarNode) for k, _ in jobs.value):
+        bad.append(f"{rel}: a job key that is not a plain name")
+        return False
+    return True
 
 
 def check_file(tree, rel, pins, bad):
@@ -2694,6 +2819,8 @@ def check_file(tree, rel, pins, bad):
     for i, d in enumerate(docs):
         if d is not None:
             walk(d, [], refs, bad, rel + (f"[doc{i}]" if len(docs) > 1 else ""))
+            if not job_keys_are_names(rel, d, bad):
+                continue                              # Codex round 1, L3: a finding was made; the job loops below read names
             if rel.startswith(".github/workflows/"):
                 check_runners(rel, d, bad)
             # every mapping key of the parsed document — quoted, flow-style or block (Codex #164 r3, C13)
@@ -2776,9 +2903,10 @@ def main():
         check_file(tree, rel, pins, bad)
     if GATE_WORKFLOW not in files:
         bad.append(f"{GATE_WORKFLOW}: missing — the gate that runs this check")
-    elif gate_digest(tree.read(GATE_WORKFLOW)) != GATE_WORKFLOW_SHA256:
+    elif gate_digest(tree.read(GATE_WORKFLOW)) not in GATE_WORKFLOW_SHA256:
         bad.append(f"{GATE_WORKFLOW}: changed — update GATE_WORKFLOW_SHA256 in this checker "
-                   f"(a reviewed .github/agent/ change) to {gate_digest(tree.read(GATE_WORKFLOW))}")
+                   f"(a reviewed .github/agent/ change) to {gate_digest(tree.read(GATE_WORKFLOW))}; "
+                   f"accepted: {', '.join(sorted(GATE_WORKFLOW_SHA256))}")
     if verify:
         bad += verify_pins(pins)
     for b in bad:

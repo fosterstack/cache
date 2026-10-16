@@ -4,7 +4,7 @@ merge/consolidate fallbacks, the narrative guard, the scanner tables and main()'
 
 No network, no real git/gh/go: every subprocess call is intercepted by FakeRun and asserted on by
 its exact argv. Every write goes to a temp dir."""
-import contextlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
+import base64, contextlib, importlib.util, io, json, os, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -45,6 +45,77 @@ class FakeRun:
 
     def argvs(self):
         return [a for a, _ in self.calls]
+
+
+SHA = "a" * 40
+OID = "b" * 40
+OLDHEAD = "c" * 40
+GQL_OK = json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID, "signature": {"isValid": True, "state": "VALID"}}}}})
+
+
+def head_lookup(verified=True, parent=SHA, parents=None, files=(("go.mod", "modified"),)):
+    """GitHub's answer for a commit: its parents, its changed files and whether it is verified."""
+    return (0, json.dumps({"parents": [{"sha": x} for x in (parents if parents is not None else [parent])],
+                           "files": [{"filename": f[0], "status": f[1], **(f[2] if len(f) > 2 else {})} for f in files],
+                           "commit": {"verification": {"verified": verified}}}), "")
+
+
+class ApiRun(FakeRun):
+    """FakeRun plus the GitHub API the signed delivery uses: the delivery branch's ref (GET answers `live`, None = absent), the temporary ref
+    POST / DELETE, the live ref PATCH, the createCommitOnBranch GraphQL call (its stdin kept in .stdins), the commit lookup and a PR's head oid.
+    Defaults: the branch exists at OLDHEAD, every write succeeds with a VALID signature, `git status` lists the suppression files as changed and
+    `git rev-parse` answers SHA. Override `live`, `post`, `patch`, `delete`, `mutation`, `lookup`, `pr_head`."""
+    def __init__(self, rules=None, live=OLDHEAD, post=(0, "{}", ""), patch=(0, "{}", ""), delete=(0, "{}", ""), mutation=(0, GQL_OK, ""),
+                 lookup=None, pr_head=OID, contents=None):
+        defaults = {("git", "status"): (0, " M .vex/fosterstack-cache.openvex.json\0?? .auditor/knowledge.md\0", ""),
+                    ("git", "rev-parse"): (0, SHA + "\n", "")}
+        super().__init__({**defaults, **(rules or {})})
+        self.live, self.post, self.patch, self.delete, self.mutation = live, post, patch, delete, mutation
+        self.lookup = lookup or head_lookup()
+        self.pr_head = pr_head
+        self.contents = {"go.mod": b"module m\n"} if contents is None else contents
+        self.stdins = []
+
+    def __call__(self, argv, **kw):
+        argv = list(argv)
+        if argv[:3] == ["gh", "pr", "view"] and "headRefOid" in argv and self.pr_head is not None:
+            self.calls.append((argv, kw))
+            return subprocess.CompletedProcess(argv, 0, self.pr_head + "\n", "")
+        if argv[:2] == ["gh", "api"] and not any(argv[:len(p)] == list(p) for p in self.rules):
+            self.calls.append((argv, kw))
+            if argv[2] == "graphql":
+                self.stdins.append(json.loads(kw["input"])); resp = self.mutation
+            elif argv[2] == "--method":
+                resp = {"POST": self.post, "PATCH": self.patch, "DELETE": self.delete}[argv[3]]
+            elif "/git/ref/heads/" in argv[2]:
+                resp = (1, "", "gh: Not Found (HTTP 404)") if self.live is None else (0, json.dumps({"object": {"sha": self.live}}), "")
+            elif "/commits/" in argv[2]:
+                resp = self.lookup
+            elif "/contents/" in argv[2]:
+                path = argv[2].split("/contents/")[1].split("?ref=")[0]
+                resp = (0, json.dumps({"encoding": "base64", "content": base64.encodebytes(self.contents[path]).decode()}), "") if path in self.contents \
+                    else (1, "", "gh: Not Found (HTTP 404)")
+            else:
+                return super().__call__(argv, **kw)
+            return subprocess.CompletedProcess(argv, resp[0], resp[1], resp[2])
+        return super().__call__(argv, **kw)
+
+    def no_unsigned(self):
+        """Nothing here ever ran `git commit` or `git push`."""
+        return not any(a[:2] in (["git", "commit"], ["git", "push"]) for a in self.argvs())
+
+    def ref_writes(self):
+        """The writes that move or create a ref or make a commit, in order: ("POST"|"PATCH"|"DELETE"|"COMMIT", target)."""
+        out = []
+        for a in self.argvs():
+            if a[:2] == ["gh", "api"] and a[2] == "graphql":
+                out.append(("COMMIT", None))
+            elif a[:2] == ["gh", "api"] and a[2] == "--method" and a[3] != "GET":
+                out.append((a[3], a[4]))
+        return out
+
+    def index(self, argv):
+        return self.argvs().index(argv)
 
 
 def F(fid, purl, pkg, sev="Low", fixed=None, scanner="grype", extra=None):
@@ -383,7 +454,7 @@ class SuppressionPR(Base):
         self.wj(os.path.join(self.out, ".auditor", "knowledge.md"), "# k\n")
 
     def real(self, fr, automerge=False, supp=None):
-        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.ws)
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.ws, GITHUB_REPOSITORY="o/r")
         os.environ.pop("AUDITOR_AUTOMERGE", None)
         if automerge:
             os.environ["AUDITOR_AUTOMERGE"] = "on"
@@ -402,43 +473,139 @@ class SuppressionPR(Base):
         self.assertIn("dry-run would open auto-merge PR", out)
 
     def test_git_failures_stop_delivery(self):
+        # (changed: `git commit` and `git push` are never run any more; the commit is a signed one made through the API)
         for pre, label in ((("git", "fetch"), "git fetch"), (("git", "checkout"), "git checkout"),
-                           (("git", "commit"), "git commit"), (("git", "push"), "git push")):
-            fr = FakeRun({pre: (1, "", " %s broke \n" % label)})
+                           (("git", "status"), "git status"), (("git", "rev-parse"), "git rev-parse")):
+            fr = ApiRun({pre: (1, "", " %s broke \n" % label)})
             self.assertEqual(self.real(fr), (None, "%s: %s broke" % (label, label)), label)
             self.assertFalse(any(a[:3] == ["gh", "pr", "create"] for a in fr.argvs()), label)
-        push = [a for a in fr.argvs() if a[:2] == ["git", "push"]][0]
-        self.assertEqual(push, ["git", "push", "-u", "origin", self.BR, "--force-with-lease"])
+            self.assertTrue(fr.no_unsigned(), label)
+        fr = ApiRun({("git", "status"): (0, "", "")})                      # the run changed none of the files: never an empty commit
+        self.assertEqual(self.real(fr), (None, "signed commit: nothing to commit (the run changed none of the suppression files)"))
+        self.assertFalse(fr.stdins)
+
+    def test_the_delivery_commit_is_made_through_the_api_never_git(self):   # main requires signed commits
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.assertEqual(self.real(fr), ("https://x/pull/9", None))
+        self.assertTrue(fr.no_unsigned(), fr.argvs())                      # NO git commit, NO git push
+        self.assertFalse(any(a[:2] == ["git", "add"] for a in fr.argvs()))
+        self.assertEqual(len(fr.stdins), 1)
+        inp = fr.stdins[0]["variables"]["input"]
+        self.assertEqual(inp["branch"]["repositoryNameWithOwner"], "o/r")
+        self.assertTrue(inp["branch"]["branchName"].startswith("auditor/tmp-"))   # the commit is made on a TEMPORARY branch; the live one moves after
+        self.assertEqual(inp["expectedHeadOid"], SHA)                      # rebuilt on origin/main's tip
+        self.assertEqual([x["path"] for x in inp["fileChanges"]["additions"]], [".auditor/knowledge.md", ".vex/fosterstack-cache.openvex.json"])
+        self.assertEqual(inp["fileChanges"]["deletions"], [])
+        a = fr.argvs()
+        self.assertLess(a.index(["git", "fetch", "origin", "main"]), a.index(["gh", "api", "--method", "PATCH", "repos/o/r/git/refs/heads/" + self.BR, "-f", "sha=" + OID, "-F", "force=true"]))
+        self.assertLess(a.index(["gh", "api", "graphql", "--input", "-"]), a.index(a[[i for i, x in enumerate(a) if x[:3] == ["gh", "pr", "create"]][0]]))
+        # a deleted file is a deletion; a signed commit that cannot be made stops the delivery before any PR
+        fr = ApiRun({("git", "status"): (0, " D gone/file.txt\0", "")}); self.real(fr)
+        self.assertEqual(fr.stdins[0]["variables"]["input"]["fileChanges"], {"additions": [], "deletions": [{"path": "gone/file.txt"}]})
+        fr = ApiRun(mutation=(1, "", "HTTP 403")); res = self.real(fr)
+        self.assertEqual(res[0], None); self.assertIn("createCommitOnBranch", res[1]); self.assertIn("HTTP 403", res[1])
+        fr = ApiRun(mutation=(0, json.dumps({"data": {"createCommitOnBranch": {"commit": {"oid": OID, "signature": {"isValid": False, "state": "UNSIGNED"}}}}}), ""))
+        res = self.real(fr)
+        self.assertIn("NOT validly signed", res[1]); self.assertFalse(any(x[:3] == ["gh", "pr", "create"] for x in fr.argvs()))
+        os.environ.pop("GITHUB_REPOSITORY"); fr = ApiRun()
+        with mock.patch.object(R.subprocess, "run", fr):
+            res = R._deliver_suppression_pr(self.out, self.supp, 1, "2026-09-22", "abcdef1234567890", False, [])
+        self.assertIn("GITHUB_REPOSITORY is not set", res[1])
+
+    ARMED = {("gh", "pr", "view"): (0, "true\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
+    DIS = ["gh", "pr", "merge", "--disable-auto", "https://x/pull/7"]
+
+    def test_an_armed_suppression_pr_is_disarmed_before_its_branch_is_replaced_and_stays_disarmed_on_failure(self):
+        fr = ApiRun(self.ARMED)
+        self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/7", None))
+        a = fr.argvs()
+        first_write = next(i for i, x in enumerate(a) if x[:2] == ["gh", "api"] and x[2] in ("graphql", "--method"))
+        self.assertLess(a.index(self.DIS), first_write)                           # disarmed BEFORE any ref write or commit
+        self.assertEqual(a[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/7"])   # re-armed afterwards
+        self.assertIn(["gh", "pr", "view", "https://x/pull/7", "--json", "headRefOid", "--jq", ".headRefOid"], a)
+        fr = ApiRun(self.ARMED, mutation=(1, "", "HTTP 403"))
+        res = self.real(fr, automerge=True)
+        self.assertIsNone(res[0]); self.assertIn("createCommitOnBranch", res[1])
+        self.assertIn(self.DIS, fr.argvs())                                        # a failure leaves it disarmed ...
+        self.assertFalse(any(x[:3] == ["gh", "pr", "merge"] and "--auto" in x for x in fr.argvs()))   # ... never re-armed
+        self.assertEqual([w for w in fr.ref_writes() if w[1] == "repos/o/r/git/refs/heads/" + self.BR], [])
+        fr = ApiRun({**self.ARMED, ("gh", "pr", "merge", "--disable-auto"): (1, "", "HTTP 500")})
+        res = self.real(fr, automerge=True)
+        self.assertIn("disable auto-merge", res[1]); self.assertEqual(fr.ref_writes(), [])
+        fr = ApiRun({**self.ARMED, ("gh", "pr", "view"): (1, "", "HTTP 500")})
+        res = self.real(fr, automerge=True)
+        self.assertIsNotNone(res[1]); self.assertEqual(fr.ref_writes(), [])
+        fr = ApiRun(self.ARMED, pr_head="e" * 40)                                  # another run replaced the head: never armed
+        res = self.real(fr, automerge=True)
+        self.assertIsNone(res[0]); self.assertIn("not arming", res[1])
+        self.assertFalse(any(x[:3] == ["gh", "pr", "merge"] and "--auto" in x for x in fr.argvs()))
+        fr = ApiRun({("gh", "pr", "view"): (0, "false\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
+        self.assertEqual(self.real(fr), ("https://x/pull/7", None))
+        self.assertNotIn(self.DIS, fr.argvs())                                     # not armed: nothing to disarm
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})      # no existing PR: no `pr view`
+        self.real(fr); self.assertFalse(any(x[:3] == ["gh", "pr", "view"] for x in fr.argvs()))
+
+    def test_a_temporary_ref_that_cannot_be_deleted_is_a_warning_not_a_failure(self):
+        fr = ApiRun(delete=(1, "", "HTTP 500"))
+        os.environ["GITHUB_REPOSITORY"] = "o/r"
+        with mock.patch.object(R.subprocess, "run", fr):
+            res, out = self.quiet(R._signed_delivery, self.ws, self.BR, SHA, "title", ["gone.txt"])
+        self.assertEqual(res[0], OID); self.assertIsNone(res[1])
+        self.assertIn("warning: temporary branch auditor/tmp-", out); self.assertIn("could not be deleted", out)
+
+    def test_a_pr_discovery_failure_aborts_before_any_write(self):
+        for rules in ({("gh", "pr", "list"): (1, "", "HTTP 500")}, {("gh", "pr", "list"): (1, "", "")}):
+            fr = ApiRun(rules)
+            res = self.real(fr, automerge=True)
+            self.assertIsNone(res[0]); self.assertIn("gh pr list", res[1])
+            self.assertEqual(fr.ref_writes(), []); self.assertTrue(fr.no_unsigned())
+            self.assertFalse(any(a[:3] in (["gh", "pr", "merge"], ["gh", "pr", "create"], ["gh", "pr", "view"]) for a in fr.argvs()))
+
+    def test_every_suppression_path_arms_only_the_verified_head(self):
+        view = ["gh", "pr", "view", "https://x/pull/9", "--json", "headRefOid", "--jq", ".headRefOid"]
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/9", None))   # a NEW PR is checked too
+        self.assertIn(view, fr.argvs()); self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/9"])
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}, pr_head="e" * 40)   # replaced between the commit and the arm
+        res = self.real(fr, automerge=True)
+        self.assertIsNone(res[0]); self.assertIn("head changed since it was verified", res[1])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}, pr_head=None)       # unreadable
+        self.assertIsNone(self.real(fr, automerge=True)[0])
+        fr = ApiRun({("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")], ("gh", "pr", "create"): (1, "", "already exists")}, pr_head="e" * 40)
+        self.assertIsNone(self.real(fr, automerge=True)[0])                                       # the race-found PR is bound too
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}, pr_head="e" * 40)
+        self.assertEqual(self.real(fr), ("https://x/pull/9", None))                              # draft (no auto-merge): nothing to arm, nothing to check
 
     def test_stage_failure(self):
-        fr = FakeRun()
+        fr = ApiRun()
         url, err = self.real(fr, supp=self.d("empty-supp"))               # no openvex file to merge
         self.assertIsNone(url); self.assertTrue(err.startswith("stage files: "), err)
         self.assertEqual(fr.argvs(), [["git", "fetch", "origin", "main"], ["git", "checkout", "-B", self.BR, "origin/main"]])
 
     def test_existing_pr_reused_and_armed(self):
-        fr = FakeRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
+        fr = ApiRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
         self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/7", None))
         self.assertIn(["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/7"], fr.argvs())
         self.assertFalse(any(a[:3] == ["gh", "pr", "create"] for a in fr.argvs()))
         # staged files rode the checkout
         self.assertTrue(os.path.exists(os.path.join(self.ws, ".auditor", "knowledge.md")))
         self.assertTrue(os.path.exists(os.path.join(self.ws, ".vex", "fosterstack-cache.openvex.json")))
-        add = [a for a in fr.argvs() if a[:2] == ["git", "add"]][0]
-        self.assertIn(".auditor/knowledge.md", add)
-        fr = FakeRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
+        # (changed: there is no `git add` any more; the files ride the one signed API commit)
+        self.assertIn(".auditor/knowledge.md", [x["path"] for x in fr.stdins[0]["variables"]["input"]["fileChanges"]["additions"]])
+        fr = ApiRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
         self.assertEqual(self.real(fr), ("https://x/pull/7", None))
         self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] for a in fr.argvs()))
 
     def test_create_race_already_exists(self):
-        fr = FakeRun({("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")],
+        fr = ApiRun({("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")],
                       ("gh", "pr", "create"): (1, "", "a pull request already EXISTS for head")})
         self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/8", None))
         self.assertIn(["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/8"], fr.argvs())
         # race but the existing PR cannot be found -> a real failure
-        fr = FakeRun({("gh", "pr", "create"): (1, "", "already exists")})
+        fr = ApiRun({("gh", "pr", "create"): (1, "", "already exists")})
         self.assertEqual(self.real(fr), (None, "gh pr create: already exists"))
-        fr = FakeRun({("gh", "pr", "create"): (1, "", "HTTP 403")})
+        fr = ApiRun({("gh", "pr", "create"): (1, "", "HTTP 403")})
         self.assertEqual(self.real(fr), (None, "gh pr create: HTTP 403"))
 
     LIST = ("gh", "api", "repos/{owner}/{repo}/pulls?state=open&per_page=100")
@@ -448,7 +615,7 @@ class SuppressionPR(Base):
     def test_superseded_daily_suppression_prs_are_closed(self):          # advisor 0187: stale PRs must not pile up behind main
         for how, rules in (("created", {("gh", "pr", "create"): (0, "https://x/pull/11\n", "")}),
                            ("existing", {("gh", "pr", "list"): (0, "https://x/pull/6\n", "")})):
-            fr = FakeRun({**rules, self.LIST: (0, self.OPEN, "")})
+            fr = ApiRun({**rules, self.LIST: (0, self.OPEN, "")})
             self.assertIsNotNone(self.real(fr)[0], how)
             closed = sorted(a[3] for a in fr.argvs() if a[:3] == ["gh", "pr", "close"])
             self.assertEqual(closed, ["10", "5"], how)              # only OLDER daily branches: not today's, not a NEWER one (12), not panel/bump/feature
@@ -458,7 +625,7 @@ class SuppressionPR(Base):
             self.assertNotIn("--delete-branch", first)                      # the branch stays: nothing here deletes refs
 
     def test_only_the_apps_own_non_draft_same_repo_prs_are_candidates(self):    # reviewer r1 blocker 2
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, "")})
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, "")})
         self.real(fr)
         lst = [a for a in fr.argvs() if a[:3] == list(self.LIST)][0]
         self.assertIn("--paginate", lst)
@@ -467,32 +634,37 @@ class SuppressionPR(Base):
             self.assertIn(needle, jq)                                          # a fork's, a human's and an owner-held draft are never closed
 
     def test_todays_replacement_must_be_a_same_repo_pr_into_main(self):                            # review r6 B2
-        fr = FakeRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", ""), self.LIST: (0, self.OPEN, "")})
+        fr = ApiRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", ""), self.LIST: (0, self.OPEN, "")})
         self.real(fr, automerge=True)
         lst = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "list"]][0]
         jq = lst[lst.index("--jq") + 1]
         self.assertIn("isCrossRepository == false", jq); self.assertIn('baseRefName == "main"', jq)
 
     def test_nothing_is_closed_when_todays_pr_was_not_delivered(self):
-        fr = FakeRun({("gh", "pr", "create"): (1, "", "HTTP 403"), self.LIST: (0, self.OPEN, "")})
+        fr = ApiRun({("gh", "pr", "create"): (1, "", "HTTP 403"), self.LIST: (0, self.OPEN, "")})
         self.assertIsNone(self.real(fr)[0])
         self.assertFalse(any(a[:3] == ["gh", "pr", "close"] for a in fr.argvs()))
 
     def test_a_failing_cleanup_never_fails_the_delivery(self):
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (1, "", "HTTP 500"),
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (1, "", "HTTP 500"),
                       ("gh", "pr", "close"): (1, "", "HTTP 500")})
         self.assertEqual(self.real(fr), ("https://x/pull/11", None))
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, ""), ("gh", "pr", "close"): (1, "", "HTTP 500")})
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: (0, self.OPEN, ""), ("gh", "pr", "close"): (1, "", "HTTP 500")})
         self.assertEqual(self.real(fr), ("https://x/pull/11", None))
 
+    def test_a_cleanup_that_raises_never_fails_the_delivery(self):
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/11\n", ""), self.LIST: OSError("gh vanished")})
+        res = self.real(fr)
+        self.assertEqual(res, ("https://x/pull/11", None))
+
     def test_create_draft_vs_automerge(self):
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr, automerge=True), ("https://x/pull/9", None))
         self.assert_branch_off_main(fr)
         create = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"]][0]
         self.assertNotIn("--draft", create)
         self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/9"])
-        fr = FakeRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr), ("https://x/pull/9", None))
         create = [a for a in fr.argvs() if a[:3] == ["gh", "pr", "create"]][0]
         self.assertEqual(create[3], "--draft")
@@ -503,12 +675,14 @@ class FixPR(Base):
     ROW = {"id": "CVE-2099-40", "fix_bump": {"cve": "CVE-2099-40", "module": "example.com/m", "from": "v1.0.0", "to": "v1.1.0"}}
     BR = "auditor/bump-example.com-m-1.1.0"       # keyed by TARGET, never by CVE or commit (LR-32)
 
-    def real(self, rules, automerge=False):
-        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"))
+    def real(self, rules, automerge=False, api=None, repo="o/r"):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"), GITHUB_REPOSITORY=repo)
         os.environ.pop("AUDITOR_AUTOMERGE", None)
         if automerge:
             os.environ["AUDITOR_AUTOMERGE"] = "1"
-        fr = FakeRun(rules)
+        fr = ApiRun(rules, **(api or {}))
+        if not os.path.exists(os.path.join(self.d("ws"), "go.mod")):      # what `go get` + `go mod tidy` leave in the checkout
+            open(os.path.join(self.d("ws"), "go.mod"), "w").write("module m\n")
         with mock.patch.object(R.subprocess, "run", fr):
             res = self.quiet(R._deliver_fix_pr, self.ROW, "2026-09-22", "abcdef1234567890", False, [])[0]
         return res, fr
@@ -532,10 +706,131 @@ class FixPR(Base):
             res, fr = self.real({pre: (1, "", "nope")})
             self.assertEqual(res, (None, "%s: nope" % label, "error"))
             self.assertEqual(fr.argvs()[0], ["git", "reset", "--hard"])
-        res, fr = self.real({("git", "diff"): (1, "", ""), ("git", "commit"): (1, "", "empty")})
-        self.assertEqual(res, (None, "git commit: empty", "error"))
-        res, fr = self.real({("git", "diff"): (1, "", ""), ("git", "push"): (1, "", "rejected")})
-        self.assertEqual(res, (None, "git push: rejected", "error"))
+        # (changed: `git commit` / `git push` are never run; the commit is made through the API and its failures are signed-commit failures)
+        res, fr = self.real({("git", "diff"): (1, "", ""), ("git", "rev-parse"): (1, "", "bad ref")})
+        self.assertEqual(res, (None, "git rev-parse: bad ref", "error"))
+        res, fr = self.real({("git", "diff"): (1, "", "")}, api={"mutation": (1, "", "HTTP 422 empty")})
+        self.assertEqual(res[2], "error"); self.assertIn("signed commit: createCommitOnBranch", res[1]); self.assertIn("HTTP 422 empty", res[1])
+        self.assertTrue(fr.no_unsigned())
+        res, fr = self.real({("git", "diff"): (1, "", "")}, api={"post": (1, "", "HTTP 500")})
+        self.assertEqual(res[2], "error"); self.assertIn("creating temporary branch", res[1])
+        res, fr = self.real({("git", "diff"): (1, "", "")}, repo="")
+        self.assertEqual(res[2], "error"); self.assertIn("GITHUB_REPOSITORY is not set", res[1])
+
+    def test_the_bump_commit_is_made_through_the_api_never_git(self):
+                                                                                   # (no go.sum in the checkout: a module with no dependencies)
+        res, fr = self.real({("git", "diff"): (1, "", ""), ("gh", "pr", "create"): (0, "https://x/pull/3\n", "")})
+        self.assertEqual(res, ("https://x/pull/3", None, "delivered"))
+        self.assertTrue(fr.no_unsigned(), fr.argvs())
+        inp = fr.stdins[0]["variables"]["input"]
+        self.assertTrue(inp["branch"]["branchName"].startswith("auditor/tmp-"))
+        self.assertEqual(inp["expectedHeadOid"], SHA)
+        self.assertEqual(inp["fileChanges"], {"additions": [{"path": "go.mod", "contents": "bW9kdWxlIG0K"}], "deletions": []})
+        self.assertIn("bump example.com/m", inp["message"]["headline"])
+        self.assertIn(["gh", "api", "repos/o/r/git/ref/heads/" + self.BR], fr.argvs())
+
+    ARMED = {("gh", "pr", "view"): (0, "true\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
+    CHG = {("git", "diff"): (1, "", "")}
+
+    def assert_disarmed_before_any_write(self, fr, label):
+        a = fr.argvs()
+        dis = ["gh", "pr", "merge", "--disable-auto", "https://x/pull/7"]
+        self.assertIn(dis, a, label)
+        first_write = next(i for i, x in enumerate(a) if x[:2] == ["gh", "api"] and (x[2] in ("graphql", "--method")))
+        self.assertLess(a.index(dis), first_write, label)                   # disarmed BEFORE any ref write or commit
+
+    def test_an_armed_bump_pr_is_disarmed_before_its_branch_is_replaced_and_stays_disarmed_on_failure(self):
+        res, fr = self.real({**self.CHG, **self.ARMED}, automerge=True)
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered"))
+        self.assert_disarmed_before_any_write(fr, "bump")
+        self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/7"])   # re-armed, bound to the head we wrote
+        self.assertIn(["gh", "pr", "view", "https://x/pull/7", "--json", "headRefOid", "--jq", ".headRefOid"], fr.argvs())
+        res, fr = self.real({**self.CHG, **self.ARMED}, automerge=True, api={"mutation": (1, "", "HTTP 403")})
+        self.assertEqual(res[2], "error"); self.assert_disarmed_before_any_write(fr, "failed")
+        self.assertFalse(any(a[:4] == ["gh", "pr", "merge", "--auto"][:4] or a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+        self.assertEqual([w for w in fr.ref_writes() if w[1] == "repos/o/r/git/refs/heads/" + self.BR], [])    # the live branch was never moved
+        # a disarm that fails stops the delivery before anything is written
+        res, fr = self.real({**self.CHG, **self.ARMED, ("gh", "pr", "merge", "--disable-auto"): (1, "", "HTTP 500")}, automerge=True)
+        self.assertEqual(res[2], "error"); self.assertIn("disable auto-merge", res[1]); self.assertEqual(fr.ref_writes(), [])
+        res, fr = self.real({**self.CHG, **self.ARMED, ("gh", "pr", "view"): (1, "", "HTTP 500")}, automerge=True)
+        self.assertEqual(res[2], "error"); self.assertEqual(fr.ref_writes(), [])
+        # an unarmed PR is not disarmed; a head that is not the one written is not armed
+        res, fr = self.real({**self.CHG, ("gh", "pr", "view"): (0, "false\n", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}, automerge=True)
+        self.assertEqual(res[0], "https://x/pull/7"); self.assertFalse(any(a[:4] == ["gh", "pr", "merge", "--disable-auto"][:4] and "--disable-auto" in a for a in fr.argvs()))
+        res, fr = self.real({**self.CHG, **self.ARMED}, automerge=True, api={"pr_head": "e" * 40})
+        self.assertEqual(res[2], "error"); self.assertIn("not arming", res[1])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+
+    REUSE = {("git", "diff", "--cached"): (1, "", ""), ("git", "diff", "--quiet"): (0, "", ""), ("gh", "pr", "list"): (0, "https://x/pull/7\n", "")}
+
+    def test_an_existing_bump_branch_is_reused_only_for_one_reviewed_bump_commit_on_main_with_the_same_bytes(self):
+        # one verified commit on the CURRENT main, changing only go.mod, with the same bytes: reused, no write at all
+        res, fr = self.real(self.REUSE, api={"lookup": head_lookup(True, SHA)})
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertEqual(fr.ref_writes(), [])
+        self.assertIn(["gh", "api", "repos/o/r/commits/" + OLDHEAD], fr.argvs())
+        # everything else is rebuilt through the API (the PR is then updated); never reused
+        for label, api in (("unsigned", {"lookup": head_lookup(False, SHA)}), ("old main", {"lookup": head_lookup(True, "9" * 40)}),
+                           ("two parents (a verified merge commit)", {"lookup": head_lookup(True, parents=[SHA, "9" * 40])}),
+                           ("parent is not main", {"lookup": head_lookup(True, parents=["9" * 40])}),
+                           ("an extra changed file", {"lookup": head_lookup(True, SHA, files=[("go.mod", "modified"), ("README.md", "modified")])}),
+                           ("a rename", {"lookup": head_lookup(True, SHA, files=[("go.mod", "renamed", {"previous_filename": "a"})])}),
+                           ("different bytes", {"contents": {"go.mod": b"module other\n"}}),
+                           ("lookup failure", {"lookup": (1, "", "HTTP 500")}), ("absent", {"live": None})):
+            res, fr = self.real(self.REUSE, api=api)
+            self.assertEqual(res, ("https://x/pull/7", None, "delivered"), label)
+            self.assertEqual([w[0] for w in fr.ref_writes()], ["POST", "COMMIT", "PATCH" if label != "absent" else "POST", "DELETE"], label)
+            self.assertTrue(fr.no_unsigned(), label)
+        # never delivered on an unverified head: the rebuild itself failing is an error, and the live branch was not touched
+        for api in ({"lookup": head_lookup(False, SHA), "mutation": (1, "", "HTTP 403")}, {"lookup": (1, "", "HTTP 500"), "post": (1, "", "HTTP 403")}):
+            res, fr = self.real(self.REUSE, api=api)
+            self.assertEqual(res[0], None); self.assertEqual(res[2], "error")
+            self.assertEqual([w for w in fr.ref_writes() if w[1] == "repos/o/r/git/refs/heads/" + self.BR], [])
+        # an unchanged branch with no repository to verify against is an error, never "delivered"
+        res, fr = self.real(self.REUSE, repo="")
+        self.assertEqual(res[2], "error")
+
+    def test_a_pr_discovery_failure_aborts_before_any_write(self):                     # a failed lookup is not "no PR"
+        for rules in ({("gh", "pr", "list"): (1, "", "HTTP 500")}, {("gh", "pr", "list"): (1, "", "")}):
+            res, fr = self.real({**self.CHG, **rules}, automerge=True)
+            self.assertEqual(res[0], None); self.assertEqual(res[2], "error"); self.assertIn("gh pr list", res[1])
+            self.assertEqual(fr.ref_writes(), []); self.assertTrue(fr.no_unsigned())
+            self.assertFalse(any(a[:3] in (["gh", "pr", "merge"], ["gh", "pr", "create"], ["gh", "pr", "view"]) for a in fr.argvs()))
+        res, fr = self.real({**self.REUSE, ("gh", "pr", "list"): (1, "", "HTTP 500")})   # also when the branch would be reused
+        self.assertEqual(res[2], "error"); self.assertEqual(fr.ref_writes(), [])
+
+    def test_every_bump_path_arms_only_the_verified_head(self):
+        new = {**self.CHG, ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")}
+        res, fr = self.real(new, automerge=True)                                       # a new PR: head == the commit the helper made
+        self.assertEqual(res, ("https://x/pull/9", None, "delivered"))
+        self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/9"])
+        self.assertLess(fr.index(["gh", "pr", "view", "https://x/pull/9", "--json", "headRefOid", "--jq", ".headRefOid"]), len(fr.argvs()) - 1)
+        res, fr = self.real(new, automerge=True, api={"pr_head": "e" * 40})            # replaced between the commit and the arm
+        self.assertEqual(res[0], None); self.assertEqual(res[2], "error"); self.assertIn("head changed since it was verified", res[1])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+        res, fr = self.real(self.REUSE, automerge=True, api={"pr_head": OLDHEAD})      # a REUSED branch: bound to the head that was verified
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertEqual(fr.ref_writes(), [])
+        self.assertEqual(fr.argvs()[-1], ["gh", "pr", "merge", "--auto", "--squash", "https://x/pull/7"])
+        res, fr = self.real(self.REUSE, automerge=True, api={"pr_head": "e" * 40})      # its head changed after the verification
+        self.assertEqual(res[2], "error"); self.assertIn("head changed since it was verified", res[1])
+        self.assertFalse(any(a[:3] == ["gh", "pr", "merge"] and "--auto" in a for a in fr.argvs()))
+        res, fr = self.real({**self.CHG, ("gh", "pr", "list"): [(0, "", ""), (0, "https://x/pull/8", "")], ("gh", "pr", "create"): (1, "", "already exists")},
+                            automerge=True, api={"pr_head": "e" * 40})                 # the race-found PR is bound too
+        self.assertEqual(res[2], "error")
+        res, fr = self.real(new, automerge=True, api={"pr_head": None})                # a head that cannot be read is not armed either
+        self.assertEqual(res[2], "error")
+
+    def test_a_staging_failure_is_an_error_and_a_missing_go_sum_is_not_staged(self):
+        res, fr = self.real({("git", "add"): (1, "", "fatal: pathspec 'go.mod' did not match")})
+        self.assertEqual(res, (None, "git add: fatal: pathspec 'go.mod' did not match", "error"))
+        self.assertEqual(fr.ref_writes(), [])
+        res, fr = self.real({**self.CHG, ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.assertIn(["git", "add", "go.mod"], fr.argvs())                           # no go.sum in the checkout: only what exists is staged
+        os.remove(os.path.join(self.d("ws"), "go.mod"))
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws"), GITHUB_REPOSITORY="o/r")
+        fr = ApiRun()
+        with mock.patch.object(R.subprocess, "run", fr):
+            res = self.quiet(R._deliver_fix_pr, self.ROW, "2026-09-22", "abcdef1234567890", False, [])[0]
+        self.assertEqual(res[2], "error"); self.assertIn("go.mod", res[1])            # no go.mod at all: nothing to stage, never "unresolvable"
 
     def test_go_get_unresolvable_and_tidy_error(self):
         res, fr = self.real({("go", "get"): (1, "", "unknown revision")})
@@ -549,7 +844,7 @@ class FixPR(Base):
     def test_noop_bump_is_unresolvable(self):
         res, fr = self.real({("git", "diff"): (0, "", "")})                # nothing staged
         self.assertEqual(res, (None, None, "unresolvable"))
-        self.assertIn(["git", "add", "go.mod", "go.sum"], fr.argvs())
+        self.assertIn(["git", "add", "go.mod"], fr.argvs())               # (changed: only the files that exist are staged; the checkout has no go.sum)
         self.assertFalse(any(a[:2] == ["git", "commit"] for a in fr.argvs()))
 
     def test_existing_and_race_and_create(self):
