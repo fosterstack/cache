@@ -110,6 +110,17 @@ def inventory_pairs(path):
     return request_pairs(doc.get("components") if isinstance(doc, dict) else None)
 
 
+def _finding_ok(v):
+    """A finding both readers can use: an id, a NON-empty list of affected components each naming its bom-ref (the gate reads affects[].ref, the panel drops
+    a finding with no affects, so a missing or empty list would read as clean there), and ratings, when present, as objects."""
+    if not (isinstance(v, dict) and isinstance(v.get("id"), str) and v["id"]):
+        return False
+    aff = v.get("affects")
+    if not (isinstance(aff, list) and aff and all(isinstance(a, dict) and isinstance(a.get("ref"), str) and a["ref"] for a in aff)):
+        return False
+    return "ratings" not in v or (isinstance(v["ratings"], list) and all(isinstance(r, dict) for r in v["ratings"]))
+
+
 def check_answer(path, req_pairs):
     """FILE must be the ScanSbom envelope {"sbom": <CycloneDX with a components list>} that carries EVERY identifier of the
     request SBOM (a superset: the service adds components of its own). An extra response component only adds
@@ -125,8 +136,8 @@ def check_answer(path, req_pairs):
     # (`or []`), so it is refused here (fail closed); an absent field is the service's answer for an image without findings
     if "vulnerabilities" in sbom:
         vs = sbom["vulnerabilities"]
-        if not isinstance(vs, list) or not all(isinstance(v, dict) and isinstance(v.get("id"), str) and v["id"] for v in vs):
-            raise ValueError("the findings field is not a list of objects with an id")
+        if not isinstance(vs, list) or not all(_finding_ok(v) for v in vs):
+            raise ValueError("the findings field is not a list of well-formed findings")
 
 
 def stored_path(d, date, key):

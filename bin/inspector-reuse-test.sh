@@ -227,6 +227,27 @@ for name, val in (("obj", {}), ("str", "x"), ("num", 0), ("null", None), ("items
     json.dump(g, open("%s/v-bad-%s.json" % (w, name), "w"))
 PY
 for n in obj str num null items noid; do vtry "a findings field that is not a list of objects with an id ($n)" 1 "$w/v-bad-$n.json"; done
+# each finding must name the components it affects the way both readers need (the gate reads affects[].ref, the panel drops a finding with no affects) and carry ratings as objects
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+f = json.load(open(w + "/f-vuln.json"))
+vs = f["sbom"]["vulnerabilities"]
+assert vs and isinstance(vs[0].get("affects"), list) and vs[0]["affects"], vs[0]
+def put(name, mut):
+    g = json.loads(json.dumps(f)); mut(g["sbom"]["vulnerabilities"][0])
+    json.dump(g, open("%s/v-bad-%s.json" % (w, name), "w"))
+put("aff-obj", lambda v: v.__setitem__("affects", {}))
+put("aff-empty", lambda v: v.__setitem__("affects", []))
+put("aff-missing", lambda v: v.pop("affects"))
+put("aff-str", lambda v: v.__setitem__("affects", ["x"]))
+put("aff-noref", lambda v: v.__setitem__("affects", [{"versions": []}]))
+put("aff-emptyref", lambda v: v.__setitem__("affects", [{"ref": ""}]))
+put("aff-numref", lambda v: v.__setitem__("affects", [{"ref": 5}]))
+put("rat-str", lambda v: v.__setitem__("ratings", "high"))
+put("rat-items", lambda v: v.__setitem__("ratings", ["high"]))
+PY
+for n in aff-obj aff-empty aff-missing aff-str aff-noref aff-emptyref aff-numref rat-str rat-items; do vtry "a finding whose affects or ratings are malformed ($n)" 1 "$w/v-bad-$n.json"; done
 vtry "an empty file" 1 "$w/m4.json"
 ls "$w" | grep -q "findings" && bad "validate: wrote something" || ok "validate: writes nothing"
 
