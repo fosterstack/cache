@@ -293,3 +293,133 @@ jobs:
       - name: delete the identity token file
         if: ${{ always() }}
         run: rm -f "${RUNNER_TEMP}/anthropic-identity-token"
+
+  # The daily refresh of the build inputs (REQ-REFRESH-001-AC24 to AC31; owner's rules 4 to 9 of Oct 14). One job in this workflow, main only,
+  # on the daily schedule or by hand, never on a pull request. It looks for a newer version of every base package and build tool, adds what it
+  # finds to the package archive (verified by signature and checksum), opens a pull request on its own refresh/ branch that moves the build to the
+  # new versions, and stores the archive back in our own registry only if something changed. It never merges, never pushes to main.
+  # Its own token is read-only plus packages: write (the archive store); the pull request is opened with the auditor App's token, minted exactly
+  # as the check job mints it and handed to the two steps that open pull requests.
+  refresh:
+    name: refresh the build inputs and open the refresh pull request
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '23 6 * * *') }}
+    # one refresh at a time: two overlapping runs could each pass the open-pull-request check and each open a pull request (AC29)
+    concurrency:
+      group: refresh-inputs
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false   # the App token, via gh, is the only push credential
+
+      # Rule 6: the very first thing is the key. Before any tool is installed, any registry is touched, any archive is pulled or any token is minted,
+      # the live Wolfi signing key must be the one pinned in build/locks/archive-keys.sha256 (a difference, a missing or repeated line: exit 3, a human looks).
+      - name: check the live Wolfi key against the pinned one
+        run: ./bin/refresh-inputs.sh key-check --repo-dir "$GITHUB_WORKSPACE"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          check-latest: true
+
+      - name: install apko and crane at their fixed locations
+        run: |
+          set -euo pipefail
+          sudo ./bin/install-build-tools.sh apko /usr/local/bin
+          sudo chown "$(id -un)" /usr/local/bin
+          GOTOOLCHAIN=local GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+
+      - name: log in to our registry with the job's own token
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | /usr/local/bin/crane auth login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: pull the archive by its recorded digest
+        if: ${{ hashFiles('build/archive.json') != '' }}
+        run: |
+          set -euo pipefail
+          ./bin/archive-pull.sh --pointer build/archive.json --out "$RUNNER_TEMP/archive"
+          find "$RUNNER_TEMP/archive" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum > "$RUNNER_TEMP/archive.before"
+
+      # The one state with no archive: build/archive.json is absent on main. The live Wolfi key must be the one pinned in
+      # build/locks/archive-keys.sha256 (a difference, a missing or repeated line stops for a human: exit 3); the refresh step then
+      # builds the archive from the committed base locks. Any other state (a pointer that is unreadable or does not resolve) fails closed above.
+      - name: bootstrap the archive from the pinned Wolfi key
+        if: ${{ hashFiles('build/archive.json') == '' }}
+        run: |
+          set -euo pipefail
+          ./bin/refresh-inputs.sh bootstrap --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive"
+          find "$RUNNER_TEMP/archive" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum > "$RUNNER_TEMP/archive.before"
+
+      - name: check the live Wolfi key against the pulled archive
+        run: |
+          set -euo pipefail
+          ./bin/refresh-inputs.sh archive-key-check --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive"
+
+      - name: mint the auditor App's token (exactly the auditor's scope)
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: refresh the inputs (stage the pull request)
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          ./bin/refresh-inputs.sh refresh --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive" --pr-author "$AUDITOR_APP_SLUG" --plan-dir "$RUNNER_TEMP/plan"
+
+      - name: check for a newer certified crypto module
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          ./bin/refresh-inputs.sh fips-module --go-root "$(go env GOROOT)" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG" --plan-dir "$RUNNER_TEMP/plan"
+
+      # Stored first (rule 6, last step), so the pull request that moves the build to the new versions can carry the new pointer (rule 7).
+      # Only when something changed; an archive that no pull request points to is harmless.
+      - name: store the archive when something changed
+        id: store
+        run: |
+          set -euo pipefail
+          after=$(find "$RUNNER_TEMP/archive" -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum)
+          if [ "$after" = "$(cat "$RUNNER_TEMP/archive.before")" ]; then
+            echo "the archive is unchanged: nothing stored"
+          else
+            digest=$(./bin/archive-push.sh --dir "$RUNNER_TEMP/archive")
+            echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+            echo "the archive changed and was stored at ${digest}" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: open the pull requests
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          AUDITOR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          STORED_DIGEST: ${{ steps.store.outputs.digest }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$RUNNER_TEMP/plan" ]; then
+            echo "nothing planned: no pull request"
+            exit 0
+          fi
+          gh auth setup-git
+          git config user.name "$AUDITOR_APP_SLUG[bot]"
+          git config user.email "$AUDITOR_APP_SLUG[bot]@users.noreply.github.com"
+          if [ -n "$STORED_DIGEST" ]; then
+            ./bin/refresh-inputs.sh open-pr --plan-dir "$RUNNER_TEMP/plan" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG" --archive "$RUNNER_TEMP/archive" --archive-digest "$STORED_DIGEST"
+          else
+            ./bin/refresh-inputs.sh open-pr --plan-dir "$RUNNER_TEMP/plan" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG"
+          fi

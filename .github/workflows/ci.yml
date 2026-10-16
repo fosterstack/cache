@@ -317,6 +317,9 @@ jobs:
       - name: input refresh script regressions
         run: bash bin/refresh-inputs-test.sh
 
+      - name: archive push, pull and verify regressions
+        run: bash bin/archive-test.sh
+
       - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
         run: python3 bin/gen-recipes.py --check
 

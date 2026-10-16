@@ -3332,7 +3332,121 @@ requirements:
       - id: REQ-REFRESH-001-AC23
         given: "bin/refresh-inputs.sh"
         when: "it is read and run"
-        then: "it names curl, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by fixed absolute path (never through the caller's search path; no other utility is called by bare name, cat, sed and dirname being builtins or parameter expansions instead), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it only in the lines marked TEST-SUBST (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
+        then: "it names curl, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path; no other utility is called by bare name, cat, sed and dirname being builtins or parameter expansions instead), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it ONLY in occurrences of those ten fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC24
+        given: "the repository's workflows"
+        when: "the daily refresh job exists"
+        then: "it is one job named refresh in the existing .github/workflows/go-freshness.yml and no workflow file was added (rule 5; owner Oct 14 rule 5)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC25
+        given: ".github/workflows/go-freshness.yml"
+        when: "it runs on its daily schedule or by workflow_dispatch"
+        then: "the refresh job runs once per run, on no other trigger (never on a pull_request), and does nothing on any ref other than main (owner Oct 14 rule 5)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC26
+        given: "a refresh run"
+        when: "the refresh job's steps run"
+        then: "the Wolfi signing key is checked first (a change stops everything for a human, before any other step); then the package archive is fetched by its recorded fingerprint; then the step looks for a newer version of every base package and build tool, downloads each, checks its signature and checksum, adds it to the archive; then it checks whether a newer certified crypto module exists; then it stores the archive back only if something changed (owner Oct 14 rule 6, in his words)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC27
+        given: "the refresh job"
+        when: "it pulls or stores the archive"
+        then: "it uses bin/archive-pull.sh by the digest committed in build/archive.json and bin/archive-push.sh, the store happens only in this job and only after verification passed, no other workflow calls archive-push.sh, and each tool is called by its fixed path with no test switch (owner Oct 14 rules 6 and 9)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC28
+        given: "the refresh job's permissions block"
+        when: "the job runs"
+        then: "the job's own token permissions are those of the existing go bump job (contents: read, the pull request opened with the auditor App's token minted exactly as that job mints it) plus packages: write for storing the archive in our own registry, and nothing else; no new secret, account, environment or ruleset; the top-level permissions stay contents: read (owner Oct 14 rule 8)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC29
+        given: "the refresh job found any update"
+        when: "it finishes"
+        then: "it opens a pull request on its own refresh/ branch that moves the build to the new versions, targeting main; the job never merges or approves it, never pushes to main or to any branch not under refresh/, and opens nothing and pushes nothing when nothing changed; with a refresh pull request already open it opens no second (owner Oct 14 rule 7, in his words)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC30
+        given: "the live Wolfi signing key differs from the archived one"
+        when: "the refresh job runs"
+        then: "it exits 3 saying a human must look, opens no pull request, stores nothing, and its later steps do not run (rule 6, first step)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC31
+        given: "bin/go-freshness-wiring-test.sh"
+        when: "it runs"
+        then: "it lists the refresh job as a consumer of the auditor App's credential, requires the jobs of go-freshness.yml to be exactly check, mutation and refresh, requires every action reference in the refresh job to be a commit digest with a tag comment, and fails on a copy that changes any of AC24 to AC30's properties"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+  - id: REQ-ARCHIVE-001
+    title: The archive is pushed, pulled and checked by digest, with no way around the pointer
+    statement: >
+      The archive of apk packages, package indexes and the Wolfi key file shall be stored as one OCI artifact in GHCR under a digest, by one script that only the refresh job calls (the only writer). Build, Rebuild and the refresh job shall pull it by exactly the digest committed in build/archive.json, before and outside the sealed build, into a staging directory, and refuse any digest or any file hash that differs from the pointer; no fallback to the live internet.
+    source: [bin/archive-push.sh, bin/archive-pull.sh, bin/archive-verify.py, build/archive.json]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 26, 27, 29, 30, 44 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md) and the advisor's Oct 9 ruling (option A) as read back in ops/handoffs/outbox/2026-10-09-cache-readback-archive-tooling.md (approved by handoff 0423 item 1)
+    confidence: implementation-only
+    notes: >
+      PROPOSED by the helper: every AC of this requirement is new English and needs the owner's ratification (AC9 is the tool-path convention, the same form as REQ-BUILDAPK-001-AC3). Not in this change: the refresh job's workflow edit, the real archive contents (the first refresh run creates them), registry deletion and retention, and any crane install beyond the version pinned in stage-promote.yml (the fixed path of crane is /usr/local/bin/crane, a TEST-SUBST line). Symlinks are refused by the push and by verify, and the refresh layout does not use one (advisor 0425, amended REQ-REFRESH-001-AC13): <arch>/APKINDEX.tar.gz is a regular-file COPY of index/APKINDEX-<sha256>.tar.gz, so the same sha256 is listed in the pointer under both names (archive-test covers a directory holding both). The refresh job writes build/archive.json from archive-push.sh's printed digest plus the sorted file list, with no new script. Crane (advisor 0425): installed at /usr/local/bin/crane with stage-promote.yml's exact pin (go install github.com/google/go-containerregistry/cmd/crane@v0.22.1); no workflow edit in this change. The version annotation of a layer is parsed from an apk file name (<name>-<version>-r<N>.apk) and is empty for other files.
+    acceptance_criteria:
+      - id: REQ-ARCHIVE-001-AC1
+        given: "a directory in the refresh job's archive layout (keys/, <arch>/<name>-<version>.apk, <arch>/index/), holding only regular files"
+        when: "bin/archive-push.sh --dir DIR runs"
+        then: "it packs the directory into one OCI artifact with one layer per file, each layer annotated with the file's name (relative path), version and sha256, pushes it to ghcr.io/fosterstack/cache-archive by its digest (no tag), and prints that digest (sha256:<hex>) as its only output; the digest is a function of the file names and bytes alone (the same directory gives the same digest, whatever the file times) (rules 27, 29, 44; read-back item 1)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC2
+        given: "a directory that holds a symlink, any entry that is not a regular file, no file, a file name outside letters, digits and . _ + ~ - (or starting with a dot), or a push after which crane reports a digest other than the one computed from the layout"
+        when: "bin/archive-push.sh runs"
+        then: "it refuses before calling crane (exit 2, naming the entry) for the directory problems, and exits 1 printing nothing on stdout when crane fails or reports another digest than the computed one (rules 27, 44; read-back items 1 and 4: push output digest checked)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC3
+        given: "build/archive.json, the pointer to the archive"
+        when: "it is read by bin/archive-verify.py or bin/archive-pull.sh"
+        then: "it must hold exactly schema (the number 1), artifact (ghcr.io/fosterstack/cache-archive@sha256:<64 lower-case hex>, by digest only) and files (a non-empty list of {name, sha256}, sorted and unique, each name a safe relative path, each sha256 64 lower-case hex) and nothing else, and is refused (exit 2) otherwise; it changes only through the refresh job's pull requests (rules 27, 30, 44; read-back item 2)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC4
+        given: "a pointer naming a digest, and optionally --digest"
+        when: "bin/archive-pull.sh --pointer FILE --out DIR [--digest sha256:<hex>] runs"
+        then: "it pulls exactly the artifact the pointer names, by digest, with crane pull --format oci, and refuses (exit 2, before any crane call, nothing written) a --digest that is not the pointer's own; it never pulls by tag and has no fallback to any other source (rules 26, 27, 30, 44; read-back items 1 and 2)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC5
+        given: "a directory and a pointer"
+        when: "bin/archive-verify.py verify --pointer FILE --dir DIR runs"
+        then: "it exits 0 only when the directory holds exactly the listed files with the listed sha256, and exits 1 naming each missing, extra or altered file, an extra directory, or a symlink (rules 27, 29, 44; read-back items 1 and 4)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC6
+        given: "an artifact that was altered after it was pushed, an artifact that holds a file the pointer does not list or lacks one it lists, a crane that fails half-way, or an output path that already exists"
+        when: "bin/archive-pull.sh runs"
+        then: "it checks the manifest hashes to the committed digest, every layer hashes to its digest and annotation, and the files equal the pointer's list, in a staging directory beside the output; it renames the staging directory to the output path only after all checks passed, otherwise exits 1 naming the file and leaves nothing at the output path or beside it; an output path that already exists (a half-pulled directory) is refused (exit 2) untouched (rules 27, 30, 44; read-back items 1 and 4: half-pulled directory refused)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC7
+        given: "the digest the refresh job's push printed and the pointer the job commits"
+        when: "bin/archive-verify.py verify --pointer FILE --dir DIR --pushed-digest sha256:<hex> runs"
+        then: "it exits 1 naming both digests when the pointer's artifact does not name the pushed digest, and 0 when it does; a --pushed-digest that is not sha256:<64 hex> is refused (exit 2) (rules 27, 44; read-back item 4: the committed pointer must name the pushed digest)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC8
+        given: "the three archive tools"
+        when: "they are read and run"
+        then: "bin/archive-push.sh is the only one that names a crane write (crane push); bin/archive-pull.sh and bin/archive-verify.py name none; none names sudo, unshare, melange or apko (the pull happens before and outside the sealed call, rules 38a, 38b unchanged), a token, a password or a login; the shell scripts read no variable of the caller (the push uses the workflow's own credential, which crane finds itself) and a hostile caller environment (a tool or repository variable, PYTHONPATH, PYTHONSTARTUP) changes nothing; STATED RESIDUAL: TMPDIR, which mktemp itself reads for the scratch directory of the push and the pull, and the process environment the script starts in (read-back item 3)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC9
+        given: "bin/archive-push.sh, bin/archive-pull.sh and bin/archive-verify.py"
+        when: "they are read and run"
+        then: "the shell scripts name crane, python3, mktemp and rm by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path, also not inside nested substitutions or quoted words), every python3 runs as python3 -I -B, there is no test hook (no test-mode variable), and bin/archive-test.sh runs a copy that differs from each file ONLY in occurrences of those four fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 27, 44; same form as REQ-BUILDAPK-001-AC3 and REQ-REFRESH-001-AC23; PROPOSED by the helper: this AC needs the owner's ratification)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-IMAGE-001
