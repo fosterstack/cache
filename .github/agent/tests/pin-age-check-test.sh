@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -2280,6 +2280,54 @@ ctxno "a multi-line parameter expansion hides an assignment-looking line" "${SH}
 ctxyes "a one-line parameter expansion is understood" "${SH}"$'value=${UNSET:-b}\n# curl https://e.example/x\n' comment
 ctxno "argparse can create a file (FileType)" "${SH}"$'python3 - <<\'PY\'\nimport argparse\np = argparse.ArgumentParser()\np.add_argument("o", type=argparse.FileType("w"))\nx = "curl https://e.example/x"\nPY\n' pystring
 ctxyes "argparse with the review label" "${SH}"$'python3 - <<\'PY\'\nimport argparse\np = argparse.ArgumentParser()\nx = "curl https://e.example/x"\nPY\n' pystring "$IMP"
+# --- REQ-SUP-001-AC2 (round 1 of cache#180, seat B, B1): the images the persona UAT runs are named in bin/persona-uat-tools.json, a file the driver reads and no workflow
+# names; the inventory must read it like any other image CI runs, so a new or moved persona image needs the same 7 days of public age and reaches the daily advisory check. ------
+PT1="ghcr.io/own/ptool-a@$DIG1"; PT2="ghcr.io/own/ptool-b@$DIG2"; PT3="ghcr.io/own/ptool-c@$DIG3"
+PTJ=$(printf '{\n  "capture": "%s",\n  "gradle": "%s",\n  "shell": "%s"\n}\n' "$PT1" "$PT2" "$PT3")
+newcase ptools "$(pyw bin/persona-uat-tools.json "$PTJ")"
+runck ptools '{"times": {}}'
+CASE="AC2 persona tools: a new tools file with three digest images and no age data FAILS (exit 1) and names all three"
+check test "$rc" -eq 1; for n in ptool-a@$DIG1 ptool-b@$DIG2 ptool-c@$DIG3; do check grep -qF "image:ghcr.io/own/$n" "$work/ptools.out"; done
+runck ptools "{\"times\": {\"image:ghcr.io/own/ptool-a@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}, \"image:ghcr.io/own/ptool-b@$DIG2\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}, \"image:ghcr.io/own/ptool-c@$DIG3\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
+CASE="AC2 persona tools: the same three images 10 days old via registry-push are accepted (exit 0) and named"
+check test "$rc" -eq 0; for n in ptool-a@$DIG1 ptool-b@$DIG2 ptool-c@$DIG3; do check grep -qF "image:ghcr.io/own/$n" "$work/ptools.out"; done
+runck ptools "{\"times\": {\"image:ghcr.io/own/ptool-a@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}, \"image:ghcr.io/own/ptool-b@$DIG2\": {\"time\": \"$YOUNG\", \"source\": \"registry-push\"}, \"image:ghcr.io/own/ptool-c@$DIG3\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
+CASE="AC2 persona tools: one image 3 days old FAILS the check (exit 1)"; check test "$rc" -eq 1; check grep -qF "image:ghcr.io/own/ptool-b@$DIG2" "$work/ptools.out"
+newcase ptagonly "$(pyw bin/persona-uat-tools.json "$(printf '{\n  "shell": "ghcr.io/own/ptool-a:latest"\n}\n')")"
+runck ptagonly '{"times": {}}'
+CASE="AC2 persona tools: an image named by a tag alone (no digest) can never pass: exit 1"; check test "$rc" -eq 1
+newcase pbadjson "$(pyw bin/persona-uat-tools.json 'this is not json')"
+runck pbadjson '{"times": {}}'
+CASE="AC2 persona tools: a tools file that is not JSON stops the check (exit 2), never 'nothing to measure'"; check test "$rc" -eq 2
+for bad in '{"shell": 5}' '{"shell": ["ghcr.io/own/ptool-a@'$DIG1'"]}' '["ghcr.io/own/ptool-a@'$DIG1'"]' '{"shell": {"image": "ghcr.io/own/ptool-a@'$DIG1'"}}'; do
+  newcase pbadshape "$(pyw bin/persona-uat-tools.json "$bad")"
+  runck pbadshape '{"times": {}}'
+  CASE="AC2 persona tools: a tools file of another shape ($bad) stops the check (exit 2), never skipped"; check test "$rc" -eq 2
+done
+# round 2 of cache#393: a registry with a port is an ordinary image reference, and a digest-only move in the same repository is a moved item
+PTP="registry.example:5000/team/ptool-p@$DIG1"
+newcase pport "$(pyw bin/persona-uat-tools.json "$(printf '{\n  "shell": "%s"\n}\n' "$PTP")")"
+runck pport "{\"times\": {\"image:registry.example:5000/team/ptool-p@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
+CASE="AC2 persona tools: an image on a registry with a port, 10 days old via registry-push, is inventoried (named) and accepted (exit 0)"
+check test "$rc" -eq 0; check grep -qF "registry.example:5000/team/ptool-p@$DIG1" "$work/pport.out"
+rm -rf "$work/pmove2"; cp -R "$base" "$work/pmove2"
+( cd "$work/pmove2" && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG1" >bin/persona-uat-tools.json && git add -A && git commit -q -m b2 && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG2" >bin/persona-uat-tools.json && git add -A && git commit -q -m h2 )
+runck pmove2 '{"times": {}}'
+CASE="AC2 persona tools: moving only the digest of the same repository is a moved item with no age: FAILS (exit 1) and names the new digest, not the old one"
+check test "$rc" -eq 1; check grep -qF "ghcr.io/own/same@$DIG2" "$work/pmove2.out"; check test "$(grep -cF "same@$DIG1" "$work/pmove2.out")" -eq 0
+# round 1 of cache#393 (both seats): a duplicate key, an image reference that is not <name>[:tag]@sha256:<64 hex> exactly, and a tools file that cannot be read each stop the check (exit 2): an image we cannot read is never skipped
+for bad in '{"shell": 7, "shell": "'$PT1'"}' '{"shell": "'$PT1'", "shell": "'$PT2'"}' '{"shell": "ghcr.io/own/ptool-a/'$DIG1'"}' '{"shell": "ghcr.io/own/ptool-a@'$DIG1'0"}' '{"shell": "ghcr.io/own/ptool-a@'${DIG1^^}'"}' '{"": "'$PT1'"}'; do
+  newcase pbadref "$(pyw bin/persona-uat-tools.json "$bad")"
+  runck pbadref '{"times": {}}'
+  CASE="AC2 persona tools: a tools file with a duplicate key or a reference that is not exactly name@sha256:<64 hex> ($bad) stops the check (exit 2)"; check test "$rc" -eq 2
+done
+# a digest that MOVES in a tools file the base already holds is a moved item like any other pin
+rm -rf "$work/pmove"; cp -R "$base" "$work/pmove"
+( cd "$work/pmove" && printf '{\n  "shell": "%s"\n}\n' "$PT1" >bin/persona-uat-tools.json && git add -A && git commit -q -m b1 && printf '{\n  "shell": "%s"\n}\n' "$PT3" >bin/persona-uat-tools.json && git add -A && git commit -q -m h1 )
+runck pmove '{"times": {}}'
+CASE="AC2 persona tools: moving the digest in a tools file the base holds is a moved item with no age: FAILS (exit 1) and names the new digest, not the old one"
+check test "$rc" -eq 1; check grep -qF "image:ghcr.io/own/ptool-c@$DIG3" "$work/pmove.out"; check test "$(grep -cF "ptool-a@$DIG1" "$work/pmove.out")" -eq 0
+
 # a context the file does not name, a non-text value, a proof without a context: the file is malformed (exit 2), never "nothing ruled" and never "everything ruled"
 newcase cx "$(pyw bin/ctx.sh "${SH}# curl https://e.example/x"$'\n')"
 for bad in '"context": "shell"' '"context": ""' '"context": 5' '"context": ["comment"]' '"proof": "x"' '"context": "comment", "proof": 7' '"context": "comment", "proof": ""' '"context": null'; do
@@ -3131,9 +3179,24 @@ for f in bi-str bi-int bi-dup bi-bad; do
   CASE="AC21: a malformed list ($f) stops the check, never 'nothing exempted' and never 'everything' (exit 2)"
   check test "$rc" -eq 2
 done
+# REQ-SUP-001-AC22: the committed list names the archive index record exactly (the daily refresh pull request moves it; rule 48: no seven-day hold on Wolfi)
+CASE="AC22: the committed .github/policy/base-inputs.json names build/locks/archive-index.sha256 exactly once, beside the archive key record"
+check python3 - "$root/.github/policy/base-inputs.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))["base_inputs"]
+assert d.count("build/locks/archive-index.sha256") == 1 and "build/locks/archive-keys.sha256" in d, d
+PY
+bick "$root/.github/policy/base-inputs.json"
+CASE="AC22: with the committed list, the moved archive index record and the archive key record are base inputs, no finding (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'base input' "$work/bi.out")" -ge 2
+rm -rf "$work/bi3"; cp -R "$work/bi" "$work/bi3"
+( cd "$work/bi3" && printf '%s\n' "x86_64 sha256:cccc" >build/locks/archive-index.sha256.bak && mkdir -p docs && printf '%s\n' "x86_64 sha256:dddd" >docs/archive-index.sha256 && git add -A && git -c user.name=t -c user.email=t@x commit -qm lookalikes )
+rc=0; python3 "$chk" --root "$work/bi3" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --base-inputs "$root/.github/policy/base-inputs.json" >"$work/bi3.out" 2>&1 || rc=$?
+CASE="AC22: a name with a suffix and the same name in another directory stay items that cannot pass, with the committed list (exit 1, two findings)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL tool:file:' "$work/bi3.out")" -eq 2
 # a pull request's own list is never read: the default is the copy beside the script, not the tree under --root
 rm -rf "$work/bi2"; cp -R "$work/bi" "$work/bi2"
-( cd "$work/bi2" && mkdir -p .github/policy && cp "$work/bi-ok.json" .github/policy/base-inputs.json && git add -A && git -c user.name=t -c user.email=t@x commit -qm list )
+( cd "$work/bi2" && printf '%s\n' "x86_64 sha256:eeee" >build/locks/zz-record.sha256 && mkdir -p .github/policy && printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", "build/locks/archive-index.sha256", "build/locks/zz-record.sha256"]}' >.github/policy/base-inputs.json && git add -A && git -c user.name=t -c user.email=t@x commit -qm list )
 rc=0; python3 "$chk" --root "$work/bi2" --base HEAD~2 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/bi2.out" 2>&1 || rc=$?
 CASE="AC21: a list the pull request itself adds under --root exempts nothing (the default list is the base branch's copy beside the script): exit 1"
 check test "$rc" -eq 1
