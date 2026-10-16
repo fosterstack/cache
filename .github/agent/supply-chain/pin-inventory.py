@@ -858,6 +858,8 @@ bin/melange-apko-lib.sh
 bin/patch-decide-test.sh
 bin/sealed-proof.sh
 bin/vendor-check.sh
+bin/vendor-provenance-test.sh
+bin/vendor-provenance.py
 bin/vendoring-test.sh
 bin/vex-forms-test.sh
 bin/vex-scope-test.sh
