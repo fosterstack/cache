@@ -580,7 +580,7 @@ _PY_FORBIDDEN_NAMES = frozenset("exec eval compile __import__ getattr setattr gl
 _DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od".split())
 _PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii "
                           "unicodedata urllib.parse shlex enum dataclasses".split())
-_DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\(\))", re.M)
+_DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\))", re.M)
 
 
 def _norm_word(w):
@@ -663,6 +663,10 @@ def _shell_lex(lines):
                 elif c == "$" and line[j + 1:j + 2] == "(":
                     if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
                     else: stack.append("$("); j += 1
+                elif c == "{" and (j == 0 or line[j - 1] in " \t;&|(") and (j + 1 == len(line) or line[j + 1] in " \t"):
+                    stack.append("{")                       # a brace group: what a heredoc inside it feeds is decided by what follows the closing brace
+                elif c == "}" and top == "{" and (j == 0 or line[j - 1] in " \t;&|"):
+                    stack.pop()
                 elif c == "(":
                     if top == "(" and line[j - 1:j] == "(": stack[-1] = "(("
                     else: stack.append("(")
@@ -680,7 +684,7 @@ def _shell_lex(lines):
                         raw = m.group(2)
                         quoted = bool(re.search(r"['\"\\]", raw))
                         delim = _unquote(raw)
-                        ops.append((m.group(1) == "-", quoted, delim, any(s in ("$(", "`", '"') for s in stack)))
+                        ops.append((m.group(1) == "-", quoted, delim, any(s in ("$(", "`", '"', "(", "((", "{") for s in stack)))
                         j += m.end() - 1
             j += 1
         i += 1
@@ -880,6 +884,10 @@ def _py_program_flags(body):
             for t in nd.targets:
                 if isinstance(t, ast.Name) and isinstance(nd.value, ast.Lambda): defined.add(t.id)
     called = {id(nd.func) for nd in ast.walk(tree) if isinstance(nd, ast.Call)}
+    roots = {id(nd.value) for nd in ast.walk(tree) if isinstance(nd, ast.Attribute)}
+    for nd in ast.walk(tree):
+        if isinstance(nd, ast.Name) and nd.id in mods and nd.id not in defined and id(nd) not in roots and id(nd) not in called:
+            why.add("module " + nd.id + " used as a value")      # `x = sys` then x.modules[...]: an alias the walk below would not follow
     for nd in ast.walk(tree):
         if isinstance(nd, ast.Name) and nd.id in _PY_FORBIDDEN_NAMES and nd.id not in defined: why.add(nd.id)
         if isinstance(nd, ast.Name) and nd.id == "open" and nd.id not in defined: why.add("open")
@@ -1017,7 +1025,7 @@ def _context_holds(context, proof, text, line_hash):
         return False
     trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"})) + r"|python[\d.]*"
     if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
-            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\))", text):
+            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text):
         return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
     def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
         return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
