@@ -3314,6 +3314,32 @@ def _():
 
 
 
+@param("LAYOUT", "every input file (the VEX file, the built index, the final index) is refused when another account could have written it (group- or world-writable) or replaced it (a writable, non-sticky directory above it)", [
+    ("the VEX file, world-writable", ("vex-file", 0o666)), ("the VEX file, group-writable", ("vex-file", 0o664)), ("the directory of the VEX file, world-writable", ("vex-dir", 0o777)),
+    ("the built index file, group-writable (compute)", ("index-file", 0o664))])
+def _(arg):
+    kind, mode = arg
+    fx = mk_fx()
+    s = sb()
+    box = os.path.join(s, "in")
+    os.makedirs(box)
+    v = wr(os.path.join(box, "vex.json"), vex_real())
+    i = wr(os.path.join(s, "i.json"), fx.bytes)
+    target = {"vex-file": v, "vex-dir": box, "index-file": i}[kind]
+    os.chmod(target, mode)
+    d, _b = mk_layout(fx)
+    t0 = tree(d, full=True)
+    if kind == "index-file":
+        r = run(["compute", "--index", i, "--vex", v, "--out-dir", os.path.join(s, "out")])
+    else:
+        r = run(["layout", "--layout", d, "--vex", v])
+    os.chmod(target, 0o755 if kind == "vex-dir" else 0o644)
+    ok(r.rc == 2 and ("private" in r.err or "above the layout" in r.err), "wanted a refusal naming the permissions, got rc=%d %s" % (r.rc, (r.out + r.err).strip()[:200]))
+    eq(tree(d, full=True), t0, "the layout must be untouched")
+    ok(not os.path.exists(os.path.join(s, "out")), "compute must not have created its output")
+
+
+
 @case("AC3", "verify needs --base (the exclusion of D from the attestations cannot be checked without it)")
 def _():
     fx = mk_fx()

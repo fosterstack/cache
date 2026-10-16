@@ -504,7 +504,8 @@ def read_regular(dir_fd, name, limit, what, private=False):
 def read_path(path, limit):
     parent_fd, name = open_parent(path)
     try:
-        return read_regular(parent_fd, name, limit, path)
+        require_trusted_ancestors(path)      # an input file is read only when no other account could have written it or replaced it on the way
+        return read_regular(parent_fd, name, limit, path, private=True)
     finally:
         os.close(parent_fd)
 
