@@ -896,12 +896,12 @@ def collection(variables, extra=None):
 clean = {"GITHUB_SHA": "abc", "GITHUB_REF_NAME": "v0.3.0", "RUNNER_TEMP": "/home/runner/work/_temp"}
 jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyZXBvIn0.c2lnbmF0dXJl"
 cases = {"clean": collection(clean),
-         "masked": collection(dict(clean, ACTIONS_ID_TOKEN_REQUEST_TOKEN="***")),
+         "masked": collection(dict(clean, ACTIONS_ID_TOKEN_REQUEST_TOKEN="masked-by-the-runner")),
          "value": collection(dict(clean, ACTIONS_ID_TOKEN_REQUEST_TOKEN="abcdef0123456789")),
          "url": collection(dict(clean, ACTIONS_ID_TOKEN_REQUEST_URL="https://pipelines.actions.githubusercontent.com/x?api-version=2.0")),
-         "runtime": collection(dict(clean, ACTIONS_RUNTIME_TOKEN="***")),
-         "ghtoken": collection(dict(clean, GH_TOKEN="***")),
-         "githubtoken": collection(dict(clean, GITHUB_TOKEN="***")),
+         "runtime": collection(dict(clean, ACTIONS_RUNTIME_TOKEN="masked-by-the-runner")),
+         "ghtoken": collection(dict(clean, GH_TOKEN="masked-by-the-runner")),
+         "githubtoken": collection(dict(clean, GITHUB_TOKEN="masked-by-the-runner")),
          "ghs": collection(dict(clean, SOMETHING="ghs_" + "A" * 36)),
          "jwt": collection(dict(clean, SOMETHING=jwt)),
          "githubatt": collection(clean, {"type": "https://witness.dev/attestations/github/v0.1", "attestation": {"jwt": {"raw": jwt}}})}
@@ -1340,7 +1340,15 @@ beh_rebuild_apk() { # beh_rebuild_apk TAGNAME SCRIPT MODE VERSIONTAG
 }
 beh_rebuild_assemble() { # beh_rebuild_assemble TAGNAME SCRIPT MODE VERSIONTAG
   local t=$1 s=$2 mode=$3 v=$4 d="$work/b-rbs-$1-$4" rc calls n1 n2 n3 n4 n5 n6
-  mk "$d" rebuild-assemble "$s" "$mode" "$v"; rc=$(run_stage "$d" rebuild-assemble "$mode" "$v"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  mk "$d" rebuild-assemble "$s" "$mode" "$v"
+  printf '{"image-fips":"sha256:%s","image-production":"sha256:%s"}' "$(printf f | sha256sum | cut -c1-64)" "$(printf p | sha256sum | cut -c1-64)" > "$d/build-in/digests.json"   # the digest list Build attested, not the harness' empty one
+  rc=$(run_stage "$d" rebuild-assemble "$mode" "$v"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  # REQ-CHAIN-005-AC2 (Astra R2): Rebuild's own record must carry the product file:digests.json with Build's bytes, because Release's stage-start for Rebuild compares the sha256 of Build's digest file with it
+  if [ "$rc" = 0 ] && [ -f "$d/digests.json" ] && [ ! -L "$d/digests.json" ] && cmp -s "$d/digests.json" "$d/build-in/digests.json" && [ -s "$d/digests.json" ]; then
+    ok "005-AC2 $t rebuild-assemble $v: digests.json at the repository root is the verified digest list byte for byte (the product Release's stage-start asks Rebuild's record for)"
+  else
+    bad "005-AC2 $t rebuild-assemble $v: no byte-identical root digests.json (rc=$rc, $(ls "$d" 2> /dev/null | tr '\n' ' ' | head -c 120))"
+  fi
   n1=$(line_of 'verify verify ' "$d")
   n2=$(line_of 'verify stage-start' "$d")
   n3=$(line_of 'verify bind ' "$d")
@@ -1628,7 +1636,7 @@ for tag in fixture real; do
     fi
   done
 done
-cases_of() { case "$1" in apk) echo 16;; assemble) echo 21;; rebuild-apk) echo 3;; rebuild-assemble) echo 7;; esac; }    # cases one kind runs for both versions
+cases_of() { case "$1" in apk) echo 16;; assemble) echo 21;; rebuild-apk) echo 3;; rebuild-assemble) echo 9;; esac; }    # cases one kind runs for both versions
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in apk assemble rebuild-apk rebuild-assemble; do
@@ -2194,7 +2202,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=738
+EXPECT=742
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

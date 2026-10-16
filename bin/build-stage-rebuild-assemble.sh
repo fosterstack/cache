@@ -30,5 +30,6 @@ python3 bin/vex-index.py sidecar --layout out/fips --vex .vex/fosterstack-cache.
 python3 bin/build-archives.py --melange-repo melange-repo --version "${GITHUB_REF_NAME#v}" --out dist
 python3 bin/chain-verify.py items-merge --fragment rapk/ubuntu-24.04/items-apk.json --fragment rapk/ubuntu-24.04-arm/items-apk.json \
   --images out --archives dist --version "${GITHUB_REF_NAME#v}" --archive archive --items items.json
+cp build-in/digests.json digests.json
 python3 bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json --expected build-in/items.json \
   --actual items.json --out witness-rebuild/verdict.json

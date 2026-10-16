@@ -254,7 +254,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "bf83033740914cc565d520661d450d88e87e716992207375c430464c1b26000a"
+      "sha256": "2d6917aed16eda8d043c69d66ab16cd41d2a167d577b05940306f3369307ae2e"
     },
     {
       "path": "bin/build-admit.py",
@@ -1021,7 +1021,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "91d4cee0ebb15b8db3a25fd3d0eade9f31ef18bc7dcc0cb1f832d55e2f5d1599",
+      "sha256": "1a9b567cda4d859dfd73a36f842b6bc2e58dbf98f0165a0db12b0fb77ae46fb4",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1091,7 +1091,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "11fe5a78b03035f4631a80618d6781761938c232758451a3ccfb14d2dd3e13b0"
+      "sha256": "7eeee19a6933128d8112965cd25c639f1488c97973b47bde52d4d92aa795cd45"
     },
     {
       "path": "bin/vex-forms.py",
