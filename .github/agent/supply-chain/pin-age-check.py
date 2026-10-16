@@ -577,6 +577,9 @@ _PY_FORBIDDEN_NAMES = frozenset("exec eval compile __import__ getattr setattr gl
                                 "system popen startfile posix_spawn posix_spawnp fork forkpty execl execle execlp execlpe execv execve execvp execvpe spawnl spawnle spawnlp spawnlpe "
                                 "spawnv spawnve spawnvp spawnvpe write_text write_bytes chmod shutil touch mkdir makedirs unlink remove rmdir rename symlink link symlink_to hardlink_to "
                                 "write writelines truncate fdopen copy copyfile copytree move rmtree".split())
+_DATA_CONSUMERS = frozenset("cat tee grep egrep fgrep sort uniq head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od xxd".split())
+_PURE_IMPORTS = frozenset("json re sys os os.path pathlib time datetime hashlib base64 collections itertools functools math string textwrap argparse typing copy struct binascii "
+                          "unicodedata urllib.parse shlex io enum dataclasses".split())
 _DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\(\))", re.M)
 
 
@@ -624,6 +627,7 @@ def _shell_lex(lines):
     command line, continuation lines joined), targets (files its output goes to), ops (how many heredocs the line opens)}. A `<<` counts only in code position (not inside quotes, a
     comment, arithmetic or a here-string). sane is False when the walk ends inside an open quote or substitution: then nothing in the file is proved."""
     hds, stack, i, n = [], [], 0, len(lines)
+    insane = False
     state = [None] * n
     while i < n:
         state[i] = tuple(stack)
@@ -653,6 +657,8 @@ def _shell_lex(lines):
                     if top == "(" and line[j - 1:j] == "(": stack[-1] = "(("
                     else: stack.append("(")
                 elif c == ")" and top in ("$(", "(", "$((", "(("):
+                    if top == "$(" and re.match(r"[ \t]*\(?[^\s()]+(?:\|[^\s()]+)*$", line[:j]) and re.match(r"[ \t]*(?:[;&|)]|$)", line[j + 1:]) is None:
+                        insane = True                   # `pattern) command` inside $( ): a case pattern, not the end of the substitution
                     stack.pop()
                     if top in ("$((", "((") and line[j + 1:j + 2] == ")": j += 1
                 elif c == "#" and (j == 0 or line[j - 1] in " \t;&|(") : cmt = True
@@ -677,22 +683,24 @@ def _shell_lex(lines):
         opener = " ".join(lines[first:o + 1])
         bad = lines[o].rstrip().endswith("\\")      # the command goes on after the operator: where the body starts is not something this walk claims
         stripped = re.sub(r"<<-?[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|\w+)", " ", opener)
-        targets = [t.strip("'\"") for t in re.findall(r"(?:^|[^\d<>&])(?:\d*>>?|&>>?)[ \t]*(\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+)", stripped)
-                   + re.findall(r"\btee\b(?:[ \t]+-\w+)*[ \t]+(\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+)", opener)]
+        tee_ops = []
+        for m in re.finditer(r"\btee\b((?:[ \t]+(?:-\w+|\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+))+)", opener):
+            tee_ops += re.findall(r"\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+", re.sub(r"(?:^|[ \t])-\w+", " ", m.group(1)))
+        targets = [t.strip("'\"") for t in re.findall(r"(?:^|[^\d<>&])(?:\d*>>?|&>>?)[ \t]*(\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+)", stripped) + tee_ops]
         targets = [t for t in targets if t and not t.startswith(("&", "/dev/"))]
         for tab, quoted, delim, nested in ops:
             start, k = i, i
             if delim is None:
                 hds.append({"open": o, "start": start, "end": None, "quoted": quoted, "nested": nested, "bad": True, "opener": opener, "targets": targets, "ops": len(ops)})
                 continue
-            while k < n and (lines[k].lstrip("\t") if tab else lines[k]).rstrip("\r") != delim:
+            while k < n and (lines[k].lstrip("\t") if tab else lines[k]) != delim:
                 state[k] = None
                 k += 1
             hds.append({"open": o, "start": start, "end": k if k < n else None, "quoted": quoted, "nested": nested, "bad": bad, "opener": opener, "targets": targets, "ops": len(ops)})
             i = (k + 1) if k < n else n
             if k >= n:
                 break
-    return hds, not stack, state
+    return hds, not stack and not insane, state
 
 
 def _func_bodies(lines):
@@ -707,7 +715,8 @@ def _func_bodies(lines):
             continue
         depth, body, k, seen = 0, [], idx, False
         while k < len(lines):
-            body.append(lines[k]); depth += lines[k].count("{") - lines[k].count("}"); seen = seen or "{" in lines[k]
+            bare = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "", lines[k])        # a brace inside a quoted string does not open or close the function
+            body.append(lines[k]); depth += bare.count("{") - bare.count("}"); seen = seen or "{" in bare
             if seen and depth <= 0: break
             k += 1
         out[name] = "\n".join(body)
@@ -732,16 +741,17 @@ def _written_file_used_later(lines, hd):
     (conservative: any later line that names it next to such a word, or starts with it, counts)."""
     later = lines[(hd["end"] or hd["start"]) + 1:]
     names = set(hd["targets"])
-    for _ in range(4):                                          # a variable that holds the name (one assignment at a time, a few levels)
-        for ln in later:
+    for _ in range(4):                                          # a variable that holds the name (set before or after the heredoc; one assignment at a time, a few levels)
+        for ln in lines:
             for var, val in re.findall(r"(?:^|[;&|\s])([A-Za-z_]\w*)=(\"[^\"]*\"|'[^']*'|[^\s;&|]+)", ln):
                 if val.strip("'\"") in names or any(t in val for t in names):
                     names |= {"$" + var, "${" + var + "}"}
+    funcs = _func_bodies(lines)
     for t in names:
         for ln in later:
             if t in ln:
                 st = ln.strip().strip("'\"")
-                if st.startswith(t) or (_INTERP_WORDS | _USE_WORDS) & set(_words(ln)):
+                if st.startswith(t) or _runs_input(_words(ln), funcs):
                     return True
     return False
 
@@ -757,8 +767,10 @@ def _py_program_flags(body):
     for nd in ast.walk(tree):
         if isinstance(nd, ast.Name) and nd.id in _PY_FORBIDDEN_NAMES: why.add(nd.id)
         elif isinstance(nd, ast.Attribute) and nd.attr in _PY_FORBIDDEN_NAMES: why.add(nd.attr)
-        elif isinstance(nd, ast.Import): why |= {a.name.split(".")[0] for a in nd.names} & _PY_FORBIDDEN_NAMES
-        elif isinstance(nd, ast.ImportFrom) and (nd.module or "").split(".")[0] in _PY_FORBIDDEN_NAMES: why.add(nd.module)
+        elif isinstance(nd, ast.Import): why |= {"import " + a.name for a in nd.names if a.name not in _PURE_IMPORTS} | ({a.name.split(".")[0] for a in nd.names} & _PY_FORBIDDEN_NAMES)
+        elif isinstance(nd, ast.ImportFrom):
+            if (nd.module or "") not in _PURE_IMPORTS or nd.level: why.add("import " + (nd.module or "."))
+            why |= {a.name for a in nd.names} & _PY_FORBIDDEN_NAMES
         elif isinstance(nd, ast.Call) and isinstance(nd.func, ast.Name) and nd.func.id == "open":
             mode = nd.args[1] if len(nd.args) > 1 else next((k.value for k in nd.keywords if k.arg == "mode"), None)
             if mode is not None and not (isinstance(mode, ast.Constant) and isinstance(mode.value, str) and not set(mode.value) & set("wax+")):
@@ -818,6 +830,32 @@ def _plain_value(s):
     return not (sq or dq)
 
 
+def _first_command(opener):
+    toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", re.sub(r"<<-?[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|\w+)", " ", opener))
+    toks = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*", t)]
+    while toks and toks[0] in ("command", "builtin", "nohup", "nice", "time"):
+        toks = toks[1:]
+    return (_unquote(toks[0]) or "").split("/")[-1] if toks else ""
+
+
+def _heredoc_ok(hd, lines, funcs, python=False):
+    """The here-document is terminated and quoted, is not nested in a substitution, is opened by exactly one operator whose command is a known data consumer (or a function the file
+    defines that runs nothing), is not piped or substituted into an interpreter, and its file (if any) is never later run."""
+    if hd is None or not hd["quoted"] or hd["nested"] or hd["bad"] or hd["end"] is None or hd["ops"] != 1:
+        return False
+    words = _words(hd["opener"])
+    if re.search(r"\$\(|`|<\(|>\(", re.sub(r"<<-?[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|\w+)", " ", hd["opener"])):
+        return False
+    if _runs_input([w for w in words if w in funcs], funcs):                  # a function the file defines that (through others) runs its input
+        return False
+    if _written_file_used_later(lines, hd):
+        return False
+    if python:
+        return True
+    cmd = _first_command(hd["opener"])
+    return not (set(words) & _INTERP_WORDS) and (cmd in _DATA_CONSUMERS or (cmd in funcs and not _runs_input(_words(funcs[cmd]), funcs)))
+
+
 def _context_holds(context, proof, text, line_hash):
     """True only when EVERY single-line occurrence of the ruled line (by the hash of its whole flattened text) in `text` has the named context. None found: False."""
     lines = text.split("\n")
@@ -828,8 +866,9 @@ def _context_holds(context, proof, text, line_hash):
     hds, sane, state = _shell_lex(lines)
     if not sane:
         return False
-    def in_quoted_heredoc(i):                  # a body line of a terminated quoted heredoc: text, whatever it says
-        return any(h["start"] <= i < h["end"] and h["quoted"] and not h["bad"] for h in hds if h["end"] is not None)
+    funcs = _func_bodies(lines)
+    def in_quoted_heredoc(i):                  # a body line of an inert here-document (quoted delimiter, data consumer, never run): text, whatever it says
+        return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, funcs) for h in hds if h["end"] is not None)
     if context in ("comment", "assignment"):
         import shlex
         for i in hits:
@@ -847,20 +886,12 @@ def _context_holds(context, proof, text, line_hash):
                     return False
                 if len(toks) != 1 or not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", toks[0]): return False
         return True
-    funcs = _func_bodies(lines)
     for i in hits:
         hd = next((h for h in hds if h["start"] <= i < (h["end"] if h["end"] is not None else -1)), None)
-        if hd is None or not hd["quoted"] or hd["nested"] or hd["bad"] or hd["end"] is None or hd["ops"] != 1:
-            return False
-        words = _words(hd["opener"])
-        if re.search(r"\$\(|`|<\(|>\(", re.sub(r"<<-?[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|\w+)", " ", hd["opener"])):
-            return False
-        if _runs_input([w for w in words if w in funcs], funcs):                 # a function the file defines that (through others) runs its input
-            return False
-        if _written_file_used_later(lines, hd):
+        words = _words(hd["opener"]) if hd else []
+        if not _heredoc_ok(hd, lines, funcs, python=(context == "pystring")):
             return False
         if context == "heredoc":
-            if set(words) & _INTERP_WORDS: return False
             continue
         # pystring: python / python3 reading the program from stdin ("-"), no other interpreter or shell on the command line
         pyw = {"python", "python3"}
@@ -885,6 +916,21 @@ def _scripts_at(root, rev):
     return _HEAD_SCRIPTS.setdefault((root, rev), inv.tree_scripts(root, rev))
 
 
+_RAW_CR = {}
+
+
+def _has_cr(root, rev, path):
+    """True when the file's real bytes hold a carriage return (the scan reads text with universal newlines, which hides one: bash would see a different line). Unreadable: True."""
+    key = (root, rev, path)
+    if key not in _RAW_CR:
+        try:
+            raw = subprocess.run(["git", "-C", root, "show", f"{rev}:{path}"], capture_output=True, check=True).stdout if rev is not None else open(os.path.join(root, path), "rb").read()
+            _RAW_CR[key] = b"\r" in raw
+        except (OSError, subprocess.CalledProcessError):
+            _RAW_CR[key] = True
+    return _RAW_CR[key]
+
+
 def _context_proved(root, head, path, line_hash, row):
     """A row without a context is as it always was; a row with one rules its line only when the context is proved from the head file."""
     ruling, count, context, proof = row
@@ -893,7 +939,7 @@ def _context_proved(root, head, path, line_hash, row):
     if not path.endswith(".sh"):
         return False
     text = _scripts_at(root, head).get(path)
-    return text is not None and _context_holds(context, proof, text, line_hash)
+    return text is not None and not _has_cr(root, head, path) and _context_holds(context, proof, text, line_hash)
 
 
 def _context_regressions(root, base, head, rulings):
@@ -906,7 +952,7 @@ def _context_regressions(root, base, head, rulings):
             if not row or row[2] is None or not k[0].endswith(".sh"):
                 continue
             was = _scripts_at(root, base).get(k[0])
-            if was is not None and _context_holds(row[2], row[3], was, lh) and not _context_proved(root, head, k[0], lh, row):
+            if was is not None and not _has_cr(root, base, k[0]) and _context_holds(row[2], row[3], was, lh) and not _context_proved(root, head, k[0], lh, row):
                 out.setdefault(k, {})[lh] = n
     return out
 
