@@ -244,16 +244,12 @@ def write_state(path, values):
                 fh.write("%s='%s'\n" % (k, values[k]))
 
 
-SECRET_ENV = ("DOCKERHUB_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN", "DH_REPO", "SCOUT_DOCKER_CONFIG", "DOCKER_CONFIG")
+SECRET_ENV = ("DOCKERHUB_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN", "DH_REPO")
 
 
-def guide_env(section):
-    """The environment the page's commands run in: ours minus the Docker Hub user, tokens, test repository and Docker config; the Scout block alone gets the Scout
-    scan's own config directory (read-only token) as its Docker config, so it can run as written. The push token is never here."""
-    env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
-    if section == "scout" and os.environ.get("SCOUT_DOCKER_CONFIG"):
-        env["DOCKER_CONFIG"] = os.environ["SCOUT_DOCKER_CONFIG"]
-    return env
+def guide_env():
+    """The environment the page's commands run in: ours minus the Docker Hub user, tokens and test repository."""
+    return {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
 
 
 def run_guide(plan, state_path, section, plan_dir=None):
@@ -272,7 +268,7 @@ def run_guide(plan, state_path, section, plan_dir=None):
     os.close(fd)
     try:
         script += 'printf "%%s\\0%%s\\0%%s\\0" "${VER-}" "${IMAGE-}" "${DIGEST-}" > %s\n' % shlex.quote(out)
-        rc = subprocess.run(["bash", "-c", script], env=guide_env(section)).returncode
+        rc = subprocess.run(["bash", "-c", script], env=guide_env()).returncode
         if rc != 0:
             return rc
         ver, image, digest = open(out).read().split("\0")[:3]
@@ -725,18 +721,6 @@ def hub_sweep(repository, user, token, opener=None):
         raise RuntimeError("the Docker Hub test repository was not emptied: %d delete failures %s, %d tags left %s" % (len(failures), failures[:3], len(left), left[:5]))
 
 
-def docker_auth(directory, user, token):
-    """A private Docker config directory (0700) holding a Docker Hub login (0600): the user and the token never travel on a command line. Refuses an existing config."""
-    import base64
-    if not user or ":" in user or any(c.isspace() for c in user) or not token or any(c.isspace() for c in token):
-        raise ValueError("a Docker Hub user without a colon or blanks and a token are both needed")
-    os.makedirs(directory, mode=0o700, exist_ok=True)
-    os.chmod(directory, 0o700)
-    fd = os.open(os.path.join(directory, "config.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        json.dump({"auths": {"https://index.docker.io/v1/": {"auth": base64.b64encode(("%s:%s" % (user, token)).encode()).decode()}}}, fh)
-
-
 def _selfcheck():
     spec = importlib.util.spec_from_file_location("scout_selfcheck", os.path.join(os.path.dirname(os.path.abspath(__file__)), "scout-selfcheck.py"))
     m = importlib.util.module_from_spec(spec)
@@ -835,9 +819,6 @@ def main(argv=None):
     wi.add_argument("--layout", required=True)
     hs = sub.add_parser("hub-sweep", help="delete every tag of the Docker Hub test repository (DOCKERHUB_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN in the environment)")
     hs.add_argument("--repository", required=True)
-    da = sub.add_parser("docker-auth", help="write a private Docker config directory with a Docker Hub login (user from DOCKERHUB_USERNAME, token from the named variable)")
-    da.add_argument("--dir", required=True)
-    da.add_argument("--token-env", required=True, choices=("DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN"))
     sw = sub.add_parser("scout-valid", help="succeed only for a well-formed Scout GitLab report")
     sw.add_argument("--report", required=True)
     sp = sub.add_parser("scout-pick", help="print the first CVE Scout reports that one of our statements covers (empty when none)")
@@ -868,13 +849,6 @@ def main(argv=None):
             hub_sweep(a.repository, os.environ.get("DOCKERHUB_USERNAME", ""), os.environ.get("DOCKERHUB_TEST_PUSH_TOKEN", ""))
         except (ValueError, RuntimeError, OSError, KeyError) as e:
             print("::error::Docker Hub sweep: %s" % e, file=sys.stderr)
-            return 1
-        return 0
-    if a.cmd == "docker-auth":
-        try:
-            docker_auth(a.dir, os.environ.get("DOCKERHUB_USERNAME", ""), os.environ.get(a.token_env, ""))
-        except (ValueError, OSError) as e:
-            print("::error::docker-auth: %s" % e, file=sys.stderr)
             return 1
         return 0
     if a.cmd == "scout-valid":

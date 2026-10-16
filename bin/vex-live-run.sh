@@ -25,7 +25,7 @@ push_copy() {   # <src> <dst>: one push, journaled BEFORE it starts (a copy that
     return 1
   fi
   printf '%s\n' "$2" >> "${PUSHED_LOG:-/dev/null}"
-  ${CRANE_CMD:-crane} copy "$1" "$2"
+  crane copy "$1" "$2"
 }
 
 copy_candidate() {   # <layout dir> <dst ref> <attested digest>: a release candidate publishes nothing, so each image is pushed from Build's OCI layout
@@ -37,8 +37,8 @@ copy_candidate() {   # <layout dir> <dst ref> <attested digest>: a release candi
     return 1
   fi
   printf '%s\n' "$dst" >> "${PUSHED_LOG:-/dev/null}"   # journaled BEFORE the push, so a push that dies midway is still swept
-  ${CRANE_CMD:-crane} push "$layout" "$dst" || return 1
-  got=$(${CRANE_CMD:-crane} digest "$dst") || return 1
+  crane push "$layout" "$dst" || return 1
+  got=$(crane digest "$dst") || return 1
   [ "$got" = "$want" ] || { echo "::error::${dst} came out as ${got}, Build attested ${want}" >&2; return 1; }
 }
 
@@ -184,21 +184,13 @@ scout_preflight() {   # fails closed: the leg runs only with its test repository
     || { echo "::error::DH_REPO must be a Docker Hub namespace/name, got '${DH_REPO}'" >&2; return 1; }
 }
 
-scout_docker() {   # docker with the Scout scan's own login (a read-only token in its own config directory) when the leg has made one
-  if [ -n "${SCOUT_DOCKER_CONFIG:-}" ]; then DOCKER_CONFIG="$SCOUT_DOCKER_CONFIG" docker "$@"; else docker "$@"; fi
-}
-
-crane_dh() {   # crane with the push token's own config directory: the only place the push token is ever used
-  DOCKER_CONFIG="$PWD/dh-push-config" crane "$@"
-}
-
 scout_scan() {   # <registry:// or oci-dir:// reference> <out file> [author pattern]: Scout's GitLab report; the author pattern is one argument
   local ref=$1 out=$2 author=${3:-}
   [[ "$ref" =~ ^(registry|oci-dir)://[A-Za-z0-9._/:@+-]+$ ]] || { echo "::error::refusing to scan '${ref}': not a registry:// or oci-dir:// reference" >&2; return 1; }
   if [ -n "$author" ]; then
-    scout_docker scout cves --format gitlab --vex-author "$author" "$ref" > "$out"
+    docker scout cves --format gitlab --vex-author "$author" "$ref" > "$out"
   else
-    scout_docker scout cves --format gitlab "$ref" > "$out"
+    docker scout cves --format gitlab "$ref" > "$out"
   fi
 }
 
@@ -261,13 +253,10 @@ scout_leg() {   # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as
   local vexfile="$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" dh="index.docker.io/${DH_REPO}" author prod fx_f target ref what
   author=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" scout-author --openvex "$vexfile") || return 1
   prod=$(jq -er '.production.index' images.json) || return 1
-  # two private Docker config directories, one per token (the user and the tokens are never on a command line, and the push token never shares a file with the read-only one);
-  # the page's commands run in an environment without either (bin/vex-live-test.py guide), the Scout block alone with the Scout directory
-  rm -rf dh-push-config dh-scout-config
-  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" docker-auth --dir "$PWD/dh-push-config" --token-env DOCKERHUB_TEST_PUSH_TOKEN || return 1
-  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" docker-auth --dir "$PWD/dh-scout-config" --token-env DOCKERHUB_SCOUT_TOKEN || return 1
-  export SCOUT_DOCKER_CONFIG="$PWD/dh-scout-config"
-  if [ "$MODE" = rc ]; then scout_probe "$CANDIDATE_DIR/images/production" "$author"; fi
+  # The push token is on the machine only while the two images are pushed (it goes in on stdin and is logged out again before anything else runs); the read-only Scout token
+  # only while Scout scans. The user name is the Docker Hub namespace, public (it is in the repository name); neither token is ever on a command line, and the page's
+  # commands run in an environment without any of them (bin/vex-live-test.py guide).
+  printf '%s' "$DOCKERHUB_TEST_PUSH_TOKEN" | crane auth login index.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin || return 1
   # (1) the pinned fixture is a single image: wrapped in an index, it gets our attestation like a release does (one child per platform), and goes to the test repository
   rm -rf scout-fixture
   crane pull --format oci "$FIXTURE_SRC" scout-fixture || return 1
@@ -276,17 +265,20 @@ scout_leg() {   # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as
     --repository "docker.io/${DH_REPO}" --out scout-fixture.vex.json || return 1
   python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1
   fx_f=$(jq -er '.manifests[0].digest' scout-fixture/index.json) || return 1
-  CRANE_CMD=crane_dh copy_candidate scout-fixture "${dh}:${RUN}-fixture-vex" "$fx_f" || return 1
+  copy_candidate scout-fixture "${dh}:${RUN}-fixture-vex" "$fx_f" || return 1
+  # (2) our production image: the candidate from Build's layout, or the published image copied by digest
+  if [ "$MODE" = rc ]; then
+    copy_candidate "$CANDIDATE_DIR/images/production" "${dh}:${RUN}-production" "$prod" || return 1
+  else
+    push_copy "ghcr.io/fosterstack/cache@${prod}" "${dh}:${RUN}-production" || return 1
+    [ "$(crane digest "${dh}:${RUN}-production")" = "$prod" ] || { echo "::error::the production copy does not keep its digest" >&2; return 1; }
+  fi
+  crane auth logout index.docker.io || return 1
+  printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin >/dev/null || return 1
+  if [ "$MODE" = rc ]; then scout_probe "$CANDIDATE_DIR/images/production" "$author"; fi
   scout_scan "registry://docker.io/${DH_REPO}@${fx_f}" scout.fixture.before.json || return 1
   scout_scan "registry://docker.io/${DH_REPO}@${fx_f}" scout.fixture.after.json "$author" || return 1
   scout_judge scout.fixture.before.json scout.fixture.after.json "$CVE" "the fixture carrying our attestation" || return 1
-  # (2) our production image: the candidate from Build's layout, or the published image copied by digest
-  if [ "$MODE" = rc ]; then
-    CRANE_CMD=crane_dh copy_candidate "$CANDIDATE_DIR/images/production" "${dh}:${RUN}-production" "$prod" || return 1
-  else
-    CRANE_CMD=crane_dh push_copy "ghcr.io/fosterstack/cache@${prod}" "${dh}:${RUN}-production" || return 1
-    [ "$(crane_dh digest "${dh}:${RUN}-production")" = "$prod" ] || { echo "::error::the production copy does not keep its digest" >&2; return 1; }
-  fi
   scout_scan "registry://docker.io/${DH_REPO}@${prod}" scout.prod.before.json || return 1
   scout_scan "registry://docker.io/${DH_REPO}@${prod}" scout.prod.after.json "$author" || return 1
   python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" scout-valid --report scout.prod.before.json || return 1    # both reports are read strictly before anything is concluded
@@ -311,6 +303,7 @@ scout_leg() {   # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as
     python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "DIGEST=${prod}" || return 1
     guide scout || return 1
   fi   # the page's own Scout command, as written (nothing is published on a release candidate)
+  docker logout docker.io >/dev/null || return 1
   echo "Docker Scout leg passed: ${CVE} on the fixture, ${target:-no statement of ours reported} on our production image"
 }
 [ "${VEX_LIVE_TEST_LIB:-}" = 1 ] && return 0

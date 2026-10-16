@@ -974,33 +974,13 @@ SECRETS_ENV = dict(DOCKERHUB_USERNAME="hubuser-secret", DOCKERHUB_TEST_PUSH_TOKE
 for section in ("verify", "scout"):
     with tempfile.TemporaryDirectory() as t:
         os.makedirs(os.path.join(t, "plan"))
-        open(os.path.join(t, "plan", "00-%s.sh" % section), "w").write('env | grep -E "^(DOCKERHUB|DH_REPO|DOCKER_CONFIG)" | sort || echo NONE\n')
+        open(os.path.join(t, "plan", "00-%s.sh" % section), "w").write('env | grep -E "^(DOCKERHUB|DH_REPO)" | sort || echo NONE\n')
         open(os.path.join(t, "plan.txt"), "w").write("00-%s.sh\n" % section)
         open(os.path.join(t, "state.env"), "w").write("VER='0.3.0'\nIMAGE='x/y/cache'\n")
         r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "guide", "--plan", "plan.txt", "--state", "state.env", section], cwd=t,
-                           env=dict(os.environ, SCOUT_DOCKER_CONFIG="/scout/cfg", DOCKER_CONFIG="/push/cfg", **SECRETS_ENV), capture_output=True, text=True)
-        seen = [l for l in r.stdout.split("\n") if re.match(r"(DOCKERHUB|DH_REPO|DOCKER_CONFIG)", l)]
-        want = ["DOCKER_CONFIG=/scout/cfg"] if section == "scout" else []
-        check("guide child (%s): none of the Docker Hub secrets, the repository or the push config reach the page's commands%s" % (section, "; the Scout block gets the Scout config only" if section == "scout" else ""),
-              r.returncode == 0 and seen == want, (r.returncode, seen, r.stderr[-200:]))
-with tempfile.TemporaryDirectory() as t:
-    t = os.path.realpath(t)
-    d = os.path.join(t, "cfg")
-    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "docker-auth", "--dir", d, "--token-env", "DOCKERHUB_TEST_PUSH_TOKEN"], capture_output=True, text=True,
-                       env=dict(os.environ, **SECRETS_ENV))
-    cfgp = os.path.join(d, "config.json")
-    import base64, stat
-    ok_cfg = r.returncode == 0 and os.path.exists(cfgp) and json.load(open(cfgp)) == {"auths": {"https://index.docker.io/v1/": {"auth": base64.b64encode(b"hubuser-secret:push-tok").decode()}}}
-    check("docker-auth: a config file with the user and the token for Docker Hub, nothing on stdout or stderr", ok_cfg and r.stdout == "" and "push-tok" not in r.stderr, (r.returncode, r.stdout, r.stderr))
-    check("docker-auth: the directory is 0700 and the file 0600", ok_cfg and stat.S_IMODE(os.stat(d).st_mode) == 0o700 and stat.S_IMODE(os.stat(cfgp).st_mode) == 0o600)
-    before_cfg = open(cfgp).read()
-    r2 = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "docker-auth", "--dir", d, "--token-env", "DOCKERHUB_SCOUT_TOKEN"], capture_output=True, text=True, env=dict(os.environ, **SECRETS_ENV))
-    check("docker-auth: an existing config is refused, not overwritten", r2.returncode != 0 and open(cfgp).read() == before_cfg, r2.returncode)
-    for why, env, args in (("no user", dict(SECRETS_ENV, DOCKERHUB_USERNAME=""), ["--token-env", "DOCKERHUB_TEST_PUSH_TOKEN"]), ("no token", dict(SECRETS_ENV, DOCKERHUB_TEST_PUSH_TOKEN=""), ["--token-env", "DOCKERHUB_TEST_PUSH_TOKEN"]),
-                           ("a token variable that is not a Docker Hub one", SECRETS_ENV, ["--token-env", "AWS_SECRET_ACCESS_KEY"]), ("a user with a colon", dict(SECRETS_ENV, DOCKERHUB_USERNAME="a:b"), ["--token-env", "DOCKERHUB_TEST_PUSH_TOKEN"])):
-        r3 = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "docker-auth", "--dir", os.path.join(t, "cfg-" + why.replace(" ", "-"))] + args, capture_output=True, text=True,
-                            env=dict({k: v for k, v in os.environ.items() if not k.startswith("DOCKERHUB")}, **env))
-        check("docker-auth refuses %s" % why, r3.returncode != 0 and not os.path.exists(os.path.join(t, "cfg-" + why.replace(" ", "-"), "config.json")), (r3.returncode, r3.stderr[-100:]))
+                           env=dict(os.environ, **SECRETS_ENV), capture_output=True, text=True)
+        seen = [l for l in r.stdout.split("\n") if re.match(r"(DOCKERHUB|DH_REPO)", l)]
+        check("guide child (%s): none of the Docker Hub secrets or the test repository reach the page's commands" % section, r.returncode == 0 and seen == [], (r.returncode, seen, r.stderr[-200:]))
 
 # the Hub path boundary and schema (Codex #416 r1)
 class HubFake2(HubFake):
@@ -1119,47 +1099,52 @@ with tempfile.TemporaryDirectory() as lt:
         for base_, dirs_, files_ in os.walk(d_):
             os.chmod(base_, 0o755)
             for f_ in files_: os.chmod(os.path.join(base_, f_), 0o644)
-    CRANE = r'''echo "DOCKER_CONFIG=${DOCKER_CONFIG:-unset} $*" >> "$RUNNER_TEMP/crane.log"
+    CRANE = r'''echo "$*" >> "$RUNNER_TEMP/crane.log"; echo "crane $*" >> "$RUNNER_TEMP/events.log"
 case "$1" in
-  push|copy|digest) if [ "$1" != digest ] || [ -n "${DOCKER_CONFIG:-}" ]; then grep -q "$(printf 'hubuser-secret:push-tok' | base64)" "${DOCKER_CONFIG:-/nonexistent}/config.json" 2>/dev/null || echo "MISSING-PUSH-AUTH $1" >> "$RUNNER_TEMP/crane.log"; fi ;;&
-  auth) echo "UNEXPECTED-crane-auth $*" >> "$RUNNER_TEMP/crane.log" ;;
+  auth) case "$2" in login) [ "$(cat)" = push-tok ] && echo "PUSH-LOGIN-OK" >> "$RUNNER_TEMP/events.log" || echo "BAD-PUSH-LOGIN" >> "$RUNNER_TEMP/events.log" ;; logout) echo "PUSH-LOGOUT" >> "$RUNNER_TEMP/events.log" ;; esac ;;
   pull) dir="${@: -1}"; cp -R "$FIXTURE_LAYOUT_SRC" "$dir"; chmod -R go-w "$dir" ;;
   push) d=$(jq -r '.manifests[0].digest' "$2/index.json"); echo "$3 $d" >> "$RUNNER_TEMP/pushed.map" ;;
   copy) echo "$3 ${2##*@}" >> "$RUNNER_TEMP/pushed.map" ;;
   digest) if [ -n "${CRANE_DIGEST_OVERRIDE:-}" ]; then echo "$CRANE_DIGEST_OVERRIDE"; else grep "^$2 " "$RUNNER_TEMP/pushed.map" | tail -1 | cut -d' ' -f2; fi ;;
 esac'''
-    SCOUT = r'''printf 'DOCKER_CONFIG=%s %s\n' "${DOCKER_CONFIG:-unset}" "$*" >> "$RUNNER_TEMP/docker.log"
+    SCOUT = r'''printf '%s\n' "$*" >> "$RUNNER_TEMP/docker.log"; echo "docker $*" >> "$RUNNER_TEMP/events.log"
 case "$*" in
-  "login "*) echo "UNEXPECTED-docker-login" >> "$RUNNER_TEMP/docker.log"; cat >/dev/null; exit 0 ;;
-  *"scout cves"*) grep -q "$(printf 'hubuser-secret:scout-tok' | base64)" "${DOCKER_CONFIG:-/nonexistent}/config.json" 2>/dev/null || echo "MISSING-SCOUT-AUTH" >> "$RUNNER_TEMP/docker.log"
-                  n=$(grep -c "scout cves" "$RUNNER_TEMP/docker.log"); cat "$RUNNER_TEMP/scout-$n.json" ;;
+  "login "*) [ "$(cat)" = scout-tok ] && echo "SCOUT-LOGIN-OK" >> "$RUNNER_TEMP/events.log" || echo "BAD-SCOUT-LOGIN" >> "$RUNNER_TEMP/events.log"; exit 0 ;;
+  "logout "*) echo "SCOUT-LOGOUT" >> "$RUNNER_TEMP/events.log" ;;
+  *"scout cves"*) n=$(grep -c "scout cves" "$RUNNER_TEMP/docker.log"); cat "$RUNNER_TEMP/scout-$n.json" ;;
   *) exit 0 ;; esac'''
     def leg(reports, env=None, mode="rc", extra=""):
         files = "".join("printf %%s '%s' > \"$RUNNER_TEMP/scout-%d.json\"; " % (r, i + 1) for i, r in enumerate(reports))
         body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0-rc1; ' % mode
                 + 'FIXTURE_SRC=docker.io/library/debian@%s; FIX=%s; RUN=live-1-1; CVE=%s; ' % (fx_man, fx_man, LEG_CVE)
                 + "echo '{\"production\": {\"index\": \"%s\", \"children\": {\"linux/amd64\": \"sha256:%s\", \"linux/arm64\": \"sha256:%s\"}}}' > images.json; " % (prod_man, "2" * 64, "3" * 64)
-                + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null")
+                + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null || true; echo =EVENTS=; cat \"$RUNNER_TEMP/events.log\"")
         e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src, CANDIDATE_DIR=os.path.join(lt, "cand"))
         e.update(env or {})
         return sh(body, {"crane": CRANE, "docker": SCOUT}, e)
     OK_FIX = [gl_report(LEG_CVE, "CVE-A", OURS_CVE), gl_report("CVE-A", OURS_CVE)]
     OK_PROD = [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")]
     rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)    # the first two answers belong to the informational probe of the Build layout (an unreadable report there is information)
-    sc = [l.split(" ", 1)[1] for l in out.split("\n") if l.startswith("DOCKER_CONFIG=") and " scout cves" in l]
+    sc = [l for l in out.split("\n") if l.startswith("scout cves")]
     check("scout leg (rc): passes when the fixture's finding shows with Docker's authors only and is gone with ours, and the same for our production image", "leg-rc=0" in out, (rc, out[-500:]))
     check("scout leg (rc): the Build layout is probed first (oci-dir://, information), then the Docker Hub test repository by digest",
           sc and sc[0].startswith("scout cves --format gitlab oci-dir://") and any("registry://docker.io/fosterstack-live/cache-live-test@sha256:" in l for l in sc[2:]), sc)
     check("scout leg (rc): each registry image is scanned twice, first with Docker's authors, then naming ours as one argument",
           [("--vex-author ^FosterStack LLC$ " in l) for l in sc[2:]] == [False, True, False, True], sc)
-    check("scout leg (rc): no login command runs and no secret is on a command line: both tokens and the user travel in two private Docker config directories, the push one for crane, the Scout one for Scout",
-          "UNEXPECTED" not in out and "MISSING" not in out and "push-tok" not in out and "scout-tok" not in out and "hubuser-secret" not in out
-          and all("DOCKER_CONFIG=unset" not in l for l in out.split("\n") if (" push " in l or " copy " in l or " scout cves" in l)), out[-600:])
-    crane_cfgs = {l.split(" ")[0] for l in out.split("\n") if l.startswith("DOCKER_CONFIG=") and (" push " in l or " copy " in l or " digest " in l)}
-    scout_cfgs = {l.split(" ")[0] for l in out.split("\n") if l.startswith("DOCKER_CONFIG=") and " scout cves" in l}
-    check("scout leg (rc): crane and Scout use different Docker config directories (the two tokens never share one file)", len(crane_cfgs) == 1 and len(scout_cfgs) == 1 and crane_cfgs != scout_cfgs, (crane_cfgs, scout_cfgs))
-    check("scout leg (rc): two pushes, both journaled before the sweep can need them, tagged with the run",
-          open(os.path.join(lt, "x")).read() if False else out.count("index.docker.io/fosterstack-live/cache-live-test:live-1-1-") >= 2, out[-400:])
+    ev = out.split("=EVENTS=\n", 1)[1].split("\n") if "=EVENTS=" in out else []
+    def cat_of(l):
+        if "PUSH-LOGIN-OK" in l: return 1
+        if l.startswith("crane push") or l.startswith("crane copy"): return 2
+        if "PUSH-LOGOUT" in l: return 3
+        if "SCOUT-LOGIN-OK" in l: return 4
+        if l.startswith("docker scout cves"): return 5
+        if "SCOUT-LOGOUT" in l: return 6
+        return 0
+    cats = [c for c in map(cat_of, ev) if c]
+    check("scout leg (rc): the push token is on the machine only for the pushes (login, pushes, logout), then the Scout token only for the scans (login, scans, logout); neither is ever on a command line",
+          cats == sorted(cats) and {1, 2, 3, 4, 5, 6} <= set(cats) and "BAD-" not in out and "push-tok" not in "\n".join(ev) and "scout-tok" not in "\n".join(ev), (cats, out[-500:]))
+    check("scout leg (rc): the user name is the only secret-backed value on a command line (the Docker Hub namespace, public)",
+          all("hubuser-secret" in l for l in ev if "auth login" in l or l.startswith("docker login")) and not any("hubuser-secret" in l for l in ev if "scout cves" in l or " push " in l or " copy " in l))
     for why, reports, env in (("the fixture's finding still shown with our author", [OK_FIX[0], OK_FIX[0]] + OK_PROD, {}),
                               ("the fixture's finding not shown without our author", [gl_report("CVE-A"), gl_report("CVE-A")] + OK_PROD, {}),
                               ("another fixture finding lost with our author", [OK_FIX[0], gl_report(OURS_CVE)] + OK_PROD, {}),
@@ -1188,7 +1173,7 @@ case "$*" in
     check("scout leg (release): the page's Scout block gets OUR production digest (the Google leg leaves the fixture's in the state)", "guide scout: " in out and ("DIGEST='%s'" % prod_man) in out, out[-400:])
     rc2, out2 = leg(["{}", "{}"] + OK_FIX + OK_PROD)
     check("scout leg (rc): the page's Scout block is not run (nothing is published)", "guide scout" not in out2 and "leg-rc=0" in out2, out2[-300:])
-    sc = [l.split(" ", 1)[1] for l in out.split("\n") if l.startswith("DOCKER_CONFIG=") and " scout cves" in l]
+    sc = [l for l in out.split("\n") if l.startswith("scout cves")]
     check("scout leg (release): the published index is also scanned by tag and by exact digest, with Docker's authors and with ours",
           "leg-rc=0" in out and any("registry://ghcr.io/fosterstack/cache:0.3.0" in l for l in sc) and any("registry://ghcr.io/fosterstack/cache@" + prod_man in l for l in sc)
           and not any(l.startswith("scout cves --format gitlab oci-dir://") for l in sc), (rc, sc, out[-300:]))
