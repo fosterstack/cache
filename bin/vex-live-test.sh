@@ -54,10 +54,8 @@ guide() {   # <section>: source each command block of that section byte for byte
   done
 }
 
-ca() {   # Container Analysis REST, as the live-test service account
-  local tok
-  tok=$(gcloud auth print-access-token) || return 1
-  curl -fsS -H "Authorization: Bearer ${tok}" "$@"
+ca() {   # Container Analysis REST, as the live-test service account (an API call for data, not a download: the python helper, fixed host)
+  $LT ca "$@"
 }
 
 notes_of() {   # <uri prefix>: the names of every VULNERABILITY_ASSESSMENT note on images under that prefix, all pages;

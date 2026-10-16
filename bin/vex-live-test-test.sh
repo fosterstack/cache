@@ -156,6 +156,9 @@ for name, d, job in (("release.yml rc job", rel, rel["jobs"].get("live-test") or
     uses = [s["uses"] for s in steps if "uses" in s]
     check("%s: every action pinned by commit digest" % name, uses and all(re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", u) for u in uses), uses)
     clean = [s for s in steps if "cleanup" in (s.get("name") or "")]
+    gc = [s for s in steps if "setup-gcloud" in (s.get("uses") or "")]
+    check("%s: gcloud is installed at an explicit version (the pin-age inventory refuses the action's default)" % name,
+          len(gc) == 1 and re.fullmatch(r"\d+\.\d+\.\d+", (gc[0].get("with") or {}).get("version", "")) is not None, gc)
     check("%s: cleanup runs always" % name, len(clean) == 1 and clean[0].get("if") == "always()", [s.get("name") for s in steps])
     check("%s: runs the committed orchestration" % name, "bin/vex-live-test.sh" in text)
 RJ, PJ = rel["jobs"]["live-test"], rel["jobs"]["live-test-release"]
@@ -230,9 +233,49 @@ def sh(body, stubs, env=None):
         e = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], VEX_LIVE_TEST_LIB="1",
                  RUNNER_TEMP=t, ECR="1.dkr.ecr.us-east-1.amazonaws.com/fosterstack-cache-live-test",
                  GAR="us-east1-docker.pkg.dev/fosterstack-cache/cache-live-test", GITHUB_RUN_ID="1", **(env or {}))
-        r = subprocess.run(["bash", "-c", 'set -euo pipefail; source "$0"; ' + body, script], cwd=t, env=e,
+        # the Container Analysis calls go through ca() -> the python helper (urllib, tested below); here ca() is replaced by the stub transport so the shell
+        # logic around it is tested offline
+        prelude = 'ca() { ca-transport "$@"; }; ' if "ca-transport" in stubs else ""
+        r = subprocess.run(["bash", "-c", 'set -euo pipefail; source "$0"; ' + prelude + body, script], cwd=t, env=e,
                            capture_output=True, text=True)
         return r.returncode, r.stdout + r.stderr
+# the Container Analysis API is called by the python helper (an API call for data, not a software download): fixed host, bearer token, the method asked for,
+# an HTTP error is an error
+import io, urllib.error
+seen = {}
+class FakeResp:
+    def __init__(self, body): self.body = body
+    def read(self): return self.body
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+def opener_ok(req, timeout=None):
+    seen["url"], seen["method"], seen["auth"] = req.full_url, req.get_method(), req.get_header("Authorization")
+    return FakeResp(b'{"names": []}')
+CA = "https://containeranalysis.googleapis.com/v1/projects/p/notes?pageSize=1000"
+check("ca: a GET to the Container Analysis host with the bearer token", L.ca_request(CA, "GET", "tok", opener_ok) == '{"names": []}'
+      and seen == {"url": CA, "method": "GET", "auth": "Bearer tok"}, seen)
+L.ca_request("https://containeranalysis.googleapis.com/v1/projects/p/notes/n", "DELETE", "tok", opener_ok)
+check("ca: a DELETE is sent as a DELETE", seen["method"] == "DELETE", seen)
+for why, url, method in [("another host", "https://example.org/v1/x", "GET"), ("plain http", "http://containeranalysis.googleapis.com/v1/x", "GET"),
+                         ("a host that only starts with the right name", "https://containeranalysis.googleapis.com.evil.example/v1/x", "GET"),
+                         ("a user part", "https://containeranalysis.googleapis.com@evil.example/v1/x", "GET"), ("a method that is neither GET nor DELETE", CA, "POST")]:
+    try:
+        L.ca_request(url, method, "tok", opener_ok); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("ca refuses %s" % why, got == "refused", got)
+def opener_err(req, timeout=None):
+    raise urllib.error.HTTPError(req.full_url, 403, "denied", {}, io.BytesIO(b""))
+try:
+    L.ca_request(CA, "GET", "tok", opener_err); got = "returned"
+except urllib.error.HTTPError:
+    got = "raised"
+check("ca: an HTTP error is an error, never an empty answer", got == "raised", got)
+try:
+    L.ca_request(CA, "GET", "", opener_ok); got = "accepted"
+except ValueError:
+    got = "refused"
+check("ca: no token is refused", got == "refused", got)
 # SEC-169-03: a guide block's failing command fails the run even inside a pipe
 plan_ok = 'mkdir -p plan; printf "00-verify.sh\\n" > plan.txt; printf "%s\\n" "cosign verify-attestation x | jq -r . > out.json" > plan/00-verify.sh; guide verify; echo CONTINUED'
 rc, out = sh(plan_ok, {"cosign": "echo '{}'; exit 42"})
@@ -244,18 +287,18 @@ OKAWS = r"""case "$*" in
   *) echo '{}' ;; esac"""
 OKGC = 'case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) echo "[]" ;; esac'
 OKCURL = 'echo "{}"'
-rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "curl": OKCURL})
+rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "ca-transport": OKCURL})
 check("sweep of empty test resources passes", rc == 0, out[-300:])
-rc, out = sh("sweep", {"aws": 'echo AccessDenied >&2; exit 254', "gcloud": OKGC, "curl": OKCURL})
+rc, out = sh("sweep", {"aws": 'echo AccessDenied >&2; exit 254', "gcloud": OKGC, "ca-transport": OKCURL})
 check("SEC-169-08 sweep fails when AWS listing fails", rc != 0, out[-200:])
-rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "curl": 'echo denied >&2; exit 22'})
+rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "ca-transport": 'echo denied >&2; exit 22'})
 check("SEC-169-08 sweep fails when the notes cannot be listed", rc != 0, out[-200:])
 rc, out = sh("sweep", {"aws": r"""case "$*" in
   *"ecr list-images"*) echo '{"imageIds": [{"imageDigest": "sha256:a"}]}' ;;
   *"batch-delete-image"*) echo '{"imageIds": [], "failures": [{"imageId": {"imageDigest": "sha256:a"}, "failureCode": "X"}]}' ;;
-  *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac""", "gcloud": OKGC, "curl": OKCURL})
+  *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac""", "gcloud": OKGC, "ca-transport": OKCURL})
 check("SEC-169-08 sweep fails on an ECR per-image failure", rc != 0, out[-200:])
-rc, out = sh("sweep; cat \"$RUNNER_TEMP/deleted\"", {"aws": OKAWS, "gcloud": OKGC, "curl": r"""for a in "$@"; do u=$a; done
+rc, out = sh("sweep; cat \"$RUNNER_TEMP/deleted\"", {"aws": OKAWS, "gcloud": OKGC, "ca-transport": r"""for a in "$@"; do u=$a; done
 case "$u" in
   *notes\?*) [ -s "$RUNNER_TEMP/deleted" ] && { echo '{"notes": []}'; exit 0; } ;;& 
   *notes\?*pageToken=p2*) echo '{"notes": [{"name": "projects/p/notes/two", "vulnerabilityAssessment": {"product": {"genericUri": "https://us-east1-docker.pkg.dev/fosterstack-cache/cache-live-test/cache@sha256:b"}}}]}' ;;
@@ -277,12 +320,12 @@ for why, aws_s, gc_s, curl_s in [
   *"ecr list-images"*) echo '{"imageIds": [{"imageDigest": "sha256:a"}]}' ;;
   *"batch-delete-image"*) echo 'oops' ;;
   *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac""", OKGC, OKCURL)]:
-    rc, out = sh("sweep", {"aws": aws_s, "gcloud": gc_s, "curl": curl_s})
+    rc, out = sh("sweep", {"aws": aws_s, "gcloud": gc_s, "ca-transport": curl_s})
     check("SEC-169-08 sweep fails on %s" % why, rc != 0, out[-200:])
 # Codex #169 r3 (SEC-169-08): a failing step inside the note enumeration (sed, cut) fails the sweep, never reads as empty
 NOTE_PAGE = r"""case " $* " in *" -X DELETE "*) echo "{}" ;; *) echo '{"notes": [%s]}' ;; esac""" % NOTE_OK
 for tool in ("sed", "cut"):
-    rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "curl": NOTE_PAGE, tool: "echo %s_FAILED >&2; exit 42" % tool.upper()})
+    rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "ca-transport": NOTE_PAGE, tool: "echo %s_FAILED >&2; exit 42" % tool.upper()})
     check("SEC-169-08 sweep fails when %s fails inside the note enumeration" % tool, rc != 0, out[-200:])
 for kind, doc, ok in [("notes", '{"notes": [], "nextPageToken": 3}', False), ("notes", '{}', True),
                       ("gar", '[{"package": "x", "version": "sha256:a"}]', True), ("gar", '[{"package": 1}]', False),

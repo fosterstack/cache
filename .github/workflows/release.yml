@@ -446,6 +446,8 @@ jobs:
           workload_identity_provider: ${{ vars.LIVE_TEST_GCP_PROVIDER }}
           service_account: ${{ vars.LIVE_TEST_GCP_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: '587.0.0'
       - name: the live test, every guide command as written, the fixture's finding shown before and gone after
         env:
           MODE: rc
@@ -497,6 +499,8 @@ jobs:
           workload_identity_provider: ${{ vars.LIVE_TEST_GCP_PROVIDER }}
           service_account: ${{ vars.LIVE_TEST_GCP_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+        with:
+          version: '587.0.0'
       - name: the live test, every guide command as written, the fixture's finding shown before and gone after
         env:
           MODE: release

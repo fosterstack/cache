@@ -238,6 +238,25 @@ def inventory(kind, doc, prefix=""):
     raise ValueError("unknown inventory %s" % kind)
 
 
+CA_HOST = "containeranalysis.googleapis.com"
+
+
+def ca_request(url, method, token, opener=None):
+    """One call to the Container Analysis API (an API call for data, not a software download): the fixed host over https, the bearer token, GET or DELETE
+    only. An HTTP error is raised, never turned into an empty answer. Returns the body as text."""
+    import urllib.parse, urllib.request
+    p = urllib.parse.urlsplit(url)
+    if p.scheme != "https" or p.hostname != CA_HOST or p.username is not None or p.password is not None or p.port not in (None, 443):
+        raise ValueError("not a Container Analysis URL: %r" % url[:80])
+    if method not in ("GET", "DELETE"):
+        raise ValueError("method %r is not GET or DELETE" % method)
+    if not token:
+        raise ValueError("no access token")
+    req = urllib.request.Request(url, method=method, headers={"Authorization": "Bearer " + token})
+    with (opener or urllib.request.urlopen)(req, timeout=60) as r:
+        return r.read().decode("utf-8")
+
+
 def _semver(tag):
     m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)(?:-rc(\d+))?", tag)
     return None if not m else (int(m[1]), int(m[2]), int(m[3]), int(m[4]) if m[4] else 1 << 30)
@@ -277,9 +296,17 @@ def main(argv=None):
     j.add_argument("--notes", help="google: a file with the names of the VEX notes this run created, one per line")
     st = sub.add_parser("settings", help="print the test's values as the guide's settings (VAR=value ...)")
     st.add_argument("pairs", nargs="+")
+    c2 = sub.add_parser("ca", help="one Container Analysis call as the live-test service account")
+    c2.add_argument("-X", dest="method", default="GET")
+    c2.add_argument("url")
     r = sub.add_parser("release")
     r.add_argument("--releases", required=True, help="gh release list --json tagName,isDraft + assets names")
     a = ap.parse_args(argv)
+    if a.cmd == "ca":
+        import subprocess
+        tok = subprocess.run(["gcloud", "auth", "print-access-token"], capture_output=True, text=True, check=True).stdout.strip()
+        sys.stdout.write(ca_request(a.url, a.method, tok))
+        return 0
     if a.cmd == "plan":
         skip = json.load(open(a.skip_cannot_run))["blocks"] if a.skip_cannot_run else ()
         for i, b in enumerate(guide_blocks(open(a.guide).read(), skip)):
