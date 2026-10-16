@@ -199,7 +199,7 @@ open-pr)
   # build/archive.json, the pointer naming the stored digest (advisor 0440 (3)). Nothing is opened unless every plan validates first.
   [ -n "$plan_dir" ] && [ -d "$plan_dir" ] || die "--plan-dir must be an existing directory"
   if [ -n "$archive_digest" ]; then
-    case $archive_digest in sha256:????????????????????????????????????????????????????????????????) ;; *) die "--archive-digest must be sha256:<64 hex>";; esac
+    { [ "${archive_digest#sha256:}" != "$archive_digest" ] && [ "${#archive_digest}" -eq 71 ]; } || die "--archive-digest must be sha256:<64 hex>"
     case ${archive_digest#sha256:} in *[!0-9a-f]*) die "--archive-digest must be sha256:<64 lower-case hex>";; esac
     [ -n "$archive" ] && [ -d "$archive" ] || die "--archive is required with --archive-digest"
   fi
@@ -315,7 +315,7 @@ PY
   lock "$tmp/melange/melange-env.yaml" "$tmp/melange.lock.json"
 
   # The embedded program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per line); the shell fetches them with the
-  # ruled curl lines below and runs the program again (it starts from the same state each time, up to three passes: packages, index, the rest).
+  # ruled download lines below and runs the program again (it starts from the same state each time, up to three passes: packages, index, the rest).
   refresh_py() { /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY'
 import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
@@ -731,7 +731,7 @@ for (name, ver, arch), e in sorted(fresh.items()):
         continue
     part = "%s/%s/%s-%s.apk" % (stage, arch, name, ver)
     os.makedirs(os.path.dirname(part), exist_ok=True)
-    if not os.path.exists(part):   # the shell fetches it (curl lines of the ruled grammar), then runs this program again
+    if not os.path.exists(part):   # the shell fetches it (download lines of the ruled grammar), then runs this program again
         want_pk.append("%s %s/%s-%s.apk" % (e["url"][len(WOLFI_URL):], arch, name, ver))   # the url passed the host and path check above
         continue
     verify(part, e)
