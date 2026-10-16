@@ -1886,11 +1886,16 @@ rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull re
 for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/chain-check-wiring-test.sh bin/chain-records-test.sh; do
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
-# the burn-down (cache4, handoff 0475): the vendor-provenance row landed in chain-scripts.json, so the three entries it kept open are gone; only KR-CUTOVER may remain on the committed list
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1, KR-SIGN-3 and KR-RECORDS-1 are off the committed list (the bin/vendor-provenance.py row is in chain-scripts.json); only KR-CUTOVER remains" || bad "known-red: the committed list still holds a burned-down entry, or lost KR-CUTOVER"
+# the burn-down (cache4, handoff 0475): the vendor-provenance row landed in chain-scripts.json, so the three entries it kept open are gone. Only KR-CUTOVER may remain, and the marker
+# pull request of REQ-CHAIN-001-AC6 removes that one entry too: the committed list is [KR-CUTOVER] now and [] after the marker, nothing else
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: the committed list is exactly [KR-CUTOVER] (or [] after the marker pull request): KR-SIGN-1, KR-SIGN-3 and KR-RECORDS-1 are gone with the bin/vendor-provenance.py row in chain-scripts.json" || bad "known-red: the committed list holds a burned-down entry or another id (only KR-CUTOVER, or nothing after the marker, is allowed)"
 import json, sys
+allowed = lambda ids: ids in ([], ["KR-CUTOVER"])
 ids = [x["id"] for x in json.load(open(sys.argv[1]))["entries"]]
-assert ids == ["KR-CUTOVER"], ids
+assert allowed(ids), ids
+assert allowed([]) and allowed(["KR-CUTOVER"])                     # the marker pull request's list (empty) is as valid as today's
+for bad_ids in (["KR-CUTOVER", "KR-SIGN-1"], ["KR-SIGN-1"], ["KR-RECORDS-1", "KR-CUTOVER"], ["KR-CUTOVER", "KR-CUTOVER"], ["x"]):
+    assert not allowed(bad_ids), bad_ids
 PY
 # PR 4 (advisor ruling): the records suite's expected failures are ONE entry (KR-RECORDS-1) that names the three cache scripts Release's steps run and that are not
 # listed rows yet. The judge accepts exactly those findings, refuses any other (the entry cannot grow silently) and any missing one (it shrinks only by an edit that
