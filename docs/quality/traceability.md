@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 93 |
-| Acceptance criteria | 380 |
-| Release-blocking ACs | 121 |
-| ACs with mapped evidence | 363 |
-| Release-blocking ACs with mapped evidence | 121 |
+| Acceptance criteria | 384 |
+| Release-blocking ACs | 125 |
+| ACs with mapped evidence | 367 |
+| Release-blocking ACs with mapped evidence | 125 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
 | Confidence: implementation-only | 46 |
@@ -881,12 +881,18 @@ Every release shall publish the VEX three ways, all generated from the one OpenV
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .vex/fosterstack-cache.openvex.json*
 
+> AC5: the digest file has two variants, production and fips (v0.3.0 ships no :debug image). The generator must know the key set {production, fips} to refuse a third key or a missing one; the digests come only from the file. AC6: "repeats a key" needs an explicit check, because Python's json.load keeps the last of two equal keys and says nothing. AC7: the variants are walked in a fixed order and the children in a fixed order, so the key order of the digest file does not reach the output. AC8: the test no longer reads stage-promote.yml step names; AC3's check reads main-candidate-rescan.yml contents, not step names.
+
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement, scoped by CVE and image digest, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC2 | Given the three VEX forms; when they are compared; then they cover exactly the same statements | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC4 | Given documentation of the Google VEX upload; when it is published; then it says the upload is a preview feature | inspection |  | approved | 1 item(s) |
+| REQ-SCAN-010-AC5 | Given a digest file, passed to the generator by its path: a JSON object with exactly two keys, production and fips; each value an object with exactly two keys, index and children; children an object with exactly two keys, linux/amd64 and linux/arm64; every digest a string of sha256: followed by 64 lower-case hexadecimal characters; when the three VEX forms are generated; then the forms name exactly the six digests in that file and no other image digest. The generator checks the file's shape and key set only. It does not check that the digests are the ones Build verified; that check belongs to the release workflow and is tested there. The generator reads no registry and opens no network connection. | unit | yes | approved | 1 item(s) |
+| REQ-SCAN-010-AC6 | Given a digest file that is not a JSON object; that repeats a key at any level; that has a key other than production and fips, or lacks either; whose variant value is not an object with exactly the keys index and children; whose children lack linux/amd64 or linux/arm64 or have any other key; that has any digest which is not a string of sha256: followed by 64 lower-case hexadecimal characters; or that names the same digest twice; when the forms are generated; then generation stops with a non-zero exit before any form file is written, no form file is created or changed in the output directory, and the error names the key path (for example fips.children.linux/arm64) or the value at fault | unit | yes | approved | 1 item(s) |
+| REQ-SCAN-010-AC7 | Given the same OpenVEX file, the same digest file content and the same version; when the forms are generated twice, at different times, with a different time zone, locale or SOURCE_DATE_EPOCH, or from a digest file with the same content in a different key order; then both runs give byte-identical form files. No date, time or run identifier comes from the clock or the environment; the only dates are the ones the OpenVEX file carries | unit | yes | approved | 1 item(s) |
+| REQ-SCAN-010-AC8 | Given the REQ-SCAN-010 test; when it runs; then it proves AC1-AC7 against the generator and the OpenVEX file alone. It reads no workflow file's step names or step order. Where the forms are generated, that the signed release record covers them, and that the digests are Build's verified ones are proven by the release workflow's own test. AC3's check of the rescan workflow's contents (it filters against the OpenVEX file and uses no derived form) stays | unit | yes | approved | 1 item(s) |
 
 ### REQ-SCAN-011 — Customer guide
 
