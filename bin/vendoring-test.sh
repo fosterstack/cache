@@ -131,8 +131,18 @@ done
 mkdir -p "$work/nogo"; cp -R "$fx/vendor" "$work/nogo/vendor"
 rc AC2 "a tree with vendor/ but no go.mod or go.sum exits 2" 2 vc "$work/nogo"
 # fail closed: a proxy that cannot serve the module, and a toolchain that is not there, are failures, never a pass
-rc AC2 "an embedded dot file that go mod vendor regenerates is still refused (1)" 1 vc "$fxe"
-says AC2 "(embedded dot file) the failure names the dot component" "dot component"
+# ruling D (advisor, Oct 14): a dot-named FILE is allowed exactly when it is what go mod vendor regenerates, byte for byte and mode 100644
+rc AC2 "an embedded dot file that go mod vendor regenerates passes (0)" 0 vc "$fxe"
+t AC2 "(embedded dot file) the vendored tree builds" bash -c "cd '$fxe' && GOFLAGS=-mod=vendor GOPROXY=off go build ./..."
+rm -rf "$work/fx-dotbyte" "$work/fx-dotmode" "$work/fx-dotextra"; cp -R "$fxe" "$work/fx-dotbyte"; cp -R "$fxe" "$work/fx-dotmode"; cp -R "$fxe" "$work/fx-dotextra"
+echo "changed" >"$work/fx-dotbyte/vendor/example.test/emb/.hidden"
+chmod 600 "$work/fx-dotmode/vendor/example.test/emb/.hidden"
+echo x >"$work/fx-dotextra/vendor/example.test/emb/.extra"
+rc AC2 "a regenerated dot file with a changed byte is refused (1)" 1 vc "$work/fx-dotbyte"
+rc AC2 "a regenerated dot file that is not mode 644 is refused (1)" 1 vc "$work/fx-dotmode"
+rc AC2 "a dot file that regeneration does not produce is refused (1)" 1 vc "$work/fx-dotextra"
+rc AC2 "a dot DIRECTORY is refused (1), by name" 1 vc "$work/fx-dotdir"
+says AC2 "(dot directory) the failure names the dot directory" "dot directory"
 mkcase gosumempty; : >"$work/fx-gosumempty/go.sum"
 rc AC2 "a go.sum that go mod vendor would have to repair is refused (1), with GOFLAGS=-mod=mod in the caller's environment" 1 vc "$work/fx-gosumempty"
 mkcase gomodedit; printf 'module example.test/app\n\ngo 1.20\n' >"$work/fx-gomodedit/go.mod"   # the require line is missing: go mod vendor (GOFLAGS=-mod=mod) would add it
@@ -201,9 +211,115 @@ rc AC2 "a regular file named vendor: refused (2)" 2 vc "$work/g-vfile"
 mkgit vlink;    mkdir "$work/vlink-target" && ln -s "$work/vlink-target" "$work/g-vlink/vendor"
 rc AC2 "a symlink named vendor: refused (2)" 2 vc "$work/g-vlink"
 mkgit full;     cp -R "$fx/vendor" "$work/g-full/vendor"
+git -C "$work/g-full" add -A vendor >/dev/null 2>&1
 rc AC2 "vendor/ present and equal to the regenerated tree: full check passes" 0 vc "$work/g-full"
 mkgit fullbad;  cp -R "$fx/vendor" "$work/g-fullbad/vendor"; echo "package dep" >"$work/g-fullbad/vendor/example.test/dep/extra.go"
 rc AC2 "vendor/ present with an extra file: full check refuses (1)" 1 vc "$work/g-fullbad"
+# ruling D: the git-acting files. A vendored .gitattributes is read (committed content): `text` set and `eol=lf` are the only text/eol
+# forms that pass; every other form of text, eol, crlf, binary, diff, merge, filter, ident, export-ignore, export-subst,
+# working-tree-encoding and every [attr] macro fails, and so does a line the parser cannot read.
+mkattr() { # NAME CONTENT [ignore]: a one-module app whose vendored module carries a .gitattributes (and a .gitignore hiding extra.txt)
+  local n=$1 d="$work/fa-$1"; rm -rf "$d"; mkdir -p "$d"
+  python3 - "$proxy" "$n" "$2" "${3:-}" <<'PY'
+import sys, zipfile, json, os
+proxy, n, attrs, ign = sys.argv[1:5]
+mod = "example.test/ga-" + n
+if attrs == "@BIG":
+    attrs = "#" + "a" * 1100000 + "\n*.go text\n"
+p = proxy + "/" + mod + "/@v"; os.makedirs(p, exist_ok=True)
+open(p + "/list", "w").write("v1.0.0\n")
+open(p + "/v1.0.0.info", "w").write(json.dumps({"Version": "v1.0.0", "Time": "2024-01-01T00:00:00Z"}))
+open(p + "/v1.0.0.mod", "w").write("module %s\n\ngo 1.20\n" % mod)
+with zipfile.ZipFile(p + "/v1.0.0.zip", "w") as z:
+    z.writestr("%s@v1.0.0/go.mod" % mod, "module %s\n\ngo 1.20\n" % mod)
+    z.writestr("%s@v1.0.0/ga.go" % mod, "package ga\n\nfunc N() int { return 1 }\n")
+    z.writestr("%s@v1.0.0/.gitattributes" % mod, attrs.encode("utf-8", "surrogateescape"))
+    z.writestr("%s@v1.0.0/extra.txt" % mod, "x\n")
+    if ign:
+        z.writestr("%s@v1.0.0/.gitignore" % mod, "extra.txt\n")
+PY
+  printf 'module example.test/appga\n\ngo 1.20\n\nrequire example.test/ga-%s v1.0.0\n' "$n" >"$d/go.mod"
+  printf 'package main\n\nimport "example.test/ga-%s"\n\nfunc main() { println(ga.N()) }\n' "$n" >"$d/main.go"
+  ( cd "$d" && go mod tidy && go mod vendor ) >"$work/fixattr.log" 2>&1 || echo "attr fixture $n setup failed: $(tail -3 "$work/fixattr.log")"
+}
+mkattr ok "$(printf '# comment\n\n*.go text eol=lf\n*.md linguist-vendored\n*.txt linguist-generated=true\n')"
+rc AC2 "a vendored .gitattributes with text eol=lf and linguist attributes passes (0)" 0 vc "$work/fa-ok"
+mkattr realbbolt "$(printf '# ensure that line endings for Windows builds are properly formatted\n# see https://github.com/golangci/golangci-lint-action?tab=readme-ov-file#how-to-use\n# at "Multiple OS Example" section\n*.go text eol=lf\n')"
+rc AC2 "the real go.etcd.io/bbolt .gitattributes passes (0)" 0 vc "$work/fa-realbbolt"
+i=0
+while IFS= read -r attr; do
+  i=$((i+1)); mkattr "bad$i" "$(printf '# c\n%s\n' "$attr")"
+  rc AC2 "a vendored .gitattributes line is refused (1): $attr" 1 vc "$work/fa-bad$i"
+done <<'EOF'
+*.go -text
+*.go !text
+*.go text=auto
+*.go text=lf
+*.go eol=crlf
+*.go eol=native
+*.go text eol=lf whitespace=-blank-at-eol
+*.go text eol=lf conflict-marker-size=32
+*.go text eol=lf unknownattr
+*.go text eol=lf unknownattr=1
+*.go whitespace
+*.go eol=LF
+*.go -eol
+*.go !eol
+*.go crlf
+*.go -crlf
+*.go binary
+*.go -binary
+*.go working-tree-encoding=UTF-16
+*.go export-ignore
+*.go -export-ignore
+*.go export-subst
+*.go filter=lfs
+*.go -filter
+*.go diff=word
+*.go -diff
+*.go !diff
+*.go merge=union
+*.go -merge
+*.go ident
+*.go linguist-vendored text=auto
+[attr]mymacro -diff
+[attr]vendored linguist-vendored
+"*.go text
+*.go text eol=lf=x
+*.go =text
+*.go --text
+EOF
+mkattr cr "$(printf '*.go text eol=lf\r')"
+rc AC2 "a .gitattributes line the parser cannot read (CR) is refused (1)" 1 vc "$work/fa-cr"
+mkattr nonascii "$(printf '# caf\303\251\n*.go text\n')"
+rc AC2 "a .gitattributes that is not plain text the parser reads (non-ASCII) is refused (1)" 1 vc "$work/fa-nonascii"
+mkattr big "@BIG"
+rc AC2 "a .gitattributes over 1 MB is refused (1)" 1 vc "$work/fa-big"
+mkattr named "$(printf '# c\n*.go text\n*.go export-ignore\n')"
+rc AC2 "(forbidden attribute) the failure names the file and the line" 1 vc "$work/fa-named"
+says AC2 "(forbidden attribute) .gitattributes:3" ".gitattributes:3"
+
+# ruling D: in a git work tree the index is judged too: the tracked paths are the regenerated paths, each blob the regenerated bytes, mode 100644
+gv() { mkgit "$1"; cp -R "$fx/vendor" "$work/g-$1/vendor"; }
+gadd() { git -C "$work/g-$1" add -A vendor >/dev/null 2>&1; }
+gv gitnone
+rc AC2 "vendor/ equal to the regenerated tree but not tracked in the index: refused (1)" 1 vc "$work/g-gitnone"
+gv gitexec; gadd gitexec; git -C "$work/g-gitexec" update-index --chmod=+x vendor/example.test/dep/dep.go >/dev/null 2>&1
+rc AC2 "a tracked vendored file with index mode 100755: refused (1)" 1 vc "$work/g-gitexec"
+gv gitblob; gadd gitblob
+hb=$(printf 'other\n' | git -C "$work/g-gitblob" hash-object -w --stdin)
+git -C "$work/g-gitblob" update-index --cacheinfo "100644,$hb,vendor/example.test/dep/dep.go" >/dev/null 2>&1
+rc AC2 "a tracked blob that is not the regenerated bytes (a checkout conversion): refused (1)" 1 vc "$work/g-gitblob"
+gv gitmissing; gadd gitmissing; git -C "$work/g-gitmissing" rm --cached -q vendor/example.test/dep/dep.go >/dev/null 2>&1
+rc AC2 "a regenerated path that is not tracked: refused (1)" 1 vc "$work/g-gitmissing"
+gv gitok; gadd gitok
+rc AC2 "every regenerated path tracked, blobs equal, mode 100644: passes (0)" 0 vc "$work/g-gitok"
+mkattr ign "$(printf '*.go text eol=lf\n')" ignore
+rm -rf "$work/g-ign"; cp -R "$work/fa-ign" "$work/g-ign"
+( cd "$work/g-ign" && git init -q && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm base ) >/dev/null 2>&1
+rc AC2 "a vendored .gitignore that leaves a regenerated file untracked: refused (1)" 1 vc "$work/g-ign"
+( cd "$work/g-ign" && git add -f vendor ) >/dev/null 2>&1
+rc AC2 "the same tree with the ignored file force-added: passes (0)" 0 vc "$work/g-ign"
 unset GOPROXY GOSUMDB GOFLAGS GOMODCACHE GOCACHE GOTOOLCHAIN
 
 # ===== AC3: the vendor job ====================================================================
@@ -229,7 +345,8 @@ if set(job) - {"name", "runs-on", "permissions", "steps"}: fail("job keys beyond
 if job.get("permissions") != {"contents": "read"}: fail("permissions " + str(job.get("permissions")))
 steps = job.get("steps", [])
 runs = [s for s in steps if "run" in s]
-if [s["run"].strip() for s in runs] != ["go mod verify", "bash bin/vendor-check.sh"]: fail("run steps are not exactly go mod verify, then bash bin/vendor-check.sh: " + str([s["run"] for s in runs]))
+want = ["go mod verify", "bash bin/vendor-check.sh", "python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json"]
+if [s["run"].strip() for s in runs] != want: fail("run steps are not exactly go mod verify, bash bin/vendor-check.sh, then the provenance check: " + str([s["run"] for s in runs]))
 allowed = {"name", "uses", "with", "run"}
 for s in steps:
     if set(s) - allowed: fail("a step key beyond name, uses, with, run: " + str(sorted(set(s) - allowed)))
@@ -247,7 +364,7 @@ blob = json.dumps(job) + json.dumps(d.get("env")) + json.dumps(d.get("defaults")
 if re.search(r"GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GOINSECURE|GOFLAGS|GOPROXY|-insecure|-mod=mod", blob): fail("a Go environment setting or opt-out in the vendor job or the workflow env")
 if "continue-on-error" in blob or "continue-on-error" in str(d.get("defaults")): fail("continue-on-error in the vendor job")
 PY
-t AC3 "ci.yml vendor job: bare pull_request trigger, hosted runner, exactly go mod verify then bin/vendor-check.sh, no condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
+t AC3 "ci.yml vendor job: bare pull_request trigger, hosted runner, exactly go mod verify, bin/vendor-check.sh, then the provenance check, no condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
 mutate() { # NAME PYTHON-EXPRESSION on s (the ci.yml text): the mutated file must be refused
   python3 - "$root/.github/workflows/ci.yml" "$work/mut-$1.yml" "$2" <<'PY'
 import sys
@@ -259,6 +376,11 @@ PY
   tn AC3 "the job check refuses: $1" python3 "$J" "$work/mut-$1.yml"
 }
 tn() { local ac=$1 d=$2; shift 2; if "$@" >"$work/out" 2>&1; then bad "$ac" "$d (expected a refusal)"; else ok; fi; }
+mutate provenance-or-true 's = s.replace("--provenance dependency-provenance.json\n", "--provenance dependency-provenance.json || true\n", 1)'
+mutate provenance-echo-only 's = s.replace("run: python3 bin/vendor-provenance.py check", "run: echo bin/vendor-provenance.py check", 1)'
+mutate provenance-other-file 's = s.replace("--provenance dependency-provenance.json\n", "--provenance /dev/null\n", 1)'
+mutate provenance-before-check 's = s.replace("        run: go mod verify\n      - name: vendor/ is what go mod vendor regenerates\n        run: bash bin/vendor-check.sh\n      - name: dependency-provenance.json lists the modules of vendor/ with the hashes of go.sum (REQ-VEND-001-AC4)\n        run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json\n", "        run: go mod verify\n      - name: p\n        run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json\n      - name: vendor/ is what go mod vendor regenerates\n        run: bash bin/vendor-check.sh\n", 1)'
+mutate provenance-second-step 's = s.replace("        run: bash bin/vendor-check.sh\n", "        run: bash bin/vendor-check.sh\n      - name: extra\n        run: echo hi\n", 1)'
 mutate trigger-branches 's = s.replace("  pull_request:\n", "  pull_request:\n    branches: [main]\n", 1)'
 mutate or-true 's = s.replace("run: bash bin/vendor-check.sh\n", "run: bash bin/vendor-check.sh || true\n", 1)'
 mutate echo-only 's = s.replace("run: bash bin/vendor-check.sh\n", "run: echo bin/vendor-check.sh\n", 1)'
