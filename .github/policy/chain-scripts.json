@@ -466,7 +466,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "dd890f3481111ae40289f51e9743d139f63bbe66e9675009797ac430452bd5f3",
+      "sha256": "50c24d360d311fa88bfba26fc2734c5e2622319bf1d966623aa6aa171bb888c4",
       "tools": [
         "env",
         "source"

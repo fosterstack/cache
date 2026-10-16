@@ -2,7 +2,7 @@
 """bin/check-govulncheck.py --scanners FILE --out DIR
 Check's Go scan of the product module's code (advisor ruling G, Oct 12; v0.3.0 rule 55; REQ-CHAIN-006-AC4). FILE is .github/policy/scanners.json, whose `source_scanners`
 list must be exactly ["govulncheck"] (no unlisted scanner runs). The scan is `govulncheck -json ./...` in the working directory (the tagged checkout), with the pinned Go
-first on the tool's search path (/usr/local/bin/fscache-go/bin, installed by the pinned Go installer), GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local and no workspace, so the scan reads
+first on the tool's search path (/usr/local/bin/fscache-go/bin, installed by the pinned Go installer), GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, no workspace and no external package driver (GOPACKAGESDRIVER=off), so the scan reads
 the exact bytes the build uses (a tree without vendor/ is refused): nothing Go-related from the caller's environment reaches it. The tool's stream is written, byte for byte, to DIR/govulncheck.json: the file the
 record of the scanners step carries as a product, which the Release stage binds (the verifier's bind-check) and hands to the dependency evidence step.
 Exit 0 only when the tool ran (one config message of scanner govulncheck, on its own database https://vuln.go.dev) and no finding reaches a called symbol (a trace whose
@@ -31,7 +31,7 @@ def pinned_env():
     # an EXPLICIT environment (Codex 4b-5 r1): nothing Go-related is inherited (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV... all dropped)
     # and persisted Go configuration is switched off; only the neutral process settings and the pinned values below reach the tool
     tool_env = {k: v for k, v in os.environ.items() if k in ("HOME", "TMPDIR", "LANG", "LC_ALL", "TERM", "USER", "SSL_CERT_FILE", "SSL_CERT_DIR") and v}
-    tool_env.update({"GOFLAGS": "-mod=vendor", "GOTOOLCHAIN": "local", "GOPROXY": "off", "GOWORK": "off", "GOENV": "off"})
+    tool_env.update({"GOFLAGS": "-mod=vendor", "GOTOOLCHAIN": "local", "GOPROXY": "off", "GOWORK": "off", "GOENV": "off", "GOPACKAGESDRIVER": "off"})
     search = GO_DIR + os.pathsep + os.environ.get("PATH", "")
     tool_env["PATH"] = search
     return tool_env, search
