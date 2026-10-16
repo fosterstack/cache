@@ -3244,6 +3244,28 @@ def _(arg):
 
 
 
+@param("LAYOUT", "layout refuses a layout that another account could change (a directory or a blob writable by group or others), leaving it untouched", [
+    ("the layout directory, group-writable", ("", 0o775)), ("blobs/, others-writable", ("blobs", 0o757)), ("blobs/sha256, group-writable", ("blobs/sha256", 0o775)),
+    ("a blob, group-writable", ("BLOB", 0o664))])
+def _(arg):
+    rel, mode = arg
+    fx = mk_fx()
+    d, _b = mk_layout(fx)
+    if rel == "BLOB":
+        rel = "blobs/sha256/" + hx(fx.children[0]["digest"])
+    target = os.path.join(d, rel) if rel else d
+    normal = 0o644 if rel.startswith("blobs/sha256/") else 0o755
+    os.chmod(target, mode)
+    t0 = tree(d, full=True)
+    r = lay(d, vex_real())
+    ok(r.rc == 2 and "private" in r.err, "wanted a refusal naming the permissions, got rc=%d %s" % (r.rc, (r.out + r.err).strip()[:200]))
+    eq(tree(d, full=True), t0, "the layout must be untouched")
+    os.chmod(target, normal)
+    r = lay(d, vex_real())
+    ok(r.rc == 0, "control: private again, accepted: rc=%d %s" % (r.rc, r.err.strip()[:200]))
+
+
+
 @case("AC3", "verify needs --base (the exclusion of D from the attestations cannot be checked without it)")
 def _():
     fx = mk_fx()

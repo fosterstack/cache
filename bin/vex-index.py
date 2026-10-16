@@ -6,13 +6,18 @@ release's OpenVEX document as an in-toto statement whose subject is that platfor
 of the bytes of D and of the VEX file: nothing signed or promoted ever names D.
 
   compute       --index D.json --vex VEX.json --out-dir DIR           (the pieces, into an empty directory)
-  verify        --final F.json --vex VEX.json --blobs DIR/blobs [--base D.json]
+  verify        --final F.json --vex VEX.json --blobs DIR/blobs --base D.json
   layout        --layout DIR --vex VEX.json                           (in place: DIR is an OCI image layout whose index.json names D;
                                                                        afterwards it names F, every new blob is in blobs/sha256)
-  verify-layout --layout DIR --vex VEX.json [--base-digest sha256:..] (F is in the layout, canonical, with its attestations)
+  verify-layout --layout DIR --vex VEX.json --base-digest sha256:.. (F is in the layout, canonical, with its attestations)
 
 verify always performs the full validation. There is no network code at all: nothing is pushed, nothing is read from a
 registry. Standard library only; nothing in the environment (CI variables, locale, time zone, clock) influences any output.
+
+Layout commands: the layout is Build's own directory, owned by the user that runs the tool and not writable by anyone else (refused
+otherwise). The tool checks the whole layout before writing, writes only what it owns and removes it again on failure, and checks the
+layout's exact state before and after the commit; a change by another process fails the run. A process of the same user that writes
+into the layout while the tool runs is outside what the tool can exclude; the chain runs verify-layout as a separate read-only step.
 
 Exit status: 0 success, 2 the input was refused (a plain reason on stderr), 1 an unexpected error.
 """
@@ -706,6 +711,7 @@ def open_layout(layout):
     """(dir_fd, blobs, top-level index.json, its one descriptor, the bytes of oci-layout and index.json as read) of an OCI image layout directory, or a refusal; the caller closes both"""
     layout_fd = open_directory(layout)
     try:
+        require_private(layout_fd, "the layout directory")
         if list_directory(layout_fd, "the layout") != LAYOUT_TOP:
             raise Refuse("the layout must hold exactly oci-layout, index.json and blobs/ (regular files and a directory, no links)")
         marker_bytes = read_regular(layout_fd, "oci-layout", 1024, "oci-layout")
@@ -726,13 +732,26 @@ def open_layout(layout):
                 or not 0 < entry["size"] <= MAX_FINAL_BYTES or ("annotations" in entry and not is_string_map(entry["annotations"]))):
             raise Refuse("the layout's one descriptor must be an OCI image index (mediaType, digest, size, annotations as strings)")
         blobs = Blobs("blobs", layout_fd)
-        if list_directory(blobs.root_fd, "blobs/") != {"sha256": stat.S_IFDIR}:
+        try:
+            require_private(blobs.root_fd, "blobs/")
+            require_private(blobs.sha_fd, "blobs/sha256")
+            if list_directory(blobs.root_fd, "blobs/") != {"sha256": stat.S_IFDIR}:
+                raise Refuse("the layout's blobs/ must hold only sha256/")
+        except BaseException:
             blobs.close()
-            raise Refuse("the layout's blobs/ must hold only sha256/")
+            raise
         return layout_fd, blobs, top, entry, {"oci-layout": marker_bytes, "index.json": top_bytes}
     except BaseException:
         os.close(layout_fd)
         raise
+
+
+def require_private(fd, what):
+    """only this user may change what is at fd: owned by the effective user and not writable by group or others (a layout another account can
+    write to cannot be checked by looking at it, so it is refused)"""
+    info = os.fstat(fd)
+    if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise Refuse("%s is not private to this user (it must be owned by the effective user and not writable by group or others)" % what)
 
 
 def hash_blobs(blobs):
@@ -743,6 +762,7 @@ def hash_blobs(blobs):
             raise Refuse("blobs/sha256 holds %r, which is not a regular file named by a sha256" % name)
         fd = os.open(name, FILE_FLAGS, dir_fd=blobs.sha_fd)
         try:
+            require_private(fd, "blob " + name)
             digest, size = hashlib.sha256(), 0
             while True:
                 chunk = os.read(fd, 1 << 20)
