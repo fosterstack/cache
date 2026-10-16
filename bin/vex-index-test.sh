@@ -1981,7 +1981,7 @@ def _add(path, key, valid, wrongs):
 _add("doc", "@context", CTX, [7, None, "https://openvex.dev/ns/v0.1.0"])
 _add("doc", "@id", "urn:uuid:1", [7, None])
 _add("doc", "author", "Author", [7, None])
-_add("doc", "role", "vendor", S_WRONG)
+_add("doc", "role", "document creator", S_WRONG)
 _add("doc", "timestamp", "2026-09-20T09:00:00.5-04:00", TS_WRONG)
 _add("doc", "last_updated", "2026-09-21T00:00:00Z", TS_WRONG)
 _add("doc", "version", 2, INT_WRONG)
