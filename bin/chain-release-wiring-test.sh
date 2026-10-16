@@ -193,7 +193,7 @@ m s_att     'id-token: write\n    steps'                    'id-token: write\n  
 m s_noid    'id-token: write\n    steps'                    'id-token: none\n    steps'                               'permissions'        "AC1 no id-token"
 m s_cont    '    environment: release\n'                     '    environment: release\n    container: alpine\n'        'job keys'           "AC1 a job container"
 m s_jenv    '    environment: release\n'                     '    environment: release\n    env: {X: y}\n'              'job keys'           "AC1 job env"
-m s_needs   '    environment: release\n'                     '    environment: release\n    needs: x\n'                 'job keys'           "AC1 a needs inside the stage file"
+m s_needs   '    environment: release\n'                     '    environment: release\n    needs: x\n'                 'needs'              "AC1 the release job names a second needs (x) besides verify"
 m s_wf      'permissions:\n  contents: read\njobs'          'permissions:\n  contents: read\nenv: {A: b}\njobs'      'workflow keys'      "AC1 workflow env"
 m s_trig    'workflow_call:'                                'workflow_call:\n  push:'                                'workflow_call'      "AC1 an extra trigger"
 m s_unp     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v4'                          'digest-pinned'      "AC1 an unpinned checkout"
@@ -446,7 +446,7 @@ for n in release-verify release-apks release-publish release-sign release-assets
 done
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"
-EXPECT=205
+EXPECT=219
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

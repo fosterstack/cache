@@ -6,8 +6,8 @@
 # release-apks (re-sign the apks with the stored key), release-publish (the exact image bytes by digest to ghcr.io and Docker Hub, read back),
 # release-sign (keyless signatures with a Rekor entry), release-assets (the evidence to the GitHub release) and release-postverify (the customer-guide
 # commands that need a registry, run against what was just published, in both registries; rule 79 as amended by the owner on Oct 10). Release creates no tag.
-# A release candidate (a tag vX.Y.Z-rcN, so one with a hyphen) ends after release-verify: every later step carries the condition below and is skipped, so no
-# credential or key is read, nothing is pushed and no release is made (REQ-CHAIN-007-AC14). A tag that is neither is refused by release-verify's tag rule.
+# A release candidate (a tag vX.Y.Z-rcN, so one with a hyphen) ends after the verify job: the release job carries the job-level condition below and is skipped (and every
+# witnessed step after release-verify carries it too), so no credential or key is read, nothing is pushed and no release is made (REQ-CHAIN-007-AC14). A tag that is neither is refused by release-verify's tag rule.
 # The shape of this file is judged by bin/chain-release-wiring-test.sh and the closed grammar of bin/chain-sign-wiring-test.sh.
 name: 'Stage: release'
 on:
@@ -15,7 +15,65 @@ on:
 permissions:
   contents: read
 jobs:
+  # The verify job (REQ-CHAIN-007-AC1, Astra R6): contents read and the identity token Witness needs, and nothing else: no environment, no secret, no write token.
+  # It verifies every earlier stage's record (release-verify under Witness). The release job below needs it, so no job that holds a write token or a secret starts
+  # unless the records were verified by an earlier job; it also repeats release-verify on its own downloads before any credential step.
+  verify:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-build
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-rebuild
+          path: witness-rebuild
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-check
+          path: witness-check
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-check-arm64
+          path: witness-check/witness-arm64
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: check-results
+          path: check-results
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: provenance
+          path: provenance
+      - name: release-verify under Witness
+        run: bash bin/witnessed.sh release-verify bin/release-verify.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: witness-release-verify
+          path: witness-release-verify
   release:
+    needs: verify
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-24.04
     environment: release
     permissions:
