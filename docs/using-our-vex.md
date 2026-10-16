@@ -73,11 +73,12 @@ Run with credentials allowed to call `inspector2:CreateFilter` in the account an
 our image:
 
 ```sh
-(set -o pipefail; jq -ce '.filters[]' "fosterstack-cache-v${VER}.inspector-filters.json" | while read -r f; do aws inspector2 create-filter --cli-input-json "$f" || exit 1; done)
+(set -o pipefail; jq -c '.filters[]' "fosterstack-cache-v${VER}.inspector-filters.json" | while read -r f; do aws inspector2 create-filter --cli-input-json "$f" || exit 1; done)
 ```
 
-What it does in your account: it creates one Inspector suppression rule per *not affected* or *fixed* statement,
-named `fosterstack-cache-v<version>-<CVE>`. Each rule matches only that CVE on our exact image digests (each variant's
+What it does in your account: it creates Inspector suppression rules for the *not affected* and *fixed* statements, at least one
+per statement, named `fosterstack-cache-v<version>-<CVE>` (a statement that covers more than one scope gets one rule per scope, the
+second and later ending in `-2`, `-3`). If no statement is suppressible the file holds no rule and the command does nothing. Each rule matches only that CVE on our exact image digests (each variant's
 index and its linux/amd64 and linux/arm64 images), and only the named package where a statement names one. It
 suppresses nothing on any other image, including other digests of your own builds on top of ours. The command stops at
 the first rule Inspector refuses.
