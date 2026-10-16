@@ -968,6 +968,7 @@ fips-module)
     if [ -r "$_cf" ] && [ -r "$_mf" ]; then
       read -r _cur <"$_mf" || true
       while IFS= read -r _l || [ -n "$_l" ]; do case $_l in ''|'#'*) continue;; esac; _cert=$_l; break; done <"$_cf"
+      [ -n "$_cert" ] && [ -n "$_cur" ] || die "$_cf or $_mf holds no module value: the certified-module check cannot tell whether a newer module is pending" 1
       if [ -n "$_cert" ] && [ -n "$_cur" ] && [ "$_cert" != "$_cur" ]; then
         echo "fips-module: pending: Go's certified module file names $_cert, the FIPS build uses $_cur; its pull request is staged on the next run without a staged refresh"
       else

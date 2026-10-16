@@ -153,7 +153,7 @@ if ARCHKEY not in rnames or not (rnames.index(ARCHKEY) > max(rnames.index(n) for
 elif "./bin/refresh-inputs.sh archive-key-check " not in "".join(str(x.get("run", "")) for x in rsteps if x.get("name") == ARCHKEY) or any(x.get("if") for x in rsteps if x.get("name") == ARCHKEY):
     bad.append("AC30: the archive key check step does not call refresh-inputs.sh archive-key-check, or carries an if")
 for x in rsteps:
-    if x.get("name") not in (BOOT_NAME, PULL_NAME) and re.search(r"always\(\)|failure\(\)|cancelled\(\)", str(x.get("if", ""))):
+    if x.get("name") not in (BOOT_NAME, PULL_NAME) and re.search(r"(always|failure|cancelled)\s*\(", str(x.get("if", "")), re.I):
         bad.append("AC30: the refresh step %r runs after a failure (%s); a stop must stop every later step" % (x.get("name"), x.get("if")))
 if len(rnames) < 2 or rnames[1] != KEYCHK if rnames else True:
     bad.append("AC26/AC30: the live key is not checked against the pinned one in the first step after the checkout (before tool installation, registry login, archive retrieval and token minting)")
@@ -249,6 +249,8 @@ case_ archive-keycheck-removed bad "$R['steps'] = [s for s in $R['steps'] if s.g
 case_ archive-keycheck-if      bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check the live Wolfi key against the pulled archive']"
 case_ archive-keycheck-late    bad "$R['steps'].append($R['steps'].pop([k for k, s in enumerate($R['steps']) if s.get('name') == 'check the live Wolfi key against the pulled archive'][0]))"
 case_ later-step-always        bad "[s.__setitem__('if', '\${{ always() }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ later-step-failure-space bad "[s.__setitem__('if', '\${{ failure () }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ later-step-always-upper  bad "[s.__setitem__('if', '\${{ ALWAYS() }}') for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
 case_ refresh-no-concurrency  bad "$R.pop('concurrency', None)"
 case_ refresh-cancel-in-prog  bad "$R['concurrency'] = {'group': 'refresh-inputs', 'cancel-in-progress': True}"
 case_ refresh-other-group     bad "$R['concurrency'] = {'group': 'refresh-inputs-' + '\${{ github.run_id }}', 'cancel-in-progress': False}"

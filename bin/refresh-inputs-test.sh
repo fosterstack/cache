@@ -788,13 +788,24 @@ t "rule 32" "refresh: every package and index download is globoff (-g), size-cap
 t "rule 32" "every live fetch is a shell line in the ruled grammar: -q first, the fixed flags (-fsSL -g --max-filesize N --max-time N --proto =https --tlsv1.2 -o FILE), exactly one operand that is a literal https://packages.wolfi.dev URL or \"https://packages.wolfi.dev/os/\$p\", optional || die \"plain\" N; the embedded Python runs no download" python3 -I - "$RF_PROD" <<'PYT'
 import re, sys
 s = open(sys.argv[1]).read()
-lines = [l for l in s.split("\n") if "/usr/bin/curl" in l and not l.lstrip().startswith("#")]
-shell = [l for l in lines if l.lstrip().startswith("/usr/bin/curl ")]
-assert len(shell) == len(lines) and len(lines) == 6, "every curl is a shell line (4 key fetches, packages, index): %d of %d" % (len(shell), len(lines))
-g = re.compile(r'^\s+/usr/bin/curl -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
+lines = [l for l in s.split("\n") if " -fsSL " in l and not l.lstrip().startswith("#")]   # the fetch lines are the ones carrying the fixed flag cluster
+shell = [l for l in lines if l.lstrip().startswith("/usr/bin/")]
+assert len(shell) == len(lines) and len(lines) == 6, "every fetch line is a shell line (4 key fetches, packages, index): %d of %d" % (len(shell), len(lines))
+g = re.compile(r'^\s+/usr/bin/[a-z]+ -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
 bad = [l for l in lines if not g.match(l)]
 assert not bad, bad
-assert 'subprocess.run(["/usr/bin/curl"' not in s
+assert '"-fsSL"' not in s   # the embedded Python passes no fetch flags: it runs no download
+PYT
+t "rule 32" "the pin-age checker's own live-fetch rule accepts each of the six fetch lines and refuses the same line with another program (the grammar test above names the flags, the checker decides the program)" python3 -I - "$RF_PROD" "$root/.github/agent/supply-chain/pin-age-check.py" <<'PYT'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pac", sys.argv[2])
+m = importlib.util.module_from_spec(spec); sys.modules["pac"] = m; spec.loader.exec_module(m)
+lines = [" ".join(l.split()) for l in open(sys.argv[1]).read().split("\n") if " -fsSL " in l and not l.lstrip().startswith("#")]
+assert len(lines) == 6, len(lines)
+for l in lines:
+    assert m._live_fetch_line_ok(l), ("the checker refuses a real fetch line", l)
+    other = "/usr/bin/other" + l[l.index(" "):]
+    assert not m._live_fetch_line_ok(other), ("the checker accepts another program", other)
 PYT
 t "rule 31" "refresh: the temp files are opened exclusively (O_EXCL) with an unpredictable name, so a planted symlink is never followed" bash -c "grep -q 'O_EXCL' '$RF' && grep -q 'secrets\\|token_hex\\|urandom' '$RF'"
 # the previous pointer's TARGET is hashed too
@@ -1321,6 +1332,10 @@ mv "$gr/lib/fips140/certified.txt" "$gr/lib/fips140/certified.txt.away"
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
 mv "$gr/lib/fips140/certified.txt.away" "$gr/lib/fips140/certified.txt"
 t "AC26" "fips-module --plan-dir with a refresh plan already staged and an unreadable certified-module file: exit 1 naming the file (never a silent pass)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'certified.txt' '$work/log' && ! grep -qi 'nothing pending' '$work/log'"
+printf '# only a comment\n' >"$gr/lib/fips140/certified.txt"
+run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
+echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"
+t "AC26" "fips-module --plan-dir with a refresh plan already staged and a certified-module file holding no module value (empty or only comments): exit 1, not nothing pending" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -qi 'nothing pending' '$work/log'"
 fr; rm -rf "$work/plan-f"
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-f"
 t "AC29" "fips-module --plan-dir into an empty plan directory still stages its pull request (exit 0, one plan)" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(ls '$work/plan-f' | wc -l)\" -eq 1"
