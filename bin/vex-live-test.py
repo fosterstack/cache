@@ -94,7 +94,7 @@ def render_settings(values):
     return "".join("%s='%s'\n" % (k, v) for k, v in values.items())   # plain values only: quoting cannot break
 
 
-def fixture_vex(vex, images, fixture_digest, cve):
+def fixture_vex(vex, images, fixture_digest, cve, repository="ghcr.io/fosterstack/cache"):
     """The real statements unchanged, plus one test-only not_affected statement for the fixture. The images map for the
     fixture's own filters is a valid two-variant digest file (the generator takes exactly production and fips, each with an
     index and the two platform children): production's index is the fixture digest (its children are the real ones, which the statement
@@ -103,7 +103,7 @@ def fixture_vex(vex, images, fixture_digest, cve):
     tvex["statements"].append({
         "vulnerability": {"name": cve}, "status": "not_affected", "justification": "vulnerable_code_not_present",
         "impact_statement": "live test (scanner-panel rule 12): a test-only statement for the fixture image",
-        "products": [{"@id": REPO_PURL % fixture_digest}]})
+        "products": [{"@id": "pkg:oci/cache@%s?repository_url=%s" % (fixture_digest, repository)}]})
     timages = copy.deepcopy(images)
     timages["production"] = {"index": fixture_digest, "children": images["production"]["children"]}
     return tvex, timages
@@ -317,10 +317,12 @@ def judge_inspector(before, after, cve):
     if set(b) != set(a):
         return "the finding inventory changed: %d lost, %d new" % (len(set(b) - set(a)), len(set(a) - set(b)))
     for arn, f in a.items():
+        if f["vulnerabilityId"] != b[arn]["vulnerabilityId"]:
+            return "a finding changed its CVE (%s -> %s): it is not the finding that was there" % (b[arn]["vulnerabilityId"], f["vulnerabilityId"])
         if f["vulnerabilityId"] == cve:
             if f["status"] != "SUPPRESSED":
                 return "%s is %s after our file, not SUPPRESSED" % (cve, f["status"])
-        elif f["status"] != b[arn]["status"] or f["vulnerabilityId"] != b[arn]["vulnerabilityId"]:
+        elif f["status"] != b[arn]["status"]:
             return "an unrelated finding changed (%s: %s -> %s)" % (f["vulnerabilityId"], b[arn]["status"], f["status"])
     return None
 
@@ -364,6 +366,9 @@ def judge_google(before, after, cve, run_notes):
         return "two occurrences carry the same identity"
     if set(bi) != set(ai):
         return "the occurrence inventory changed: %d lost, %d new" % (len(set(bi) - set(ai)), len(set(ai) - set(bi)))
+    note_of = lambda docs: {ident(o): str(o.get("noteName", "")) for o in docs}
+    if note_of(bo) != note_of(ao):
+        return "an occurrence changed its note (its CVE): it is not the finding that was there"
     for o in a:
         va = assessment(o)
         if va.get("state") != "NOT_AFFECTED" or va.get("noteName") not in run_notes:
@@ -477,6 +482,7 @@ def main(argv=None):
     t.add_argument("--fixture-digest", required=True)
     t.add_argument("--cve", required=True)
     t.add_argument("--out-dir", required=True)
+    t.add_argument("--grype-repository", help="the repository Grype scans the fixture in (the test registry's cache repository); the OpenVEX file names the fixture there")
     c = sub.add_parser("pick-cve")
     c.add_argument("--reports", required=True)
     c.add_argument("--openvex", required=True, help="our statements: their CVEs are never the fixture's")
@@ -523,6 +529,7 @@ def main(argv=None):
         V = _forms()
         vex, images = json.load(open(a.openvex)), json.load(open(a.images))
         tvex, timages = fixture_vex(vex, images, a.fixture_digest, a.cve)
+        gvex, _ = fixture_vex(vex, images, a.fixture_digest, a.cve, a.grype_repository) if a.grype_repository else (tvex, None)
         shipped, generated = inspector_files(V, vex, images, a.fixture_digest, a.cve, a.version)
         tc = test_copy(generated)
         bad = check_copy(shipped, generated, tc, a.fixture_digest)
@@ -530,7 +537,7 @@ def main(argv=None):
             print("\n".join(bad), file=sys.stderr)
             return 1
         base = os.path.join(a.out_dir, "fosterstack-cache-%s" % a.version)
-        json.dump(tvex, open(os.path.join(a.out_dir, "fosterstack-cache.openvex.json"), "w"), indent=1)
+        json.dump(gvex, open(os.path.join(a.out_dir, "fosterstack-cache.openvex.json"), "w"), indent=1)   # the file Grype reads: the fixture's product in the test registry
         json.dump(tc, open(base + ".inspector-filters.json", "w"), indent=1)
         json.dump(csaf_test_copy(V, vex, images, a.fixture_digest, a.cve, a.version), open(base + ".csaf.json", "w"), indent=1)
         return 0

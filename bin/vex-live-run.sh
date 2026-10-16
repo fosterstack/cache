@@ -68,9 +68,11 @@ notes_of() {   # <uri prefix>: the names of every VULNERABILITY_ASSESSMENT note 
   printf '%s' "$names" || return 1
 }
 
-sweep() {   # empty the two dedicated test repositories, delete every live-test filter and every VEX note on the test
-  local rc=0 out lst r pass n f chunk ref   # repository's images; every listing is parsed strictly, and any listing,
-  local repo=${ECR#*/}                       # parsing or deletion failure — or anything left — fails the sweep
+# The sweep empties the dedicated test resources. Every resource family is cleaned on its own: a failing listing or delete in one family never stops the others, every
+# failure is kept, and the sweep fails at the end if any family did (Codex #387 r3). Any listing, parsing or deletion failure, or anything left, fails its family.
+sweep_ecr() {
+  local rc=0 out lst r pass n chunk
+  local repo=${ECR#*/}
   for pass in 1 2 3; do   # indexes first, then the children they held
     out=$(aws ecr list-images --region "$REGION" --repository-name "$repo" --output json) \
       || { echo "::error::cannot list the test ECR repository" >&2; return 1; }
@@ -86,6 +88,11 @@ sweep() {   # empty the two dedicated test repositories, delete every live-test 
   out=$(aws ecr list-images --region "$REGION" --repository-name "$repo" --output json) || return 1
   lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind ecr <<<"$out") || return 1
   [ -z "$lst" ] || { echo "::error::the test ECR repository is not empty after the sweep" >&2; rc=1; }
+  return "$rc"
+}
+
+sweep_gar() {
+  local rc=0 out lst pass ref
   for pass in 1 2 3; do
     out=$(gcloud artifacts docker images list "$GAR" --include-tags --format=json) \
       || { echo "::error::cannot list the test Artifact Registry repository" >&2; return 1; }
@@ -99,6 +106,11 @@ sweep() {   # empty the two dedicated test repositories, delete every live-test 
   out=$(gcloud artifacts docker images list "$GAR" --format=json) || return 1
   lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind gar <<<"$out") || return 1
   [ -z "$lst" ] || { echo "::error::the test Artifact Registry repository is not empty after the sweep" >&2; rc=1; }
+  return "$rc"
+}
+
+sweep_filters() {
+  local rc=0 out lst f
   out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) \
     || { echo "::error::cannot list the Inspector filters" >&2; return 1; }
   lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
@@ -109,6 +121,11 @@ sweep() {   # empty the two dedicated test repositories, delete every live-test 
   out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) || return 1
   lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
   [ -z "$lst" ] || { echo "::error::live-test Inspector filters remain after the sweep" >&2; rc=1; }
+  return "$rc"
+}
+
+sweep_notes() {
+  local rc=0 lst n
   lst=$(notes_of "https://${GAR}/") || { echo "::error::cannot list the VEX notes" >&2; return 1; }
   while read -r n; do
     [ -n "$n" ] || continue
@@ -119,6 +136,15 @@ sweep() {   # empty the two dedicated test repositories, delete every live-test 
   return "$rc"
 }
 
+sweep() {
+  local rc=0
+  sweep_ecr || rc=1
+  sweep_gar || rc=1
+  sweep_filters || rc=1
+  sweep_notes || rc=1
+  return "$rc"
+}
+
 check_removal_scope() {   # the page's removal block deletes every Inspector filter named fosterstack-cache-*: run it only when each such filter is a live-test one
   local out all test
   out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) \
@@ -126,6 +152,16 @@ check_removal_scope() {   # the page's removal block deletes every Inspector fil
   all=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind filters --prefix "fosterstack-cache-" <<<"$out") || return 1
   test=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
   [ "$all" = "$test" ] || { echo "::error::the guide's removal would delete Inspector filters that are not live-test ones" >&2; return 1; }
+}
+
+compare_release_files() {   # <tag> <committed openvex>: the three downloaded forms equal the committed OpenVEX file and the generator's output (in regen/); the test replaces them
+  local tag=$1 committed=$2   # with its own copies only after this
+  cmp -s fosterstack-cache.openvex.json "$committed" \
+    || { echo "::error::the release's OpenVEX file is not the committed one" >&2; return 1; }
+  cmp -s "regen/fosterstack-cache-${tag}.inspector-filters.json" "fosterstack-cache-${tag}.inspector-filters.json" \
+    || { echo "::error::the release's Inspector file is not the generator's output" >&2; return 1; }
+  cmp -s "regen/fosterstack-cache-${tag}.csaf.json" "fosterstack-cache-${tag}.csaf.json" \
+    || { echo "::error::the release's CSAF file is not the generator's output" >&2; return 1; }
 }
 
 select_release() {   # the release under test: MODE rc = the release candidate tag (vX.Y.Z-rcN, nothing published); MODE release = the final tag just
@@ -208,13 +244,10 @@ else
   done
 fi
 if [ "$MODE" = release ]; then   # a just-published release: the downloaded files are the generator's output for the committed file and the published images
-  cmp -s fosterstack-cache.openvex.json "$root/.vex/fosterstack-cache.openvex.json" \
-    || { echo "::error::the release's OpenVEX file is not the committed one" >&2; exit 1; }
   mkdir -p regen
   python3 "$GITHUB_WORKSPACE/bin/vex-forms.py" --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json \
     --version "$tag" --out-dir regen >/dev/null
-  cmp -s "regen/fosterstack-cache-${tag}.inspector-filters.json" "fosterstack-cache-${tag}.inspector-filters.json" \
-    || { echo "::error::the release's Inspector file is not the generator's output" >&2; exit 1; }
+  compare_release_files "$tag" "$root/.vex/fosterstack-cache.openvex.json"
 fi
 
 # --- push by digest to the two test repositories: our two images and the fixture (REQ-SCAN-012-AC2)
@@ -275,7 +308,7 @@ echo "the fixture's finding under test: ${CVE}"
 # --- the files the guide's commands load: the shipped statements plus the fixture's, the Inspector copy tagged and
 #     test-prefixed and checked to differ in nothing else (advisor 0098)
 python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" test-files --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" \
-  --fixture-digest "$FIX" --cve "$CVE" --out-dir .
+  --fixture-digest "$FIX" --cve "$CVE" --grype-repository "${GAR}/cache" --out-dir .
 
 # --- Grype: the guide's command as written, then the fixture without and with our file, judged
 guide grype

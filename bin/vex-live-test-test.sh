@@ -172,6 +172,14 @@ def pids(o):
     return [o] if isinstance(o, str) and o.startswith("fosterstack-cache-v0.3.0-rc1-") else []
 check("test CSAF: every product id a statement names is a product of the tree", set(pids(csaf["vulnerabilities"])) <= set(prods), (set(pids(csaf["vulnerabilities"])) - set(prods)))
 
+# --- Codex #387 r3 (P1): Grype scans the test registry's copy of the fixture, and OpenVEX matches the product's repository too: the OpenVEX file Grype reads names the test repository
+GREPO = "us-east1-docker.pkg.dev/fosterstack-cache/cache-live-test/cache"
+gvex, _t = L.fixture_vex(vex, images, FIX, "CVE-2023-9999", GREPO)
+gadded = [s for s in gvex["statements"] if s not in vex["statements"]]
+check("grype: the fixture statement's product carries the test repository", len(gadded) == 1 and gadded[0]["products"] == [{"@id": "pkg:oci/cache@%s?repository_url=%s" % (FIX, GREPO)}], gadded)
+gdef, _t = L.fixture_vex(vex, images, FIX, "CVE-2023-9999")
+check("grype: without a repository the product stays the shipped repository (the generators' form)", gdef["statements"][-1]["products"] == [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache" % FIX}])
+
 # --- the fixture CVE: one every service reports for the fixture, deterministic
 pick = L.pick_cve({"grype": {"CVE-1": "High", "CVE-2": "Critical", "CVE-3": "Low"}, "inspector": {"CVE-1", "CVE-2", "CVE-3"},
                    "google": {"CVE-2", "CVE-3", "CVE-1"}})
@@ -331,6 +339,18 @@ for why, after in [("an unrelated CVE suppressed too", [fi("a/1", "CVE-T", "SUPP
 check("SEC-387 inspector refuses a before without the target CVE", L.judge_inspector({"findings": [fi("a/3", "CVE-U", "ACTIVE")]}, {"findings": [fi("a/3", "CVE-U", "ACTIVE")]}, "CVE-T") is not None)
 check("SEC-387 inspector refuses a malformed document", L.judge_inspector(IB, {"findings": "x"}, "CVE-T") is not None and L.judge_inspector(IB, [], "CVE-T") is not None)
 
+# Codex #387 r3 (P2): a finding that keeps its ID but changes its CVE is not the finding that was there: the CVE association of every ID is compared
+check("SEC-387 inspector refuses an unrelated finding changed to the target CVE and suppressed",
+      L.judge_inspector({"findings": [fi("a/1", "CVE-T", "ACTIVE"), fi("a/3", "CVE-U", "ACTIVE")]},
+                        {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-T", "SUPPRESSED")]}, "CVE-T") is not None)
+check("SEC-387 inspector refuses a target finding changed to an unrelated CVE",
+      L.judge_inspector({"findings": [fi("a/1", "CVE-T", "ACTIVE"), fi("a/2", "CVE-T", "ACTIVE")]},
+                        {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-U", "ACTIVE")]}, "CVE-T") is not None)
+check("SEC-387 google refuses one of two target occurrences changed to an unrelated CVE while the other is assessed",
+      L.judge_google({"occurrences": [T1, T2, U1]}, {"occurrences": [T1a, occn("o/2", "CVE-U"), U1]}, "CVE-T", {OURS}) is not None)
+check("SEC-387 google refuses an unrelated occurrence changed to the target CVE",
+      L.judge_google({"occurrences": [T1, U1]}, {"occurrences": [T1a, occn("o/3", "CVE-T", "NOT_AFFECTED", OURS)]}, "CVE-T", {OURS}) is not None)
+
 # behavioral: the shell library, with stubs
 script = os.path.join(root, "bin/vex-live-run.sh")
 def sh(body, stubs, env=None):
@@ -457,6 +477,21 @@ AWS_ECR_FAIL = r"""case "$*" in
   *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac"""
 rc, out = sh("sweep", {"aws": AWS_ECR_FAIL, "gcloud": OKGC, "ca-transport": OKCURL})
 check("SEC-387 sweep fails when an ECR per-image delete failed on an early pass and a later pass succeeded", rc != 0, (rc, out[-300:]))
+# Codex #387 r3 (P2): one failing listing does not stop the cleanup of the other resource families; every failure is kept and the sweep fails at the end
+CALLS = r"""echo "$0 $*" >> "$RUNNER_TEMP/calls"; """
+AWS_ECR_DOWN = CALLS + r"""case "$*" in *"ecr list-images"*) exit 42 ;; *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac"""
+GC_LOG = CALLS + r"""case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) echo "[]" ;; esac"""
+rc, out = sh('sweep || echo SWEEP_FAILED; cat "$RUNNER_TEMP/calls"', {"aws": AWS_ECR_DOWN, "gcloud": GC_LOG, "ca-transport": OKCURL})
+check("SEC-387 an ECR listing failure does not skip the Google, Inspector and note cleanup, and the sweep still fails",
+      "SWEEP_FAILED" in out and "images list" in out and "inspector2 list-filters" in out, (rc, out[-400:]))
+# the downloaded forms of a published release are compared with the generator's output, the CSAF included, before the test replaces them
+rc, out = sh("mkdir -p regen; echo '{}' > fosterstack-cache.openvex.json; echo '{}' > fosterstack-cache-v0.3.0.inspector-filters.json; echo '{}' > fosterstack-cache-v0.3.0.csaf.json; "
+             "cp fosterstack-cache-v0.3.0.inspector-filters.json fosterstack-cache-v0.3.0.csaf.json regen/; compare_release_files v0.3.0 fosterstack-cache.openvex.json",
+             {}, {})
+check("SEC-387 a published release whose three forms equal the generator's output passes the comparison", rc == 0, (rc, out[-300:]))
+rc, out = sh("mkdir -p regen; echo '{}' > fosterstack-cache.openvex.json; echo '{}' > fosterstack-cache-v0.3.0.inspector-filters.json; echo '{\"x\": 1}' > fosterstack-cache-v0.3.0.csaf.json; "
+             "echo '{}' > regen/fosterstack-cache-v0.3.0.inspector-filters.json; echo '{}' > regen/fosterstack-cache-v0.3.0.csaf.json; compare_release_files v0.3.0 fosterstack-cache.openvex.json", {}, {})
+check("SEC-387 a published CSAF that differs from the generator's output fails the comparison", rc != 0, (rc, out[-300:]))
 # Codex #387 r1 (P2): the page's removal block selects every filter named fosterstack-cache-; before it runs, every such filter in the account must be a live-test one
 FLT = lambda *names: """echo '{"filters": [%s]}'""" % ", ".join('{"name": "%s", "arn": "arn:%d"}' % (n, i) for i, n in enumerate(names))
 rc, out = sh("check_removal_scope", {"aws": FLT("fosterstack-cache-livetest-x", "fosterstack-cache-v0.3.0-CVE-1")}, {"REGION": "us-east-1"})
