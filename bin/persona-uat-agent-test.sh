@@ -427,7 +427,10 @@ BUDGET=1000 MODEL=MODEL-JR-X agent jscrub '[{"usage":{"tokens":10},"action":{"ty
 CASE="the journal is scrubbed like the transcript: neither the model name nor a credential-looking string is in it"
 check none_match 'MODEL-JR-X|ghp_abcdefghijkl' "$work/jscrub.log"
 # a REAL agent whose command's docker client kills the agent at execution entry (SIGKILL): the action record is already in the journal and there is no result record
-mkdir -p "$work/jkill/sandbox"; echo README >"$work/jkill/sandbox/README.md"; echo '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl http://killed-before-return.example/\necho more"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]' >"$work/jkill/plan.json"
+mkdir -p "$work/jkill/sandbox"; echo README >"$work/jkill/sandbox/README.md"
+cat >"$work/jkill/plan.json" <<'JSON'
+[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl http://killed-before-return.example/\necho more"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]
+JSON
 : >"$work/jkill/fp.log"; printf '#!/bin/sh\nkill -9 $PPID\nsleep 5\n' >"$work/jkill/docker"; chmod +x "$work/jkill/docker"; rm -f "$work/jkill/j.log"
 printf '{"persona":"readme-evaluator","instructions":"x","docs_dir":"%s","endpoint":"http://127.0.0.1:18080","image":"x@sha256:%s","model":"M-K","token_budget":400000,"tools":{}}' "$work/jkill/sandbox" "$(printf 'a%.0s' $(seq 64))" >"$work/jkill/req.json"
 python3 - "$agent" "$work" <<'PY'

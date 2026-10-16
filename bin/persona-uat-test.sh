@@ -3198,11 +3198,15 @@ t["kubectl"] = "registry.example.net/kubectl@sha256:" + "6" * 64
 t["cosign"] = "quay.io/sigstore/cosign@sha256:" + "5" * 64
 json.dump(t, open(sys.argv[2], "w"))
 PY
-TOOLS="$work/tools-reg.json" run hostsreg '{"readme-evaluator":{"commands":["curl https://registry.k8s.io/v2/","curl https://registry.example.net/v2/","curl https://quay.io/v2/","curl https://gcr.io/v2/","curl https://docker.io/v2/"]}}' rc
+cat >"$work/hostsreg.plan.json" <<'JSON'
+{"readme-evaluator":{"commands":["curl https://registry.k8s.io/v2/","curl https://registry.example.net/v2/","curl https://quay.io/v2/","curl https://gcr.io/v2/","curl https://docker.io/v2/"]}}
+JSON
+TOOLS="$work/tools-reg.json" run hostsreg "$(cat "$work/hostsreg.plan.json")" rc
 CASE="hosts: the registries are read from the tools file the driver was given (not a hard-coded list): registry.example.net, quay.io and docker.io are excluded, registry.k8s.io and gcr.io are no longer named by any entry"
 check test "$(hostsline "$(out hostsreg)/readme-evaluator.report.md")" = "gcr.io,registry.k8s.io"
 unset TOOLS
-for c in 'commands-str|{"override":{"commands":"curl https://evil.example"}}' 'commands-int|{"commands":[5]}' 'commands-obj|{"override":{"commands":{"a":"b"}}}'; do
+CSTR='commands-str|{"override":{"commands":"curl https://evil.example"}}'
+for c in "$CSTR" 'commands-int|{"commands":[5]}' 'commands-obj|{"override":{"commands":{"a":"b"}}}'; do
   name=${c%%|*}; plan=${c#*|}
   failclosed "$name" readme-evaluator "$plan"
 done
