@@ -578,8 +578,8 @@ _PY_FORBIDDEN_NAMES = frozenset("exec eval compile __import__ getattr setattr gl
                                 "spawnv spawnve spawnvp spawnvpe write_text write_bytes chmod shutil touch mkdir makedirs unlink remove rmdir rename symlink link symlink_to hardlink_to "
                                 "write writelines truncate fdopen copy copyfile copytree move rmtree".split())
 _DATA_CONSUMERS = frozenset("cat tee grep egrep fgrep sort uniq head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od xxd".split())
-_PURE_IMPORTS = frozenset("json re sys os os.path pathlib time datetime hashlib base64 collections itertools functools math string textwrap argparse typing copy struct binascii "
-                          "unicodedata urllib.parse shlex io enum dataclasses".split())
+_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap argparse typing copy struct binascii "
+                          "unicodedata urllib.parse shlex enum dataclasses".split())
 _DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\(\))", re.M)
 
 
@@ -657,8 +657,8 @@ def _shell_lex(lines):
                     if top == "(" and line[j - 1:j] == "(": stack[-1] = "(("
                     else: stack.append("(")
                 elif c == ")" and top in ("$(", "(", "$((", "(("):
-                    if top == "$(" and re.match(r"[ \t]*\(?[^\s()]+(?:\|[^\s()]+)*$", line[:j]) and re.match(r"[ \t]*(?:[;&|)]|$)", line[j + 1:]) is None:
-                        insane = True                   # `pattern) command` inside $( ): a case pattern, not the end of the substitution
+                    if top == "$(" and re.match(r"[ \t]*\(?[^\s()]+(?:\|[^\s()]+)*$", line[:j]):
+                        insane = True                   # a bare word, then `)`, at the start of a line inside $( ): a case pattern, not the end of the substitution; not followed
                     stack.pop()
                     if top in ("$((", "((") and line[j + 1:j + 2] == ")": j += 1
                 elif c == "#" and (j == 0 or line[j - 1] in " \t;&|(") : cmt = True
@@ -687,7 +687,7 @@ def _shell_lex(lines):
         for m in re.finditer(r"\btee\b((?:[ \t]+(?:-\w+|\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+))+)", opener):
             tee_ops += re.findall(r"\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+", re.sub(r"(?:^|[ \t])-\w+", " ", m.group(1)))
         targets = [t.strip("'\"") for t in re.findall(r"(?:^|[^\d<>&])(?:\d*>>?|&>>?)[ \t]*(\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+)", stripped) + tee_ops]
-        targets = [t for t in targets if t and not t.startswith(("&", "/dev/"))]
+        targets = [t for t in targets if t and not t.startswith("&") and t not in ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "/dev/tty") and not t.startswith("/dev/fd/")]
         for tab, quoted, delim, nested in ops:
             start, k = i, i
             if delim is None:
@@ -715,7 +715,7 @@ def _func_bodies(lines):
             continue
         depth, body, k, seen = 0, [], idx, False
         while k < len(lines):
-            bare = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "", lines[k])        # a brace inside a quoted string does not open or close the function
+            bare = re.sub(r"(?:^|(?<=\s))#.*$", "", re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "", lines[k]))        # a brace inside a quoted string or a comment does not open or close the function
             body.append(lines[k]); depth += bare.count("{") - bare.count("}"); seen = seen or "{" in bare
             if seen and depth <= 0: break
             k += 1
@@ -747,9 +747,14 @@ def _written_file_used_later(lines, hd):
                 if val.strip("'\"") in names or any(t in val for t in names):
                     names |= {"$" + var, "${" + var + "}"}
     funcs = _func_bodies(lines)
-    for t in names:
+    spell = set(names)
+    for t in list(names):
+        if not t.startswith("$"):
+            spell |= {t.lstrip("./") or t, os.path.basename(t.rstrip("/")) or t}
+    for t in spell:
+        rx = re.compile(r"(?<![\w.$-])" + re.escape(t) + r"(?![\w-])") if not t.startswith("$") else re.compile(re.escape(t))
         for ln in later:
-            if t in ln:
+            if rx.search(ln):
                 st = ln.strip().strip("'\"")
                 if st.startswith(t) or _runs_input(_words(ln), funcs):
                     return True
@@ -764,13 +769,15 @@ def _py_program_flags(body):
     except (SyntaxError, ValueError, RecursionError):
         return None, ["does not parse"]
     why = set()
+    called = {id(nd.func) for nd in ast.walk(tree) if isinstance(nd, ast.Call)}
     for nd in ast.walk(tree):
+        if isinstance(nd, ast.Name) and nd.id == "open" and id(nd) not in called: why.add("an alias of open")
         if isinstance(nd, ast.Name) and nd.id in _PY_FORBIDDEN_NAMES: why.add(nd.id)
         elif isinstance(nd, ast.Attribute) and nd.attr in _PY_FORBIDDEN_NAMES: why.add(nd.attr)
         elif isinstance(nd, ast.Import): why |= {"import " + a.name for a in nd.names if a.name not in _PURE_IMPORTS} | ({a.name.split(".")[0] for a in nd.names} & _PY_FORBIDDEN_NAMES)
         elif isinstance(nd, ast.ImportFrom):
             if (nd.module or "") not in _PURE_IMPORTS or nd.level: why.add("import " + (nd.module or "."))
-            why |= {a.name for a in nd.names} & _PY_FORBIDDEN_NAMES
+            why |= {a.name for a in nd.names} & (_PY_FORBIDDEN_NAMES | {"open"})
         elif isinstance(nd, ast.Call) and isinstance(nd.func, ast.Name) and nd.func.id == "open":
             mode = nd.args[1] if len(nd.args) > 1 else next((k.value for k in nd.keywords if k.arg == "mode"), None)
             if mode is not None and not (isinstance(mode, ast.Constant) and isinstance(mode.value, str) and not set(mode.value) & set("wax+")):
@@ -830,12 +837,18 @@ def _plain_value(s):
     return not (sq or dq)
 
 
-def _first_command(opener):
-    toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", re.sub(r"<<-?[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|\w+)", " ", opener))
-    toks = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*", t)]
-    while toks and toks[0] in ("command", "builtin", "nohup", "nice", "time"):
-        toks = toks[1:]
-    return (_unquote(toks[0]) or "").split("/")[-1] if toks else ""
+def _commands(opener):
+    """The first word of every command in the opener line (split at | ; & and lists), env assignments and a few wrappers skipped; "" for a segment with none."""
+    flat = re.sub(r"<<-?[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|\w+)", " ", opener)
+    out = []
+    for seg in re.split(r"\|\||&&|[|;&]", flat):
+        toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", seg)
+        toks = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*", t) and not re.fullmatch(r"\d*[<>]+.*", t)]
+        while toks and toks[0] in ("command", "builtin", "nohup", "nice", "time"):
+            toks = toks[1:]
+        if toks:
+            out.append((_unquote(toks[0]) or "").split("/")[-1])
+    return out
 
 
 def _heredoc_ok(hd, lines, funcs, python=False):
@@ -852,8 +865,7 @@ def _heredoc_ok(hd, lines, funcs, python=False):
         return False
     if python:
         return True
-    cmd = _first_command(hd["opener"])
-    return not (set(words) & _INTERP_WORDS) and (cmd in _DATA_CONSUMERS or (cmd in funcs and not _runs_input(_words(funcs[cmd]), funcs)))
+    return not (set(words) & _INTERP_WORDS) and all(c in _DATA_CONSUMERS or (c in funcs and not _runs_input(_words(funcs[c]), funcs)) for c in _commands(hd["opener"]))
 
 
 def _context_holds(context, proof, text, line_hash):
@@ -895,6 +907,8 @@ def _context_holds(context, proof, text, line_hash):
             continue
         # pystring: python / python3 reading the program from stdin ("-"), no other interpreter or shell on the command line
         pyw = {"python", "python3"}
+        if not all(c in _DATA_CONSUMERS or c in pyw or c.startswith("python") or (c in funcs and not _runs_input(_words(funcs[c]), funcs)) for c in _commands(hd["opener"])):
+            return False
         if not (set(words) & pyw) or (set(words) & _INTERP_WORDS) - pyw or not re.search(r"\bpython[\d.]*[ \t]+(?:-[a-zA-Z]+[ \t]+)*-(?=[ \t]|$)", hd["opener"]) or re.search(r"[ \t]-[a-zA-Z]*[cm]\b", hd["opener"]):
             return False
         body = "\n".join(lines[hd["start"]:hd["end"]])
