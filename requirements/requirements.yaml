@@ -3248,10 +3248,13 @@ requirements:
         then: "it has the same shape as Build (REQ-CHAIN-004-AC1 and AC2: an apk matrix job and an assemble job, each directly on a GitHub-hosted VM, the one Witness line through bin/witnessed.sh with the steps rapk and rebuild, no secrets, no packages write, no admission token) with its own checkout on a fresh runner, and its first action after the policy is made is chain-verify.py stage-start against Build's record, before any build; its apk job installs melange only and its assemble job apko only, as REQ-CHAIN-004-AC3 says of Build"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
+      # Source: advisor reading Oct 16, Astra release review (R2: Release's stage-start asks Rebuild's record for the product file:digests.json, which Rebuild never wrote);
+      # owner's Oct 13 latitude. Earlier wording, kept here:
+      #   then: "it builds the same commit with the same two scripts, the same pinned tools and the same SOURCE_DATE_EPOCH as Build (the tagged commit's committer time), and then compares instead of publishing; it fetches nothing Build produced except the signed record and the digest list it compares against"
       - id: REQ-CHAIN-005-AC2
         given: "bin/build-stage.sh run in Rebuild"
         when: "it rebuilds"
-        then: "it builds the same commit with the same two scripts, the same pinned tools and the same SOURCE_DATE_EPOCH as Build (the tagged commit's committer time), and then compares instead of publishing; it fetches nothing Build produced except the signed record and the digest list it compares against"
+        then: "it builds the same commit with the same two scripts, the same pinned tools and the same SOURCE_DATE_EPOCH as Build (the tagged commit's committer time), and then compares instead of publishing; it fetches nothing Build produced except the signed record and the digest list it compares against; the assemble script copies the digest list it verified (build-in/digests.json, the file stage-start checked against Build's record) byte for byte to digests.json at the repository root, as its last line before the comparison, so that Rebuild's own signed record carries the product file:digests.json with the same bytes as Build's and Release's stage-start for Rebuild (--previous rebuild --digests witness-build/digests.json) accepts it; Rebuild writes no other digest list"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-005-AC3
@@ -3750,6 +3753,14 @@ requirements:
         when: "bin/release-postverify.py runs them"
         then: "release-published/ must be a directory, else the run fails before anything runs; every command runs with that directory as its working directory, so the guide's bare file names resolve as they do for a customer, and a command that names a file absent from it fails the run after all have run; a command made only of jq is accepted only when every file it reads is named by an EARLIER command of the same list that is a verify form, and at run time only after that verify exited 0 (a jq-only command with no earlier verify of the same file, with no file operand, with an option that reads other files or loads a program, or listed before its verify is refused and nothing runs; one whose earlier verify failed is not run and fails the run); the form rule for every other command (a pipe of verify forms and jq with at least one verify form, no other shell syntax) and every other refusal are unchanged"
         verification: { method: unit, release_blocking: false }
+        status: approved
+      # Source: advisor reading Oct 16, Astra release review (R3: nothing produced dist/checksums.txt, which AC9 attaches and release-sign.sh signs); owner's Oct 13 latitude.
+      # A new criterion: no earlier wording is replaced.
+      - id: REQ-CHAIN-007-AC21
+        given: "the four Linux archives in dist/ that Build uploaded, Build's verified digests.json, and the Release scripts"
+        when: "release-sign.sh runs"
+        then: "before its first signature it runs `python3 bin/release-metadata.py bind-archives` (dist holds exactly the four archives Build recorded, each with the digest of digests.json) and then `python3 bin/release-metadata.py checksums --version V --digests witness-build/digests.json --dist dist --out dist/checksums.txt`, which writes checksums.txt as one line `<sha256>  <name>` (two spaces) for each of the four archives, in byte order of the names, ending in a newline, with no other line, through a temporary file renamed into place; an archive that is missing, extra, symlinked or different from the recorded digest, or a version that is not vX.Y.Z, is a refusal (exit 1, naming the archive) and nothing is written or signed; no producer other than this command makes checksums.txt (Build and Rebuild do not write it, it is not an item of items.json), and no test creates the file it signs"
+        verification: { method: unit, release_blocking: true }
         status: approved
   - id: REQ-BUILDTOOLS-002
     title: The image digest is the OCI index digest and a sealed namespace is checked by a probe

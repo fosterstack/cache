@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-007-AC19
+# proves: REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC21
 # RED until bin/release-metadata.py exists (REQ-CHAIN-007-AC13, advisor 0386 item 2; owner Oct 10: v0.3.0 matches CISA secure by design): step 4.
 #
 # The four release metadata files and their signed list. bin/release-metadata.py has four subcommands, all offline and deterministic (no clock, no network):
@@ -186,7 +186,8 @@ cases = [("a generated patch tag", GEN, "v0.3.1"),
 for what, raw, tag in cases:
     obj = os.path.join(tempfile.mkdtemp(), "tag.txt"); open(obj, "w").write(raw)
     r = subprocess.run(["python3", os.path.join(BIN, "release-metadata.py"), "tag-notes", "--tag", tag, "--object", obj], capture_output=True, text=True)
-    pd = PD.tag_notes(raw) if tag == "v0.3.1" else None
+    try: pd = PD.tag_notes(raw) if tag == "v0.3.1" else None
+    except ValueError: pd = None          # since cache#300 patch-decide REFUSES a tag message with a refused form (two signature blocks): the release keeps its fixed text, as for "no notes"
     same = (r.returncode == 0 and pd is not None and r.stdout.strip() == pd.strip()) or (r.returncode == 1 and pd is None and r.stdout == "")
     check(same, "tag-notes: %s gives what patch-decide's tag_notes gives (notes, or none)" % what, "rc=%s out=%r pd=%r" % (r.returncode, r.stdout[:60], (pd or "")[:60]))
 print("pass=%d fail=%d" % (passn, failn))
@@ -213,8 +214,49 @@ check("release-files.sha256 with its bundle and the four metadata files (AC19), 
 check("Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and provenance.bundle.json (the record the Sign stage signed; the bundle carries its signature)" in t19
       and "Build's admission-baseline.json" in t19 and "never a version Release chooses itself" in t19 and "the baseline admission chose for a CI patch)" not in t19,
       "text: REQ-CHAIN-007-AC19 covers admission-baseline.json and Sign's provenance and takes the baseline from Build's verified file (rulings B and C)")
+# ---- REQ-CHAIN-007-AC21 (advisor reading Oct 16, Astra R3): checksums writes dist/checksums.txt from the four archives Build recorded ----------------------------------
+ARCS = (("archive-fips-linux-amd64", "fscache-fips_0.3.0_linux_amd64.tar.gz"), ("archive-fips-linux-arm64", "fscache-fips_0.3.0_linux_arm64.tar.gz"),
+        ("archive-linux-amd64", "fscache_0.3.0_linux_amd64.tar.gz"), ("archive-linux-arm64", "fscache_0.3.0_linux_arm64.tar.gz"))
+def ck_tree():
+    t = tempfile.mkdtemp(); os.makedirs(t + "/dist"); os.makedirs(t + "/witness-build")
+    for item, name in ARCS: open(os.path.join(t, "dist", name), "wb").write(item.encode())
+    json.dump({item: sha(item.encode()) for item, _ in ARCS}, open(t + "/witness-build/digests.json", "w"))
+    return t
+def ck_run(t, version="0.3.0"):
+    return run("checksums", "--version", version, "--dist", t + "/dist", "--digests", t + "/witness-build/digests.json", "--out", t + "/dist/checksums.txt")
+WANT = "".join("%s  %s\n" % (hashlib.sha256(i.encode()).hexdigest(), n) for i, n in sorted(ARCS, key=lambda x: x[1].encode()))
+t = ck_tree(); r = ck_run(t)
+check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and WANT.count("\n") == 4 and "  " in WANT.split("\n")[0] and WANT.endswith("\n"),
+      "AC21 checksums writes one `<sha256>  <name>` line per archive, in byte order of the names, two spaces, a final newline, and nothing else", "rc=%s %s" % (r[0], r[2][:120]))
+t = ck_tree(); open(t + "/dist/checksums.txt", "w").write("stale\n"); r = ck_run(t)
+check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and sorted(os.listdir(t + "/dist")) == sorted([n for _, n in ARCS] + ["checksums.txt"]),
+      "AC21 an earlier checksums.txt is replaced, not extended, and no temporary file is left in dist", "rc=%s %s" % (r[0], sorted(os.listdir(t + "/dist"))))
+for label, mutate, word in (("a missing archive", lambda d: os.remove(d + "/" + ARCS[2][1]), ARCS[2][0]),
+                            ("an extra archive", lambda d: open(d + "/fscache_0.3.0_linux_riscv.tar.gz", "wb").write(b"x"), "riscv"),
+                            ("an archive that is not the recorded bytes", lambda d: open(d + "/" + ARCS[0][1], "wb").write(b"other"), ARCS[0][0]),
+                            ("a symlinked archive", lambda d: (os.remove(d + "/" + ARCS[1][1]), os.symlink("/etc/hosts", d + "/" + ARCS[1][1])), ARCS[1][1])):
+    t = ck_tree(); mutate(t + "/dist"); r = ck_run(t)
+    check(r[0] == 1 and word in r[2] and not os.path.exists(t + "/dist/checksums.txt"), "AC21 %s is refused (exit 1, naming it) and no checksums.txt is written" % label, "rc=%s %s" % (r[0], r[2][:140]))
+for bad_v in ("0.3.0-rc1", "v0.3.0", "0.3", ""):
+    t = ck_tree(); r = ck_run(t, bad_v)
+    check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 the version %r is refused: only X.Y.Z, and nothing is written" % bad_v, "rc=%s %s" % (r[0], r[2][:100]))
+# round 1 (Codex seat B, a reproduced blocker): the temporary file is never a path someone else can pre-place. A planted symlink checksums.txt.part must not make the
+# command write through it (it overwrote an archive after the archives were checked), and a stale regular .part is replaced, never extended or kept
+t = ck_tree(); victim = t + "/dist/" + ARCS[0][1]; before = open(victim, "rb").read()
+os.symlink(victim, t + "/dist/checksums.txt.part"); r = ck_run(t)
+check(r[0] == 0 and open(victim, "rb").read() == before and not os.path.islink(t + "/dist/checksums.txt") and open(t + "/dist/checksums.txt").read() == WANT
+      and not os.path.lexists(t + "/dist/checksums.txt.part"),
+      "AC21 a planted symlink at checksums.txt.part is not written through: the archive keeps its bytes, checksums.txt is a regular file with the right lines, no .part is left", "rc=%s %s" % (r[0], r[2][:140]))
+t = ck_tree(); open(t + "/dist/checksums.txt.part", "w").write("stale part\n"); r = ck_run(t)
+check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and not os.path.lexists(t + "/dist/checksums.txt.part"),
+      "AC21 a stale regular checksums.txt.part is replaced, not kept or extended", "rc=%s" % r[0])
+t = ck_tree(); os.mkdir(t + "/dist/checksums.txt.part"); r = ck_run(t)
+check(r[0] == 1 and not os.path.exists(t + "/dist/checksums.txt"), "AC21 a directory at checksums.txt.part is a refusal (exit 1), and nothing is written", "rc=%s %s" % (r[0], r[2][:120]))
+t21 = ac("REQ-CHAIN-007", 21)["then"]
+check("bin/release-metadata.py bind-archives" in t21 and "bin/release-metadata.py checksums" in t21 and "no test creates the file it signs" in t21,
+      "text: REQ-CHAIN-007-AC21 names the bind and the checksums command and says no test creates the signed file")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "86"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "100"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY
