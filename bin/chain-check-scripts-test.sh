@@ -909,6 +909,7 @@ cat > "$gvt/fake/govulncheck" <<'EOF'
 [ ! -f "$(dirname "$0")/env" ] || . "$(dirname "$0")/env"
 echo "govulncheck $*" >> "$GV_LOG"
 echo "env GOFLAGS=${GOFLAGS:-} GOTOOLCHAIN=${GOTOOLCHAIN:-} GOPROXY=${GOPROXY:-} PATH1=${PATH%%:*}" >> "$GV_LOG"
+echo "pkgdriver GOPACKAGESDRIVER=${GOPACKAGESDRIVER-unset}" >> "$GV_LOG"
 echo "goenv GOOS=${GOOS-unset} GOARCH=${GOARCH-unset} CGO_ENABLED=${CGO_ENABLED-unset} GOAMD64=${GOAMD64-unset} GOPATH=${GOPATH-unset} GOCACHE=${GOCACHE-unset} GOMODCACHE=${GOMODCACHE-unset} GOENV=${GOENV-unset}" >> "$GV_LOG"
 case "$1" in -version) printf 'Go: go1.27.2\nScanner: govulncheck@v1.7.0\nDB: https://vuln.go.dev\nDB updated: 2026-10-10 00:00:00 +0000 UTC\n'; exit 0 ;; esac
 [ "${GV_RC:-0}" = 0 ] || { echo "govulncheck: boom" >&2; exit "$GV_RC"; }
@@ -945,6 +946,8 @@ else bad "G the scan environment is not the pinned one: $(grep '^env' "$work/gvl
 gvrun GOFLAGS=-toolexec=/tmp/evil GOTOOLCHAIN=auto GOPROXY=https://evil.example GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" = 0 ] && grep -q 'GOFLAGS=-mod=vendor GOTOOLCHAIN=local GOPROXY=off ' "$work/gvlog" && ! grep -q 'evil' "$work/gvlog"; then ok "G a GOFLAGS, GOTOOLCHAIN or GOPROXY of the caller's environment never reaches the scan"
 else bad "G the caller's Go environment reached the scan: $(grep '^env' "$work/gvlog" | head -1) rc=$rc"; fi
+gvrun GOPACKAGESDRIVER=/tmp/evil-driver GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && grep -q '^pkgdriver GOPACKAGESDRIVER=off$' "$work/gvlog"; then ok "G the scan sets GOPACKAGESDRIVER=off (no external package driver is searched for on PATH or taken from the caller's environment)"; else bad "G the package-driver setting is not off: $(grep '^pkgdriver' "$work/gvlog" | head -1) rc=$rc"; fi
 gvrun GOOS=windows GOARCH=arm64 CGO_ENABLED=0 GOAMD64=v4 GOPATH=/tmp/evil-path GOCACHE=/tmp/evil-cache GOMODCACHE=/tmp/evil-mod GOENV=/tmp/evil-env GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" = 0 ] && grep -q '^goenv GOOS=unset GOARCH=unset CGO_ENABLED=unset GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off$' "$work/gvlog"; then ok "G no Go setting of the caller (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV) reaches the scan and persisted Go configuration is off (GOENV=off)"
 else bad "G the caller's platform or cache settings reached the scan: $(grep '^goenv' "$work/gvlog" | head -1) rc=$rc"; fi
@@ -977,11 +980,11 @@ rm -f "$gvt/go.mod"; gvrun GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G no go.mod in the working directory fails (a source scan of nothing is not a scan)"; else bad "G a tree without go.mod was scanned"; fi
 printf 'module example.com/a\n' > "$gvt/go.mod"
 mv "$gvt/vendor" "$gvt/vendor.hide"; gvrun GV_OUT=clean -- "${GVARGS[@]}"
-if [ "$rc" != 0 ] && [ "$rc" != 127 ] && [ ! -s "$work/gvlog" ] && grep -q 'vendor' <<< "$out"; then ok "G no vendor/ directory fails before the tool runs, naming it (a scan of modules the build does not use is not a scan)"; else bad "G a tree without vendor/ was scanned: rc=$rc $out"; fi
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && [ ! -s "$work/gvlog" ] && [ ! -e "$gvt/out/govulncheck.json" ] && grep -q 'vendor' <<< "$out"; then ok "G no vendor/ directory fails before the tool runs, naming it and writing no result file (a scan of modules the build does not use is not a scan)"; else bad "G a tree without vendor/ was scanned: rc=$rc $out"; fi
 mv "$gvt/vendor.hide" "$gvt/vendor"
 if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.py" 2> /dev/null && [ -f "$root/bin/check-govulncheck.py" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
 else bad "G bin/check-govulncheck.py is missing or names a signing tool or credential"; fi
-EXPECT=308
+EXPECT=309
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
