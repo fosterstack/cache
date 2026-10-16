@@ -2321,52 +2321,9 @@ def _all_texts(text, depth=0):
 SHELL_SHEBANG = re.compile(r"#!\s*\S*/(?:env\s+(?:-\S+\s+)*)?(ba|da|z)?sh\b")
 
 
-_WORKSPACE = ("$GITHUB_WORKSPACE/", "${GITHUB_WORKSPACE}/", "$PWD/", "${PWD}/")
-# short options of each downloader that take a value (the rest of the cluster, or the next word; from each tool's own option list): a cluster such as -fsSLo FILE or
-# -qOFILE is read letter by letter and ends at the first of them; aria2c's list is empty, so every letter of its clusters is read (it can only over-refuse)
-_SHORT_WITH_VALUE = {"curl": "AbcCdDeEFHKmoPQrtTuUwxXyYz", "wget": "aABDegGiIloPQRtTUwX", "aria2c": ""}
-_SHORT_OUTPUT = {"curl": "o", "wget": "O", "aria2c": "o"}
-
-
-def _downloads_onto(cmd, rest, same, rel):
-    """True when a downloader (curl, wget, aria2c) may write the file rel: its output option -o / -O / --output / --output-document / --out names it
-    (separate, attached, '=' or inside a cluster such as -fsSLo FILE or -qO FILE; the plain spellings of the workspace root, $GITHUB_WORKSPACE/ and $PWD/, are
-    resolved like ./), or the downloader names the file by its own name (-O / --remote-name, wget without -O, aria2c: the file lands in the current directory under the URL's name)."""
-    def resolved(value):
-        value = value.strip("'\"")
-        for prefix in _WORKSPACE:
-            if value.startswith(prefix):
-                value = value[len(prefix):]
-        return same(value)
-    values, named = [], False
-    for k, tok in enumerate(rest):
-        nxt = rest[k + 1] if k + 1 < len(rest) else None
-        if tok.startswith("--"):
-            name, eq, val = tok.partition("=")
-            if name in ("--output", "--output-document", "--out"):
-                values.append(val if eq else nxt)
-            elif name in ("--remote-name", "--remote-name-all", "--directory-prefix", "--output-dir", "--dir"):
-                named = True
-        elif tok.startswith("-") and len(tok) > 1:
-            for j, ch in enumerate(tok[1:], 1):
-                if ch == _SHORT_OUTPUT[cmd] or (cmd == "curl" and ch == "O") or (cmd == "wget" and ch == "P"):
-                    if ch == _SHORT_OUTPUT[cmd]:
-                        values.append(tok[j + 1:] or nxt)
-                    else:
-                        named = True
-                    break
-                if ch in _SHORT_WITH_VALUE[cmd]:
-                    break
-    if any(v is not None and resolved(v) for v in values):
-        return True
-    if (named or (cmd == "wget" and not values) or cmd == "aria2c") and any(os.path.basename(re.split(r"[?#]", t.strip("'\""))[0]) == os.path.basename(rel) for t in rest):
-        return True
-    return False
-
-
 def _writes(script, rel, ctx=None):
     """True when a command of the job writes the exact file rel before it runs: a redirection onto it, tee, cp / mv /
-    install / ln / rsync onto it, a downloader's output option naming it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir)."""
+    install / ln / rsync onto it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir)."""
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     ctx = script if ctx is None else ctx                # where the job assigns its variables (f="$work/x" …)
@@ -2383,8 +2340,6 @@ def _writes(script, rel, ctx=None):
             continue
         cmd, rest = _base(words[-1]), toks[toks.index(words[-1]) + 1:]
         pos = [t for t in rest if not t.startswith("-")]
-        if cmd in ("curl", "wget", "aria2c") and _downloads_onto(cmd, rest, same, rel):
-            return True
         if (cmd == "tee" and any(same(t) for t in pos)) or (cmd in ("cp", "mv", "install", "ln", "rsync") and pos and
                                                               same(pos[-1])) or \
                 (cmd in ("sed", "perl") and any(t.startswith("-i") for t in rest) and any(same(t) for t in pos)) or \
