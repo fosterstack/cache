@@ -25,74 +25,265 @@ unset PYTHONOPTIMIZE   # python -O would drop every assert; the checks below are
 WOLFI=https://packages.wolfi.dev/os
 SELF=refresh-inputs.sh
 
-# ---- fixed locations (REQ-REFRESH-001-AC23): a production call never resolves its fetch tool, git, gh, apko, openssl, python3, cmp or mktemp through the
-# caller's search path, and there is no test hook in this file: bin/refresh-inputs-test.sh runs a COPY in which exactly the lines ending in
-# TEST-SUBST are replaced, and checks that the copy differs from this file in no other line.
-PY3=/usr/bin/python3            # TEST-SUBST
-printf -v CURL %s /usr/bin/curl   # TEST-SUBST
-GIT=/usr/bin/git                # TEST-SUBST
-GH=/usr/bin/gh                  # TEST-SUBST
-APKO=/usr/local/bin/apko        # TEST-SUBST (bin/install-build-tools.sh apko puts it there)
-OPENSSL=/usr/bin/openssl        # TEST-SUBST
-RM=/bin/rm                      # TEST-SUBST
-MKDIR=/bin/mkdir                # TEST-SUBST
+# ---- fixed locations (REQ-REFRESH-001-AC23): every call names its tool by the literal fixed path (the fetch tool and git, gh,
+# /usr/local/bin/apko, /usr/bin/openssl, /usr/bin/python3, /usr/bin/cmp, /usr/bin/mktemp, /bin/rm, /bin/mkdir), never through the caller's search path,
+# and there is no test hook in this file: bin/refresh-inputs-test.sh runs a COPY that differs from this file only in occurrences of those ten paths,
+# each replaced one for one by a dispatcher.
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # this script's directory, without dirname
-CMP=/usr/bin/cmp                # TEST-SUBST
-MKTEMP=/usr/bin/mktemp          # TEST-SUBST
+dir_empty() { local e; for e in "$1"/* "$1"/.[!.]* "$1"/..?*; do { [ -e "$e" ] || [ -L "$e" ]; } && return 1; done; return 0; }   # no ls
 
 die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 
-usage() { die "usage: $SELF refresh --repo-dir DIR --archive DIR | $SELF fips-module --go-root DIR --repo-dir DIR"; }
+usage() { die "usage: $SELF refresh --repo-dir DIR --archive DIR [--plan-dir DIR] | $SELF fips-module --go-root DIR --repo-dir DIR [--plan-dir DIR] | $SELF open-pr --plan-dir DIR --repo-dir DIR [--archive DIR --archive-digest sha256:HEX] | $SELF bootstrap --repo-dir DIR --archive DIR"; }
 
 # open_pr BRANCH TITLE BODY PATH...: branch, commit, push the branch (never main), open the PR (never merge it)
 open_pr() {
   local branch=$1 title=$2 body=$3; shift 3
+  if [ -n "$plan_dir" ] && [ "$cmd" != open-pr ]; then   # staged: the pull request is written down and opened later by `open-pr`, once the archive is stored (rules 6 and 7)
+    local seq pd
+    /bin/mkdir -p "$plan_dir" || die "could not create $plan_dir" 1
+    seq=1; for _e in "$plan_dir"/*; do [ -e "$_e" ] && seq=$((seq+1)); done; pd=$plan_dir/$seq-$cmd
+    /bin/mkdir -p "$pd" && printf '%s\n' "$branch" >"$pd/branch" && printf '%s\n' "$title" >"$pd/title" && printf '%s\n' "$body" >"$pd/body" \
+      && printf '%s\n' "$@" >"$pd/paths" || die "could not write the plan to $plan_dir" 1
+    echo "planned: $branch (opened later by open-pr)"
+    return 0
+  fi
+  # Asked again immediately before the branch is created: two overlapping runs can both have passed the staging check (REQ-REFRESH-001-AC29). Only a
+  # pull request of this repository counts; the list not being readable stops the job (an unknown state is not "no pull request").
+  local _open _rc=0
+  _open=$(cd "$repo" && /usr/bin/gh pr list --state open --limit 1000 --json number,headRefName,isCrossRepository,author) \
+    || die "cannot list the open pull requests (gh pr list failed); changing nothing, pushing nothing, opening nothing" 1
+  printf '%s' "$_open" >"$tmp/open-prs.json"
+  /usr/bin/python3 -I -B - "$branch" "$pr_author" "$tmp/open-prs.json" <<'PY' || _rc=$?
+import json, sys
+def norm(x):
+    y = x.lower()
+    while True:
+        z = y[4:] if y.startswith("app/") else (y[:-5] if y.endswith("[bot]") else y)
+        if z == y:
+            return y
+        y = z
+for pr in json.load(open(sys.argv[3])):
+    h = pr.get("headRefName", "")
+    who = (pr.get("author") or {}).get("login") or ""
+    if pr.get("isCrossRepository") or not h.startswith("refresh/") or (sys.argv[2] and norm(who) != norm(sys.argv[2])):
+        continue
+    # AC29 names no kind: any refresh/ pull request of this repository stops a second one
+    print("an earlier pull request (#%s, %s) is already open; opening no second one" % (pr.get("number"), h)); sys.exit(4)
+PY
+  [ "$_rc" != 4 ] || return 0
+  [ "$_rc" = 0 ] || die "cannot read the open pull request list; changing nothing" 1
   local base=$branch n=1
   # a branch name already taken on the remote (a closed or merged PR) gets a -2, -3, ... suffix instead of a failed push
-  while [ -n "$("$GIT" -C "$repo" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null)" ]; do
+  while [ -n "$(/usr/bin/git -C "$repo" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null)" ]; do
     n=$((n+1)); [ $n -le 9 ] || die "the branch name $base and its numbered variants are all taken on the remote" 1
     branch=$base-$n
   done
   local startbr startsha rc=0
-  startbr=$("$GIT" -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-  startsha=$("$GIT" -C "$repo" rev-parse HEAD 2>/dev/null || true)
-  "$GIT" -C "$repo" checkout -b "$branch" && "$GIT" -C "$repo" add -- "$@" && "$GIT" -C "$repo" commit -q -m "$title" -m "$body" \
-    && "$GIT" -C "$repo" push -q origin "$branch" && (cd "$repo" && "$GH" pr create --base main --head "$branch" --title "$title" --body "$body") || rc=$?
+  startbr=$(/usr/bin/git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  startsha=$(/usr/bin/git -C "$repo" rev-parse HEAD 2>/dev/null || true)
+  /usr/bin/git -C "$repo" checkout -b "$branch" && /usr/bin/git -C "$repo" add -- "$@" && /usr/bin/git -C "$repo" commit -q -m "$title" -m "$body" \
+    && /usr/bin/git -C "$repo" push -q origin "$branch" && (cd "$repo" && /usr/bin/gh pr create --base main --head "$branch" --title "$title" --body "$body") || rc=$?
   # back to where the job started, whether or not a step failed: a later step of the same job (the FIPS check) must not branch from this commit.
   # A detached start is restored by its commit.
-  if [ -n "$startbr" ] && [ "$startbr" != HEAD ]; then "$GIT" -C "$repo" checkout -q "$startbr" || { echo "refresh-inputs.sh: could not go back to $startbr; a later step would branch from the refresh commit" >&2; rc=1; }
-  elif [ -n "$startsha" ]; then "$GIT" -C "$repo" checkout -q --detach "$startsha" || { echo "refresh-inputs.sh: could not go back to $startsha; a later step would branch from the refresh commit" >&2; rc=1; }; fi
+  if [ -n "$startbr" ] && [ "$startbr" != HEAD ]; then /usr/bin/git -C "$repo" checkout -q "$startbr" || { echo "refresh-inputs.sh: could not go back to $startbr; a later step would branch from the refresh commit" >&2; rc=1; }
+  elif [ -n "$startsha" ]; then /usr/bin/git -C "$repo" checkout -q --detach "$startsha" || { echo "refresh-inputs.sh: could not go back to $startsha; a later step would branch from the refresh commit" >&2; rc=1; }; fi
   return $rc
 }
 
 cmd=${1:-}; [ -n "$cmd" ] || usage; shift
-repo= archive= goroot= pr_author=
+repo= archive= goroot= pr_author= plan_dir= archive_digest=
 while [ $# -gt 0 ]; do
   case $1 in
     --repo-dir) [ $# -ge 2 ] || usage; repo=$2; shift 2;;
     --archive) [ $# -ge 2 ] || usage; archive=$2; shift 2;;
     --go-root) [ $# -ge 2 ] || usage; goroot=$2; shift 2;;
     --pr-author) [ $# -ge 2 ] || usage; pr_author=$2; shift 2;;
+    --plan-dir) [ $# -ge 2 ] || usage; plan_dir=$2; shift 2;;
+    --archive-digest) [ $# -ge 2 ] || usage; archive_digest=$2; shift 2;;
     *) die "unknown argument: $1";;
   esac
 done
 [ -n "$repo" ] && [ -d "$repo" ] || die "--repo-dir must be an existing directory"
+case $cmd in key-check) [ -z "$archive$goroot$pr_author$plan_dir$archive_digest" ] || die "key-check takes only --repo-dir";; esac
+case $cmd in archive-key-check) { [ -n "$archive" ] && [ -d "$archive" ]; } || die "archive-key-check needs --archive (the pulled or seeded archive)"; [ -z "$goroot$pr_author$plan_dir$archive_digest" ] || die "archive-key-check takes only --repo-dir and --archive";; esac
 case $cmd in refresh|fips-module) [ -n "$pr_author" ] || die "--pr-author is required (the Auditor App's name; gh reports it as app/<name>, both spellings are accepted): without it a stranger's pull request on a refresh/ branch could be counted";; esac
 
-tmp=$("$MKTEMP" -d)
-cleanup() { local rc=$?; set +e; "$RM" -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
+tmp=$(/usr/bin/mktemp -d)
+cleanup() { local rc=$?; set +e; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
 trap cleanup EXIT
 
 case $cmd in
+archive-key-check)
+  # After the archive is pulled or seeded and before the App token is minted: the live Wolfi signing key must be the pinned key AND the key the archive
+  # holds (keys/wolfi-signing.rsa.pub); the stop then precedes every later step also when the archive carries another key (rule 6, AC30). A difference, a missing or a repeated line stops for a human (exit 3, rule 6); nothing is written.
+  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" "$archive" <<'PY' || exit $?
+import hashlib, re, sys
+repo, live, archive = sys.argv[1:4]
+def stop(msg):
+    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
+try:
+    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
+except (OSError, UnicodeError):
+    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
+mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
+if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
+    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
+if hashlib.sha256(open(live, "rb").read()).hexdigest() != mine[0].split("sha256:")[1]:
+    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
+try:
+    archived = open(archive + "/keys/wolfi-signing.rsa.pub", "rb").read()
+except OSError:
+    stop("the archive holds no keys/wolfi-signing.rsa.pub")
+if archived != open(live, "rb").read():
+    stop("the live Wolfi signing key differs from the key in the archive")
+print("archive-key-check: the live Wolfi signing key is the pinned one and the archive's key")
+PY
+  ;;
+key-check)
+  # The first step of the daily job, before any tool is installed, any registry is touched or any token is minted: the live Wolfi signing key must be
+  # the key pinned in build/locks/archive-keys.sha256. A difference, a missing or a repeated line stops for a human (exit 3, rule 6); nothing is written.
+  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
+import hashlib, re, sys
+repo, live = sys.argv[1:3]
+def stop(msg):
+    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
+try:
+    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
+except (OSError, UnicodeError):
+    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
+mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
+if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
+    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
+if hashlib.sha256(open(live, "rb").read()).hexdigest() != mine[0].split("sha256:")[1]:
+    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
+print("key-check: the live Wolfi signing key is the pinned one")
+PY
+  ;;
+
+bootstrap)
+  # The archive does not exist yet (build/archive.json is absent on main). The one trust anchor is the key line committed in
+  # build/locks/archive-keys.sha256: the live Wolfi key is fetched, its sha256 must be that line, and only then is it the new archive's
+  # key. A missing or repeated line, or a different key, stops for a human (exit 3): there is no trust on first use.
+  [ -n "$archive" ] || die "--archive is required"
+  if [ -e "$archive" ] || [ -L "$archive" ]; then
+    { [ -d "$archive" ] && [ ! -L "$archive" ] && dir_empty "$archive"; } || die "$archive already exists and is not an empty directory: bootstrap never touches an existing archive" 2
+  fi
+  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" "$archive" <<'PY' || exit $?
+import hashlib, os, re, sys
+repo, live, archive = sys.argv[1:4]
+def stop(msg):
+    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
+try:
+    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
+except (OSError, UnicodeError):
+    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
+mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
+if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
+    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
+raw = open(live, "rb").read()
+if hashlib.sha256(raw).hexdigest() != mine[0].split("sha256:")[1]:
+    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
+os.makedirs(archive + "/keys", exist_ok=True)
+with open(archive + "/keys/wolfi-signing.rsa.pub", "xb") as f:
+    f.write(raw); f.flush(); os.fsync(f.fileno())
+print("bootstrap: the archive was seeded with the pinned Wolfi signing key")
+PY
+  ;;
+
+open-pr)
+  # Opens the pull requests that `refresh` / `fips-module --plan-dir` staged, after the archive was stored. The refresh pull request also carries
+  # build/archive.json, the pointer naming the stored digest (advisor 0440 (3)). Nothing is opened unless every plan validates first.
+  [ -n "$plan_dir" ] && [ -d "$plan_dir" ] || die "--plan-dir must be an existing directory"
+  if [ -n "$archive_digest" ]; then
+    { [ "${archive_digest#sha256:}" != "$archive_digest" ] && [ "${#archive_digest}" -eq 71 ]; } || die "--archive-digest must be sha256:<64 hex>"
+    case ${archive_digest#sha256:} in *[!0-9a-f]*) die "--archive-digest must be sha256:<64 lower-case hex>";; esac
+    [ -n "$archive" ] && [ -d "$archive" ] || die "--archive is required with --archive-digest"
+  fi
+  /usr/bin/python3 -I -B - "$repo" "$plan_dir" "$archive" "$archive_digest" "$(cd "$HERE" && pwd)" "$tmp" <<'PY' || exit $?
+import json, os, re, subprocess, sys
+repo, plan_dir, archive, digest, BINDIR, tmp = sys.argv[1:7]
+def fail(msg, code=2): print("refresh-inputs.sh: " + msg, file=sys.stderr); sys.exit(code)
+plans = []
+for name in sorted(os.listdir(plan_dir), key=lambda n: (int(n.split("-")[0]) if n.split("-")[0].isdigit() else 10**9, n)):
+    d = plan_dir + "/" + name
+    if not os.path.isdir(d): fail("plan %s is not a directory" % name)
+    try:
+        branch, title, body = (open(d + "/" + f).read().rstrip("\n") for f in ("branch", "title", "body"))
+        paths = [l for l in open(d + "/paths").read().split("\n") if l]
+    except OSError as e:
+        fail("plan %s is incomplete (%s)" % (name, e))
+    if not re.fullmatch(r"refresh/[A-Za-z0-9._-]+", branch): fail("plan %s names the branch %r, not one under refresh/" % (name, branch))
+    if not paths: fail("plan %s names no file" % name)
+    for p in paths:
+        if p.startswith("/") or ".." in p.split("/") or not os.path.isfile(repo + "/" + p): fail("plan %s names %r, which is not a file of the repository" % (name, p))
+    plans.append((branch, title, body, paths, branch.startswith("refresh/fips-module-")))
+if not plans:
+    print("open-pr: nothing planned, nothing opened"); open(tmp + "/ncount", "w").write("0\n"); sys.exit(0)
+if digest and not any(not p[4] for p in plans):
+    print("open-pr: the plan holds no refresh pull request, so the pointer is not written")
+out = []
+for branch, title, body, paths, fips in plans:
+    if digest and not fips:
+        r = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/archive-verify.py", "make-pointer", "--dir", archive, "--digest", digest,
+                            "--out", repo + "/build/archive.json"], capture_output=True, text=True)
+        if r.returncode != 0: fail("the pointer for %s could not be made: %s" % (digest, (r.stderr or r.stdout).strip()), 1)
+        paths = paths + ["build/archive.json"]
+        body += "\n\nThe archive was stored in our registry at %s; this pull request moves build/archive.json to it." % digest
+    out.append("\0".join([branch, title, body] + paths))
+open(tmp + "/plans", "w").write("\n\1\n".join(out))
+open(tmp + "/ncount", "w").write("%d\n" % len(out))
+PY
+  nc=0; read -r nc <"$tmp/ncount" 2>/dev/null || nc=0
+  [ "$nc" != 0 ] || exit 0
+  # the validated plans, one open_pr each, in plan order
+  /usr/bin/python3 -I -B - "$tmp/plans" "$tmp" <<'PY' || exit $?
+import sys
+parts = open(sys.argv[1]).read().split("\n\1\n")
+for i, p in enumerate(parts, 1):
+    f = p.split("\0")
+    open("%s/p%d.branch" % (sys.argv[2], i), "w").write(f[0])
+    open("%s/p%d.title" % (sys.argv[2], i), "w").write(f[1])
+    open("%s/p%d.body" % (sys.argv[2], i), "w").write(f[2])
+    open("%s/p%d.paths" % (sys.argv[2], i), "w").write("\n".join(f[3:]) + "\n")
+PY
+  n=$nc; i=1; rc_all=0
+  while [ "$i" -le "$n" ]; do
+    paths=(); while IFS= read -r l; do [ -n "$l" ] && paths+=("$l"); done <"$tmp/p$i.paths"
+    open_pr "$(<"$tmp/p$i.branch")" "$(<"$tmp/p$i.title")" "$(<"$tmp/p$i.body")" "${paths[@]}" || rc_all=1
+    i=$((i+1))
+  done
+  exit $rc_all
+  ;;
+
 refresh)
   [ -n "$archive" ] && [ -d "$archive" ] || die "--archive must be an existing directory"
   archived_key=$archive/keys/wolfi-signing.rsa.pub
-  [ -x "$OPENSSL" ] || die "openssl is required to verify the package index signature and was not found ($OPENSSL)"
+  [ -x /usr/bin/openssl ] || die "openssl is required to verify the package index signature and was not found (/usr/bin/openssl)"
   [ -s "$archived_key" ] || die "the archive has no Wolfi signing key at keys/wolfi-signing.rsa.pub"
 
   # rules 32 and 46: every run, before anything else, compare the live key to the archived one
-  "$CURL" -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
-  if ! "$CMP" -s "$tmp/live-key.pub" "$archived_key"; then
+  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
+  # the live key's sha256 must be the one pinned in build/locks/archive-keys.sha256, checked right after the fetch and before the key is used for anything
+  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
+import hashlib, re, sys
+repo, live = sys.argv[1:3]
+def stop(msg):
+    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
+try:
+    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
+except (OSError, UnicodeError):
+    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
+mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
+if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
+    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
+if hashlib.sha256(open(live, "rb").read()).hexdigest() != mine[0].split("sha256:")[1]:
+    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
+PY
+  if ! /usr/bin/cmp -s "$tmp/live-key.pub" "$archived_key"; then
     echo "$SELF: the live Wolfi signing key differs from the archived one; stopping, no pull request, a human must decide whether to trust the new key" >&2
     exit 3
   fi
@@ -103,8 +294,8 @@ refresh)
   done
 
   # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
-  "$MKDIR" -p "$tmp/production" "$tmp/fips" "$tmp/melange"
-  "$PY3" -I -B - "$repo" "$tmp" <<'PY'
+  /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange"
+  /usr/bin/python3 -I -B - "$repo" "$tmp" <<'PY'
 import sys, yaml
 repo, tmp = sys.argv[1:3]
 for src, out in (("apko.yaml", "production/apko.yaml"), ("apko-fips.yaml", "fips/apko-fips.yaml")):
@@ -118,15 +309,16 @@ names = [str(p).split("=")[0] for p in m["environment"]["contents"]["packages"]]
 yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": names}, "archs": ["x86_64", "aarch64"]},
                open(tmp + "/melange/melange-env.yaml", "w"))
 PY
-  lock() { "$APKO" lock --arch x86_64,aarch64 --repository-append "$WOLFI" --keyring-append "$archived_key" --output "$2" "$1"; }
+  lock() { /usr/local/bin/apko lock --arch x86_64,aarch64 --repository-append "$WOLFI" --keyring-append "$archived_key" --output "$2" "$1"; }
   lock "$tmp/production/apko.yaml" "$tmp/production.lock.json"
   lock "$tmp/fips/apko-fips.yaml" "$tmp/fips.lock.json"
   lock "$tmp/melange/melange-env.yaml" "$tmp/melange.lock.json"
 
-  "$PY3" -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" "$GH" "$CURL" "$OPENSSL" <<'PY' || exit $?
+  # The embedded program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per line); the shell fetches them with the
+  # ruled download lines below and runs the program again (it starts from the same state each time, up to three passes: packages, index, the rest).
+  refresh_py() { /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY'
 import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
-GH, CURL, OPENSSL = sys.argv[6:9]   # fixed locations, named by the shell part above
 ARCHS = ["x86_64", "aarch64"]
 
 
@@ -144,11 +336,11 @@ def open_prs_guard(kind):
     """Looked up before the FIRST archive or repository change. The open pull requests are listed once; if the list cannot be read the job fails
     (an unknown state is not "no PR"). If any pull request of this kind (input refresh, or FIPS module) is open, whether it is this very change
     or an earlier one, nothing more is done: no change, no push, no second PR. The stall is visible: the log and the job summary name it."""
-    r = subprocess.run([GH, "pr", "list", "--state", "open", "--limit", "1000", "--json", "number,headRefName,isCrossRepository,author"],
+    r = subprocess.run(["/usr/bin/gh", "pr", "list", "--state", "open", "--limit", "1000", "--json", "number,headRefName,isCrossRepository,author"],
                        cwd=repo, capture_output=True, text=True)
     if r.returncode != 0:
         fail("cannot list the open pull requests (gh pr list failed); changing nothing, pushing nothing, opening nothing")
-    pfx = "refresh/fips-module-" if kind == "fips-module" else "refresh/"
+    pfx = "refresh/"   # AC29 names no kind: a package refresh and a certified-module pull request stop each other
     try:
         prs = json.loads(r.stdout)
     except ValueError:
@@ -159,7 +351,7 @@ def open_prs_guard(kind):
         if pr.get("isCrossRepository") or (PR_AUTHOR and norm_login(who) != norm_login(PR_AUTHOR)):
             continue
         num, head = pr.get("number"), pr.get("headRefName", "")
-        if head.startswith(pfx) and not (kind == "refresh" and head.startswith("refresh/fips-module-")):
+        if head.startswith(pfx):
             msg = "an earlier pull request (#%s, %s) of this kind is still open (already open); changing nothing, pushing nothing and opening no second one (it is merged or closed first)" % (num, head)
             print(msg)
             if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -343,7 +535,7 @@ def check_signature(path, arch, what):
     sp, ip = "%s/index-%s.sig" % (stage, arch), "%s/index-%s.stream" % (stage, arch)
     os.makedirs(stage, exist_ok=True)
     open(sp, "wb").write(sig); open(ip, "wb").write(parts[1][0])
-    r = subprocess.run([OPENSSL, "dgst", "-" + alg, "-verify", archived_key, "-signature", sp, ip], capture_output=True)
+    r = subprocess.run(["/usr/bin/openssl", "dgst", "-" + alg, "-verify", archived_key, "-signature", sp, ip], capture_output=True)
     if r.returncode != 0:
         fail("the %s %s package index signature does not verify against the archived Wolfi key; refused" % (what, arch))
     return parts
@@ -529,6 +721,7 @@ def preflight(targets):
 # ---- download, verify, and only then keep ----
 stage = tmp + "/dl"
 keep = []
+want_pk = []
 for (name, ver, arch), e in sorted(fresh.items()):
     dest = "%s/%s/%s-%s.apk" % (archive, arch, name, ver)
     if os.path.exists(dest):
@@ -538,11 +731,14 @@ for (name, ver, arch), e in sorted(fresh.items()):
         continue
     part = "%s/%s/%s-%s.apk" % (stage, arch, name, ver)
     os.makedirs(os.path.dirname(part), exist_ok=True)
-    r = subprocess.run([CURL, "-fsSL", "-g", "--max-filesize", "536870912", "--max-time", "900", "--proto", "=https", "--tlsv1.2", "-o", part, e["url"]], stdout=sys.stderr, stderr=sys.stderr)
-    if r.returncode != 0:
-        fail("could not download %s" % e["url"])
+    if not os.path.exists(part):   # the shell fetches it (download lines of the ruled grammar), then runs this program again
+        want_pk.append("%s %s/%s-%s.apk" % (e["url"][len(WOLFI_URL):], arch, name, ver))   # the url passed the host and path check above
+        continue
     verify(part, e)
     keep.append((part, dest, name, ver, arch))
+if want_pk:
+    open(tmp + "/want-packages", "w").write("".join(l + "\n" for l in want_pk))
+    sys.exit(75)
 
 
 def place(src, dest):
@@ -600,7 +796,7 @@ if sorted(old_mel) != new_mel:
 gen_dir = tmp + "/gen"
 os.makedirs(gen_dir, exist_ok=True)
 open(tmp + "/melange.lock.new", "w").write("".join(l + "\n" for l in new_mel))
-r_ = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
+r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
                      "--fips-module", repo + "/build/locks/fips-module.txt", "--emit", gen_dir], capture_output=True, text=True)
 if r_.returncode != 0:
     fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
@@ -648,14 +844,18 @@ def verify_index(path, arch):
 
 
 index_parts = {}
+want_ix = []
 for arch in ARCHS:
     part = "%s/index/%s/APKINDEX.tar.gz" % (stage, arch)
     os.makedirs(os.path.dirname(part), exist_ok=True)
-    r = subprocess.run([CURL, "-fsSL", "-g", "--max-filesize", "268435456", "--max-time", "600", "--proto", "=https", "--tlsv1.2", "-o", part, "https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz" % arch], stdout=sys.stderr, stderr=sys.stderr)
-    if r.returncode != 0:
-        fail("could not download the live %s package index" % arch)
+    if not os.path.exists(part):
+        want_ix.append("%s/APKINDEX.tar.gz index/%s/APKINDEX.tar.gz" % (arch, arch))
+        continue
     verify_index(part, arch)
     index_parts[arch] = (part, hashlib.sha256(open(part, "rb").read()).hexdigest())
+if want_ix:
+    open(tmp + "/want-index", "w").write("".join(l + "\n" for l in want_ix))
+    sys.exit(75)
 # an existing file under a digest name is trusted only if it hashes to that name (a garbage or truncated file from an earlier run fails closed)
 for arch in ARCHS:
     vdir, cur = "%s/%s/index" % (archive, arch), "%s/%s/APKINDEX.tar.gz" % (archive, arch)
@@ -709,7 +909,7 @@ lines = ["- archived %s-%s.apk (%s)" % (n, v, a) for _, _, n, v, a in keep] + ["
 supersedes = []
 if ahead:   # the reconcile PR says why the index record jumps: it supersedes a refresh PR that was closed unmerged
     prev = None
-    r_ = subprocess.run([GH, "pr", "list", "--state", "closed", "--limit", "100", "--json", "number,headRefName,mergedAt,isCrossRepository,author"], cwd=repo, capture_output=True, text=True)
+    r_ = subprocess.run(["/usr/bin/gh", "pr", "list", "--state", "closed", "--limit", "100", "--json", "number,headRefName,mergedAt,isCrossRepository,author"], cwd=repo, capture_output=True, text=True)
     if r_.returncode == 0:
         try:
             cands = [p_ for p_ in json.loads(r_.stdout) if not p_.get("isCrossRepository") and not p_.get("mergedAt")
@@ -733,6 +933,25 @@ open(tmp + "/changed", "w").write(("\n".join(os.path.relpath(p, repo) for p in c
 open(tmp + "/sig", "w").write(sig)
 open(tmp + "/body", "w").write(body)
 PY
+  }
+  for _pass in 1 2 3; do
+    _rc=0; refresh_py || _rc=$?
+    [ "$_rc" = 75 ] || break
+    if [ -s "$tmp/want-packages" ]; then
+      while read -r p f; do
+        /usr/bin/curl -q -fsSL -g --max-filesize 536870912 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download a package from live Wolfi" 1
+      done <"$tmp/want-packages"
+      /bin/rm -f "$tmp/want-packages"
+    elif [ -s "$tmp/want-index" ]; then
+      while read -r p f; do
+        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 600 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download the live package index" 1
+      done <"$tmp/want-index"
+      /bin/rm -f "$tmp/want-index"
+    else
+      die "the refresh program asked for downloads and named none" 1
+    fi
+  done
+  [ "$_rc" = 0 ] || exit "$_rc"
   [ -s "$tmp/changed" ] || exit 0
   branch="refresh/$(<"$tmp/sig")"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/changed"
@@ -741,13 +960,31 @@ PY
 
 fips-module)
   [ -n "$goroot" ] || die "--go-root is required"
+  # The refresh and this check edit the same recipe files in one working tree and their pull requests are opened only after the archive is stored: a
+  # second plan would be built on the first one's uncommitted edits. With a plan already staged this check stages nothing and runs again tomorrow.
+  if [ -n "$plan_dir" ] && [ -d "$plan_dir" ] && ! dir_empty "$plan_dir"; then
+    echo "fips-module: a pull request is already staged in $plan_dir; this check stages nothing now and runs again tomorrow (each pull request is built from the committed files alone)"
+    _mf=$repo/build/locks/fips-module.txt _cf=$goroot/lib/fips140/certified.txt _cur= _cert= _l=
+    if [ -r "$_cf" ] && [ -r "$_mf" ]; then
+      read -r _cur <"$_mf" || true
+      while IFS= read -r _l || [ -n "$_l" ]; do case $_l in ''|'#'*) continue;; esac; _cert=$_l; break; done <"$_cf"
+      [ -n "$_cert" ] && [ -n "$_cur" ] || die "$_cf or $_mf holds no module value: the certified-module check cannot tell whether a newer module is pending" 1
+      if [ -n "$_cert" ] && [ -n "$_cur" ] && [ "$_cert" != "$_cur" ]; then
+        echo "fips-module: pending: Go's certified module file names $_cert, the FIPS build uses $_cur; its pull request is staged on the next run without a staged refresh"
+      else
+        echo "fips-module: nothing pending: the certified module is the one the FIPS build uses ($_cur)"
+      fi
+    else
+      die "cannot read $_cf or $_mf: the certified-module check cannot tell whether a newer module is pending" 1
+    fi
+    exit 0
+  fi
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
   [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
-  "$PY3" -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" "$GH" <<'PY' || exit $?
+  /usr/bin/python3 -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY' || exit $?
 import io, json, os, re, secrets, shutil, subprocess, sys
 goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR = sys.argv[1:7]
-GH = sys.argv[7]
 cert = os.path.join(goroot, "lib", "fips140", "certified.txt")
 
 
@@ -808,11 +1045,11 @@ def open_prs_guard(kind):
     """Looked up before the FIRST archive or repository change. The open pull requests are listed once; if the list cannot be read the job fails
     (an unknown state is not "no PR"). If any pull request of this kind (input refresh, or FIPS module) is open, whether it is this very change
     or an earlier one, nothing more is done: no change, no push, no second PR. The stall is visible: the log and the job summary name it."""
-    r = subprocess.run([GH, "pr", "list", "--state", "open", "--limit", "1000", "--json", "number,headRefName,isCrossRepository,author"],
+    r = subprocess.run(["/usr/bin/gh", "pr", "list", "--state", "open", "--limit", "1000", "--json", "number,headRefName,isCrossRepository,author"],
                        cwd=repo, capture_output=True, text=True)
     if r.returncode != 0:
         fail_gh("cannot list the open pull requests (gh pr list failed); changing nothing, pushing nothing, opening nothing")
-    pfx = "refresh/fips-module-" if kind == "fips-module" else "refresh/"
+    pfx = "refresh/"   # AC29 names no kind: a package refresh and a certified-module pull request stop each other
     try:
         prs = json.loads(r.stdout)
     except ValueError:
@@ -823,7 +1060,7 @@ def open_prs_guard(kind):
         if pr.get("isCrossRepository") or (PR_AUTHOR and norm_login(who) != norm_login(PR_AUTHOR)):
             continue
         num, head = pr.get("number"), pr.get("headRefName", "")
-        if head.startswith(pfx) and not (kind == "refresh" and head.startswith("refresh/fips-module-")):
+        if head.startswith(pfx):
             msg = "an earlier pull request (#%s, %s) of this kind is still open (already open); changing nothing, pushing nothing and opening no second one (it is merged or closed first)" % (num, head)
             print(msg)
             if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -835,7 +1072,7 @@ open_prs_guard("fips-module")   # before any file is changed
 gen_dir = tmp + "/gen"
 os.makedirs(gen_dir, exist_ok=True)
 open(tmp + "/fips-module.new", "w").write(newest + "\n")
-r_ = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", repo + "/build/locks/melange.lock",
+r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", repo + "/build/locks/melange.lock",
                      "--fips-module", tmp + "/fips-module.new", "--emit", gen_dir], capture_output=True, text=True)
 if r_.returncode != 0:
     fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)

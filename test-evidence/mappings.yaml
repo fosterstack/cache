@@ -684,6 +684,9 @@ mappings:
   - ac: REQ-REL-009-AC11
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
   - ac: REQ-REL-009-AC3
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
@@ -1379,6 +1382,60 @@ mappings:
   - ac: REQ-REFRESH-001-AC23
     evidence:
       - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC24
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC25
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC26
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC27
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC28
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC29
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC30
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC31
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
   - ac: REQ-BUILDAPK-001-AC9
     evidence:
       - { type: shell-test, ref: "bin/build-apk-test.sh" }

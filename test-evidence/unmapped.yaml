@@ -40,3 +40,13 @@ unmapped:
 # They cannot be listed above: the validator refuses a residual that is also mapped, and both ACs are mapped for production and -fips (Check, PR 3).
   - ac: REQ-GUIDE-001-AC8
     reason: "manual acceptance not done yet: the owner's cold reading, the second reader on a clean machine, and pipeline's AC7 run executing every command against a candidate; recorded as manual evidence in mappings.yaml when each is done"
+  - ac: REQ-UAT-001-AC1
+    reason: its tests (bin/persona-uat-test.sh, -agent-test.sh, -wiring-test.sh) ship with the persona-uat pull request (#180), whose file names this PR allowlists; the mapping moves there
+  - ac: REQ-UAT-001-AC2
+    reason: its tests (bin/persona-uat-test.sh, -agent-test.sh, -wiring-test.sh) ship with the persona-uat pull request (#180), whose file names this PR allowlists; the mapping moves there
+  - ac: REQ-UAT-001-AC3
+    reason: its tests (bin/persona-uat-test.sh, -agent-test.sh, -wiring-test.sh) ship with the persona-uat pull request (#180), whose file names this PR allowlists; the mapping moves there
+  - ac: REQ-UAT-001-AC4
+    reason: its tests (bin/persona-uat-test.sh, -agent-test.sh, -wiring-test.sh) ship with the persona-uat pull request (#180), whose file names this PR allowlists; the mapping moves there
+  - ac: REQ-UAT-001-AC5
+    reason: its tests (bin/persona-uat-test.sh, -agent-test.sh, -wiring-test.sh) ship with the persona-uat pull request (#180), whose file names this PR allowlists; the mapping moves there

@@ -283,6 +283,1210 @@
       "key": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
       "line": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
       "ruling": "text, not a command: the fetch tool's fixed-path line of the daily input refresh job, a printf -v of a constant path, replaced by a stub in the test copy; the Wolfi live fetch it names is ruled by owner rule 48 (no 7-day hold on Wolfi) and verified per rules 32 and 28; handoff 0429/0432"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "26a5a54c945cc5c970b1cef963189599c19aecbbdcde47efa806d1a93b7a073c",
+      "line": "94a55f0539c5ddd3f26ba667b6f7750d592fc7af407bd3578b85616caa2f34c6",
+      "ruling": "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): the live package index download (one per run) in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "37b5b58e137deed9a347cabe279ad987c5c4cb3cd044515862b8f606adec8a8d",
+      "line": "a0bb5343d7024d3efc65996ba905f9ceb1e29e4327006543726b192feb6cfff6",
+      "ruling": "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): the per-package download in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "90d3436c2e7e40c9fa82f5f090b7268ec8275db601fb196821051f5aee448301",
+      "line": "d793285ee57677f99a8a6d0dba7d38a8c6de084b71c27dc2c33134f72688cf86",
+      "count": 4,
+      "ruling": "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): the signing-key fetch (four copies of the same line: key-check, archive-key-check, bootstrap, refresh) in bin/refresh-inputs.sh; one curl with fixed flags and one https://packages.wolfi.dev operand; the fetched bytes are verified against the lock checksums or the pinned and archived Wolfi key before use"
+    },
+    {
+      "file": "bin/persona-uat-agent-test.sh",
+      "form": "a download",
+      "key": "e55e3a52414e0c1f018689d3d20186503da10177844018a5e1a9164ac0f8707a",
+      "line": "e55e3a52414e0c1f018689d3d20186503da10177844018a5e1a9164ac0f8707a",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/persona-uat-agent-test.sh",
+      "form": "a download",
+      "key": "ee827d544e752abb80ab6ced9371f1a08bfef4b9b6fd9c10e5b3346bd9eae00c",
+      "line": "ee827d544e752abb80ab6ced9371f1a08bfef4b9b6fd9c10e5b3346bd9eae00c",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-agent-test.sh",
+      "form": "a download",
+      "key": "b5e9b0a3bddede04a0527d41ff75b653d6e501f432a7a24d976a9cc3cd008f7b",
+      "line": "b5e9b0a3bddede04a0527d41ff75b653d6e501f432a7a24d976a9cc3cd008f7b",
+      "ruling": "text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "169c8064f2a0ee992d4e876aadfa68f98aedaacaa0105b959c99d703e41a68ab",
+      "line": "169c8064f2a0ee992d4e876aadfa68f98aedaacaa0105b959c99d703e41a68ab",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "257221d8e9d3ca65ed8b9d1346958123ecc2024bbb6e8312fcb38fbe92fd7157",
+      "line": "257221d8e9d3ca65ed8b9d1346958123ecc2024bbb6e8312fcb38fbe92fd7157",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "5e6d53b436261fcadbb519d4020d67c171177d8ef69666724a9c33141c1897c6",
+      "line": "34f86abe49e03cecdd07da1b601cf02b587370e6dd6723dbed31961911c591f8",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "b9ed461c6dfbc2c8b3e7ef050d9d386b7215c8f4360f0d8b8d111bf064866079",
+      "line": "b9ed461c6dfbc2c8b3e7ef050d9d386b7215c8f4360f0d8b8d111bf064866079",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "e2fb6df0dfab494e393c0c49f133522840e206e6720b9e5d742e895e751f4503",
+      "line": "e2fb6df0dfab494e393c0c49f133522840e206e6720b9e5d742e895e751f4503",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "a2db3ff5964d60c1803defe5ef6d907372f4e55b03e8cae3f13d8a784e94c5f5",
+      "line": "7b92a4da2b4d628ac68cdacdddfc45868196f4c67cf2402c124bf25fab75272e",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "cc20aa407d21c877da507b13145daaf144bba3efd504b252ee03bd47f91ab2b1",
+      "line": "cc20aa407d21c877da507b13145daaf144bba3efd504b252ee03bd47f91ab2b1",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "6e0813d47432f028c18e2ec7f53e562683c1493867d6721f9a9047dcb1bb12ac",
+      "line": "6e0813d47432f028c18e2ec7f53e562683c1493867d6721f9a9047dcb1bb12ac",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "27d2b5048eda8f59862327440ddae02e75bb0ba778071a316af5c65dc6b4992a",
+      "line": "27d2b5048eda8f59862327440ddae02e75bb0ba778071a316af5c65dc6b4992a",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "47b30d6ceaa8fb6e11dc1b918f687d6e07301f26616e70cf77cac52dbc71bae6",
+      "line": "47b30d6ceaa8fb6e11dc1b918f687d6e07301f26616e70cf77cac52dbc71bae6",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "97e100729618de8fa899a523129dcdde14246d765c96daad1d4093bce146d837",
+      "line": "97e100729618de8fa899a523129dcdde14246d765c96daad1d4093bce146d837",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "dab7acbd926028a5307a8afafb057a9d54de680effefd56212d884aa7b10ee6f",
+      "line": "dab7acbd926028a5307a8afafb057a9d54de680effefd56212d884aa7b10ee6f",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "ecdf63b68fd94a5324fd7198f2fd7980e14bb8ca49822cbf7359c138d04d5a03",
+      "line": "ecdf63b68fd94a5324fd7198f2fd7980e14bb8ca49822cbf7359c138d04d5a03",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "4c8d5002e8734ca864431015021f4f8ab646155fa71919bf540396ba6bfcd132",
+      "line": "4c8d5002e8734ca864431015021f4f8ab646155fa71919bf540396ba6bfcd132",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "5089f101162116cef3191f694976bbefcdd8ece9fbb4cfabe905c768e8e06a5f",
+      "line": "5089f101162116cef3191f694976bbefcdd8ece9fbb4cfabe905c768e8e06a5f",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "7b821f8f65c0d7ecac18cb61e7f7224e310ed328c0aaa237fa33127cf5f69c93",
+      "line": "7b821f8f65c0d7ecac18cb61e7f7224e310ed328c0aaa237fa33127cf5f69c93",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "12f1cb361c9571b5f3e64f4ca533c49eb2fe870f7536e804449c68b5231c3f9d",
+      "line": "12f1cb361c9571b5f3e64f4ca533c49eb2fe870f7536e804449c68b5231c3f9d",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "f5f37664efebe98e7941a9a6d7c4459d546c4cc2f08a0c8ba1f905a23f4d9794",
+      "line": "f5f37664efebe98e7941a9a6d7c4459d546c4cc2f08a0c8ba1f905a23f4d9794",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "7b89461c8bbb71060a2d4cb6802754de7e658ea01da5be433cb40c8663dc8b80",
+      "line": "7b89461c8bbb71060a2d4cb6802754de7e658ea01da5be433cb40c8663dc8b80",
+      "ruling": "text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "a42ca85023a534b56e085d7a6ae78a62756f609636a110f0770ea18174962e9c",
+      "line": "a42ca85023a534b56e085d7a6ae78a62756f609636a110f0770ea18174962e9c",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "edaf73c2b771b91b005d8bcedb58562d3caad1280738cf08acde2ea5085f4189",
+      "line": "edaf73c2b771b91b005d8bcedb58562d3caad1280738cf08acde2ea5085f4189",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "d7f610e53aa6a7a23fc608b8468caaf5620b9d409f8e66466bae47a4702934e2",
+      "line": "d7f610e53aa6a7a23fc608b8468caaf5620b9d409f8e66466bae47a4702934e2",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "09f9cf24e60fe6c0b64f3f62fac116bbb8c360f2f1143eeb0b10f10382dc7743",
+      "line": "09f9cf24e60fe6c0b64f3f62fac116bbb8c360f2f1143eeb0b10f10382dc7743",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "376efd916365367a58faf7f95be358ba82480e5e7f09ebedb0261b1724b178c4",
+      "line": "376efd916365367a58faf7f95be358ba82480e5e7f09ebedb0261b1724b178c4",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "647eae6f95c486d11d9678210ca60d3e7b9afd1ce324a43a1dc50fea48a56212",
+      "line": "647eae6f95c486d11d9678210ca60d3e7b9afd1ce324a43a1dc50fea48a56212",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "3a501f3ccb25e2de26678eb5987e8cb60da5088340396e6e795aecc2a9b6087d",
+      "line": "3a501f3ccb25e2de26678eb5987e8cb60da5088340396e6e795aecc2a9b6087d",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "context": "heredoc"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "0d3b4fb088658f863f723a97bbd747b9b7ddd20ac90fab1af2a6e7bb62cb98a0",
+      "line": "a40a7309df07e72858b77f3378f5c2bc1e794ef9f13ce3e28349196503d0f0d9",
+      "ruling": "text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "194724ec661b0faf90582c09ce9a9bd00b74292de9344a7990f885259f238100",
+      "line": "194724ec661b0faf90582c09ce9a9bd00b74292de9344a7990f885259f238100",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "9805b3d5b76be85a21a4d6149241c0032bf15c4ebac88c1d4818afbf64409c2e",
+      "line": "9805b3d5b76be85a21a4d6149241c0032bf15c4ebac88c1d4818afbf64409c2e",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "ac6cd3d5addfccbede75542a4d6951c625b91d3fdfb95fa13e8e67ea6b41f8ec",
+      "line": "ac6cd3d5addfccbede75542a4d6951c625b91d3fdfb95fa13e8e67ea6b41f8ec",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "ad747ff8169259f51c7ceb796343d371f262ab9eda1e6b408bebf36002ea6cf4",
+      "line": "ad747ff8169259f51c7ceb796343d371f262ab9eda1e6b408bebf36002ea6cf4",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "014f17bcde84a3915d3648a9a6a1b2f8b6138641f3704ade64748a147da01d86",
+      "line": "014f17bcde84a3915d3648a9a6a1b2f8b6138641f3704ade64748a147da01d86",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "768c61fea5c30d9747c31cfa32b5ae0f21f481b07b78d2ff727d13406eb656e9",
+      "line": "768c61fea5c30d9747c31cfa32b5ae0f21f481b07b78d2ff727d13406eb656e9",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "7cebfa23c62a7354e2b368b3d2ca82bfd4294fd1dc8d079d325209258f5c21e9",
+      "line": "7cebfa23c62a7354e2b368b3d2ca82bfd4294fd1dc8d079d325209258f5c21e9",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "7cebfa23c62a7354e2b368b3d2ca82bfd4294fd1dc8d079d325209258f5c21e9",
+      "line": "7cebfa23c62a7354e2b368b3d2ca82bfd4294fd1dc8d079d325209258f5c21e9",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "58711a7d1ba7e21c2486e2db43947f41b8cffca3996a7f7df33de749aa7f57a1",
+      "line": "58711a7d1ba7e21c2486e2db43947f41b8cffca3996a7f7df33de749aa7f57a1",
+      "ruling": "text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "47d2e7fb36fb46a5fbd623da2f1477582729ee8047f999776813480d1d69ef79",
+      "line": "47d2e7fb36fb46a5fbd623da2f1477582729ee8047f999776813480d1d69ef79",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "e1f1de7367898a77594469015e6327a757c3261cfc0c7a795b83a26b310ac9e4",
+      "line": "e1f1de7367898a77594469015e6327a757c3261cfc0c7a795b83a26b310ac9e4",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "b43c29004fc5ef86e97602251cf9f3c69ef598ea47bd0054605d0a0c1f200c9e",
+      "line": "b43c29004fc5ef86e97602251cf9f3c69ef598ea47bd0054605d0a0c1f200c9e",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "c1599f19956cee42fccaab38afbf62fb046a2abdefcad65d5f0f97e61895c524",
+      "line": "c1599f19956cee42fccaab38afbf62fb046a2abdefcad65d5f0f97e61895c524",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "2a79a4ef86c54f32a419dbd2306a56691ea7a1f95161565f9cf1fd94d1b4a758",
+      "line": "2a79a4ef86c54f32a419dbd2306a56691ea7a1f95161565f9cf1fd94d1b4a758",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "986bde1dce75c601f9435d7069325af67f06a86b598ff50feb8ebec474fb2ec9",
+      "line": "986bde1dce75c601f9435d7069325af67f06a86b598ff50feb8ebec474fb2ec9",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "034778003b1b92c42c0d4aa55e2cb833e5873954ddf6af68ad50c73111537baa",
+      "line": "e4f1ca8f731761a2ad833b7e922cfe0023d907890b07b41658f71102d2ffd28f",
+      "ruling": "text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "067008058fd5f0e096dbca533796dfa59fbd4e2a8f26e4322f399742894589dd",
+      "line": "067008058fd5f0e096dbca533796dfa59fbd4e2a8f26e4322f399742894589dd",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "cca6fea5a08669b6fb492e730fc43a62e872a355acb623533faa08b24f49df4a",
+      "line": "939d59ae0f1b5b87be84e3908ee394c3cbe957772f04423804df761ee90793d7",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "109c5b1c0e0e2e9729eb6c739b9c9fbbb7a6f635dde9f483b127fc4a5c1905fc",
+      "line": "939d59ae0f1b5b87be84e3908ee394c3cbe957772f04423804df761ee90793d7",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "0953805676a7d315a288ab6b6d6ada0be9612387b327e43beb83b26235608934",
+      "line": "0953805676a7d315a288ab6b6d6ada0be9612387b327e43beb83b26235608934",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "ccb1102fd3a13e7c23ea2d15ad2701c118dce57cf350e85c9876ea3f577f68af",
+      "line": "ccb1102fd3a13e7c23ea2d15ad2701c118dce57cf350e85c9876ea3f577f68af",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "a4a1be75ce014f4336956b8028f94e7bcf339b0bc18d9b69e3920f5e68dba2b2",
+      "line": "a4a1be75ce014f4336956b8028f94e7bcf339b0bc18d9b69e3920f5e68dba2b2",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "4599051161fdfb9e4117ccc822ef975abbf4990c115a3e9d5ef0ce05d9b9af3c",
+      "line": "4599051161fdfb9e4117ccc822ef975abbf4990c115a3e9d5ef0ce05d9b9af3c",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "8af15de0d8cee941b3271bbfc014b79b516f722575e15a60452bf93efe78411b",
+      "line": "8af15de0d8cee941b3271bbfc014b79b516f722575e15a60452bf93efe78411b",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "47b349fa8d9eaf1817429462c9b445bf541c9041e81696a4e08dca03abcaadad",
+      "line": "47b349fa8d9eaf1817429462c9b445bf541c9041e81696a4e08dca03abcaadad",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "7d34a19354d42f199582c4f0a374ab3f639e2a3aa8c5e7b353b4d89f76a73d09",
+      "line": "7d34a19354d42f199582c4f0a374ab3f639e2a3aa8c5e7b353b4d89f76a73d09",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "27d73e477492dd2bf276aab2e4b69a4132720f08dc38cf579596bbe4afadef72",
+      "line": "ee2543800eff29f84d50813b5c044deb4d96fada1b57e43469ef6ed37cdbd06a",
+      "ruling": "text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "3e12291bcf442bb12bf4be913b6083023fd5955b0e36a48948c084a303d7053e",
+      "line": "ee2543800eff29f84d50813b5c044deb4d96fada1b57e43469ef6ed37cdbd06a",
+      "ruling": "text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "2b44bf4549351ad8c977e2f03e4831c019157bfff7868246c0f4a17f684b375f",
+      "line": "2b44bf4549351ad8c977e2f03e4831c019157bfff7868246c0f4a17f684b375f",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "f7a99a40ec6abfa35e1f11fd4a1860fdec0c178c152fb9be7e486e5bf8cc4b60",
+      "line": "532401603c32b777c231470180a0088cdb51ee033f2d6df99e9b0dd3d3769af5",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "532401603c32b777c231470180a0088cdb51ee033f2d6df99e9b0dd3d3769af5",
+      "line": "532401603c32b777c231470180a0088cdb51ee033f2d6df99e9b0dd3d3769af5",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "4a0851c6e7b5b39d3e4f248c562ad1d503f256f791928b0e909fdac1a999760d",
+      "line": "4a0851c6e7b5b39d3e4f248c562ad1d503f256f791928b0e909fdac1a999760d",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "33b6c6f122edcf4ed27c2b0780365139af4c73c305ce5a0e5a1f49ec654ca402",
+      "line": "33b6c6f122edcf4ed27c2b0780365139af4c73c305ce5a0e5a1f49ec654ca402",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "7be1504bffcdc411df104fcb114ae437b3e5d613a4883a72a15b730e2d837d45",
+      "line": "1b7108b0f391e8bf99dda565f2e596f22b5e9f0fd0cb2a6bb96d49476a47c5ab",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "d7bda452a1c50231ba05ceaba24034d5a013acee77345abeb40702c301d92605",
+      "line": "1b7108b0f391e8bf99dda565f2e596f22b5e9f0fd0cb2a6bb96d49476a47c5ab",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "958a561b42ff38769edbbc879c6278279e92cd2a3b655a5853be7ed240a75406",
+      "line": "1b7108b0f391e8bf99dda565f2e596f22b5e9f0fd0cb2a6bb96d49476a47c5ab",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "54cd532dc4cadd110da69c97938977055bae625cba944ad4d837f307032f112a",
+      "line": "54cd532dc4cadd110da69c97938977055bae625cba944ad4d837f307032f112a",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "b364dfaa13980758f49cd7252e551c40f44b829fbb3ac24a269768559cead43b",
+      "line": "b364dfaa13980758f49cd7252e551c40f44b829fbb3ac24a269768559cead43b",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "fb3380992641c53246fb5494dea288bc8f9d6cfd4c7d2b000b762a54a5a30462",
+      "line": "fb3380992641c53246fb5494dea288bc8f9d6cfd4c7d2b000b762a54a5a30462",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "341a25ee432d6af908301a8483a284aba0568e89a6c632c10f213340bb3f6e93",
+      "line": "341a25ee432d6af908301a8483a284aba0568e89a6c632c10f213340bb3f6e93",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "27f44fa49c9b0a9b0fd52eab818752dd3707d51f0ef132cb7bbb3ea9756b4d35",
+      "line": "27f44fa49c9b0a9b0fd52eab818752dd3707d51f0ef132cb7bbb3ea9756b4d35",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "074559849a74d219e5edb272aee1171b780be87d747efa9272cce2cf9d7534f6",
+      "line": "c50fb56edf57601a4f745007c35a5d78a83e598118895b138b5cf05383dee67e",
+      "ruling": "text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "c50fb56edf57601a4f745007c35a5d78a83e598118895b138b5cf05383dee67e",
+      "line": "c50fb56edf57601a4f745007c35a5d78a83e598118895b138b5cf05383dee67e",
+      "ruling": "text, not a command: the value of a plain assignment in the test (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "98b957796bfdfe5821bb1e7b388cc53e58c565ca3685693c4f65de69b649b003",
+      "line": "07c214f28334cd5f1e328dd45c50087e1e67a2953802c447f43c54db419178a4",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "252bea1f445e56b9964b9156d1a47f5bfc1e7ead1746cf9e1d7673a69f3a814b",
+      "line": "07c214f28334cd5f1e328dd45c50087e1e67a2953802c447f43c54db419178a4",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "d94d27fc6b1a16e1a8b0434500f4cb0aa3258b52b26028fd49663cc6f74e834b",
+      "line": "d94d27fc6b1a16e1a8b0434500f4cb0aa3258b52b26028fd49663cc6f74e834b",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "f45734f9851d44d4a858c78c49bca7cc44b950758d8d4a724499ec0018ffae51",
+      "line": "17575dcbe89feca2b2f27070bb6ba40e09be380b81e2dcacfa08de036cb97d93",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "832ba82a43dcbd176db9ff05ca43c8e058226e0ebcc27ef953cbe4903164a01b",
+      "line": "17575dcbe89feca2b2f27070bb6ba40e09be380b81e2dcacfa08de036cb97d93",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "e28579c8ca5077379e428a954ba20b8e581c69b618858d52626c1e2fd56602ed",
+      "line": "c4c62cf0143e49af84acb64d68687ccfdee682fe6d84743cf849894e7e2e1b65",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "56b6152555e0f4cffd289bccd7e7eb323fc64c4f454b3043b26c31275cd66e24",
+      "line": "c4c62cf0143e49af84acb64d68687ccfdee682fe6d84743cf849894e7e2e1b65",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "f930f5ac8ccadf7e283e51807c60d51a25bb3633780cd3c52a46452056b7799d",
+      "line": "c4c62cf0143e49af84acb64d68687ccfdee682fe6d84743cf849894e7e2e1b65",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "18cf75fdaebcc32051d3edb4f48d1088a71483c5ad9a060b161992b0e21a70b3",
+      "line": "18cf75fdaebcc32051d3edb4f48d1088a71483c5ad9a060b161992b0e21a70b3",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "5365c06fa2b097fc7692214fae0fecc41a8a5cdc12b496cb5246b22ae3c0fb2d",
+      "line": "5365c06fa2b097fc7692214fae0fecc41a8a5cdc12b496cb5246b22ae3c0fb2d",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "7df972a7d29678272b56e74930ceb4f8e410192b46237c82ecef29ea80a93de2",
+      "line": "c692f6037cff40fe2f12bcf0b3bc9c616d9a5b0941d2a1c35b9e93962ad6047d",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "3098e212f251a65f6eb366b4ae69e51e2f661a63c037ed1dc69e8e10327d0f00",
+      "line": "3098e212f251a65f6eb366b4ae69e51e2f661a63c037ed1dc69e8e10327d0f00",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "3098e212f251a65f6eb366b4ae69e51e2f661a63c037ed1dc69e8e10327d0f00",
+      "line": "3098e212f251a65f6eb366b4ae69e51e2f661a63c037ed1dc69e8e10327d0f00",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "f6ed8d4eb58ad839e70221e41ebf511554140650b04e6f2fd561d71e93777f41",
+      "line": "a593a50d8edcafa6992c01cf0f3e2b00d754441d50eba398283acbc8cec83b1a",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "019b8d1c475210246192f06b701a5ebab9537cbf17d49468f3c16e6a30879fd6",
+      "line": "28f2a5559e6c79fd0a713e334b96eb9e612d97a5b64614221d4185ed6baa5459",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "e75bf888b9f4d667a68e5684de03eba1e2eb46a6842e7ce9833421df4f441fe8",
+      "line": "e75bf888b9f4d667a68e5684de03eba1e2eb46a6842e7ce9833421df4f441fe8",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "9e222d760846a29d48bed2f94d8612459da9857d23d4fa91218c5565b656985f",
+      "line": "9e222d760846a29d48bed2f94d8612459da9857d23d4fa91218c5565b656985f",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "6e496ca944729b433e583e22bef97de8669fd7a11bfc40fce30b4dcb63f11371",
+      "line": "6e496ca944729b433e583e22bef97de8669fd7a11bfc40fce30b4dcb63f11371",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "faca0c713d0452c17d9a6a39dc2e933441527818a81e115be2ced8b28509534c",
+      "line": "92b3d892532a9e863b6c1988c8f2b1b5b35fe198ebe4d8f818bc30000730b55f",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "31485b14f69c16638bae8731237f435f124e7fcbc0b1bd82abd975fcc08d5f04",
+      "line": "18711709e6b76954b124c9dbd5ddc067538473e72a4a1c93117fd7c66f86bee4",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "a96c5ff35307cd4a4b282bdc8c5eea2cd6b3f0442904498d97f8cb842c9e84d6",
+      "line": "a96c5ff35307cd4a4b282bdc8c5eea2cd6b3f0442904498d97f8cb842c9e84d6",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "515beffe02156ddf272783bb7a17abe5483b75b5bfae1844d20a8212de0c8724",
+      "line": "515beffe02156ddf272783bb7a17abe5483b75b5bfae1844d20a8212de0c8724",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "c153c628c6570d29e39659842cb380a6c1704d9be5d8e85646eddfb6dcd88aab",
+      "line": "c153c628c6570d29e39659842cb380a6c1704d9be5d8e85646eddfb6dcd88aab",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "117cc9a79a56bf8268e8b0b65e82170d8eee8b443821cd8d6dda39f7a1fc47d3",
+      "line": "e455215b483eab06e992e85a5efe618e9ae9dc3333bc26e810a789723827a4cb",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "0305b63d764b809200af9db5c94f3b868739cd341f6cde9f0dd3df27824780e0",
+      "line": "0305b63d764b809200af9db5c94f3b868739cd341f6cde9f0dd3df27824780e0",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "f953ed8b7742f52a1894b7bf45b16d89d0f4002427129ea80df9b117fea39bd3",
+      "line": "f953ed8b7742f52a1894b7bf45b16d89d0f4002427129ea80df9b117fea39bd3",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "fbf8f8066087f0f982bb9920ecdafed8a38381558d53ddffc0075ab6371a9c9b",
+      "line": "fbf8f8066087f0f982bb9920ecdafed8a38381558d53ddffc0075ab6371a9c9b",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "b8205456b4cac997f5575462725512da78575978f14f97556844299c5f3a4f8e",
+      "line": "b8205456b4cac997f5575462725512da78575978f14f97556844299c5f3a4f8e",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "b0a91c17c3503d007fb68d387f8740870f8e13e1c960535a71b2a3fbe66623a2",
+      "line": "b0a91c17c3503d007fb68d387f8740870f8e13e1c960535a71b2a3fbe66623a2",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "6a2c4cb2423aa31b7cf6ad448a7dbda130170bf69ea4ba4d391b8abff24d4567",
+      "line": "6a2c4cb2423aa31b7cf6ad448a7dbda130170bf69ea4ba4d391b8abff24d4567",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "2d3eb5a3004dbd32651ec7d7df02f1d70ade841a86e608900bb526ea1f5da16e",
+      "line": "2d3eb5a3004dbd32651ec7d7df02f1d70ade841a86e608900bb526ea1f5da16e",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "e846dd625b180ea2b59d253dc344266b388a082e29ec7fdbfdd199c2e16dac12",
+      "line": "e846dd625b180ea2b59d253dc344266b388a082e29ec7fdbfdd199c2e16dac12",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "7a37073dea7a068c528706c26d9324e145640c1759872c30704fc935b6c91baf",
+      "line": "7a37073dea7a068c528706c26d9324e145640c1759872c30704fc935b6c91baf",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "08dabb20ad108ae9462f84efca6aeb8f575260309340a11ae1d98b7603f04bac",
+      "line": "08dabb20ad108ae9462f84efca6aeb8f575260309340a11ae1d98b7603f04bac",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "e2424876c0c9f998befcfc0face135fbebe5c40b5f5c803204dc9349b6b5367d",
+      "line": "e2424876c0c9f998befcfc0face135fbebe5c40b5f5c803204dc9349b6b5367d",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "11ccc89a001709efaeb40855b73d385fe2e4c644c0fc8659b08c193f98ee2857",
+      "line": "11ccc89a001709efaeb40855b73d385fe2e4c644c0fc8659b08c193f98ee2857",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "570311179b3b51aebaf8ade1d450e9f6dcfe362ee9e8d52666f05d9b5e48d694",
+      "line": "570311179b3b51aebaf8ade1d450e9f6dcfe362ee9e8d52666f05d9b5e48d694",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "af54e161a739c522f79d37cbdc99a924f01e49f9c240b39e8d08e4719580c1e0",
+      "line": "af54e161a739c522f79d37cbdc99a924f01e49f9c240b39e8d08e4719580c1e0",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a git clone or remote fetch",
+      "key": "af54e161a739c522f79d37cbdc99a924f01e49f9c240b39e8d08e4719580c1e0",
+      "line": "af54e161a739c522f79d37cbdc99a924f01e49f9c240b39e8d08e4719580c1e0",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "ac6d8b1825f3648e3b37353f5e5f858473018a979283c1f6208a9ef9661e7215",
+      "line": "ac6d8b1825f3648e3b37353f5e5f858473018a979283c1f6208a9ef9661e7215",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "a489db5ca99b6da8405b0383dadc1c2277ac7d78940e029f870ab24b78156899",
+      "line": "a489db5ca99b6da8405b0383dadc1c2277ac7d78940e029f870ab24b78156899",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-test.sh",
+      "form": "a download",
+      "key": "85fef04f2f6df8c4f3d5259309d16e0653b0f0813dbf113069182685e9dda5cf",
+      "line": "85fef04f2f6df8c4f3d5259309d16e0653b0f0813dbf113069182685e9dda5cf",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (proved by the checker: context pystring); the program does not execute it",
+      "context": "pystring"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "3598de50185c5d93f1364896d68c63c9ab62745a38366b251c7b4f6681ada0ea",
+      "line": "a7ec75ac7c5348fb1d3a40d954f0b64b9c1cad993557f52107a6bce4da24af34",
+      "ruling": "text, not a command: a comment in the test; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "640f31f90d3764a424d96f4de436e5fc638b3fba2c0d715908a159b499499055",
+      "line": "5199a8dc8f9a9b0e1e0c9e8efd40e7012d15224495a65cf63ad6a1b7a61cb2c6",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "86a2dc3f8369ec75c3865544d2f9d038b48262ea082f2c2e5e3ff8260951f4f3",
+      "line": "86a2dc3f8369ec75c3865544d2f9d038b48262ea082f2c2e5e3ff8260951f4f3",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "a9ce6d7d241d6a20ba00468e1198a9f8d3a790b03bfd6b2f8bf022c5b7199798",
+      "line": "a9ce6d7d241d6a20ba00468e1198a9f8d3a790b03bfd6b2f8bf022c5b7199798",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "5374c6fbb71fde282c7935a61365ba496a19c977fc6d94e710e73621c5579df0",
+      "line": "5374c6fbb71fde282c7935a61365ba496a19c977fc6d94e710e73621c5579df0",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "84fa86de3d5025216b26f8463e46c3770078f9c0bf069048304034ee6adda175",
+      "line": "84fa86de3d5025216b26f8463e46c3770078f9c0bf069048304034ee6adda175",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "b220d4c86b93ae6d9b0193e013f806baa7ac14480dd28ec14c495b5e5e34f29d",
+      "line": "8d2c4ae069d82ce4f65ebaa09ce882428acb4a2e0e0c1b6c92090925ac03fe10",
+      "ruling": "text, not a command: Python text that writes the curl shim the installer test puts on PATH; in that test the installer is a copy run in the test's temporary directory with temporary curl and sha256sum shims, the curl shim redirects the kind release request to a local server on 127.0.0.1, and the kind executable it installs is a synthetic fixture; nothing is fetched from outside the host and no upstream tool is installed",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "c4ffa25f0fa70e185c072c18e58002bc534f3f61888db8b654a792b7d70fe334",
+      "line": "60f1283ca18f78328d1233f3fe8afdfba42960b05f4e05e832bc57e0a65ce436",
+      "ruling": "text, not a command: Python text that writes the curl shim the installer test puts on PATH; in that test the installer is a copy run in the test's temporary directory with temporary curl and sha256sum shims, the curl shim redirects the kind release request to a local server on 127.0.0.1, and the kind executable it installs is a synthetic fixture; nothing is fetched from outside the host and no upstream tool is installed",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "an unpinned package install",
+      "key": "8b915108c33228e6625c285de6a4a00672fc480fbcde83293b5f5d353e6bd8f4",
+      "line": "8b915108c33228e6625c285de6a4a00672fc480fbcde83293b5f5d353e6bd8f4",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "8b915108c33228e6625c285de6a4a00672fc480fbcde83293b5f5d353e6bd8f4",
+      "line": "8b915108c33228e6625c285de6a4a00672fc480fbcde83293b5f5d353e6bd8f4",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "7d93101fcfbee87cd5836af1693cbb4f92d8d8b735996f0fef016cbeaf448711",
+      "line": "7d93101fcfbee87cd5836af1693cbb4f92d8d8b735996f0fef016cbeaf448711",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "b384147cc25a554c7e2faed47e532ddac6826626ffbe549d1ed91e670d8e61c4",
+      "line": "b384147cc25a554c7e2faed47e532ddac6826626ffbe549d1ed91e670d8e61c4",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "407b501925dc2db9fdf475664f4cbd47b859923ba4eec9ae7afadf84696a9176",
+      "line": "407b501925dc2db9fdf475664f4cbd47b859923ba4eec9ae7afadf84696a9176",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "bbea442a8d754e741a0ad48b46c57ba1ad9faf2348fcd4bbc9aedd12daf803e0",
+      "line": "bbea442a8d754e741a0ad48b46c57ba1ad9faf2348fcd4bbc9aedd12daf803e0",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "f52b38b45ca4cad329b9f6baa2c5f0c7cb68c738c529a278a2a1666264d96f8d",
+      "line": "f52b38b45ca4cad329b9f6baa2c5f0c7cb68c738c529a278a2a1666264d96f8d",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "e861939397a79c133a47cd989c0f473722c56e85b946a85292474e8771c08330",
+      "line": "e861939397a79c133a47cd989c0f473722c56e85b946a85292474e8771c08330",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "an unpinned package install",
+      "key": "68841022794a17d385fc9e106714192a7c7ffec4eadefd3addc4159c2d0c891d",
+      "line": "68841022794a17d385fc9e106714192a7c7ffec4eadefd3addc4159c2d0c891d",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "68841022794a17d385fc9e106714192a7c7ffec4eadefd3addc4159c2d0c891d",
+      "line": "68841022794a17d385fc9e106714192a7c7ffec4eadefd3addc4159c2d0c891d",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "17a20c759762a04cf9ea651f099d98e055c4785f2bd974a3efcd5f641d0c5dfe",
+      "line": "8e005d16bf2f9da125241963e12c02ad22e56dc3a9d50c7aef89c81d567f2f1a",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "495f057e3d27a4a3a9cad466b838abd25cf41b8bd609dbff1d2024e238c5f5ac",
+      "line": "8e005d16bf2f9da125241963e12c02ad22e56dc3a9d50c7aef89c81d567f2f1a",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "1f63cd4fd52708de16b3127cb237b068bcb1d021cc99bb0d6de3a0bdec61464c",
+      "line": "5ef392226c97a9ec299ed76967b69860df565b516e10c3071d36ee7d03c1c831",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "an unpinned package install",
+      "key": "0d20313fd0a747c9c0165e5c03a70f3f597c4bc31746482b687acae42c87b672",
+      "line": "0d20313fd0a747c9c0165e5c03a70f3f597c4bc31746482b687acae42c87b672",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a pip requirements file not named requirements*.txt",
+      "key": "0d20313fd0a747c9c0165e5c03a70f3f597c4bc31746482b687acae42c87b672",
+      "line": "0d20313fd0a747c9c0165e5c03a70f3f597c4bc31746482b687acae42c87b672",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "af76b19e1983dd275d1fbd5bc3f7d062037e69b39beda0e74d4ed80a3649530c",
+      "line": "af76b19e1983dd275d1fbd5bc3f7d062037e69b39beda0e74d4ed80a3649530c",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "an unpinned package install",
+      "key": "fc14771248e90c36df2be8d6027c3c905f05659c54c2af8b6d2c902f9e970cfe",
+      "line": "fc14771248e90c36df2be8d6027c3c905f05659c54c2af8b6d2c902f9e970cfe",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "a download",
+      "key": "bfe5916bf894648566d26ae0e28b3240d011695f85bd3b214ca2425caac59612",
+      "line": "bfe5916bf894648566d26ae0e28b3240d011695f85bd3b214ca2425caac59612",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/persona-uat-wiring-test.sh",
+      "form": "an unpinned package install",
+      "key": "82e0da7d32c115f5efede1d9eac9d01acf90d25bf4d610e72e38e6ed9744f1ce",
+      "line": "82e0da7d32c115f5efede1d9eac9d01acf90d25bf4d610e72e38e6ed9744f1ce",
+      "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
     }
   ]
 }
