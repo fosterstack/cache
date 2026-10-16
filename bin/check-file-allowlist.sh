@@ -218,6 +218,8 @@ ALLOW_PATTERNS=(
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'
+  # The archive pointer the daily refresh pull request moves (build/archive.json): which registry digest the build pulls its packages from.
+  '^build/archive\.json$'
   # The certified Go Cryptographic Module the FIPS recipe is generated with (build/locks/fips-module.txt): one of the two data files the daily job edits.
   '^build/locks/fips-module\.txt$'
   # Signing keys: build/keys/assembly.rsa and build/keys/assembly.rsa.pub (the committed, non-secret assembly
