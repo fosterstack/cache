@@ -785,13 +785,13 @@ P
 done
 mkrepo; run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c "grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'"
-t "rule 32" "every live fetch is a shell line in the ruled grammar: -q first, the fixed flags (-fsSL -g --max-filesize N --max-time N --proto =https --tlsv1.2 -o FILE), exactly one operand that is a literal https://packages.wolfi.dev URL or \"https://packages.wolfi.dev/os/\$p\", optional || die \"plain\" N; the embedded Python runs no download" python3 -I - "$RF_PROD" <<'PYT'
+t "rule 32" "every live fetch is a shell line in the ruled grammar: -q first, the fixed flags (-fsSL -g --max-filesize N --max-time N --proto =https --tlsv1.2 -o FILE), exactly one operand that is a literal https://packages.wolfi.dev URL, \"https://packages.wolfi.dev/os/\$p\" or \"https://go.dev/dl/\$f\", optional || die \"plain\" N; the embedded Python runs no download" python3 -I - "$RF_PROD" <<'PYT'
 import re, sys
 s = open(sys.argv[1]).read()
 lines = [l for l in s.split("\n") if " -fsSL " in l and not l.lstrip().startswith("#")]   # the fetch lines are the ones carrying the fixed flag cluster
 shell = [l for l in lines if l.lstrip().startswith("/usr/bin/")]
-assert len(shell) == len(lines) and len(lines) == 6, "every fetch line is a shell line (4 key fetches, packages, index): %d of %d" % (len(shell), len(lines))
-g = re.compile(r'^\s+/usr/bin/[a-z]+ -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
+assert len(shell) == len(lines) and len(lines) == 7, "every fetch line is a shell line (4 key fetches, packages, the Go toolchain, index): %d of %d" % (len(shell), len(lines))
+g = re.compile(r'^\s+/usr/bin/[a-z]+ -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|"https://go\.dev/dl/\$f"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
 bad = [l for l in lines if not g.match(l)]
 assert not bad, bad
 assert '"-fsSL"' not in s   # the embedded Python passes no fetch flags: it runs no download
@@ -1189,7 +1189,7 @@ t "rule 27" "AC17 probe A (control): the same run with the archive undamaged wai
 # ---- REQ-REFRESH-001-AC32: the first fill (advisor reading Oct 16): an archive that holds only the pinned key, and no build/archive.json on main --------------------------
 # The committed locks may name versions the live resolution has moved past; with an empty archive they can never already be there, so the job fetches those Wolfi still
 # serves and verifies each (a locked one against its lock checksums; a melange.lock one, which has no checksums, against the signed live index) before archiving it.
-ffl="$work/ff-live"; rm -rf "$ffl"; mkdir -p "$ffl"
+ffl="$work/ff-live"; rm -rf "$ffl"; mkdir -p "$ffl/dl"; cp "$fx/archive/go/"*.tar.gz "$ffl/dl/"
 mkrepo; cp "$fx/melange.lock" "$work/mel.keep"
 oldbb=$(grep '^busybox=' "$work/rp/build/locks/melange.lock" | head -1); ffbv=${oldbb#busybox=}
 python3 - "$fx/live-mel.lock.json" "$work/ff-mel-moved.json" "$ffbv" <<'P'
@@ -1303,6 +1303,7 @@ done
 # sha256. The refresh job stores a missing one only after the sha256 it fetched equals the pin; a present one must equal the pin; old files are never removed.
 gofx="$work/go-live"; rm -rf "$gofx"; mkdir -p "$gofx/dl"
 cp "$fx/archive/go/"*.tar.gz "$gofx/dl/"
+for a_ in x86_64 aarch64; do mkdir -p "$gofx/$a_"; cp "$fx/live/$a_/APKINDEX.tar.gz" "$gofx/$a_/"; done   # the run also fetches and checks the live index
 gofiles=$(cd "$fx/archive/go" && ls *.tar.gz)
 gorun() {   # $1 = the fetch directory (its dl/ holds the go.dev files); the live resolution equals the committed locks, so nothing but the Go files can change
   run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$1" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
@@ -1310,7 +1311,8 @@ gorepo() {   # the repository as main holds it (a pointer exists), the archive w
   mkrepo; printf '{"schema":1,"artifact":"ghcr.io/fosterstack/cache-archive@sha256:%s","files":[{"name":"keys/wolfi-signing.rsa.pub","sha256":"%s"}]}\n' "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" >"$work/rp/build/archive.json"
   /bin/rm -rf "$work/ar/go"; }
 gorepo; ff_go_before=$(treehash "$work/rp"); gorun "$gofx"
-t "AC33" "Go archive: a recipe-pinned Go tarball that the archive lacks is fetched, checked against the recipe's sha256 and stored: exit 0, both files archived byte for byte" bash -c "test \"\$(cat '$work/rc')\" = 0 && for f in $gofiles; do cmp -s '$work/ar/go/'\$f '$gofx/dl/'\$f || exit 1; done"
+go_same=1; for f_ in $gofiles; do cmp -s "$work/ar/go/$f_" "$gofx/dl/$f_" || go_same=0; done
+t "AC33" "Go archive: a recipe-pinned Go tarball that the archive lacks is fetched, checked against the recipe's sha256 and stored: exit 0, both files archived byte for byte" bash -c "test \"\$(cat '$work/rc')\" = 0 && test $go_same = 1"
 t "AC33" "Go archive: the fetch names the go.dev file and the pull request moves the pointer even though no other file changed (one gh pr create)" bash -c "grep -q 'go.dev/dl/go1.27.2' '$CALLS' && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1"
 gorepo; gorun "$work/no-such-dir"
 t "AC33" "Go archive: a tarball that is not served stops the job (exit 1) naming the file, nothing stored" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'go1.27.2' '$work/log' && ! test -d '$work/ar/go'"
@@ -1339,11 +1341,11 @@ s2 = re.sub(r"expected-sha256: [0-9a-f]{64}", "expected-sha256: nothex", s, coun
 open(p, "w").write(s2)
 P
 ); gorun "$gofx"
-t "AC33" "Go archive: a recipe whose Go fetch has no valid sha256 pin stops the job (exit 1, names the recipe), nothing fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'melange.yaml' '$work/log' && ! grep -q 'go.dev/dl' '$CALLS'"
+t "AC33" "Go archive: a recipe whose Go fetch has no valid sha256 pin stops the job (exit 2, names the recipe), nothing fetched" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -q 'melange.yaml' '$work/log' && ! grep -q 'go.dev/dl' '$CALLS'"
 gorepo; ( cd "$work/rp" && python3 - <<'P'
 import re
 p = "build/melange-fips.yaml"; s = open(p).read()
-s2 = re.sub(r"expected-sha256: [0-9a-f]{64}", "expected-sha256: " + "0" * 64, s, count=1); assert s2 != s
+s2 = re.sub(r"expected-sha256: [0-9a-f]{64}", "expected-sha256: " + "a" * 64, s, count=1); assert s2 != s
 open(p, "w").write(s2)
 P
 ); gorun "$gofx"
