@@ -228,6 +228,9 @@ m s_rnorv    '=      - name: release-verify\n        run: bash bin/witnessed.sh 
 m s_latemel  '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: install melange again\n        run: bash bin/install-build-tools.sh melange\n      - name: release-apks' 'between' "AC1 (Astra R4, round 1) a second melange install between release-verify and release-apks"
 m s_latecos  '=run: bash bin/witnessed.sh release-apks bin/release-apks.sh\n' 'run: bash bin/witnessed.sh release-apks bin/release-apks.sh\n      - name: install cosign again\n        run: bash bin/install-scanner.sh cosign\n' 'between' "AC1 (Astra R4, round 1) an install between two Witness steps"
 m s_latedl   '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: release-apks' 'downloads' "AC1 (Astra R4, round 1) a download between release-verify and release-apks"
+# round 1 (Codex PR 415): the verify job's proof upload is exactly witness-release-verify holding the record directory
+m s_vupname  '=name: witness-release-verify\n          path: witness-release-verify' 'name: witness-release\n          path: witness-release-verify' 'verify' "AC1 (Astra R6, round 1) the verify job's upload is named witness-release (it would collide with the release job's)"
+m s_vuppath  '=name: witness-release-verify\n          path: witness-release-verify' 'name: witness-release-verify\n          path: docs' 'verify' "AC1 (Astra R6, round 1) the verify job's upload holds a path other than its Witness record"
 m s_melorder 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install melange\n        run: bash bin/install-build-tools.sh melange' 'install melange\n        run: bash bin/install-build-tools.sh melange\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'start with checkout' "AC1 (Astra R4) melange installed before crane (the order is fixed: the three scanners' tools, then melange)"
 m s_melscan 'install-build-tools.sh melange'               'install-scanner.sh melange'                             'none of checkout'   "AC1 (Astra R4) melange fetched by the scanner installer (it is the build-tools installer's, with its own pin)"
 m s_order   'release-apks bin/release-apks.sh'              'release-sign bin/release-sign.sh'                       'exactly'            "AC1 two witnessed steps swapped (release-sign twice)"
@@ -252,6 +255,8 @@ c c_melenv  'run: bash bin/install-build-tools.sh melange' 'env:\n          GH_T
 c c_vsec    '=      - name: release-verify\n'                       '      - name: release-verify\n        env:\n          GH_TOKEN: ${{ github.token }}\n' 'verify job' "AC2 (Astra R6) the verify job's Witness step carries the token (the verify job holds no credential)"
 c c_rcos    '=      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n' '      - name: install cosign\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/install-scanner.sh cosign\n' 'up to release-verify' "AC2 (Astra R6) the release job reads the token before its re-run of release-verify"
 c c_rdlsec  '=name: dist\n          path: dist'                   'name: dist\n          path: dist\n          token: ${{ secrets.DOCKERHUB_TOKEN }}' 'up to release-verify' "AC2 (Astra R6) the release job reads a secret in a download before its re-run of release-verify"
+c c_vbrk    '=      - name: install witness\n'                      '      - name: x ${{ secrets["OTHER_SECRET"] }}\n'                       'verify job' "AC2 (Astra R6, round 1) the verify job reads a secret through the bracket form in a step name"
+c c_rbrk    '=      - name: install cosign\n'                       '      - name: x ${{ github["token"] }}\n'                                'up to release-verify' "AC2 (Astra R6, round 1) the release job reads the token through the bracket form before its re-run of release-verify"
 c c_chk     'persist-credentials: false'                   'persist-credentials: false\n        env:\n          GH_TOKEN: ${{ github.token }}' 'up to release-verify' "AC2 the token on the checkout step"
 c c_dlsec   'name: images\n          path: images'        'name: images\n          path: images\n          token: ${{ secrets.DOCKERHUB_TOKEN }}' 'up to release-verify' "AC2 a secret in a download"
 c c_vfy     '      - name: release-verify\n'               '      - name: release-verify\n        env:\n          GH_TOKEN: ${{ github.token }}\n' 'up to release-verify' "AC2 any env on the verify step"
@@ -450,7 +455,19 @@ for n in release-verify release-apks release-publish release-sign release-assets
 done
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"
-EXPECT=222
+# round 1 (Codex PR 415): the requirement text and the stage file's header say only what is enforced about credentials (no job holds a write token or a secret before an earlier job verified; no explicit credential binding up to release-verify)
+python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "text: REQ-CHAIN-007-AC1 does not claim that no credential exists before the melange install, and states the explicit bindings and the verify gate" || bad "text: REQ-CHAIN-007-AC1 overstates credential absence"
+import sys, yaml
+t = next(a for q in yaml.safe_load(open(sys.argv[1]))["requirements"] if q["id"] == "REQ-CHAIN-007" for a in q["acceptance_criteria"] if a["id"] == "REQ-CHAIN-007-AC1")["then"]
+assert "before any credential exists" not in t and "no explicit credential binding" in t and "needs: verify" in t, t[:200]
+PY
+python3 - "$root/.github/workflows/stage-promote.yml" "$root/bin/release-verify.sh" <<'PY' && ok "text: the stage-promote.yml header and release-verify.sh do not say that no credential exists before release-verify" || bad "text: a header comment overstates credential absence"
+import sys
+for f in sys.argv[1:]:
+    t = open(f).read()
+    assert "no credential exists yet" not in t and "No credential exists in this step" not in t, f
+PY
+EXPECT=228
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
