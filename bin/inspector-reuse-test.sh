@@ -248,6 +248,26 @@ put("rat-str", lambda v: v.__setitem__("ratings", "high"))
 put("rat-items", lambda v: v.__setitem__("ratings", ["high"]))
 PY
 for n in aff-obj aff-empty aff-missing aff-str aff-noref aff-emptyref aff-numref rat-str rat-items; do vtry "a finding whose affects or ratings are malformed ($n)" 1 "$w/v-bad-$n.json"; done
+# reference integrity (Codex #188 r3): bom-refs of the answer's components are non-empty strings and unique, and every affected ref resolves to exactly one of them
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+f = json.load(open(w + "/f-vuln.json"))
+comps = f["sbom"]["components"]; aff = f["sbom"]["vulnerabilities"][0]["affects"][0]["ref"]
+assert any(c.get("bom-ref") == aff for c in comps), "the fixture's finding must resolve to a component"
+def put(name, mut):
+    g = json.loads(json.dumps(f)); mut(g["sbom"]); json.dump(g, open("%s/v-bad-%s.json" % (w, name), "w"))
+def dup(s):
+    other = [c for c in s["components"] if c.get("bom-ref") != aff]
+    assert other, "need a second component"
+    other[0]["bom-ref"] = aff
+put("ref-dup", dup)
+put("ref-dangling", lambda s: s["vulnerabilities"][0]["affects"][0].__setitem__("ref", "no-such-ref"))
+put("ref-null", lambda s: [c.__setitem__("bom-ref", None) for c in s["components"] if c.get("bom-ref") == aff])
+put("ref-empty", lambda s: [c.__setitem__("bom-ref", "") for c in s["components"] if c.get("bom-ref") == aff])
+put("ref-num", lambda s: [c.__setitem__("bom-ref", 7) for c in s["components"] if c.get("bom-ref") == aff])
+PY
+for n in ref-dup ref-dangling ref-null ref-empty ref-num; do vtry "an answer whose component references are not unique, not strings, or do not resolve ($n)" 1 "$w/v-bad-$n.json"; done
 vtry "an empty file" 1 "$w/m4.json"
 ls "$w" | grep -q "findings" && bad "validate: wrote something" || ok "validate: writes nothing"
 

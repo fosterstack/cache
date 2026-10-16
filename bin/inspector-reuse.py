@@ -138,6 +138,14 @@ def check_answer(path, req_pairs):
         vs = sbom["vulnerabilities"]
         if not isinstance(vs, list) or not all(_finding_ok(v) for v in vs):
             raise ValueError("the findings field is not a list of well-formed findings")
+        # reference integrity: both readers look a finding's component up by bom-ref in a dictionary where the last duplicate wins, so the references of the
+        # answer's components must be non-empty unique strings and every affected ref must resolve to exactly one of them
+        refs = [c["bom-ref"] for c in sbom["components"] if isinstance(c, dict) and "bom-ref" in c]
+        if not all(isinstance(r, str) and r for r in refs) or len(set(refs)) != len(refs):
+            raise ValueError("the component references are not non-empty unique strings")
+        known = set(refs)
+        if not all(a["ref"] in known for v in vs for a in v["affects"]):
+            raise ValueError("a finding names a component the answer does not carry")
 
 
 def stored_path(d, date, key):
