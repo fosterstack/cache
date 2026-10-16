@@ -1,7 +1,7 @@
 # The Release stage of the v0.3.0 release chain (rules 5, 17, 29, 50, 52, 53, 56, 57, 60, 61, 63, 64, 65, 69, 70, 71, 79; REQ-CHAIN-007). Called only from release.yml, after Check,
 # Rebuild and Sign (it needs exactly those three; it reaches Build through Check). This is the ONLY file of the repository that holds a registry credential,
 # the apk signing key or packages: write, and it holds them only in the Witness steps that need them (the environment named release holds the secrets).
-# It builds nothing. Steps: checkout, the three pinned tools (Witness first, rule 68), the earlier stages' artifacts, then six Witness steps through the one helper,
+# It builds nothing. Steps: checkout, the three pinned tools (Witness first, rule 68) and the pinned melange (for the apk re-signing, REQ-CHAIN-007-AC1), the earlier stages' artifacts, then six Witness steps through the one helper,
 # each a committed script: release-verify (no credential exists yet: the tag, the release policy, every earlier stage's record in rule 69's order),
 # release-apks (re-sign the apks with the stored key), release-publish (the exact image bytes by digest to ghcr.io and Docker Hub, read back),
 # release-sign (keyless signatures with a Rekor entry), release-assets (the evidence to the GitHub release) and release-postverify (the customer-guide
@@ -32,6 +32,8 @@ jobs:
         run: bash bin/install-scanner.sh cosign
       - name: install crane (pinned by checksum)
         run: bash bin/install-scanner.sh crane
+      - name: install melange (pinned by checksum; release-apks signs through bin/release-sign-apks.sh, which needs it)
+        run: bash bin/install-build-tools.sh melange
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: witness-build

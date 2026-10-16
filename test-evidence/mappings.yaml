@@ -484,6 +484,9 @@ mappings:
   - ac: REQ-DEP-002-AC2
     evidence:
       - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
+  - ac: REQ-DEP-002-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
   - ac: REQ-DEP-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
