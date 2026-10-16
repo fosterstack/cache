@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-005-AC2
+# proves: REQ-REL-005-AC2, REQ-REL-005-AC3
 # Proves .github/agent/bin/check-action-pins.py (row 78): one throwaway repo per case, each with one fixture workflow.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -2761,6 +2761,76 @@ case_ r33-b1-ampersand-redirect-to-a-quoted-name-with-a-space-bad bad "$(rb 'cur
 case_ r33-b1-ampersand-append-redirect-to-a-quoted-name-bad bad "$(rb 'curl -fsSL https://example.org/releases/latest/tool &>> "/tmp/my tool"
           sudo install -m 0755 "/tmp/my tool" /usr/local/bin/tool
           tool --version')"
+
+# --- REQ-REL-005-AC3 (advisor reading Oct 16, handoff 0479): a job that runs a committed script refuses every downloader that is not DEMONSTRABLY writing to standard output (or to /dev/null):
+# the options are not parsed for a destination, so no spelling of "-o <the script>" can hide. Each case runs a committed bin/x-test.sh after the download.
+dlj() { printf '%s\n    steps:\n      - run: |\n' "$head"; printf '%s\n' "$1" | sed 's/^/          /'; }
+DLS='mkdir -p bin tools; printf "echo x\n" > bin/x-test.sh; printf "echo y\n" > tools/y.sh'
+U=https://example.invalid/x-test.sh
+for spelling in "curl -fsSL -o bin/x-test.sh $U" "curl -fsSL -obin/x-test.sh $U" "curl -fsSLo bin/x-test.sh $U" "curl -sSfLO $U" "curl --remote-name $U" "curl --output bin/x-test.sh $U" "curl --output=bin/x-test.sh $U" \
+  "curl --output-dir bin -O $U" "curl --output-dir bin -obin/x-test.sh $U" "curl -fsSL -o \$GITHUB_WORKSPACE/bin/x-test.sh $U" "curl -fsSL -o \$PWD/bin/x-test.sh $U" "curl -fsSL -o bin/x-test.sh '$U?v=1'" \
+  "curl -D bin/x-test.sh -o /dev/null $U" "curl --dump-header bin/x-test.sh -o /dev/null $U" "curl -fsSL \"-o\" bin/x-test.sh $U" "curl $U --output" "curl $U -o" "wget $U -O" "curl --request=PUT -X GET --bogus-option $U" "curl -Z $U" "curl -fsSL '--output' bin/x-test.sh $U" "curl -fsSL $U > bin/x-test.sh" "curl -fsSL $U >> bin/x-test.sh" \
+  "curl -fsSL $U | tee bin/x-test.sh" "curl -fsSL -o \"\$f\" $U" "curl -fsSL \${opts} $U" "curl -K cfg $U" "curl --config cfg $U" "curl -T bin/x-test.sh $U" "curl --create-dirs -o bin/x-test.sh $U" "env curl -o bin/x-test.sh $U" \
+  "sudo curl -o bin/x-test.sh $U" "xargs curl -O" "command curl -o bin/x-test.sh $U" "sh -c 'curl -o bin/x-test.sh $U'" "bash -c \"curl -o bin/x-test.sh $U\"" "curl -fsSL -o /tmp/d $U && cp /tmp/d bin/x-test.sh" \
+  "curl -fsSL -o /tmp/d $U && mv /tmp/d bin/x-test.sh" "curl -fsSL -o /tmp/d $U && install -m 755 /tmp/d bin/x-test.sh" "wget -O bin/x-test.sh $U" "wget -obin/x-test.sh $U" "wget -P bin $U" "wget $U" "wget -qO bin/x-test.sh $U" \
+  "wget --output-document=bin/x-test.sh $U" "wget -a log $U" "aria2c -o x-test.sh -d bin $U" "aria2c $U" "curl -fsSL $U -o /dev/null -o bin/x-test.sh" "curl -sS --output /dev/null --output bin/x-test.sh $U"; do
+  n=$(printf '%s' "$spelling" | md5 -q 2>/dev/null || printf '%s' "$spelling" | md5sum | cut -c1-32)
+  case_ "ac3-bad-$n" bad "$(dlj "$spelling
+bash bin/x-test.sh")" "$DLS"
+done
+for how in 'bash bin/x-test.sh' 'sh ./bin/x-test.sh' '. bin/x-test.sh' 'source bin/x-test.sh' 'chmod +x bin/x-test.sh && ./bin/x-test.sh' 'bash tools/y.sh'; do
+  n=$(printf '%s' "$how" | md5 -q 2>/dev/null || printf '%s' "$how" | md5sum | cut -c1-32)
+  case_ "ac3-run-$n" bad "$(dlj "curl -fsSL -o bin/x-test.sh $U
+$how")" "$DLS"
+done
+# the downloads that are demonstrably standard output / /dev/null stay fine in the same job
+for spelling in "curl -fsSL $U | jq -r ." "curl --silent --show-error --fail --location --head $U" "x=\$(curl -fsS $U)" "curl -s -o /dev/null -w '%{http_code}' -I $U" "curl -sf $U >/dev/null" "curl -sS --output /dev/null $U" "wget -qO- $U" "wget -O - -q $U" "wget --output-document=- $U" \
+  "curl -sf -X PUT -u a:b --data-binary @/tmp/in -H 'X: y' $U >/dev/null" "curl -s -D - -o /dev/null -X PUT $U" "echo curl is a tool"; do
+  n=$(printf '%s' "$spelling" | md5 -q 2>/dev/null || printf '%s' "$spelling" | md5sum | cut -c1-32)
+  case_ "ac3-ok-$n" ok "$(dlj "$spelling
+bash bin/x-test.sh")" "$DLS"
+done
+case_ ac3-non-bash-step-bad bad "$head
+    steps:
+      - shell: pwsh
+        run: Write-Host hi
+      - run: bash bin/x-test.sh" "$DLS"
+# a job that runs NO committed script is not judged by this rule (a download there is not read as a committed script's bytes)
+case_ ac3-no-script-ok ok "$(dlj "curl -fsSL -o /tmp/d $U
+echo done")" "$DLS"
+# a pipeline that cannot be read is refused rather than skipped
+case_ ac3-unreadable-bad bad "$(dlj "bash bin/x-test.sh
+curl -fsSL \"unterminated $U")" "$DLS"
+
+# the one exact exclusion (auditor.yml, job audit, step 9, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
+python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+import yaml
+wf = open(sys.argv[2]).read()
+run = yaml.safe_load(wf)["jobs"]["audit"]["steps"][9]["run"]
+class Tree:
+    entries = {"bin/x-test.sh": "file"}
+    def __init__(self, files): self.files = files
+    def read(self, p):
+        if p in self.files: return self.files[p]
+        if p == "bin/x-test.sh": return "echo x\n"
+        raise KeyError(p)
+def judge(file, job, idx, text, files=None):
+    bad = []
+    m.READ_SCRIPTS.clear()
+    m.check_runs(file, [(f"{file}.jobs.{job}.steps[{idx}].run", text, None), (f"{file}.jobs.{job}.steps[40].run", "bash bin/x-test.sh\n", None)], bad, Tree(files if files is not None else {file: wf}))
+    return [b for b in bad if "REQ-REL-005-AC3" in b]
+F = ".github/workflows/auditor.yml"
+assert not judge(F, "audit", 9, run), "the exact step is excluded"
+assert judge(F, "audit", 10, run), "the same text at another step index is a finding"
+assert judge(F, "other", 9, run), "the same text in another job is a finding"
+assert judge(".github/workflows/other.yml", "audit", 9, run, {".github/workflows/other.yml": wf}), "the same text in another file is a finding"
+assert judge(F, "audit", 9, run, {}), "a workflow file the tree cannot read keeps the finding"
+assert judge(F, "audit", 9, run + "\n# edited"), "an edited step is a finding"
+assert judge(F, "audit", 9, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
+assert judge(F, "audit", 9, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
+PY
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
