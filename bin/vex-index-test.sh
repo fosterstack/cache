@@ -21,11 +21,11 @@ trap 'rm -rf "$T"' EXIT
 
 cat >"$T/harness.py" <<'PYEOF'
 import ast, base64, hashlib, http.server, json, os, random, re, shutil, socket, subprocess, sys
-import atexit, gzip, io, select, tarfile, socketserver, ssl, tempfile, threading, time, urllib.parse
+import atexit, gzip, importlib.util, io, select, tarfile, socketserver, ssl, tempfile, threading, time, urllib.parse
 
 ROOT = os.environ["ROOT"]
 TOOL = os.environ["VEX_INDEX"]
-TMP = tempfile.mkdtemp(prefix="vexidx-cases-")
+TMP = os.path.realpath(tempfile.mkdtemp(prefix="vexidx-cases-"))   # no symlink in the path: the tool refuses one at any level
 atexit.register(shutil.rmtree, TMP, True)
 USER, SECRET = "ci-user", "s3cr3t-T0KEN-value-9f2c"
 PRED = "https://openvex.dev/ns/v0.2.0"
@@ -2643,13 +2643,13 @@ def _():
     eq(json.loads(rl.out)["final_digest"], rc_.out.strip(), "layout and compute agree")
 
 
-@case("LAYOUT", "verify-layout accepts the result (with and without the built index's digest) and prints ok")
+@case("LAYOUT", "verify-layout accepts the result (with the built index's digest) and prints ok")
 def _():
     fx = mk_fx()
     vb = vex_real()
     d, _b = mk_layout(fx)
     ok(lay(d, vb).rc == 0, "layout failed")
-    for extra in ((), ("--base-digest", dg(fx.bytes))):
+    for extra in (("--base-digest", dg(fx.bytes)),):
         r = lay(d, vb, cmd="verify-layout", extra=extra)
         ok(r.rc == 0 and r.out == "ok\n", "verify-layout: rc=%d %s %s" % (r.rc, r.out, r.err.strip()[:200]))
 
@@ -2756,13 +2756,13 @@ def _():
     p = os.path.join(d, "blobs", "sha256", h)
     good = rd(p)
     wr(p, good + b" ")
-    ok(lay(d, vb, cmd="verify-layout").rc == 2, "a changed attestation blob must be refused")
+    ok(lay(d, vb, cmd="verify-layout", extra=("--base-digest", dg(fx.bytes))).rc == 2, "a changed attestation blob must be refused")
     wr(p, good)
-    ok(lay(d, vb, cmd="verify-layout").rc == 0, "control: restored")
-    ok(lay(d, VEX_MIN, cmd="verify-layout").rc == 2, "another VEX file must be refused")
+    ok(lay(d, vb, cmd="verify-layout", extra=("--base-digest", dg(fx.bytes))).rc == 0, "control: restored")
+    ok(lay(d, VEX_MIN, cmd="verify-layout", extra=("--base-digest", dg(fx.bytes))).rc == 2, "another VEX file must be refused")
     ok(lay(d, vb, cmd="verify-layout", extra=("--base-digest", "sha256:" + "0" * 64)).rc == 2, "a wrong --base-digest must be refused")
     os.unlink(p)
-    ok(lay(d, vb, cmd="verify-layout").rc == 2, "a removed attestation blob must be refused")
+    ok(lay(d, vb, cmd="verify-layout", extra=("--base-digest", dg(fx.bytes))).rc == 2, "a removed attestation blob must be refused")
 
 
 @case("LAYOUT", "the layout Build hands to Sign passes bin/release-layout.py for the final digest (the chain's own layout check)")
@@ -2788,6 +2788,186 @@ def _():
     ok(not re.search(r"^\s*(import|from)\s+(socket|http|urllib|ssl|ftplib|smtplib|requests)\b", src, re.M), "a network module is imported")
     r = run(["push"], net="off")
     ok(r.rc != 0 and "invalid choice" in r.err, "push must not exist")
+
+
+
+# ------------------------------------------------------------------ round 1 (Codex #389): the whole layout is validated, ownership, path levels, metadata, the base
+def _stray_file(d, fx, blobs):
+    wr(os.path.join(d, "blobs", "sha256", "junk"), b"stray")
+
+
+def _stray_hex(d, fx, blobs):
+    wr(os.path.join(d, "blobs", "sha256", "f" * 64), b"a file whose name is a digest it does not have")
+
+
+def _blob_symlink(d, fx, blobs):
+    os.symlink("/etc/hostname", os.path.join(d, "blobs", "sha256", "e" * 64))
+
+
+def _corrupt_platform(d, fx, blobs):
+    p = os.path.join(d, "blobs", "sha256", hx(fx.children[0]["digest"]))
+    wr(p, rd(p) + b" ")
+
+
+def _missing_platform(d, fx, blobs):
+    os.unlink(os.path.join(d, "blobs", "sha256", hx(fx.children[1]["digest"])))
+
+
+def _missing_layer(d, fx, blobs):
+    layer = [k for k in fx.children[0]["blobs"] if k != json.loads(fx.children[0]["bytes"])["config"]["digest"]][0]
+    os.unlink(os.path.join(d, "blobs", "sha256", hx(layer)))
+
+
+def _platform_size(d, fx, blobs):
+    top = json.loads(rd(os.path.join(d, "index.json")))
+    idx = json.loads(rd(os.path.join(d, "blobs", "sha256", hx(top["manifests"][0]["digest"]))))
+    idx["manifests"][0]["size"] += 1
+    nb = json.dumps(idx, indent=2).encode() + b"\n"
+    os.unlink(os.path.join(d, "blobs", "sha256", hx(top["manifests"][0]["digest"])))
+    wr(os.path.join(d, "blobs", "sha256", hx(dg(nb))), nb)
+    top["manifests"][0].update({"digest": dg(nb), "size": len(nb)})
+    wr(os.path.join(d, "index.json"), json.dumps(top).encode())
+
+
+def _desc_annotations(v):
+    def f(d, fx, blobs):
+        top = json.loads(rd(os.path.join(d, "index.json")))
+        top["manifests"][0]["annotations"] = v
+        wr(os.path.join(d, "index.json"), json.dumps(top).encode())
+    return f
+
+
+def _wrapper_annotations(v):
+    def f(d, fx, blobs):
+        top = json.loads(rd(os.path.join(d, "index.json")))
+        top["annotations"] = v
+        wr(os.path.join(d, "index.json"), json.dumps(top).encode())
+    return f
+
+
+def _wrapper_media(d, fx, blobs):
+    top = json.loads(rd(os.path.join(d, "index.json")))
+    top["mediaType"] = DOCKER_LIST
+    wr(os.path.join(d, "index.json"), json.dumps(top).encode())
+
+
+@param("LAYOUT", "layout refuses a layout whose inventory or image graph is not complete and exact, and malformed metadata, leaving it byte-identical", [
+    ("a stray file in blobs/sha256", _stray_file), ("a blob named like a digest it does not have", _stray_hex), ("a symlink in blobs/sha256", _blob_symlink),
+    ("a corrupted platform manifest", _corrupt_platform), ("a missing platform manifest", _missing_platform), ("a missing layer blob", _missing_layer),
+    ("a wrong platform descriptor size", _platform_size),
+    ("descriptor annotations that are a list", _desc_annotations([])), ("descriptor annotations with a non-string value", _desc_annotations({"k": 7})),
+    ("descriptor annotations that are a number", _desc_annotations(42)), ("wrapper annotations that are a list", _wrapper_annotations([])),
+    ("wrapper annotations with a non-string value", _wrapper_annotations({"k": 7})), ("a Docker manifest-list wrapper media type", _wrapper_media)])
+def _(arg):
+    _refused_layout(arg.__name__ + " (layout)", arg)
+
+
+@param("LAYOUT", "verify-layout refuses the same malformed results", [
+    ("a stray file in blobs/sha256", _stray_file), ("a corrupted platform manifest", _corrupt_platform), ("a missing layer blob", _missing_layer),
+    ("descriptor annotations with a non-string value", _desc_annotations({"k": 7}))])
+def _(arg):
+    fx = mk_fx()
+    d, blobs = mk_layout(fx)
+    ok(lay(d, vex_real()).rc == 0, "setup failed")
+    arg(d, fx, blobs)
+    r = lay(d, vex_real(), cmd="verify-layout", extra=("--base-digest", dg(fx.bytes)))
+    ok(r.rc == 2, "wanted a refusal (exit 2), got rc=%d %s" % (r.rc, (r.out + r.err).strip()[:200]))
+
+
+@case("LAYOUT", "verify-layout needs the built index's digest (the exclusion of D from the attestations is only checkable against it) and refuses an attestation that carries it")
+def _():
+    fx = mk_fx()
+    vb = vex_real()
+    d, _b = mk_layout(fx)
+    ok(lay(d, vb).rc == 0, "layout failed")
+    r = lay(d, vb, cmd="verify-layout")
+    ok(r.rc != 0 and "base-digest" in r.err, "verify-layout without --base-digest must be refused: rc=%d %s" % (r.rc, r.err.strip()[:200]))
+    vex = json.loads(vb)
+    vex["statements"][0]["impact_statement"] = "mentions %s" % dg(fx.bytes)
+    vb2 = json.dumps(vex).encode()
+    d2, _b2 = mk_layout(fx)
+    ok(lay(d2, vb2).rc == 2, "layout must refuse a VEX that names the built index's digest")
+
+
+def _symlinked_ancestor_case(which):
+    fx = mk_fx()
+    s = sb()
+    d, _b = mk_layout(fx, s=os.path.join(s, "real"))
+    link = os.path.join(s, "link")
+    os.symlink(os.path.join(s, "real"), link)
+    vb = wr(os.path.join(s, "vex.json"), vex_real())
+    t0 = tree(d, full=True)
+    path = {"ancestor symlink": os.path.join(link, "layout"), "dot-dot segment": os.path.join(s, "real", "..", "real", "layout"),
+            "trailing dot segment through the link": os.path.join(link, "layout") + "/."}[which]
+    r = run(["layout", "--layout", path, "--vex", vb])
+    ok(r.rc == 2, "%s: wanted a refusal, got rc=%d %s" % (which, r.rc, (r.out + r.err).strip()[:200]))
+    eq(tree(d, full=True), t0, which + ": the layout must be untouched")
+    r = run(["layout", "--layout", d, "--vex", os.path.join(link, "vex.json")])
+    ok(r.rc == 2, "a VEX path through a symlinked ancestor must be refused: rc=%d" % r.rc)
+
+
+@param("LAYOUT", "a symlink or a dot-dot segment at ANY level of a path argument is refused", [(k, k) for k in ("ancestor symlink", "dot-dot segment", "trailing dot segment through the link")])
+def _(which):
+    _symlinked_ancestor_case(which)
+
+
+def _load_tool():
+    spec = importlib.util.spec_from_file_location("vexidx_under_test", TOOL)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+@case("LAYOUT", "ownership: a failed commit removes what the run created, a layout that changed between the check and the commit is refused, and a temporary file is claimed before any blob is written")
+def _():
+    for case_ in ("create fails on the 3rd file", "index.json replaced before the rename"):
+        fx = mk_fx()
+        d, _b = mk_layout(fx)
+        vb = wr(os.path.join(sb(), "vex.json"), vex_real())
+        t0 = tree(d, full=True)
+        m = _load_tool()
+        calls = {"n": 0}
+        real_create = m.create_file
+        if case_.startswith("create"):
+            def create(dir_fd, name, data):
+                calls["n"] += 1
+                if calls["n"] == 3:
+                    raise OSError(28, "no space left")
+                return real_create(dir_fd, name, data)
+            m.create_file = create
+        else:
+            state = {"swapped": False}
+
+            def create(dir_fd, name, data):
+                real_create(dir_fd, name, data)
+                if not name.endswith(".tmp") and not state["swapped"]:
+                    state["swapped"] = True      # the layout's index.json is replaced after the check, before the commit
+                    other = os.path.join(d, "index.json")
+                    top = json.loads(rd(other))
+                    top["annotations"] = {"swapped": "yes"}
+                    with open(other, "wb") as fh:
+                        fh.write(json.dumps(top).encode())
+            m.create_file = create
+        argv = ["vex-index", "layout", "--layout", d, "--vex", vb]
+        old = sys.argv
+        sys.argv = argv
+        code = None
+        try:
+            try:
+                m.main()
+            except SystemExit as e:
+                code = e.code
+        finally:
+            sys.argv = old
+        ok(code not in (0, None), "%s: the command must fail, got %r" % (case_, code))
+        if case_.startswith("create"):
+            eq(tree(d, full=True), t0, case_ + ": what the run created must be removed again")
+        else:
+            top_now = json.loads(rd(os.path.join(d, "index.json")))
+            ok(top_now.get("annotations") == {"swapped": "yes"} and top_now["manifests"][0]["digest"] == dg(fx.bytes),
+               case_ + ": the replaced index.json must not be overwritten by a stale run")
+            left = [k for k in tree(d, full=True) if k not in t0 and not k.endswith("/")]
+            eq(left, [], case_ + ": what the run created must be removed again")
 
 
 
