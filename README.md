@@ -137,7 +137,7 @@ run — there is no primary platform.
 
 | Artifact | Platforms |
 |---|---|
-| Binaries (`fscache`) | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` |
+| Binaries (`fscache`) | `linux/amd64`, `linux/arm64` |
 | FIPS binaries (`fscache-fips`) | `linux/amd64`, `linux/arm64` |
 | Container images (prod, `-debug`, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
 

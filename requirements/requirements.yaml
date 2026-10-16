@@ -1152,18 +1152,25 @@ requirements:
   - id: REQ-PLAT-001
     title: Binary platform matrix
     statement: >
-      Every release shall ship static (CGO_ENABLED=0) binaries for
-      linux/amd64, linux/arm64, darwin/amd64, and darwin/arm64, and
-      FIPS-variant binaries for the two Linux platforms only.
-    source: [README.md "Supported platforms", docs/install.md, .goreleaser.yaml]
+      Every release shall ship static (CGO_ENABLED=0) standard and
+      FIPS-variant binaries for linux/amd64 and linux/arm64. No macOS or
+      Windows binaries are shipped; the release notes say so and point
+      macOS users to the container image.
+    source: [README.md "Supported platforms", docs/install.md, docs/docker-deploy.md, RELEASING.md, docs/next-release-notes.md, bin/build-archives.py]
     tier: community
     introduced: v0.1.0
     confidence: documented
+    origin: >
+      Amended for v0.3.0 from the owner's decision of Oct 9 2026, verbatim
+      "drop mac, linux only." (ops/docs/ratify/2026-10-09-v030-owner-answers.md);
+      the amended text was accepted by the advisor at step 5 on Oct 11 2026.
+      The v0.2.x baselines (requirements/releases/v0.2.*.yaml) are frozen
+      and unchanged: they keep the six-archive text.
     acceptance_criteria:
       - id: REQ-PLAT-001-AC1
         given: a release's artifact set
         when: it is enumerated
-        then: exactly the six archives exist and each binary executes on its platform (or a documented equivalent)
+        then: exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64), no darwin or windows archive exists, and each binary executes on its platform (or a documented equivalent)
         verification: { method: acceptance-release-artifact, release_blocking: true }
         status: approved
 
