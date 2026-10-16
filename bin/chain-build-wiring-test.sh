@@ -865,6 +865,9 @@ lj i3  "REQ-SCAN-012 live-test that is always() (it would run on any ref, a sche
 lj u1  "REQ-SCAN-012 live-test given a job-level uses" "  live-test:\n    needs: [check]" "  live-test:\n    uses: ./.github/workflows/ci.yml\n    needs: [check]" caught "job-level uses"
 lj s1  "REQ-SCAN-012 live-test using a secret (the App's secrets and the publish credentials are not for it)" "      - run: echo rc" "      - run: echo \${{ secrets.GH_APP_KEY }}" caught "may not use secrets."
 lj x1  "REQ-SCAN-012 a third job of the same kind (live-test-fast) beside the two permitted ones is not allowed" "  live-test-release:\n    needs: [release]" "  live-test-fast:\n    needs: [release]\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo x\n  live-test-release:\n    needs: [release]" caught "not one of the five chain jobs"
+lj s2  "REQ-SCAN-012 live-test reading the secrets context by index (a bracket expression)" "      - run: echo rc" "      - run: echo \${{ secrets['AUDIT_SENTINEL'] }}" caught "may not use secrets"
+lj s3  "REQ-SCAN-012 live-test passing the whole secrets context (toJSON)" "      - run: echo rc" "      - run: echo \${{ toJSON(secrets) }}" caught "may not use secrets"
+lj s4  "REQ-SCAN-012 live-test-release reading the secrets context in an env value" "      - run: echo final" "      - run: echo final\n        env:\n          X: \${{ secrets ['K'] }}" caught "may not use secrets"
 # a duplicated mapping key is refused before any spec is read (a YAML loader keeps the LAST of two equal keys, so a first, wider definition would be hidden)
 lj d1  "REQ-SCAN-012 two definitions of live-test (the first in the release environment with a write) are refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    environment: release\n    permissions:\n      contents: write\n    steps:\n      - run: echo first\n  live-test:\n    needs: [check]" caught "duplicate"
 lj d2  "REQ-SCAN-012 a key given twice inside a job is refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    needs: [check]" caught "duplicate"
@@ -2104,7 +2107,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=719
+EXPECT=722
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
