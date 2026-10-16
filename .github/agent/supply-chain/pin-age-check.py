@@ -663,6 +663,10 @@ def _shell_lex(lines):
                 elif c == "$" and line[j + 1:j + 2] == "(":
                     if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
                     else: stack.append("$("); j += 1
+                elif c.isalpha() and (j == 0 or line[j - 1] in " \t;&|({") and re.match(r"(?:if|while|until|for|select|case)(?![\w.-])", line[j:]) and re.search(r"(?:^|[;&|({]|\bthen|\bdo|\belse|\belif)[ \t]*$", line[:j]):
+                    stack.append("kw")                      # a compound command: what follows its fi / done / esac (a pipe to a shell) decides what a heredoc inside it feeds
+                elif c.isalpha() and top == "kw" and (j == 0 or line[j - 1] in " \t;&|({") and re.match(r"(?:fi|done|esac)(?![\w.-])", line[j:]):
+                    stack.pop()
                 elif c == "{" and (j == 0 or line[j - 1] in " \t;&|(") and (j + 1 == len(line) or line[j + 1] in " \t"):
                     stack.append("{")                       # a brace group: what a heredoc inside it feeds is decided by what follows the closing brace
                 elif c == "}" and top == "{" and (j == 0 or line[j - 1] in " \t;&|"):
@@ -684,7 +688,7 @@ def _shell_lex(lines):
                         raw = m.group(2)
                         quoted = bool(re.search(r"['\"\\]", raw))
                         delim = _unquote(raw)
-                        ops.append((m.group(1) == "-", quoted, delim, any(s in ("$(", "`", '"', "(", "((", "{") for s in stack)))
+                        ops.append((m.group(1) == "-", quoted, delim, any(s in ("$(", "`", '"', "(", "((", "{", "kw") for s in stack)))
                         j += m.end() - 1
             j += 1
         i += 1
@@ -779,7 +783,7 @@ def _strip_comment(ln):
 
 def _reads_only(seg):
     """True when the (already comment-free) segment writes nothing: no output redirection except to /dev/null or a descriptor, no -o / --output option (also clustered, e.g. -uo)."""
-    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null(?![\w./-])", " ", seg)
+    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null(?![^\s;&|<>()])", " ", seg)
     if re.search(r"\d*>|&>", flat):
         return False
     flat = re.sub(r"[\"'\\]", "", flat)                       # judged on the option WORDS: "-o", '--output=x' and -\o spell the same options
@@ -838,6 +842,7 @@ _PY_SAFE_BUILTINS = frozenset("print len range str int float bool list dict set 
 _PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii unicodedata shlex enum "
                              "dataclasses".split())
 _PY_PURE_DOTTED = frozenset(("os.path", "urllib.parse"))
+_PY_MODULE_NAMES = frozenset("os sys io builtins posix nt shutil subprocess importlib pathlib tempfile socket ctypes".split())
 _PY_SYS_OK = frozenset("argv exit stdin stdout stderr version_info platform maxsize".split())
 _PY_SAFE_METHODS = frozenset("""capitalize casefold center count decode encode endswith expandtabs find format format_map index isalnum isalpha isascii isdecimal isdigit isidentifier
     islower isnumeric isprintable isspace istitle isupper join ljust lower lstrip maketrans partition removeprefix removesuffix replace rfind rindex rjust rpartition rsplit rstrip split
@@ -887,7 +892,9 @@ def _py_program_flags(body):
     roots = {id(nd.value) for nd in ast.walk(tree) if isinstance(nd, ast.Attribute)}
     for nd in ast.walk(tree):
         if isinstance(nd, ast.Name) and nd.id in mods and nd.id not in defined and id(nd) not in roots and id(nd) not in called:
-            why.add("module " + nd.id + " used as a value")      # `x = sys` then x.modules[...]: an alias the walk below would not follow
+            why.add("module " + nd.id + " used as a value")
+        if isinstance(nd, ast.Attribute) and nd.attr in _PY_MODULE_NAMES and id(nd) not in roots:
+            why.add("module " + nd.attr + " reached through an attribute")      # `x = os.path.os`: a module re-exported under a plain name      # `x = sys` then x.modules[...]: an alias the walk below would not follow
     for nd in ast.walk(tree):
         if isinstance(nd, ast.Name) and nd.id in _PY_FORBIDDEN_NAMES and nd.id not in defined: why.add(nd.id)
         if isinstance(nd, ast.Name) and nd.id == "open" and nd.id not in defined: why.add("open")

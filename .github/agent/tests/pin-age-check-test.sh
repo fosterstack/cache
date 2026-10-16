@@ -2298,6 +2298,12 @@ ctxno "a heredoc inside a brace group piped to sh" "${SH}"$'{\ncat <<\'EOF\'\ncu
 ctxno "a python module alias reaches a method" "${SH}"$'python3 - <<\'PY\'\nimport sys, os.path\nruntime = sys\nruntime.modules["os"].replace("old", "new")\nx = "curl https://e.example/x"\nPY\n' pystring
 ctxno "a python re-exported module reaches a writer (os.path.os.replace)" "${SH}"$'python3 - <<\'PY\'\nimport os.path\nos.path.os.replace("a", "b")\nx = "curl https://e.example/x"\nPY\n' pystring
 ctxno "a redirection to a path that only starts with /dev/null" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload >/dev/nullcopy\nsh /dev/nullcopy\n' heredoc
+ctxno "a heredoc inside an if whose fi pipes to sh" "${SH}"$'if true; then\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\nfi | sh\n' heredoc
+ctxno "a heredoc inside a for loop whose done pipes to sh" "${SH}"$'for i in 1; do\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\ndone | sh\n' heredoc
+ctxno "a heredoc inside a while loop" "${SH}"$'while true; do\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\nbreak; done | sh\n' heredoc
+ctxyes "a heredoc after a finished if is still inert text" "${SH}"$'if true; then echo a; fi\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a python module attribute assigned to an alias" "${SH}"$'python3 - <<\'PY\'\nimport os.path\nruntime = os.path.os\nruntime.replace("old", "new")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "a redirection to /dev/null with a dynamic suffix" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload >/dev/null"$SUFFIX"\nsh copied\n' heredoc
 ctxno "a quoted -o of sort copies the written file" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsort "-o" copied payload\nsh copied\n' heredoc
 ctxno "a single-quoted --output= of sort copies the written file" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsort \'--output=copied\' payload\nsh copied\n' heredoc
 # --- hardening (round-3 residuals of #386, recorded in its PR body; advisor Oct 16) ---
