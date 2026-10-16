@@ -27,6 +27,7 @@ import base64, hashlib, json, os, re, sys, yaml
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
+MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-AC1 (Astra R4): the one build tool Release needs, for release-sign-apks.sh; the fourth install, after crane
 DOWN = {"witness-build", "witness-rebuild", "witness-check", "witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"}   # Build's and Rebuild's real artifact names (AC17)
 UP = {"release-evidence", "witness-release"}
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
@@ -122,6 +123,8 @@ def stage(path):
             bad.append("uses not allowed in the Release stage: %s" % u)
         elif r in ["bash bin/install-scanner.sh " + t for t in INSTALLS]:   # the form the closed stage grammar accepts (bash PATH ARGS), as Build, Sign and Check run it
             kinds.append("install:" + r.split()[-1])
+        elif r == MELANGE_INSTALL:
+            kinds.append("install:melange")
         elif re.fullmatch(r"bash bin/witnessed\.sh (release-[a-z]+) bin/\1\.sh", r):
             kinds.append("W:" + r.split()[2])
         else:
@@ -130,13 +133,13 @@ def stage(path):
         if len(kinds) > nk and s.get("if") != want_if:   # nk: kinds before this step; only a step that was classified is judged for its if
             bad.append("step %r must carry %s, found %r (a release candidate ends after release-verify; release-verify and every non-Witness step carry no if)"
                        % (r or u, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
-    want = ["checkout"] + ["install:" + t for t in INSTALLS]
+    want = ["checkout"] + ["install:" + t for t in INSTALLS] + ["install:melange"]
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]
     ups = [i for i, k in enumerate(kinds) if k == "up"]
-    if kinds[:4] != want:
-        bad.append("steps must start with checkout and the installs of witness, cosign, crane: got %s" % kinds[:4])
-    if not ds or ds != list(range(4, 4 + len(ds))):
+    if kinds[:5] != want:
+        bad.append("steps must start with checkout and the installs of witness, cosign, crane, melange: got %s" % kinds[:5])
+    if not ds or ds != list(range(5, 5 + len(ds))):
         bad.append("the downloads must follow the installs directly and all come before Witness starts (rule 68)")
     # REQ-CHAIN-007-AC16: Check's two uploads meet where bin/chain-verify.py check-list reads them: witness-check/ holds witness-scanners, witness-acceptance and
     # witness-runtime (artifact witness-check), and the arm64 leg's separate artifact witness-check-arm64 lands in witness-check/witness-arm64/
