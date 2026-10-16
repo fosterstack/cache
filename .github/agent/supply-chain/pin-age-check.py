@@ -578,7 +578,7 @@ _PY_FORBIDDEN_NAMES = frozenset("exec eval compile __import__ getattr setattr gl
                                 "spawnv spawnve spawnvp spawnvpe write_text write_bytes chmod shutil touch mkdir makedirs unlink remove rmdir rename symlink link symlink_to hardlink_to "
                                 "write writelines truncate fdopen copy copyfile copytree move rmtree".split())
 _DATA_CONSUMERS = frozenset("cat tee grep egrep fgrep sort uniq head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od xxd".split())
-_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap argparse typing copy struct binascii "
+_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii "
                           "unicodedata urllib.parse shlex enum dataclasses".split())
 _DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\(\))", re.M)
 
@@ -640,11 +640,21 @@ def _shell_lex(lines):
                 if c == "\\": j += 1
                 elif c == '"': stack.pop()
                 elif c == "`": stack.append("`")
+                elif c == "$" and line[j + 1:j + 2] == "{":
+                    k, d = j + 2, 1
+                    while k < len(line) and d: d += (line[k] == "{") - (line[k] == "}"); k += 1
+                    if d: insane = True                 # a parameter expansion that does not close on its line: its word can hold substitutions the walk does not follow
+                    else: j = k - 1
                 elif c == "$" and line[j + 1:j + 2] == "(":
                     if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
                     else: stack.append("$("); j += 1
             else:                                   # code position: top level, $( ), $(( )), (( )), backticks, ( )
-                if c == "\\": j += 1
+                if c == "$" and line[j + 1:j + 2] == "{":
+                    k, d = j + 2, 1
+                    while k < len(line) and d: d += (line[k] == "{") - (line[k] == "}"); k += 1
+                    if d: insane = True
+                    else: j = k - 1
+                elif c == "\\": j += 1
                 elif c == "'": stack.append("'")
                 elif c == '"': stack.append('"')
                 elif c == "`":
@@ -736,9 +746,17 @@ def _runs_input(words, funcs, seen=None):
     return False
 
 
+# Functions that may receive a written file's CONTENT as an argument ("$(cat FILE)"), by the sha256 of the whitespace-flattened definition (a new one is a change here: a human gate).
+_REVIEWED_FUNCS = {"run": frozenset((
+    "ab708ea8cb3a371d0f922e905fed2a26e73c83657149c621e6c47c479d5792d5",   # pin-age-check-test.sh fixture
+    "004f644d043348ed9bf307882a5ffe652f7fb62628cf16b2cc1508b957796d46",   # bin/persona-uat-test.sh run()
+))}
+
+
 def _written_file_used_later(lines, hd):
-    """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later named anywhere except as the argument of a data consumer (cat, grep, diff
-    ...) or in a plain assignment. A closed rule: running, sourcing, copying, chmod'ing, passing to a function or a program the checker does not know all refuse."""
+    """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later named anywhere except: as the argument of a data consumer on a line that is
+    nothing but data consumers; in a plain assignment; or read through $(cat FILE) as an argument of a reviewed content-taking function. A closed rule: running, sourcing, copying,
+    chmod'ing, a pipe to anything else, a substitution that is evaluated, a program or function the checker does not know all refuse."""
     later = lines[(hd["end"] or hd["start"]) + 1:]
     names = set(hd["targets"])
     for _ in range(4):                                          # a variable that holds the name (set before or after the heredoc; one assignment at a time, a few levels)
@@ -751,19 +769,31 @@ def _written_file_used_later(lines, hd):
         if not t.startswith("$"):
             spell |= {t.lstrip("./") or t, os.path.basename(t.rstrip("/")) or t}
     rxs = [re.compile(r"(?<![\w.$-])" + re.escape(t) + r"(?![\w-])") if not t.startswith("$") else re.compile(re.escape(t)) for t in spell if t]
+    funcs = _func_bodies(lines)
+    reviewed = {n for n, body in funcs.items() if n in _REVIEWED_FUNCS and _line_hash(" ".join(body.split())) in _REVIEWED_FUNCS[n]}
+    readcat = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
     for ln in later:
-        ln = re.sub(r"\$\([ \t]*(?:" + "|".join(sorted(_DATA_CONSUMERS)) + r")[ \t]+(?:\"[^\"`$()]*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)", " ", ln)     # $(cat FILE): the content is read, the name is not passed on
-        ln = re.sub(r"\$\([ \t]*cat[ \t]+\"(?:[^\"`()]|\$\{?\w+\}?)*\"[ \t]*\)", " ", ln)
+        ln = re.sub(r"(?:^|(?<=\s))#.*$", "", ln)
         if not any(rx.search(ln) for rx in rxs):
             continue
-        for seg in re.split(r"\|\||&&|[|;&]", re.sub(r"(?:^|(?<=\s))#.*$", "", ln)):
-            if not any(rx.search(seg) for rx in rxs):
-                continue
+        if "`" in ln:
+            return True
+        stripped = readcat.sub(" ", ln)
+        content = stripped != ln                                  # some mention is a $(cat FILE) read: its content goes to the command
+        rest = any(rx.search(stripped) for rx in rxs)
+        if "$(" in stripped:
+            return True
+        segs = [sg for sg in re.split(r"\|\||&&|[|;&]", stripped) if sg.strip()]
+        for seg in segs:
             toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", seg)
             if toks and all(re.fullmatch(r"[A-Za-z_]\w*=.*", t) for t in toks):
-                continue                                        # a plain assignment (the alias rule above follows the name)
-            toks = [t for t in toks if not re.fullmatch(r"\d*[<>]+.*", t)]
-            if not toks or (_unquote(toks[0]) or "").split("/")[-1] not in _DATA_CONSUMERS:
+                continue                                          # a plain assignment (the alias rule above follows the name)
+            toks = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*", t)]
+            first = [t for t in toks if not re.fullmatch(r"\d*[<>]+.*", t)]
+            cmd = (_unquote(first[0]) or "").split("/")[-1] if first else ""
+            if content and not rest and len(segs) == 1 and cmd in reviewed:
+                continue                                          # the content goes to a reviewed function, once, with nothing else on the line
+            if cmd not in _DATA_CONSUMERS or content:
                 return True
     return False
 
@@ -772,7 +802,7 @@ _PY_SAFE_BUILTINS = frozenset("print len range str int float bool list dict set 
                               "format map filter reversed bytes bytearray type hash hex bin oct divmod pow iter next slice object id callable chr super property staticmethod classmethod "
                               "Exception BaseException ValueError KeyError TypeError AssertionError RuntimeError SystemExit IndexError StopIteration AttributeError NotImplementedError "
                               "ZeroDivisionError UnicodeDecodeError UnicodeEncodeError LookupError ArithmeticError OverflowError FileNotFoundError".split())
-_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap argparse typing copy struct binascii unicodedata shlex enum "
+_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii unicodedata shlex enum "
                              "dataclasses".split())
 _PY_PURE_DOTTED = frozenset(("os.path", "urllib.parse"))
 
@@ -946,6 +976,9 @@ def _context_holds(context, proof, text, line_hash):
     hds, sane, state = _shell_lex(lines)
     if not sane:
         return False
+    if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
+            or re.search(r"(?m)^[ \t]*(?:function[ \t]+)?(?:" + "|".join(sorted(_DATA_CONSUMERS | {"python", "python3"})) + r")[ \t]*\(\)", text):
+        return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
     def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
         return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
     if context == "assignment" and re.search(r"\b(?:declare|typeset|integer|(?:local|readonly|export)[ \t]+-\w+)\b", text):

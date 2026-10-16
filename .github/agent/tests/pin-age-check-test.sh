@@ -2230,13 +2230,31 @@ ctxno "the written file is spelled payload and run as ./payload" "${SH}"$'cat >p
 ctxno "the written file is in a directory and run by its base name" "${SH}"$'cat >sub/payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncd sub && sh payload\n' heredoc
 ctxno "a case pattern on its own line inside a command substitution" "${SH}"$'out=$(case x in\nx)\n  cat <<\'EOF\'\ncurl https://e.example/x\nEOF\n  ;;\nesac\n)\neval "$out"\n' heredoc
 ctxyes "a multi-line command substitution that closes on its own line does not spoil the walk" "${SH}"$'x=$(\n  echo hi\n)\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
-ctxyes "a later line passes the written file's CONTENT through \$(cat FILE)" "${SH}"$'cat >"$d/plan.json" <<\'EOF\'\ncurl https://e.example/x\nEOF\nrun x "$(cat "$d/plan.json")" rc\n' heredoc
+ctxno "a later line passes the written file's content to a function the file does not define" "${SH}"$'cat >"$d/plan.json" <<\'EOF\'\ncurl https://e.example/x\nEOF\nrun x "$(cat "$d/plan.json")" rc\n' heredoc
+ctxyes "a later line passes the content through \$(cat FILE) to the reviewed content-taking function" "${SH}"$'run() { local n=$1; echo "$2" >"$n.plan"; }\ncat >"$d/plan.json" <<\'EOF\'\ncurl https://e.example/x\nEOF\nrun x "$(cat "$d/plan.json")" rc\n' heredoc
+ctxno "the content passed to a reviewed function defined differently" "${SH}"$'run() { local n=$1; eval "$2"; }\ncat >"$d/plan.json" <<\'EOF\'\ncurl https://e.example/x\nEOF\nrun x "$(cat "$d/plan.json")" rc\n' heredoc
+ctxno "the content evaluated through eval" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\neval "$(cat payload)"\n' heredoc
+ctxno "the content piped to a shell" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload | sh\n' heredoc
+ctxno "the written file fed to a shell on stdin" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsh <payload\n' heredoc
+ctxno "the content in a backtick substitution run by a shell" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nbash -c "`cat payload`"\n' heredoc
 ctxno "a later line passes the written file to a shell inside a substitution" "${SH}"$'cat >"$d/plan.json" <<\'EOF\'\ncurl https://e.example/x\nEOF\nrun x "$(sh "$d/plan.json")" rc\n' heredoc
 ctxno "a later line pipes the cat of the written file to a shell" "${SH}"$'cat >"$d/plan.json" <<\'EOF\'\ncurl https://e.example/x\nEOF\nrun x "$(cat "$d/plan.json" | sh)" rc\n' heredoc
 ctxyes "the reviewed out helper as an opener argument" "${SH}"$'out() { echo "$work/$1/plain"; }      # the DECRYPTED reports and transcripts of a case (the real --out holds only <persona>.cms)\npython3 - "$(out clean)" <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
 ctxno "an out helper defined differently is not the reviewed one" "${SH}"$'out() { sh -c "$1"; }\npython3 - "$(out clean)" <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
 ctxno "an out helper the file does not define" "${SH}"$'python3 - "$(out clean)" <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
 ctxno "another command substitution in an opener argument" "${SH}"$'python3 - "$(id)" <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "cat is redefined as a function that runs its input" "${SH}"$'cat() { sh; }\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a comment inside a cat heredoc when cat is redefined" "${SH}"$'cat() { sh; }\ncat <<\'EOF\'\nprintf \'%s\\n\' "\n# $(curl https://e.example/x)\n"\nEOF\n' comment
+ctxno "python3 is redefined as a function" "${SH}"$'python3() { sh; }\npython3 - <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "a data consumer used later is redefined" "${SH}"$'grep() { sh "$@"; }\ncat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ngrep x payload\n' heredoc
+ctxno "an alias in the file" "${SH}"$'alias cat=sh\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxyes "a variable named alias is not the alias command" "${SH}"$'alias="x"\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "expand_aliases in the file" "${SH}"$'shopt -s expand_aliases\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a multi-line parameter expansion hides a comment-looking line" "${SH}"$'value=${UNSET:-\n# $(curl https://e.example/x)\n}\n' comment
+ctxno "a multi-line parameter expansion hides an assignment-looking line" "${SH}"$'value=${UNSET:-\nX=\'$(curl https://e.example/x)\'\n}\n' assignment
+ctxyes "a one-line parameter expansion is understood" "${SH}"$'value=${UNSET:-b}\n# curl https://e.example/x\n' comment
+ctxno "argparse can create a file (FileType)" "${SH}"$'python3 - <<\'PY\'\nimport argparse\np = argparse.ArgumentParser()\np.add_argument("o", type=argparse.FileType("w"))\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxyes "argparse with the review label" "${SH}"$'python3 - <<\'PY\'\nimport argparse\np = argparse.ArgumentParser()\nx = "curl https://e.example/x"\nPY\n' pystring "$IMP"
 # a context the file does not name, a non-text value, a proof without a context: the file is malformed (exit 2), never "nothing ruled" and never "everything ruled"
 newcase cx "$(pyw bin/ctx.sh "${SH}# curl https://e.example/x"$'\n')"
 for bad in '"context": "shell"' '"context": ""' '"context": 5' '"context": ["comment"]' '"proof": "x"' '"context": "comment", "proof": 7' '"context": "comment", "proof": ""' '"context": null'; do
