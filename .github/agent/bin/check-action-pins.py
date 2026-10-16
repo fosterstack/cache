@@ -2321,9 +2321,24 @@ def _all_texts(text, depth=0):
 SHELL_SHEBANG = re.compile(r"#!\s*\S*/(?:env\s+(?:-\S+\s+)*)?(ba|da|z)?sh\b")
 
 
+def _downloads_onto(rest, same):
+    """True when a downloader's own output option (-o / -O FILE, --output FILE, --output=FILE, --output-document[=]FILE, -oFILE) names the file"""
+    for k, tok in enumerate(rest):
+        value = None
+        if tok in ("-o", "-O", "--output", "--output-document") and k + 1 < len(rest):
+            value = rest[k + 1]
+        elif tok.startswith(("--output=", "--output-document=")):
+            value = tok.split("=", 1)[1]
+        elif re.fullmatch(r"-[oO].+", tok):
+            value = tok[2:]
+        if value is not None and same(value):
+            return True
+    return False
+
+
 def _writes(script, rel, ctx=None):
     """True when a command of the job writes the exact file rel before it runs: a redirection onto it, tee, cp / mv /
-    install / ln / rsync onto it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir)."""
+    install / ln / rsync onto it, a downloader's output option naming it, sed / perl -i on it, or a copy or extraction over its directory (_fills_dir)."""
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     ctx = script if ctx is None else ctx                # where the job assigns its variables (f="$work/x" …)
@@ -2340,6 +2355,8 @@ def _writes(script, rel, ctx=None):
             continue
         cmd, rest = _base(words[-1]), toks[toks.index(words[-1]) + 1:]
         pos = [t for t in rest if not t.startswith("-")]
+        if cmd in ("curl", "wget", "aria2c") and _downloads_onto(rest, same):
+            return True
         if (cmd == "tee" and any(same(t) for t in pos)) or (cmd in ("cp", "mv", "install", "ln", "rsync") and pos and
                                                               same(pos[-1])) or \
                 (cmd in ("sed", "perl") and any(t.startswith("-i") for t in rest) and any(same(t) for t in pos)) or \
