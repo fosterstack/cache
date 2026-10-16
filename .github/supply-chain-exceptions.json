@@ -1304,7 +1304,7 @@
       "form": "a download",
       "key": "b220d4c86b93ae6d9b0193e013f806baa7ac14480dd28ec14c495b5e5e34f29d",
       "line": "8d2c4ae069d82ce4f65ebaa09ce882428acb4a2e0e0c1b6c92090925ac03fe10",
-      "ruling": "text, not a command: Python text that writes the curl shim the installer test puts on PATH; the shim runs only in that test and redirects the kind release request to a local server on 127.0.0.1; nothing is fetched from outside the host and no upstream tool is installed (only a synthetic fixture runs in the test's temporary directory)",
+      "ruling": "text, not a command: Python text that writes the curl shim the installer test puts on PATH; in that test the installer is a copy run in the test's temporary directory with temporary curl and sha256sum shims, the curl shim redirects the kind release request to a local server on 127.0.0.1, and the kind executable it installs is a synthetic fixture; nothing is fetched from outside the host and no upstream tool is installed",
       "context": "pystring",
       "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
     },
@@ -1313,7 +1313,7 @@
       "form": "a download",
       "key": "c4ffa25f0fa70e185c072c18e58002bc534f3f61888db8b654a792b7d70fe334",
       "line": "60f1283ca18f78328d1233f3fe8afdfba42960b05f4e05e832bc57e0a65ce436",
-      "ruling": "text, not a command: Python text that writes the curl shim the installer test puts on PATH; the shim runs only in that test and redirects the kind release request to a local server on 127.0.0.1; nothing is fetched from outside the host and no upstream tool is installed (only a synthetic fixture runs in the test's temporary directory)",
+      "ruling": "text, not a command: Python text that writes the curl shim the installer test puts on PATH; in that test the installer is a copy run in the test's temporary directory with temporary curl and sha256sum shims, the curl shim redirects the kind release request to a local server on 127.0.0.1, and the kind executable it installs is a synthetic fixture; nothing is fetched from outside the host and no upstream tool is installed",
       "context": "pystring",
       "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
     },
