@@ -4,11 +4,11 @@
 # time (concurrency group vex-live-test), from the release-candidate job of release.yml and the main-push job of ci.yml,
 # as the federated live-test identities.
 #
-#   bin/vex-live-test.sh run       sweep the test resources; every guide command block exactly as written (settings
+#   bin/vex-live-run.sh run       sweep the test resources; every guide command block exactly as written (settings
 #                                  blocks take the test's values); our images and the pinned fixture copied by digest to
 #                                  the two test repositories (at most 50 pushes); the fixture's finding shown before and
 #                                  suppressed by our files after, in Inspector, Google and Grype (Docker Scout is not tested here: see REQ-REL-010)
-#   bin/vex-live-test.sh cleanup   sweep again: the two test repositories emptied, every live-test Inspector filter and
+#   bin/vex-live-run.sh cleanup   sweep again: the two test repositories emptied, every live-test Inspector filter and
 #                                  every VEX note on the test repository's images deleted — and proven gone
 #
 # Inputs (env): MODE (rc|main), ECR, GAR (the test repositories), GITHUB_REF_NAME (rc), GH_TOKEN (main: the releases),
@@ -165,7 +165,7 @@ if [ "${1:-}" = cleanup ]; then
   sweep
   exit 0
 fi
-[ "${1:-}" = run ] || { echo "usage: vex-live-test.sh run|cleanup" >&2; exit 2; }
+[ "${1:-}" = run ] || { echo "usage: vex-live-run.sh run|cleanup" >&2; exit 2; }
 # the fixture: debian 12.0, linux/amd64, by digest — known findings every scanner reports; pushed only to the test repos
 FIXTURE_SRC=docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab
 FIX=${FIXTURE_SRC#*@}

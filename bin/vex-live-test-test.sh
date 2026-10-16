@@ -165,12 +165,12 @@ check("none yet: empty", L.release_under_test(rels[2:]) is None)
 
 # --- AC4: at most 50 pushes per run (the counter in the orchestration script)
 out = subprocess.run(["bash", "-c", 'source "$0"; crane() { :; }; for i in $(seq 1 50); do push_copy a b || exit 9; done; push_copy a b && exit 7; exit 0',
-                      os.path.join(root, "bin/vex-live-test.sh")], capture_output=True, text=True, env=dict(os.environ, VEX_LIVE_TEST_LIB="1"))
+                      os.path.join(root, "bin/vex-live-run.sh")], capture_output=True, text=True, env=dict(os.environ, VEX_LIVE_TEST_LIB="1"))
 check("the 51st push fails the run", out.returncode == 0, (out.returncode, out.stderr[-300:]))
 
 # --- the release candidate under test (v0.3: an rc ends before publishing, so its images exist only as Build's OCI layouts and digests.json): each layout is pushed to
 #     the test repository and must come out at exactly the digest Build attested
-# (the behavioral cases below drive bin/vex-live-test.sh with stubs; "copy_candidate" is the one place that reads a candidate)
+# (the behavioral cases below drive bin/vex-live-run.sh with stubs; "copy_candidate" is the one place that reads a candidate)
 # --- AC1/AC3/AC4: the wiring
 wf = lambda n: yaml.load(open(os.path.join(root, ".github/workflows", n)), Loader=yaml.BaseLoader)
 rel, ci = wf("release.yml"), wf("ci.yml")
@@ -195,7 +195,7 @@ for name, d, job in (("release.yml rc job", rel, rel["jobs"].get("live-test") or
     check("%s: gcloud is installed at an explicit version (the pin-age inventory refuses the action's default)" % name,
           len(gc) == 1 and re.fullmatch(r"\d+\.\d+\.\d+", (gc[0].get("with") or {}).get("version", "")) is not None, gc)
     check("%s: cleanup runs always" % name, len(clean) == 1 and clean[0].get("if") == "always()", [s.get("name") for s in steps])
-    check("%s: runs the committed orchestration" % name, "bin/vex-live-test.sh" in text)
+    check("%s: runs the committed orchestration" % name, "bin/vex-live-run.sh" in text)
 RJ, PJ = rel["jobs"]["live-test"], rel["jobs"]["live-test-release"]
 check("release.yml: the rc job runs after Check, on release-candidate tags (vX.Y.Z-rcN) only, never in the dry run",
       RJ.get("needs") in ("check", ["check"]) and RJ.get("if") == "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}",
@@ -215,7 +215,7 @@ def gated(path):
     return bool(pat) and subprocess.run(["grep", "-qE", pat.group(1)], input=path + "\n", text=True).returncode == 0
 check("ci.yml: the gate watches the guide, the VEX file and the live test's own code",
       all(gated(x) for x in ("docs/using-our-vex.md", ".vex/fosterstack-cache.openvex.json", "bin/vex-forms.py",
-                             "bin/vex-live-test.sh", "bin/vex-live-test.py")), pat and pat.group(1))
+                             "bin/vex-live-run.sh", "bin/vex-live-test.py")), pat and pat.group(1))
 check("ci.yml: the gate ignores unrelated changes",
       not any(gated(x) for x in ("README.md", "docs/verify-images.md", "bin/panel.py", "docs/using-our-vex.md.bak/x")))
 check("ci.yml: no usable base runs the test rather than missing a change", 'echo "changed=true"' in gate.split("exit 0")[0])
@@ -288,7 +288,7 @@ check("SEC-387 inspector refuses a before without the target CVE", L.judge_inspe
 check("SEC-387 inspector refuses a malformed document", L.judge_inspector(IB, {"findings": "x"}, "CVE-T") is not None and L.judge_inspector(IB, [], "CVE-T") is not None)
 
 # behavioral: the shell library, with stubs
-script = os.path.join(root, "bin/vex-live-test.sh")
+script = os.path.join(root, "bin/vex-live-run.sh")
 def sh(body, stubs, env=None):
     with tempfile.TemporaryDirectory() as t:
         os.makedirs(os.path.join(t, "stub"))

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Scanner-panel rule 12 (owner RATIFIED Oct 2; REQ-SCAN-012; read-back approved, advisor 0098): the offline half of the
-live test. bin/vex-live-test.sh does the cloud calls; this file decides what they run on.
+live test. bin/vex-live-run.sh does the cloud calls; this file decides what they run on.
 
 - plan:          the guide's ```sh blocks, byte for byte, in order — a settings block (only VAR=value lines: VER, IMAGE)
                  takes the test's values, every other block runs exactly as written

@@ -455,13 +455,13 @@ jobs:
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_DIR: ${{ github.workspace }}/candidate
-        run: bash bin/vex-live-test.sh run
+        run: bash bin/vex-live-run.sh run
       - name: cleanup, delete every image, live-test filter and VEX note the run created
         if: always()
         env:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
-        run: bash bin/vex-live-test.sh cleanup
+        run: bash bin/vex-live-run.sh cleanup
 
   # The same live test, right after the final release is published, with every command block of the page as written (including the download, digest and verify blocks).
   live-test-release:
@@ -507,13 +507,13 @@ jobs:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
           GH_TOKEN: ${{ github.token }}
-        run: bash bin/vex-live-test.sh run
+        run: bash bin/vex-live-run.sh run
       - name: cleanup, delete every image, live-test filter and VEX note the run created
         if: always()
         env:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
-        run: bash bin/vex-live-test.sh cleanup
+        run: bash bin/vex-live-run.sh cleanup
 
   # The dry run's judges (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL
   # verifier against the policy made for this run's own ref, and one positive control (this run's genuine Sign output) must be

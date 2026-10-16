@@ -724,7 +724,7 @@ jobs:
             exit 0
           fi
           git diff --name-only "$BEFORE" "$GITHUB_SHA" > "$RUNNER_TEMP/changed.txt"   # complete before it is read
-          if grep -qE '^(docs/using-our-vex\.md|docs/using-our-vex\.cannot-run\.json|\.vex/.+|bin/vex-forms\.py|bin/vex-live-test\.(sh|py))$' "$RUNNER_TEMP/changed.txt"; then
+          if grep -qE '^(docs/using-our-vex\.md|docs/using-our-vex\.cannot-run\.json|\.vex/.+|bin/vex-forms\.py|bin/vex-live-(run\.sh|test\.py))$' "$RUNNER_TEMP/changed.txt"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -773,10 +773,10 @@ jobs:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
           GH_TOKEN: ${{ github.token }}
-        run: bash bin/vex-live-test.sh run
+        run: bash bin/vex-live-run.sh run
       - name: cleanup, delete every image, live-test filter and VEX note the run created
         if: always()
         env:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
-        run: bash bin/vex-live-test.sh cleanup
+        run: bash bin/vex-live-run.sh cleanup
