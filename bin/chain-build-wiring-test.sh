@@ -1886,14 +1886,16 @@ rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull re
 for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/chain-check-wiring-test.sh bin/chain-records-test.sh; do
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
-# the committed entries of the two real suites carry the structured identity of their findings, with multiplicity (KR-SIGN-1 is the 19 findings of the real tree)
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1 and KR-SIGN-3 carry their structured findings (1 each since cache#362: the vendor-provenance row; was 5 with four assemble-image edges; the three release-sign-apks.sh script findings are gone; was 8 after cache#341 (P4) and 22 before: 19 plus PR 4's three cache scripts; KR-SIGN-2 left with the legacy-list probes, KR-BUILD-1 went green with PR 4's release job)" || bad "known-red: the real-suite entries lack their structured findings"
+# the burn-down (cache4, handoff 0475): the vendor-provenance row landed in chain-scripts.json, so the three entries it kept open are gone. Only KR-CUTOVER may remain, and the marker
+# pull request of REQ-CHAIN-001-AC6 removes that one entry too: the committed list is [KR-CUTOVER] now and [] after the marker, nothing else
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: the committed list is exactly [KR-CUTOVER] (or [] after the marker pull request): KR-SIGN-1, KR-SIGN-3 and KR-RECORDS-1 are gone with the bin/vendor-provenance.py row in chain-scripts.json" || bad "known-red: the committed list holds a burned-down entry or another id (only KR-CUTOVER, or nothing after the marker, is allowed)"
 import json, sys
-e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
-for k in ("KR-SIGN-1", "KR-SIGN-3"):
-    f = e[k].get("findings")
-    assert isinstance(f, list) and f and all(isinstance(x, str) and x for x in f), k
-for k in ("KR-SIGN-1", "KR-SIGN-3"): assert len(e[k]["findings"]) == 1, (k, len(e[k]["findings"]))   # the vendor-provenance row only (cache#362 listed the P5 scripts and the four assemble stage edges; cache#349 removed the three bin/release-sign-apks.sh findings)
+allowed = lambda ids: ids in ([], ["KR-CUTOVER"])
+ids = [x["id"] for x in json.load(open(sys.argv[1]))["entries"]]
+assert allowed(ids), ids
+assert allowed([]) and allowed(["KR-CUTOVER"])                     # the marker pull request's list (empty) is as valid as today's
+for bad_ids in (["KR-CUTOVER", "KR-SIGN-1"], ["KR-SIGN-1"], ["KR-RECORDS-1", "KR-CUTOVER"], ["KR-CUTOVER", "KR-CUTOVER"], ["x"]):
+    assert not allowed(bad_ids), bad_ids
 PY
 # PR 4 (advisor ruling): the records suite's expected failures are ONE entry (KR-RECORDS-1) that names the three cache scripts Release's steps run and that are not
 # listed rows yet. The judge accepts exactly those findings, refuses any other (the entry cannot grow silently) and any missing one (it shrinks only by an edit that
@@ -1905,21 +1907,21 @@ import json, sys
 print("FINDINGS-JSON " + json.dumps(["chain-scripts.json: chain-scripts.json: %s runs '%s', which is not listed" % (("bin/release-apks.sh" if "apk" in p else "bin/release-sign.sh"), p) for p in sys.argv[1:]]))
 PY
 }
-rec_run() { # rec_run LABEL WANT-EXIT PATHS...  : the records suite's output with those findings, judged against the committed list
+# the judge's behaviour on an entry with ONE finding is proven on a fixture list (the committed list no longer holds KR-RECORDS-1, see above)
+python3 - "$work/kr-records-list.json" <<'PY'
+import json, sys
+e = {"id": "KR-RECORDS-1", "suite": "bin/chain-records-test.sh", "case": "the real repository: every produced record type has a row with a claim and a stage consumer", "reason": "fixture: the one script that has no row yet", "green_by": "a row",
+     "findings": ["chain-scripts.json: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed"]}
+json.dump({"_note": "fixture", "entries": [e]}, open(sys.argv[1], "w"), indent=1)
+PY
+rec_run() { # rec_run LABEL WANT-EXIT PATHS...  : the records suite's output with those findings, judged against the fixture list
   local label=$1 want=$2 rc=0 out; shift 2
-  out=$( { recids "$@"; echo "FAIL $RECCASE -> chain-scripts.json: x"; echo "pass=96 fail=1"; } | python3 "$KR" judge --suite bin/chain-records-test.sh --list "$root/test-evidence/known-red.json" --inner-rc 1 2>&1) || rc=$?
+  out=$( { recids "$@"; echo "FAIL $RECCASE -> chain-scripts.json: x"; echo "pass=96 fail=1"; } | python3 "$KR" judge --suite bin/chain-records-test.sh --list "$work/kr-records-list.json" --inner-rc 1 2>&1) || rc=$?
   if [ "$rc" = "$want" ]; then ok "known-red records: $label"; else bad "known-red records: $label (exit $rc, wanted $want: ${out:0:200})"; fi; }
 rec_run "exactly the entry's one finding is accepted" 0 bin/vendor-provenance.py
 rec_run "a second finding (a script the entry does not name) is refused: the entry cannot grow" 1 bin/vendor-provenance.py bin/other.py
 rec_run "a missing finding (the script landed, the entry not shrunk) is refused" 1
 rec_run "a different finding of the same size is refused" 1 bin/other.py
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red records: KR-RECORDS-1 names the vendor-provenance script, in the records suite, with a structured finding" || bad "known-red records: no KR-RECORDS-1 entry with its one finding"
-import json, sys
-e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}["KR-RECORDS-1"]
-assert e["suite"] == "bin/chain-records-test.sh" and e["case"].startswith("the real repository: every produced record type")
-f = e["findings"]
-assert len(f) == 1 and "bin/vendor-provenance.py" in f[0], f
-PY
 # ---- advisor ruling (finding 5): no suite reads or writes a fixed host path under /tmp --------------------------------------------------------------------
 # A stray /tmp/x once changed a verdict. Every file a chain suite makes or reads lives in its own mktemp -d ($work). This guard reads the suites' own shell and Python
 # text: a redirection, a file command or an open() whose target is a literal /tmp/ path outside any quote is a violation. Fixture TEXT (a workflow or a script held in
@@ -2202,7 +2204,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=742
+EXPECT=741
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
