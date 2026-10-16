@@ -1153,6 +1153,9 @@ mappings:
   - ac: REQ-REFRESH-001-AC31
     evidence:
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC32
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
   - ac: REQ-ARCHIVE-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/archive-test.sh" }
