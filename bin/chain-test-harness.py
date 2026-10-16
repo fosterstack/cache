@@ -166,10 +166,23 @@ def digests_of(items):
     return d
 
 
-def expected(d, kind, which, tag):
+VEX_FILE = ".vex/fosterstack-cache.openvex.json"
+
+
+def vex_final(o):
+    """image_outputs with the digest of the FINAL index (REQ-REL-010-AC1): what the REAL vex-index.py makes of the built index and the repository's OpenVEX file"""
+    import importlib.util
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location("vexidx_oracle", os.path.join(here, "bin", "vex-index.py"))
+    tool = importlib.util.module_from_spec(spec); spec.loader.exec_module(tool)
+    final_bytes, _blobs, _result = tool.compute(o["blob"], open(os.path.join(here, VEX_FILE), "rb").read())
+    return dict(o, digest=tool.digest_of(final_bytes))
+
+
+def expected(d, kind, which, tag, vex=True):
     pre = "apk" if kind in ("assemble", "snapshot-assemble") else "rapk"
     frags = [json.load(open("%s/%s/%s/items-apk.json" % (d, pre, r))) for r, _, _ in RUNNERS]
-    items = merge(frags, {i: image_outputs(i, tag) for i in IMAGES}, {k: b for k, (_, b) in archive_files(tag).items()}, d + "/archive")
+    items = merge(frags, {i: (vex_final if vex else dict)(image_outputs(i, tag)) for i in IMAGES}, {k: b for k, (_, b) in archive_files(tag).items()}, d + "/archive")
     return digests_of(items) if which == "digests" else items
 
 
@@ -270,7 +283,8 @@ blob, children = _h.oci_parts(image, sde, body)
 dg = hashlib.sha256(blob).hexdigest()
 os.makedirs("%s/%s/blobs/sha256" % (out, image), exist_ok=True)
 open("%s/%s/oci-layout" % (out, image), "w").write('{"imageLayoutVersion": "1.0.0"}')
-open("%s/%s/index.json" % (out, image), "w").write('{"schemaVersion": 2, "manifests": [{"digest": "sha256:%s"}]}' % dg)
+open("%s/%s/index.json" % (out, image), "w").write('{"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:%s", "size": %d}]}' % (dg, len(blob)))
+open("%s/%s/blobs/sha256/%s" % (out, image, hashlib.sha256(b"{}").hexdigest()), "wb").write(b"{}")      # the empty config every child manifest names
 open("%s/%s/blobs/sha256/%s" % (out, image, dg), "wb").write(blob)
 for cd, cb in children.values():
     open("%s/%s/blobs/sha256/%s" % (out, image, cd.split(":", 1)[1]), "wb").write(cb)
@@ -359,6 +373,9 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
                        ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
         write(d + "/bin/" + name, body, 0o755)
     shutil.copy(script, d + "/bin/build-stage-%s.sh" % kind); os.chmod(d + "/bin/build-stage-%s.sh" % kind, 0o755)
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    shutil.copy(os.path.join(here, "bin", "vex-index.py"), d + "/bin/vex-index.py"); os.chmod(d + "/bin/vex-index.py", 0o755)      # the REAL tool runs in the stage tree (REQ-REL-010-AC1)
+    os.makedirs(d + "/.vex", exist_ok=True); shutil.copy(os.path.join(here, VEX_FILE), d + "/" + VEX_FILE)
     for f, c in (("archive/keys/wolfi-signing.rsa.pub", "w"), ("archive/go/go.tar.gz", "g"),
                  ("archive/x86_64/pkg-1.apk", "p1"), ("archive/aarch64/pkg-1.apk", "p2"),
                  ("build/keys/assembly.rsa.pub", "a"), ("build/locks/melange.lock", "l"), (".github/policy/release-policy.template.json", "{}")):

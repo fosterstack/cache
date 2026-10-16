@@ -15,6 +15,7 @@ import fnmatch
 import hashlib
 import shlex
 import json
+import os
 import re
 import subprocess
 import sys
@@ -143,7 +144,7 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 def tree_files(root, rev):
     """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
     def wanted(n):
-        return (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
+        return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
                 or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
                 or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
     out = {}
@@ -791,7 +792,7 @@ def tree_scripts(root, rev):
     """{path: text} for every shell script at a revision (rev None: the working tree): where a download or install can hide outside the workflows."""
     out = {}
     if rev is None:
-        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh") and not n.startswith(".github/agent/")]
+        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n.endswith(".sh") and not n.startswith((".github/agent/", "vendor/"))]
         for n in names:
             try:
                 out[n] = open(f"{root}/{n}").read()
@@ -802,7 +803,7 @@ def tree_scripts(root, rev):
         return out
     for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
         meta, _, n = line.partition("\t")
-        if n.endswith(".sh") and not n.startswith(".github/agent/"):
+        if n.endswith(".sh") and not n.startswith((".github/agent/", "vendor/")):
             blob = meta.split()[2]
             if blob not in _BLOBS:
                 _BLOBS[blob] = git(root, "cat-file", "blob", blob)
@@ -836,13 +837,103 @@ def _line_ids(text):
     return ids
 
 
+# The top-level vendor/ is skipped by this inventory because nothing runs from it (REQ-VEND-001; owner exception 1 of Oct 15). That premise is held by a
+# FILE-LEVEL rule, not by reading commands: a non-comment line of a scanned file outside vendor/ that names the vendored folder (a path under vendor/, a bare vendor
+# word; `go mod vendor` and -mod=vendor are the tool's own words) is an unmeasured occurrence unless the file is one of these exact paths. A new workflow or script that
+# names vendor/ is therefore refused until a security-tier change lists it here: a human gate on every new consumer, with no shell syntax to spell around.
+_VENDOR_NAMING_FILES = frozenset("""
+.github/workflows/ci.yml
+.github/workflows/release.yml
+bin/assemble-image-test.sh
+bin/build-apk-test.sh
+bin/build-apk.sh
+bin/build-helpers-test.sh
+bin/dependabot-reviewer.py
+bin/go-module-sbom.py
+bin/patch-decide.py
+bin/vex-forms.py
+bin/check-file-allowlist-test.sh
+bin/check-file-allowlist.sh
+bin/dependabot-reviewer-test.sh
+bin/melange-apko-lib.sh
+bin/patch-decide-test.sh
+bin/sealed-proof.sh
+bin/vendor-check.sh
+bin/vendor-provenance-test.sh
+bin/vendor-provenance.py
+bin/vendoring-test.sh
+bin/vex-forms-test.sh
+bin/vex-scope-test.sh
+bin/check-govulncheck.py
+bin/install-scanner.sh
+bin/chain-check-scripts-test.sh
+bin/chain-install-witness-test.sh
+bin/chain-release-scripts-test.sh
+bin/release-metadata.py
+""".split())
+_VENDOR_LETTER = lambda c: r"(?:" + c + r"|\[[^\]]*" + c + r"[^\]]*\]|\?|\*)"
+_VENDOR_SPELLING = r"(?:[\"'\\]|\*)*".join(_VENDOR_LETTER(c) for c in "vendor")       # ven""dor, ven\dor, vendo[r], v*ndor, vend?r
+_VENDOR_NAMED = re.compile(r"(?:^|[^\w.-])(?:\./)?(?:vendor|" + _VENDOR_SPELLING + r")(?:/|(?![\w-]))")
+_VENDOR_TOOLWORD = re.compile(r"(?<![\w-])go\s+mod\s+vendor(?![\w/.-])|(?<![\w-])-mod=vendor(?![\w/.-])")
+_ESCAPE = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|x([0-9A-Fa-f]{2}))")
+_SURFACE = re.compile(r"(?:\.py|\.mk|(?:^|/)(?:GNU)?[Mm]akefile|(?:^|/)Dockerfile[\w.-]*|\.dockerfile)$")
+
+
+def tree_surfaces(root, rev):
+    """{path: text} for the executable surfaces the other readers skip (python helpers, Makefiles, Dockerfiles), for the vendored-folder rule only."""
+    out = {}
+    if rev is None:
+        names = [n for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0") if n and _SURFACE.search(n)]
+        for n in names:
+            try:
+                out[n] = open(f"{root}/{n}").read()
+            except (OSError, UnicodeDecodeError):
+                continue
+        return out
+    for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
+        meta, _, n = line.partition("\t")
+        if n and _SURFACE.search(n):
+            blob = meta.split()[2]
+            if blob not in _BLOBS:
+                _BLOBS[blob] = git(root, "cat-file", "blob", blob)
+            out[n] = _BLOBS[blob]
+    return out
+
+
+def _names_vendor(line):
+    """The line names the vendored folder in any spelling a shell or YAML reads as it: vendor, ./vendor, a quoted, backslashed, globbed or bracketed spelling,
+    a YAML \\xNN or \\uNNNN escape. A line that is entirely a comment names nothing; text after a # is still read (a quoted # is not a comment)."""
+    s = line.strip()
+    if s.startswith("#"):
+        return False
+    for cand in (s, _ESCAPE.sub(lambda m: chr(int(m.group(1) or m.group(2), 16)), s)):
+        if _VENDOR_NAMED.search(_VENDOR_TOOLWORD.sub("", cand)):
+            return True
+    return False
+
+
+def vendor_list_extras(root, files):
+    """Sorted listed paths that EXIST under root but do not name the vendored folder. A listed path with no file is not reported: listing a path is the reviewed
+    gate, so an absent entry pre-authorizes only that one exact path (a file that arrives later and names the folder)."""
+    naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/")) and any(_names_vendor(ln) for ln in t.split("\n"))}
+    return sorted(p for p in _VENDOR_NAMING_FILES - naming if os.path.lexists(os.path.join(root, p)))
+
+
 def unmeasured_occurrences(files):
     """Each unmeasured occurrence as (key, the WHOLE flattened line it was found in, bashlike): the line binds a ruled-text row (REQ-SUP-001-AC16) to the
     line, not to the one downloader segment the key hashes. bashlike is False when the line holds whitespace other than a space or a tab, or was joined from
     a backslash-newline continuation: bash reads such a line differently from this flattening, so no row may ever match it."""
     for path, text in sorted(files.items()):
-        if not (path.startswith(".github/") or path.endswith(".sh")) or path.startswith(".github/agent/"):
+        if path.startswith((".github/agent/", "vendor/")):
             continue  # .github/agent/ is covered by the independent second review (and its tests quote such commands as fixtures)
+        scan_all = path.startswith(".github/") or path.endswith(".sh")
+        if not scan_all and not _SURFACE.search(path):
+            continue
+        if path not in _VENDOR_NAMING_FILES:      # a name split by a backslash-newline reads as vendor in the shell: the joined text has no space there
+            for ln in re.sub(r"\\\n", "", text).split("\n"):
+                if _names_vendor(ln) and not any(_names_vendor(x) for x in text.split("\n") if x.strip() and x.strip() in ln):
+                    yield (path, "a line that names the vendored folder", hashlib.sha256(ln.encode("utf-8", "replace")).hexdigest() + ":" + _hide(ln)[:100]), " ".join(ln.split()), False
+                    break
         mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
         tainted = mark in text
         for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
@@ -852,6 +943,10 @@ def unmeasured_occurrences(files):
             flat = " ".join(line.split())
             if len(flat) > MAX_LINE:
                 raise RuntimeError(f"{path}: a command line of {len(flat)} characters is longer than the {MAX_LINE} this check reads: refusing to read it partially")
+            if path not in _VENDOR_NAMING_FILES and _names_vendor(line):
+                yield (path, "a line that names the vendored folder", hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike
+            if not scan_all:
+                continue
             for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):    # each downloader invocation on its own: a release URL elsewhere on the line excuses nothing
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)

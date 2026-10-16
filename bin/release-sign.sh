@@ -9,6 +9,9 @@ for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN; do
   if [ -z "${!name:-}" ]; then echo "release-sign: $name is not set" >&2; exit 2; fi
 done
 [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
+# REQ-CHAIN-007-AC21 (Astra R3): checksums.txt has no other producer. Before any evidence is made or anything is signed, the four archives in dist are bound to Build's digests.json
+# and the file release-assets attaches and this step signs is written from them; an archive that is missing, extra or not Build's stops the step here
+python3 bin/release-metadata.py checksums --version "${GITHUB_REF_NAME#v}" --digests witness-build/digests.json --dist dist --out dist/checksums.txt
 repo="fosterstack/cache"
 prod=$(jq -r '."image-production" // empty' witness-build/digests.json)
 fips=$(jq -r '."image-fips" // empty' witness-build/digests.json)

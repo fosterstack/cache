@@ -1578,8 +1578,10 @@ def sh(*a, cwd=None, env=None, check=True):
 
 
 class Prune(unittest.TestCase):  # AC22-AC24
+    TMP_PREFIX = "tmp"
+
     def setUp(self):
-        self.td = tempfile.mkdtemp()
+        self.td = tempfile.mkdtemp(prefix=self.TMP_PREFIX)
         self.addCleanup(shutil.rmtree, self.td, True)
         self.origin = os.path.join(self.td, "origin.git")
         self.w = os.path.join(self.td, "work")
@@ -1799,7 +1801,8 @@ class Prune(unittest.TestCase):  # AC22-AC24
         shutil.rmtree(wt)
         p = self.run_prune("--apply")
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertNotIn("wt", sh("git", "worktree", "list", cwd=self.w).stdout.replace("work", ""))
+        listed = [ln[len("worktree "):] for ln in sh("git", "worktree", "list", "--porcelain", cwd=self.w).stdout.split("\n") if ln.startswith("worktree ")]
+        self.assertNotIn(os.path.realpath(wt), [os.path.realpath(x) for x in listed])
         self.assertFalse(self.exists("feat/wt"))
 
     def test_ac24_default_is_dry_run_and_changes_nothing(self):
@@ -1978,6 +1981,15 @@ class Prune(unittest.TestCase):  # AC22-AC24
         self.assertNotIn("push", src.replace("# ", ""))
         self.assertNotIn(AUD, src)
         self.assertEqual(sh("bash", "-n", os.path.join(ROOT, "bin", "local-prune.sh"), check=False).returncode, 0)
+
+
+class PruneInWtNamedDir(Prune):  # the temp dir's own name contains "wt": the AC22 check must read paths, not a substring of the whole listing
+    TMP_PREFIX = "wt-"
+
+
+for _n in dir(Prune):
+    if _n.startswith("test_") and _n != "test_ac22_worktree_record_with_missing_directory_is_pruned_then_branch_goes":
+        setattr(PruneInWtNamedDir, _n, None)
 
 
 if __name__ == "__main__":
