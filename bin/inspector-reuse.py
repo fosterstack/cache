@@ -137,6 +137,11 @@ def _readers_consume(sbom_path, answer_path, doc):
     closes the class of shapes they cannot list one by one. The gate runs with an empty VEX document held in memory (nothing is read or written)."""
     sbom = read_json(sbom_path)
     scan = doc["sbom"]
+    for what in (sbom, doc):   # text the readers print must be encodable: a lone surrogate parses as JSON but cannot be written out
+        try:
+            json.dumps(what, ensure_ascii=False).encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("the document holds text that cannot be written out")
     want = sum(len(v["affects"]) for v in scan.get("vulnerabilities") or [])
     try:
         panel = _load_sibling("_panel_probe", "panel.py")

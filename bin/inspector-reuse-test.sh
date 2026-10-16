@@ -302,6 +302,25 @@ def badref(s):
     s.pop("vulnerabilities", None); s["components"].append({"name": "audit-extra", "version": "1", "bom-ref": ["bad"]})
 put("rd-ref-list-nofind", badref)
 PY
+# text the readers print must be encodable (Codex #188 r7): a lone surrogate (\ud800) parses as JSON but cannot be written out
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+f = json.load(open(w + "/f-vuln.json"))
+def put(name, mut):
+    s = json.dumps(f); g = json.loads(s); mut(g["sbom"]); open("%s/v-bad-%s.json" % (w, name), "w").write(json.dumps(g))
+def sur_name(s):
+    s["components"].append({"name": "audit-\ud800-extra", "version": "1", "bom-ref": "audit-extra"})
+    s["vulnerabilities"][0]["affects"].append({"ref": "audit-extra"})
+put("sur-name", sur_name)
+def sur_id(s):
+    s["vulnerabilities"][0]["id"] = "CVE-\udfff-1"
+put("sur-id", sur_id)
+def sur_unused(s):
+    s["metadata"] = {"note": "x\ud800y"}
+put("sur-unused", sur_unused)
+PY
+for n in sur-name sur-id sur-unused; do vtry "the answer holds text that cannot be written out ($n)" 1 "$w/v-bad-$n.json"; done
 for n in rd-version-dict rd-version-int rd-ref-list-nofind; do vtry "the readers cannot consume the answer ($n)" 1 "$w/v-bad-$n.json"; done
 for n in comp-purlnum comp-noident comp-notobj comp-namenum; do vtry "an answer carrying a component the readers cannot use ($n)" 1 "$w/v-bad-$n.json"; done
 for n in ref-dup ref-dangling ref-null ref-empty ref-num; do vtry "an answer whose component references are not unique, not strings, or do not resolve ($n)" 1 "$w/v-bad-$n.json"; done
