@@ -32,7 +32,7 @@ def _forms():
 def guide_blocks(text, skip=()):
     """[{kind, section, text}] for every ```sh block of the guide, in order and byte for byte. skip: the exact texts of the blocks
     the cannot-run list names (a release candidate publishes nothing, so the blocks that read a release or a registry cannot run
-    on it); each must be a block of the guide and only a digest, download or verify block may be skipped."""
+    on it); each must be a block of the guide and only a digest, download, verify or Grype (the scan of the published image) block may be skipped."""
     out = []
     for body in re.findall(r"```sh\n(.*?)```", text, re.S):
         # a setting is a plain value and nothing else: VER=0.3.0; false is a command the plan must run (Codex #169 r1,
@@ -49,8 +49,8 @@ def guide_blocks(text, skip=()):
         if texts.count(s) != 1:
             raise ValueError("a cannot-run entry is not exactly one block of the guide: %r" % s[:60])
     skipped = [b for b in out if b["text"] in set(skip)]
-    if any(b["section"] not in ("digest", "download", "verify") for b in skipped):
-        raise ValueError("only a digest, download or verify block may be skipped on a release candidate")
+    if any(b["section"] not in ("digest", "download", "verify", "grype") for b in skipped):
+        raise ValueError("only a digest, download, verify or published-image Grype block may be skipped on a release candidate")
     return [b for b in out if b["text"] not in set(skip)] if skip else out
 
 

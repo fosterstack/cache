@@ -54,18 +54,18 @@ check("the plan names each command block by the scanner it serves",
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
 rc_blocks = L.guide_blocks(guide, skip=cr["blocks"])
 check("the rc plan is the page's plan minus exactly the listed blocks, in order", [b["text"] for b in rc_blocks] == [b["text"] for b in blocks if b["text"] not in cr["blocks"]])
-check("the rc plan has no digest, download or verify block", not {"digest", "download", "verify"} & {b["section"] for b in rc_blocks})
-check("the rc plan keeps the scanners' blocks", {"grype", "inspector", "google", "inspector-remove"} <= {b["section"] for b in rc_blocks})
+check("the rc plan has no digest, download, verify or published-image Grype block", not {"digest", "download", "verify", "grype"} & {b["section"] for b in rc_blocks})
+check("the rc plan keeps the Inspector and Google blocks and the removal", {"inspector", "google", "inspector-remove"} <= {b["section"] for b in rc_blocks})
 try:
     L.guide_blocks(guide, skip=cr["blocks"] + ["not a block of the page\n"]); got = "accepted"
 except ValueError:
     got = "refused"
 check("a cannot-run entry that is not a block of the page is refused", got == "refused", got)
 try:
-    L.guide_blocks(guide, skip=[b["text"] for b in blocks if b["section"] == "grype"]); got = "accepted"
+    L.guide_blocks(guide, skip=[b["text"] for b in blocks if b["section"] == "inspector"]); got = "accepted"
 except ValueError:
     got = "refused"
-check("a cannot-run list that skips a scanner's block is refused (only digest, download, verify may be skipped)", got == "refused", got)
+check("a cannot-run list that skips an Inspector or Google block is refused (only digest, download, verify and the published-image Grype scan may be skipped)", got == "refused", got)
 
 # --- the test copy of the Inspector file (advisor 0098): tag + prefix, and exactly the fixture's own filters
 images = {v: {"index": "sha256:" + c * 64, "children": {"linux/amd64": "sha256:" + d * 64, "linux/arm64": "sha256:" + e * 64}}
