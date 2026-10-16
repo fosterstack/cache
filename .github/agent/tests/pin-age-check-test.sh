@@ -1924,7 +1924,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b": "printf -v CURL %s /usr/bin/curl # TEST-SUBST",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith("live fetch, owner ratified (")]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -1981,6 +1981,23 @@ for r in rows:
     assert not ac._live_fetch_line_ok(other), ("another program is accepted", other)
 assert next(r for r in rows if r["line"] == H(KEY))["count"] == 4
 assert [r.get("count", 1) for r in sorted(rows, key=lambda r: r["line"])] == [c for _, c in sorted((h, 4 if h == H(KEY) else 1) for h in LIVE)], "the counts are exactly 4, 1, 1"
+PY
+CASE="the committed Go-toolchain row is exactly the one go.dev fetch line of bin/refresh-inputs.sh: its text, its hashes (the key is the curl segment), the checker's Go rule accepts it, the same line with another program, under the Wolfi rule, or with another host is refused"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
+import hashlib, importlib.util, json, re, sys
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
+spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+GO = '/usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/go/$f" "https://go.dev/dl/$f" || die "could not download a Go toolchain from go.dev" 1'
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith(ac.GO_RULING)]
+assert len(rows) == 1, [r["line"][:12] for r in rows]
+r = rows[0]
+assert r["file"] == "bin/refresh-inputs.sh" and r["form"] == "a download" and r["line"] == H(GO) and "count" not in r, r
+segs = re.split(r"\s*(?:;|&&|\|\||\|)\s*", GO)
+assert r["key"] == H(segs[0]) and segs[0].startswith("/usr/bin/curl ") and r["key"] != H(segs[1]) and segs[1].startswith("die "), r
+assert ac._live_fetch_line_ok(GO, toolchain=True), "the Go rule refuses the line"
+assert not ac._live_fetch_line_ok(GO), "the Wolfi rule accepts a go.dev line"
+assert not ac._live_fetch_line_ok(GO.replace("/usr/bin/curl", "/usr/bin/other", 1), toolchain=True), "another program is accepted"
+assert not ac._live_fetch_line_ok(GO.replace("https://go.dev/", "https://go.dev.example/", 1), toolchain=True), "another host is accepted"
 PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
