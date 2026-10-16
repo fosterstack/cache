@@ -231,6 +231,7 @@ case "$TOOL" in
     "${DEST}/fscache-go/bin/go" version | grep -q "go${GO_VER} " || pipeline_fail "the Go toolchain at ${DEST}/fscache-go is not go${GO_VER}"
     [ -f tools/govulncheck/go.mod ] || pipeline_fail "tools/govulncheck/go.mod is missing: it holds the govulncheck pin"
     [ -s tools/govulncheck/go.sum ] || pipeline_fail "tools/govulncheck/go.sum is missing: its h1 hashes are the govulncheck pin"
+    [ ! -e tools/govulncheck/vendor ] || pipeline_fail "tools/govulncheck/vendor exists: vendor mode does not check contents against go.sum, so the build refuses it (go.sum's h1 hashes are the pin)"
     pin=""
     while read -r key val rest; do
       [ "$key" != require ] || { key=$val; val=${rest%% *}; }
@@ -238,9 +239,9 @@ case "$TOOL" in
     done < tools/govulncheck/go.mod
     [[ "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || pipeline_fail "tools/govulncheck/go.mod does not require golang.org/x/vuln at a version"
     mkdir -p "$tmp/home" "$tmp/gocache" "$tmp/gomod"
-    # nothing Go-related from the caller's environment reaches the build: those names are unset, the pinned ones exported, in a subshell
-    ( unset GOROOT GOPATH GOPRIVATE GONOPROXY GONOSUMDB GONOSUMCHECK GOSUMDB GOINSECURE GOVCS GOEXPERIMENT GODEBUG GOCACHEPROG GOAUTH GOTOOLDIR GOBIN GOTMPDIR GOMODCACHEPROG GOOS GOARCH GOAMD64 GOARM GO386 GOMIPS GOPPC64 GORISCV64 GOWASM CC CXX CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS
-      export HOME="$tmp/home" TMPDIR="$tmp" GOCACHE="$tmp/gocache" GOMODCACHE="$tmp/gomod" GOFLAGS=-mod=readonly GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org CGO_ENABLED=0 GOWORK=off GOENV=off
+    # nothing Go-related from the caller's environment reaches the build: those names are unset, the pinned ones exported, in a subshell; GOFLAGS is among the unset names and none is set: tools/govulncheck has no vendor/ directory, so Go's own default (read-only modules) applies
+    ( unset GOFLAGS GOROOT GOPATH GOPRIVATE GONOPROXY GONOSUMDB GONOSUMCHECK GOSUMDB GOINSECURE GOVCS GOEXPERIMENT GODEBUG GOCACHEPROG GOAUTH GOTOOLDIR GOBIN GOTMPDIR GOMODCACHEPROG GOOS GOARCH GOAMD64 GOARM GO386 GOMIPS GOPPC64 GORISCV64 GOWASM CC CXX CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS
+      export HOME="$tmp/home" TMPDIR="$tmp" GOCACHE="$tmp/gocache" GOMODCACHE="$tmp/gomod" GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org CGO_ENABLED=0 GOWORK=off GOENV=off
       cd tools/govulncheck && "${DEST}/fscache-go/bin/go" build -trimpath -o "$tmp/govulncheck" golang.org/x/vuln/cmd/govulncheck ) || pipeline_fail "go build of govulncheck ${pin} failed"
     "$tmp/govulncheck" -version 2>/dev/null | grep -qx "Scanner: govulncheck@${pin}" || pipeline_fail "the built govulncheck does not report version ${pin} (the module's pin)"
     install -m 0755 "$tmp/govulncheck" "${DEST}/govulncheck" || pipeline_fail "install failed for govulncheck"

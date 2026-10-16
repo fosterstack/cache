@@ -12,7 +12,7 @@
  "chain-check-wiring-test.sh": 269,
  "chain-hostile-test.sh": 253,
  "chain-install-crane-test.sh": 7,
- "chain-install-witness-test.sh": 38,
+ "chain-install-witness-test.sh": 41,
  "chain-rebuild-test.sh": 102,
  "chain-records-test.sh": 97,
  "chain-release-metadata-test.sh": 86,

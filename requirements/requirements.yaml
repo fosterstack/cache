@@ -1152,18 +1152,25 @@ requirements:
   - id: REQ-PLAT-001
     title: Binary platform matrix
     statement: >
-      Every release shall ship static (CGO_ENABLED=0) binaries for
-      linux/amd64, linux/arm64, darwin/amd64, and darwin/arm64, and
-      FIPS-variant binaries for the two Linux platforms only.
-    source: [README.md "Supported platforms", docs/install.md, .goreleaser.yaml]
+      Every release shall ship static (CGO_ENABLED=0) standard and
+      FIPS-variant binaries for linux/amd64 and linux/arm64. No macOS or
+      Windows binaries are shipped; the release notes say so and point
+      macOS users to the container image.
+    source: [README.md "Supported platforms", docs/install.md, docs/docker-deploy.md, RELEASING.md, docs/next-release-notes.md, bin/build-archives.py]
     tier: community
     introduced: v0.1.0
     confidence: documented
+    origin: >
+      Amended for v0.3.0 from the owner's decision of Oct 9 2026, verbatim
+      "drop mac, linux only." (ops/docs/ratify/2026-10-09-v030-owner-answers.md);
+      the amended text was accepted by the advisor at step 5 on Oct 11 2026.
+      The v0.2.x baselines (requirements/releases/v0.2.*.yaml) are frozen
+      and unchanged: they keep the six-archive text.
     acceptance_criteria:
       - id: REQ-PLAT-001-AC1
         given: a release's artifact set
         when: it is enumerated
-        then: exactly the six archives exist and each binary executes on its platform (or a documented equivalent)
+        then: exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64), no darwin or windows archive exists, and each binary executes on its platform (or a documented equivalent)
         verification: { method: acceptance-release-artifact, release_blocking: true }
         status: approved
 
@@ -1502,7 +1509,7 @@ requirements:
       pipeline rather than passing silently; main's latest candidate shall be
       rescanned daily; and the Go toolchain shall be kept on its latest patch
       by an automated bump.
-    source: [.github/workflows/scan.yml, bin/inspector-gate.py, .github/policy/required-checks.json, .github/workflows/main-candidate-rescan.yml, .github/workflows/go-freshness.yml, bin/rescan-statement.py]
+    source: [.github/workflows/scan.yml, bin/inspector-gate.py, bin/inspector-reuse.py, .github/policy/required-checks.json, .github/workflows/main-candidate-rescan.yml, .github/workflows/go-freshness.yml, bin/rescan-statement.py]
     tier: community
     introduced: v0.2.1
     origin: audit-2026-09-15; v0.2.0 release-pipeline scan failure
@@ -1549,6 +1556,13 @@ requirements:
         when: "the daily rescan looks for its tracking issue"
         then: "it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue'"
         verification: { method: unit, release_blocking: false }
+        status: approved
+      # Why the SBOM and not the image digest: every commit stamps its id into the binary, so digests never repeat.
+      - id: REQ-REL-004-AC8
+        given: "an image whose SBOM component list (package names and versions only, sorted, no timestamps, serial numbers or our own module's version) hashes the same as one Amazon Inspector already scanned the same UTC day"
+        when: the scan check or the rescan would call Amazon Inspector for it
+        then: "it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ"
+        verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
   - id: REQ-REL-005
@@ -2205,8 +2219,13 @@ requirements:
     source: [.vex/fosterstack-cache.openvex.json]
     tier: community
     introduced: v0.3.0
-    origin: scanner-panel rule 10 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
+    origin: scanner-panel rule 10 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md). AC5 to AC8 are advisor step 5 Oct 11 (handoff 0389).
     confidence: implementation-only
+    notes: >
+      AC5: the digest file has two variants, production and fips (v0.3.0 ships no :debug image). The generator must know the key set {production, fips} to refuse a third key or a missing one; the digests come only from the file.
+      AC6: "repeats a key" needs an explicit check, because Python's json.load keeps the last of two equal keys and says nothing.
+      AC7: the variants are walked in a fixed order and the children in a fixed order, so the key order of the digest file does not reach the output.
+      AC8: the test no longer reads stage-promote.yml step names; AC3's check reads main-candidate-rescan.yml contents, not step names.
     acceptance_criteria:
       - id: REQ-SCAN-010-AC1
         given: "a release"
@@ -2231,6 +2250,30 @@ requirements:
         when: "it is published"
         then: "it says the upload is a preview feature"
         verification: { method: inspection, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-010-AC5
+        given: "a digest file, passed to the generator by its path: a JSON object with exactly two keys, production and fips; each value an object with exactly two keys, index and children; children an object with exactly two keys, linux/amd64 and linux/arm64; every digest a string of sha256: followed by 64 lower-case hexadecimal characters"
+        when: "the three VEX forms are generated"
+        then: "the forms name exactly the six digests in that file and no other image digest. The generator checks the file's shape and key set only. It does not check that the digests are the ones Build verified; that check belongs to the release workflow and is tested there. The generator reads no registry and opens no network connection."
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-SCAN-010-AC6
+        given: "a digest file that is not a JSON object; that repeats a key at any level; that has a key other than production and fips, or lacks either; whose variant value is not an object with exactly the keys index and children; whose children lack linux/amd64 or linux/arm64 or have any other key; that has any digest which is not a string of sha256: followed by 64 lower-case hexadecimal characters; or that names the same digest twice"
+        when: "the forms are generated"
+        then: "generation stops with a non-zero exit before any form file is written, no form file is created or changed in the output directory, and the error names the key path (for example fips.children.linux/arm64) or the value at fault"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-SCAN-010-AC7
+        given: "the same OpenVEX file, the same digest file content and the same version"
+        when: "the forms are generated twice, at different times, with a different time zone, locale or SOURCE_DATE_EPOCH, or from a digest file with the same content in a different key order"
+        then: "both runs give byte-identical form files. No date, time or run identifier comes from the clock or the environment; the only dates are the ones the OpenVEX file carries"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-SCAN-010-AC8
+        given: "the REQ-SCAN-010 test"
+        when: "it runs"
+        then: "it proves AC1-AC7 against the generator and the OpenVEX file alone. It reads no workflow file's step names or step order. Where the forms are generated, that the signed release record covers them, and that the digests are Build's verified ones are proven by the release workflow's own test. AC3's check of the rescan workflow's contents (it filters against the OpenVEX file and uses no derived form) stays"
+        verification: { method: unit, release_blocking: true }
         status: approved
 
   - id: REQ-SCAN-011

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Our VEX in three forms (scanner-panel rule 10, owner RATIFIED Oct 2; REQ-SCAN-010; advisor 0076/0077).
 
-Generated at release time from the ONE OpenVEX file (.vex/fosterstack-cache.openvex.json) and the release's image
-digests (each variant's index and its linux/amd64 and linux/arm64 children); no network, no cloud call:
+Generated at release time from the ONE OpenVEX file (.vex/fosterstack-cache.openvex.json) and a digest file naming the
+release's images (REQ-SCAN-010-AC5): exactly the two variants production and fips, each an index digest and its
+linux/amd64 and linux/arm64 children. No registry read, no network, no cloud call, no clock:
   - an Amazon Inspector suppression-rule file: {"filters": [...]}, one `create-filter --cli-input-json` document per
     suppressible statement scope (not_affected, fixed), scoped by CVE, by the image digests the statement covers and,
     for a package-scoped statement, by that package and version; the guide applies it with GUIDE_INSPECTOR_COMMAND;
@@ -12,11 +13,20 @@ digests (each variant's index and its linux/amd64 and linux/arm64 children); no 
 "The same statements" (advisor's words): the CSAF file carries every OpenVEX statement; the Inspector file carries one
 rule per suppressible statement (not_affected, fixed) and none for affected or under_investigation.
 Our own pipeline keeps filtering against the OpenVEX file itself (rule 4); these forms are for customers.
+
+The digest file (AC5, AC6; advisor step 5, Oct 11, handoff 0389): the generator checks its SHAPE AND KEY SET ONLY:
+a JSON object with exactly the keys production and fips, no key repeated at any level, each an object with exactly
+index and children, children exactly linux/amd64 and linux/arm64, every digest sha256: and 64 lower-case hex, and no
+digest named twice. Anything else is refused, naming the key path or the value, before any form file is written. It
+does NOT check that the digests are the ones Build verified: that check belongs to the release workflow and is
+tested there. The same inputs give the same bytes (AC7): the only dates are the OpenVEX file's own.
 """
 import argparse, json, os, re, sys, urllib.parse
 
 REPO = "ghcr.io/fosterstack/cache"
-VARIANTS = ("production", "debug", "fips")
+VARIANTS = ("production", "fips")                    # v0.3.0 ships no :debug image (AC5)
+PLATFORMS = ("linux/amd64", "linux/arm64")
+DIGEST = re.compile(r"sha256:[0-9a-f]{64}")             # used with fullmatch only: no trailing newline slips through
 CSAF_STATUS = {"not_affected": "known_not_affected", "fixed": "fixed", "affected": "known_affected",
                "under_investigation": "under_investigation"}
 SUPPRESSIBLE = ("not_affected", "fixed")
@@ -32,15 +42,82 @@ GUIDE_GOOGLE_COMMAND = ("jq --arg u \"$IMAGE\" --arg d \"$DIGEST\" '.product_tre
                         "gcloud artifacts vulnerabilities load-vex --source=vex-for-my-image.json --uri=\"$IMAGE@$DIGEST\"")
 
 
+class _Obj(dict):
+    """A JSON object that remembers the keys its file repeated (json.load keeps the last of two and says nothing)."""
+    repeated = ()
+
+
+def _pairs(pairs):
+    d, rep = _Obj(), []
+    for k, v in pairs:
+        if k in d:
+            rep.append(k)
+        d[k] = v
+    d.repeated = tuple(rep)
+    return d
+
+
+def _refuse_repeats(obj, path=()):
+    if isinstance(obj, dict):
+        for k in getattr(obj, "repeated", ()):
+            raise ValueError("digest file: key %s is repeated" % ".".join(path + (k,)))
+        for k, v in obj.items():
+            _refuse_repeats(v, path + (k,))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            _refuse_repeats(v, path + (str(i),))
+
+
+def _exact_keys(obj, keys, path):
+    """obj is an object with exactly these keys; otherwise refused, naming the first key path at fault."""
+    where = ".".join(path) if path else "the digest file"
+    if not isinstance(obj, dict):
+        raise ValueError("%s must be a JSON object with exactly the keys %s" % (where, ", ".join(keys)))
+    pre = ".".join(path) + "." if path else ""
+    for k in keys:
+        if k not in obj:
+            raise ValueError("digest file: key %s%s is missing" % (pre, k))
+    for k in sorted(set(obj) - set(keys)):
+        raise ValueError("digest file: key %s%s is not allowed (only %s)" % (pre, k, ", ".join(keys)))
+
+
+def check_images(images):
+    """The digest file's shape and key set (REQ-SCAN-010-AC5, AC6), and nothing more: membership in Build's verified
+    set is the release workflow's check. Raises ValueError naming the key path or the value at fault."""
+    _refuse_repeats(images)
+    _exact_keys(images, VARIANTS, ())
+    seen = {}
+    for v in VARIANTS:
+        _exact_keys(images[v], ("index", "children"), (v,))
+        _exact_keys(images[v]["children"], PLATFORMS, (v, "children"))
+        for path, d in [((v, "index"), images[v]["index"])] + [((v, "children", p), images[v]["children"][p]) for p in PLATFORMS]:
+            where = ".".join(path)
+            if not isinstance(d, str) or not DIGEST.fullmatch(d):
+                raise ValueError("digest file: %s is %s, not sha256: followed by 64 lower-case hexadecimal characters"
+                                 % (where, json.dumps(d)))
+            if d in seen:
+                raise ValueError("digest file: %s is named twice (%s and %s)" % (d, seen[d], where))
+            seen[d] = where
+
+
+def read_images(path):
+    """The digest file, by its path: parsed with every repeated key kept visible, then shape-checked."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            images = json.load(fh, object_pairs_hook=_pairs)
+    except (OSError, ValueError) as e:                 # ValueError: invalid JSON or invalid UTF-8
+        raise ValueError("digest file %s is not readable JSON: %s" % (path, e))
+    check_images(images)
+    return images
+
+
 def _digests(images):
-    missing = [v for v in VARIANTS if v not in images]
-    if missing:
-        raise ValueError("image digests missing for: " + ", ".join(missing))
+    check_images(images)
     out = []
     for v in VARIANTS:
         out.append((v, None, images[v]["index"]))
-        for plat, d in sorted(images[v]["children"].items()):
-            out.append((v, plat, d))
+        for plat in PLATFORMS:
+            out.append((v, plat, images[v]["children"][plat]))
     return out
 
 
@@ -220,18 +297,28 @@ def csaf(vex, images, version):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="vex-forms")
     ap.add_argument("--openvex", required=True)
-    ap.add_argument("--images", required=True, help="JSON {variant: {index, children: {platform: digest}}}")
+    ap.add_argument("--images", required=True, metavar="DIGEST_FILE",
+                    help='path of a JSON file: {"production": {"index": D, "children": {"linux/amd64": D, '
+                         '"linux/arm64": D}}, "fips": {the same}}, D = sha256:<64 lower-case hex>; shape and key set '
+                         'are checked here, that the digests are Build\'s verified ones is the release workflow\'s check')
     ap.add_argument("--version", required=True)
     ap.add_argument("--out-dir", required=True)
     a = ap.parse_args(argv)
-    vex, images = json.load(open(a.openvex)), json.load(open(a.images))
     base = os.path.join(a.out_dir, "fosterstack-cache-%s" % a.version)
-    with open(base + ".inspector-filters.json", "w") as fh:
-        json.dump(inspector(vex, images, a.version), fh, indent=1)
-    with open(base + ".csaf.json", "w") as fh:
-        json.dump(csaf(vex, images, a.version), fh, indent=1)
-    print(base + ".inspector-filters.json")
-    print(base + ".csaf.json")
+    try:                                               # both forms are built in memory first: a refusal writes nothing
+        images = read_images(a.images)
+        with open(a.openvex, encoding="utf-8") as fh:
+            vex = json.load(fh)
+        forms = [(base + ".inspector-filters.json", json.dumps(inspector(vex, images, a.version), indent=1)),
+                 (base + ".csaf.json", json.dumps(csaf(vex, images, a.version), indent=1))]
+    except (OSError, ValueError) as e:
+        print("vex-forms: refused, nothing written: %s" % e, file=sys.stderr)
+        return 1
+    for path, text in forms:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    for path, _ in forms:
+        print(path)
     return 0
 
 

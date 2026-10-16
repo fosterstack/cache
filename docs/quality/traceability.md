@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 94 |
-| Acceptance criteria | 413 |
-| Release-blocking ACs | 121 |
-| ACs with mapped evidence | 396 |
-| Release-blocking ACs with mapped evidence | 121 |
+| Acceptance criteria | 418 |
+| Release-blocking ACs | 125 |
+| ACs with mapped evidence | 401 |
+| Release-blocking ACs with mapped evidence | 125 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
 | Confidence: implementation-only | 47 |
@@ -452,13 +452,13 @@ The server shall make no outbound network connections — no telemetry, no updat
 
 ### REQ-PLAT-001 — Binary platform matrix
 
-Every release shall ship static (CGO_ENABLED=0) binaries for linux/amd64, linux/arm64, darwin/amd64, and darwin/arm64, and FIPS-variant binaries for the two Linux platforms only.
+Every release shall ship static (CGO_ENABLED=0) standard and FIPS-variant binaries for linux/amd64 and linux/arm64. No macOS or Windows binaries are shipped; the release notes say so and point macOS users to the container image.
 
-*Introduced v0.1.0 · tier community · confidence documented · source: README.md "Supported platforms"; docs/install.md; .goreleaser.yaml*
+*Introduced v0.1.0 · tier community · confidence documented · source: README.md "Supported platforms"; docs/install.md; docs/docker-deploy.md; RELEASING.md; docs/next-release-notes.md; bin/build-archives.py*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the six archives exist and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | 1 item(s) |
+| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64), no darwin or windows archive exists, and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | 1 item(s) |
 
 ### REQ-PLAT-002 — Image variants and multi-arch
 
@@ -625,7 +625,7 @@ No artifact shall be published with a known CVE at any severity unless a publish
 
 A newly disclosed vulnerability shall be caught before release, not on tag day: the full scanner set shall run as a required check on every pull request, every push to main, and every tag; scanner installers shall be pinned by checksum so a scanner that cannot run fails the pipeline rather than passing silently; main's latest candidate shall be rescanned daily; and the Go toolchain shall be kept on its latest patch by an automated bump.
 
-*Introduced v0.2.1 · tier community · confidence implementation-only · source: .github/workflows/scan.yml; bin/inspector-gate.py; .github/policy/required-checks.json; .github/workflows/main-candidate-rescan.yml; .github/workflows/go-freshness.yml; bin/rescan-statement.py*
+*Introduced v0.2.1 · tier community · confidence implementation-only · source: .github/workflows/scan.yml; bin/inspector-gate.py; bin/inspector-reuse.py; .github/policy/required-checks.json; .github/workflows/main-candidate-rescan.yml; .github/workflows/go-freshness.yml; bin/rescan-statement.py*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -636,6 +636,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 | REQ-REL-004-AC5 | Given the published releases; when the daily rescan enumerates what to scan; then it enumerates exactly the current release (the latest published, non-draft, non-prerelease release by semantic version) and no superseded one; a release that stops being current is no longer scanned; the issues of superseded releases are not reopened or created | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-004-AC6 | Given a rescan scanner listed in .github/policy/scanners.json that cannot read the VEX itself (OSV-Scanner today; Grype and Trivy apply it themselves), and a finding for a CVE or alias that our published OpenVEX marks not_affected or fixed for this image's product; when the rescan statement is merged; then that finding is removed before it counts (it opens no tracking issue and raises no comment), is kept in the statement as vex_suppressed with the VEX document and statement that covered it, and every other finding still counts at any severity; a VEX document that is missing, cannot be read or does not parse stops the rescan as an operational error (never as 'no suppression'); the match is by CVE or alias for the image's product (the repository-wide product, or one scoped to this variant and architecture; the named package and version when the statement names subcomponents), never by CVE alone across products; and a scanner in scanners.json that is neither marked as reading the VEX natively nor covered by this filter fails a test, so a new scanner can never bypass the VEX by omission (advisor reading: ratified scanner-panel rule 4, the pipeline filter, applied to every scanner that cannot read the VEX) | unit |  | approved | 1 item(s) |
 | REQ-REL-004-AC7 | Given more open issues carry the daily-rescan label than one page holds; when the daily rescan looks for its tracking issue; then it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue' | unit |  | approved | 1 item(s) |
+| REQ-REL-004-AC8 | Given an image whose SBOM component list (package names and versions only, sorted, no timestamps, serial numbers or our own module's version) hashes the same as one Amazon Inspector already scanned the same UTC day; when the scan check or the rescan would call Amazon Inspector for it; then it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ | ci-workflow |  | approved | 2 item(s) |
 
 ### REQ-REL-005 — Every CI action pinned to a commit digest
 
@@ -881,12 +882,18 @@ Every release shall publish the VEX three ways, all generated from the one OpenV
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .vex/fosterstack-cache.openvex.json*
 
+> AC5: the digest file has two variants, production and fips (v0.3.0 ships no :debug image). The generator must know the key set {production, fips} to refuse a third key or a missing one; the digests come only from the file. AC6: "repeats a key" needs an explicit check, because Python's json.load keeps the last of two equal keys and says nothing. AC7: the variants are walked in a fixed order and the children in a fixed order, so the key order of the digest file does not reach the output. AC8: the test no longer reads stage-promote.yml step names; AC3's check reads main-candidate-rescan.yml contents, not step names.
+
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement, scoped by CVE and image digest, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC2 | Given the three VEX forms; when they are compared; then they cover exactly the same statements | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC4 | Given documentation of the Google VEX upload; when it is published; then it says the upload is a preview feature | inspection |  | approved | 1 item(s) |
+| REQ-SCAN-010-AC5 | Given a digest file, passed to the generator by its path: a JSON object with exactly two keys, production and fips; each value an object with exactly two keys, index and children; children an object with exactly two keys, linux/amd64 and linux/arm64; every digest a string of sha256: followed by 64 lower-case hexadecimal characters; when the three VEX forms are generated; then the forms name exactly the six digests in that file and no other image digest. The generator checks the file's shape and key set only. It does not check that the digests are the ones Build verified; that check belongs to the release workflow and is tested there. The generator reads no registry and opens no network connection. | unit | yes | approved | 1 item(s) |
+| REQ-SCAN-010-AC6 | Given a digest file that is not a JSON object; that repeats a key at any level; that has a key other than production and fips, or lacks either; whose variant value is not an object with exactly the keys index and children; whose children lack linux/amd64 or linux/arm64 or have any other key; that has any digest which is not a string of sha256: followed by 64 lower-case hexadecimal characters; or that names the same digest twice; when the forms are generated; then generation stops with a non-zero exit before any form file is written, no form file is created or changed in the output directory, and the error names the key path (for example fips.children.linux/arm64) or the value at fault | unit | yes | approved | 1 item(s) |
+| REQ-SCAN-010-AC7 | Given the same OpenVEX file, the same digest file content and the same version; when the forms are generated twice, at different times, with a different time zone, locale or SOURCE_DATE_EPOCH, or from a digest file with the same content in a different key order; then both runs give byte-identical form files. No date, time or run identifier comes from the clock or the environment; the only dates are the ones the OpenVEX file carries | unit | yes | approved | 1 item(s) |
+| REQ-SCAN-010-AC8 | Given the REQ-SCAN-010 test; when it runs; then it proves AC1-AC7 against the generator and the OpenVEX file alone. It reads no workflow file's step names or step order. Where the forms are generated, that the signed release record covers them, and that the digests are Build's verified ones are proven by the release workflow's own test. AC3's check of the rescan workflow's contents (it filters against the OpenVEX file and uses no derived form) stays | unit | yes | approved | 1 item(s) |
 
 ### REQ-SCAN-011 — Customer guide
 
