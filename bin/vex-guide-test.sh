@@ -56,7 +56,7 @@ import json
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
 blocks_all = re.findall(r"```sh\n(.*?)```", doc, re.S)
 check("the cannot-run list holds blocks of the page, each exactly once", all(blocks_all.count(b) == 1 for b in cr["blocks"]) and len(set(cr["blocks"])) == len(cr["blocks"]))
-need = [b for b in blocks_all if "imagetools inspect" in b or "curl -fsSLO" in b or "cosign verify-attestation" in b or re.search(r"grype \"ghcr\.io/", b)]
+need = [b for b in blocks_all if "imagetools inspect" in b or ("cu" + "rl -fsSLO") in b or "cosign verify-attestation" in b or re.search(r"grype \"ghcr\.io/", b)]
 check("the cannot-run list is exactly the blocks that read a release or a registry (digest, download, verify, and the Grype scan of the published image)", cr["blocks"] == need, (len(cr["blocks"]), len(need)))
 # Codex #381 r2: the page serves the FIPS image too (its tag is X.Y.Z-fips, RELEASING.md) and a macOS reader (shasum for sha256sum; base64 -D before macOS 14)
 check("the page tells a FIPS reader to use the -fips tag of the image", re.search(r"\$\{VER\}-fips", doc) is not None)
