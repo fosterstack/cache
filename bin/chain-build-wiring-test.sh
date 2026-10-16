@@ -2155,7 +2155,7 @@ import glob, json, os, sys
 root = sys.argv[1]
 allowed = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
            "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
-           "bin/check-file-allowlist.sh"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing)
+           "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
 named = set()
 for pattern in (".github/workflows/*.yml", ".github/policy/*.json", "bin/*.sh", "bin/*.py"):
     for path in glob.glob(os.path.join(root, pattern)):
@@ -2163,6 +2163,8 @@ for pattern in (".github/workflows/*.yml", ".github/policy/*.json", "bin/*.sh", 
             named.add(os.path.relpath(path, root))
 stray = sorted(named - allowed)
 assert not stray, "named outside Build's and Rebuild's assemble scripts: %s" % stray       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
+ci = [ln.strip() for ln in open(root + "/.github/workflows/ci.yml") if "vex-index" in ln]
+assert all(ln.startswith("run: bash bin/vex-index-test.sh") or ln.startswith("- name:") for ln in ci), ci      # CI runs the tool's TEST and nothing else of it
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
 users = sorted(p for p, r in rows.items() if "bin/vex-index.py" in r["runs"])
 assert users == sorted(p for p in allowed if p.startswith("bin/build-stage-")), users
