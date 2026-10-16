@@ -539,6 +539,8 @@ def _live_fetch_line_ok(flat, toolchain=False):
     raw = re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s"']+)+""", left)
     if len(raw) != len(w):
         return False
+    if toolchain and "'" in left:
+        return False                                   # the Go shape has no single quote anywhere: a single-quoted $name is a literal dollar sign, never a variable
     for rt in raw:
         # an expansion, brace, glob or tilde may appear only inside double quotes: unquoted, the shell splits it into several words
         if re.search(r"[$`{}*?\[\]~]", re.sub(r'"[^"]*"|\'[^\']*\'', "", rt)):
