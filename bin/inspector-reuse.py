@@ -31,7 +31,10 @@
 # DATE is an argument (the workflow reads the UTC clock at each decision and
 # each store), so this program never reads the clock.
 # Pure python3, stdlib only, no network.
+import contextlib
 import hashlib
+import importlib.util
+import io
 import json
 import os
 import re
@@ -121,7 +124,41 @@ def _finding_ok(v):
     return "ratings" not in v or (isinstance(v["ratings"], list) and all(isinstance(r, dict) and ("severity" not in r or isinstance(r["severity"], str)) for r in v["ratings"]))
 
 
-def check_answer(path, req_pairs):
+def _load_sibling(name, filename):
+    spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), filename))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _readers_consume(sbom_path, answer_path, doc):
+    """The readers are the judge: the answer is reusable only if bin/inspector-gate.py and bin/panel.py both consume it without an exception and neither drops a
+    finding (each (finding, affected component) pair becomes one row in the gate and one in the panel). Shape rules above stay as the reasons that are named; this
+    closes the class of shapes they cannot list one by one. The gate runs with an empty VEX document held in memory (nothing is read or written)."""
+    sbom = read_json(sbom_path)
+    scan = doc["sbom"]
+    want = sum(len(v["affects"]) for v in scan.get("vulnerabilities") or [])
+    try:
+        panel = _load_sibling("_panel_probe", "panel.py")
+        comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
+        panel._cdx_packages(sbom)
+        rows = panel._cdx_findings(scan, comps)
+        for r in rows:
+            panel.key_of("probe", r[0], r[1], r[2])   # the panel's own per-finding key (tally): the step that reads a version as text
+        gate = _load_sibling("_gate_probe", "inspector-gate.py")
+        real_load = gate.load
+        gate.load = lambda p: {"@context": "https://openvex.dev/ns/v0.2.0", "statements": []} if p == "<empty-vex>" else real_load(p)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = gate.main(["inspector-gate.py", "probe", sbom_path, answer_path, "<empty-vex>"])
+    except Exception as e:
+        raise ValueError("a reader cannot consume the answer: %s" % type(e).__name__)
+    m = re.search(r", (\d+) finding\(s\)", out.getvalue())
+    if len(rows) != want or rc != (1 if want else 0) or not m or int(m.group(1)) != want:
+        raise ValueError("a reader would drop or miscount a finding")
+
+
+def check_answer(path, req_pairs, sbom_path=None):
     """FILE must be the ScanSbom envelope {"sbom": <CycloneDX with a components list>} that carries EVERY identifier of the
     request SBOM (a superset: the service adds components of its own). An extra response component only adds
     identifiers; it can never hide a finding for the requested set, because a finding is read from the component it
@@ -146,6 +183,8 @@ def check_answer(path, req_pairs):
         known = set(refs)
         if not all(a["ref"] in known for v in vs for a in v["affects"]):
             raise ValueError("a finding names a component the answer does not carry")
+    if sbom_path is not None:
+        _readers_consume(sbom_path, path, doc)
 
 
 def stored_path(d, date, key):
@@ -166,7 +205,7 @@ def cmd_decide(args):
         pairs = inventory_pairs(sbom)
         p = stored_path(d, date, pairs_key(pairs))
         if os.path.isfile(p):
-            check_answer(p, pairs)
+            check_answer(p, pairs, sbom)
             return "reuse\n" + p
     except Exception:
         pass
@@ -175,7 +214,7 @@ def cmd_decide(args):
 
 def cmd_validate(args):
     sbom, src = args
-    check_answer(src, inventory_pairs(sbom))
+    check_answer(src, inventory_pairs(sbom), sbom)
 
 
 def fsync_dir(path):
@@ -191,7 +230,7 @@ def cmd_store(args):
     pairs = inventory_pairs(sbom)
     key = pairs_key(pairs)
     dest = stored_path(d, date, key)
-    check_answer(src, pairs)
+    check_answer(src, pairs, sbom)
     with open(src, "rb") as f:
         data = f.read()
     ddir = os.path.dirname(dest)

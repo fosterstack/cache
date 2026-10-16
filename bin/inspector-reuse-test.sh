@@ -282,6 +282,27 @@ put("comp-noident", lambda cs: cs.append({"bom-ref": "extra2"}))
 put("comp-notobj", lambda cs: cs.append("extra3"))
 put("comp-namenum", lambda cs: cs.append({"bom-ref": "extra4", "name": 7}))
 PY
+# the readers themselves are the judge (Codex #188 r6): an answer is reusable only if bin/inspector-gate.py and bin/panel.py consume it without an exception and
+# keep every finding (a non-string fallback version, a non-string bom-ref even when there are no findings, ...)
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+f = json.load(open(w + "/f-vuln.json"))
+def put(name, mut):
+    g = json.loads(json.dumps(f)); mut(g["sbom"]); json.dump(g, open("%s/v-bad-%s.json" % (w, name), "w"))
+def verdict(s):
+    s["components"].append({"name": "audit-extra", "version": {"bad": 1}, "bom-ref": "audit-extra"})
+    s["vulnerabilities"][0]["affects"].append({"ref": "audit-extra"})
+put("rd-version-dict", verdict)
+def nover(s):
+    s["components"].append({"name": "audit-extra", "version": 3, "bom-ref": "audit-extra"})
+    s["vulnerabilities"][0]["affects"].append({"ref": "audit-extra"})
+put("rd-version-int", nover)
+def badref(s):
+    s.pop("vulnerabilities", None); s["components"].append({"name": "audit-extra", "version": "1", "bom-ref": ["bad"]})
+put("rd-ref-list-nofind", badref)
+PY
+for n in rd-version-dict rd-version-int rd-ref-list-nofind; do vtry "the readers cannot consume the answer ($n)" 1 "$w/v-bad-$n.json"; done
 for n in comp-purlnum comp-noident comp-notobj comp-namenum; do vtry "an answer carrying a component the readers cannot use ($n)" 1 "$w/v-bad-$n.json"; done
 for n in ref-dup ref-dangling ref-null ref-empty ref-num; do vtry "an answer whose component references are not unique, not strings, or do not resolve ($n)" 1 "$w/v-bad-$n.json"; done
 vtry "an empty file" 1 "$w/m4.json"
