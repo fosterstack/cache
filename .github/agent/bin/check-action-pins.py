@@ -2292,7 +2292,8 @@ def _resolve_script(path, text, entries, bases=()):
     return None
 
 
-READ_SCRIPTS = []                                       # the committed scripts _run_scripts read, for check_runs
+READ_SCRIPTS = []
+FOREIGN_RUN = []                                      # committed scripts of another language the job runs (REQ-REL-005-AC3 applies to them too)                                       # the committed scripts _run_scripts read, for check_runs
 
 
 def _all_texts(text, depth=0):
@@ -2396,6 +2397,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             continue
         if t[0] == "__foreign__":
             rel = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", t[1])
+            if entries.get(rel) == "file":
+                FOREIGN_RUN.append(rel)
             if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries, bases) is None:
                 found.append("runs %s with another language's interpreter, and it is not a committed file; refused "
                              "(handoff 0094: only committed files and heredocs are the boundary)" % t[1])
@@ -2413,6 +2416,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
                 if not path.endswith(".sh"):
                     continue                             # a program, not a script of this repository
             elif tree.read(rel).startswith("#!") and not SHELL_SHEBANG.match(tree.read(rel)):
+                FOREIGN_RUN.append(rel)
                 continue                                 # another language: the documented boundary (0094)
         if (where.split(".jobs.", 1)[0], path) in GENERATED_OK:
             # fenced: written only by the step's python heredoc; a shell write anywhere in the job breaks the fence
@@ -2466,6 +2470,14 @@ _WGET_LONG_VALUE = frozenset("--header --timeout --tries --user --password --use
 _NULL_SINKS = ("/dev/null", "-")
 
 
+def _value_reason(opt, val):
+    """Why the value of a read-only option is not demonstrably read-only, or None. curl's -w / --write-out takes a format whose %output{FILE} writes a file (and @FILE reads
+    a format from a file that may hold it): only a format that does not name output and is not read from a file is accepted."""
+    if opt in ("-w", "--write-out") and (val.startswith("@") or re.search(r"%.*output", val, re.I)):
+        return "the write-out format %s can write a file (%%output{} or @file)" % val
+    return None
+
+
 def _download_reason(toks):
     """None when the downloader command whose arguments are toks (the words after the program name) demonstrably writes only to standard output or /dev/null;
     else why it is not demonstrable."""
@@ -2502,13 +2514,18 @@ def _download_reason(toks):
                     if i >= len(args):
                         return "%s has no value" % name
                     val, i = args[i], i + 1
-                if val not in _NULL_SINKS:
+                if val not in (("-",) if wget else _NULL_SINKS):
                     return "%s writes %s" % (name, val)
                 out_seen = out_seen or name == "--output-document"
                 continue
             if name in lvalue:
                 if not eq:
-                    i += 1
+                    if i >= len(args):
+                        return "%s has no value" % name
+                    val, i = args[i], i + 1
+                r = _value_reason(name, val)
+                if r:
+                    return r
                 continue
             return "the option %s is not on the list of read-only options" % name
         if t.startswith("-") and len(t) > 1:
@@ -2525,18 +2542,24 @@ def _download_reason(toks):
                         if i >= len(args):
                             return "-%s has no value" % c
                         val, i = args[i], i + 1
-                    if val not in _NULL_SINKS:
+                    if val not in (("-",) if wget else _NULL_SINKS):
                         return "-%s writes %s" % (c, val)
                     out_seen = out_seen or (wget and c == "O")
                     break
                 if c in vletters:
-                    if not rest:
-                        i += 1
+                    val = rest
+                    if not val:
+                        if i >= len(args):
+                            return "-%s has no value" % c
+                        val, i = args[i], i + 1
+                    r = _value_reason("-" + c, val)
+                    if r:
+                        return r
                     break
                 return "the option -%s is not on the list of read-only options" % c
             continue
-        if re.fullmatch(r"\$\{?[A-Za-z_]\w*\}?", t):
-            return "a bare variable (%s) where an option may stand" % t
+        if t.startswith("$"):
+            return "an expansion (%s) where an option may stand: it can spell any option" % t
     if wget and not out_seen:
         return "wget without -O - writes a file named by the URL"
     return None
@@ -2557,6 +2580,9 @@ def _unsafe_downloads(text):
                 for n, t in enumerate(toks):
                     if _base(t.strip("\"'")) in DOWNLOADERS:
                         why = _download_reason([_base(t.strip("\"'"))] + toks[n + 1:])
+                        after = chunk[chunk.find(t) + len(t):] if t in chunk else chunk
+                        if why is None and "$" in re.sub(r"\$'[^']*'|'[^']*'|\"[^\"]*\"", "", after):
+                            why = "an unquoted expansion after the program name splits into words this parser cannot read"
                         if why is None:
                             bad_sinks = [x for x in _redirect_targets(chunk) if x not in ("/dev/null",)]
                             if bad_sinks:
@@ -2571,8 +2597,16 @@ def _unsafe_downloads(text):
 DOWNLOAD_EXCLUSIONS = {
     (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
-        "holds only while the file names that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
-        "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
+        "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
+        "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
+    (".github/workflows/dependabot-reviewer.yml", "review", 4, "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
+        "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} (set by the runner, quoted, followed by a literal &audience=) into a "
+        "command substitution that jq reads; it writes no file (this exclusion holds only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+        "ACTIONS_ID_TOKEN_REQUEST_URL", None),
+    (".github/workflows/dependabot-reviewer.yml", "review", 8, "95e44c8ccb8ac27ab0ffcf34f61f7111cfbaf6d70676cc36b5dee4724f6c5727"): (
+        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written (this exclusion holds "
+        "only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+        "ACTIONS_ID_TOKEN_REQUEST_URL", None),
 }
 
 
@@ -2609,7 +2643,9 @@ def check_runs(where_job, scripts, bad, tree=None):
     # every committed script read for this job must run as committed: nothing in the job, its -c / eval strings or the
     # scripts it runs writes it first (Codex #164 r3, C02 — after inlining, over normalized paths, harnesses included)
     read_scripts = dict(READ_SCRIPTS)
-    if read_scripts:                                     # REQ-REL-005-AC3: this job runs a committed script
+    foreign_ran = bool(FOREIGN_RUN)
+    FOREIGN_RUN.clear()
+    if read_scripts or foreign_ran:                                     # REQ-REL-005-AC3: this job runs a committed script
         for item, ok in zip(scripts, posix):
             if not ok:
                 continue
@@ -2621,7 +2657,8 @@ def check_runs(where_job, scripts, bad, tree=None):
                     ftext = tree.read(key[0])
                 except Exception:
                     ftext = ""
-                if ftext.count(excl[1]) == 1 and len(re.findall(r"(?m)^\s*AUDITOR_KEV_CATALOG\s*:", ftext)) == 1:
+                assigned = len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext))
+                if (excl[2] is None and assigned == 0) or (excl[2] is not None and ftext.count(excl[2]) == 1 and assigned == 1):
                     continue
             for cmd, why in _unsafe_downloads(read(item[1])):
                 bad.append(f"{item[0]}: this job runs a committed script, and `{cmd[:80]}` is a download that is not demonstrably writing to standard output or "
