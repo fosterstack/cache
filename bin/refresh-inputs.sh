@@ -653,15 +653,19 @@ for kind in ("production", "fips"):
 # REQ-REFRESH-001-AC32, the first fill: an archive that holds nothing but the pinned key and a main with no pointer cannot already hold the versions the committed
 # locks name, so the ones Wolfi still serves are fetched below and verified before they are archived. Any other state keeps the rule: a missing version stops the job.
 def first_fill_state():
+    """exactly the key and nothing else: a real archive directory holding one real keys directory that holds one regular file, the pinned key (any other entry,
+    whatever its type, a symlinked archive or keys directory, or a listing that cannot be read is not the first-fill state)"""
     if os.path.lexists(repo + "/build/archive.json"):
         return False
-    keyfile = archived_key
-    for root, dirs, files in os.walk(archive, followlinks=False):
-        for n_ in dirs + files:
-            q_ = os.path.join(root, n_)
-            if os.path.islink(q_) or (os.path.isdir(q_) and q_ != os.path.dirname(keyfile)) or (os.path.isfile(q_) and q_ != keyfile):
-                return False
-    return os.path.isfile(keyfile) and not os.path.islink(keyfile)
+    try:
+        if os.path.islink(archive) or not os.path.isdir(archive) or os.listdir(archive) != ["keys"]:
+            return False
+        kd = archive + "/keys"
+        if os.path.islink(kd) or not os.path.isdir(kd) or os.listdir(kd) != ["wolfi-signing.rsa.pub"]:
+            return False
+        return (os.lstat(archived_key).st_mode & 0o170000) == 0o100000
+    except OSError:
+        return False
 
 
 FIRST_FILL = first_fill_state()
@@ -874,6 +878,9 @@ def verify_index(path, arch):
         if "P" in f and "V" in f and "C" in f:
             listed.add((f["P"], f["V"], f["C"]))
     index_listed[arch] = listed
+    for (_n, _v, _a), _e in sorted(ff_locked.items()):   # a committed version fetched by the first fill is backed by the signed index like every locked package
+        if _a == arch and (_n, _v, _e["checksum"]) not in listed:
+            fail("the signed %s package index does not list the committed package %s-%s (%s); it cannot be checked against the index, a human must look" % (arch, _n, _v, _e["checksum"]))
     for lockpk in (live["production"], live["fips"], live_mel):
         for e in lockpk:
             if e["architecture"] == arch and (e["name"], e["version"], e["checksum"]) not in listed:
