@@ -2,7 +2,7 @@
 # Rebuild and Sign (it needs exactly those three; it reaches Build through Check). This is the ONLY file of the repository that holds a registry credential,
 # the apk signing key or packages: write, and it holds them only in the Witness steps that need them (the environment named release holds the secrets).
 # It builds nothing. Steps: checkout, the three pinned tools (Witness first, rule 68) and the pinned melange (for the apk re-signing, REQ-CHAIN-007-AC1), the earlier stages' artifacts, then six Witness steps through the one helper,
-# each a committed script: release-verify (no credential exists yet: the tag, the release policy, every earlier stage's record in rule 69's order),
+# each a committed script: release-verify (no credential is bound to this step: the tag, the release policy, every earlier stage's record in rule 69's order),
 # release-apks (re-sign the apks with the stored key), release-publish (the exact image bytes by digest to ghcr.io and Docker Hub, read back),
 # release-sign (keyless signatures with a Rekor entry), release-assets (the evidence to the GitHub release) and release-postverify (the customer-guide
 # commands that need a registry, run against what was just published, in both registries; rule 79 as amended by the owner on Oct 10). Release creates no tag.

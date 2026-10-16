@@ -24,6 +24,8 @@ docs/tutorials/artifact-policy.md:58-70 (the envelope: base64 payload); PR 3's b
 fixtures); PR 1's chain-scripts.json rows (tools, runs, signs)."""
 import base64, hashlib, json, os, re, sys, yaml
 
+# a stored secret or the job token read in any expression syntax (dotted or bracket), or a credential name; used by the credential judges (fail closed on the bracket form too)
+CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB|APK_RELEASE", re.I)
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
@@ -130,6 +132,9 @@ def verify_job(j):
             bad.append("verify job: artifact %s must be downloaded to %s (where release-verify reads it), got %r" % (nm, want, dl.get(nm)))
     if not ups or ups != list(range(len(kinds) - len(ups), len(kinds))):
         bad.append("verify job: only uploads may follow release-verify, and there must be at least one")
+    upl = [(x.get("with") or {}) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/upload-artifact@")]
+    if upl != [{"name": "witness-release-verify", "path": "witness-release-verify"}]:
+        bad.append("verify job: its one upload must be exactly name witness-release-verify with path witness-release-verify (the Witness record of release-verify; the release job's own upload is witness-release): %s" % upl)
     return bad
 
 
@@ -228,7 +233,7 @@ def stage(path):
 
 def j_names_credential(j):
     blob = yaml.dump(j.get("steps") or [])
-    return any(st.get("env") is not None for st in (j.get("steps") or [])) or bool(re.search(r"secrets\.|github\.token|GH_TOKEN|DOCKERHUB|APK_RELEASE|environment", blob + " " + str(j.get("environment") or "")))
+    return any(st.get("env") is not None for st in (j.get("steps") or [])) or bool(CRED_RE.search(blob) or re.search(r"environment", blob + " " + str(j.get("environment") or "")))
 
 
 def credentials(path):
@@ -245,12 +250,12 @@ def credentials(path):
         name = r.split()[2] if r.startswith("bash bin/witnessed.sh ") and len(r.split()) > 3 else None
         blob = yaml.dump(s)
         if not seen_verify:
-            if env is not None or re.search(r"secrets\.|github\.token|GH_TOKEN|DOCKERHUB|APK_RELEASE", blob):
+            if env is not None or CRED_RE.search(blob):
                 bad.append("a step up to release-verify has an env or names a secret or token: %s" % (r or s.get("uses", "")))
             seen_verify = name == "release-verify"
             continue
         if name is None:
-            if env is not None or re.search(r"secrets\.|github\.token", blob):
+            if env is not None or CRED_RE.search(blob):
                 bad.append("only the witnessed steps may carry an env or a secret: %s" % (r or s.get("uses", "")))
             continue
         want = WHO.get(name, set())
