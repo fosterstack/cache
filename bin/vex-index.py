@@ -44,6 +44,7 @@ MAX_DEPTH = 32
 MAX_PLATFORMS = 64
 MAX_INT = 2 ** 53
 MAX_STATEMENT_BYTES = 2 << 20  # an attestation statement (it embeds the VEX)
+MAX_CONFIG_BYTES = 16 << 20  # an image config read while checking a layout
 MAX_SMALL_BLOB_BYTES = 64 << 10  # an attestation manifest or config
 
 # every digest, port and name below is ASCII only: [0-9] and explicit classes, never \d or \w
@@ -427,9 +428,9 @@ def clean_path(path):
 
 def check_path(path):
     """a path argument has no symlink at any level and no '.' or '..' segment: what is named is what is reached"""
-    path = clean_path(path)
     if any(part in (".", "..") for part in path.split("/")):
         raise Refuse("%s has a '.' or '..' segment" % path)
+    path = clean_path(path)
     if os.path.realpath(path) != os.path.abspath(path):
         raise Refuse("%s goes through a symlink (at some level of the path)" % path)
     return path
@@ -496,8 +497,15 @@ def list_directory(dir_fd, what):
 
 def create_file(dir_fd, name, data):
     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o666, dir_fd=dir_fd)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(data)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+    except BaseException:
+        try:
+            os.unlink(name, dir_fd=dir_fd)       # this call created the file (O_EXCL): a partial one is never left
+        except OSError:
+            pass
+        raise
 
 
 # ---------------------------------------------------------------- compute
@@ -695,15 +703,17 @@ LAYOUT_TOP = {"oci-layout": stat.S_IFREG, "index.json": stat.S_IFREG, "blobs": s
 
 
 def open_layout(layout):
-    """(dir_fd, blobs, top-level index.json, its one descriptor, index.json bytes) of an OCI image layout directory, or a refusal; the caller closes both"""
+    """(dir_fd, blobs, top-level index.json, its one descriptor, the bytes of oci-layout and index.json as read) of an OCI image layout directory, or a refusal; the caller closes both"""
     layout_fd = open_directory(layout)
     try:
         if list_directory(layout_fd, "the layout") != LAYOUT_TOP:
             raise Refuse("the layout must hold exactly oci-layout, index.json and blobs/ (regular files and a directory, no links)")
-        marker = load_json(read_regular(layout_fd, "oci-layout", 1024, "oci-layout"), "oci-layout")
+        marker_bytes = read_regular(layout_fd, "oci-layout", 1024, "oci-layout")
+        marker = load_json(marker_bytes, "oci-layout")
         if marker != {"imageLayoutVersion": "1.0.0"}:
             raise Refuse("oci-layout is not exactly imageLayoutVersion 1.0.0")
-        top = load_json(read_regular(layout_fd, "index.json", MAX_INDEX_BYTES, "index.json"), "the layout's index.json")
+        top_bytes = read_regular(layout_fd, "index.json", MAX_INDEX_BYTES, "index.json")      # read once: what is parsed is what is compared later
+        top = load_json(top_bytes, "the layout's index.json")
         entries = top.get("manifests") if isinstance(top, dict) else None
         if not isinstance(top, dict) or top.get("schemaVersion") != 2 or not isinstance(entries, list) or len(entries) != 1:
             raise Refuse("the layout's index.json must have schemaVersion 2 and exactly one descriptor")
@@ -719,7 +729,7 @@ def open_layout(layout):
         if list_directory(blobs.root_fd, "blobs/") != {"sha256": stat.S_IFDIR}:
             blobs.close()
             raise Refuse("the layout's blobs/ must hold only sha256/")
-        return layout_fd, blobs, top, entry, read_regular(layout_fd, "index.json", MAX_INDEX_BYTES, "index.json")
+        return layout_fd, blobs, top, entry, {"oci-layout": marker_bytes, "index.json": top_bytes}
     except BaseException:
         os.close(layout_fd)
         raise
@@ -760,21 +770,31 @@ def reach_image(blobs, found, entry, where):
         names.add(name)
     present(entry, where)
     manifest = load_json(read_regular(blobs.sha_fd, hex_of(entry["digest"]), MAX_SMALL_BLOB_BYTES, where), where, limits=False)
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("layers"), list):
-        raise Refuse("%s is not an image manifest with a config and layers" % where)
+    if (not isinstance(manifest, dict) or manifest.get("schemaVersion") != 2 or manifest.get("mediaType") not in (OCI_MANIFEST, DOCKER_MANIFEST)
+            or manifest["mediaType"] != entry["mediaType"] or not isinstance(manifest.get("layers"), list)):
+        raise Refuse("%s is not an image manifest (schemaVersion 2, the media type its descriptor names, a config and layers)" % where)
     present(manifest.get("config"), where + " config")
+    config = load_json(read_regular(blobs.sha_fd, hex_of(manifest["config"]["digest"]), MAX_CONFIG_BYTES, where + " config"), where + " config", limits=False)
+    if not isinstance(config, dict):
+        raise Refuse("%s config is not a JSON object" % where)
     for position, layer in enumerate(manifest["layers"]):
         present(layer, "%s layer %d" % (where, position))
     return names
 
 
-def check_layout_blobs(blobs, platforms, extra_names):
+def retained_children(index_bytes, final):
+    """[(label, descriptor)] of every child that is not an attestation (also one without a platform): each is an image that must be whole"""
+    index, _ = load_index(index_bytes, final=final)
+    return [("child %d" % position, entry) for position, entry in enumerate(index["manifests"]) if not is_attestation(entry)]
+
+
+def check_layout_blobs(blobs, children, extra_names):
     """every blob of the layout is a regular file hashing to its name, every platform's image graph is present and exact,
     and nothing else is in the directory beyond extra_names (which must also be present)"""
     found = hash_blobs(blobs)
     reach = set(extra_names)
-    for name, entry in platforms:
-        reach |= reach_image(blobs, found, entry, "platform " + name)
+    for label, entry in children:
+        reach |= reach_image(blobs, found, entry, label)
     if set(found) != reach:
         raise Refuse("blobs/sha256 does not hold exactly the blobs of the images and the indexes")
     return found
@@ -787,6 +807,23 @@ def read_index_blob(blobs, entry, limit):
     return data
 
 
+def layout_state_problem(layout_fd, blobs, files, blob_sizes):
+    """why the layout is not exactly the expected state (top-level files by name with their bytes, blobs with their sizes), or None;
+    the blobs are hashed first and every listing and file is read after that, so a change during the hashing is seen too"""
+    if hash_blobs(blobs) != blob_sizes:
+        return "the blobs are not the expected ones"
+    if list_directory(layout_fd, "the layout") != dict({name: stat.S_IFREG for name in files}, blobs=stat.S_IFDIR):
+        return "the layout's files are not the expected ones"
+    if list_directory(blobs.root_fd, "blobs/") != {"sha256": stat.S_IFDIR}:
+        return "blobs/ is not the expected directory"
+    if {name: stat.S_IFREG for name in blob_sizes} != list_directory(blobs.sha_fd, "blobs/sha256"):
+        return "blobs/sha256 is not the expected directory"
+    for name, data in files.items():
+        if read_regular(layout_fd, name, MAX_INDEX_BYTES, name) != data:
+            return "%s is not the expected file" % name
+    return None
+
+
 def unlink_quiet(dir_fd, name):
     try:
         os.unlink(name, dir_fd=dir_fd)
@@ -796,13 +833,12 @@ def unlink_quiet(dir_fd, name):
 
 def command_layout(args):
     vex_bytes = read_path(args.vex, MAX_INDEX_BYTES)
-    layout_fd, blobs, top, entry, top_bytes = open_layout(args.layout)
+    layout_fd, blobs, top, entry, snapshot = open_layout(args.layout)
     created, tmp, tmp_made = [], "index.json.vex-index.tmp", False
     try:
         d_bytes = read_index_blob(blobs, entry, MAX_INDEX_BYTES)
         final_bytes, new_blobs, result = compute(d_bytes, vex_bytes)
-        _, platforms = load_index(d_bytes, final=False)
-        before = check_layout_blobs(blobs, platforms, {hex_of(entry["digest"])})   # the whole layout, before anything is written
+        before = check_layout_blobs(blobs, retained_children(d_bytes, False), {hex_of(entry["digest"])})   # the whole layout, before anything is written
         planned = dict(new_blobs)
         planned[digest_of(final_bytes)] = final_bytes
         for digest, data in planned.items():
@@ -813,19 +849,24 @@ def command_layout(args):
         if "annotations" in entry:
             descriptor["annotations"] = entry["annotations"]
         final_top["manifests"] = [descriptor]
-        create_file(layout_fd, tmp, canonical(final_top) + b"\n")   # claimed first: if it exists, nothing else is written
+        top_out = canonical(final_top) + b"\n"
+        create_file(layout_fd, tmp, top_out)   # claimed first: if it exists, nothing else is written
         tmp_made = True
         for digest, data in planned.items():
             if hex_of(digest) not in before:
                 create_file(blobs.sha_fd, hex_of(digest), data)
                 created.append(hex_of(digest))
-        if (read_regular(layout_fd, "index.json", MAX_INDEX_BYTES, "index.json") != top_bytes
-                or hash_blobs(blobs) != dict(before, **{hex_of(d): len(planned[d]) for d in planned})):
-            raise Refuse("the layout changed while this run was working; nothing was committed")
+        sizes = dict(before, **{hex_of(d): len(planned[d]) for d in planned})
+        problem = layout_state_problem(layout_fd, blobs, dict(snapshot, **{tmp: top_out}), sizes)
+        if problem:
+            raise Refuse("the layout changed while this run was working (%s); nothing was committed" % problem)
         os.rename(tmp, "index.json", src_dir_fd=layout_fd, dst_dir_fd=layout_fd)
         tmp_made = False
+        problem = layout_state_problem(layout_fd, blobs, {"oci-layout": snapshot["oci-layout"], "index.json": top_out}, sizes)
+        if problem:
+            raise Refuse("the layout changed during the commit (%s); it is not trustworthy" % problem)
     except BaseException:
-        for name in created:
+        for name in (created if tmp_made else []):
             unlink_quiet(blobs.sha_fd, name)
         if tmp_made:
             unlink_quiet(layout_fd, tmp)
@@ -840,7 +881,7 @@ def command_verify_layout(args):
     vex_bytes = read_path(args.vex, MAX_INDEX_BYTES)
     if not DIGEST.fullmatch(args.base_digest):
         raise Refuse("--base-digest is not sha256:<64 lowercase hex>")
-    layout_fd, blobs, top, entry, _top_bytes = open_layout(args.layout)
+    layout_fd, blobs, top, entry, _snapshot = open_layout(args.layout)
     try:
         final_bytes = read_index_blob(blobs, entry, MAX_FINAL_BYTES)
         vex = check_vex(vex_bytes)
@@ -853,8 +894,7 @@ def command_verify_layout(args):
         stripped["manifests"] = [e for e in final["manifests"] if not is_attestation(e)]
         if canonical(stripped) != canonical(built):
             raise Refuse("the final index minus its attestations differs from the built index")
-        _, platforms = load_index(final_bytes, final=True)
-        check_layout_blobs(blobs, platforms, {hex_of(entry["digest"]), hex_of(args.base_digest)} | {hex_of(d) for d in needed})
+        check_layout_blobs(blobs, retained_children(final_bytes, True), {hex_of(entry["digest"]), hex_of(args.base_digest)} | {hex_of(d) for d in needed})
     finally:
         blobs.close()
         os.close(layout_fd)
@@ -872,7 +912,7 @@ def build_parser():
     verify_parser.add_argument("--final", required=True)
     verify_parser.add_argument("--vex", required=True)
     verify_parser.add_argument("--blobs", required=True, help="the blobs directory written by compute (holds sha256/<hex>)")
-    verify_parser.add_argument("--base", help="the built index file")
+    verify_parser.add_argument("--base", required=True, help="the built index file (the exclusion of its digest from the attestations is checked against it)")
     layout_parser = commands.add_parser("layout", help="turn the built index of an OCI image layout into the final index, in place")
     layout_parser.add_argument("--layout", required=True)
     layout_parser.add_argument("--vex", required=True)

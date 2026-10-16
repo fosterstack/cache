@@ -1211,7 +1211,10 @@ def _(good):
     path, fb = build_custom(fx, VEX_MIN)
     eq(len(fb), 2 ** 21 + (0 if good else 1), "fixture size")
     r = verify(fb, VEX_MIN, blobs=os.path.join(path, "blobs"))
-    ok((r.rc == 0) == good, "verify %s a final index of %d bytes: %s" % ("refused" if good else "accepted", len(fb), r.err.strip()[:150]))
+    if good:    # the built index it derives from is itself above its own 1 MiB limit here, so the only refusal that may come is the base file's size, after the final index was read
+        ok(r.rc == 0 or (r.rc == 2 and "base.json is larger than 1048576 bytes" in r.err), "verify refused a final index of %d bytes for the wrong reason: %s" % (len(fb), r.err.strip()[:150]))
+    else:
+        ok(r.rc != 0 and "final.json is larger" in r.err, "verify accepted or mislabelled a final index of %d bytes: %s" % (len(fb), r.err.strip()[:150]))
 
 
 @case("AC2", "valid OpenVEX forms are accepted: a product identified only by identifiers, subcomponents, every justification, timestamps with Z and valid offsets and fractions, statement timestamps")
@@ -1568,6 +1571,13 @@ def verify(f_bytes, vb, base=None, blobs="auto", s=None, env=None, final_path=No
     if blobs == "auto":
         blobs = auto_blobs(f_bytes, vb)
     args = ["verify", "--final", fp, "--vex", vp]
+    if base is None:      # --base is required: by default the built index the final index was made from (its entries minus the attestations)
+        try:
+            o = json.loads(f_bytes)
+            o["manifests"] = [e for e in o["manifests"] if not (e.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"]
+            base = json.dumps(o).encode()
+        except Exception:
+            base = mk_fx().bytes
     if base is not None:
         args += ["--base", wr(os.path.join(s, "base.json"), base) if isinstance(base, bytes) else base]
     if blobs is not None:
@@ -2391,11 +2401,11 @@ def _():
         eq(os.listdir(target), [], "something was written through the symlink spelled %r" % (spelling % "link"))
 
 
-@case("AC2", "compute accepts a real out-dir with a trailing slash or dot, creating it when it does not exist" + R8)
+@case("AC2", "compute accepts a real out-dir with trailing slashes, creating it when it does not exist" + R8)
 def _():
     fx = mk_fx()
     base = do_compute(fx.bytes, VEX_MIN)
-    for spelling in ("%s/", "%s/."):
+    for spelling in ("%s/", "%s//"):
         s = sb()
         i = wr(os.path.join(s, "i.json"), fx.bytes)
         v = wr(os.path.join(s, "v.json"), VEX_MIN)
@@ -2968,6 +2978,239 @@ def _():
                case_ + ": the replaced index.json must not be overwritten by a stale run")
             left = [k for k in tree(d, full=True) if k not in t0 and not k.endswith("/")]
             eq(left, [], case_ + ": what the run created must be removed again")
+
+
+
+# ------------------------------------------------------------------ round 2 (Codex #389): retained children, image contents, one snapshot, partial writes, verify needs its base, dot spellings
+def fx_edit_child(edit, cfg=None):
+    """a fixture whose first platform's manifest (and optionally config) is replaced, with the index rebuilt around it"""
+    fx = mk_fx()
+    ch = fx.children[0]
+    man = json.loads(ch["bytes"])
+    blobs = dict(ch["blobs"])
+    if cfg is not None:
+        old_cfg = man["config"]["digest"]
+        blobs.pop(old_cfg)
+        blobs[dg(cfg)] = cfg
+        man["config"]["digest"], man["config"]["size"] = dg(cfg), len(cfg)
+    edit(man)
+    b = json.dumps(man, indent=2).encode()
+    ch.update(bytes=b, digest=dg(b), size=len(b), blobs=blobs)
+    fx.obj["manifests"][0].update(digest=dg(b), size=len(b))
+    fx.bytes = json.dumps(fx.obj, indent=2).encode("utf-8") + b"\n"
+    return fx
+
+
+def _set(key, value):
+    return lambda man: man.__setitem__(key, value)
+
+
+@param("LAYOUT", "layout refuses a platform whose manifest or config is not a well-formed image (schemaVersion 2, an image manifest media type, a JSON object config), leaving the layout untouched", [
+    ("schemaVersion 1", (_set("schemaVersion", 1), None)), ("schemaVersion 99 with a Docker list media type", (lambda m: (m.__setitem__("schemaVersion", 99), m.__setitem__("mediaType", DOCKER_LIST)), None)),
+    ("a manifest list media type", (_set("mediaType", DOCKER_LIST), None)), ("no layers list", (lambda m: m.pop("layers"), None)),
+    ("a layer without a media type", (lambda m: m["layers"][0].pop("mediaType"), None)),
+    ("a config that is not JSON", (lambda m: None, b"not JSON")), ("a config that is a JSON list", (lambda m: None, b"[1]"))])
+def _(arg):
+    edit, cfg = arg
+    fx = fx_edit_child(edit, cfg)
+    d, _b = mk_layout(fx)
+    t0 = tree(d, full=True)
+    r = lay(d, vex_real())
+    ok(r.rc == 2, "wanted a refusal (exit 2), got rc=%d %s" % (r.rc, (r.out + r.err).strip()[:200]))
+    eq(tree(d, full=True), t0, "the layout must be untouched")
+
+
+def fx_unknown_child(complete):
+    """a fixture with one more retained child (platform unknown/unknown, the shape of a buildkit attestation) whose image graph is complete or lacks its config"""
+    fx = mk_fx()
+    cfg = cj({"architecture": "unknown", "os": "unknown", "rootfs": {"type": "layers", "diff_ids": []}})
+    man = {"schemaVersion": 2, "mediaType": OCI_MAN, "config": {"mediaType": OCI_CFG, "digest": dg(cfg), "size": len(cfg)}, "layers": []}
+    b = json.dumps(man, indent=2).encode()
+    fx.extra = {dg(b): b}
+    if complete:
+        fx.extra[dg(cfg)] = cfg
+    fx.obj["manifests"].append({"mediaType": OCI_MAN, "digest": dg(b), "size": len(b), "platform": {"architecture": "unknown", "os": "unknown"}})
+    fx.bytes = json.dumps(fx.obj, indent=2).encode("utf-8") + b"\n"
+    return fx
+
+
+def mk_layout_with(fx):
+    d, blobs = mk_layout(fx)
+    for dig, data in fx.extra.items():
+        wr(os.path.join(d, "blobs", "sha256", hx(dig)), data)
+    return d
+
+
+@case("LAYOUT", "every retained child of the built index (also a platform-less unknown/unknown one) must have its whole image graph present, in layout and verify-layout; a complete one is kept untouched")
+def _():
+    fx = fx_unknown_child(complete=False)
+    d = mk_layout_with(fx)
+    t0 = tree(d, full=True)
+    r = lay(d, vex_real())
+    ok(r.rc == 2, "an incomplete retained child must be refused, got rc=%d %s" % (r.rc, (r.out + r.err).strip()[:200]))
+    eq(tree(d, full=True), t0, "the layout must be untouched")
+    fx = fx_unknown_child(complete=True)
+    d = mk_layout_with(fx)
+    r = lay(d, vex_real())
+    ok(r.rc == 0, "a complete retained child must be accepted: rc=%d %s" % (r.rc, r.err.strip()[:200]))
+    r = lay(d, vex_real(), cmd="verify-layout", extra=("--base-digest", dg(fx.bytes)))
+    ok(r.rc == 0, "verify-layout of it: rc=%d %s" % (r.rc, r.err.strip()[:200]))
+    for dig in fx.extra:
+        ok(os.path.isfile(os.path.join(d, "blobs", "sha256", hx(dig))), "the retained child's blob must stay")
+    top = json.loads(rd(os.path.join(d, "index.json")))
+    final = json.loads(rd(os.path.join(d, "blobs", "sha256", hx(top["manifests"][0]["digest"]))))
+    ok(final["manifests"][2]["platform"] == {"architecture": "unknown", "os": "unknown"} and final["manifests"][2]["digest"] == fx.obj["manifests"][2]["digest"],
+       "the retained child must keep its place in the final index")
+
+
+@case("LAYOUT", "a file this tool creates is removed again when writing or closing it fails part-way (no partial blob and no partial temporary index remains)")
+def _():
+    import types
+    for failing in ("the temporary index", "a blob"):
+        fx = mk_fx()
+        d, _b = mk_layout(fx)
+        vb = wr(os.path.join(sb(), "vex.json"), vex_real())
+        t0 = tree(d, full=True)
+        m = _load_tool()
+        counter = {"n": 0}
+        real_fdopen = os.fdopen
+        want = 1 if failing == "the temporary index" else 2
+
+        class Handle:
+            def __init__(self, h, fail):
+                self.h, self.fail = h, fail
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                self.h.close()
+                return False
+
+            def write(self, data):
+                if self.fail:
+                    self.h.write(data[:7])
+                    self.h.flush()
+                    raise OSError(28, "no space left")
+                return self.h.write(data)
+
+        def fdopen(fd, mode):
+            counter["n"] += 1
+            return Handle(real_fdopen(fd, mode), counter["n"] == want)
+        m.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os)})
+        m.os.fdopen = fdopen
+        old, sys.argv = sys.argv, ["vex-index", "layout", "--layout", d, "--vex", vb]
+        code = None
+        try:
+            try:
+                m.main()
+            except SystemExit as e:
+                code = e.code
+        finally:
+            sys.argv = old
+        ok(code not in (0, None), "%s: the command must fail, got %r" % (failing, code))
+        eq(tree(d, full=True), t0, failing + ": nothing may be left behind")
+
+
+def _swap_ann(d, fx):
+    other = os.path.join(d, "index.json")
+    top = json.loads(rd(other))
+    top["annotations"] = {"swapped": "yes"}
+    wr(other, json.dumps(top).encode())
+
+
+def _swap_marker(d, fx):
+    wr(os.path.join(d, "oci-layout"), b'{"imageLayoutVersion":"1.0.1"}')
+
+
+def _swap_top_stray(d, fx):
+    wr(os.path.join(d, "stray.txt"), b"x")
+
+
+def _swap_blobs_stray(d, fx):
+    wr(os.path.join(d, "blobs", "sha256", "d" * 64), b"not its hash")
+
+
+def _swap_tmp(d, fx):
+    wr(os.path.join(d, "index.json.vex-index.tmp"), b'{"manifests":[]}')
+
+
+@param("LAYOUT", "a change to the layout while the tool works (any file of it, at any step before the commit) fails the run and leaves nothing of this run behind", [
+    (k, (f, when)) for k, f in (("index.json", _swap_ann), ("oci-layout", _swap_marker), ("a stray top-level file", _swap_top_stray),
+                               ("a stray blob", _swap_blobs_stray), ("the temporary index", _swap_tmp)) for when in ("after the first blob", "in the last pass")])
+def _(arg):
+    swap, when = arg
+    fx = mk_fx()
+    d, _b = mk_layout(fx)
+    vb = wr(os.path.join(sb(), "vex.json"), vex_real())
+    t0 = tree(d, full=True)
+    m = _load_tool()
+    state = {"done": False, "hash_calls": 0}
+    real_create, real_hash = m.create_file, m.hash_blobs
+
+    def once():
+        if not state["done"]:
+            state["done"] = True
+            swap(d, fx)
+    if when == "after the first blob":
+        def create(dir_fd, name, data):
+            real_create(dir_fd, name, data)
+            if not name.endswith(".tmp"):
+                once()
+        m.create_file = create
+    else:
+        def hashing(blobs):
+            state["hash_calls"] += 1
+            out = real_hash(blobs)
+            if state["hash_calls"] == 2:
+                once()
+            return out
+        m.hash_blobs = hashing
+    old, sys.argv = sys.argv, ["vex-index", "layout", "--layout", d, "--vex", vb]
+    code = None
+    try:
+        try:
+            m.main()
+        except SystemExit as e:
+            code = e.code
+    finally:
+        sys.argv = old
+    ok(state["done"], "the change was never made (harness)")
+    ok(code not in (0, None), "the run must fail, got %r" % (code,))
+    top = json.loads(rd(os.path.join(d, "index.json")))
+    ok(top["manifests"][0]["digest"] == dg(fx.bytes), "the final index must not have been committed")
+    new = [k for k in tree(d, full=True) if k not in t0]
+    ok(all(k in ("stray.txt", "index.json.vex-index.tmp") or k.endswith(("d" * 64,)) for k in new) or new == [],
+       "what this run created must be removed (only the swapper's own file may remain): %r" % new)
+    ok(not any(k.startswith("blobs/sha256/") and k not in t0 and not k.endswith("d" * 64) for k in new), "a blob of this run was left behind: %r" % new)
+
+
+@case("AC3", "verify needs --base (the exclusion of D from the attestations cannot be checked without it)")
+def _():
+    fx = mk_fx()
+    s = sb()
+    out = os.path.join(s, "out")
+    i = wr(os.path.join(s, "i.json"), fx.bytes)
+    v = wr(os.path.join(s, "v.json"), VEX_MIN)
+    r = run(["compute", "--index", i, "--vex", v, "--out-dir", out])
+    ok(r.rc == 0, "compute failed: " + r.err.strip()[:200])
+    r = run(["verify", "--final", os.path.join(out, "index.json"), "--vex", v, "--blobs", os.path.join(out, "blobs")])
+    ok(r.rc != 0 and "--base" in r.err, "verify without --base must be refused: rc=%d %s" % (r.rc, r.err.strip()[:200]))
+    r = run(["verify", "--final", os.path.join(out, "index.json"), "--vex", v, "--blobs", os.path.join(out, "blobs"), "--base", i])
+    ok(r.rc == 0, "control with --base: rc=%d %s" % (r.rc, r.err.strip()[:200]))
+
+
+@param("LAYOUT", "a '.' segment is refused wherever it stands in a path argument, also the last one (layout/. and layout/./)", [(k, k) for k in ("/.", "/./", "/./.")])
+def _(suffix):
+    fx = mk_fx()
+    d, _b = mk_layout(fx)
+    t0 = tree(d, full=True)
+    r = run(["layout", "--layout", d + suffix, "--vex", wr(os.path.join(sb(), "v.json"), vex_real())])
+    ok(r.rc == 2, "layout%s must be refused: rc=%d %s" % (suffix, r.rc, (r.out + r.err).strip()[:200]))
+    eq(tree(d, full=True), t0, "the layout must be untouched")
+    s = sb()
+    r = run(["compute", "--index", wr(os.path.join(s, "i.json"), fx.bytes), "--vex", wr(os.path.join(s, "v.json"), VEX_MIN), "--out-dir", os.path.join(s, "o") + suffix])
+    ok(r.rc == 2, "an out-dir with %s must be refused: rc=%d" % (suffix, r.rc))
 
 
 
