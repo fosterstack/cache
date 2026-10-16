@@ -13,7 +13,7 @@ EARLIER command of the same list that is a verify form, and at run time only aft
 import json, os, re, shlex, subprocess, sys
 
 LIST = "docs/verify-release.cannot-run.json"
-ASSETS = "release-published"   # gh release download -D release-published (bin/release-assets.sh): the files a customer downloads
+ASSETS = "release-published"   # gh release download -D release-published (the release assets step): the files a customer downloads
 DIGESTS = "witness-build/digests.json"
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")   # constants: releases publish identical digests to both; no input names a repository
 TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")   # a release candidate publishes nothing, so there is nothing to verify (REQ-CHAIN-007-AC14)
@@ -38,7 +38,7 @@ def form_error(c, jq_only=False):
     while i < len(c):
         ch = c[i]
         if ch == "\\" and quote != "'":
-            # a backslash outside single quotes makes the next character literal: it never opens or closes a quoted region (a $ stays refused)
+            # a backslash outside single quotes turns the next character into a literal: it never opens or closes a quoted region (a $ stays refused)
             if i + 1 < len(c) and c[i + 1] != "$":
                 i += 2
                 continue
@@ -88,7 +88,7 @@ def form_error(c, jq_only=False):
 # ---- jq-only commands (REQ-CHAIN-007-AC20): a CLOSED grammar, fail closed -----------------------------------------------------------
 # A jq-only command is accepted only when it is spelled in this small grammar and every file it reads is a plain file name that an EARLIER
 # verify form of the list named as a file operand (and, at run time, only after that verify exited 0). Whatever the grammar does not name is
-# refused, so no option, module, program file, glob or combined flag can make jq read what nothing verified.
+# refused, so no option, module, program file, glob or combined flag can cause jq to read what nothing verified.
 PHM = lambda m: "\u2039" + m.group(1) + "\u203a"   # a placeholder is a marker no plain file name can equal (never PH_X, which a file could be called)
 JQ_FLAGS = ("-e", "-r", "-c", "-S", "--exit-status", "--raw-output", "--compact-output", "--sort-keys")   # each a separate word: no -er, no -L., no -f
 JQ_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -161,7 +161,7 @@ def jq_filter_why(f, names):
 
 
 def all_jq(c):
-    """True when every pipe segment of the command is a jq call and nothing else (no ; < > & ( ))."""
+    """True when every pipe segment of the command is a jq call and nothing else (no semicolon, redirect, background job or subshell)."""
     try:
         lx = shlex.shlex(PH.sub(PHM, c), posix=True, punctuation_chars=True)
         lx.whitespace_split = True
