@@ -3096,6 +3096,152 @@ requirements:
         then: "a run with every fixed-path tool in place completes exactly as the run with the ordinary search path does, and a copy that calls any named tool by bare name, however the name is spelled or assembled, fails with that tool 'not found' (a command the script hands to a stub or to sudo, env or unshare is resolved as exec would, under the same restricted path, and the stubs answer an unresolved operand with exit 127 and '<name>: command not found'; every named-tool call site, the commit-time, cleanup-fallback and network-probe sites included, is reached by its own restricted scenario that always runs, whoever the user is; the calls that are deliberately nonfatal or degrade are proved by their named evidence: the sysctl relaxation prints 'sudo: command not found' and 'could not relax' and makes no sysctl call, the cleanup fallback prints 'sudo: command not found', makes no sudo rm call and keeps the build's own status, and a bare go or env at the Go check ends the run as AC4 states: in CI it fails with 'no Go toolchain on PATH in CI', outside CI it exits 0 saying 'not verified' and the go stub is never called); this holds for the tools the scripts hand to a python subprocess as well (such a subprocess runs with a search path that names no directory); STATED RESIDUAL as AC3: the coreutils search path and the starting environment (BASH_ENV) are the invoking stage's"
         verification: { method: unit, release_blocking: false }
         status: approved
+  - id: REQ-REFRESH-001
+    title: Image inputs and the certified FIPS module are kept fresh by jobs that only open pull requests
+    statement: >
+      Once a day a job shall re-make the image lock files and re-resolve melange's build tools against live Wolfi; if anything changed it archives the new packages by digest, updates the locks and opens a pull request, never pushing to main; otherwise it does nothing. This job is the only updater of image recipes, apk packages and lock files. If Wolfi's signing key changed the job stops, opens no pull request and flags it for a human. If an old upstream version disappears the job notes it and does not fail. New Wolfi packages get no waiting period; signature and checksum checks and archiving still apply. The job's pull requests go through all normal checks and the rebuild-from-archive test. In the same daily run it shall also read Go's own certified-module file and, when a newer Go Cryptographic Module is certified, open a pull request that moves the FIPS build to it. The archive's package index shall be kept as the original Wolfi-signed file, versioned by its sha256, verified against the archived key, and an existing file under a digest name must hash to that name or the run fails closed.
+    source: [bin/refresh-inputs.sh, .github/workflows/go-freshness.yml, .github/dependabot.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 32, 44-49 and 73 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md, REFRESH-1..6, APKO-25, FIPS-59; rule 48 "dont do this 7 day hold on wolfi.")
+    confidence: implementation-only
+    notes: >
+      Real-run evidence for this group is PENDING the runner proof; the seal (rules 38-41) is not counted as proven until then; the earlier Addenda A-C ran on an older commit of the scripts.
+      The job is the `refresh` job of the existing go-freshness.yml workflow (no new workflow file). It opens pull requests with the auditor App's token, like the go.mod bump job, so bin/go-freshness-wiring-test.sh lists it as a credential consumer; the token's reach (a refresh/ branch and a pull request) was checked against the repository rulesets and the agent environment's branch policy (ruleset 21172637 targets only the default branch). Rebuilding the archive index and the check that a new lock verifies against the archive (bin/apko-lock.sh) belong to the apko pull request.
+      Known residuals: with an open refresh PR and the pointer ahead, the pointer is accepted if it hashes to its own name (direction and signature are checked only on the next reconcile run); a forwarded-value echo in error messages is not escaped. Round-8 residuals: the fips-module recipe is left modified if the push or the pull request creation fails (the PR run is a fresh checkout); in a state where the archive is BEHIND the record the superseded-pull-request sentence can name an unrelated closed refresh pull request (the sentence begins 'No open refresh pull request was found'); the pointer-ahead state trusts any self-hashing index file until the next reconcile replaces it. AC17 reading: while a refresh pull request waits, a damaged archived file stops the job, including a file named only by the COMMITTED locks (an old version an upgrade leaves behind); a MISSING apk is not downloaded again by that run (the waiting pull request's own run, and the first run after it merges, do that), and a package that only main's lock names and that live Wolfi no longer resolves is verified against the committed lock but cannot be downloaded again. AC17 floor for the committed melange.lock: its old versions (name=version, no checksums) are checked for integrity (every gzip stream inflates, the control section's datahash equals the data stream's sha256), not against a checksum; authenticity of those files rests on the apko locks and the signed index. AC22 plain pointer: a legacy plain pointer is checked to be a SIGNED index before any early exit (also when it equals the record). AC22 legacy state: a plain APKINDEX.tar.gz that is the recorded index and is a signed index, with no versioned index/APKINDEX-<sha256> file yet, is accepted and is kept under its own digest by the first run that changes the index. The daily job edits only DATA files (the locks, build/locks/fips-module.txt) and asks bin/gen-recipes.py what the recipes become; it never edits the recipe template or its pin.
+    acceptance_criteria:
+      - id: REQ-REFRESH-001-AC1
+        given: "the live Wolfi signing key differs from the archived one"
+        when: "bin/refresh-inputs.sh refresh runs (every run compares the keys first, even when nothing else changed)"
+        then: "it stops with exit 3 before any apko call, the message names the signing key and a human, and no branch, commit or pull request is made"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC2
+        given: "the live Wolfi signing key equals the archived one"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it makes the production, fips and melange-build-tools lock files with apko lock against https://packages.wolfi.dev/os, and when nothing changed it makes no commit, no push and no pull request and exits 0"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC3
+        given: "live Wolfi resolves a package version that the committed locks do not have"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "the new apk is downloaded over HTTPS (TLS 1.2 or newer) for both architectures, checked against the lock's control and data checksums (both ranges are required) and its datahash, and only then kept in the archive; the base locks (archive paths) and the melange lock and recipe pins are updated"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC4
+        given: "a downloaded package whose bytes fail a checksum in its lock entry"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it exits non-zero naming the checksum mismatch, keeps nothing in the archive, changes no lock and opens no pull request"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC5
+        given: "the refresh found changes"
+        when: "bin/refresh-inputs.sh refresh finishes"
+        then: "it pushes a branch named refresh/... (never main) and opens one pull request; it never merges, never uses --admin or auto-merge, never skips a hook or CI, and the pull request says it goes through all normal checks and the rebuild-from-archive test"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC6
+        given: "a package version in the committed locks that live Wolfi no longer resolves"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it notes in its output that the version is no longer in live Wolfi's resolution, exits 0 and keeps the archived copy"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC7
+        given: "the refresh path (bin/refresh-inputs.sh and the refresh job)"
+        when: "it is read"
+        then: "it holds no waiting period on new Wolfi packages (no cooldown, 7-day or minimum-age rule), and it says it is the only updater of image recipes, apk packages and lock files"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC8
+        given: ".github/dependabot.yml"
+        when: "it is read"
+        then: "it has no entry for apko, melange, apk packages or lock files"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC10
+        given: "Go's lib/fips140/certified.txt names the module the FIPS recipe already builds (GOFIPS140 proof value)"
+        when: "bin/refresh-inputs.sh fips-module runs"
+        then: "it says the build is up to date and exits 0 with no pull request"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC11
+        given: "Go's lib/fips140/certified.txt names a newer certified module than the FIPS recipe builds"
+        when: "bin/refresh-inputs.sh fips-module runs"
+        then: "build/melange-fips.yaml moves to it (the GOFIPS140 version and the proof value) and one pull request is opened, not merged, with nothing pushed to main"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC12
+        given: "lib/fips140/certified.txt is missing, empty, holds more than one module line, holds a value that is not vMAJOR.MINOR.PATCH-<8 hex>, names a module older than the one the recipe builds, or names the same version with a different hash"
+        when: "bin/refresh-inputs.sh fips-module runs"
+        then: "it fails closed (exit 2), naming the file, and changes nothing"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC13
+        given: "the refresh changed something and downloaded the live package index for each architecture"
+        when: "bin/refresh-inputs.sh refresh stores it"
+        then: "each index must verify against the archived Wolfi key and list every locked package (name, version and checksum), otherwise the run fails closed naming the index and changes nothing; it is stored byte for byte as index/APKINDEX-<sha256>.tar.gz, and an existing file under that name must hash to that name or the run fails closed; APKINDEX.tar.gz becomes a regular-file copy of the newest (the same sha256 as that index/APKINDEX-<sha256>.tar.gz, written atomically; never a symlink, and a symlink found there is refused), the previous index stays in the archive, and build/locks/archive-index.sha256 records one sha256 line per architecture (rules 31, 32, 47)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC14
+        given: "a live lock whose package name or version holds a path or other unexpected characters, or whose architecture is not x86_64 or aarch64, or an archived package with the same name and version but different bytes"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it refuses before anything is written (exit 2 for the invalid name, version or architecture, naming it; a checksum failure for different bytes), and the archive and the repository are byte for byte unchanged, as they are after any refusal before the commit phase (rules 45, 47)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC15
+        given: "a refresh that found changes, while a pull request opened by an earlier refresh is still open (a different change or this one), or while the list of open pull requests cannot be read"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "with an earlier refresh pull request open it pushes nothing and opens no second one, says so in the log and in the job summary with that pull request's number, and exits 0; an open FIPS-module pull request does not count; if the list cannot be read it exits 1 with no push and no pull request (rules 44, 49; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC16
+        given: "nothing changed against live Wolfi but build/locks/archive-index.sha256 does not exist"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it stores the verified live index as usual, writes the record from it and opens a pull request carrying the record; when the record exists and nothing changed it opens nothing (rules 30, 31, 44)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC17
+        given: "a package named by an unchanged lock is missing from the archive, or a file under a package's final name is truncated or has other bytes"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "the missing package is downloaded again and checked against the lock (exit 0, no pull request, nothing to commit); if it cannot be fetched again the job fails (exit 1) naming the package; a damaged file stops the job (exit 1), names the file, says to delete it and changes nothing (rules 27, 44; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC18
+        given: "any refresh that will change the archive or the repository"
+        when: "it writes"
+        then: "before the first change it checks that every file to be written (or its directory) is writable and that no directory on the way into the archive is a symlink or sits where a temporary name goes, and refuses (exit 1, naming it) otherwise; each file is written under a temporary name in its own directory and then renamed, so a run killed half-way leaves nothing under a final name and the next run succeeds (rule 44; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC19
+        given: "a signed package index or a package's control section"
+        when: "bin/refresh-inputs.sh refresh decompresses and reads it"
+        then: "an index larger than 128 MiB decompressed is refused (exit 1, naming the limit) before its signature is checked (the live index is 42 MiB today); a control section without exactly one datahash line is refused; numbers in ranges and versions are ASCII digits only (rules 32, 44; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC20
+        given: "a lock entry whose address is not https, or whose host is not exactly packages.wolfi.dev, or that has a port, a user name, a dot-dot segment, a backslash, a query or a fragment"
+        when: "bin/refresh-inputs.sh refresh reads the lock"
+        then: "it refuses (exit 2, naming the address check) before anything is fetched or written (rule 32)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC21
+        given: "the production, FIPS and melange locks name the same package and version for the same architecture with different checksums"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it refuses (exit 1, saying the locks disagree) and changes nothing (rule 44; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC22
+        given: "the archive's package index is intact but is not the one recorded in build/locks/archive-index.sha256 (a refresh pull request is waiting, or was closed unmerged)"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "if an open refresh pull request of ours exists it changes nothing and exits 0 saying so; if there is none it reconciles: it stores the verified live index; when the record would change it opens a pull request that rewrites the record, and that pull request's body states that no open refresh pull request was found, that the previous refresh pull request (its number when it can be found among the closed unmerged ones of ours, otherwise 'a previous refresh pull request') was closed unmerged and that this one supersedes it; when the record would not change it repoints the archive's pointer to the verified live index, opens no pull request and exits 0 saying so; and an index file that does not hash to its own name, a recorded index file that is missing or does not match (except the legacy state: a plain pointer file that is the recorded index and is a signed index, with no versioned file yet), a missing or non-matching pointer, a legacy plain pointer that is not a signed index, or a malformed record (CRLF, no final newline, a repeated or unknown line) stops the job naming it (rules 30, 31, 44; advisor reading: hardening of the daily job; Oct 10 step 5)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC23
+        given: "bin/refresh-inputs.sh"
+        when: "it is read and run"
+        then: "it names curl, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by fixed absolute path (never through the caller's search path; no other utility is called by bare name, cat, sed and dirname being builtins or parameter expansions instead), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it only in the lines marked TEST-SUBST (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-IMAGE-001
     title: The image is assembled by apko from the archive alone, sealed from the network and proved so
     statement: >
