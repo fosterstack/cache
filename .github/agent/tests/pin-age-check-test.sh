@@ -2304,6 +2304,17 @@ for bad in '{"shell": 5}' '{"shell": ["ghcr.io/own/ptool-a@'$DIG1'"]}' '["ghcr.i
   runck pbadshape '{"times": {}}'
   CASE="AC2 persona tools: a tools file of another shape ($bad) stops the check (exit 2), never skipped"; check test "$rc" -eq 2
 done
+# round 2 of cache#393: a registry with a port is an ordinary image reference, and a digest-only move in the same repository is a moved item
+PTP="registry.example:5000/team/ptool-p@$DIG1"
+newcase pport "$(pyw bin/persona-uat-tools.json "$(printf '{\n  "shell": "%s"\n}\n' "$PTP")")"
+runck pport "{\"times\": {\"image:registry.example:5000/team/ptool-p@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
+CASE="AC2 persona tools: an image on a registry with a port, 10 days old via registry-push, is inventoried (named) and accepted (exit 0)"
+check test "$rc" -eq 0; check grep -qF "registry.example:5000/team/ptool-p@$DIG1" "$work/pport.out"
+rm -rf "$work/pmove2"; cp -R "$base" "$work/pmove2"
+( cd "$work/pmove2" && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG1" >bin/persona-uat-tools.json && git add -A && git commit -q -m b2 && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG2" >bin/persona-uat-tools.json && git add -A && git commit -q -m h2 )
+runck pmove2 '{"times": {}}'
+CASE="AC2 persona tools: moving only the digest of the same repository is a moved item with no age: FAILS (exit 1) and names the new digest, not the old one"
+check test "$rc" -eq 1; check grep -qF "ghcr.io/own/same@$DIG2" "$work/pmove2.out"; check test "$(grep -cF "same@$DIG1" "$work/pmove2.out")" -eq 0
 # round 1 of cache#393 (both seats): a duplicate key, an image reference that is not <name>[:tag]@sha256:<64 hex> exactly, and a tools file that cannot be read each stop the check (exit 2): an image we cannot read is never skipped
 for bad in '{"shell": 7, "shell": "'$PT1'"}' '{"shell": "'$PT1'", "shell": "'$PT2'"}' '{"shell": "ghcr.io/own/ptool-a/'$DIG1'"}' '{"shell": "ghcr.io/own/ptool-a@'$DIG1'0"}' '{"shell": "ghcr.io/own/ptool-a@'${DIG1^^}'"}' '{"": "'$PT1'"}'; do
   newcase pbadref "$(pyw bin/persona-uat-tools.json "$bad")"

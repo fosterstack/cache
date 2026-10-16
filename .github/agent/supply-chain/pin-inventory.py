@@ -179,7 +179,7 @@ def _strip_tag(name):
     return (head + "/" if head else "") + tail.split(":")[0]
 
 
-PERSONA_IMAGE = re.compile(r"[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")
+PERSONA_IMAGE = re.compile(r"(?:[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/)?(?:[a-z0-9._-]+/)*[a-z0-9._-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")      # [registry[:port]/]path/name[:tag]@sha256:<digest>
 PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driver runs, by digest; no workflow names them, so the inventory reads the file itself (REQ-SUP-001-AC2)
 
 
