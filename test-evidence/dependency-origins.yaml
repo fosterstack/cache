@@ -1,0 +1,16 @@
+[
+ {
+  "module": "github.com/beorn7/perks",
+  "version": "v1.0.1",
+  "url": "https://github.com/beorn7/perks",
+  "commit": "37c8de3658fcb183f997c4e13e8337516ab753e6",
+  "command": "git ls-remote --tags https://github.com/beorn7/perks.git 'refs/tags/v1.0.1*' (annotated tag object c49ff274687222a7373c4cd83578f1065cf3e143, peeled commit 37c8de3658fcb183f997c4e13e8337516ab753e6); git fetch --depth 1 https://github.com/beorn7/perks.git refs/tags/v1.0.1; git log -1 --format=%H%n%cI FETCH_HEAD^{commit} gave 37c8de3658fcb183f997c4e13e8337516ab753e6 and 2019-07-31T14:00:54+02:00, which is 2019-07-31T12:00:54Z, the Time of the module record (Oct 12 2026)"
+ },
+ {
+  "module": "github.com/munnerz/goautoneg",
+  "version": "v0.0.0-20191010083416-a7dc8b61c822",
+  "url": "https://github.com/munnerz/goautoneg",
+  "commit": "a7dc8b61c822528f973a5e4e7b272055c6fdb43e",
+  "command": "git ls-remote https://github.com/munnerz/goautoneg.git (HEAD and refs/heads/master a7dc8b61c822528f973a5e4e7b272055c6fdb43e); git fetch --depth 1 https://github.com/munnerz/goautoneg.git a7dc8b61c822528f973a5e4e7b272055c6fdb43e; git log -1 --format=%H%n%cI FETCH_HEAD gave a7dc8b61c822528f973a5e4e7b272055c6fdb43e and 2019-10-10T09:34:16+01:00, which is 2019-10-10T08:34:16Z, the timestamp of the pseudo-version (Oct 12 2026)"
+ }
+]

@@ -579,7 +579,7 @@ elif mode == "dependabot":
     d = load()
     for u in d["updates"]:
         assert not re.search(r"apko|melange|apk|lock|/build/locks", json.dumps(u), re.I), u
-        assert u["directory"] in ("/", "/.github/agent"), u["directory"]
+        assert u["directory"] in ("/", "/.github/agent", "/tools/govulncheck"), u["directory"]   # /tools/govulncheck: the Check stage's pinned Go source scanner is its own module (advisor Oct 12, ruling G); it is not an apk, apko, melange or lock-file entry
 elif mode == "wf":
     d = load(); on = d.get(True) or d.get("on"); jobs = d["jobs"]; j = jobs[arg]; blob = json.dumps(j)
     if arg == "refresh":
