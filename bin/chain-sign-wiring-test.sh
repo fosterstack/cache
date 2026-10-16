@@ -2280,6 +2280,12 @@ probe sneak    stage-admission.yml  "stage-admission.yml running an unlisted bin
   "printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance --predicate p.json img\n' > bin/sneak.sh; printf '  sneak:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bash bin/sneak.sh\n' >> .github/workflows/stage-admission.yml"
 probe supply   supply-chain.yml     "a provenance signer job in supply-chain.yml"           "printf '$SIGN_JOB' >> .github/workflows/supply-chain.yml"
 probe ci       ci.yml               "a provenance signer job in ci.yml"                     "printf '$SIGN_JOB' >> .github/workflows/ci.yml"
+# KR-SIGN-1 (cache4, handoff 0475): bin/release-sign.sh runs bin/vendor-provenance.py, so the inventory must list it with its bytes; dropping the row, or changing the script without its hash, turns the judge red
+probe vendorrow vendor-provenance.py "dropping the bin/vendor-provenance.py row from chain-scripts.json" \
+  "python3 -c 'import json; p=\".github/policy/chain-scripts.json\"; d=json.load(open(p)); d[\"scripts\"]=[r for r in d[\"scripts\"] if r[\"path\"]!=\"bin/vendor-provenance.py\"]; json.dump(d, open(p,\"w\"), indent=1)'"
+probe vendorbytes vendor-provenance.py "an edit of bin/vendor-provenance.py without its sha256 in the row" "printf '\n# edited\n' >> bin/vendor-provenance.py"
+probe vendorruns vendor-provenance.py "bin/vendor-provenance.py starting another program it does not list (the row says it runs none)" \
+  "printf '\nimport subprocess\nsubprocess.run([\"bash\", \"bin/sneak.sh\"])\n' >> bin/vendor-provenance.py; printf 'echo x\n' > bin/sneak.sh"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
 # a LISTED script that a frozen file runs, turned into a provenance signer with its row and sha256 updated
 probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by frozen stage-build.yml) made a provenance signer, its row and sha256 updated" \
@@ -3313,6 +3319,8 @@ done < <(python3 "$work/setupgo.py" 2>&1)
 # ---- Codex A r4 #2 / B F1: the judge prints its findings as structured ids, one for one with its own list (CHAIN_FINDINGS=1; stderr; output only) ----------------
 fj="$work/fj"; mkdir -p "$fj"
 d=$(tracked_copy fjson); printf 'cosign attest --type slsaprovenance x\n' > "$d/bin/fj-signer.sh"; ( cd "$d" && git add -A 2> /dev/null || true )
+# the copy must be red by its OWN doing (it was red only because the real tree had an open finding, KR-SIGN-1): drop a listed script's row
+( cd "$d" && python3 -c 'import json; p=".github/policy/chain-scripts.json"; d=json.load(open(p)); d["scripts"]=[r for r in d["scripts"] if r["path"]!="bin/vendor-provenance.py"]; json.dump(d, open(p,"w"), indent=1)' )
 rc=0; CHAIN_FINDINGS=1 python3 "$work/judge.py" tree "$d" > "$fj/out.txt" 2> "$fj/err.txt" || rc=$?
 rcp=0
 python3 - "$fj/out.txt" "$fj/err.txt" "$rc" <<'PY' || rcp=$?
@@ -3351,7 +3359,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1329
+EXPECT=1332
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
