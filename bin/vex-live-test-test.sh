@@ -125,6 +125,25 @@ for why, fn in [("a widened criterion", lambda c: c["filters"][0]["filterCriteri
     check("check_copy refuses %s" % why, mut(fn) != [], "accepted")
 check("the shipped file never carries the tag", all("tags" not in f for f in shipped["filters"]))
 
+# --- Codex #387 r1 (P1): the test CSAF keeps the SHIPPED product tree and adds a separately identified fixture product and statement (the production load must still find
+#     its own products)
+vexc = copy.deepcopy(vex)
+csaf = L.csaf_test_copy(V, vexc, images, FIX, "CVE-2023-9999", "v0.3.0-rc1")
+ship = V.csaf(vexc, images, "v0.3.0-rc1")
+prods = [b["product"]["product_id"] for b in csaf["product_tree"]["branches"]]
+purls = json.dumps(csaf["product_tree"])
+check("test CSAF: the shipped branches come first and unchanged", csaf["product_tree"]["branches"][:len(ship["product_tree"]["branches"])] == ship["product_tree"]["branches"])
+check("test CSAF: the real production index is still in the tree", images["production"]["index"] in purls and images["fips"]["index"] in purls)
+check("test CSAF: the fixture digest is a product of its own, with its own id", FIX in purls and len(prods) == len(set(prods)) and len(prods) == len(ship["product_tree"]["branches"]) + 1, prods)
+check("test CSAF: the shipped vulnerabilities come first and unchanged, the fixture's statement is added",
+      csaf["vulnerabilities"][:len(ship["vulnerabilities"])] == ship["vulnerabilities"] and len(csaf["vulnerabilities"]) == len(ship["vulnerabilities"]) + 1
+      and csaf["vulnerabilities"][-1]["cve"] == "CVE-2023-9999")
+def pids(o):
+    if isinstance(o, dict): return [x for v in o.values() for x in pids(v)]
+    if isinstance(o, list): return [x for v in o for x in pids(v)]
+    return [o] if isinstance(o, str) and o.startswith("fosterstack-cache-v0.3.0-rc1-") else []
+check("test CSAF: every product id a statement names is a product of the tree", set(pids(csaf["vulnerabilities"])) <= set(prods), (set(pids(csaf["vulnerabilities"])) - set(prods)))
+
 # --- the fixture CVE: one every service reports for the fixture, deterministic
 pick = L.pick_cve({"grype": {"CVE-1": "High", "CVE-2": "Critical", "CVE-3": "Low"}, "inspector": {"CVE-1", "CVE-2", "CVE-3"},
                    "google": {"CVE-2", "CVE-3", "CVE-1"}})

@@ -116,6 +116,31 @@ def inspector_files(V, vex, images, fixture_digest, cve, version):
     return shipped, {"filters": shipped["filters"] + fixture["filters"]}
 
 
+def csaf_test_copy(V, vex, images, fixture_digest, cve, version):
+    """The shipped CSAF (the real statements over the real images, so the production load finds its own products) with the fixture added as a product of its
+    own, under its own id, and its one statement: the generator's CSAF for the fixture statement alone, narrowed to the fixture's branch."""
+    tvex, timages = fixture_vex(vex, images, fixture_digest, cve)
+    out = copy.deepcopy(V.csaf(vex, images, version))
+    fx = V.csaf({"statements": tvex["statements"][-1:]}, timages, version)
+    branches = [b for b in fx["product_tree"]["branches"] if fixture_digest in json.dumps(b)]
+    if len(branches) != 1:
+        raise ValueError("the fixture is not exactly one product of its CSAF")
+    old_id = branches[0]["product"]["product_id"]
+    new_id = old_id + "-fixture"
+    if any(new_id == b["product"]["product_id"] for b in out["product_tree"]["branches"]):
+        raise ValueError("the fixture's product id is already a product of the shipped tree")
+
+    def rename(o):
+        if isinstance(o, dict):
+            return {k: rename(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [rename(v) for v in o]
+        return new_id if o == old_id else o
+    out["product_tree"]["branches"] += rename(branches)
+    out["vulnerabilities"] += rename(fx["vulnerabilities"])
+    return out
+
+
 def test_copy(generated):
     out = copy.deepcopy(generated)
     for f in out["filters"]:
@@ -414,7 +439,7 @@ def main(argv=None):
         base = os.path.join(a.out_dir, "fosterstack-cache-%s" % a.version)
         json.dump(tvex, open(os.path.join(a.out_dir, "fosterstack-cache.openvex.json"), "w"), indent=1)
         json.dump(tc, open(base + ".inspector-filters.json", "w"), indent=1)
-        json.dump(V.csaf(tvex, timages, a.version), open(base + ".csaf.json", "w"), indent=1)
+        json.dump(csaf_test_copy(V, vex, images, a.fixture_digest, a.cve, a.version), open(base + ".csaf.json", "w"), indent=1)
         return 0
     if a.cmd == "pick-cve":
         rep = json.load(open(a.reports))
