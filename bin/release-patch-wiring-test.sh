@@ -29,7 +29,7 @@ jobs = d.get("jobs") or {}
 adm = jobs.get("admission") or {}
 if adm.get("if", "").replace(" ", "") != "${{startsWith(github.ref,'refs/tags/v')}}":
     bad.append("admission is not guarded to v* tags: %s" % adm.get("if"))
-chain = [j for j in jobs if j not in ("admission", "decide", "patch-failed", "patch-notes")]
+chain = [j for j in jobs if j not in ("admission", "decide", "patch-failed", "patch-notes", "persona-uat")]   # persona-uat: REQ-UAT-001, an RC-tag-only job after promotion; its own shape is pinned by persona-uat-wiring-test.sh
 for j in chain:
     if "if" in jobs[j] or not jobs[j].get("needs"):
         bad.append("chain job %s does not hang off admission unconditionally" % j)

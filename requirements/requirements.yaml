@@ -2616,6 +2616,46 @@ requirements:
         then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); a row for any file that is not a shell script outside .github/ (a workflow step, another file type) rules nothing; a line of another shape under that ruling (the spellings --disable and --globoff in place of -q and -g, a single-quoted operand, an output value with a default or command expansion, another host, a lookalike host, userinfo, a port, http, another path, a literal file name, two variables, a variable host, a second operand, a pipe, a proxy or resolve option, no -g, no leading -q) rules nothing; a Go-toolchain line under the Wolfi live-fetch ruling, and a Wolfi line under the Go-toolchain ruling, rule nothing; the Wolfi ruling's own shapes are unchanged (advisor reading Oct 16 under the owner's Oct 13 latitude: owner rule 12 keeps the Go toolchain in the archive, the refresh job verifies each tarball against the sha256 its committed recipe pins before storing it)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+  - id: REQ-UAT-001
+    title: Persona UAT
+    statement: >
+      Five agents, each playing a different customer and reading only our public documents, shall exercise every release candidate and the latest release every week, the way a real acceptance test would.
+    source: [bin/persona-uat.py, bin/persona-uat-agent.py, .github/workflows/release.yml, .github/workflows/go-freshness.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: persona UAT (owner, Oct 3 2026, ops/docs/ratify/2026-10-02-owner-load.md point 9; criteria ratified Oct 4 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-UAT-001-AC1
+        given: a release candidate tag v*-rc.*
+        when: its release run promotes
+        then: "five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC2
+        given: the weekly maintenance run
+        when: it runs
+        then: "the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC3
+        given: a persona finding that is friction (not broken behavior or a failing doc step)
+        when: the run ends
+        then: "it is recorded in the persona's encrypted report as information and blocks nothing; no public issue is opened for a persona result"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC4
+        given: a persona run
+        when: it needs Jenkins, a GitLab runner or Kubernetes
+        then: "each runs as a digest-pinned container inside the job and nothing is provisioned in a cloud"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC5
+        given: a persona agent
+        when: it runs
+        then: "it is told to use only the public docs and the endpoint and its sandbox holds only the public docs; any other host its commands contact is flagged in its encrypted report and nothing blocks the network beyond the existing fences; its model and token budget come from environment variables the owner sets; its report and transcript are kept only as one encrypted artifact that only FosterStack can read (openssl CMS to a recipient certificate committed in the repository), never as plaintext"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
   - id: REQ-REPO-001
     title: Branch hygiene without a human
     statement: >
@@ -3512,44 +3552,4 @@ requirements:
         when: "it runs"
         then: "every tool it names (python3, sudo, unshare, apko, sha256sum, openssl, git) is called by a fixed absolute path held in a variable, every python3 call is python3 -I -B, it reads no caller variable beyond a closed list it names, and it has no test hook: the production file is the file the tests run (rule 1). STATED RESIDUAL: the starting environment and the coreutils search path are the invoking stage's (same text as REQ-BUILDAPK-001-AC3)"
         verification: { method: unit, release_blocking: false }
-        status: approved
-  - id: REQ-UAT-001
-    title: Persona UAT
-    statement: >
-      Five agents, each playing a different customer and reading only our public documents, shall exercise every release candidate and the latest release every week, the way a real acceptance test would.
-    source: [bin/persona-uat.py, bin/persona-uat-agent.py, .github/workflows/release.yml, .github/workflows/go-freshness.yml]
-    tier: community
-    introduced: v0.3.0
-    origin: persona UAT (owner, Oct 3 2026, ops/docs/ratify/2026-10-02-owner-load.md point 9; criteria ratified Oct 4 2026)
-    confidence: implementation-only
-    acceptance_criteria:
-      - id: REQ-UAT-001-AC1
-        given: a release candidate tag v*-rc.*
-        when: its release run promotes
-        then: "five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-UAT-001-AC2
-        given: the weekly maintenance run
-        when: it runs
-        then: "the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-UAT-001-AC3
-        given: a persona finding that is friction (not broken behavior or a failing doc step)
-        when: the run ends
-        then: "it is recorded in the persona's encrypted report as information and blocks nothing; no public issue is opened for a persona result"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-UAT-001-AC4
-        given: a persona run
-        when: it needs Jenkins, a GitLab runner or Kubernetes
-        then: "each runs as a digest-pinned container inside the job and nothing is provisioned in a cloud"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-UAT-001-AC5
-        given: a persona agent
-        when: it runs
-        then: "it is told to use only the public docs and the endpoint and its sandbox holds only the public docs; any other host its commands contact is flagged in its encrypted report and nothing blocks the network beyond the existing fences; its model and token budget come from environment variables the owner sets; its report and transcript are kept only as one encrypted artifact that only FosterStack can read (openssl CMS to a recipient certificate committed in the repository), never as plaintext"
-        verification: { method: ci-workflow, release_blocking: false }
         status: approved
