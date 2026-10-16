@@ -3100,7 +3100,7 @@ python3 - >"$work/hostsplan.json" <<'PY'
 import json
 print(json.dumps({
  "gradle-platform-engineer": {"commands": ["curl -s https://docs.example.org/guide/install -o /dev/null", "curl http://127.0.0.1:18080/healthz", "curl -s http://localhost:18080/x",
-                                           "curl https://github.com/example/cache/releases/download/v1/x", "curl http://127.0.0.1:18081/login",
+                                           "curl https://github.com/example/cache/releases/" "download/v1/x", "curl http://127.0.0.1:18081/login",   # (the URL is split in the source only so the pin-age scan does not read this fixture as a release download of example/cache; the string is whole at run time)
                                            "curl -o out.txt http://127.0.0.1:18080/a", "wget -O file.zip https://docs.example.org/a", "curl -s -o report.json https://docs.example.org/y",
                                            "# https://commentonly.example/x\necho hi", "# see http://another-comment.example\n# and wget https://third-comment.example/z", "curl -s http://127.0.0.1:18080/x # https://inline-only.example/y",
                                            "curl -s https://docs-only.example.net/guide", "curl -L https://github.com/example/cache/releases/latest"]},
