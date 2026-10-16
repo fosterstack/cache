@@ -205,7 +205,8 @@
       "runs": [
         "bin/chain-verify.py",
         "bin/build-archives.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/assemble-image.sh"
       ],
       "signs": false,
       "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json",
@@ -234,7 +235,8 @@
       "runs": [
         "bin/chain-verify.py",
         "bin/build-archives.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/assemble-image.sh"
       ],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's",
@@ -363,7 +365,8 @@
       "runs": [
         "bin/chain-verify.py",
         "bin/build-archives.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/assemble-image.sh"
       ],
       "signs": false,
       "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify)",
@@ -394,7 +397,8 @@
       "runs": [
         "bin/chain-verify.py",
         "bin/build-archives.py",
-        "bin/build-apk.sh"
+        "bin/build-apk.sh",
+        "bin/assemble-image.sh"
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot)",
@@ -1054,7 +1058,7 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "aafd50f630f2d0d718d8fb84e5af533b41dff49938beb0e8f108eab3c5088ed3"
+      "sha256": "df6ab2c2d35aab2262938e3a18dd0bb9053579b47094059d76896d4a34fd673b"
     },
     {
       "path": "bin/release-metadata.py",
@@ -1411,6 +1415,73 @@
           "name": "PATH",
           "text": "no Go toolchain on PATH in CI",
           "why": "words in a refusal message: nothing is set"
+        }
+      ]
+    },
+    {
+      "path": "bin/assemble-image.sh",
+      "tools": [
+        "script",
+        "at",
+        "sudo",
+        "make",
+        "tar",
+        "bash",
+        "go",
+        "python",
+        "trap",
+        "command"
+      ],
+      "runs": [
+        "bin/apko-lock.sh",
+        "bin/oci-digest.py",
+        "bin/net-probe.py"
+      ],
+      "signs": false,
+      "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
+      "sha256": "35b917e02c4d377e97e5a6cc57cb4339e7abc1b2daf380fb17ab2b29ee13ed18",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bin/assemble-image-test.sh",
+          "why": "a comment or message naming the script; prose, never run from here"
+        }
+      ]
+    },
+    {
+      "path": "bin/apko-lock.sh",
+      "tools": [
+        "at"
+      ],
+      "runs": [
+        "bin/oci-digest.py"
+      ],
+      "signs": false,
+      "reason": "the apko lock proof helper assemble-image.sh runs",
+      "sha256": "4834a34a53fb26f7d53219c85dac617a406978701fabc8aaac619c1bd5e1e1b7"
+    },
+    {
+      "path": "bin/oci-digest.py",
+      "tools": [
+        "tar",
+        "at",
+        "script",
+        "python"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the OCI layout digest tool assemble-image.sh runs",
+      "sha256": "753af3c0964ffd252869cdf9b632a3c53bac4bc8fe6403d6deac48316aea0da8",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "assemble-image.sh",
+          "why": "a comment or message naming the script; prose, never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "apko-lock.sh",
+          "why": "a comment or message naming the script; prose, never run from here"
         }
       ]
     },

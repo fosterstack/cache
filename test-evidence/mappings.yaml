@@ -1324,3 +1324,6 @@ mappings:
   - ac: REQ-GUIDE-001-AC7
     evidence:
       - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-CHAIN-007-AC20
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
