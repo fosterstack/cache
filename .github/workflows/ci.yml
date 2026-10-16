@@ -400,6 +400,8 @@ jobs:
         run: bash bin/chain-records-test.sh
       - name: "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)"
         run: bash bin/chain-build-wiring-test.sh
+      - name: "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)"
+        run: bash bin/vex-index-test.sh </dev/null
       - name: "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)"
         run: bash bin/chain-build-admit-test.sh
       - name: "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)"

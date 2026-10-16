@@ -80,6 +80,19 @@ def image_cmd(variant, ver=VER):
             % (variant, ver, ARCHIVE))
 
 
+VEX_FILE = ".vex/fosterstack-cache.openvex.json"
+
+
+def vex_attach():
+    """REQ-REL-010-AC1: right after the images are assembled and before items-merge writes digests.json, each variant's built index becomes the final index (one
+    attestation child per platform carrying the release's OpenVEX), and its digest file follows; the same four lines in every assembly, Build's and Rebuild's, snapshot or not."""
+    lines = []
+    for variant in ("production", "fips"):
+        lines.append("python3 bin/vex-index.py layout --layout out/%s --vex %s" % (variant, VEX_FILE))
+        lines.append("python3 bin/vex-index.py sidecar --layout out/%s --vex %s --digest-file out/%s.digest" % (variant, VEX_FILE, variant))
+    return lines
+
+
 def version_check(variant):
     return ('python3 bin/build-version-check.py --apk-dir "out/$(uname -m)" --variant %s --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"' % variant)
 
@@ -119,21 +132,21 @@ def expected_lines(kind):
                 version_check("standard"), version_check("fips"), items_apk(), ADMISSION_COPY])
     if kind == "assemble":
         return ([H, POLICY] + verify_records("build", "rec-apk", "apk-collection.json") + bind_files("apk", "rec-apk", "apk-collection.json", "apk")
-                + [ADMISSION_BASELINE] + melange_repo("apk") + SDE + [image_cmd("production"), image_cmd("fips"), archives(),
+                + [ADMISSION_BASELINE] + melange_repo("apk") + SDE + [image_cmd("production"), image_cmd("fips")] + vex_attach() + [archives(),
                 merge("apk", "--digests digests.json --items items.json")])
     if kind == "snapshot-apk":       # no admission, no version check, no tag: the version is the fixed snapshot one
         return ([H] + SNAPSHOT_TAG_LINES + SDE
                 + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION), items_apk()])
     if kind == "snapshot-assemble":  # no policy and no verify (a snapshot record is refused by every verifier): the bind is the only link to the record
         return ([H] + bind_files("snapshot-apk", "rec-apk", "snapshot-apk-collection.json", "apk") + melange_repo("apk") + SDE
-                + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION), archives(SNAPSHOT_VERSION),
+                + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION)] + vex_attach() + [archives(SNAPSHOT_VERSION),
                    merge("apk", "--digests digests.json --items items.json", SNAPSHOT_VERSION)])
     if kind == "snapshot-rebuild-apk":      # the same local-tag discipline as the snapshot Build; no policy, no stage-start (a snapshot record is refused)
         return ([H] + SNAPSHOT_TAG_LINES + SDE
                 + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION), items_apk()])
     if kind == "snapshot-rebuild-assemble":     # --snapshot makes rebuild-compare accept exactly Build's snapshot-build record and nothing else
         return ([H] + bind_files("snapshot-rapk", "rec-rapk", "snapshot-rapk-collection.json", "rapk") + melange_repo("rapk") + SDE
-                + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION), archives(SNAPSHOT_VERSION),
+                + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION)] + vex_attach() + [archives(SNAPSHOT_VERSION),
                    merge("rapk", "--items items.json", SNAPSHOT_VERSION),
                    "python3 bin/chain-verify.py rebuild-compare --snapshot --build-record witness-build/snapshot-build-collection.json "
                    "--expected build-in/items.json --actual items.json --out %s" % SNAPSHOT_VERDICT])
@@ -142,7 +155,7 @@ def expected_lines(kind):
     if kind == "rebuild-assemble":
         return ([H, POLICY, START] + verify_records("rebuild", "rec-rapk", "rapk-collection.json")
                 + bind_files("rapk", "rec-rapk", "rapk-collection.json", "rapk") + melange_repo("rapk") + SDE
-                + [image_cmd("production"), image_cmd("fips"), archives(), merge("rapk", "--items items.json"),
+                + [image_cmd("production"), image_cmd("fips")] + vex_attach() + [archives(), merge("rapk", "--items items.json"),
                    "python3 bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json "
                    "--expected build-in/items.json --actual items.json --out witness-rebuild/verdict.json"])
     raise KeyError(kind)

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
+# proves: REQ-REL-010-AC1, REQ-REL-010-AC3
 # Tests for bin/vex-index.py, the tool that derives the FINAL image index from the built index and the release's
-# VEX file (REQ-REL-010: the wording is PROPOSED, the owner has not ratified it, so no AC id is claimed here). The
-# tool is driven through its command line only (compute, verify, layout, verify-layout). Everything runs offline,
+# VEX file (REQ-REL-010: the ACs are the advisor's reading of the owner's rules, not his words). The
+# tool is driven through its command line only (compute, verify, layout, verify-layout, sidecar). Everything runs offline,
 # with a network guard under every run: the tool has no network code at all.
 #
 # The expected bytes are computed here, by an independent re-statement of the canonical form (ref_compute),
@@ -1981,7 +1982,7 @@ def _add(path, key, valid, wrongs):
 _add("doc", "@context", CTX, [7, None, "https://openvex.dev/ns/v0.1.0"])
 _add("doc", "@id", "urn:uuid:1", [7, None])
 _add("doc", "author", "Author", [7, None])
-_add("doc", "role", "vendor", S_WRONG)
+_add("doc", "role", "supplier", S_WRONG)
 _add("doc", "timestamp", "2026-09-20T09:00:00.5-04:00", TS_WRONG)
 _add("doc", "last_updated", "2026-09-21T00:00:00Z", TS_WRONG)
 _add("doc", "version", 2, INT_WRONG)
@@ -3337,6 +3338,115 @@ def _(arg):
     ok(r.rc == 2 and ("private" in r.err or "above the layout" in r.err), "wanted a refusal naming the permissions, got rc=%d %s" % (r.rc, (r.out + r.err).strip()[:200]))
     eq(tree(d, full=True), t0, "the layout must be untouched")
     ok(not os.path.exists(os.path.join(s, "out")), "compute must not have created its output")
+
+
+
+# ------------------------------------------------------------------ sidecar: the OUT/<variant>.digest file Build records follows the layout from the built index to the final index (REQ-REL-010-AC1)
+def side(d, content, mode=0o644):
+    p = d + ".digest"
+    wr(p, content)
+    os.chmod(p, mode)
+    return p
+
+
+def sidecar(d, vb, p, s=None):
+    s = s or sb()
+    return run(["sidecar", "--layout", d, "--vex", wr(os.path.join(s, "vex.json"), vb), "--digest-file", p])
+
+
+@case("LAYOUT", "sidecar: after layout, the digest file holding the built index's digest holds the final index's digest, nothing else changes, and the output is that digest")
+def _():
+    fx = mk_fx()
+    d, _b = mk_layout(fx)
+    vb = vex_real()
+    p = side(d, (dg(fx.bytes) + "\n").encode())
+    ok(lay(d, vb).rc == 0, "layout failed")
+    top = json.loads(rd(os.path.join(d, "index.json")))
+    f = top["manifests"][0]["digest"]
+    t0 = tree(d, full=True)
+    r = sidecar(d, vb, p)
+    ok(r.rc == 0 and r.out == f + "\n", "wanted rc 0 and the final digest, got rc=%d %r %s" % (r.rc, r.out, r.err.strip()[:200]))
+    eq(rd(p), (f + "\n").encode(), "the digest file")
+    eq(tree(d, full=True), t0, "the layout must not change")
+    ok(sorted(os.listdir(os.path.dirname(p))) == ["layout", "layout.digest"], "a temporary file was left behind: %r" % sorted(os.listdir(os.path.dirname(p))))
+    ok(os.stat(p).st_mode & 0o022 == 0, "the digest file must stay private")
+
+
+def _sc_nofile(d, fx):
+    return None
+
+
+def _sc_other(d, fx):
+    return ("sha256:" + "9" * 64 + "\n").encode()
+
+
+def _sc_nonl(d, fx):
+    return dg(fx.bytes).encode()
+
+
+def _sc_crlf(d, fx):
+    return (dg(fx.bytes) + "\r\n").encode()
+
+
+def _sc_two(d, fx):
+    return (dg(fx.bytes) + "\n" + dg(fx.bytes) + "\n").encode()
+
+
+def _sc_final(d, fx):
+    top = json.loads(rd(os.path.join(d, "index.json")))
+    return (top["manifests"][0]["digest"] + "\n").encode()
+
+
+@param("LAYOUT", "sidecar refuses a digest file that is not exactly the built index's digest and a newline, leaving the layout and the file untouched", [
+    ("a missing file", _sc_nofile), ("another digest", _sc_other), ("no newline", _sc_nonl), ("CRLF", _sc_crlf), ("two lines", _sc_two),
+    ("already the final digest (a second run)", _sc_final)])
+def _(make):
+    fx = mk_fx()
+    d, _b = mk_layout(fx)
+    vb = vex_real()
+    ok(lay(d, vb).rc == 0, "layout failed")
+    content = make(d, fx)
+    p = d + ".digest"
+    if content is not None:
+        side(d, content)
+    t0, before = tree(d, full=True), (rd(p) if content is not None else None)
+    r = sidecar(d, vb, p)
+    ok(r.rc == 2 and "vex-index: refused:" in r.err, "wanted a refusal (exit 2, a plain reason), got rc=%d %s" % (r.rc, (r.out + r.err).strip()[:200]))
+    eq(tree(d, full=True), t0, "the layout must be untouched")
+    eq(rd(p) if os.path.exists(p) else None, before, "the digest file must be untouched")
+    ok(not os.path.exists(p + ".vex-index.tmp"), "no temporary file may remain")
+
+
+@case("LAYOUT", "sidecar refuses a layout that is not yet final, another VEX file, a symlinked or writable digest file and an existing temporary file")
+def _():
+    fx = mk_fx()
+    d, _b = mk_layout(fx)
+    vb = vex_real()
+    good = (dg(fx.bytes) + "\n").encode()
+    p = side(d, good)
+    r = sidecar(d, vb, p)
+    ok(r.rc == 2 and "refused:" in r.err, "a layout still holding the built index must be refused: rc=%d" % r.rc)
+    eq(rd(p), good, "the digest file must be untouched")
+    ok(lay(d, vb).rc == 0, "layout failed")
+    r = sidecar(d, VEX_MIN, p)
+    ok(r.rc == 2 and "refused:" in r.err, "another VEX file must be refused: rc=%d" % r.rc)
+    eq(rd(p), good, "the digest file must be untouched")
+    os.chmod(p, 0o664)
+    r = sidecar(d, vb, p)
+    ok(r.rc == 2 and "private" in r.err, "a group-writable digest file must be refused: rc=%d %s" % (r.rc, r.err.strip()[:150]))
+    os.chmod(p, 0o644)
+    os.unlink(p)
+    real = wr(p + ".real", good)
+    os.symlink(real, p)
+    r = sidecar(d, vb, p)
+    ok(r.rc == 2 and "refused:" in r.err, "a symlinked digest file must be refused: rc=%d" % r.rc)
+    os.unlink(p)
+    side(d, good)
+    wr(p + ".vex-index.tmp", b"x")
+    r = sidecar(d, vb, p)
+    ok(r.rc == 2 and "refused:" in r.err, "an existing temporary file must be refused: rc=%d" % r.rc)
+    eq(rd(p), good, "the digest file must be untouched")
+    eq(rd(p + ".vex-index.tmp"), b"x", "the foreign temporary file must be left alone")
 
 
 

@@ -118,6 +118,18 @@
       "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
     },
     {
+      "path": "bin/vex-index.py",
+      "tools": [
+        "python3",
+        "at",
+        "command"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
+      "sha256": "71660fbb88c0c317f05cef915717530c5953a651c3483baccb6aa754b3c3507c"
+    },
+    {
       "path": "bin/witnessed.sh",
       "tools": [
         "script",
@@ -206,11 +218,12 @@
         "bin/chain-verify.py",
         "bin/build-archives.py",
         "bin/build-apk.sh",
-        "bin/assemble-image.sh"
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
       ],
       "signs": false,
-      "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json",
-      "sha256": "80219e55402fd8ae50870cf0c23f8bec4a2237d2aeab1b486ae3c12f4e1e914c"
+      "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "b8204607679e636797bedaeae874a22aa2e3240149101b66814b1b5804a7a370"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -236,11 +249,12 @@
         "bin/chain-verify.py",
         "bin/build-archives.py",
         "bin/build-apk.sh",
-        "bin/assemble-image.sh"
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
       ],
       "signs": false,
-      "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's",
-      "sha256": "52eca0cca35acc611ff5ad34142f6c580badee55784097dbb86fc06f13e8782c"
+      "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "bf83033740914cc565d520661d450d88e87e716992207375c430464c1b26000a"
     },
     {
       "path": "bin/build-admit.py",
@@ -366,11 +380,12 @@
         "bin/chain-verify.py",
         "bin/build-archives.py",
         "bin/build-apk.sh",
-        "bin/assemble-image.sh"
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
       ],
       "signs": false,
-      "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify)",
-      "sha256": "b1437012bd97d644eeb530b207b6bf9bcc378b952fd2729ba9b67bdebe8279ed"
+      "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "50c16ff497e10b995d846c5fe7ba74ce5a3e97fd921e0efcd5f256fe64cd62ee"
     },
     {
       "path": "bin/build-stage-snapshot-rebuild-apk.sh",
@@ -398,11 +413,12 @@
         "bin/chain-verify.py",
         "bin/build-archives.py",
         "bin/build-apk.sh",
-        "bin/assemble-image.sh"
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
       ],
       "signs": false,
-      "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot)",
-      "sha256": "388378561dd203bfef362990ee2efba517ba1d22d0b3d9da1898faf457219d1f"
+      "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "64392922a2d944a139c2c585b8e86cff0934bab6203c0e9362f1aa24865d0bd4"
     },
     {
       "path": "bin/admission-tag-signer.py",

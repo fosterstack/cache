@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 94 |
-| Acceptance criteria | 418 |
+| Active requirements | 95 |
+| Acceptance criteria | 424 |
 | Release-blocking ACs | 125 |
-| ACs with mapped evidence | 401 |
+| ACs with mapped evidence | 406 |
 | Release-blocking ACs with mapped evidence | 125 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
-| Confidence: implementation-only | 47 |
+| Confidence: implementation-only | 48 |
 
 ## Cache protocol
 
@@ -763,6 +763,21 @@ Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at o
 | REQ-REL-009-AC11 | Given a CI patch release; when it is published; then it moves :X.Y to itself every time and moves :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC12 | Given a PR the lane labels patch-fix; when the label is applied; then both reviewers' step-8 records for that PR say no behavior change; otherwise only the owner applies it, or the change waits for a minor release | ci-workflow |  | approved | none mapped |
 | REQ-REL-009-AC13 | Given a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses); when decide considers cutting it, and source admission admits it; then it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline | unit |  | approved | 2 item(s) |
+
+### REQ-REL-010 — Our OpenVEX is attached to each published image index for Docker Scout
+
+The final image index that Sign signs and Release publishes shall carry our OpenVEX as attestation children, one per platform, and nothing after Sign shall change any digest. Owner, RATIFIED Oct 3: "Docker main path as attestation!!!!! We want that and we tell users it's the easiest path for seeing scanner omit findings that are just noise." Owner, RATIFIED Oct 7: every change to our published VEX cuts an automatic patch release.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/vex-index.py; .github/workflows/stage-build.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-010-AC1 | Given Build's image layouts and the tag's .vex/ OpenVEX file; when Build writes digests.json; then each published index (production and fips) has exactly one attestation child per platform, carrying that file's exact bytes and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build | unit |  | approved | 2 item(s) |
+| REQ-REL-010-AC2 | Given the same inputs; when Build and Rebuild each make the final index; then the two are byte-identical (Rebuild's comparison covers it) | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-010-AC3 | Given the final index; when its attestation children are removed; then every platform image and the index's other entries are byte-identical to what Build made without them | unit |  | approved | 2 item(s) |
+| REQ-REL-010-AC4 | Given Sign's digest list; when Release publishes; then the digest customers pull equals the digest the signature, provenance and release manifest name, and no step after Sign attaches, adds or changes an attestation (an attempt is refused) | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-010-AC5 | Given a changed OpenVEX for an already published version; when the pipeline runs; then it makes no change to that version's image; the change reaches images only through the next automatic patch release | unit |  | approved | 1 item(s) |
+| REQ-REL-010-AC6 | Given the published final index; when Docker Scout scans it by tag and by exact digest with our author; then it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image | acceptance-release-artifact |  | approved | none mapped |
 
 ## SCAN
 
