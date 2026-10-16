@@ -956,12 +956,12 @@ def collection(variables, extra=None):
 clean = {"GITHUB_SHA": "abc", "GITHUB_REF_NAME": "v0.3.0", "RUNNER_TEMP": "/home/runner/work/_temp"}
 jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJyZXBvIn0.c2lnbmF0dXJl"
 cases = {"clean": collection(clean),
-         "masked": collection(dict(clean, ACTIONS_ID_TOKEN_REQUEST_TOKEN="******")),
+         "masked": collection(dict(clean, ACTIONS_ID_TOKEN_REQUEST_TOKEN="masked-by-the-runner")),
          "value": collection(dict(clean, ACTIONS_ID_TOKEN_REQUEST_TOKEN="abcdef0123456789")),
          "url": collection(dict(clean, ACTIONS_ID_TOKEN_REQUEST_URL="https://pipelines.actions.githubusercontent.com/x?api-version=2.0")),
-         "runtime": collection(dict(clean, ACTIONS_RUNTIME_TOKEN="******")),
-         "ghtoken": collection(dict(clean, GH_TOKEN="******")),
-         "githubtoken": collection(dict(clean, GITHUB_TOKEN="******")),
+         "runtime": collection(dict(clean, ACTIONS_RUNTIME_TOKEN="masked-by-the-runner")),
+         "ghtoken": collection(dict(clean, GH_TOKEN="masked-by-the-runner")),
+         "githubtoken": collection(dict(clean, GITHUB_TOKEN="masked-by-the-runner")),
          "ghs": collection(dict(clean, SOMETHING="ghs_" + "A" * 36)),
          "jwt": collection(dict(clean, SOMETHING=jwt)),
          "githubatt": collection(clean, {"type": "https://witness.dev/attestations/github/v0.1", "attestation": {"jwt": {"raw": jwt}}})}

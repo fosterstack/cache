@@ -1859,6 +1859,53 @@ requirements:
     introduced: v0.3.0
     origin: automatic patch releases (owner RATIFIED Oct 2; ops/docs/ratify/2026-10-02-automatic-patch-releases.md, with the floating-tags amendment; advisor read-backs 0051, 0055, 0056)
     confidence: implementation-only
+    notes: >
+      AC14 (origin: advisor step 5 Oct 11, owner rule 5 engineering AC): the refusals protect AC8's owner sentence (rule 5,
+      ops/docs/ratify/2026-10-02-automatic-patch-releases.md) and leave AC8's text untouched. No line is exempt (advisor
+      decision Oct 11, option A, replacing the round-9 VEX-section exemption): the refusals apply to every line of the
+      changelog inputs and a generated tag's notes, a '### VEX' section's lines included. To keep the generator's own notes
+      readable back (notes, then the tag, the changelog's notes and later the history), _lit's quoted form writes '<' and
+      '&' as \u003c and \u0026 (the same JSON string, as a hyphen before four more is written \u002d), so no printed VEX
+      value holds a refused form; a reader sees the JSON string (a statement named <b>x shows "\u003cb>x" in its code
+      span); the value is redacted as text before it is encoded (an escape ends in a letter or digit and would erase the
+      word boundary the redactor reads: '<google', '&o1'), and a statement whose CVE name or @id redaction changes is
+      named by its position. A VEX value (a CVE name, an @id, a product or subcomponent @id or identifier, a field name)
+      that holds a redaction-marker form ('<redacted>' or '(redacted)' in any case, as written, Markdown backslash-escaped,
+      JSON-escaped or as HTML character references, each read once) is refused before any redaction, naming the document,
+      the statement and the field (exit 2, no notes, no patch); a value is never converted into the marker (advisor narrow
+      cut, Oct 12). Exotic nested spellings of the marker in a VEX field (percent-encoded, fullwidth, nested or mixed
+      escapes) are not decoded; the refusal covers the forms our printer and readers recognise (advisor cut, Oct 12, Codex
+      #300 b12). notes() checks its whole text, and every line, a VEX line too, is printed and read back by the one function
+      _clean_free (a VEX line holding the redaction marker is written in the escape-whole-line form). Each line of a
+      multi-line source value is checked before the value is made one line, and the whole go.mod line a Go fix's version
+      is read from. go.mod is read by a strict parser of its grammar (Go's modfile lexer: '//' comments, 'verb (' ... ')'
+      blocks): the versions and the line judged come from one parse of the require directives only (never a comment,
+      replace or exclude line), and anything the parser does not read (a '/* */' comment, a quoted string, a control or
+      other space character, a module required twice, a require that is not a path and a semantic version, an unclosed
+      block) is refused, naming go.mod:line; Go is not on the decide job's PATH, so the parser is in the script. Versions
+      are read as golang.org/x/mod/semver reads them (vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD], ASCII digits, no leading
+      zero, no empty identifier), the go directive as a Go release version (1.21, 1.21.0, 1.21rc1), and every supported
+      directive in its own shape (module, toolchain, require, exclude, replace, retract, godebug, tool, ignore); the name
+      'stdlib' is reserved for the toolchain and refused in any directive, and a stdlib fix is compared with 'go' + the go
+      directive's version. Documented limit (advisor, Oct 11): a quoted path, which Go accepts, is refused (fail closed):
+      the parser reads the go.mod forms the repository's go.mod files use. A fix record is judged on the scan match that produced it (the
+      first match HEAD fixes, variants sorted, document order: the one fixed_findings prints from). The collision check
+      (5) is one set across every published line (fix, VEX and behavior); a fix record is named by its scan file and key
+      path; in the readers (a tag's notes, the changelog's notes, the history) two '- ' lines of one release block that
+      publish the same line once cleaned as published ('- gpt' and '- claude'; a marker line and its escaped spelling) are
+      refused, both named by their source lines; the same line in two release blocks is not a collision. In a generated patch tag (release tagger, gitsign signature last, heading naming the tag) a '-----BEGIN '
+      anywhere before that last signature is refused (exit 2, the line named); any other tag exits 1 as before. Beyond
+      the four forms, a free-text line holding the redaction marker that continues the line above it (neither blank nor a
+      heading) is refused in tag notes and changelog inputs (a construct spanning lines could hide the marker); --published (every v* tag message and CHANGELOG.md) is not a source and is not checked for '-----BEGIN '
+      (each tag message carries its signature block). 'Letter' after '<' is any Unicode letter. For a value inside a
+      JSON scan file the message names the file and the JSON key path instead of a line. 'Already published' is decided
+      by whole line, never substring: an entry counts as published only when a whole line of the published text equals
+      its published line, both compared without trailing whitespace (git's tag-message cleanup strips trailing
+      whitespace; leading and interior whitespace stay significant). tag-notes exits 2 on a refused form like notes and
+      changelog. The code reads the reference-definition shape also after any list or quote markers and any indentation,
+      and refuses a '[' label left open at the line end (a definition can open inside a list item; wider than
+      CommonMark, fail closed). No published text ever held a redaction marker form other than the current one (no CHANGELOG.md on main,
+      no v* tag message holds 'redacted'), so the marker handling is the escape-whole-line rule only.
     acceptance_criteria:
       - id: REQ-REL-009-AC1
         given: "the commits on main since the latest release tag"
@@ -1936,6 +1983,12 @@ requirements:
         given: "a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses)"
         when: "decide considers cutting it, and source admission admits it"
         then: "it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-009-AC14
+        given: "the notes sources of a patch release: the fix records the release scans and go.mod give, the entries of docs/next-release-notes.md, and the changelog inputs (the notes file the changelog step is handed and the existing docs/quality/releases/CHANGELOG.md)"
+        when: "the notes are generated (patch-decide notes) or the changelog is written (patch-decide changelog)"
+        then: "a source is refused outright, never decoded, escaped or rewritten, when any line of it holds (1) a '<' followed by a letter, '/', '!' or '?'; (2) the shape of a Markdown link reference definition: up to three spaces, '[', a label, ']' and ':'; (3) a character reference: '&#' digits ';', '&#x' or '&#X' hex digits ';', or '&' a letter, letters or digits and ';'; or (4) the text '-----BEGIN '; and (5) two entries whose published lines are the same line are refused before any entry is dropped as already published or cleared from docs/next-release-notes.md; the refusal message names the file and line of each offending source line (both, for a collision); on a refusal the command exits 2 and writes nothing, so no patch tag is cut (notes) or no changelog PR is opened (changelog)"
         verification: { method: unit, release_blocking: false }
         status: approved
 
@@ -2598,6 +2651,12 @@ requirements:
         given: "a pull request that adds or changes a checksum or version record file (an item whose identity is the file's content) at a path that .github/policy/base-inputs.json, as the base branch holds it, lists in base_inputs"
         when: "the age check runs"
         then: "that file is no item and no finding (it is the repository's own base record: its content change is the release chain's base-input-changed signal, and the list is itself a reviewed file); a file at any other path, a path spelled differently from the list (a ./ prefix, a .. inside), and every item that is not a file item stay as before; a list the pull request brings never counts (the base branch's copy is read), a missing list exempts nothing and a malformed one stops the check (decided by the orchestrator Oct 14, the plainest closed form: no pattern on names or directories)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC22
+        given: "the committed .github/policy/base-inputs.json, and a pull request (the daily refresh pull request) that changes build/locks/archive-index.sha256, the record of the digests of the Wolfi-signed package index that every refresh run checks against the archived index"
+        when: "the age check runs"
+        then: "the list names build/locks/archive-index.sha256 exactly (rules 61 and 62: the archive records are base inputs) and, by AC21, that record is no item and no finding: it records Wolfi's own index and cannot be seven days old, and the owner's Oct 9 rule 48 allows no seven-day hold on Wolfi; the same name at any other path, a name with a suffix, and every installer checksum file stay items (advisor reading Oct 16 under the owner's Oct 13 latitude)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
   - id: REQ-REPO-001
@@ -3738,32 +3797,101 @@ requirements:
       The release source shall include vendor/ generated in CI from checksum-verified downloads; every Go build shall use only vendored code;
       dependency-provenance.json at the repository root shall list per module its path, version, hash, checksum-log entry, upstream origin,
       commit (pseudo-versions) or tag (tagged versions), and license; any module whose origin or checksum-log entry cannot be found shall fail the build.
-    source: [bin/vendor-check.sh, bin/vendoring-test.sh, .github/workflows/ci.yml, bin/check-file-allowlist.sh]
+    source: [bin/vendor-provenance.py, bin/vendor-check.sh, bin/vendoring-test.sh, bin/vendor-provenance-test.sh, .github/workflows/ci.yml, bin/check-file-allowlist.sh, vendor/modules.txt, dependency-provenance.json]
     tier: community
     introduced: v0.3.0
-    origin: owner-ratified dependency rules 1-10 (ops/docs/ratify/2026-10-09-v030-rules.md, VEND-1..8, 41, 45); the check coded on the owner's "code it" Oct 14 (ops/docs/ratify/2026-10-14-vendored-dependencies-check.md); ACs accepted by the advisor, step 5, Oct 12 2026; AC2 amended by advisor ruling Oct 14 (mode 100644; the narrow no-vendor/ pass) under the owner's byte-for-byte words
+    origin: owner-ratified dependency rules 1-10 (ops/docs/ratify/2026-10-09-v030-rules.md, VEND-1..8, 41, 45); the check coded on the owner's "code it" Oct 14 (ops/docs/ratify/2026-10-14-vendored-dependencies-check.md); ACs accepted by the advisor, step 5, Oct 12 2026, with --date as epoch digits only, one ^vendor/ subtree allowlist pattern, no new write token, evidence records the scan and never judges it; AC14 by advisor ruling Oct 12 (two-module rule-6 record); AC2 amended by advisor ruling Oct 14 (mode 100644; the narrow no-vendor/ pass) under the owner's byte-for-byte words; AC2 amended again by advisor ruling D, Oct 14 (dot files allowed when regenerated byte for byte; the git index and .gitattributes judged), back to the owner's ratified wording "exactly what the official tool produces ... byte for byte"
     confidence: implementation-only
     notes: >
-      This requirement is landed in parts. This part holds the regenerate-and-compare check, the required `vendor` job and the vendor/ allowlist
-      pattern (AC2, AC3, AC11); the provenance file and its check (AC4, AC5), the vendored tree (AC1, AC6), the evidence file (AC7-AC10, AC12),
-      the public wording (AC13) and the two-module origins record (AC14) follow in the vendored-tree PR with their own tests and mappings.
+      Landed in two parts: the regenerate-and-compare check, the required `vendor` job and the vendor/ allowlist pattern (AC2, AC3, AC11 for bin/vendor-check.sh) in the vendor-check PR;
+      the vendored tree, the provenance file and its check, the evidence file and the public wording (AC1, AC4-AC10, AC12-AC14, the provenance step of AC3 and AC11 for bin/vendor-provenance.py)
+      in the vendored-tree PR, whose tests are bin/vendor-provenance-test.sh; the vendor-check cases stay in bin/vendoring-test.sh.
+      The vendor job runs the provenance check; the release stage that assembles the evidence file is a separate release-chain change.
+      AC13's public text (docs/dependencies.md) is a DRAFT held for the owner's discussion. build reads the sumdb record, the origins and the reviewed licenses file as files, so the
+      network fetch of those records is a separate CI step outside this requirement. The SPDX licence id comes from a committed, reviewed licenses file, never from detection.
     acceptance_criteria:
+      - id: REQ-VEND-001-AC1
+        given: "the source tree at a release commit"
+        when: "it is read"
+        then: "vendor/ is present with vendor/modules.txt; go.mod pins every module to one exact version (no range, no replace to a local path) and go.sum holds a hash for each; every build recipe that exists sets GOFLAGS=-mod=vendor and GOPROXY=off; and no workflow, script or recipe passes -mod=mod or -mod=readonly to go build, test, vet or run (test fixtures that only quote the string are excluded)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
       - id: REQ-VEND-001-AC2
         given: "bin/vendor-check.sh run on a copy of a tree that holds vendor/, go.mod and go.sum"
         when: "it regenerates vendor/ with go mod verify then go mod vendor in a scratch directory"
-        then: "it exits 0 only when the regenerated vendor/ equals the committed vendor/ (the same files, the same bytes, mode 100644 for every file, vendor/modules.txt included, no link, no special file); a changed byte, an added file, a removed file, an edited modules.txt or go.sum drift, a dot component (also one that go mod vendor itself regenerates, such as an embedded dot file), an empty directory, a link or a file that is not mode 100644 exits 1 naming the first offending path; a go.mod or go.sum that go mod vendor changes in the scratch copy exits 1 naming the file; a missing go toolchain, a proxy that cannot serve the modules or a failed go mod verify exits 1 and never passes; an unreadable tree, an unknown argument or a tree with vendor/ but no go.mod and go.sum exits 2. A tree with no vendor/ passes (with the printed line) only when no path of it has a vendor component AND origin/main holds no path with a vendor component; a vendor path that is not a vendor/ directory at the top exits 2; an unreadable origin/main, a tree or a base listing that does not complete, or a tree that is not a git tree exits 1; the base's paths are read NUL-delimited, so a name with a quote, a tab or a non-ASCII byte is found"
+        then: "it exits 0 only when the regenerated vendor/ equals the committed vendor/ (the same files, the same bytes, mode 100644 for every file, vendor/modules.txt included, no link, no special file); a changed byte, an added file, a removed file, an edited modules.txt or go.sum drift, a dot directory, an empty directory, a link or a file that is not mode 100644 exits 1 naming the first offending path (a dot-named FILE is allowed exactly when go mod vendor regenerates it, byte for byte, at mode 100644); in a git work tree the regenerated paths must also be exactly the tracked paths under vendor/, each tracked blob the regenerated bytes at index mode 100644, so a vendored .gitignore that leaves a file untracked or a .gitattributes that would change checkout bytes exits 1; a vendored .gitattributes line that sets, unsets or unspecifies any attribute other than plain `text`, `eol=lf` and the linguist-* labels (a closed list: export-ignore, export-subst, filter, diff, merge, ident, whitespace, conflict-marker-size, crlf, binary, working-tree-encoding and every name this check does not know are refused), that defines a macro ([attr]), or that cannot be read (not plain ASCII text, longer than 1 MB, a line it cannot tokenize) exits 1 naming file:line; a go.mod or go.sum that go mod vendor changes in the scratch copy exits 1 naming the file; a missing go toolchain, a proxy that cannot serve the modules or a failed go mod verify exits 1 and never passes; an unreadable tree, an unknown argument or a tree with vendor/ but no go.mod and go.sum exits 2. A tree with no vendor/ passes (with the printed line) only when no path of it has a vendor component AND origin/main holds no path with a vendor component; a vendor path that is not a vendor/ directory at the top exits 2; an unreadable origin/main, a tree or a base listing that does not complete, or a tree that is not a git tree exits 1; the base's paths are read NUL-delimited, so a name with a quote, a tab or a non-ASCII byte is found"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-VEND-001-AC3
         given: "the required CI job named vendor and a pull request opened or updated by anyone, Dependabot included"
         when: "it runs"
-        then: "it runs on a GitHub-hosted runner with the whole history fetched, runs go mod verify and bin/vendor-check.sh, sets no sumdb opt-out (GOSUMDB=off, GONOSUMDB, GOFLAGS=-insecure, GOPRIVATE, -mod=mod), has no actor, author or branch condition that skips it, and fails a Dependabot bump that leaves vendor/ stale. (The provenance check joins this job in the vendored-tree PR.)"
+        then: "it runs on a GitHub-hosted runner, runs go mod verify, bin/vendor-check.sh and the provenance check (AC4), sets no sumdb opt-out (GOSUMDB=off, GONOSUMDB, GOFLAGS=-insecure, GOPRIVATE, -mod=mod), has no actor, author or branch condition that skips it, and fails a Dependabot bump that leaves vendor/ or dependency-provenance.json stale"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-VEND-001-AC4
+        given: "dependency-provenance.json at the repository root, next to go.mod, and `bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json`"
+        when: "it runs"
+        then: "it exits 0 only if the file is schema fosterstack/dependency-provenance/v1 (modules[] of {path, version, go_sum_hash, checksum_log:{included, log}, origin:{url, commit for a pseudo-version or tag for a tagged version}, license}), lists exactly the modules and versions of vendor/modules.txt (none missing, none extra, none at another version), and each go_sum_hash equals the h1: hash go.sum records for that module version; any other input exits 2 naming the module and field"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC5
+        given: "`bin/vendor-provenance.py build` run with a module whose origin, checksum-log entry or license cannot be resolved, or whose recorded hash differs from go.sum, or whose log entry is not marked included, or whose origin is not an https address, or whose commit is not 40 hex characters or whose tag is empty"
+        when: "it runs"
+        then: "it exits non-zero naming the module and the gap, writes no output file (no partial entry), and never skips the module"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC6
+        given: "a release"
+        when: "its builds run"
+        then: "the vendored mode is the only mode: no recipe or script builds from the module cache; the one declared mode is vendor and dependency-provenance.json holds the module hashes that the vendored binary's build information does not"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC7
+        given: "`bin/vendor-provenance.py evidence --out DIR --provenance P --govulncheck G --date E` with P a regular file that passes the AC4 schema reading, G a regular non-empty file holding a govulncheck JSON result, and E epoch digits"
+        when: "it runs"
+        then: "it creates DIR if absent and writes exactly one file, DIR/vendor-evidence.json, and exits 0; the file records the schema name, the mode vendor, the sha256 of P and its module count, the sha256 of G, the date as E and as the UTC calendar day E falls on (YYYY-MM-DD), and nothing else"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC8
+        given: "`evidence` with a missing, repeated or unknown flag, a --out that exists and is not a directory, a P or G that is absent, not a regular file (a link, a directory, a device), empty, over 16 MiB or not valid JSON, a P that fails the AC4 schema reading, or a --date that is not digits (or is empty, negative, has a leading zero beyond a lone 0, or is above 253402300799)"
+        when: "it runs"
+        then: "it exits 2 naming the cause on stderr and writes nothing, not even DIR when DIR did not exist; any internal failure exits 1 and also writes nothing"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC9
+        given: "`evidence` run twice with the same P, G and E"
+        when: "both runs finish"
+        then: "DIR/vendor-evidence.json is byte-identical (keys sorted, no whitespace variation, a trailing LF, no timestamp from the clock, no host or path name); a different E, P or G gives a different file"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC10
+        given: "`evidence` and `check`"
+        when: "they run with no network"
+        then: "they succeed with the same output; they never run govulncheck or any other program, read no environment variable, write nothing outside DIR, and import no network module"
+        verification: { method: unit, release_blocking: false }
+        status: approved
       - id: REQ-VEND-001-AC11
-        given: "bin/vendor-check.sh"
-        when: "the release chain's script judge scans it"
-        then: "it is named by a literal repository-relative path, has a shebang and mode 100755, assigns none of PATH, IFS, BASH_ENV, ENV, LD_*, PYTHON*, runs no python3 -c and no here-document interpreter, builds no command word by substitution, and exits 2 when not run from the repository root"
+        given: "bin/vendor-provenance.py and bin/vendor-check.sh"
+        when: "the release chain's script judge scans them"
+        then: "each is named by a literal repository-relative path, has a shebang and mode 100755, assigns none of PATH, IFS, BASH_ENV, ENV, LD_*, PYTHON*, runs no python3 -c and no here-document interpreter, builds no command word by substitution, and exits 2 when not run from the repository root"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC12
+        given: "bin/vendor-provenance.py"
+        when: "it is read and run"
+        then: "it writes no signature, calls no signing tool and holds no key; vendor-evidence.json is signed afterwards, as a blob with a bundle, by release-sign.sh (REQ-CHAIN-007-AC8), and the claim of what that signature means is the chain's"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC13
+        given: "README.md, docs/, the www site and the release notes"
+        when: "the wording check runs"
+        then: "a line that speaks of dependencies, vendored code or modules never says audited; the allowed claim reads \"verified to be the same source the public checksum log records, from the stated upstream commit or tag\""
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC14
+        given: "a module whose module-cache record has no Origin"
+        when: "dependency-provenance.json is built"
+        then: "its origin is taken from test-evidence/dependency-origins.yaml, one entry per such module with module, version, repository URL, commit and the command that produced it; an entry for any other module (one the cache has an Origin for, or one not in the build list), or a commit that does not match the pseudo-version's hash, is refused; no other gap is filled"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-BUILDAPK-001
@@ -3835,6 +3963,272 @@ requirements:
         given: "bin/build-apk.sh and bin/release-sign-apks.sh"
         when: "each runs in the test with a search path that holds only the coreutils it uses and none of the tools it names (melange, go, sudo, unshare, env, openssl, sha256sum, git, python3, apko)"
         then: "a run with every fixed-path tool in place completes exactly as the run with the ordinary search path does, and a copy that calls any named tool by bare name, however the name is spelled or assembled, fails with that tool 'not found' (a command the script hands to a stub or to sudo, env or unshare is resolved as exec would, under the same restricted path, and the stubs answer an unresolved operand with exit 127 and '<name>: command not found'; every named-tool call site, the commit-time, cleanup-fallback and network-probe sites included, is reached by its own restricted scenario that always runs, whoever the user is; the calls that are deliberately nonfatal or degrade are proved by their named evidence: the sysctl relaxation prints 'sudo: command not found' and 'could not relax' and makes no sysctl call, the cleanup fallback prints 'sudo: command not found', makes no sudo rm call and keeps the build's own status, and a bare go or env at the Go check ends the run as AC4 states: in CI it fails with 'no Go toolchain on PATH in CI', outside CI it exits 0 saying 'not verified' and the go stub is never called); this holds for the tools the scripts hand to a python subprocess as well (such a subprocess runs with a search path that names no directory); STATED RESIDUAL as AC3: the coreutils search path and the starting environment (BASH_ENV) are the invoking stage's"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+  - id: REQ-REFRESH-001
+    title: Image inputs and the certified FIPS module are kept fresh by jobs that only open pull requests
+    statement: >
+      Once a day a job shall re-make the image lock files and re-resolve melange's build tools against live Wolfi; if anything changed it archives the new packages by digest, updates the locks and opens a pull request, never pushing to main; otherwise it does nothing. This job is the only updater of image recipes, apk packages and lock files. If Wolfi's signing key changed the job stops, opens no pull request and flags it for a human. If an old upstream version disappears the job notes it and does not fail. New Wolfi packages get no waiting period; signature and checksum checks and archiving still apply. The job's pull requests go through all normal checks and the rebuild-from-archive test. In the same daily run it shall also read Go's own certified-module file and, when a newer Go Cryptographic Module is certified, open a pull request that moves the FIPS build to it. The archive's package index shall be kept as the original Wolfi-signed file, versioned by its sha256, verified against the archived key, and an existing file under a digest name must hash to that name or the run fails closed.
+    source: [bin/refresh-inputs.sh, .github/workflows/go-freshness.yml, .github/dependabot.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 32, 44-49 and 73 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md, REFRESH-1..6, APKO-25, FIPS-59; rule 48 "dont do this 7 day hold on wolfi.")
+    confidence: implementation-only
+    notes: >
+      Real-run evidence for this group is PENDING the runner proof; the seal (rules 38-41) is not counted as proven until then; the earlier Addenda A-C ran on an older commit of the scripts.
+      The job is the `refresh` job of the existing go-freshness.yml workflow (no new workflow file). It opens pull requests with the auditor App's token, like the go.mod bump job, so bin/go-freshness-wiring-test.sh lists it as a credential consumer; the token's reach (a refresh/ branch and a pull request) was checked against the repository rulesets and the agent environment's branch policy (ruleset 21172637 targets only the default branch). Rebuilding the archive index and the check that a new lock verifies against the archive (bin/apko-lock.sh) belong to the apko pull request.
+      Known residuals: with an open refresh PR and the pointer ahead, the pointer is accepted if it hashes to its own name (direction and signature are checked only on the next reconcile run); a forwarded-value echo in error messages is not escaped. Round-8 residuals: the fips-module recipe is left modified if the push or the pull request creation fails (the PR run is a fresh checkout); in a state where the archive is BEHIND the record the superseded-pull-request sentence can name an unrelated closed refresh pull request (the sentence begins 'No open refresh pull request was found'); the pointer-ahead state trusts any self-hashing index file until the next reconcile replaces it. AC17 reading: while a refresh pull request waits, a damaged archived file stops the job, including a file named only by the COMMITTED locks (an old version an upgrade leaves behind); a MISSING apk is not downloaded again by that run (the waiting pull request's own run, and the first run after it merges, do that), and a package that only main's lock names and that live Wolfi no longer resolves is verified against the committed lock but cannot be downloaded again. AC17 floor for the committed melange.lock: its old versions (name=version, no checksums) are checked for integrity (every gzip stream inflates, the control section's datahash equals the data stream's sha256), not against a checksum; authenticity of those files rests on the apko locks and the signed index. AC22 plain pointer: a legacy plain pointer is checked to be a SIGNED index before any early exit (also when it equals the record). AC22 legacy state: a plain APKINDEX.tar.gz that is the recorded index and is a signed index, with no versioned index/APKINDEX-<sha256> file yet, is accepted and is kept under its own digest by the first run that changes the index. The daily job edits only DATA files (the locks, build/locks/fips-module.txt) and asks bin/gen-recipes.py what the recipes become; it never edits the recipe template or its pin.
+    acceptance_criteria:
+      - id: REQ-REFRESH-001-AC1
+        given: "the live Wolfi signing key differs from the archived one"
+        when: "bin/refresh-inputs.sh refresh runs (every run compares the keys first, even when nothing else changed)"
+        then: "it stops with exit 3 before any apko call, the message names the signing key and a human, and no branch, commit or pull request is made"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC2
+        given: "the live Wolfi signing key equals the archived one"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it makes the production, fips and melange-build-tools lock files with apko lock against https://packages.wolfi.dev/os, and when nothing changed it makes no commit, no push and no pull request and exits 0"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC3
+        given: "live Wolfi resolves a package version that the committed locks do not have"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "the new apk is downloaded over HTTPS (TLS 1.2 or newer) for both architectures, checked against the lock's control and data checksums (both ranges are required) and its datahash, and only then kept in the archive; the base locks (archive paths) and the melange lock and recipe pins are updated"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC4
+        given: "a downloaded package whose bytes fail a checksum in its lock entry"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it exits non-zero naming the checksum mismatch, keeps nothing in the archive, changes no lock and opens no pull request"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC5
+        given: "the refresh found changes"
+        when: "bin/refresh-inputs.sh refresh finishes"
+        then: "it pushes a branch named refresh/... (never main) and opens one pull request; it never merges, never uses --admin or auto-merge, never skips a hook or CI, and the pull request says it goes through all normal checks and the rebuild-from-archive test"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC6
+        given: "a package version in the committed locks that live Wolfi no longer resolves"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it notes in its output that the version is no longer in live Wolfi's resolution, exits 0 and keeps the archived copy"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC7
+        given: "the refresh path (bin/refresh-inputs.sh and the refresh job)"
+        when: "it is read"
+        then: "it holds no waiting period on new Wolfi packages (no cooldown, 7-day or minimum-age rule), and it says it is the only updater of image recipes, apk packages and lock files"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC8
+        given: ".github/dependabot.yml"
+        when: "it is read"
+        then: "it has no entry for apko, melange, apk packages or lock files"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC10
+        given: "Go's lib/fips140/certified.txt names the module the FIPS recipe already builds (GOFIPS140 proof value)"
+        when: "bin/refresh-inputs.sh fips-module runs"
+        then: "it says the build is up to date and exits 0 with no pull request"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC11
+        given: "Go's lib/fips140/certified.txt names a newer certified module than the FIPS recipe builds"
+        when: "bin/refresh-inputs.sh fips-module runs"
+        then: "build/melange-fips.yaml moves to it (the GOFIPS140 version and the proof value) and one pull request is opened, not merged, with nothing pushed to main"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC12
+        given: "lib/fips140/certified.txt is missing, empty, holds more than one module line, holds a value that is not vMAJOR.MINOR.PATCH-<8 hex>, names a module older than the one the recipe builds, or names the same version with a different hash"
+        when: "bin/refresh-inputs.sh fips-module runs"
+        then: "it fails closed (exit 2), naming the file, and changes nothing"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC13
+        given: "the refresh changed something and downloaded the live package index for each architecture"
+        when: "bin/refresh-inputs.sh refresh stores it"
+        then: "each index must verify against the archived Wolfi key and list every locked package (name, version and checksum), otherwise the run fails closed naming the index and changes nothing; it is stored byte for byte as index/APKINDEX-<sha256>.tar.gz, and an existing file under that name must hash to that name or the run fails closed; APKINDEX.tar.gz becomes a regular-file copy of the newest (the same sha256 as that index/APKINDEX-<sha256>.tar.gz, written atomically; never a symlink, and a symlink found there is refused), the previous index stays in the archive, and build/locks/archive-index.sha256 records one sha256 line per architecture (rules 31, 32, 47)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC14
+        given: "a live lock whose package name or version holds a path or other unexpected characters, or whose architecture is not x86_64 or aarch64, or an archived package with the same name and version but different bytes"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it refuses before anything is written (exit 2 for the invalid name, version or architecture, naming it; a checksum failure for different bytes), and the archive and the repository are byte for byte unchanged, as they are after any refusal before the commit phase (rules 45, 47)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC15
+        given: "a refresh that found changes, while a pull request opened by an earlier refresh is still open (a different change or this one), or while the list of open pull requests cannot be read"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "with an earlier refresh pull request open it pushes nothing and opens no second one, says so in the log and in the job summary with that pull request's number, and exits 0; an open FIPS-module pull request does not count; if the list cannot be read it exits 1 with no push and no pull request (rules 44, 49; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC16
+        given: "nothing changed against live Wolfi but build/locks/archive-index.sha256 does not exist"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it stores the verified live index as usual, writes the record from it and opens a pull request carrying the record; when the record exists and nothing changed it opens nothing (rules 30, 31, 44)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC17
+        given: "a package named by an unchanged lock is missing from the archive, or a file under a package's final name is truncated or has other bytes"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "the missing package is downloaded again and checked against the lock (exit 0, no pull request, nothing to commit); if it cannot be fetched again the job fails (exit 1) naming the package; a damaged file stops the job (exit 1), names the file, says to delete it and changes nothing (rules 27, 44; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC18
+        given: "any refresh that will change the archive or the repository"
+        when: "it writes"
+        then: "before the first change it checks that every file to be written (or its directory) is writable and that no directory on the way into the archive is a symlink or sits where a temporary name goes, and refuses (exit 1, naming it) otherwise; each file is written under a temporary name in its own directory and then renamed, so a run killed half-way leaves nothing under a final name and the next run succeeds (rule 44; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC19
+        given: "a signed package index or a package's control section"
+        when: "bin/refresh-inputs.sh refresh decompresses and reads it"
+        then: "an index larger than 128 MiB decompressed is refused (exit 1, naming the limit) before its signature is checked (the live index is 42 MiB today); a control section without exactly one datahash line is refused; numbers in ranges and versions are ASCII digits only (rules 32, 44; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC20
+        given: "a lock entry whose address is not https, or whose host is not exactly packages.wolfi.dev, or that has a port, a user name, a dot-dot segment, a backslash, a query or a fragment"
+        when: "bin/refresh-inputs.sh refresh reads the lock"
+        then: "it refuses (exit 2, naming the address check) before anything is fetched or written (rule 32)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC21
+        given: "the production, FIPS and melange locks name the same package and version for the same architecture with different checksums"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it refuses (exit 1, saying the locks disagree) and changes nothing (rule 44; advisor reading: hardening of the daily job)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC22
+        given: "the archive's package index is intact but is not the one recorded in build/locks/archive-index.sha256 (a refresh pull request is waiting, or was closed unmerged)"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "if an open refresh pull request of ours exists it changes nothing and exits 0 saying so; if there is none it reconciles: it stores the verified live index; when the record would change it opens a pull request that rewrites the record, and that pull request's body states that no open refresh pull request was found, that the previous refresh pull request (its number when it can be found among the closed unmerged ones of ours, otherwise 'a previous refresh pull request') was closed unmerged and that this one supersedes it; when the record would not change it repoints the archive's pointer to the verified live index, opens no pull request and exits 0 saying so; and an index file that does not hash to its own name, a recorded index file that is missing or does not match (except the legacy state: a plain pointer file that is the recorded index and is a signed index, with no versioned file yet), a missing or non-matching pointer, a legacy plain pointer that is not a signed index, or a malformed record (CRLF, no final newline, a repeated or unknown line) stops the job naming it (rules 30, 31, 44; advisor reading: hardening of the daily job; Oct 10 step 5)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC23
+        given: "bin/refresh-inputs.sh"
+        when: "it is read and run"
+        then: "it names curl, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path; no other utility is called by bare name, cat, sed and dirname being builtins or parameter expansions instead), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it ONLY in occurrences of those ten fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC24
+        given: "the repository's workflows"
+        when: "the daily refresh job exists"
+        then: "it is one job named refresh in the existing .github/workflows/go-freshness.yml and no workflow file was added (rule 5; owner Oct 14 rule 5)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC25
+        given: ".github/workflows/go-freshness.yml"
+        when: "it runs on its daily schedule or by workflow_dispatch"
+        then: "the refresh job runs once per run, on no other trigger (never on a pull_request), and does nothing on any ref other than main (owner Oct 14 rule 5)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC26
+        given: "a refresh run"
+        when: "the refresh job's steps run"
+        then: "the Wolfi signing key is checked first (a change stops everything for a human, before any other step); then the package archive is fetched by its recorded fingerprint; then the step looks for a newer version of every base package and build tool, downloads each, checks its signature and checksum, adds it to the archive; then it checks whether a newer certified crypto module exists; then it stores the archive back only if something changed (owner Oct 14 rule 6, in his words)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC27
+        given: "the refresh job"
+        when: "it pulls or stores the archive"
+        then: "it uses bin/archive-pull.sh by the digest committed in build/archive.json and bin/archive-push.sh, the store happens only in this job and only after verification passed, no other workflow calls archive-push.sh, and each tool is called by its fixed path with no test switch (owner Oct 14 rules 6 and 9)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC28
+        given: "the refresh job's permissions block"
+        when: "the job runs"
+        then: "the job's own token permissions are those of the existing go bump job (contents: read, the pull request opened with the auditor App's token minted exactly as that job mints it) plus packages: write for storing the archive in our own registry, and nothing else; no new secret, account, environment or ruleset; the top-level permissions stay contents: read (owner Oct 14 rule 8)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC29
+        given: "the refresh job found any update"
+        when: "it finishes"
+        then: "it opens a pull request on its own refresh/ branch that moves the build to the new versions, targeting main; the job never merges or approves it, never pushes to main or to any branch not under refresh/, and opens nothing and pushes nothing when nothing changed; with a refresh pull request already open it opens no second (owner Oct 14 rule 7, in his words)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC30
+        given: "the live Wolfi signing key differs from the archived one"
+        when: "the refresh job runs"
+        then: "it exits 3 saying a human must look, opens no pull request, stores nothing, and its later steps do not run (rule 6, first step)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC31
+        given: "bin/go-freshness-wiring-test.sh"
+        when: "it runs"
+        then: "it lists the refresh job as a consumer of the auditor App's credential, requires the jobs of go-freshness.yml to be exactly check, mutation and refresh, requires every action reference in the refresh job to be a commit digest with a tag comment, and fails on a copy that changes any of AC24 to AC30's properties"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC32
+        given: "an archive that holds nothing but keys/wolfi-signing.rsa.pub and a repository whose main has no build/archive.json (the first fill), and a package version that the committed production lock, the committed FIPS lock or the committed build/locks/melange.lock names and the live resolution no longer does"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it also fetches that version if Wolfi still serves it and archives it only after verifying it: a version named by a committed production or FIPS lock against that lock's checksums, exactly as any package; a version named only by the committed melange.lock (name=version, no checksums) against the checksum listed for the same name, version and architecture in the live package index, after that index's signature was verified against the archived key, and against the integrity floor of a whole package; a version that is not served, has no entry in the live index, or whose checksum differs stops the job (exit 1, naming the package) with nothing written; with an archive that holds anything else, or with a build/archive.json in the repository, no such version is ever fetched and a missing one stops the job as AC17 says (rules 27, 44; advisor reading Oct 16 under the owner's Oct 13 latitude: the only state in which the committed versions can never already be in the archive)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+  - id: REQ-ARCHIVE-001
+    title: The archive is pushed, pulled and checked by digest, with no way around the pointer
+    statement: >
+      The archive of apk packages, package indexes and the Wolfi key file shall be stored as one OCI artifact in GHCR under a digest, by one script that only the refresh job calls (the only writer). Build, Rebuild and the refresh job shall pull it by exactly the digest committed in build/archive.json, before and outside the sealed build, into a staging directory, and refuse any digest or any file hash that differs from the pointer; no fallback to the live internet.
+    source: [bin/archive-push.sh, bin/archive-pull.sh, bin/archive-verify.py, build/archive.json]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 26, 27, 29, 30, 44 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md) and the advisor's Oct 9 ruling (option A) as read back in ops/handoffs/outbox/2026-10-09-cache-readback-archive-tooling.md (approved by handoff 0423 item 1)
+    confidence: implementation-only
+    notes: >
+      PROPOSED by the helper: every AC of this requirement is new English and needs the owner's ratification (AC9 is the tool-path convention, the same form as REQ-BUILDAPK-001-AC3). Not in this change: the refresh job's workflow edit, the real archive contents (the first refresh run creates them), registry deletion and retention, and any crane install beyond the version pinned in stage-promote.yml (the fixed path of crane is /usr/local/bin/crane, a TEST-SUBST line). Symlinks are refused by the push and by verify, and the refresh layout does not use one (advisor 0425, amended REQ-REFRESH-001-AC13): <arch>/APKINDEX.tar.gz is a regular-file COPY of index/APKINDEX-<sha256>.tar.gz, so the same sha256 is listed in the pointer under both names (archive-test covers a directory holding both). The refresh job writes build/archive.json from archive-push.sh's printed digest plus the sorted file list, with no new script. Crane (advisor 0425): installed at /usr/local/bin/crane with stage-promote.yml's exact pin (go install github.com/google/go-containerregistry/cmd/crane@v0.22.1); no workflow edit in this change. The version annotation of a layer is parsed from an apk file name (<name>-<version>-r<N>.apk) and is empty for other files.
+    acceptance_criteria:
+      - id: REQ-ARCHIVE-001-AC1
+        given: "a directory in the refresh job's archive layout (keys/, <arch>/<name>-<version>.apk, <arch>/index/), holding only regular files"
+        when: "bin/archive-push.sh --dir DIR runs"
+        then: "it packs the directory into one OCI artifact with one layer per file, each layer annotated with the file's name (relative path), version and sha256, pushes it to ghcr.io/fosterstack/cache-archive by its digest (no tag), and prints that digest (sha256:<hex>) as its only output; the digest is a function of the file names and bytes alone (the same directory gives the same digest, whatever the file times) (rules 27, 29, 44; read-back item 1)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC2
+        given: "a directory that holds a symlink, any entry that is not a regular file, no file, a file name outside letters, digits and . _ + ~ - (or starting with a dot), or a push after which crane reports a digest other than the one computed from the layout"
+        when: "bin/archive-push.sh runs"
+        then: "it refuses before calling crane (exit 2, naming the entry) for the directory problems, and exits 1 printing nothing on stdout when crane fails or reports another digest than the computed one (rules 27, 44; read-back items 1 and 4: push output digest checked)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC3
+        given: "build/archive.json, the pointer to the archive"
+        when: "it is read by bin/archive-verify.py or bin/archive-pull.sh"
+        then: "it must hold exactly schema (the number 1), artifact (ghcr.io/fosterstack/cache-archive@sha256:<64 lower-case hex>, by digest only) and files (a non-empty list of {name, sha256}, sorted and unique, each name a safe relative path, each sha256 64 lower-case hex) and nothing else, and is refused (exit 2) otherwise; it changes only through the refresh job's pull requests (rules 27, 30, 44; read-back item 2)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC4
+        given: "a pointer naming a digest, and optionally --digest"
+        when: "bin/archive-pull.sh --pointer FILE --out DIR [--digest sha256:<hex>] runs"
+        then: "it pulls exactly the artifact the pointer names, by digest, with crane pull --format oci, and refuses (exit 2, before any crane call, nothing written) a --digest that is not the pointer's own; it never pulls by tag and has no fallback to any other source (rules 26, 27, 30, 44; read-back items 1 and 2)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC5
+        given: "a directory and a pointer"
+        when: "bin/archive-verify.py verify --pointer FILE --dir DIR runs"
+        then: "it exits 0 only when the directory holds exactly the listed files with the listed sha256, and exits 1 naming each missing, extra or altered file, an extra directory, or a symlink (rules 27, 29, 44; read-back items 1 and 4)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC6
+        given: "an artifact that was altered after it was pushed, an artifact that holds a file the pointer does not list or lacks one it lists, a crane that fails half-way, or an output path that already exists"
+        when: "bin/archive-pull.sh runs"
+        then: "it checks the manifest hashes to the committed digest, every layer hashes to its digest and annotation, and the files equal the pointer's list, in a staging directory beside the output; it renames the staging directory to the output path only after all checks passed, otherwise exits 1 naming the file and leaves nothing at the output path or beside it; an output path that already exists (a half-pulled directory) is refused (exit 2) untouched (rules 27, 30, 44; read-back items 1 and 4: half-pulled directory refused)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC7
+        given: "the digest the refresh job's push printed and the pointer the job commits"
+        when: "bin/archive-verify.py verify --pointer FILE --dir DIR --pushed-digest sha256:<hex> runs"
+        then: "it exits 1 naming both digests when the pointer's artifact does not name the pushed digest, and 0 when it does; a --pushed-digest that is not sha256:<64 hex> is refused (exit 2) (rules 27, 44; read-back item 4: the committed pointer must name the pushed digest)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC8
+        given: "the three archive tools"
+        when: "they are read and run"
+        then: "bin/archive-push.sh is the only one that names a crane write (crane push); bin/archive-pull.sh and bin/archive-verify.py name none; none names sudo, unshare, melange or apko (the pull happens before and outside the sealed call, rules 38a, 38b unchanged), a token, a password or a login; the shell scripts read no variable of the caller (the push uses the workflow's own credential, which crane finds itself) and a hostile caller environment (a tool or repository variable, PYTHONPATH, PYTHONSTARTUP) changes nothing; STATED RESIDUAL: TMPDIR, which mktemp itself reads for the scratch directory of the push and the pull, and the process environment the script starts in (read-back item 3)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-ARCHIVE-001-AC9
+        given: "bin/archive-push.sh, bin/archive-pull.sh and bin/archive-verify.py"
+        when: "they are read and run"
+        then: "the shell scripts name crane, python3, mktemp and rm by their literal fixed absolute path at every call, no program being named by a variable (never through the caller's search path, also not inside nested substitutions or quoted words), every python3 runs as python3 -I -B, there is no test hook (no test-mode variable), and bin/archive-test.sh runs a copy that differs from each file ONLY in occurrences of those four fixed paths, each replaced one for one by the dispatcher of that tool, any other byte difference failing the test (rules 27, 44; same form as REQ-BUILDAPK-001-AC3 and REQ-REFRESH-001-AC23; PROPOSED by the helper: this AC needs the owner's ratification)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-IMAGE-001
@@ -3982,4 +4376,44 @@ requirements:
         when: "it is accepted"
         then: "the owner reads the page cold once; a second reader follows it on a clean machine; and pipeline's AC7 run executes every command against a candidate"
         verification: { method: manual, release_blocking: false }
+        status: approved
+  - id: REQ-UAT-001
+    title: Persona UAT
+    statement: >
+      Five agents, each playing a different customer and reading only our public documents, shall exercise every release candidate and the latest release every week, the way a real acceptance test would.
+    source: [bin/persona-uat.py, bin/persona-uat-agent.py, .github/workflows/release.yml, .github/workflows/go-freshness.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: persona UAT (owner, Oct 3 2026, ops/docs/ratify/2026-10-02-owner-load.md point 9; criteria ratified Oct 4 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-UAT-001-AC1
+        given: a release candidate tag v*-rc.*
+        when: its release run promotes
+        then: "five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC2
+        given: the weekly maintenance run
+        when: it runs
+        then: "the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC3
+        given: a persona finding that is friction (not broken behavior or a failing doc step)
+        when: the run ends
+        then: "it is recorded in the persona's encrypted report as information and blocks nothing; no public issue is opened for a persona result"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC4
+        given: a persona run
+        when: it needs Jenkins, a GitLab runner or Kubernetes
+        then: "each runs as a digest-pinned container inside the job and nothing is provisioned in a cloud"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC5
+        given: a persona agent
+        when: it runs
+        then: "it is told to use only the public docs and the endpoint and its sandbox holds only the public docs; any other host its commands contact is flagged in its encrypted report and nothing blocks the network beyond the existing fences; its model and token budget come from environment variables the owner sets; its report and transcript are kept only as one encrypted artifact that only FosterStack can read (openssl CMS to a recipient certificate committed in the repository), never as plaintext"
+        verification: { method: ci-workflow, release_blocking: false }
         status: approved
