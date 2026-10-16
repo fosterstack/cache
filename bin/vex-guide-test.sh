@@ -55,6 +55,8 @@ sc = re.search(r"(?ms)^### Docker Scout\n(.*?)(?=^## |^### |\Z)", doc)
 check("the page has a Docker Scout section", sc is not None)
 scout_sec = sc.group(1) if sc else ""
 check("the Scout section carries the gate marker until AC6 has passed", "<!-- gated: REQ-REL-010-AC6 -->" in scout_sec)
+check("the gate is VISIBLE to a reader of the rendered page: a draft notice in a blockquote says the section is not yet verified on a published release (Codex #416 r1)",
+      re.search(r"(?m)^> \*\*Draft, not yet verified on a published release\.\*\*", scout_sec) is not None and re.search(r"(?i)do not rely on it", scout_sec) is not None)
 scout_blocks = [b for b in blocks if "docker scout" in b]
 check("the page has exactly one Scout command, inside the Scout section", len(scout_blocks) == 1 and scout_blocks[0] in scout_sec, len(scout_blocks))
 author = json.loads(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")).read())["author"] if os.path.exists(os.path.join(root, ".vex/fosterstack-cache.openvex.json")) else ""

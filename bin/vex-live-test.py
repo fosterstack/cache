@@ -244,6 +244,18 @@ def write_state(path, values):
                 fh.write("%s='%s'\n" % (k, values[k]))
 
 
+SECRET_ENV = ("DOCKERHUB_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN", "DH_REPO", "SCOUT_DOCKER_CONFIG", "DOCKER_CONFIG")
+
+
+def guide_env(section):
+    """The environment the page's commands run in: ours minus the Docker Hub user, tokens, test repository and Docker config; the Scout block alone gets the Scout
+    scan's own config directory (read-only token) as its Docker config, so it can run as written. The push token is never here."""
+    env = {k: v for k, v in os.environ.items() if k not in SECRET_ENV}
+    if section == "scout" and os.environ.get("SCOUT_DOCKER_CONFIG"):
+        env["DOCKER_CONFIG"] = os.environ["SCOUT_DOCKER_CONFIG"]
+    return env
+
+
 def run_guide(plan, state_path, section, plan_dir=None):
     """Run every command block of one section of the page, exactly as written, in ONE bash under errexit AND pipefail (a failing command anywhere, inside a pipe
     too, stops the run), with the test's settings (VER, IMAGE, DIGEST) set. Afterwards only those three values are carried on, validated; the blocks may not
@@ -260,7 +272,7 @@ def run_guide(plan, state_path, section, plan_dir=None):
     os.close(fd)
     try:
         script += 'printf "%%s\\0%%s\\0%%s\\0" "${VER-}" "${IMAGE-}" "${DIGEST-}" > %s\n' % shlex.quote(out)
-        rc = subprocess.run(["bash", "-c", script]).returncode
+        rc = subprocess.run(["bash", "-c", script], env=guide_env(section)).returncode
         if rc != 0:
             return rc
         ver, image, digest = open(out).read().split("\0")[:3]
@@ -666,24 +678,41 @@ def hub_request(url, method, token, body=None, opener=None):
         return r.read().decode("utf-8")
 
 
+TAG_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+
+
 def hub_sweep(repository, user, token, opener=None):
     """Delete every tag of the dedicated Docker Hub test repository and prove the repository empty. A failed delete does not stop the others; any failure, or a tag
-    left, raises at the end."""
+    left, raises at the end. Every answer is read strictly: a tag name is one path segment, the next page is exactly this repository's tag list."""
+    import urllib.parse
     if not HUB_REPO.fullmatch(repository or ""):
         raise ValueError("not a Docker Hub repository name (namespace/name): %r" % (repository,))
     if not user or not token or any(c.isspace() for c in user):
         raise ValueError("the Docker Hub user and the push token are both needed")
     base = "https://%s/v2/repositories/%s/tags" % (HUB_HOST, repository)
+    base_path = urllib.parse.urlsplit(base).path
     jwt = json.loads(hub_request("https://%s/v2/users/login" % HUB_HOST, "POST", None, {"username": user, "password": token}, opener))["token"]
+
+    def own_page(url):
+        u = urllib.parse.urlsplit(url)
+        if (u.scheme != "https" or u.hostname != HUB_HOST or u.username is not None or u.password is not None or u.port not in (None, 443)
+                or u.path != base_path or u.fragment or not all(k in ("page", "page_size") and v.isdigit() for k, v in urllib.parse.parse_qsl(u.query, keep_blank_values=True))):
+            raise ValueError("the tag list points away from the repository's own tag list: %r" % url[:100])
 
     def tags():
         names, url = [], base + "?page_size=100"
         while url:
-            if not url.startswith(base):
-                raise ValueError("the tag list points away from the repository: %r" % url[:80])
+            own_page(url)
             page = json.loads(hub_request(url, "GET", jwt, None, opener))
-            names += [r["name"] for r in page["results"]]
+            if not isinstance(page, dict) or not isinstance(page.get("results"), list):
+                raise ValueError("Docker Hub's tag list has no results list")
+            for r in page["results"]:
+                if not isinstance(r, dict) or not isinstance(r.get("name"), str) or not TAG_NAME.fullmatch(r["name"]) or r["name"] in (".", ".."):
+                    raise ValueError("Docker Hub's tag list holds a tag name that is not one path segment: %r" % (r,))
+                names.append(r["name"])
             url = page.get("next")
+            if url is not None and not isinstance(url, str):
+                raise ValueError("Docker Hub's next page is not a string")
         return names
     failures = []
     for name in tags():
@@ -696,10 +725,33 @@ def hub_sweep(repository, user, token, opener=None):
         raise RuntimeError("the Docker Hub test repository was not emptied: %d delete failures %s, %d tags left %s" % (len(failures), failures[:3], len(left), left[:5]))
 
 
+def docker_auth(directory, user, token):
+    """A private Docker config directory (0700) holding a Docker Hub login (0600): the user and the token never travel on a command line. Refuses an existing config."""
+    import base64
+    if not user or ":" in user or any(c.isspace() for c in user) or not token or any(c.isspace() for c in token):
+        raise ValueError("a Docker Hub user without a colon or blanks and a token are both needed")
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chmod(directory, 0o700)
+    fd = os.open(os.path.join(directory, "config.json"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        json.dump({"auths": {"https://index.docker.io/v1/": {"auth": base64.b64encode(("%s:%s" % (user, token)).encode()).decode()}}}, fh)
+
+
+def _selfcheck():
+    spec = importlib.util.spec_from_file_location("scout_selfcheck", os.path.join(os.path.dirname(os.path.abspath(__file__)), "scout-selfcheck.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def scout_valid(report):
+    """A Scout GitLab report read strictly (the same reader the verdict uses); raises ValueError when it is not one."""
+    return _selfcheck().findings(report)
+
+
 def scout_pick(before, openvex):
     """The first CVE (sorted) that Scout reports in the before report and one of OUR statements covers, or '' when none is."""
-    with open(before) as fh:
-        reported = {v["identifiers"][0]["value"] for v in json.load(fh)["vulnerabilities"]}
+    reported = {k[0] for k in scout_valid(before)}
     with open(openvex) as fh:
         ours = {s["vulnerability"]["name"] for s in json.load(fh)["statements"]}
     both = sorted(reported & ours)
@@ -783,6 +835,11 @@ def main(argv=None):
     wi.add_argument("--layout", required=True)
     hs = sub.add_parser("hub-sweep", help="delete every tag of the Docker Hub test repository (DOCKERHUB_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN in the environment)")
     hs.add_argument("--repository", required=True)
+    da = sub.add_parser("docker-auth", help="write a private Docker config directory with a Docker Hub login (user from DOCKERHUB_USERNAME, token from the named variable)")
+    da.add_argument("--dir", required=True)
+    da.add_argument("--token-env", required=True, choices=("DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN"))
+    sw = sub.add_parser("scout-valid", help="succeed only for a well-formed Scout GitLab report")
+    sw.add_argument("--report", required=True)
     sp = sub.add_parser("scout-pick", help="print the first CVE Scout reports that one of our statements covers (empty when none)")
     sp.add_argument("--before", required=True)
     sp.add_argument("--openvex", required=True)
@@ -811,6 +868,20 @@ def main(argv=None):
             hub_sweep(a.repository, os.environ.get("DOCKERHUB_USERNAME", ""), os.environ.get("DOCKERHUB_TEST_PUSH_TOKEN", ""))
         except (ValueError, RuntimeError, OSError, KeyError) as e:
             print("::error::Docker Hub sweep: %s" % e, file=sys.stderr)
+            return 1
+        return 0
+    if a.cmd == "docker-auth":
+        try:
+            docker_auth(a.dir, os.environ.get("DOCKERHUB_USERNAME", ""), os.environ.get(a.token_env, ""))
+        except (ValueError, OSError) as e:
+            print("::error::docker-auth: %s" % e, file=sys.stderr)
+            return 1
+        return 0
+    if a.cmd == "scout-valid":
+        try:
+            scout_valid(a.report)
+        except (OSError, ValueError) as e:
+            print("::error::Scout report: %s" % e, file=sys.stderr)
             return 1
         return 0
     if a.cmd == "scout-pick":

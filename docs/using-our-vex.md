@@ -108,6 +108,8 @@ reporting that finding. Google's VEX upload is a **preview** feature, so its beh
 
 ### Docker Scout
 
+> **Draft, not yet verified on a published release.** This section describes how Docker Scout reads our statements from the image. It has not yet been run against a published release, so do not rely on it until this notice is gone.
+
 Docker Scout needs no file: every release's image index carries these statements itself, as attestations attached to the image. <!-- gated: REQ-REL-010-AC6 -->
 Scout applies only statements whose author you name (its default is Docker's own), so name ours. Scan the image by digest, with the `DIGEST` from step 1:
 
