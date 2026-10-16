@@ -577,8 +577,8 @@ _PY_FORBIDDEN_NAMES = frozenset("exec eval compile __import__ getattr setattr gl
                                 "system popen startfile posix_spawn posix_spawnp fork forkpty execl execle execlp execlpe execv execve execvp execvpe spawnl spawnle spawnlp spawnlpe "
                                 "spawnv spawnve spawnvp spawnvpe write_text write_bytes chmod shutil touch mkdir makedirs unlink remove rmdir rename symlink link symlink_to hardlink_to "
                                 "write writelines truncate fdopen copy copyfile copytree move rmtree".split())
-_DATA_CONSUMERS = frozenset("cat tee grep egrep fgrep sort uniq head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od xxd".split())
-_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii "
+_DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od".split())
+_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii "
                           "unicodedata urllib.parse shlex enum dataclasses".split())
 _DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\(\))", re.M)
 
@@ -753,6 +753,34 @@ _REVIEWED_FUNCS = {"run": frozenset((
 ))}
 
 
+def _strip_comment(ln):
+    """The line without a trailing shell comment: a # starts one only outside quotes, at the start or after whitespace or ; & | ( ."""
+    sq = dq = False
+    i = 0
+    while i < len(ln):
+        c = ln[i]
+        if sq:
+            sq = c != "'"
+        elif c == "\\" and not sq:
+            i += 1
+        elif c == "'" and not dq:
+            sq = True
+        elif c == '"':
+            dq = not dq
+        elif c == "#" and not dq and (i == 0 or ln[i - 1] in " \t;&|("):
+            return ln[:i]
+        i += 1
+    return ln
+
+
+def _reads_only(seg):
+    """True when the (already comment-free) segment writes nothing: no output redirection except to /dev/null or a descriptor, no -o / --output option (also clustered, e.g. -uo)."""
+    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null", " ", seg)
+    if re.search(r"\d*>|&>", flat):
+        return False
+    return not re.search(r"(?:^|[ \t])(?:-[A-Za-z]*o\S*|--output\S*)(?=[ \t=]|$)", flat)
+
+
 def _written_file_used_later(lines, hd):
     """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later named anywhere except: as the argument of a data consumer on a line that is
     nothing but data consumers; in a plain assignment; or read through $(cat FILE) as an argument of a reviewed content-taking function. A closed rule: running, sourcing, copying,
@@ -773,7 +801,7 @@ def _written_file_used_later(lines, hd):
     reviewed = {n for n, body in funcs.items() if n in _REVIEWED_FUNCS and _line_hash(" ".join(body.split())) in _REVIEWED_FUNCS[n]}
     readcat = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
     for ln in later:
-        ln = re.sub(r"(?:^|(?<=\s))#.*$", "", ln)
+        ln = _strip_comment(ln)
         if not any(rx.search(ln) for rx in rxs):
             continue
         if "`" in ln:
@@ -793,7 +821,7 @@ def _written_file_used_later(lines, hd):
             cmd = (_unquote(first[0]) or "").split("/")[-1] if first else ""
             if content and not rest and len(segs) == 1 and cmd in reviewed:
                 continue                                          # the content goes to a reviewed function, once, with nothing else on the line
-            if cmd not in _DATA_CONSUMERS or content:
+            if cmd not in _DATA_CONSUMERS or content or not _reads_only(seg):
                 return True
     return False
 
@@ -802,9 +830,15 @@ _PY_SAFE_BUILTINS = frozenset("print len range str int float bool list dict set 
                               "format map filter reversed bytes bytearray type hash hex bin oct divmod pow iter next slice object id callable chr super property staticmethod classmethod "
                               "Exception BaseException ValueError KeyError TypeError AssertionError RuntimeError SystemExit IndexError StopIteration AttributeError NotImplementedError "
                               "ZeroDivisionError UnicodeDecodeError UnicodeEncodeError LookupError ArithmeticError OverflowError FileNotFoundError".split())
-_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii unicodedata shlex enum "
+_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii unicodedata shlex enum "
                              "dataclasses".split())
 _PY_PURE_DOTTED = frozenset(("os.path", "urllib.parse"))
+_PY_SYS_OK = frozenset("argv exit stdin stdout stderr version_info platform maxsize".split())
+_PY_SAFE_METHODS = frozenset("""capitalize casefold center count decode encode endswith expandtabs find format format_map index isalnum isalpha isascii isdecimal isdigit isidentifier
+    islower isnumeric isprintable isspace istitle isupper join ljust lower lstrip maketrans partition removeprefix removesuffix replace rfind rindex rjust rpartition rsplit rstrip split
+    splitlines startswith strip swapcase title translate upper zfill append extend insert pop remove clear sort reverse copy get items keys values setdefault update add discard union
+    intersection difference symmetric_difference issubset issuperset popitem fromkeys hex fromhex group groups groupdict start end span sub subn match search fullmatch findall finditer
+    pattern hexdigest digest strftime isoformat timestamp date time utcoffset total_seconds astimezone most_common elements total""".split())
 
 
 def _py_dotted(nd):
@@ -849,6 +883,9 @@ def _py_program_flags(body):
         if isinstance(nd, ast.Name) and nd.id == "open" and nd.id not in defined: why.add("open")
         if isinstance(nd, ast.Attribute) and nd.attr in _PY_FORBIDDEN_NAMES: why.add(nd.attr)
         if isinstance(nd, ast.Attribute) and nd.attr == "open": why.add("open")
+        if isinstance(nd, ast.Attribute):
+            dd = _py_dotted(nd)
+            if dd and dd.split(".")[0] in mods and mods[dd.split(".")[0]] == "sys" and len(dd.split(".")) > 1 and dd.split(".")[1] not in _PY_SYS_OK: why.add("sys." + dd.split(".")[1])
         if isinstance(nd, ast.Call):
             if any(isinstance(a, ast.Starred) for a in nd.args) or any(k.arg is None for k in nd.keywords): why.add("unpacked arguments")
             f = nd.func
@@ -861,7 +898,7 @@ def _py_program_flags(body):
                     full = mods[root] + dotted[len(root):] if dotted else ""
                     if not (any(full == m or full.startswith(m + ".") for m in _PY_PURE_MODULES | _PY_PURE_DOTTED)): why.add("call of " + full)
                 elif root == "os": why.add("call of " + dotted)
-                # a method on some other object: the name must not be a writer (checked above)
+                elif f.attr not in _PY_SAFE_METHODS and f.attr not in defined: why.add("method " + f.attr)      # a method on some other object: a closed list of names
             else:
                 why.add("a call of a computed function")
     return tree, sorted(why)
@@ -976,8 +1013,9 @@ def _context_holds(context, proof, text, line_hash):
     hds, sane, state = _shell_lex(lines)
     if not sane:
         return False
+    trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"})) + r"|python[\d.]*"
     if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
-            or re.search(r"(?m)^[ \t]*(?:function[ \t]+)?(?:" + "|".join(sorted(_DATA_CONSUMERS | {"python", "python3"})) + r")[ \t]*\(\)", text):
+            or re.search(r"(?m)(?:^|[;&|({][ \t]*|&&[ \t]*|\|\|[ \t]*)(?:function[ \t]+)?(?:" + trusted + r")[ \t]*(?:\(\)|\{)", text):
         return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
     def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
         return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
