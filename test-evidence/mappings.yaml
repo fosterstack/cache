@@ -655,6 +655,18 @@ mappings:
   - ac: REQ-SCAN-010-AC4
     evidence:
       - { type: inspection, ref: ".vex/README.md section \"The same statements, three ways\": the Google VEX upload is a preview feature" }
+  - ac: REQ-SCAN-010-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
   - ac: REQ-REL-009-AC1
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
