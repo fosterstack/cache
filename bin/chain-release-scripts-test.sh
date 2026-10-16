@@ -236,6 +236,11 @@ def tree(extra_env=None):
 def run(t, script, env=None, creds=None, tag="v0.3.0"):
     path = os.path.join(t, "bin", script + ".sh")
     if not os.path.exists(path): LAST[0] = 127; return 127, "", "the script " + script + ".sh does not exist"
+    ver = tag[1:]
+    dist = os.path.join(t, "dist")
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", ver) and ver != "0.3.0" and os.path.isdir(dist):      # the four archives carry the version of the tag the run is for (their digests are by item, not by name)
+        for n in os.listdir(dist):
+            if "_0.3.0_linux_" in n and not os.path.exists(os.path.join(dist, n.replace("_0.3.0_", "_%s_" % ver))): os.rename(os.path.join(dist, n), os.path.join(dist, n.replace("_0.3.0_", "_%s_" % ver)))
     LAST[0] = 0
     e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": tag, "GITHUB_SHA": "c" * 40, "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_REF": "fosterstack/cache/.github/workflows/release.yml@refs/tags/" + tag}
     e.update({k: SENT[k] for k in (creds or [])}); e.update(env or {})
@@ -798,7 +803,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "380"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "384"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

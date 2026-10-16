@@ -231,7 +231,7 @@ check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and WANT.coun
 t = ck_tree(); open(t + "/dist/checksums.txt", "w").write("stale\n"); r = ck_run(t)
 check(r[0] == 0 and open(t + "/dist/checksums.txt").read() == WANT and sorted(os.listdir(t + "/dist")) == sorted([n for _, n in ARCS] + ["checksums.txt"]),
       "AC21 an earlier checksums.txt is replaced, not extended, and no temporary file is left in dist", "rc=%s %s" % (r[0], sorted(os.listdir(t + "/dist"))))
-for label, mutate, word in (("a missing archive", lambda d: os.remove(d + "/" + ARCS[2][1]), ARCS[2][1]),
+for label, mutate, word in (("a missing archive", lambda d: os.remove(d + "/" + ARCS[2][1]), ARCS[2][0]),
                             ("an extra archive", lambda d: open(d + "/fscache_0.3.0_linux_riscv.tar.gz", "wb").write(b"x"), "riscv"),
                             ("an archive that is not the recorded bytes", lambda d: open(d + "/" + ARCS[0][1], "wb").write(b"other"), ARCS[0][0]),
                             ("a symlinked archive", lambda d: (os.remove(d + "/" + ARCS[1][1]), os.symlink("/etc/hosts", d + "/" + ARCS[1][1])), ARCS[1][1])):

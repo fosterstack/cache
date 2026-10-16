@@ -360,6 +360,17 @@ def cmd_bind_archives(a):
             refuse("%s (%s) is %s, Build's digests.json records %s: refusing to attach it" % (name, item, got, digests.get(item)))
 
 
+def cmd_checksums(a):
+    """CHECKSUMS (REQ-CHAIN-007-AC21, Astra R3): the one producer of checksums.txt. DIST must hold exactly the four Linux archives Build recorded, each with the digest of
+    Build's digests.json (the checks of bind-archives, run here first); OUT then gets one `<sha256>  <name>` line per archive, in byte order of the names, ending in a
+    newline, through a temporary file renamed into place. Any refusal exits 1 and writes nothing."""
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", a.version or ""):
+        refuse("version %r is not X.Y.Z (a release candidate has no checksums file)" % a.version)
+    cmd_bind_archives(a)
+    names = sorted((n for n in os.listdir(a.dist) if n.endswith(".tar.gz")), key=lambda n: n.encode())
+    write_atomic(a.out, "".join("%s  %s\n" % (sha256_file(os.path.join(a.dist, n)), n) for n in names))
+
+
 RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"     # decide's tagger identity (release.yml): the one tagger of a generated patch tag
 PATCH_HEAD = re.compile(r"^## (v[0-9]+\.[0-9]+\.[0-9]+) \u2014 patch release$")
 
@@ -401,8 +412,9 @@ def main(argv):
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
     n = sub.add_parser("tag-notes"); n.add_argument("--tag", required=True); n.add_argument("--object", required=True)
     b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
+    c = sub.add_parser("checksums"); c.add_argument("--version", required=True); c.add_argument("--digests", required=True); c.add_argument("--dist", required=True); c.add_argument("--out", required=True)
     a = p.parse_args(argv)
-    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "tag-notes": cmd_tag_notes}[a.cmd](a)
+    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums, "tag-notes": cmd_tag_notes}[a.cmd](a)
 
 
 if __name__ == "__main__":
