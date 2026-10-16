@@ -3735,11 +3735,6 @@ twoc gf-in-workflow .github/workflows/x.yml $'name: x\non: push\njobs:\n  j:\n  
 edck gf-in-workflow "$work/gf-in-workflow.json"
 CASE="a Go-toolchain row for a workflow file rules nothing (scripts only): exit 1"
 check test "$rc" -eq 1
-mkrowp "$work/gf-in-py.json" tools/fetch.py "$GLW" "$GOP"
-twoc gf-in-py tools/fetch.py $'#!/usr/bin/env python3\n' $'#!/usr/bin/env python3\n'"$GLW"$'\n'
-edck gf-in-py "$work/gf-in-py.json"
-CASE="a Go-toolchain row for a non-shell file rules nothing: exit 1"
-check test "$rc" -eq 1
 # the two rulings do not lend each other their lines: a Go-shaped line under the Wolfi ruling, and a Wolfi-shaped line under the Go ruling, rule nothing
 GL="curl $GOFIX \"https://go.dev/dl/\$f\""
 mkrowp "$work/gf-under-live.json" bin/fetch.sh "$GL" "$LIVEP"

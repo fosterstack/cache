@@ -509,6 +509,7 @@ _LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
 # the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash included, so the host cannot change) followed by
 # exactly ONE variable and nothing else
 _LIVE_URL_VAR = re.compile(r"https://packages\.wolfi\.dev/os/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
+_GO_OUT = re.compile(r"(?:[A-Za-z0-9_./-]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})+")
 _GO_URL_VAR = re.compile(r"https://go\.dev/dl/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
 _ANY_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"]+")
 _LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
@@ -533,8 +534,8 @@ def _live_fetch_line_ok(flat, toolchain=False):
         w = shlex.split(left, posix=True)
     except ValueError:
         return False
-    if len(w) < 3 or w[0] not in ("curl", "/usr/bin/curl") or w[1] not in ("-q", "--disable"):
-        return False                                   # -q first: no default .curlrc (CURL_HOME) can add a URL or an option
+    if len(w) < 3 or w[0] not in ("curl", "/usr/bin/curl") or w[1] not in (("-q",) if toolchain else ("-q", "--disable")):
+        return False                                   # -q first: no default .curlrc (CURL_HOME) can add a URL or an option (the Go shape takes only the spelling -q)
     raw = re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s"']+)+""", left)
     if len(raw) != len(w):
         return False
@@ -542,25 +543,29 @@ def _live_fetch_line_ok(flat, toolchain=False):
         # an expansion, brace, glob or tilde may appear only inside double quotes: unquoted, the shell splits it into several words
         if re.search(r"[$`{}*?\[\]~]", re.sub(r'"[^"]*"|\'[^\']*\'', "", rt)):
             return False
-    i, operands, globoff = 2, [], False
+    i, operands, globoff, op_raw = 2, [], False, []
     while i < len(w):
         t = w[i]
         if t in _LIVE_FLAG_PLAIN:
-            globoff = globoff or t in ("-g", "--globoff")
+            globoff = globoff or t in (("-g",) if toolchain else ("-g", "--globoff"))
             i += 1
         elif t in _LIVE_FLAG_VALUE:
             if i + 1 >= len(w) or not re.fullmatch(_LIVE_FLAG_VALUE[t], w[i + 1]) or (t not in ("-o", "--output") and "$" in w[i + 1]):
                 return False
+            if toolchain and t in ("-o", "--output") and not _GO_OUT.fullmatch(w[i + 1]):
+                return False                           # the Go shape: an output value is literal characters and plain $name / ${name} references only
             i += 2
         elif t.startswith("-"):
             return False                               # an option outside the list (-x, -K, --resolve, --url, an attached value, a cluster not listed)
         else:
             operands.append(t)
+            op_raw.append(raw[i])
             i += 1
     if len(operands) != 1:
         return False
     if toolchain:
-        return globoff and _GO_URL_VAR.fullmatch(operands[0]) is not None        # the Go shape is the variable form only, and only with -g
+        # the variable form only, only with -g, and the operand must be double-quoted or bare: a single-quoted $f is a literal dollar sign, not a variable
+        return globoff and "'" not in op_raw[0] and _GO_URL_VAR.fullmatch(operands[0]) is not None
     if _LIVE_URL_VAR.fullmatch(operands[0]) is not None:
         return globoff                                  # curl itself expands {a,b} and [1-2] in a URL: a variable operand is one transfer only with -g
     return _LIVE_URL.fullmatch(operands[0]) is not None
@@ -1227,7 +1232,7 @@ def _run(a, moved, fx, now):
             rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
-        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(GO_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, ""), toolchain=True) for r, lh in zip(rs, lines[k])):
+        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(GO_RULING) and not (k[0].endswith(".sh") and not k[0].startswith(".github/") and _live_fetch_line_ok(_LINE_TEXT.get(lh, ""), toolchain=True)) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a Go-toolchain ruling on a line that is not exactly the one go.dev/dl/ shape rules nothing (AC23)
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
