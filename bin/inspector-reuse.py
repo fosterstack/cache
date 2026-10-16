@@ -121,6 +121,12 @@ def check_answer(path, req_pairs):
         raise ValueError("not a ScanSbom envelope")
     if not set(req_pairs) <= set(component_pairs(sbom["components"], False)):
         raise ValueError("the answer does not cover the requested inventory")
+    # a findings field that is present must be a list of objects that each carry an id: anything else would read as "no findings" in the gate
+    # (`or []`), so it is refused here (fail closed); an absent field is the service's answer for an image without findings
+    if "vulnerabilities" in sbom:
+        vs = sbom["vulnerabilities"]
+        if not isinstance(vs, list) or not all(isinstance(v, dict) and isinstance(v.get("id"), str) and v["id"] for v in vs):
+            raise ValueError("the findings field is not a list of objects with an id")
 
 
 def stored_path(d, date, key):

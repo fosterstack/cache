@@ -217,6 +217,16 @@ vtry "an envelope for another inventory" 1 "$w/f-b.json"
 vtry "an envelope missing one requested component" 1 "$w/f-missing.json"
 vtry "a superset envelope (extra components are ignored)" 0 "$w/f-c.json"
 vtry "a missing file" 1 "$w/nonexistent.json"
+# fail-closed on a malformed findings field (Codex #188 r1): a "vulnerabilities" value that is not a list of objects with an id is refused, never read as "no findings"
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+f = json.load(open(w + "/f-vuln.json"))
+for name, val in (("obj", {}), ("str", "x"), ("num", 0), ("null", None), ("items", ["x"]), ("noid", [{"severity": "high"}])):
+    g = json.loads(json.dumps(f)); g["sbom"]["vulnerabilities"] = val
+    json.dump(g, open("%s/v-bad-%s.json" % (w, name), "w"))
+PY
+for n in obj str num null items noid; do vtry "a findings field that is not a list of objects with an id ($n)" 1 "$w/v-bad-$n.json"; done
 vtry "an empty file" 1 "$w/m4.json"
 ls "$w" | grep -q "findings" && bad "validate: wrote something" || ok "validate: writes nothing"
 
