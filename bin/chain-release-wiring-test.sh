@@ -51,6 +51,7 @@ DWN = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0
 def dn(name, path=None): return f"      - uses: {DWN}\n        with:\n          name: {name}\n          path: {path or name}\n"
 def up(name): return f"      - uses: {UPL}\n        with:\n          name: {name}\n          path: {name}\n"
 def inst(t): return f"      - name: install {t}\n        run: bash bin/install-scanner.sh {t}\n"
+def inst_m(t): return f"      - name: install {t}\n        run: bash bin/install-build-tools.sh {t}\n"      # REQ-CHAIN-007-AC1 (Astra R4): release-sign-apks.sh needs the pinned melange binary
 def wit(step, env):
     e = "".join(f"          {k}: {v}\n" for k, v in env.items())
     cond = "" if step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"   # a release candidate (a tag with a hyphen) ends after release-verify (AC14)
@@ -59,7 +60,7 @@ REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOK
 stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n  release:\n    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
-         + inst("witness") + inst("cosign") + inst("crane")
+         + inst("witness") + inst("cosign") + inst("crane") + inst_m("melange")
          + "".join(dn(n) for n in ("witness-build", "digests", "items", "witness-rebuild", "witness-check", "check-results", "provenance", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"))
          + dn("admission-baseline", "witness-build")   # the baseline admission chose, a product of Build's record (REQ-CHAIN-007-AC19, advisor ruling B)
          + dn("witness-check-arm64", "witness-check/witness-arm64")   # the arm64 leg uploads its record as a separate artifact (PR 3, REQ-CHAIN-006-AC17); it lands where check-list reads it
@@ -200,6 +201,11 @@ m s_noup    '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a
 m s_swap    'install cosign\n        run: bash bin/install-scanner.sh cosign\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install cosign\n        run: bash bin/install-scanner.sh cosign' 'start with checkout' "AC1 the installs in another order"
 m s_nocos   '      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n' ''                                                                    'start with checkout' "AC1 cosign is not installed"
 m s_snyk    'install-scanner.sh crane'                      'install-scanner.sh snyk'                                'none of checkout'   "AC1 an install of a tool outside the three"
+m s_nomel   '      - name: install melange\n        run: bash bin/install-build-tools.sh melange\n' ''                                'start with checkout' "AC1 (Astra R4) melange is not installed, so release-apks would fail after the images are published"
+m s_melapko 'install-build-tools.sh melange'               'install-build-tools.sh apko'                            'none of checkout'   "AC1 (Astra R4) the fourth install is apko, not melange"
+m s_melorder 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install melange\n        run: bash bin/install-build-tools.sh melange' 'install melange\n        run: bash bin/install-build-tools.sh melange\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'start with checkout' "AC1 (Astra R4) melange installed before crane (the order is fixed: the three scanners' tools, then melange)"
+m s_melscan 'install-build-tools.sh melange'               'install-scanner.sh melange'                             'none of checkout'   "AC1 (Astra R4) melange fetched by the scanner installer (it is the build-tools installer's, with its own pin)"
+m s_melenv  'run: bash bin/install-build-tools.sh melange' 'env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/install-build-tools.sh melange' 'AC2' "AC1 (Astra R4) the melange install step carries a credential (nothing before release-verify may)"
 m s_order   'release-apks bin/release-apks.sh'              'release-sign bin/release-sign.sh'                       'exactly'            "AC1 two witnessed steps swapped (release-sign twice)"
 m s_miss    '=      - name: release-assets\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets bin/release-assets.sh\n' '' 'exactly' "AC1 a witnessed step missing"
 m s_nopv    '=      - name: release-postverify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n' '' 'exactly' "AC1 (rule 79) the post-publish verification step missing from the Release stage"
@@ -416,7 +422,7 @@ for n in release-verify release-apks release-publish release-sign release-assets
 done
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"
-EXPECT=200
+EXPECT=205
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
