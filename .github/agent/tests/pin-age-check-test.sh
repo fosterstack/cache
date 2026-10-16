@@ -2088,6 +2088,73 @@ for imp in 'import subprocess' 'from subprocess import run' 'import os; os.syste
 done
 ctxno "an impure program whose label does not say it rests on review" "${SH}"$'python3 - <<\'PY\'\nimport subprocess\nx = "curl https://e.example/x"\nPY\n' pystring "ast-strings-only"
 ctxno "an impure program: the command text in code position even with the label" "${SH}"$'python3 - <<\'PY\'\nimport subprocess\nwget = 1  # curl https://e.example/x\nPY\n' pystring "$IMP"
+# --- round 1 of the review of the context field (both seats): lexical state for comment/assignment, accurate quote removal, versioned interpreters, function forms,
+# attached redirections, continued openers, file aliases, more Python writes, f-string expressions, rows of other forms, and a ruled line that MOVES out of its context ---
+ctxno "a comment-looking line inside a multi-line double-quoted string" "${SH}"$'printf \'%s\\n\' "\n# $(curl https://e.example/x)\n"\n' comment
+ctxno "an assignment-looking line inside a multi-line double-quoted string" "${SH}"$'printf \'%s\\n\' "\nX=\'$(curl https://e.example/x)\'\n"\n' assignment
+ctxno "a comment inside an UNQUOTED heredoc (the shell expands the body)" "${SH}"$'cat <<EOF\n# $(curl https://e.example/x)\nEOF\n' comment
+ctxno "an assignment inside an UNQUOTED heredoc" "${SH}"$'cat <<EOF\nX=\'$(curl https://e.example/x)\'\nEOF\n' assignment
+ctxyes "an assignment inside a QUOTED heredoc is text" "${SH}"$'cat <<\'EOF\'\nX=\'$(curl https://e.example/x)\'\nEOF\n' assignment
+ctxyes "a comment inside a QUOTED heredoc is text" "${SH}"$'cat <<\'EOF\'\n# $(curl https://e.example/x)\nEOF\n' comment
+ctxno "a comment inside a single-quoted multi-line string passed on" "${SH}"$'sh -c \'\n# curl https://e.example/x\n\'\n' comment
+ctxno "a delimiter spelled with a literal quote inside another quote ends at that text" "${SH}"$'cat <<\'A"B\'\ntext\nA"B\ncurl https://e.example/x\nAB\n' heredoc
+ctxyes "a delimiter with a quote inside another quote, terminated as the shell does" "${SH}"$'cat <<\'A"B\'\ncurl https://e.example/x\nA"B\n' heredoc
+for op in "python3.11 -" "python3.12" "python2.7" "perl5.36" "ruby3.2" "bash5" "sh.exe"; do
+  ctxno "a heredoc opened by the versioned interpreter '$op'" "${SH}$op <<'EOF'"$'\ncurl https://e.example/x\nEOF\n' heredoc
+done
+ctxyes "pystring with a versioned python" "${SH}"$'python3.11 - <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "a heredoc opened by a 'function name { }' consumer (no parentheses)" "${SH}"$'function consume { sh; }\nconsume <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a heredoc opened by a function that calls a function that runs a shell" "${SH}"$'consume() { relay; }\nrelay() { sh; }\nconsume <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a heredoc opened by a function whose body is on the next line" "${SH}"$'consume()\n{\n  bash\n}\nconsume <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "an attached redirection (cat>file) whose file is later run" "${SH}"$'cat>"$d/x.sh" <<\'EOF\'\ncurl https://e.example/x\nEOF\nsh "$d/x.sh"\n' heredoc
+ctxno "an attached append redirection (cat>>file) whose file is later run" "${SH}"$'cat>>"$d/x.sh" <<\'EOF\'\ncurl https://e.example/x\nEOF\nbash "$d/x.sh"\n' heredoc
+ctxno "an opener continued onto the next line after the operator (| sh)" "${SH}"$'cat <<\'EOF\' \\\n  | sh\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "the written file is run through a variable that holds its name" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nf=payload\nsh "$f"\n' heredoc
+ctxno "the written file is run through a variable (braces) that holds its name" "${SH}"$'cat >"$d/p.sh" <<\'EOF\'\ncurl https://e.example/x\nEOF\nf="$d/p.sh"\nsource ${f}\n' heredoc
+ctxyes "the written file is held in a variable and only read" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nf=payload\ncat "$f"\n' heredoc
+for imp in 'from pathlib import Path; Path("o").open("w").write("x")' 'import io; io.open("o", "w")' 'from pathlib import Path; Path("o").touch()' 'import os; os.mkdir("o")' 'import os; os.makedirs("o")' 'import os; os.remove("o")' 'import os; os.rename("a", "b")' 'import sys; sys.stdout.write("x")' 'from pathlib import Path; Path("o").mkdir()' 'import os; os.symlink("a", "b")'; do
+  ctxno "a program ($imp) that writes or changes files with no review label" "${SH}"$'python3 - <<\'PY\'\n'"$imp"$'\nx = "curl https://e.example/x"\nPY\n' pystring
+  ctxyes "the same program ($imp) with the review-attested label" "${SH}"$'python3 - <<\'PY\'\n'"$imp"$'\nx = "curl https://e.example/x"\nPY\n' pystring "$IMP"
+done
+ctxno "an f-string whose expression holds the downloader word (even with the review label)" "${SH}"$'python3 - <<\'PY\'\nimport subprocess\nprint(f\'{curl}\')\nPY\n' pystring "$IMP"
+ctxno "an f-string expression that calls a function named wget" "${SH}"$'python3 - <<\'PY\'\nx = f"{wget()}"\nPY\n' pystring
+ctxyes "an f-string whose literal part holds the downloader text" "${SH}"$'python3 - <<\'PY\'\nv = 1\nx = f"curl https://e.example/x {v}"\nPY\n' pystring
+# a context row of the local-call form is malformed (exit 2): those rows name an item, and their check does not take a context
+python3 - "$chk" <<'PY' >/dev/null 2>&1 && ok "AC16 context: a local-call row that carries a context or proof is malformed (RuntimeError, exit 2)" || bad "AC16 context: a local-call row that carries a context or proof is malformed (RuntimeError, exit 2)"
+import importlib.util, json, sys, tempfile
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+h = "a" * 64
+for extra in ({"context": "comment"}, {"context": "comment", "proof": "x"}):
+    row = dict({"file": ".github/workflows/x.yml", "form": ac.LOCAL_CALL_FORM, "key": h, "line": h, "ruling": "local reusable workflow call; test"}, **extra)
+    with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+        json.dump({"unmeasured_text": [row]}, f); f.flush()
+        try:
+            ac.load_ruled_text(f.name, required=True)
+        except RuntimeError:
+            continue
+        raise SystemExit("accepted")
+PY
+# a ruled line that was inside its context in the base and has MOVED out of it in the head (its count is unchanged, so it is not "added"): refused
+ctxmove() { # NAME BASE-CONTENT HEAD-CONTENT CONTEXT -> rc
+  newcase "$1-scan" "$(pyw bin/ctx.sh "$2")"; rtrows "$work/$1-scan" "$work/ctx-$1.tmp.json" all
+  python3 - "$work/ctx-$1.tmp.json" "$work/ctx-$1.json" "$4" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for r in d["unmeasured_text"]: r["context"] = sys.argv[3]
+json.dump(d, open(sys.argv[2], "w"))
+PY
+  rm -rf "$work/$1"; cp -R "$base" "$work/$1"
+  ( cd "$work/$1" && python3 -c "import pathlib,sys; pathlib.Path('bin/ctx.sh').write_text(sys.argv[1])" "$2" && git add -A && git -c user.name=t -c user.email=t@x commit -q -m b0 \
+    && python3 -c "import pathlib,sys; pathlib.Path('bin/ctx.sh').write_text(sys.argv[1])" "$3" && git add -A && git -c user.name=t -c user.email=t@x commit -q -m h0 )
+  rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --json "$work/ctx.json" --exceptions "$work/ctx-$1.json" >"$work/ctx.out" 2>&1 || rc=$?
+}
+ctxmove mv1 "${SH}"$'cat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' "${SH}"$'cat <<\'EOF\'\nEOF\ncurl https://e.example/x\n' heredoc
+CASE="AC16 context: a ruled heredoc line that MOVES out of the heredoc (same count) is refused (exit 1)"; check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/ctx.sh' "$work/ctx.out"
+ctxmove mv2 "${SH}"$'cat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' "${SH}"$'echo other\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+CASE="AC16 context: a ruled line that stays inside its heredoc while another line is added is not refused (exit 0)"; check test "$rc" -eq 0
+ctxmove mv3 "${SH}"$'# curl https://e.example/x\n' "${SH}"$'echo ok # curl https://e.example/x\n' comment
+CASE="AC16 context: a different line (the comment became code) is an added line with no row: refused (exit 1)"; check test "$rc" -eq 1
+
 # a context the file does not name, a non-text value, a proof without a context: the file is malformed (exit 2), never "nothing ruled" and never "everything ruled"
 newcase cx "$(pyw bin/ctx.sh "${SH}# curl https://e.example/x"$'\n')"
 for bad in '"context": "shell"' '"context": ""' '"context": 5' '"context": ["comment"]' '"proof": "x"' '"context": "comment", "proof": 7' '"context": "comment", "proof": ""' '"context": null'; do
