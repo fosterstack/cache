@@ -1,6 +1,6 @@
 # Using our VEX with your scanner
 
-Every FosterStack Cache release states, for each known vulnerability that a scanner reports in our images, whether it
+Every FosterStack Cache release states, for each vulnerability we have assessed in our images, whether it
 affects you: *not affected* (with the reason), *fixed*, *affected*, or *under investigation*. We publish those
 statements in three forms, generated from one file, so that your scanner stops reporting what does not affect you and
 keeps reporting what does.
