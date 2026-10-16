@@ -742,6 +742,37 @@ PY
 expect ok     "AC16 the real chain-scripts.json lists bin/archive-pull.sh and bin/archive-verify.py with their committed sha256" "" archive-listed "$root/.github/policy/chain-scripts.json" "$root"
 expect caught "AC16 archive-pull.sh listed with a sha256 that is not the committed file's" "sha256" archive-listed "$work/ar-nosha.json" "$root"
 expect caught "AC16 archive-verify.py (run by the pull) is not a row of chain-scripts.json" "not a row" archive-listed "$work/ar-norow.json" "$root"
+# REQ-CHAIN-004-AC16: the pointer the stage's pull step reads, in the format cache#345 defines (bin/archive-verify.py): a fixture pointer is accepted, malformed ones are
+# refused, and the committed build/archive.json, the real input of every pull, is held to the same check. It does not exist until the first refresh run's pull request
+# merges: that one case is the only red of this block (known-red KR-ARCHIVE-1, green by the pointer pull request).
+AV="$root/bin/archive-verify.py"
+python3 - "$work" <<'PY'
+import json, os, sys
+w = sys.argv[1]; os.makedirs(w + "/ptr", exist_ok=True)
+D = "ghcr.io/fosterstack/cache-archive@sha256:" + "a" * 64
+good = {"schema": 1, "artifact": D, "files": [{"name": "keys/wolfi-signing.rsa.pub", "sha256": "b" * 64}, {"name": "x86_64/busybox-1.37.0-r5.apk", "sha256": "c" * 64}]}
+def w_(n, d): json.dump(d, open("%s/ptr/%s.json" % (w, n), "w"))
+w_("good", good)
+w_("tag", dict(good, artifact="ghcr.io/fosterstack/cache-archive:latest"))
+w_("noschema", {k: v for k, v in good.items() if k != "schema"})
+w_("extra", dict(good, note="x"))
+w_("empty", dict(good, files=[]))
+w_("traversal", dict(good, files=[{"name": "../x", "sha256": "b" * 64}]))
+w_("unsorted", dict(good, files=list(reversed(good["files"]))))
+w_("shortsha", dict(good, files=[{"name": "a", "sha256": "b" * 63}]))
+PY
+ptr_ok()  { if python3 -I "$AV" pointer-check --pointer "$2" >"$work/ptr.out" 2>&1; then ok "$1"; else bad "$1 -> $(head -c 160 "$work/ptr.out")"; fi; }
+ptr_bad() { if python3 -I "$AV" pointer-check --pointer "$2" >"$work/ptr.out" 2>&1; then bad "$1 -> accepted"; elif grep -Fq -- "$3" "$work/ptr.out"; then ok "$1 (refused: $(head -c 80 "$work/ptr.out"))"; else bad "$1 -> refused for another reason: $(head -c 160 "$work/ptr.out")"; fi; }
+ptr_ok  "AC16 fixture: a pointer in cache#345's format (schema 1, the archive by digest, sorted unique files) is accepted by the check the pull runs" "$work/ptr/good.json"
+ptr_bad "AC16 fixture: an archive named by a tag, not a digest, is refused" "$work/ptr/tag.json" "by digest only"
+ptr_bad "AC16 fixture: a pointer without schema is refused" "$work/ptr/noschema.json" "exactly schema"
+ptr_bad "AC16 fixture: a pointer with an extra field is refused" "$work/ptr/extra.json" "exactly schema"
+ptr_bad "AC16 fixture: an empty file list is refused" "$work/ptr/empty.json" "non-empty"
+ptr_bad "AC16 fixture: a file name that leaves the directory is refused" "$work/ptr/traversal.json" "unsafe file name"
+ptr_bad "AC16 fixture: files out of order are refused" "$work/ptr/unsorted.json" "sorted and unique"
+ptr_bad "AC16 fixture: a short sha256 is refused" "$work/ptr/shortsha.json" "64 lower-case hex"
+if python3 -I "$AV" artifact --pointer "$work/ptr/good.json" 2>/dev/null | grep -Fq "sha256:$(printf 'a%.0s' $(seq 64))"; then ok "AC16 fixture: the digest the pull passes to crane is the pointer's"; else bad "AC16 fixture: the digest the pull passes to crane is not the pointer's"; fi
+ptr_ok  "AC16 the committed build/archive.json, the input of every stage pull, is a valid pointer" "$root/build/archive.json"
 # ---- the job graph of release.yml (REQ-CHAIN-005-AC5) -----------------------------------------------------------------------------------------
 expect ok "005-AC5 fixture: build -> sign -> check, rebuild beside them, (rebuild, check, sign) -> release; other jobs ignored" "" graph "$work/release.yml"
 gr() { replace "$work/release.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" graph "$work/$1.yml"; return 0; }
@@ -2139,7 +2170,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=740
+EXPECT=750
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

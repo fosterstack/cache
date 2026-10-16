@@ -47,6 +47,13 @@
    "findings": [
     "the base input build/locks/archive-index.sha256 is not on origin/main"
    ]
+  },
+  {
+   "id": "KR-ARCHIVE-1",
+   "suite": "bin/chain-build-wiring-test.sh",
+   "case": "AC16 the committed build/archive.json, the input of every stage pull, is a valid pointer",
+   "reason": "build/archive.json does not exist on main until the first daily refresh run (cache#345, first fill cache#392) stores the archive and its pointer pull request merges; every stage job pulls by that file, so the stage jobs cannot build before it exists, and this case is the proof that it is a valid pointer in the format cache#345 defines",
+   "green_by": "the first refresh run's pointer pull request (cache#392 first, then the pointer PR)"
   }
  ]
 }
