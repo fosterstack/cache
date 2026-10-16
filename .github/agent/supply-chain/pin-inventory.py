@@ -15,6 +15,7 @@ import fnmatch
 import hashlib
 import shlex
 import json
+import os
 import re
 import subprocess
 import sys
@@ -903,6 +904,13 @@ def _names_vendor(line):
         if _VENDOR_NAMED.search(_VENDOR_TOOLWORD.sub("", cand)):
             return True
     return False
+
+
+def vendor_list_extras(root, files):
+    """Sorted listed paths that EXIST under root but do not name the vendored folder. A listed path with no file is not reported: listing a path is the reviewed
+    gate, so an absent entry pre-authorizes only that one exact path (a file that arrives later and names the folder)."""
+    naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/")) and any(_names_vendor(ln) for ln in t.split("\n"))}
+    return sorted(p for p in _VENDOR_NAMING_FILES - naming if os.path.lexists(os.path.join(root, p)))
 
 
 def unmeasured_occurrences(files):
