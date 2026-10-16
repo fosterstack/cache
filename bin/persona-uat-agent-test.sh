@@ -529,14 +529,14 @@ python3 -m http.server 18080 --bind 127.0.0.1 --directory "$work" >/dev/null 2>&
 trap 'kill $SRV 2>/dev/null; rm -rf "$work"' EXIT
 for _ in 1 2 3 4 5 6 7 8 9 10; do python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:18080')" 2>/dev/null && break; sleep 0.3; done
 echo "ok-endpoint" >"$work/healthz"
-ENDPOINT=http://127.0.0.1:18099 agent neverreached '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18099/healthz || true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+ENDPOINT=http://127.0.0.1:18099 agent neverreached '[{"usage":{"tokens":10},"action":{"type":"shell","command":"python3 -c \"import sys,urllib.request as u; print(u.urlopen(sys.argv[1]).read().decode())\" http://127.0.0.1:18099/healthz || true"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
 CASE="a command naming an endpoint where nothing listens (output empty) no longer earns a finding from the agent either: findings stay empty and none mentions the endpoint (an implementation that kept the old 'reached' rule fails this)"
 check python3 - "$work/neverreached/out.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))
 assert a["findings"] == [] and "endpoint" not in json.dumps(a["findings"]).lower(), a
 PY
-agent contacted '[{"usage":{"tokens":10},"action":{"type":"shell","command":"curl -s http://127.0.0.1:18080/healthz"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
+agent contacted '[{"usage":{"tokens":10},"action":{"type":"shell","command":"python3 -c \"import sys,urllib.request as u; print(u.urlopen(sys.argv[1]).read().decode())\" http://127.0.0.1:18080/healthz"}},{"usage":{"tokens":10},"action":{"type":"finish","findings":[]}}]'
 CASE="a persona whose command reached the endpoint (exit 0, a non-empty answer) may finish clean (findings stay empty)"
 check python3 - "$work/contacted/out.json" <<'PY'
 import json, sys

@@ -75,7 +75,6 @@ OSV_BASE="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/downloa
 SBOMGEN_BASE="${SBOMGEN_BASE_URL:-https://amazon-inspector-sbomgen.s3.amazonaws.com}"
 SCOUT_BASE="${SCOUT_BASE_URL:-https://github.com/docker/scout-cli/releases/download}"
 GITSIGN_BASE="${GITSIGN_BASE_URL:-https://github.com/sigstore/gitsign/releases/download}"
-KIND_BASE="${KIND_BASE_URL:-https://github.com/kubernetes-sigs/kind/releases/download}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -155,8 +154,7 @@ case "$TOOL" in
     ;;
   kind)
     # the Kubernetes-in-Docker CLI for the persona UAT (on-call persona): a single binary; the driver finds it on PATH
-    url="${KIND_BASE}/v${KIND_VER}/${A_KIND}"
-    curl -fsSL -o "$tmp/kind" "$url" || pipeline_fail "download failed: $url"
+    curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VER}/${A_KIND}" || pipeline_fail "download failed: kind v${KIND_VER}"
     verify "$tmp/kind"
     install -m 0755 "$tmp/kind" "${DEST}/kind" || pipeline_fail "install failed for kind"
     "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"

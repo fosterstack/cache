@@ -109,8 +109,10 @@ def judge_installer(text, bad):
             bad.append("the installer has no pinned 64-hex sha256 for kind on " + arch.split("\\")[0])
     if len(re.findall(r"A_KIND=", code)) < 2:
         bad.append("the installer maps no kind release asset for both architectures (A_KIND)")
-    if not re.search(r'(?m)^KIND_BASE="\$\{KIND_BASE_URL:-https://github\.com/kubernetes-sigs/kind/releases/download\}"', code):
-        bad.append("the installer's kind download is not from github.com/kubernetes-sigs/kind/releases/download")
+    if not re.search(r'(?m)^\s*curl [^\n]*"https://github\.com/kubernetes-sigs/kind/releases/download/v\$\{KIND_VER\}/\$\{A_KIND\}"', code):
+        bad.append("the installer's kind download is not from github.com/kubernetes-sigs/kind/releases/download, written out in the curl line as v${KIND_VER}/${A_KIND} (the pin-age scan measures the literal URL; a *_BASE variable is a source it can never call a pin)")
+    if re.search(r"(?m)^KIND_BASE=", code):
+        bad.append("the installer retargets the kind download through a KIND_BASE variable: the pin-age scan counts that as an unpinned source")
     vf = re.search(r"(?ms)^verify\(\)\s*\{(.*?)^\}", code)
     if not vf or "sha256sum" not in vf.group(1) or "SUM" not in vf.group(1):
         bad.append("the installer verifies no sha256: verify() does not hash the file with sha256sum and compare it with the pinned SUM (a comment does not count)")
@@ -127,7 +129,7 @@ def judge_installer(text, bad):
         if "curl" not in a or "pipeline_fail" not in a:
             bad.append("the kind branch does not download with curl and fail as a pipeline failure")
 
-import hashlib, http.server, subprocess, tempfile, threading, stat
+import hashlib, http.server, shutil, subprocess, tempfile, threading, stat
 
 def exercise_installer(path):
     """RUN the installer for kind against a local fixture server that serves ARCHITECTURE-SPECIFIC bytes at the kind project's real asset paths only
@@ -164,12 +166,15 @@ def exercise_installer(path):
     rbin = os.path.join(work, "rbin"); os.makedirs(rbin)
     open(os.path.join(rbin, "sha256sum"), "w").write("#!/usr/bin/env python3\nimport hashlib, sys\nfor f in sys.argv[1:]:\n    h = hashlib.sha256(open(f, 'rb').read()).hexdigest()\n    open('%s/sha.log', 'a').write(h + '\\n')\n    print(h + '  ' + f)\n" % work)
     os.chmod(os.path.join(rbin, "sha256sum"), 0o755)
+    realcurl = shutil.which("curl")
+    open(os.path.join(rbin, "curl"), "w").write('#!/usr/bin/env bash\nargs=()\nfor a in "$@"; do args+=("${a/https:\\/\\/github.com\\/kubernetes-sigs\\/kind\\/releases\\/download/http:\\/\\/127.0.0.1:%d}"); done\nexec %s "${args[@]}"\n' % (srv.server_address[1], realcurl))
+    os.chmod(os.path.join(rbin, "curl"), 0o755)      # the installer names the real https URL; this shim (the test's only seam) answers it from the local server
     for arch in ("x86_64", "aarch64"):
         for label in ("good", "tampered"):
             state["tamper"] = label == "tampered"; state["paths"] = []
             dest = os.path.join(work, "dest-%s-%s" % (arch, label)); os.makedirs(dest)
             open(os.path.join(work, "sha.log"), "w").close()
-            env = dict(os.environ, PATH=rbin + ":" + os.environ["PATH"], KIND_BASE_URL="http://127.0.0.1:%d" % srv.server_address[1], INSTALL_SCANNER_ARCH=arch)
+            env = dict(os.environ, PATH=rbin + ":" + os.environ["PATH"], INSTALL_SCANNER_ARCH=arch)
             r = subprocess.run(["bash", copy, "kind", dest], capture_output=True, text=True, env=env, timeout=60)
             hashed = open(os.path.join(work, "sha.log")).read().split()
             k = os.path.join(dest, "kind")
@@ -207,7 +212,6 @@ case "${TOOL}:${arch}" in
   kind:aarch64|kind:arm64) SUM=""" + "b" * 64 + r""" ;;
   *) pipeline_fail "no pinned checksum" ;;
 esac
-KIND_BASE="${KIND_BASE_URL:-https://github.com/kubernetes-sigs/kind/releases/download}"
 tmp=$(mktemp -d)
 trap 'rm -rf "${tmp:?}"' EXIT
 verify() { # file
@@ -217,8 +221,7 @@ verify() { # file
 }
 case "$TOOL" in
   kind)
-    url="${KIND_BASE}/v${KIND_VER}/${A_KIND}"
-    curl -fsSL -o "$tmp/kind" "$url" || pipeline_fail "download failed: $url"
+    curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VER}/${A_KIND}" || pipeline_fail "download failed: kind v${KIND_VER}"
     verify "$tmp/kind"
     install -m 0755 "$tmp/kind" "${DEST}/kind" || pipeline_fail "install failed for kind"
     "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"
@@ -670,8 +673,8 @@ def _run_refresher(script):
     m = re.search(r"PERSONA_UAT_REFRESH_SECONDS:-([0-9]+)", script)
     if not m or not 10 <= int(m.group(1)) <= 300:
         probs.append("the identity refresher's default interval is not between 10 seconds and five minutes (an assertion expires after about five)")
-    if not re.search(r"curl\s[^\n|]*--max-time\s+[0-9]+", script):
-        probs.append("the identity refresher's curl has no --max-time: one stalled request would stop the refreshing for the rest of the job")
+    if not re.search(r"urlopen\([^\n]*timeout=[0-9]+", script) or re.search(r"\bcurl\b|\bwget\b", script):
+        probs.append("the identity refresher's token fetch is not a python3 urlopen with a timeout (no curl or wget): one stalled request would stop the refreshing for the rest of the job")
     state = {"n": 0, "auth": [], "inflight": 0}
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
@@ -1116,7 +1119,7 @@ H40 = "a" * 40
 CLAIMS_JS = "// Print ONLY the identity claims the Anthropic federation rule matches on (never the token, which stays masked): a token-exchange 401 is then diagnosable.\ntry {\n  const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));\n  const claims = {};\n  for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {\n    claims[k] = payload[k];\n  }\n  core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims));\n} catch (e) {\n  core.warning('could not decode OIDC claims for logging');\n}\n"
 IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https://api.anthropic.com');\ncore.setSecret(token);\n"
          "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\n" + CLAIMS_JS)
-REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    tok=$(curl -sSf --max-time 20 -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https://api.anthropic.com" | jq -r .value) || continue\n    [ -n "$tok" ] && [ "$tok" != "null" ] || continue\n    [ -e "$f" ] || break\n    ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
+REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    tok=$(python3 -c "import json,os,urllib.request as u; r=u.Request(os.environ[\\"ACTIONS_ID_TOKEN_REQUEST_URL\\"]+\\"&audience=https://api.anthropic.com\\",headers={\\"Authorization\\":\\"bearer \\"+os.environ[\\"ACTIONS_ID_TOKEN_REQUEST_TOKEN\\"]}); print(json.load(u.urlopen(r,timeout=20))[\\"value\\"])") || continue\n    [ -n "$tok" ] && [ "$tok" != "null" ] || continue\n    [ -e "$f" ] || break\n    ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
 CLEANUP = 'rm -f "${RUNNER_TEMP}/anthropic-identity-token"'
 def synth_driver(weekly):
     pre = ""
@@ -1620,8 +1623,9 @@ for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} the refresher never stops when the file is gone", "recreated the token file", lambda j: (_sub(j, 'while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n', 'while sleep "$every"; do\n'), _sub(j, '    [ -e "$f" ] || break\n    ( umask', '    ( umask')), w)
     mutate(f"{lab} the refresher interval defaults to 10 minutes", "default interval is not between", lambda j: _sub(j, "REFRESH_SECONDS:-60", "REFRESH_SECONDS:-600"), w)
     mutate(f"{lab} the refresher starts although no token file exists", "starts although the token file does not exist", lambda j: _sub(j, '[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\n', ""), w)
-    mutate(f"{lab} the refresher asks the OIDC endpoint without the request token", "did not replace the stale token file", lambda j: _sub(j, 'Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}', 'Authorization: bearer x'), w)
-    mutate(f"{lab} the refresher's curl has no --max-time (a stalled request stops the refreshing)", "has no --max-time", lambda j: _sub(j, " --max-time 20", ""), w)
+    mutate(f"{lab} the refresher asks the OIDC endpoint without the request token", "did not replace the stale token file", lambda j: _sub(j, 'os.environ[\\"ACTIONS_ID_TOKEN_REQUEST_TOKEN\\"]', '\\"x\\"'), w)
+    mutate(f"{lab} the refresher's token fetch has no timeout (a stalled request stops the refreshing)", "not a python3 urlopen with a timeout", lambda j: _sub(j, ",timeout=20", ""), w)
+    mutate(f"{lab} the refresher fetches the token with curl again", "not a python3 urlopen with a timeout", lambda j: _sub(j, "python3 -c", "curl -sSf --max-time 20 -c"), w)
     mutate(f"{lab} the refresher asks for another audience", "did not replace the stale token file", lambda j: _sub(j, "audience=https://api.anthropic.com", "audience=https://example.invalid"), w)
     mutate(f"{lab} no token cleanup step at the end", "must end with exactly one `if: always()` step that removes", lambda j: j.update(steps=j["steps"][:-1]), w)
     mutate(f"{lab} the cleanup step is not always()", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"][-1].update({"if": "${{ success() }}"}), w)

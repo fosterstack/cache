@@ -105,7 +105,7 @@
 #       refuses sub-second precision, unknown flags, bound objects that do not exist and a persona call whose token is not an unexpired token issued for
 #       the persona's ServiceAccount with the API audience. A namespaced object applied before its Namespace is rejected by the fake. Fixture manifests
 #       that Kubernetes accepts but this driver's contract refuses (no subjects, no rules, a subject without namespace, no apiGroups) are labelled CONTRACT.
-#       Not modelled: image userspace (the curl image has no python3: the integrated case uses curl) and real UIDs (one host uid runs every fake image; ownership is
+#       Not modelled: image userspace (the curl image has no python3: the integrated case fetches with the host's python3 over loopback, the fake image running on the host) and real UIDs (one host uid runs every fake image; ownership is
 #       pinned by the root cleanup's EXECUTED deletion semantics instead). The runner's metrics mux registers /metrics (and debug handlers this fake does not model);
 #       `/` is merely not the readiness endpoint. The API behaviour of `create token` (0s default, 10-minute floor, shortening) is modelled separately from the DRIVER's own
 #       1h-24h request policy. Hosts are inferred from command text (comments excluded, inline ones too); redirects and tool-internal contacts are not observed.
@@ -2712,7 +2712,7 @@ class Anthropic:
         if len(msgs) == 1:
             ctx = (kw.get("system", "") + " " + (msgs[0]["content"] if isinstance(msgs[0]["content"], str) else json.dumps(msgs[0]["content"]))).lower()
             role = next((n for n, ws in ROLE_WORDS if all(w in ctx for w in ws)), "none")      # which persona's instructions did THIS request carry
-            return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7)); echo ROLE-" + role + "; curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/"}))
+            return _Msg(json.dumps({"action": "shell", "command": "cat README.md; echo $((6*7)); echo ROLE-" + role + "; python3 -c \"import urllib.request as u; print(u.urlopen('http://127.0.0.1:18080/').status)\""}))
         last = msgs[-1]["content"] if isinstance(msgs[-1]["content"], str) else json.dumps(msgs[-1]["content"])
         if len(msgs) == 3:
             return _Msg(json.dumps({"action": "shell", "command": "cat docs/documented-step-that-does-not-exist.md"}))
