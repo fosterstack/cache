@@ -24,7 +24,7 @@ push_copy() {   # <src> <dst>: one push, journaled BEFORE it starts (a copy that
     echo "::error::more than ${MAX_PUSHES} pushes in one live-test run" >&2
     return 1
   fi
-  printf '%s\n' "$2" >> "${PUSHED_LOG:-/dev/null}"
+  printf '%s\n' "$2" >> "${PUSHED_LOG:-/dev/null}" || return 1   # a push that could not be journaled does not happen
   crane copy "$1" "$2"
 }
 
@@ -36,7 +36,7 @@ copy_candidate() {   # <layout dir> <dst ref> <attested digest>: a release candi
     echo "::error::more than ${MAX_PUSHES} pushes in one live-test run" >&2
     return 1
   fi
-  printf '%s\n' "$dst" >> "${PUSHED_LOG:-/dev/null}"   # journaled BEFORE the push, so a push that dies midway is still swept
+  printf '%s\n' "$dst" >> "${PUSHED_LOG:-/dev/null}" || return 1   # journaled BEFORE the push, so a push that dies midway is still swept; unjournaled, it does not happen
   crane push "$layout" "$dst" || return 1
   got=$(crane digest "$dst") || return 1
   [ "$got" = "$want" ] || { echo "::error::${dst} came out as ${got}, Build attested ${want}" >&2; return 1; }
@@ -274,6 +274,7 @@ scout_leg() {   # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as
     [ "$(crane digest "${dh}:${RUN}-production")" = "$prod" ] || { echo "::error::the production copy does not keep its digest" >&2; return 1; }
   fi
   crane auth logout index.docker.io || return 1
+  unset DOCKERHUB_TEST_PUSH_TOKEN      # gone from the environment too: nothing that runs from here on (a scan, the page's Scout block) can see it
   printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin >/dev/null || return 1
   if [ "$MODE" = rc ]; then scout_probe "$CANDIDATE_DIR/images/production" "$author"; fi
   scout_scan "registry://docker.io/${DH_REPO}@${fx_f}" scout.fixture.before.json || return 1

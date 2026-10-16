@@ -1111,7 +1111,7 @@ esac'''
 case "$*" in
   "login "*) [ "$(cat)" = scout-tok ] && echo "SCOUT-LOGIN-OK" >> "$RUNNER_TEMP/events.log" || echo "BAD-SCOUT-LOGIN" >> "$RUNNER_TEMP/events.log"; exit 0 ;;
   "logout "*) echo "SCOUT-LOGOUT" >> "$RUNNER_TEMP/events.log" ;;
-  *"scout cves"*) n=$(grep -c "scout cves" "$RUNNER_TEMP/docker.log"); cat "$RUNNER_TEMP/scout-$n.json" ;;
+  *"scout cves"*) echo "SCAN-ENV push-env=${DOCKERHUB_TEST_PUSH_TOKEN:+set}" >> "$RUNNER_TEMP/events.log"; n=$(grep -c "scout cves" "$RUNNER_TEMP/docker.log"); cat "$RUNNER_TEMP/scout-$n.json" ;;
   *) exit 0 ;; esac'''
     def leg(reports, env=None, mode="rc", extra=""):
         files = "".join("printf %%s '%s' > \"$RUNNER_TEMP/scout-%d.json\"; " % (r, i + 1) for i, r in enumerate(reports))
@@ -1145,6 +1145,15 @@ case "$*" in
           cats == sorted(cats) and {1, 2, 3, 4, 5, 6} <= set(cats) and "BAD-" not in out and "push-tok" not in "\n".join(ev) and "scout-tok" not in "\n".join(ev), (cats, out[-500:]))
     check("scout leg (rc): the user name is the only secret-backed value on a command line (the Docker Hub namespace, public)",
           all("hubuser-secret" in l for l in ev if "auth login" in l or l.startswith("docker login")) and not any("hubuser-secret" in l for l in ev if "scout cves" in l or " push " in l or " copy " in l))
+    check("scout leg (rc): the push token is gone from the environment once it is logged out (a Scout scan or the page's Scout block never sees it)",
+          "SCAN-ENV push-env=\n" in out and "SCAN-ENV push-env=set" not in out, out[-300:])
+    for why, call in (("copy_candidate", 'copy_candidate "$RUNNER_TEMP/layout" dst/cache:x sha256:%s' % ("a" * 64)), ("push_copy", "push_copy a b")):
+        rc, out2 = sh('export PUSHED_LOG=/dev/null/not-a-directory; { %s && echo rc=0; } || echo rc=1; echo crane-calls=$(cat "$RUNNER_TEMP/crane.log" 2>/dev/null | wc -l)' % call,
+                      {"crane": 'echo "$*" >> "$RUNNER_TEMP/crane.log"; case "$1" in digest) echo sha256:%s ;; esac' % ("a" * 64)})
+        check("%s: a journal that cannot be written stops the push before crane runs (a push nobody journaled would escape the sweep's record)" % why,
+              "rc=1" in out2 and "crane-calls=0" in out2.replace(" ", ""), (rc, out2[-200:]))
+    rc, out2 = leg(["{}", "{}"] + OK_FIX + OK_PROD, extra='export PUSHED_LOG=/dev/null/not-a-directory; ')
+    check("scout leg (rc): an unwritable journal fails the leg with no crane push or copy", "leg-rc=0" not in out2 and "crane push" not in out2 and "crane copy" not in out2, out2[-300:])
     for why, reports, env in (("the fixture's finding still shown with our author", [OK_FIX[0], OK_FIX[0]] + OK_PROD, {}),
                               ("the fixture's finding not shown without our author", [gl_report("CVE-A"), gl_report("CVE-A")] + OK_PROD, {}),
                               ("another fixture finding lost with our author", [OK_FIX[0], gl_report(OURS_CVE)] + OK_PROD, {}),
