@@ -246,8 +246,11 @@ put("aff-emptyref", lambda v: v.__setitem__("affects", [{"ref": ""}]))
 put("aff-numref", lambda v: v.__setitem__("affects", [{"ref": 5}]))
 put("rat-str", lambda v: v.__setitem__("ratings", "high"))
 put("rat-items", lambda v: v.__setitem__("ratings", ["high"]))
+put("sev-num", lambda v: v.__setitem__("ratings", [{"severity": 5}]))
+put("sev-list", lambda v: v.__setitem__("ratings", [{"severity": ["high"]}]))
+put("sev-null", lambda v: v.__setitem__("ratings", [{"severity": None}]))
 PY
-for n in aff-obj aff-empty aff-missing aff-str aff-noref aff-emptyref aff-numref rat-str rat-items; do vtry "a finding whose affects or ratings are malformed ($n)" 1 "$w/v-bad-$n.json"; done
+for n in aff-obj aff-empty aff-missing aff-str aff-noref aff-emptyref aff-numref rat-str rat-items sev-num sev-list sev-null; do vtry "a finding whose affects or ratings are malformed ($n)" 1 "$w/v-bad-$n.json"; done
 # reference integrity (Codex #188 r3): bom-refs of the answer's components are non-empty strings and unique, and every affected ref resolves to exactly one of them
 python3 - "$w" <<'PY'
 import json, sys

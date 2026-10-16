@@ -118,7 +118,7 @@ def _finding_ok(v):
     aff = v.get("affects")
     if not (isinstance(aff, list) and aff and all(isinstance(a, dict) and isinstance(a.get("ref"), str) and a["ref"] for a in aff)):
         return False
-    return "ratings" not in v or (isinstance(v["ratings"], list) and all(isinstance(r, dict) for r in v["ratings"]))
+    return "ratings" not in v or (isinstance(v["ratings"], list) and all(isinstance(r, dict) and ("severity" not in r or isinstance(r["severity"], str)) for r in v["ratings"]))
 
 
 def check_answer(path, req_pairs):
