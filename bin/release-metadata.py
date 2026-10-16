@@ -49,10 +49,30 @@ def sha256_file(path):
 
 
 def write_atomic(path, text):
+    """Write the target file through a temporary file beside it that nobody else can have placed: an earlier entry at the target's name plus .part (a stale file, a planted symlink) is removed first
+    (a symlink is removed itself, never followed), the file is then created exclusively without following links, and renamed into place; a directory or anything
+    that cannot be removed or created is a refusal."""
     tmp = path + ".part"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        refuse("%s exists and cannot be removed" % tmp)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    except OSError:
+        refuse("%s cannot be created exclusively" % tmp)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def digests_of(path):
@@ -333,9 +353,8 @@ def cmd_gate(a):
         same_as(a)
 
 
-def cmd_bind_archives(a):
-    """BIND (REQ-CHAIN-007-AC9, round 1 B3): DIST holds exactly the four Linux archives Build recorded, each hashing to the digest of Build's digests.json
-    (item archive-linux-ARCH / archive-fips-linux-ARCH for fscache_VER_linux_ARCH.tar.gz / fscache-fips_VER_linux_ARCH.tar.gz). Nothing is written."""
+def bound_archives(a):
+    """The check of bind-archives, returning {archive name: sha256 hex} of what it hashed: a caller that needs the hashes uses these, never a second read."""
     ver = a.version
     try:
         with open(a.digests) as f:
@@ -351,13 +370,32 @@ def cmd_bind_archives(a):
         gone = sorted(i for i, n in want.items() if n not in have)
         extra = sorted(n for n in have if n not in want.values())
         refuse("%s does not hold exactly the four archives Build recorded (missing: %s; not recorded: %s)" % (a.dist, ", ".join(gone) or "none", ", ".join(extra) or "none"))
+    out = {}
     for item, name in sorted(want.items()):
         p = os.path.join(a.dist, name)
         if os.path.islink(p) or not os.path.isfile(p):
             refuse("%s is not a regular file" % p)
-        got = "sha256:" + sha256_file(p)
-        if digests.get(item) != got:
-            refuse("%s (%s) is %s, Build's digests.json records %s: refusing to attach it" % (name, item, got, digests.get(item)))
+        hx = sha256_file(p)
+        if digests.get(item) != "sha256:" + hx:
+            refuse("%s (%s) is sha256:%s, Build's digests.json records %s: refusing to attach it" % (name, item, hx, digests.get(item)))
+        out[name] = hx
+    return out
+
+
+def cmd_bind_archives(a):
+    """BIND (REQ-CHAIN-007-AC9, round 1 B3): DIST holds exactly the four Linux archives Build recorded, each hashing to the digest of Build's digests.json
+    (item archive-linux-ARCH / archive-fips-linux-ARCH for fscache_VER_linux_ARCH.tar.gz / fscache-fips_VER_linux_ARCH.tar.gz). Nothing is written."""
+    bound_archives(a)
+
+
+def cmd_checksums(a):
+    """CHECKSUMS (REQ-CHAIN-007-AC21, Astra R3): the one producer of checksums.txt. DIST must hold exactly the four Linux archives Build recorded, each with the digest of
+    Build's digests.json (the checks of bind-archives, run here first); OUT then gets one `<sha256>  <name>` line per archive, in byte order of the names, ending in a
+    newline, through a temporary file renamed into place. Any refusal exits 1 and writes nothing."""
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", a.version or ""):
+        refuse("version %r is not X.Y.Z (a release candidate has no checksums file)" % a.version)
+    bound = bound_archives(a)      # the names and hashes the check itself read: the lines come from these, nothing is listed or hashed a second time
+    write_atomic(a.out, "".join("%s  %s\n" % (bound[n], n) for n in sorted(bound, key=lambda n: n.encode())))
 
 
 RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"     # decide's tagger identity (release.yml): the one tagger of a generated patch tag
@@ -401,8 +439,9 @@ def main(argv):
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
     n = sub.add_parser("tag-notes"); n.add_argument("--tag", required=True); n.add_argument("--object", required=True)
     b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
+    c = sub.add_parser("checksums"); c.add_argument("--version", required=True); c.add_argument("--digests", required=True); c.add_argument("--dist", required=True); c.add_argument("--out", required=True)
     a = p.parse_args(argv)
-    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "tag-notes": cmd_tag_notes}[a.cmd](a)
+    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "checksums": cmd_checksums, "tag-notes": cmd_tag_notes}[a.cmd](a)
 
 
 if __name__ == "__main__":
