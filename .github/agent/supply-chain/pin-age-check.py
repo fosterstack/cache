@@ -578,8 +578,8 @@ _PY_FORBIDDEN_NAMES = frozenset("exec eval compile __import__ getattr setattr gl
                                 "spawnv spawnve spawnvp spawnvpe write_text write_bytes chmod shutil touch mkdir makedirs unlink remove rmdir rename symlink link symlink_to hardlink_to "
                                 "write writelines truncate fdopen copy copyfile copytree move rmtree".split())
 _DATA_CONSUMERS = frozenset("cat tee grep egrep fgrep sort uniq head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od xxd".split())
-_PURE_IMPORTS = frozenset("json re sys os os.path pathlib time datetime hashlib base64 collections itertools functools math string textwrap argparse typing copy struct binascii "
-                          "unicodedata urllib.parse shlex io enum dataclasses".split())
+_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii "
+                          "unicodedata urllib.parse shlex enum dataclasses".split())
 _DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\(\))", re.M)
 
 
@@ -640,11 +640,21 @@ def _shell_lex(lines):
                 if c == "\\": j += 1
                 elif c == '"': stack.pop()
                 elif c == "`": stack.append("`")
+                elif c == "$" and line[j + 1:j + 2] == "{":
+                    k, d = j + 2, 1
+                    while k < len(line) and d: d += (line[k] == "{") - (line[k] == "}"); k += 1
+                    if d: insane = True                 # a parameter expansion that does not close on its line: its word can hold substitutions the walk does not follow
+                    else: j = k - 1
                 elif c == "$" and line[j + 1:j + 2] == "(":
                     if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
                     else: stack.append("$("); j += 1
             else:                                   # code position: top level, $( ), $(( )), (( )), backticks, ( )
-                if c == "\\": j += 1
+                if c == "$" and line[j + 1:j + 2] == "{":
+                    k, d = j + 2, 1
+                    while k < len(line) and d: d += (line[k] == "{") - (line[k] == "}"); k += 1
+                    if d: insane = True
+                    else: j = k - 1
+                elif c == "\\": j += 1
                 elif c == "'": stack.append("'")
                 elif c == '"': stack.append('"')
                 elif c == "`":
@@ -657,8 +667,8 @@ def _shell_lex(lines):
                     if top == "(" and line[j - 1:j] == "(": stack[-1] = "(("
                     else: stack.append("(")
                 elif c == ")" and top in ("$(", "(", "$((", "(("):
-                    if top == "$(" and re.match(r"[ \t]*\(?[^\s()]+(?:\|[^\s()]+)*$", line[:j]) and re.match(r"[ \t]*(?:[;&|)]|$)", line[j + 1:]) is None:
-                        insane = True                   # `pattern) command` inside $( ): a case pattern, not the end of the substitution
+                    if top == "$(" and re.match(r"[ \t]*\(?[^\s()]+(?:\|[^\s()]+)*$", line[:j]):
+                        insane = True                   # a bare word, then `)`, at the start of a line inside $( ): a case pattern, not the end of the substitution; not followed
                     stack.pop()
                     if top in ("$((", "((") and line[j + 1:j + 2] == ")": j += 1
                 elif c == "#" and (j == 0 or line[j - 1] in " \t;&|(") : cmt = True
@@ -687,7 +697,7 @@ def _shell_lex(lines):
         for m in re.finditer(r"\btee\b((?:[ \t]+(?:-\w+|\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+))+)", opener):
             tee_ops += re.findall(r"\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+", re.sub(r"(?:^|[ \t])-\w+", " ", m.group(1)))
         targets = [t.strip("'\"") for t in re.findall(r"(?:^|[^\d<>&])(?:\d*>>?|&>>?)[ \t]*(\"[^\"]*\"|'[^']*'|[^\s;&|<>()]+)", stripped) + tee_ops]
-        targets = [t for t in targets if t and not t.startswith(("&", "/dev/"))]
+        targets = [t for t in targets if t and not t.startswith("&") and t not in ("/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "/dev/tty") and not t.startswith("/dev/fd/")]
         for tab, quoted, delim, nested in ops:
             start, k = i, i
             if delim is None:
@@ -715,7 +725,7 @@ def _func_bodies(lines):
             continue
         depth, body, k, seen = 0, [], idx, False
         while k < len(lines):
-            bare = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "", lines[k])        # a brace inside a quoted string does not open or close the function
+            bare = re.sub(r"(?:^|(?<=\s))#.*$", "", re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "", lines[k]))        # a brace inside a quoted string or a comment does not open or close the function
             body.append(lines[k]); depth += bare.count("{") - bare.count("}"); seen = seen or "{" in bare
             if seen and depth <= 0: break
             k += 1
@@ -736,9 +746,17 @@ def _runs_input(words, funcs, seen=None):
     return False
 
 
+# Functions that may receive a written file's CONTENT as an argument ("$(cat FILE)"), by the sha256 of the whitespace-flattened definition (a new one is a change here: a human gate).
+_REVIEWED_FUNCS = {"run": frozenset((
+    "ab708ea8cb3a371d0f922e905fed2a26e73c83657149c621e6c47c479d5792d5",   # pin-age-check-test.sh fixture
+    "004f644d043348ed9bf307882a5ffe652f7fb62628cf16b2cc1508b957796d46",   # bin/persona-uat-test.sh run()
+))}
+
+
 def _written_file_used_later(lines, hd):
-    """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later run, sourced, interpreted, copied or chmod'ed in the same script
-    (conservative: any later line that names it next to such a word, or starts with it, counts)."""
+    """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later named anywhere except: as the argument of a data consumer on a line that is
+    nothing but data consumers; in a plain assignment; or read through $(cat FILE) as an argument of a reviewed content-taking function. A closed rule: running, sourcing, copying,
+    chmod'ing, a pipe to anything else, a substitution that is evaluated, a program or function the checker does not know all refuse."""
     later = lines[(hd["end"] or hd["start"]) + 1:]
     names = set(hd["targets"])
     for _ in range(4):                                          # a variable that holds the name (set before or after the heredoc; one assignment at a time, a few levels)
@@ -746,39 +764,106 @@ def _written_file_used_later(lines, hd):
             for var, val in re.findall(r"(?:^|[;&|\s])([A-Za-z_]\w*)=(\"[^\"]*\"|'[^']*'|[^\s;&|]+)", ln):
                 if val.strip("'\"") in names or any(t in val for t in names):
                     names |= {"$" + var, "${" + var + "}"}
+    spell = set(names)
+    for t in list(names):
+        if not t.startswith("$"):
+            spell |= {t.lstrip("./") or t, os.path.basename(t.rstrip("/")) or t}
+    rxs = [re.compile(r"(?<![\w.$-])" + re.escape(t) + r"(?![\w-])") if not t.startswith("$") else re.compile(re.escape(t)) for t in spell if t]
     funcs = _func_bodies(lines)
-    for t in names:
-        for ln in later:
-            if t in ln:
-                st = ln.strip().strip("'\"")
-                if st.startswith(t) or _runs_input(_words(ln), funcs):
-                    return True
+    reviewed = {n for n, body in funcs.items() if n in _REVIEWED_FUNCS and _line_hash(" ".join(body.split())) in _REVIEWED_FUNCS[n]}
+    readcat = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
+    for ln in later:
+        ln = re.sub(r"(?:^|(?<=\s))#.*$", "", ln)
+        if not any(rx.search(ln) for rx in rxs):
+            continue
+        if "`" in ln:
+            return True
+        stripped = readcat.sub(" ", ln)
+        content = stripped != ln                                  # some mention is a $(cat FILE) read: its content goes to the command
+        rest = any(rx.search(stripped) for rx in rxs)
+        if "$(" in stripped:
+            return True
+        segs = [sg for sg in re.split(r"\|\||&&|[|;&]", stripped) if sg.strip()]
+        for seg in segs:
+            toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", seg)
+            if toks and all(re.fullmatch(r"[A-Za-z_]\w*=.*", t) for t in toks):
+                continue                                          # a plain assignment (the alias rule above follows the name)
+            toks = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*", t)]
+            first = [t for t in toks if not re.fullmatch(r"\d*[<>]+.*", t)]
+            cmd = (_unquote(first[0]) or "").split("/")[-1] if first else ""
+            if content and not rest and len(segs) == 1 and cmd in reviewed:
+                continue                                          # the content goes to a reviewed function, once, with nothing else on the line
+            if cmd not in _DATA_CONSUMERS or content:
+                return True
     return False
 
 
+_PY_SAFE_BUILTINS = frozenset("print len range str int float bool list dict set tuple frozenset sorted enumerate zip min max sum any all repr isinstance issubclass ord chr abs round "
+                              "format map filter reversed bytes bytearray type hash hex bin oct divmod pow iter next slice object id callable chr super property staticmethod classmethod "
+                              "Exception BaseException ValueError KeyError TypeError AssertionError RuntimeError SystemExit IndexError StopIteration AttributeError NotImplementedError "
+                              "ZeroDivisionError UnicodeDecodeError UnicodeEncodeError LookupError ArithmeticError OverflowError FileNotFoundError".split())
+_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii unicodedata shlex enum "
+                             "dataclasses".split())
+_PY_PURE_DOTTED = frozenset(("os.path", "urllib.parse"))
+
+
+def _py_dotted(nd):
+    import ast
+    parts = []
+    while isinstance(nd, ast.Attribute):
+        parts.append(nd.attr); nd = nd.value
+    if isinstance(nd, ast.Name):
+        return ".".join([nd.id] + parts[::-1])
+    return None
+
+
 def _py_program_flags(body):
-    """(tree, impure reasons) for the Python source `body`, or (None, ...) when it does not parse. Names are read from the syntax tree (a word inside a string counts for nothing)."""
+    """(tree, impure reasons) for the Python source `body`, or (None, ...) when it does not parse. A POSITIVE subset: a program is pure only when every call is to a builtin on the safe
+    list, to a function or class the program itself defines, to a pure module's function, or to a method whose name is not a writer; there is no unpacked argument, no name that runs or
+    reaches code (exec, eval, compile, __import__, getattr ...) and every import is from the pure list. Anything else is an impurity reason (its rows then need the review label)."""
     import ast
     try:
         tree = ast.parse(body)
     except (SyntaxError, ValueError, RecursionError):
         return None, ["does not parse"]
     why = set()
+    mods, defined = {}, set()
     for nd in ast.walk(tree):
-        if isinstance(nd, ast.Name) and nd.id in _PY_FORBIDDEN_NAMES: why.add(nd.id)
-        elif isinstance(nd, ast.Attribute) and nd.attr in _PY_FORBIDDEN_NAMES: why.add(nd.attr)
-        elif isinstance(nd, ast.Import): why |= {"import " + a.name for a in nd.names if a.name not in _PURE_IMPORTS} | ({a.name.split(".")[0] for a in nd.names} & _PY_FORBIDDEN_NAMES)
+        if isinstance(nd, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)): defined.add(nd.name)
+        elif isinstance(nd, ast.Import):
+            for a in nd.names:
+                if a.name in _PY_PURE_MODULES or a.name in _PY_PURE_DOTTED: mods[a.asname or a.name.split(".")[0]] = a.name if a.asname else a.name.split(".")[0]    # `import os.path` binds os, not os.path
+                else: why.add("import " + a.name)
         elif isinstance(nd, ast.ImportFrom):
-            if (nd.module or "") not in _PURE_IMPORTS or nd.level: why.add("import " + (nd.module or "."))
-            why |= {a.name for a in nd.names} & _PY_FORBIDDEN_NAMES
-        elif isinstance(nd, ast.Call) and isinstance(nd.func, ast.Name) and nd.func.id == "open":
-            mode = nd.args[1] if len(nd.args) > 1 else next((k.value for k in nd.keywords if k.arg == "mode"), None)
-            if mode is not None and not (isinstance(mode, ast.Constant) and isinstance(mode.value, str) and not set(mode.value) & set("wax+")):
-                why.add("open for writing")
-        elif isinstance(nd, ast.Call) and isinstance(nd.func, ast.Attribute) and nd.func.attr == "open":      # Path.open(mode), io.open(file, mode), gzip.open ...: read-only only if every argument is a plain read mode
-            vals = list(nd.args) + [k.value for k in nd.keywords]
-            if not all(isinstance(v, ast.Constant) and isinstance(v.value, str) and v.value in ("r", "rb", "rt", "br", "tr") for v in vals):
-                why.add("open for writing")
+            if nd.level or (nd.module or "") not in (_PY_PURE_MODULES | _PY_PURE_DOTTED): why.add("import " + (nd.module or "."))
+            else:
+                for a in nd.names:
+                    if a.name in _PY_FORBIDDEN_NAMES or a.name == "open": why.add(a.name)
+                    mods[a.asname or a.name] = (nd.module or "") + "." + a.name
+        elif isinstance(nd, ast.Assign):
+            for t in nd.targets:
+                if isinstance(t, ast.Name) and isinstance(nd.value, ast.Lambda): defined.add(t.id)
+    called = {id(nd.func) for nd in ast.walk(tree) if isinstance(nd, ast.Call)}
+    for nd in ast.walk(tree):
+        if isinstance(nd, ast.Name) and nd.id in _PY_FORBIDDEN_NAMES and nd.id not in defined: why.add(nd.id)
+        if isinstance(nd, ast.Name) and nd.id == "open" and nd.id not in defined: why.add("open")
+        if isinstance(nd, ast.Attribute) and nd.attr in _PY_FORBIDDEN_NAMES: why.add(nd.attr)
+        if isinstance(nd, ast.Attribute) and nd.attr == "open": why.add("open")
+        if isinstance(nd, ast.Call):
+            if any(isinstance(a, ast.Starred) for a in nd.args) or any(k.arg is None for k in nd.keywords): why.add("unpacked arguments")
+            f = nd.func
+            if isinstance(f, ast.Name):
+                if f.id not in _PY_SAFE_BUILTINS and f.id not in defined and f.id not in mods: why.add("call of " + f.id)
+            elif isinstance(f, ast.Attribute):
+                dotted = _py_dotted(f)
+                root = dotted.split(".")[0] if dotted else None
+                if root in mods:
+                    full = mods[root] + dotted[len(root):] if dotted else ""
+                    if not (any(full == m or full.startswith(m + ".") for m in _PY_PURE_MODULES | _PY_PURE_DOTTED)): why.add("call of " + full)
+                elif root == "os": why.add("call of " + dotted)
+                # a method on some other object: the name must not be a writer (checked above)
+            else:
+                why.add("a call of a computed function")
     return tree, sorted(why)
 
 
@@ -830,30 +915,55 @@ def _plain_value(s):
     return not (sq or dq)
 
 
-def _first_command(opener):
-    toks = re.findall(r"""(?:[^\s'"]|'[^']*'|"[^"]*")+""", re.sub(r"<<-?[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|\w+)", " ", opener))
-    toks = [t for t in toks if not re.fullmatch(r"[A-Za-z_]\w*=.*", t)]
-    while toks and toks[0] in ("command", "builtin", "nohup", "nice", "time"):
-        toks = toks[1:]
-    return (_unquote(toks[0]) or "").split("/")[-1] if toks else ""
+_Q = r"""(?:"(?:[^"`$\\]|\$\{?\w+\}?|\$@|\\.)*"|'[^']*'|[A-Za-z0-9_./:=+,@%^~-]+|\$\{?\w+\}?|"\$\(out (?:[A-Za-z0-9_-]+|"\$\{?\w+\}?")\)")"""
+_WORD = r"""(?:"(?:[^"`$\\]|\$\{?\w+\}?)*"|'[^']*'|[A-Za-z0-9_./${}-]+)"""
+_REDIR = r"\d*>>?[ \t]*" + _WORD
+_DELIMQ = r"""(?:'[^'\s]+'|"[^"\s]+"|\\\w+)"""
+_CAT_OPENER = re.compile(r"[ \t]*cat(?:[ \t]+" + _REDIR + r")*[ \t]*<<-?[ \t]*" + _DELIMQ + r"(?:[ \t]+" + _REDIR + r")*[ \t]*")
+_ENV_ASSIGN = r"""[A-Za-z_]\w*=(?:"(?:[^"`$\\]|\$\{?\w+\}?)*"|'[^']*'|[A-Za-z0-9_./${}:-]*)"""
+_PY_OPENER = re.compile(r"[ \t]*(?:" + _ENV_ASSIGN + r"[ \t]+)*(check[ \t]+)?python3?(?:\.\d+)?[ \t]+-(?:[ \t]+" + _Q + r")*(?:[ \t]+" + _REDIR + r")*[ \t]*<<-?[ \t]*" + _DELIMQ
+                        + r"(?:[ \t]+" + _REDIR + r")*[ \t]*")
+# Wrapper functions an opener may use (`check python3 - ...`), by the sha256 of the whitespace-flattened definition line. A new wrapper is a change to this list: a human gate.
+_REVIEWED_WRAPPERS = {
+    "check": frozenset((
+        "d9f0551a0eefa0c75ab77d72fe9446ac100bf33458d956b500c865ccf33f2b43",   # persona-uat-agent-test.sh
+        "0eeb4484c724571050ef124103472beb31a6983886cd15e2f00c6e6e1a1f2629",   # persona-uat-test.sh
+        "9d447de27fa81cc5ba86eada6ef1be1830accd4258ebd950e1e1255ef6ce881d",   # pin-age-check-test.sh (fixture)
+    )),
+}
+
+
+# Helper functions an opener's argument may call as "$(NAME arg)": by the sha256 of the whitespace-flattened definition line (a new helper is a change here: a human gate).
+_REVIEWED_SUBST = {"out": frozenset(("613b579188d1c362ee67b847f36a06f68538c58197899586022d932ed1bea047",))}
+
+
+def _opener_form(opener, lines):
+    """"cat" or "python" when the opener is exactly one of the closed forms (nothing before, between or after: no pipe, list, substitution, function or continuation), else None."""
+    if _CAT_OPENER.fullmatch(opener):
+        return "cat"
+    m = _PY_OPENER.fullmatch(opener)
+    if not m:
+        return None
+    if re.search(r"\$\(out ", opener):                         # the `out` helper: its definition must be a reviewed line
+        defs = [_line_hash(" ".join(l.split())) for l in lines if re.match(r"\s*out\(\)", l)]
+        if not defs or not all(d in _REVIEWED_SUBST["out"] for d in defs):
+            return None
+    if m.group(1):                                            # the `check` wrapper: its definition must be a reviewed line
+        defs = [_line_hash(" ".join(l.split())) for l in lines if re.match(r"\s*check\(\)", l)]
+        if not defs or not all(d in _REVIEWED_WRAPPERS["check"] for d in defs):
+            return None
+    return "python"
 
 
 def _heredoc_ok(hd, lines, funcs, python=False):
-    """The here-document is terminated and quoted, is not nested in a substitution, is opened by exactly one operator whose command is a known data consumer (or a function the file
-    defines that runs nothing), is not piped or substituted into an interpreter, and its file (if any) is never later run."""
+    """The here-document is terminated and quoted, is opened by exactly one operator in a closed opener form (a plain `cat [>file] <<'X'`, or for python a `[check] python3 - args [>file]
+    <<'X'`), is not nested in a substitution, and its file (if any) is later named only as an argument of a data consumer."""
     if hd is None or not hd["quoted"] or hd["nested"] or hd["bad"] or hd["end"] is None or hd["ops"] != 1:
         return False
-    words = _words(hd["opener"])
-    if re.search(r"\$\(|`|<\(|>\(", re.sub(r"<<-?[ \t]*(?:'[^']*'|\"[^\"]*\"|\\.|\w+)", " ", hd["opener"])):
+    form = _opener_form(hd["opener"], lines)
+    if form != ("python" if python else "cat"):
         return False
-    if _runs_input([w for w in words if w in funcs], funcs):                  # a function the file defines that (through others) runs its input
-        return False
-    if _written_file_used_later(lines, hd):
-        return False
-    if python:
-        return True
-    cmd = _first_command(hd["opener"])
-    return not (set(words) & _INTERP_WORDS) and (cmd in _DATA_CONSUMERS or (cmd in funcs and not _runs_input(_words(funcs[cmd]), funcs)))
+    return not _written_file_used_later(lines, hd)
 
 
 def _context_holds(context, proof, text, line_hash):
@@ -866,9 +976,13 @@ def _context_holds(context, proof, text, line_hash):
     hds, sane, state = _shell_lex(lines)
     if not sane:
         return False
-    funcs = _func_bodies(lines)
-    def in_quoted_heredoc(i):                  # a body line of an inert here-document (quoted delimiter, data consumer, never run): text, whatever it says
-        return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, funcs) for h in hds if h["end"] is not None)
+    if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
+            or re.search(r"(?m)^[ \t]*(?:function[ \t]+)?(?:" + "|".join(sorted(_DATA_CONSUMERS | {"python", "python3"})) + r")[ \t]*\(\)", text):
+        return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
+    def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
+        return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
+    if context == "assignment" and re.search(r"\b(?:declare|typeset|integer|(?:local|readonly|export)[ \t]+-\w+)\b", text):
+        return False                           # a variable with attributes (integer, array, nameref ...) evaluates or redirects its assignment: nothing in this file is judged plain
     if context in ("comment", "assignment"):
         import shlex
         for i in hits:
@@ -888,15 +1002,10 @@ def _context_holds(context, proof, text, line_hash):
         return True
     for i in hits:
         hd = next((h for h in hds if h["start"] <= i < (h["end"] if h["end"] is not None else -1)), None)
-        words = _words(hd["opener"]) if hd else []
-        if not _heredoc_ok(hd, lines, funcs, python=(context == "pystring")):
+        if not _heredoc_ok(hd, lines, None, python=(context == "pystring")):
             return False
         if context == "heredoc":
             continue
-        # pystring: python / python3 reading the program from stdin ("-"), no other interpreter or shell on the command line
-        pyw = {"python", "python3"}
-        if not (set(words) & pyw) or (set(words) & _INTERP_WORDS) - pyw or not re.search(r"\bpython[\d.]*[ \t]+(?:-[a-zA-Z]+[ \t]+)*-(?=[ \t]|$)", hd["opener"]) or re.search(r"[ \t]-[a-zA-Z]*[cm]\b", hd["opener"]):
-            return False
         body = "\n".join(lines[hd["start"]:hd["end"]])
         tree, why = _py_program_flags(body)
         if tree is None:
