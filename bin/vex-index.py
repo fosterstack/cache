@@ -10,6 +10,7 @@ of the bytes of D and of the VEX file: nothing signed or promoted ever names D.
   layout        --layout DIR --vex VEX.json                           (in place: DIR is an OCI image layout whose index.json names D;
                                                                        afterwards it names F, every new blob is in blobs/sha256)
   verify-layout --layout DIR --vex VEX.json --base-digest sha256:.. (F is in the layout, canonical, with its attestations)
+  sidecar       --layout DIR --vex VEX.json --digest-file OUT/V.digest (the digest file Build records follows the layout: D's digest becomes F's)
 
 verify always performs the full validation. There is no network code at all: nothing is pushed, nothing is read from a
 registry. Standard library only; nothing in the environment (CI variables, locale, time zone, clock) influences any output.
@@ -421,14 +422,8 @@ FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 
 
 def clean_path(path):
-    """drop trailing separators and '/.' so that link/ and link/. cannot hide a symlink named link"""
-    while True:
-        if len(path) > 1 and path.endswith("/"):
-            path = path.rstrip("/") or "/"
-        elif path.endswith("/."):
-            path = path[:-2] or "/"
-        else:
-            return path
+    """drop trailing separators (a dot segment never gets here: check_path refuses it first)"""
+    return path.rstrip("/") or "/" if len(path) > 1 else path
 
 
 def check_path(path):
@@ -939,28 +934,66 @@ def command_layout(args):
     sys.stdout.buffer.write(canonical(result) + b"\n")
 
 
-def command_verify_layout(args):
-    vex_bytes = read_path(args.vex, MAX_INDEX_BYTES)
-    if not DIGEST.fullmatch(args.base_digest):
-        raise Refuse("--base-digest is not sha256:<64 lowercase hex>")
-    layout_fd, blobs, top, entry, _snapshot = open_layout(args.layout)
+def verify_layout_state(layout, vex_bytes, base_digest):
+    """check that the layout holds the canonical final index of the built index base_digest and the VEX file; returns the final index's digest"""
+    if not DIGEST.fullmatch(base_digest):
+        raise Refuse("the built index's digest is not sha256:<64 lowercase hex>")
+    layout_fd, blobs, top, entry, _snapshot = open_layout(layout)
     try:
         final_bytes = read_index_blob(blobs, entry, MAX_FINAL_BYTES)
         vex = check_vex(vex_bytes)
-        base = read_regular(blobs.sha_fd, hex_of(args.base_digest), MAX_INDEX_BYTES, "the built index blob")
-        if digest_of(base) != args.base_digest:
-            raise Refuse("the built index blob does not match --base-digest")
-        final, attestations, needed = check_final(final_bytes, blobs, vex, [digest_of(final_bytes), args.base_digest])
+        base = read_regular(blobs.sha_fd, hex_of(base_digest), MAX_INDEX_BYTES, "the built index blob")
+        if digest_of(base) != base_digest:
+            raise Refuse("the built index blob does not match the built index's digest")
+        final, attestations, needed = check_final(final_bytes, blobs, vex, [digest_of(final_bytes), base_digest])
         built, _ = load_index(base, final=False)
         stripped = dict(final)
         stripped["manifests"] = [e for e in final["manifests"] if not is_attestation(e)]
         if canonical(stripped) != canonical(built):
             raise Refuse("the final index minus its attestations differs from the built index")
-        check_layout_blobs(blobs, retained_children(final_bytes, True), {hex_of(entry["digest"]), hex_of(args.base_digest)} | {hex_of(d) for d in needed})
+        check_layout_blobs(blobs, retained_children(final_bytes, True), {hex_of(entry["digest"]), hex_of(base_digest)} | {hex_of(d) for d in needed})
+        return entry["digest"]
     finally:
         blobs.close()
         os.close(layout_fd)
+
+
+def command_verify_layout(args):
+    verify_layout_state(args.layout, read_path(args.vex, MAX_INDEX_BYTES), args.base_digest)
     print("ok")
+
+
+SIDECAR_LINE = re.compile(rb"sha256:[0-9a-f]{64}\n")
+
+
+def command_sidecar(args):
+    """OUT/<variant>.digest names the built index until layout has run; this moves it to the final index, after checking the layout is the final index of
+    exactly that built index and the VEX file (the one writer of that file besides the image assembly)"""
+    vex_bytes = read_path(args.vex, MAX_INDEX_BYTES)
+    parent_fd, name = open_parent(args.digest_file)
+    tmp, tmp_made = name + ".vex-index.tmp", False
+    try:
+        require_trusted_ancestors(args.digest_file)
+        current = read_regular(parent_fd, name, 128, args.digest_file, private=True)
+        if not SIDECAR_LINE.fullmatch(current):
+            raise Refuse("%s must hold one line, sha256:<64 lowercase hex> and a newline, and nothing else" % args.digest_file)
+        final_digest = verify_layout_state(args.layout, vex_bytes, current[:-1].decode())
+        try:
+            create_file(parent_fd, tmp, final_digest.encode() + b"\n")      # claimed exclusively; a temporary file that exists already is refused
+        except FileExistsError:
+            raise Refuse("%s.vex-index.tmp exists already; it is not this run's to remove" % args.digest_file)
+        tmp_made = True
+        if read_regular(parent_fd, name, 128, args.digest_file, private=True) != current:
+            raise Refuse("%s changed while this run was working; nothing was committed" % args.digest_file)
+        os.rename(tmp, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        tmp_made = False
+    except BaseException:
+        if tmp_made:
+            unlink_quiet(parent_fd, tmp)
+        raise
+    finally:
+        os.close(parent_fd)
+    print(final_digest)
 
 
 def build_parser():
@@ -981,6 +1014,10 @@ def build_parser():
     verify_layout = commands.add_parser("verify-layout", help="check that an OCI image layout holds a canonical final index with its attestations")
     verify_layout.add_argument("--layout", required=True)
     verify_layout.add_argument("--vex", required=True)
+    sidecar_parser = commands.add_parser("sidecar", help="move OUT/<variant>.digest from the built index's digest to the final index's, after checking the layout")
+    sidecar_parser.add_argument("--layout", required=True)
+    sidecar_parser.add_argument("--vex", required=True)
+    sidecar_parser.add_argument("--digest-file", required=True)
     verify_layout.add_argument("--base-digest", required=True, help="the built index's digest: the final index minus its attestations must equal that blob")
     return parser
 
@@ -988,7 +1025,8 @@ def build_parser():
 def main():
     args = build_parser().parse_args()
     try:
-        {"compute": command_compute, "verify": command_verify, "layout": command_layout, "verify-layout": command_verify_layout}[args.command](args)
+        {"compute": command_compute, "verify": command_verify, "layout": command_layout, "verify-layout": command_verify_layout,
+         "sidecar": command_sidecar}[args.command](args)
     except Refuse as err:
         sys.stderr.write("vex-index: refused: %s\n" % err)
         sys.exit(2)
