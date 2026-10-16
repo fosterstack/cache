@@ -588,10 +588,10 @@ _PY_FORBIDDEN_NAMES = frozenset("exec eval compile __import__ getattr setattr gl
                                 "system popen startfile posix_spawn posix_spawnp fork forkpty execl execle execlp execlpe execv execve execvp execvpe spawnl spawnle spawnlp spawnlpe "
                                 "spawnv spawnve spawnvp spawnvpe write_text write_bytes chmod shutil touch mkdir makedirs unlink remove rmdir rename symlink link symlink_to hardlink_to "
                                 "write writelines truncate fdopen copy copyfile copytree move rmtree".split())
-_DATA_CONSUMERS = frozenset("cat tee grep egrep fgrep sort uniq head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od xxd".split())
-_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii "
+_DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od".split())
+_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii "
                           "unicodedata urllib.parse shlex enum dataclasses".split())
-_DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\(\))", re.M)
+_DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\))", re.M)
 
 
 def _norm_word(w):
@@ -674,6 +674,14 @@ def _shell_lex(lines):
                 elif c == "$" and line[j + 1:j + 2] == "(":
                     if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
                     else: stack.append("$("); j += 1
+                elif c.isalpha() and (j == 0 or line[j - 1] in " \t;&|({") and re.match(r"(?:if|while|until|for|select|case)(?![\w.-])", line[j:]) and re.search(r"(?:^|[;&|({]|\bthen|\bdo|\belse|\belif)[ \t]*$", line[:j]):
+                    stack.append("kw")                      # a compound command: what follows its fi / done / esac (a pipe to a shell) decides what a heredoc inside it feeds
+                elif c.isalpha() and top == "kw" and (j == 0 or line[j - 1] in " \t;&|({") and re.match(r"(?:fi|done|esac)(?![\w.-])", line[j:]):
+                    stack.pop()
+                elif c == "{" and (j == 0 or line[j - 1] in " \t;&|(") and (j + 1 == len(line) or line[j + 1] in " \t"):
+                    stack.append("{")                       # a brace group: what a heredoc inside it feeds is decided by what follows the closing brace
+                elif c == "}" and top == "{" and (j == 0 or line[j - 1] in " \t;&|"):
+                    stack.pop()
                 elif c == "(":
                     if top == "(" and line[j - 1:j] == "(": stack[-1] = "(("
                     else: stack.append("(")
@@ -691,7 +699,7 @@ def _shell_lex(lines):
                         raw = m.group(2)
                         quoted = bool(re.search(r"['\"\\]", raw))
                         delim = _unquote(raw)
-                        ops.append((m.group(1) == "-", quoted, delim, any(s in ("$(", "`", '"') for s in stack)))
+                        ops.append((m.group(1) == "-", quoted, delim, any(s in ("$(", "`", '"', "(", "((", "{", "kw") for s in stack)))
                         j += m.end() - 1
             j += 1
         i += 1
@@ -764,6 +772,35 @@ _REVIEWED_FUNCS = {"run": frozenset((
 ))}
 
 
+def _strip_comment(ln):
+    """The line without a trailing shell comment: a # starts one only outside quotes, at the start or after whitespace or ; & | ( ."""
+    sq = dq = False
+    i = 0
+    while i < len(ln):
+        c = ln[i]
+        if sq:
+            sq = c != "'"
+        elif c == "\\" and not sq:
+            i += 1
+        elif c == "'" and not dq:
+            sq = True
+        elif c == '"':
+            dq = not dq
+        elif c == "#" and not dq and (i == 0 or ln[i - 1] in " \t;&|("):
+            return ln[:i]
+        i += 1
+    return ln
+
+
+def _reads_only(seg):
+    """True when the (already comment-free) segment writes nothing: no output redirection except to /dev/null or a descriptor, no -o / --output option (also clustered, e.g. -uo)."""
+    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null(?![^\s;&|<>()])", " ", seg)
+    if re.search(r"\d*>|&>", flat):
+        return False
+    flat = re.sub(r"[\"'\\]", "", flat)                       # judged on the option WORDS: "-o", '--output=x' and -\o spell the same options
+    return not re.search(r"(?:^|[ \t])(?:-[A-Za-z]*o\S*|--output\S*)(?=[ \t=]|$)", flat)
+
+
 def _written_file_used_later(lines, hd):
     """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later named anywhere except: as the argument of a data consumer on a line that is
     nothing but data consumers; in a plain assignment; or read through $(cat FILE) as an argument of a reviewed content-taking function. A closed rule: running, sourcing, copying,
@@ -784,7 +821,7 @@ def _written_file_used_later(lines, hd):
     reviewed = {n for n, body in funcs.items() if n in _REVIEWED_FUNCS and _line_hash(" ".join(body.split())) in _REVIEWED_FUNCS[n]}
     readcat = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
     for ln in later:
-        ln = re.sub(r"(?:^|(?<=\s))#.*$", "", ln)
+        ln = _strip_comment(ln)
         if not any(rx.search(ln) for rx in rxs):
             continue
         if "`" in ln:
@@ -804,7 +841,7 @@ def _written_file_used_later(lines, hd):
             cmd = (_unquote(first[0]) or "").split("/")[-1] if first else ""
             if content and not rest and len(segs) == 1 and cmd in reviewed:
                 continue                                          # the content goes to a reviewed function, once, with nothing else on the line
-            if cmd not in _DATA_CONSUMERS or content:
+            if cmd not in _DATA_CONSUMERS or content or not _reads_only(seg):
                 return True
     return False
 
@@ -813,9 +850,16 @@ _PY_SAFE_BUILTINS = frozenset("print len range str int float bool list dict set 
                               "format map filter reversed bytes bytearray type hash hex bin oct divmod pow iter next slice object id callable chr super property staticmethod classmethod "
                               "Exception BaseException ValueError KeyError TypeError AssertionError RuntimeError SystemExit IndexError StopIteration AttributeError NotImplementedError "
                               "ZeroDivisionError UnicodeDecodeError UnicodeEncodeError LookupError ArithmeticError OverflowError FileNotFoundError".split())
-_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii unicodedata shlex enum "
+_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii unicodedata shlex enum "
                              "dataclasses".split())
 _PY_PURE_DOTTED = frozenset(("os.path", "urllib.parse"))
+_PY_MODULE_NAMES = frozenset("os sys io builtins posix nt shutil subprocess importlib pathlib tempfile socket ctypes".split())
+_PY_SYS_OK = frozenset("argv exit stdin stdout stderr version_info platform maxsize".split())
+_PY_SAFE_METHODS = frozenset("""capitalize casefold center count decode encode endswith expandtabs find format format_map index isalnum isalpha isascii isdecimal isdigit isidentifier
+    islower isnumeric isprintable isspace istitle isupper join ljust lower lstrip maketrans partition removeprefix removesuffix replace rfind rindex rjust rpartition rsplit rstrip split
+    splitlines startswith strip swapcase title translate upper zfill append extend insert pop remove clear sort reverse copy get items keys values setdefault update add discard union
+    intersection difference symmetric_difference issubset issuperset popitem fromkeys hex fromhex group groups groupdict start end span sub subn match search fullmatch findall finditer
+    pattern hexdigest digest strftime isoformat timestamp date time utcoffset total_seconds astimezone most_common elements total""".split())
 
 
 def _py_dotted(nd):
@@ -850,16 +894,26 @@ def _py_program_flags(body):
             else:
                 for a in nd.names:
                     if a.name in _PY_FORBIDDEN_NAMES or a.name == "open": why.add(a.name)
+                    if nd.module == "sys" and a.name not in _PY_SYS_OK: why.add("sys." + a.name)      # an imported member of sys is judged like the attribute
                     mods[a.asname or a.name] = (nd.module or "") + "." + a.name
         elif isinstance(nd, ast.Assign):
             for t in nd.targets:
                 if isinstance(t, ast.Name) and isinstance(nd.value, ast.Lambda): defined.add(t.id)
     called = {id(nd.func) for nd in ast.walk(tree) if isinstance(nd, ast.Call)}
+    roots = {id(nd.value) for nd in ast.walk(tree) if isinstance(nd, ast.Attribute)}
+    for nd in ast.walk(tree):
+        if isinstance(nd, ast.Name) and nd.id in mods and nd.id not in defined and id(nd) not in roots and id(nd) not in called:
+            why.add("module " + nd.id + " used as a value")
+        if isinstance(nd, ast.Attribute) and nd.attr in _PY_MODULE_NAMES and id(nd) not in roots:
+            why.add("module " + nd.attr + " reached through an attribute")      # `x = os.path.os`: a module re-exported under a plain name      # `x = sys` then x.modules[...]: an alias the walk below would not follow
     for nd in ast.walk(tree):
         if isinstance(nd, ast.Name) and nd.id in _PY_FORBIDDEN_NAMES and nd.id not in defined: why.add(nd.id)
         if isinstance(nd, ast.Name) and nd.id == "open" and nd.id not in defined: why.add("open")
         if isinstance(nd, ast.Attribute) and nd.attr in _PY_FORBIDDEN_NAMES: why.add(nd.attr)
         if isinstance(nd, ast.Attribute) and nd.attr == "open": why.add("open")
+        if isinstance(nd, ast.Attribute):
+            dd = _py_dotted(nd)
+            if dd and dd.split(".")[0] in mods and mods[dd.split(".")[0]] == "sys" and len(dd.split(".")) > 1 and dd.split(".")[1] not in _PY_SYS_OK: why.add("sys." + dd.split(".")[1])
         if isinstance(nd, ast.Call):
             if any(isinstance(a, ast.Starred) for a in nd.args) or any(k.arg is None for k in nd.keywords): why.add("unpacked arguments")
             f = nd.func
@@ -870,9 +924,11 @@ def _py_program_flags(body):
                 root = dotted.split(".")[0] if dotted else None
                 if root in mods:
                     full = mods[root] + dotted[len(root):] if dotted else ""
-                    if not (any(full == m or full.startswith(m + ".") for m in _PY_PURE_MODULES | _PY_PURE_DOTTED)): why.add("call of " + full)
+                    ms = [m for m in _PY_PURE_MODULES | _PY_PURE_DOTTED if full == m or full.startswith(m + ".")]
+                    if not ms: why.add("call of " + full)
+                    elif "." in full[len(max(ms, key=len)):].lstrip("."): why.add("call of " + full)      # a name reached THROUGH the module (os.path.os.replace): only the module's own functions pass
                 elif root == "os": why.add("call of " + dotted)
-                # a method on some other object: the name must not be a writer (checked above)
+                elif f.attr not in _PY_SAFE_METHODS and f.attr not in defined: why.add("method " + f.attr)      # a method on some other object: a closed list of names
             else:
                 why.add("a call of a computed function")
     return tree, sorted(why)
@@ -987,8 +1043,9 @@ def _context_holds(context, proof, text, line_hash):
     hds, sane, state = _shell_lex(lines)
     if not sane:
         return False
+    trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"})) + r"|python[\d.]*"
     if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
-            or re.search(r"(?m)^[ \t]*(?:function[ \t]+)?(?:" + "|".join(sorted(_DATA_CONSUMERS | {"python", "python3"})) + r")[ \t]*\(\)", text):
+            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text):
         return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
     def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
         return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
