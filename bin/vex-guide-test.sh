@@ -51,6 +51,13 @@ check("Grype reads the OpenVEX file", re.search(r"grype \S+ --vex %s" % re.escap
 # has shown Scout applying it (owner Oct 3: "the guide leads with it only after the live test"; REQ-REL-010). Scout's local-file flag (--vex-location) applies
 # nothing on Scout 1.24 to 1.26 (rules.md:158-160), so it must not appear either.
 check("no Docker Scout command or claim is made yet", re.search(r"(?i)scout", doc) is None and "--vex-location" not in doc and "--vex-author" not in doc)
+# the blocks that need a published release or a registry are listed by exact text for the live test (rule 79 precedent: docs/verify-release.cannot-run.json)
+import json
+cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
+blocks_all = re.findall(r"```sh\n(.*?)```", doc, re.S)
+check("the cannot-run list holds blocks of the page, each exactly once", all(blocks_all.count(b) == 1 for b in cr["blocks"]) and len(set(cr["blocks"])) == len(cr["blocks"]))
+need = [b for b in blocks_all if "imagetools inspect" in b or "curl -fsSLO" in b or "cosign verify-attestation" in b]
+check("the cannot-run list is exactly the blocks that read a release or a registry (digest, download, verify)", cr["blocks"] == need, (len(cr["blocks"]), len(need)))
 # Grype applies repository_url-qualified products from 0.118.0 (0.117 ignores them; the pin is 0.118.0)
 check("names the minimum Grype version the file works with", re.search(r"Grype 0\.118\.0 or later", doc) is not None)
 # what each does in the customer's account
