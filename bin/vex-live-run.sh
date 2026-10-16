@@ -147,13 +147,61 @@ sweep_notes() {
   return "$rc"
 }
 
+hub_sweep() {   # the Docker Hub test repository (the Scout leg's), through the Hub API: the user and the push token travel in the environment, never on a command line
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" hub-sweep --repository "$DH_REPO"
+}
+
+sweep_dockerhub() {   # only when the Scout leg's repository is configured: nothing else of ours is on Docker Hub's test side
+  if [ -z "${DH_REPO:-}" ]; then
+    echo "::notice::no Docker Hub test repository configured: nothing to sweep there"
+    return 0
+  fi
+  hub_sweep || { echo "::error::the Docker Hub test repository could not be emptied" >&2; return 1; }
+}
+
 sweep() {
   local rc=0
   sweep_ecr || rc=1
   sweep_gar || rc=1
   sweep_filters || rc=1
   sweep_notes || rc=1
+  sweep_dockerhub || rc=1
   return "$rc"
+}
+
+# --- the Docker Scout leg (scanner-panel rule 12; REQ-REL-010-AC6). Scout applies a VEX attestation of an image only for statements of an author the scan names
+#     (its default is Docker's own), so "before" is a scan with Docker's authors and "after" the same scan naming ours.
+scout_preflight() {   # fails closed: the leg runs only with its test repository, its user and both tokens (the owner sets them in the live-test environment)
+  local v miss=""
+  for v in DH_REPO DOCKERHUB_USERNAME DOCKERHUB_TEST_PUSH_TOKEN DOCKERHUB_SCOUT_TOKEN; do
+    [ -n "${!v:-}" ] || miss="${miss} ${v}"
+  done
+  if [ -n "$miss" ]; then
+    echo "::error::the Docker Scout leg needs${miss} in the live-test environment (the variable LIVE_TEST_DOCKERHUB_REPOSITORY, the secrets DOCKERHUB_USERNAME, DOCKERHUB_TEST_PUSH_TOKEN, DOCKERHUB_SCOUT_TOKEN); it does not run without them" >&2
+    return 1
+  fi
+  [[ "$DH_REPO" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]] \
+    || { echo "::error::DH_REPO must be a Docker Hub namespace/name, got '${DH_REPO}'" >&2; return 1; }
+}
+
+scout_scan() {   # <registry:// or oci-dir:// reference> <out file> [author pattern]: Scout's GitLab report; the author pattern is one argument
+  local ref=$1 out=$2 author=${3:-}
+  [[ "$ref" =~ ^(registry|oci-dir)://[A-Za-z0-9._/:@+-]+$ ]] || { echo "::error::refusing to scan '${ref}': not a registry:// or oci-dir:// reference" >&2; return 1; }
+  if [ -n "$author" ]; then
+    docker scout cves --format gitlab --vex-author "$author" "$ref" > "$out"
+  else
+    docker scout cves --format gitlab "$ref" > "$out"
+  fi
+}
+
+scout_probe() {   # <layout dir> <author pattern>: INFORMATION ONLY (advisor, Oct 16): does Scout apply the attached attestation straight from Build's layout? Never fails the run.
+  local layout=$1 author=$2
+  {
+    scout_scan "oci-dir://${layout}" scout.probe.before.json \
+      && scout_scan "oci-dir://${layout}" scout.probe.after.json "$author" \
+      && python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" scout-delta --before scout.probe.before.json --after scout.probe.after.json
+  } || echo "::notice::Scout could not scan Build's layout directly (oci-dir://); information only"
+  return 0
 }
 
 check_removal_scope() {   # the page's removal block deletes every Inspector filter named fosterstack-cache-*: run it only when each such filter is a live-test one

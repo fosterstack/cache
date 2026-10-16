@@ -696,6 +696,16 @@ def hub_sweep(repository, user, token, opener=None):
         raise RuntimeError("the Docker Hub test repository was not emptied: %d delete failures %s, %d tags left %s" % (len(failures), failures[:3], len(left), left[:5]))
 
 
+def scout_pick(before, openvex):
+    """The first CVE (sorted) that Scout reports in the before report and one of OUR statements covers, or '' when none is."""
+    with open(before) as fh:
+        reported = {v["identifiers"][0]["value"] for v in json.load(fh)["vulnerabilities"]}
+    with open(openvex) as fh:
+        ours = {s["vulnerability"]["name"] for s in json.load(fh)["statements"]}
+    both = sorted(reported & ours)
+    return both[0] if both else ""
+
+
 def scout_delta(before, after):
     """(findings before, findings after, CVEs our statements dropped) of two Scout GitLab reports; for the informational probe only."""
     def ids(path):
@@ -773,6 +783,9 @@ def main(argv=None):
     wi.add_argument("--layout", required=True)
     hs = sub.add_parser("hub-sweep", help="delete every tag of the Docker Hub test repository (DOCKERHUB_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN in the environment)")
     hs.add_argument("--repository", required=True)
+    sp = sub.add_parser("scout-pick", help="print the first CVE Scout reports that one of our statements covers (empty when none)")
+    sp.add_argument("--before", required=True)
+    sp.add_argument("--openvex", required=True)
     sd = sub.add_parser("scout-delta", help="the informational notice for two Scout reports")
     sd.add_argument("--before", required=True)
     sd.add_argument("--after", required=True)
@@ -798,6 +811,13 @@ def main(argv=None):
             hub_sweep(a.repository, os.environ.get("DOCKERHUB_USERNAME", ""), os.environ.get("DOCKERHUB_TEST_PUSH_TOKEN", ""))
         except (ValueError, RuntimeError, OSError, KeyError) as e:
             print("::error::Docker Hub sweep: %s" % e, file=sys.stderr)
+            return 1
+        return 0
+    if a.cmd == "scout-pick":
+        try:
+            print(scout_pick(a.before, a.openvex))
+        except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+            print("::error::Scout report: %s" % e, file=sys.stderr)
             return 1
         return 0
     if a.cmd == "scout-delta":

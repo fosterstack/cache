@@ -930,6 +930,76 @@ with tempfile.TemporaryDirectory() as t:
     r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-delta", "--before", bp, "--after", os.path.join(t, "missing.json")], capture_output=True, text=True)
     check("scout-delta: an unreadable report is a notice, never a failure (information only)", r.returncode == 0 and "::notice::" in r.stdout, (r.returncode, r.stdout, r.stderr))
 
+# scout-pick: which of OUR statements' CVEs does Scout report on the production image (the AC6 target); none is an answer, not an error
+with tempfile.TemporaryDirectory() as t:
+    bp, vp = os.path.join(t, "b.json"), os.path.join(t, "v.json")
+    json.dump(gl("CVE-1", "CVE-2", "CVE-3"), open(bp, "w"))
+    json.dump({"statements": [{"vulnerability": {"name": n}} for n in ("CVE-9", "CVE-3", "CVE-2")]}, open(vp, "w"))
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-pick", "--before", bp, "--openvex", vp], capture_output=True, text=True)
+    check("scout-pick: the first CVE (in order) that Scout reports and one of our statements covers", r.returncode == 0 and r.stdout.strip() == "CVE-2", (r.returncode, r.stdout, r.stderr))
+    json.dump({"statements": [{"vulnerability": {"name": "CVE-9"}}]}, open(vp, "w"))
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-pick", "--before", bp, "--openvex", vp], capture_output=True, text=True)
+    check("scout-pick: none of ours reported is an empty answer", r.returncode == 0 and r.stdout.strip() == "", (r.returncode, r.stdout, r.stderr))
+    open(bp, "w").write("not json")
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-pick", "--before", bp, "--openvex", vp], capture_output=True, text=True)
+    check("scout-pick: an unreadable report is an error, never 'none'", r.returncode != 0, (r.returncode, r.stdout))
+
+# --- PR-C part B: the shell leg, with stubs (fail closed without its repository and tokens; the fixture and the production image scanned with Docker's authors
+#     only and with ours; the verdict from bin/scout-selfcheck.py; pushes journaled and counted; the Docker Hub repository swept)
+ENV_OK = {"DH_REPO": "fosterstack-live/cache-live-test", "DOCKERHUB_USERNAME": "fosterstack-live", "DOCKERHUB_TEST_PUSH_TOKEN": "push-tok", "DOCKERHUB_SCOUT_TOKEN": "scout-tok"}
+for missing in ENV_OK:
+    env = {k: v for k, v in ENV_OK.items() if k != missing}
+    rc, out = sh("for v in DH_REPO DOCKERHUB_USERNAME DOCKERHUB_TEST_PUSH_TOKEN DOCKERHUB_SCOUT_TOKEN; do eval \"[ -n \\\"\\${$v-}\\\" ]\" || unset $v; done; scout_preflight",
+                 {"crane": "echo CALLED >> calls; exit 0", "docker": "echo CALLED >> calls; exit 0"}, dict(env, **{missing: ""}))
+    check("scout preflight fails closed without %s, naming it" % missing, rc != 0 and missing in out, (rc, out[-200:]))
+rc, out = sh("scout_preflight", {}, ENV_OK)
+check("scout preflight passes with the repository, the user and both tokens", rc == 0, (rc, out[-200:]))
+for bad in ("fosterstack-live", "a/b/c", "Foo/bar", "docker.io/ns/name", "../x"):
+    rc, out = sh("scout_preflight", {}, dict(ENV_OK, DH_REPO=bad))
+    check("scout preflight refuses the repository name %r" % bad, rc != 0, (rc, out[-200:]))
+
+DOCKER_LOG = r'''printf '%s\n' "$*" >> "$RUNNER_TEMP/docker.log"
+case "$*" in
+  "login "*) cat >/dev/null; exit 0 ;;
+  *"scout cves"*) if [[ "$*" == *--vex-author* ]]; then cat "$RUNNER_TEMP/scout-after.json"; else cat "$RUNNER_TEMP/scout-before.json"; fi ;;
+  *) exit 0 ;; esac'''
+def gl_report(*ids):
+    return json.dumps({"vulnerabilities": [{"identifiers": [{"type": "cve", "value": i}], "location": {"dependency": {"package": {"name": "libc6"}, "version": "2.36"}}} for i in ids]})
+rc, out = sh('printf %s \'' + gl_report("CVE-1", "CVE-2") + '\' > "$RUNNER_TEMP/scout-before.json"; scout_scan registry://docker.io/ns/n@sha256:%s "$RUNNER_TEMP/o.json"; cat "$RUNNER_TEMP/docker.log"; cat "$RUNNER_TEMP/o.json"' % ("a" * 64),
+             {"docker": DOCKER_LOG})
+check("scout_scan: Docker's own authors by default (no --vex-author), the GitLab format, the registry reference, the report in the file",
+      rc == 0 and "scout cves --format gitlab registry://docker.io/ns/n@sha256:%s" % ("a" * 64) in out and "--vex-author" not in out.split("\n")[0] and "CVE-1" in out, (rc, out[-300:]))
+rc, out = sh('printf %s \'' + gl_report("CVE-2") + '\' > "$RUNNER_TEMP/scout-after.json"; scout_scan registry://docker.io/ns/n@sha256:%s "$RUNNER_TEMP/o.json" \'^FosterStack LLC$\'; cat "$RUNNER_TEMP/docker.log"' % ("a" * 64),
+             {"docker": DOCKER_LOG})
+check("scout_scan: with our author, the anchored pattern as ONE argument", rc == 0 and "--vex-author ^FosterStack LLC$ registry://docker.io/ns/n@sha256:" in out, (rc, out[-300:]))
+for ref in ("local://x", "image://x", "ghcr.io/fosterstack/cache:1", "registry://x; touch pwned", ""):
+    rc, out = sh('scout_scan "$1" "$RUNNER_TEMP/o.json" 2>&1; ls "$RUNNER_TEMP/docker.log" 2>&1 | grep -c docker.log || true', {"docker": DOCKER_LOG}) if False else sh('scout_scan %s "$RUNNER_TEMP/o.json"; echo rc=$?; test ! -e "$RUNNER_TEMP/docker.log"' % json.dumps(ref), {"docker": DOCKER_LOG})
+    check("scout_scan refuses the reference %r before running anything" % ref, "rc=0" not in out or rc != 0, (rc, out[-200:]))
+rc, out = sh('scout_scan registry://x/y@sha256:%s "$RUNNER_TEMP/o.json"' % ("a" * 64), {"docker": "exit 3"})
+check("scout_scan fails when docker scout fails", rc != 0, (rc, out[-200:]))
+
+# the informational probe of the Build layout: never fails, says what Scout did
+rc, out = sh('printf %s \'' + gl_report("CVE-1", "CVE-2") + '\' > "$RUNNER_TEMP/scout-before.json"; printf %s \'' + gl_report("CVE-2") + '\' > "$RUNNER_TEMP/scout-after.json"; '
+             'scout_probe "$RUNNER_TEMP/layout" \'^FosterStack LLC$\'', {"docker": DOCKER_LOG})
+check("scout_probe: scans the Build layout (oci-dir://) with Docker's authors and with ours, and prints the delta", rc == 0 and "::notice::" in out and "CVE-1" in out
+      and "oci-dir://" in open(os.path.join(root, "bin/vex-live-run.sh")).read(), (rc, out[-300:]))
+rc, out = sh('scout_probe "$RUNNER_TEMP/layout" \'^FosterStack LLC$\'; echo rc=$?', {"docker": "exit 9"})
+check("scout_probe: a failing Scout is information, never a failure of the run", rc == 0 and "rc=0" in out, (rc, out[-300:]))
+
+# the sweep of the Docker Hub repository joins the sweep only when the repository is configured
+rc, out = sh("hub_sweep() { echo HUB-SWEPT; }; sweep_dockerhub", {}, {})
+check("sweep_dockerhub: without a configured repository it does nothing", rc == 0 and "HUB-SWEPT" not in out, (rc, out[-200:]))
+rc, out = sh("hub_sweep() { echo HUB-SWEPT; }; sweep_dockerhub", {}, ENV_OK)
+check("sweep_dockerhub: with the repository it sweeps it", rc == 0 and "HUB-SWEPT" in out, (rc, out[-200:]))
+rc, out = sh("hub_sweep() { return 7; }; sweep_dockerhub", {}, ENV_OK)
+check("sweep_dockerhub: a failing sweep fails", rc != 0, (rc, out[-200:]))
+rc, out = sh("hub_sweep() { return 7; }; sweep_ecr() { :; }; sweep_gar() { :; }; sweep_filters() { :; }; sweep_notes() { :; }; sweep", {}, ENV_OK)
+check("sweep: a failing Docker Hub sweep fails the sweep (the other families still ran)", rc != 0, (rc, out[-200:]))
+rc, out = sh("hub_sweep() { echo HUB-SWEPT; }; sweep_ecr() { :; }; sweep_gar() { :; }; sweep_filters() { :; }; sweep_notes() { :; }; sweep", {}, ENV_OK)
+check("sweep: the Docker Hub sweep is part of the sweep when configured", rc == 0 and "HUB-SWEPT" in out, (rc, out[-200:]))
+check("hub_sweep calls the helper with the repository only (the user and the token travel in the environment, never on a command line)",
+      'vex-live-test.py" hub-sweep --repository "$DH_REPO"' in open(os.path.join(root, "bin/vex-live-run.sh")).read())
+
 print("vex-live-test: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
