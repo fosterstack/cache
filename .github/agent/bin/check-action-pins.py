@@ -2322,8 +2322,9 @@ SHELL_SHEBANG = re.compile(r"#!\s*\S*/(?:env\s+(?:-\S+\s+)*)?(ba|da|z)?sh\b")
 
 
 _WORKSPACE = ("$GITHUB_WORKSPACE/", "${GITHUB_WORKSPACE}/", "$PWD/", "${PWD}/")
-# short options of each downloader that take a value (the rest of the cluster, or the next word): a cluster such as -fsSLo FILE or -qO FILE ends at the first of them
-_SHORT_WITH_VALUE = {"curl": "AbcCdDeEFHKmMoPQrtTuUwxXyYzhB", "wget": "aAbBDeEFgGHiIlLmnoOPqQtTuUwXxvh", "aria2c": "acdDehijklmnoOpPqQrstTuUvVwxz"}
+# short options of each downloader that take a value (the rest of the cluster, or the next word; from each tool's own option list): a cluster such as -fsSLo FILE or
+# -qOFILE is read letter by letter and ends at the first of them; aria2c's list is empty, so every letter of its clusters is read (it can only over-refuse)
+_SHORT_WITH_VALUE = {"curl": "AbcCdDeEFHKmoPQrtTuUwxXyYz", "wget": "aABDegGiIloPQRtTUwX", "aria2c": ""}
 _SHORT_OUTPUT = {"curl": "o", "wget": "O", "aria2c": "o"}
 
 
@@ -2358,7 +2359,7 @@ def _downloads_onto(cmd, rest, same, rel):
                     break
     if any(v is not None and resolved(v) for v in values):
         return True
-    if (named or (cmd == "wget" and not values) or cmd == "aria2c") and any(os.path.basename(t.strip("'\"")) == os.path.basename(rel) for t in rest):
+    if (named or (cmd == "wget" and not values) or cmd == "aria2c") and any(os.path.basename(re.split(r"[?#]", t.strip("'\""))[0]) == os.path.basename(rel) for t in rest):
         return True
     return False
 
