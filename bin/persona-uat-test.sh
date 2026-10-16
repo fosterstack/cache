@@ -1538,8 +1538,12 @@ def doc_needs(texts):
             needs |= {(g, r, v) for v in ("get", "create", "patch")}
         for ln in re.findall(r"(?m)^\s*kubectl\s+(.*)$", t):
             w = ln.split()
+            if w[:1] == ["-n"] and len(w) > 2:      # a namespace flag before the verb: judge the verb that follows it
+                w = w[2:]
             if w[0] == "apply":
                 continue
+            elif w[0] == "create" and w[1:3] == ["secret", "tls"]:      # docs/kubernetes.md: the TLS secret the server mounts; the Secret create the Role already grants
+                needs |= {("", "secrets", v) for v in ("get", "create", "patch")}
             elif w[0] == "scale":
                 needs |= {("apps", "deployments/scale", v) for v in ("get", "update", "patch")} | {("apps", "deployments", "get")}
             elif w[0] == "delete" and w[1] in ("pvc", "persistentvolumeclaim"):
@@ -2263,7 +2267,10 @@ import os, re, subprocess, sys
 root = sys.argv[1]
 files = subprocess.run(["git", "-C", root, "ls-files"], capture_output=True, text=True).stdout.split()
 pat = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
-hits = [f for f in files if os.path.isfile(os.path.join(root, f)) and pat.search(open(os.path.join(root, f), errors="replace").read())]
+# the exact tracked paths that may hold the marker: the committed NON-SECRET assembly key (REQ-BUILDAPK-001: signs only the throwaway in-build apks; the release key's
+# private half is never in the tree) and two scripts that quote the marker as code (neither holds a key)
+MARKER_OK = {"build/keys/assembly.rsa", "bin/build-apk-test.sh", "bin/release-sign-apks.sh"}
+hits = [f for f in files if f not in MARKER_OK and os.path.isfile(os.path.join(root, f)) and pat.search(open(os.path.join(root, f), errors="replace").read())]
 assert not hits, ("a private-key block is tracked", hits)
 pem = os.path.join(root, "bin/persona-uat-recipient.pem")
 assert os.path.isfile(pem), "the recipient certificate bin/persona-uat-recipient.pem is not committed"
@@ -2606,7 +2613,7 @@ check test "$rc" -eq 0
 CASE="no owner-set model value appears in any decrypted report or transcript, any stdout/stderr, any artifact byte, request or docker call"
 check none_match 'MODEL-(DEFAULT|COMPLIANCE)-X|OTHER-(DEFAULT|COMPLIANCE)' "$(out clean)" "$(out capped)" "$(out friction)" "$(out weekly)" "$(out blocking)" \
   "$work/clean/docker.log" "$work/clean/out" "$work/clean/stdout" "$work/clean/stderr" "$work/weekly/stdout" "$work/weekly/stderr"
-CASE="no model name is written in the driver: neither a vendor family nor a model-version pattern"
+CASE="no model name is written in the driver: neither a company family nor a model-version pattern"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|\bo[134]-' "$root/bin/persona-uat.py"
 
 # --- symlinks at the roots: a symlinked README.md or a symlinked docs directory must never carry other bytes into the sandbox
@@ -3168,7 +3175,7 @@ for t in (g, r, m):
 blob = (open(c + "/stdout").read() + open(c + "/stderr").read() + " ".join(os.listdir(c + "/out"))).lower()
 assert v1 not in blob and v2 not in blob and "0123456789abcdef" not in blob and "evil" not in blob and "plain.example" not in blob
 PY
-CASE="hosts: a friction-only persona with outside and vendor hosts stays FRICTION, a clean persona with a vendor host stays PASS, a blocking one stays blocking for ITS finding only; the exit follows only the real blocking finding, and the log is pass/fail lines"
+CASE="hosts: a friction-only persona with outside and model-company hosts stays FRICTION, a clean persona with a model-company host stays PASS, a blocking one stays blocking for ITS finding only; the exit follows only the real blocking finding, and the log is pass/fail lines"
 check test "$(head -1 "$(out hosts3)/gradle-platform-engineer.report.md")" = "VERDICT: friction" -a "$(head -1 "$(out hosts3)/readme-evaluator.report.md")" = "VERDICT: pass" -a "$(head -1 "$(out hosts3)/maven-jenkins-ci.report.md")" = "VERDICT: blocking"
 check grep -q 'proxy URL is easy to mistype' "$(out hosts3)/gradle-platform-engineer.report.md"
 check test "$rc" -ne 0
@@ -3178,7 +3185,7 @@ import json, sys
 print(json.dumps({"gradle-platform-engineer": {"commands": ["curl https://api.%s.com/v1/x" % sys.argv[1]], "findings": [{"kind": "friction", "text": "slow"}]}}))
 PY
 run hosts4 "$(cat "$work/hostsplan4.json")" rc
-CASE="hosts: friction-only plus a vendor host and nothing else: the run exits 0 (friction blocks nothing), the friction and the host are in the encrypted report, and the log is five pass lines plus overall"
+CASE="hosts: friction-only plus a model-company host and nothing else: the run exits 0 (friction blocks nothing), the friction and the host are in the encrypted report, and the log is five pass lines plus overall"
 check test "$rc" -eq 0
 check grep -q "api.$V1.com" "$(out hosts4)/gradle-platform-engineer.report.md"
 check publiclog hosts4

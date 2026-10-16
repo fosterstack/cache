@@ -233,12 +233,14 @@ GOODINST = SYN_INST
 
 # --- prerequisites of the job (defined BEFORE common(), which calls them; the complete-workflow control below runs them through judge()) ----------------
 CRED_REF = re.compile(r"secrets\.|vars\.PERSONA_UAT|github\.token|ANTHROPIC_")
-# The pip that runs the SDK install is itself pinned (REQ-SUP-001-AC13, .github/agent/tests/pip-pin-test.sh): one step, in the form the other workflows use,
-# before the SDK install; the pin file is a path under .github/agent (the persona harness files are under bin/).
-PIN_PIP_RUN = ("python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r .github/agent/pip-requirements.txt\n"
-               "python3 -m pip --version")
+# The pip that runs the SDK install is itself pinned (REQ-SUP-001-AC13): one step, in the form the other workflows use, before the SDK install. This test
+# recognizes the step by its shape only; WHICH requirement file it reads, and that the file holds the one hash-checked pip, is proved on the real tree by the
+# pip-pin test (REQ-SUP-001-AC13), so the auditor's directory is not named here (REQ-AUD-18 AC1).
+PIN_PIP_SHAPE = re.compile(r"python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r \S+/pip-requirements\.txt\npython3 -m pip --version")
+PIN_PIP_RUN = ("python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r agent-dir/pip-requirements.txt\n"
+               "python3 -m pip --version")   # the fixtures' step
 def is_pin_pip(x):
-    return str(x.get("run", "")).strip() == PIN_PIP_RUN
+    return PIN_PIP_SHAPE.fullmatch(str(x.get("run", "")).strip()) is not None
 
 STEP_ALLOW = {      # STRUCTURAL rule: a prerequisite step may carry only these keys (and, for checkout and the uploads, only these `with` options); anything else
                     # (if, continue-on-error, working-directory, shell, env, timeout-minutes, sparse-checkout, filter, fetch-depth, lfs, ...) can change what it does
@@ -259,7 +261,7 @@ def step_kind(x, pre, weekly):
     if "nohup" in r and "ACTIONS_ID_TOKEN_REQUEST_URL" in r: return "refresher"
     if re.fullmatch(r'rm -f "?\$\{?RUNNER_TEMP\}?/anthropic-identity-token"?', r): return "cleanup"
     if install_re(pre).match(r): return "install"
-    if r == PIN_PIP_RUN: return "pinpip"
+    if PIN_PIP_SHAPE.fullmatch(r): return "pinpip"
     if "pip install" in r and "persona-uat-requirements" in r: return "sdk"
     if weekly and "gh release view" in r: return "resolver"
     return None
@@ -500,7 +502,7 @@ def common(name, job, bad):
         bad.append(f"{name}: expected exactly one hash-pinned SDK install, after the harness checkout and before the driver")
     pins = [s for s in steps if is_pin_pip(s)]
     if len(pins) != 1 or (len(boots) == 1 and steps.index(pins[0]) > steps.index(boots[0])):
-        bad.append(f"{name}: expected exactly one pinned-pip step (the hash-checked pip from .github/agent/pip-requirements.txt, then its version logged), before the SDK install")
+        bad.append(f"{name}: expected exactly one pinned-pip step (the hash-checked pip from the pinned requirement file, then its version logged), before the SDK install")
     ups = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))]
     if len(ups) != 1:
         bad.append(f"{name}: expected exactly one transcript upload step, found {len(ups)}")

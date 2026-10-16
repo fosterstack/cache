@@ -936,7 +936,7 @@ PY
 CASE="the model value never appears in the agent's answer or transcript (and the answer exists)"
 check test -s "$work/model/out.json"
 check none_match 'OWNER-MODEL-Q' "$work/model/out.json"
-CASE="no model name is written in the agent or the provider: neither a vendor family nor a model-version pattern"
+CASE="no model name is written in the agent or the provider: neither a company family nor a model-version pattern"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|\bo[134]-' "$agent" "$provider"
 
 # --- the real provider, over a FAKE anthropic SDK -----------------------------------------------------------------
