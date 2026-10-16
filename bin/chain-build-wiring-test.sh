@@ -773,6 +773,22 @@ ptr_bad "AC16 fixture: files out of order are refused" "$work/ptr/unsorted.json"
 ptr_bad "AC16 fixture: a short sha256 is refused" "$work/ptr/shortsha.json" "64 lower-case hex"
 if python3 -I "$AV" artifact --pointer "$work/ptr/good.json" 2>/dev/null | grep -Fq "sha256:$(printf 'a%.0s' $(seq 64))"; then ok "AC16 fixture: the digest the pull passes to crane is the pointer's"; else bad "AC16 fixture: the digest the pull passes to crane is not the pointer's"; fi
 ptr_ok  "AC16 the committed build/archive.json, the input of every stage pull, is a valid pointer" "$root/build/archive.json"
+# REQ-CHAIN-004-AC16 (release review R1): every part of archive/ that a stage script reads is something the archive holds. The archive the refresh job stores
+# (cache#345, REQ-ARCHIVE-001) holds keys/ and one directory per architecture (apk files, signed indexes); the stage scripts name archive/keys/..., the repository
+# directory archive itself, and archive/go (the Go toolchain tarball that build-apk.sh requires, rule 12: "kept in the archive").
+if python3 - "$root" <<'PY'
+import glob, re, sys
+root = sys.argv[1]
+HELD = {"keys", "x86_64", "aarch64"}     # what the stored archive holds at its top level (a bare "archive" names the repository directory itself)
+seen = {}
+for f in sorted(glob.glob(root + "/bin/build-stage-*.sh")):
+    for m in re.finditer(r"(?<![A-Za-z0-9_./-])archive/([A-Za-z0-9_.-]+)", open(f).read()):
+        seen.setdefault(m.group(1), set()).add(f.rsplit("/", 1)[1])
+miss = {k: sorted(v) for k, v in seen.items() if k not in HELD}
+if miss:
+    print("stage scripts read archive/ parts that the archive does not hold: %s" % miss); sys.exit(1)
+PY
+then ok "AC16 every archive/ path the stage scripts read is held by the stored archive"; else bad "AC16 every archive/ path the stage scripts read is held by the stored archive"; fi
 # ---- the job graph of release.yml (REQ-CHAIN-005-AC5) -----------------------------------------------------------------------------------------
 expect ok "005-AC5 fixture: build -> sign -> check, rebuild beside them, (rebuild, check, sign) -> release; other jobs ignored" "" graph "$work/release.yml"
 gr() { replace "$work/release.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" graph "$work/$1.yml"; return 0; }
@@ -2170,7 +2186,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=750
+EXPECT=751
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -39,21 +39,18 @@
    ]
   },
   {
-   "id": "KR-BASE-LOCKS",
-   "suite": "bin/chain-build-wiring-test.sh",
-   "case": "KNOWN-RED base locks: every path .github/policy/base-inputs.json lists is a file of origin/main",
-   "reason": "the decide job and bin/patch-decide.py read the committed apko base locks, the melange lock, the Wolfi archive records and the fips module record as the base-input-changed signal (rules 61, 62); those files are the cache lane's and are not on origin/main yet, so the signal has nothing to watch until they land; the entry shrinks by one finding as each lands",
-   "green_by": "the cache lane (the refresh job and P5): the six files of .github/policy/base-inputs.json on main",
-   "findings": [
-    "the base input build/locks/archive-index.sha256 is not on origin/main"
-   ]
-  },
-  {
    "id": "KR-ARCHIVE-1",
    "suite": "bin/chain-build-wiring-test.sh",
    "case": "AC16 the committed build/archive.json, the input of every stage pull, is a valid pointer",
    "reason": "build/archive.json does not exist on main until the first daily refresh run (cache#345, first fill cache#392) stores the archive and its pointer pull request merges; every stage job pulls by that file, so the stage jobs cannot build before it exists, and this case is the proof that it is a valid pointer in the format cache#345 defines",
    "green_by": "the first refresh run's pointer pull request (cache#392 first, then the pointer PR)"
+  },
+  {
+   "id": "KR-ARCHIVE-2",
+   "suite": "bin/chain-build-wiring-test.sh",
+   "case": "AC16 every archive/ path the stage scripts read is held by the stored archive",
+   "reason": "the stage scripts read archive/go (build-apk.sh requires the Go toolchain tarball there, rule 12: Go is kept in the archive), but the archive the refresh job stores (cache#345) holds only keys/ and the per-architecture apk files and signed indexes: after the pull every apk job would stop at 'the Go archive archive/go has no go1.27.2.linux-*.tar.gz' (release review R1, 2026-10-16)",
+   "green_by": "the Go toolchain tarballs stored in the archive (refresh-job change, advisor ruling pending) and the pointer pull request that carries them"
   }
  ]
 }
