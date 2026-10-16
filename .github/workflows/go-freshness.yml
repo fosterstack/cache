@@ -262,9 +262,7 @@ jobs:
             f="$1"; every="$2"
             while [ -e "$f" ] && sleep "$every"; do
               [ -e "$f" ] || break
-              python3 bin/persona-uat.py --mint-identity "$f.new" || continue
-              [ -e "$f" ] || break
-              mv -f "$f.new" "$f"
+              python3 bin/persona-uat.py --mint-identity "$f" || { [ "$?" -eq 3 ] && break; continue; }
             done
           ' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &
           disown
@@ -292,7 +290,7 @@ jobs:
 
       - name: delete the identity token file
         if: ${{ always() }}
-        run: rm -f "${RUNNER_TEMP}/anthropic-identity-token"
+        run: python3 bin/persona-uat.py --remove-identity "${RUNNER_TEMP}/anthropic-identity-token" || rm -f "${RUNNER_TEMP}/anthropic-identity-token" "${RUNNER_TEMP}/anthropic-identity-token.tmp"
 
   # The daily refresh of the build inputs (REQ-REFRESH-001-AC24 to AC31; owner's rules 4 to 9 of Oct 14). One job in this workflow, main only,
   # on the daily schedule or by hand, never on a pull request. It looks for a newer version of every base package and build tool, adds what it

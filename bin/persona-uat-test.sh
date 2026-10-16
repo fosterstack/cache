@@ -5402,55 +5402,119 @@ for path in glob.glob(sys.argv[1] + "/*/docker.log") + glob.glob(sys.argv[1] + "
 assert n > 50, n
 PY
 
-# --- the identity-token refresher's fetch is a committed mode of the driver (REQ-UAT-001-AC5): `persona-uat.py --mint-identity FILE` asks the runner's OIDC endpoint for a token for the
-# model provider's audience and writes it, mode 0600, to FILE; it prints nothing; any failure leaves no file and exits 1. No software is downloaded. ---------------------------------
-CASE="persona-uat.py --mint-identity: a good answer writes the token to FILE (mode 0600) and prints nothing; a refusal, an empty or null value, bad JSON, a missing variable and a stalled request each exit 1 and leave no file"
+# --- the identity-token refresher's fetch and the job's cleanup are committed modes of the driver (REQ-UAT-001-AC5), so the race between them is decided in one tested place:
+# `persona-uat.py --mint-identity FILE` asks the runner's OIDC endpoint for a token for the model provider's audience and RENEWS FILE with it (mode 0600, atomically, under FILE.lock) only
+# while FILE still exists; FILE gone means the job's cleanup ran: exit 3, nothing written and nothing left behind. `--remove-identity FILE` removes FILE (and any temporary file and the
+# lock) under the same lock. Both print nothing; any failure exits 1 and leaves FILE as it was. No software is downloaded. ------------------------------------------------------------
+CASE="persona-uat.py --mint-identity / --remove-identity: a good answer renews an existing FILE (0600, nothing printed); a missing FILE is exit 3 with nothing created; a refusal, an empty or null value, bad JSON, a missing variable and a stalled request each exit 1 and leave FILE unchanged; --remove-identity removes FILE, its temporary file and the lock, and waits for the lock; a cleanup that runs while a fetch is in flight leaves no file behind"
 check python3 - "$driver" <<'PY'
-import http.server, json, os, stat, subprocess, sys, tempfile, threading, time
+import fcntl, http.server, json, os, stat, subprocess, sys, tempfile, threading, time
 driver = sys.argv[1]
-mode = {"m": "good"}
+mode = {"m": "good", "hits": 0}
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
+        mode["hits"] += 1
         ok = self.headers.get("Authorization") == "bearer REQ-TOKEN" and "audience=https://api.anthropic.com" in self.path
         m = mode["m"]
         if not ok or m == "refuse":
             self.send_response(403); self.send_header("Content-Length", "0"); self.end_headers(); return
         if m == "hang":
             time.sleep(8); return
-        body = {"good": json.dumps({"value": "TOKEN-VALUE-1"}), "empty": json.dumps({"value": ""}), "null": json.dumps({"value": "null"}),
+        if m == "slow":
+            time.sleep(1.2)
+        body = {"good": json.dumps({"value": "TOKEN-VALUE-1"}), "slow": json.dumps({"value": "TOKEN-VALUE-1"}), "empty": json.dumps({"value": ""}), "null": json.dumps({"value": "null"}),
                 "badjson": "not json", "nokey": json.dumps({"other": "x"}), "nonstring": json.dumps({"value": 5})}[m].encode()
         self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 url = "http://127.0.0.1:%d/token?api-version=2.0" % srv.server_address[1]
-d = tempfile.mkdtemp(); f = os.path.join(d, "t.new")
-def run(m, env=None, timeout=30):
-    mode["m"] = m
+d = tempfile.mkdtemp(); f = os.path.join(d, "t")
+leftovers = lambda: sorted(x for x in os.listdir(d) if x != "t")
+def env(extra=None):
     e = dict(os.environ, ACTIONS_ID_TOKEN_REQUEST_URL=url, ACTIONS_ID_TOKEN_REQUEST_TOKEN="REQ-TOKEN", PERSONA_UAT_MINT_TIMEOUT="2")
-    e.update(env or {})
+    e.update(extra or {})
     for k in [k for k, v in e.items() if v is None]: del e[k]
-    if os.path.exists(f): os.remove(f)
+    return e
+def mint(m, extra=None, seed="STALE", timeout=30):
+    mode["m"] = m
+    for x in os.listdir(d): os.remove(os.path.join(d, x))
+    if seed is not None:
+        open(f, "w").write(seed); os.chmod(f, 0o644)
     t0 = time.time()
-    r = subprocess.run([sys.executable, driver, "--mint-identity", f], env=e, capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run([sys.executable, driver, "--mint-identity", f], env=env(extra), capture_output=True, text=True, timeout=timeout)
     return r, time.time() - t0
-r, _ = run("good")
+# a good answer renews the existing file: 0600, atomic, nothing printed, nothing left over
+r, _ = mint("good")
 assert r.returncode == 0 and r.stdout == "" and r.stderr == "", (r.returncode, r.stdout, r.stderr)
-assert open(f).read() == "TOKEN-VALUE-1" and stat.S_IMODE(os.stat(f).st_mode) == 0o600
+assert open(f).read() == "TOKEN-VALUE-1" and stat.S_IMODE(os.stat(f).st_mode) == 0o600 and leftovers() in ([], ["t.lock"]), (open(f).read(), oct(os.stat(f).st_mode), leftovers())
+# the file is gone (the job's cleanup ran): exit 3, nothing created, no temporary file
+r, _ = mint("good", seed=None)
+assert r.returncode == 3 and r.stdout == "" and not os.path.exists(f) and leftovers() in ([], ["t.lock"]), (r.returncode, leftovers())
+# failures: exit 1 and the file is exactly as it was
 for m in ("refuse", "empty", "null", "badjson", "nokey", "nonstring"):
-    r, _ = run(m)
-    assert r.returncode == 1 and not os.path.exists(f) and "TOKEN-VALUE" not in r.stdout + r.stderr, (m, r.returncode, r.stdout, r.stderr)
+    r, _ = mint(m)
+    assert r.returncode == 1 and open(f).read() == "STALE" and "TOKEN-VALUE" not in r.stdout + r.stderr and not [x for x in leftovers() if x != "t.lock"], (m, r.returncode, r.stdout, r.stderr, leftovers())
 for k in ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"):
-    r, _ = run("good", {k: None})
-    assert r.returncode == 1 and not os.path.exists(f), (k, r.returncode)
-r, took = run("hang")
-assert r.returncode == 1 and not os.path.exists(f) and took < 6, (r.returncode, took)
-# a stale file is replaced, not appended to, and a fresh one is mode 0600 even under a permissive umask
-open(f, "w").write("STALE"); os.chmod(f, 0o644)
+    r, _ = mint("good", {k: None})
+    assert r.returncode == 1 and open(f).read() == "STALE", (k, r.returncode)
+r, took = mint("hang")
+assert r.returncode == 1 and open(f).read() == "STALE" and took < 6, (r.returncode, took)
+# a permissive umask and an old mode do not leak: the renewed file is 0600
 mode["m"] = "good"
-r = subprocess.run([sys.executable, driver, "--mint-identity", f], env=dict(os.environ, ACTIONS_ID_TOKEN_REQUEST_URL=url, ACTIONS_ID_TOKEN_REQUEST_TOKEN="REQ-TOKEN"), capture_output=True, text=True, timeout=30)
-assert r.returncode == 0 and open(f).read() == "TOKEN-VALUE-1" and stat.S_IMODE(os.stat(f).st_mode) == 0o600, (r.returncode, open(f).read(), oct(os.stat(f).st_mode))
+open(f, "w").write("STALE"); os.chmod(f, 0o644)
+r = subprocess.run([sys.executable, driver, "--mint-identity", f], env=env({"PERSONA_UAT_MINT_TIMEOUT": None}), capture_output=True, text=True, timeout=30)
+assert r.returncode == 0 and open(f).read() == "TOKEN-VALUE-1" and stat.S_IMODE(os.stat(f).st_mode) == 0o600
+# --remove-identity: FILE, a temporary file and the lock go; the file being absent is fine; nothing is printed
+open(f, "w").write("X"); open(f + ".tmp", "w").write("Y"); open(f + ".lock", "w").write("")
+r = subprocess.run([sys.executable, driver, "--remove-identity", f], env=env(), capture_output=True, text=True, timeout=30)
+assert r.returncode == 0 and r.stdout == "" and r.stderr == "" and os.listdir(d) == [], (r.returncode, os.listdir(d))
+r = subprocess.run([sys.executable, driver, "--remove-identity", f], env=env(), capture_output=True, text=True, timeout=30)
+assert r.returncode == 0 and os.listdir(d) == []
+# --remove-identity takes the lock: while another process holds it, the removal waits, then completes
+open(f, "w").write("X")
+lk = open(f + ".lock", "w"); fcntl.flock(lk, fcntl.LOCK_EX)
+p = subprocess.Popen([sys.executable, driver, "--remove-identity", f], env=env(), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+time.sleep(0.8)
+assert p.poll() is None and os.path.exists(f), "the removal did not wait for the lock"
+fcntl.flock(lk, fcntl.LOCK_UN); lk.close()
+p.communicate(timeout=20)
+assert p.returncode == 0 and not os.path.exists(f)
+# the race itself: the cleanup runs while a fetch is in flight; the fetch then finishes: exit 3, no token file, no temporary file, no lock left that matters
+mode["m"] = "slow"; mode["hits"] = 0
+for x in os.listdir(d): os.remove(os.path.join(d, x))
+open(f, "w").write("STALE")
+m = subprocess.Popen([sys.executable, driver, "--mint-identity", f], env=env({"PERSONA_UAT_MINT_TIMEOUT": "10"}), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+end = time.time() + 10
+while mode["hits"] == 0 and time.time() < end: time.sleep(0.02)
+assert mode["hits"] == 1, "the fetch never started"
+rc = subprocess.run([sys.executable, driver, "--remove-identity", f], env=env(), capture_output=True, text=True, timeout=30).returncode
+assert rc == 0 and not os.path.exists(f)
+out, err = m.communicate(timeout=20)
+assert m.returncode == 3 and out == "" and not os.path.exists(f) and not [x for x in os.listdir(d) if x != "t.lock"], (m.returncode, os.listdir(d))
 srv.shutdown()
+PY
+
+# --- AC1 (round 1 of cache#180, both seats): the evaluator persona has ten minutes at most ("an evaluator with only the README and ten minutes"), whatever time the job's budget still has. ------
+CASE="persona_time_limit: the readme evaluator is capped at --evaluator-seconds (600 by default) and every other persona keeps the shared-budget share, both never above --agent-timeout"
+check python3 - "$driver" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("pu", sys.argv[1]); pu = importlib.util.module_from_spec(spec); spec.loader.exec_module(pu)
+assert pu.EVALUATOR_SECONDS == 600
+lim = pu.persona_time_limit
+# the reported case: 600 s of the budget used, two personas left (the evaluator among them): the share is 3000 s, the evaluator may have 600
+assert lim("readme-evaluator", 3600, 600, 7200, 600, 2) == 600
+assert lim("gradle-platform-engineer", 3600, 600, 7200, 600, 2) == 3300
+assert lim("maven-jenkins-ci", 3600, 600, 7200, 0, 5) == 1440          # the budget share (7200 / 5)
+assert lim("readme-evaluator", 3600, 600, 7200, 0, 5) == 600           # the cap binds below the share
+assert lim("readme-evaluator", 300, 600, 7200, 0, 1) == 300             # an explicitly short --agent-timeout stays short
+assert lim("readme-evaluator", 3600, 120, 7200, 0, 1) == 120            # --evaluator-seconds lowers the cap
+assert lim("readme-evaluator", 3600, 600, 1000, 0, 5) == 200            # a small budget share is below the cap
+assert lim("on-call-engineer", 90, 600, 7200, 0, 1) == 90
+# the source asks the function for every persona's limit (and not the old inline calculation)
+src = open(sys.argv[1]).read()
+assert "persona_time_limit(persona, a.agent_timeout, a.evaluator_seconds, a.job_budget, time.time() - job_t0, left)" in src
+assert '"--evaluator-seconds"' in src and "default=EVALUATOR_SECONDS" in src
 PY
 
 echo "persona-uat: $pass passed, $failn failed"

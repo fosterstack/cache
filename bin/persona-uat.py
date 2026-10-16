@@ -22,6 +22,7 @@ Exit status: 0 clean (friction is information, never a failure), 1 a blocking pe
 encryption, 2 a refused configuration (nothing was started), 3 the public docs are missing.
 """
 import argparse
+import fcntl
 import warnings
 import itertools
 import json
@@ -56,6 +57,7 @@ URL_RE = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]{1,15}://(?:\[[0-9A-Fa-f:.%A-Za-z]
 METRIC_RE = re.compile(r"^fscache_http_requests_total(\{[^}]*\})?\s+([0-9.eE+-]+)(\s+\d+)?\s*$")
 DEFAULT_BUDGET = 400000
 JOB_BUDGET = 6600           # seconds: the 120-minute job minus setup and the cleanup steps; the agent timeouts are cut from what is left of it
+EVALUATOR_SECONDS = 600     # "an evaluator with only the README and ten minutes" (REQ-UAT-001-AC1): the readme evaluator never gets more, whatever the job budget still holds
 MIN_PERSONA_SECONDS = 300   # a persona that cannot be given this long is blocking (cannot prove), never run
 TRANSCRIPT_CAP = 16 * 1024 * 1024 + 4096    # the agent's own cap (16 MiB) plus room for its one cap marker line; the encrypted transcript holds the persisted history whole up to it
 SETTLE_QUIET = 3.0          # seconds of an unchanged request counter before a persona's window is closed
@@ -1508,6 +1510,7 @@ def parse_args():
     ap.add_argument("--ready-timeout", type=int, default=120)
     ap.add_argument("--agent-timeout", type=int, default=3600)
     ap.add_argument("--job-budget", type=float, default=JOB_BUDGET, help="seconds of the job's time the personas may use in all; each agent timeout is cut from what is left")
+    ap.add_argument("--evaluator-seconds", type=float, default=EVALUATOR_SECONDS, help="the most the readme evaluator persona may use (ten minutes by default)")
     ap.add_argument("--min-persona-seconds", type=float, default=MIN_PERSONA_SECONDS, help="a persona that cannot be given this long is blocking (cannot prove) and not run")
     ap.add_argument("--settle-quiet", type=float, default=SETTLE_QUIET, help="seconds of an unchanged counter before a window closes")
     ap.add_argument("--settle-max", type=float, default=SETTLE_MAX, help="ceiling for that wait: a counter that never settles blocks the persona")
@@ -1557,13 +1560,29 @@ def configure(a):
 STATE = {}        # what the last-resort handler needs to write the encrypted reports of what is known: filled by _main as soon as it is known
 
 
+def _identity_lock(path):
+    """The lock the job's identity token file is renewed and removed under: an exclusive flock on FILE.lock, held until the returned descriptor is closed."""
+    fd = os.open(path + ".lock", os.O_WRONLY | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def persona_time_limit(persona, agent_timeout, evaluator_seconds, job_budget, elapsed, left):
+    """The seconds one persona may use: its share of what is left of the job's budget over the personas still to run (itself included), never above --agent-timeout, and for the
+    readme evaluator never above --evaluator-seconds either (ten minutes by default)."""
+    cap = min(agent_timeout, evaluator_seconds) if persona == "readme-evaluator" else agent_timeout
+    return int(min(cap, (job_budget - elapsed) / left))
+
+
 def mint_identity(argv):
-    """persona-uat.py --mint-identity FILE (REQ-UAT-001-AC5): ask the runner's OIDC endpoint for a fresh identity token for the model provider's audience and write it, mode 0600,
-    to FILE. Token fetch from the Actions endpoint; no software is downloaded. Prints nothing; any failure (no endpoint variable, a refusal, a stalled request, a value that is empty,
-    "null" or not text) leaves no file and exits 1. The job's refresher calls it in a loop (the assertion lives about five minutes, the job up to two hours)."""
+    """persona-uat.py --mint-identity FILE (REQ-UAT-001-AC5): ask the runner's OIDC endpoint for a fresh identity token for the model provider's audience and RENEW FILE with it, mode 0600,
+    atomically, under FILE.lock, and only while FILE still exists. Token fetch from the Actions endpoint; no software is downloaded. Prints nothing. Exit 0 renewed; exit 3 FILE is gone (the job's
+    cleanup ran during the fetch): nothing is written and nothing is left behind; exit 1 any failure (no endpoint variable, a refusal, a stalled request, a value that is empty, "null" or not
+    text), FILE untouched. The job's refresher calls it in a loop (the assertion lives about five minutes, the job up to two hours) and stops on exit 3."""
     if len(argv) != 1:
         return 1
     path = argv[0]
+    tmp = path + ".tmp"
     try:
         url, bearer = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"], os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
         timeout = float(os.environ.get("PERSONA_UAT_MINT_TIMEOUT", "20"))
@@ -1572,18 +1591,49 @@ def mint_identity(argv):
             value = json.load(resp)["value"]
         if not isinstance(value, str) or not value or value == "null":
             return 1
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        lock = _identity_lock(path)
         try:
-            os.fchmod(fd, 0o600)
-            os.write(fd, value.encode())
+            if not os.path.exists(path):
+                return 3
+            tfd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.fchmod(tfd, 0o600)
+                os.write(tfd, value.encode())
+            finally:
+                os.close(tfd)
+            os.replace(tmp, path)
+            return 0
         finally:
-            os.close(fd)
-        return 0
+            os.close(lock)
     except Exception:
         try:
-            os.remove(path)
+            os.remove(tmp)
         except OSError:
             pass
+        return 1
+
+
+def remove_identity(argv):
+    """persona-uat.py --remove-identity FILE: the job's cleanup. Under the same lock as --mint-identity, remove FILE and its temporary file, then the lock file. A missing FILE is fine. Prints nothing."""
+    if len(argv) != 1:
+        return 1
+    path = argv[0]
+    try:
+        lock = _identity_lock(path)
+        try:
+            for x in (path, path + ".tmp"):
+                try:
+                    os.remove(x)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(lock)
+        try:
+            os.remove(path + ".lock")
+        except FileNotFoundError:
+            pass
+        return 0
+    except Exception:
         return 1
 
 
@@ -1592,6 +1642,8 @@ def main():
     caught here, the encrypted reports of what is known are still written, and the run fails"""
     if sys.argv[1:2] == ["--mint-identity"]:
         return mint_identity(sys.argv[2:])
+    if sys.argv[1:2] == ["--remove-identity"]:
+        return remove_identity(sys.argv[2:])
     try:
         return _main()
     except SystemExit:
@@ -1777,7 +1829,7 @@ def _main():
                 continue
             # the job's time budget: this persona's agent timeout is what is left of the budget over the personas still to run (itself included), never above --agent-timeout
             left = len([q for q in PERSONAS if q not in results])
-            persona_timeout = int(min(a.agent_timeout, (a.job_budget - (time.time() - job_t0)) / left))
+            persona_timeout = persona_time_limit(persona, a.agent_timeout, a.evaluator_seconds, a.job_budget, time.time() - job_t0, left)
             if persona_timeout < min(a.min_persona_seconds, a.agent_timeout):      # an explicitly short --agent-timeout is the caller's choice, not a lack of budget
                 why_ = "cannot prove: the job's time budget left no time for this persona (%d seconds each, %d needed)" % (max(persona_timeout, 0), a.min_persona_seconds)
                 record(persona, None, "did not run: %s\n" % why_, why_)

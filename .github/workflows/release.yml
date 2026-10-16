@@ -513,9 +513,7 @@ jobs:
             f="$1"; every="$2"
             while [ -e "$f" ] && sleep "$every"; do
               [ -e "$f" ] || break
-              python3 bin/persona-uat.py --mint-identity "$f.new" || continue
-              [ -e "$f" ] || break
-              mv -f "$f.new" "$f"
+              python3 bin/persona-uat.py --mint-identity "$f" || { [ "$?" -eq 3 ] && break; continue; }
             done
           ' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &
           disown
@@ -543,7 +541,7 @@ jobs:
 
       - name: delete the identity token file
         if: ${{ always() }}
-        run: rm -f "${RUNNER_TEMP}/anthropic-identity-token"
+        run: python3 bin/persona-uat.py --remove-identity "${RUNNER_TEMP}/anthropic-identity-token" || rm -f "${RUNNER_TEMP}/anthropic-identity-token" "${RUNNER_TEMP}/anthropic-identity-token.tmp"
 
   # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
