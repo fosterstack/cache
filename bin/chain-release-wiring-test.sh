@@ -65,7 +65,7 @@ RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
 stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n"
          "  verify:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
-         + inst("witness") + vdowns() + wit("release-verify", {}) + up("witness-release-verify")
+         + inst("witness") + vdowns() + wit("release-verify", {}) + up("witness-release-verify").rstrip("\n") + "\n          if-no-files-found: error\n"
          + "  release:\n    needs: verify\n" + RC_COND + "    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
@@ -231,6 +231,9 @@ m s_latedl   '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n
 # round 1 (Codex PR 415): the verify job's proof upload is exactly witness-release-verify holding the record directory
 m s_vupname  '=name: witness-release-verify\n          path: witness-release-verify' 'name: witness-release\n          path: witness-release-verify' 'verify' "AC1 (Astra R6, round 1) the verify job's upload is named witness-release (it would collide with the release job's)"
 m s_vuppath  '=name: witness-release-verify\n          path: witness-release-verify' 'name: witness-release-verify\n          path: docs' 'verify' "AC1 (Astra R6, round 1) the verify job's upload holds a path other than its Witness record"
+# round 2 (Codex PR 415): the verify job's upload and downloads are exact
+m s_vupwarn  '=          path: witness-release-verify\n          if-no-files-found: error\n' '          path: witness-release-verify\n' 'verify' "AC1 (Astra R6, round 2) the verify job's upload does not fail when it finds no file (the default is a warning)"
+m s_vdist    '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: witness-release-verify\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n' 'verify' "AC1 (Astra R6, round 2) the verify job downloads dist into its proof directory (it would be uploaded with the record)"
 m s_melorder 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install melange\n        run: bash bin/install-build-tools.sh melange' 'install melange\n        run: bash bin/install-build-tools.sh melange\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'start with checkout' "AC1 (Astra R4) melange installed before crane (the order is fixed: the three scanners' tools, then melange)"
 m s_melscan 'install-build-tools.sh melange'               'install-scanner.sh melange'                             'none of checkout'   "AC1 (Astra R4) melange fetched by the scanner installer (it is the build-tools installer's, with its own pin)"
 m s_order   'release-apks bin/release-apks.sh'              'release-sign bin/release-sign.sh'                       'exactly'            "AC1 two witnessed steps swapped (release-sign twice)"
@@ -257,6 +260,11 @@ c c_rcos    '=      - name: install cosign\n        run: bash bin/install-scanne
 c c_rdlsec  '=name: dist\n          path: dist'                   'name: dist\n          path: dist\n          token: ${{ secrets.DOCKERHUB_TOKEN }}' 'up to release-verify' "AC2 (Astra R6) the release job reads a secret in a download before its re-run of release-verify"
 c c_vbrk    '=      - name: install witness\n'                      '      - name: x ${{ secrets["OTHER_SECRET"] }}\n'                       'verify job' "AC2 (Astra R6, round 1) the verify job reads a secret through the bracket form in a step name"
 c c_rbrk    '=      - name: install cosign\n'                       '      - name: x ${{ github["token"] }}\n'                                'up to release-verify' "AC2 (Astra R6, round 1) the release job reads the token through the bracket form before its re-run of release-verify"
+c c_vjson   '=      - name: install witness\n'                      '      - name: x ${{ toJSON(github) }}\n'                                  'verify job' "AC2 (Astra R6, round 2) the verify job holds an expression (the whole github context)"
+c c_rjson   '=      - name: install cosign\n'                       '      - name: x ${{ toJSON(secrets) }}\n'                                 'up to release-verify' "AC2 (Astra R6, round 2) the release job holds an expression (all secrets) before its re-run of release-verify"
+c c_vsq     '=      - name: install witness\n'                      '      - name: "x ${{ github['\''token'\''] }}"\n'                            'verify job' "AC2 (Astra R6, round 2) the verify job reads the token through the single-quoted bracket form (the executable one)"
+c c_rsq     '=      - name: install cosign\n'                       '      - name: "x ${{ secrets['\''DOCKERHUB_TOKEN'\''] }}"\n'                  'up to release-verify' "AC2 (Astra R6, round 2) the release job reads a secret through the single-quoted bracket form before its re-run of release-verify"
+c c_vwrap   '=      - name: install witness\n'                      '      - name: x ${{ format('\''{0}'\'', github) }}\n'                          'verify job' "AC2 (Astra R6, round 2) the verify job passes the github context through format()"
 c c_chk     'persist-credentials: false'                   'persist-credentials: false\n        env:\n          GH_TOKEN: ${{ github.token }}' 'up to release-verify' "AC2 the token on the checkout step"
 c c_dlsec   'name: images\n          path: images'        'name: images\n          path: images\n          token: ${{ secrets.DOCKERHUB_TOKEN }}' 'up to release-verify' "AC2 a secret in a download"
 c c_vfy     '      - name: release-verify\n'               '      - name: release-verify\n        env:\n          GH_TOKEN: ${{ github.token }}\n' 'up to release-verify' "AC2 any env on the verify step"
@@ -467,7 +475,16 @@ for f in sys.argv[1:]:
     t = open(f).read()
     assert "no credential exists yet" not in t and "No credential exists in this step" not in t, f
 PY
-EXPECT=228
+python3 - "$root/requirements/requirements.yaml" "$root/.github/policy/chain-scripts.json" "$root/.github/workflows/stage-promote.yml" <<'PY' && ok "text: the REQ-CHAIN-007 statement, the release-verify row reason and the stage header make no blanket claim that no credential exists" || bad "text: a statement, reason or header still overstates credential absence"
+import json, sys, yaml
+q = next(q for q in yaml.safe_load(open(sys.argv[1]))["requirements"] if q["id"] == "REQ-CHAIN-007")
+assert "before any credential exists" not in q["statement"], "statement"
+row = next(r for r in json.load(open(sys.argv[2]))["scripts"] if r["path"] == "bin/release-verify.sh")
+assert "no credential exists" not in row["reason"], "row reason"
+h = open(sys.argv[3]).read().split("\nname:")[0]
+assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
+PY
+EXPECT=236
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
