@@ -110,6 +110,12 @@ ALLOW_PATTERNS=(
   '^bin/admission-tag-signer-test\.sh$'
   '^bin/panel-test\.sh$'
   '^bin/panel-wiring-test\.sh$'
+  '^bin/persona-uat(-agent|-provider)?\.py$'
+  '^bin/persona-uat(-wiring|-agent|-decrypt)?-test\.sh$'
+  '^bin/persona-uat-decrypt\.sh$'
+  '^bin/persona-uat-recipient\.pem$'
+  '^bin/persona-uat-tools\.json$'
+  '^bin/persona-uat-requirements\.txt$'
   '^\.github/agent/supply-chain/pin-(inventory|age-check|audit)\.py$'
   '^\.github/agent/supply-chain/tag_observer\.py$'
   '^\.github/supply-chain-exceptions\.json$'
@@ -258,6 +264,8 @@ ALLOW_PATTERNS=(
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'
+  # The archive pointer the daily refresh pull request moves (build/archive.json): which registry digest the build pulls its packages from.
+  '^build/archive\.json$'
   # The certified Go Cryptographic Module the FIPS recipe is generated with (build/locks/fips-module.txt): one of the two data files the daily job edits.
   '^build/locks/fips-module\.txt$'
   # Signing keys: build/keys/assembly.rsa and build/keys/assembly.rsa.pub (the committed, non-secret assembly
