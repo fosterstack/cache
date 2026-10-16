@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 86 |
-| Acceptance criteria | 330 |
+| Active requirements | 87 |
+| Acceptance criteria | 335 |
 | Release-blocking ACs | 53 |
 | ACs with mapped evidence | 314 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 40 |
+| Confidence: implementation-only | 41 |
 
 ## Cache protocol
 
@@ -1228,3 +1228,19 @@ The production and FIPS images shall be assembled by apko in one offline run for
 | REQ-IMAGE-001-AC10 | Given bin/assemble-image.sh, bin/lock-proof.sh or bin/sealed-proof.sh; when it is started from a working directory that is not the repository root; then it exits 2 naming the repository root (lock-proof.sh and sealed-proof.sh with a usage line saying to run it from there) before any tool; assemble-image.sh names its helpers (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py) by literal repository-relative paths, assigns none of PATH, IFS, BASH_ENV, ENV, LD_*, PYTHON*, runs no python3 -c and no python3 heredoc, builds no command word by substitution, and has no --apko-config, --base-lock, --render-dir, --index-record or --key-record option at all (each is refused as an unknown option, in every mode): those inputs are read only from their committed repository paths, and tests run the same script against a fixture repository root | unit |  | approved | 2 item(s) |
 | REQ-IMAGE-001-AC11 | Given assemble-image.sh run twice with the same archive, melange repository, keyring, committed config and base lock, and the same SOURCE_DATE_EPOCH; when both runs have finished; then the two OUT directories are byte-identical: the same file names and the same bytes in every file of the layout directory, the digest, the manifests, the full lock and the SBOM, whether apko wrote the standard layout or its own tar shape | unit |  | approved | 1 item(s) |
 | REQ-IMAGE-001-AC12 | Given any of bin/assemble-image.sh, bin/lock-proof.sh, bin/sealed-proof.sh or bin/apko-lock.sh; when it runs; then every tool it names (python3, sudo, unshare, apko, sha256sum, openssl, git) is called by a fixed absolute path held in a variable, every python3 call is python3 -I -B, it reads no caller variable beyond a closed list it names, and it has no test hook: the production file is the file the tests run (rule 1). STATED RESIDUAL: the starting environment and the coreutils search path are the invoking stage's (same text as REQ-BUILDAPK-001-AC3) | unit |  | approved | 1 item(s) |
+
+## UAT
+
+### REQ-UAT-001 — Persona UAT
+
+Five agents, each playing a different customer and reading only our public documents, shall exercise every release candidate and the latest release every week, the way a real acceptance test would.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/persona-uat.py; bin/persona-uat-agent.py; .github/workflows/release.yml; .github/workflows/go-freshness.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-UAT-001-AC1 | Given a release candidate tag v*-rc.*; when its release run promotes; then five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall | ci-workflow |  | approved | none mapped |
+| REQ-UAT-001-AC2 | Given the weekly maintenance run; when it runs; then the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report) | ci-workflow |  | approved | none mapped |
+| REQ-UAT-001-AC3 | Given a persona finding that is friction (not broken behavior or a failing doc step); when the run ends; then it is recorded in the persona's encrypted report as information and blocks nothing; no public issue is opened for a persona result | ci-workflow |  | approved | none mapped |
+| REQ-UAT-001-AC4 | Given a persona run; when it needs Jenkins, a GitLab runner or Kubernetes; then each runs as a digest-pinned container inside the job and nothing is provisioned in a cloud | ci-workflow |  | approved | none mapped |
+| REQ-UAT-001-AC5 | Given a persona agent; when it runs; then it is told to use only the public docs and the endpoint and its sandbox holds only the public docs; any other host its commands contact is flagged in its encrypted report and nothing blocks the network beyond the existing fences; its model and token budget come from environment variables the owner sets; its report and transcript are kept only as one encrypted artifact that only FosterStack can read (openssl CMS to a recipient certificate committed in the repository), never as plaintext | ci-workflow |  | approved | none mapped |
