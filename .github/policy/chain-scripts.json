@@ -1058,7 +1058,14 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "df6ab2c2d35aab2262938e3a18dd0bb9053579b47094059d76896d4a34fd673b"
+      "sha256": "8a030a98d013b754c5c8e9806bac1c98e1adf4cdced1ca71aaa17516a5f42b76",
+      "env_mentions": [
+        {
+          "name": "ENV",
+          "text": "m.group(1) == \"ENV\"",
+          "why": "REQ-CHAIN-007-AC20: the jq filter grammar REFUSES the variable named ENV (a jq-only command may not read the environment); the literal is the refusal test, and no environment is read or set"
+        }
+      ]
     },
     {
       "path": "bin/release-metadata.py",
