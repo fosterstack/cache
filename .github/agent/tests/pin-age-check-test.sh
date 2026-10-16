@@ -2280,6 +2280,18 @@ ctxno "a multi-line parameter expansion hides an assignment-looking line" "${SH}
 ctxyes "a one-line parameter expansion is understood" "${SH}"$'value=${UNSET:-b}\n# curl https://e.example/x\n' comment
 ctxno "argparse can create a file (FileType)" "${SH}"$'python3 - <<\'PY\'\nimport argparse\np = argparse.ArgumentParser()\np.add_argument("o", type=argparse.FileType("w"))\nx = "curl https://e.example/x"\nPY\n' pystring
 ctxyes "argparse with the review label" "${SH}"$'python3 - <<\'PY\'\nimport argparse\np = argparse.ArgumentParser()\nx = "curl https://e.example/x"\nPY\n' pystring "$IMP"
+# round 1 of cache#390 (both seats): imported members of sys, a definition after then/do or indented or under a versioned interpreter name, and a quoted output option are all refused
+ctxno "from sys import path then path.append" "${SH}"$'python3 - <<\'PY\'\nfrom sys import path\npath.append("x")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "from sys import modules" "${SH}"$'python3 - <<\'PY\'\nfrom sys import modules\nmodules["os"].system("true")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "from sys import setprofile (aliased)" "${SH}"$'python3 - <<\'PY\'\nfrom sys import setprofile as sp\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxyes "from sys import argv is understood" "${SH}"$'python3 - <<\'PY\'\nfrom sys import argv\nx = "curl https://e.example/x"\nPY\n' pystring "$IMP"
+ctxno "a cat redefined after then" "${SH}"$'if true; then cat() { sh; }; fi\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a cat redefined after do" "${SH}"$'for i in 1; do cat() { sh; }; done\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "an indented versioned python redefined" "${SH}"$'  python3.11() { sh; }\npython3.11 - <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "an indented cat redefined with function" "${SH}"$'  function cat { sh; }\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxyes "a javascript .() in a string is not a function definition" "${SH}"$'python3 - <<\'PY\'\nx = "setInterval(async () => {}).unref?.();"\ny = "curl https://e.example/x"\nPY\n' pystring "$IMP"
+ctxno "a quoted -o of sort copies the written file" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsort "-o" copied payload\nsh copied\n' heredoc
+ctxno "a single-quoted --output= of sort copies the written file" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsort \'--output=copied\' payload\nsh copied\n' heredoc
 # --- hardening (round-3 residuals of #386, recorded in its PR body; advisor Oct 16) ---
 ctxno "a data consumer copies the written file with an output redirection, and the copy is run" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload >second\nsh second\n' heredoc
 ctxno "a data consumer appends to a copy" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload >>second\n' heredoc

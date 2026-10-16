@@ -778,6 +778,7 @@ def _reads_only(seg):
     flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null", " ", seg)
     if re.search(r"\d*>|&>", flat):
         return False
+    flat = re.sub(r"[\"'\\]", "", flat)                       # judged on the option WORDS: "-o", '--output=x' and -\o spell the same options
     return not re.search(r"(?:^|[ \t])(?:-[A-Za-z]*o\S*|--output\S*)(?=[ \t=]|$)", flat)
 
 
@@ -873,6 +874,7 @@ def _py_program_flags(body):
             else:
                 for a in nd.names:
                     if a.name in _PY_FORBIDDEN_NAMES or a.name == "open": why.add(a.name)
+                    if nd.module == "sys" and a.name not in _PY_SYS_OK: why.add("sys." + a.name)      # an imported member of sys is judged like the attribute
                     mods[a.asname or a.name] = (nd.module or "") + "." + a.name
         elif isinstance(nd, ast.Assign):
             for t in nd.targets:
@@ -1015,7 +1017,7 @@ def _context_holds(context, proof, text, line_hash):
         return False
     trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"})) + r"|python[\d.]*"
     if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
-            or re.search(r"(?m)(?:^|[;&|({][ \t]*|&&[ \t]*|\|\|[ \t]*)(?:function[ \t]+)?(?:" + trusted + r")[ \t]*(?:\(\)|\{)", text):
+            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\))", text):
         return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
     def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
         return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
