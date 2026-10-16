@@ -320,6 +320,24 @@ def sur_unused(s):
     s["metadata"] = {"note": "x\ud800y"}
 put("sur-unused", sur_unused)
 PY
+# the REQUEST SBOM must pass the panel's own reading too (Codex #188 r8): a CycloneDX envelope and at least one component with a package URL, else the panel discards the findings
+python3 - "$w" <<'PY'
+import json, sys
+w = sys.argv[1]
+a = json.load(open(w + "/a.json"))
+def put(name, mut):
+    g = json.loads(json.dumps(a)); mut(g); json.dump(g, open("%s/req-bad-%s.json" % (w, name), "w"))
+put("fmt-missing", lambda g: g.pop("bomFormat", None))
+put("fmt-null", lambda g: g.__setitem__("bomFormat", None))
+put("fmt-empty", lambda g: g.__setitem__("bomFormat", ""))
+put("nopurl", lambda g: [c.pop("purl", None) for c in g["components"]])
+put("emptypurl", lambda g: [c.__setitem__("purl", "") for c in g["components"]])
+PY
+rtry() { # name request-sbom ; the request is wrong, the answer is the good one
+  python3 "$prog" validate "$2" "$w/f-vuln.json" > /dev/null 2>&1; rc=$?
+  [ "$rc" -ne 0 ] && ok "validate: $1 exits non-zero" || bad "validate: $1 exits non-zero"
+}
+for n in fmt-missing fmt-null fmt-empty nopurl emptypurl; do rtry "a request SBOM the panel cannot read ($n)" "$w/req-bad-$n.json"; done
 for n in sur-name sur-id sur-unused; do vtry "the answer holds text that cannot be written out ($n)" 1 "$w/v-bad-$n.json"; done
 for n in rd-version-dict rd-version-int rd-ref-list-nofind; do vtry "the readers cannot consume the answer ($n)" 1 "$w/v-bad-$n.json"; done
 for n in comp-purlnum comp-noident comp-notobj comp-namenum; do vtry "an answer carrying a component the readers cannot use ($n)" 1 "$w/v-bad-$n.json"; done

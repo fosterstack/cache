@@ -146,7 +146,9 @@ def _readers_consume(sbom_path, answer_path, doc):
     try:
         panel = _load_sibling("_panel_probe", "panel.py")
         comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
-        panel._cdx_packages(sbom)
+        # the panel's own request-side reading (read_inspector): a CycloneDX envelope and a positive package count, else it discards the findings ("did not run")
+        if sbom.get("bomFormat") != "CycloneDX" or not panel._cdx_packages(sbom):
+            raise ValueError("the request SBOM is not one the panel reads")
         rows = panel._cdx_findings(scan, comps)
         for r in rows:
             panel.key_of("probe", r[0], r[1], r[2])   # the panel's own per-finding key (tally): the step that reads a version as text
