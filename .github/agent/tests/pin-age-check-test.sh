@@ -3713,7 +3713,14 @@ for v in "go-ok:curl $GOFIX \"https://go.dev/dl/\$f\" || die \"could not downloa
          "go-command-substitution:curl $GOFIX \"https://go.dev/dl/\$(cat /tmp/f)\":1" \
          "go-pipe-to-shell:curl $GOFIX \"https://go.dev/dl/\$f\" | tar xz:1" \
          "go-proxy-option:curl $GOFIX -x http://p.example:3128 \"https://go.dev/dl/\$f\":1" \
-         "go-no-disable-first:curl -fsSL -g -o \"\$tmp/dl/\$f\" \"https://go.dev/dl/\$f\":1"; do
+         "go-no-disable-first:curl -fsSL -g -o \"\$tmp/dl/\$f\" \"https://go.dev/dl/\$f\":1" \
+         "go-disable-alias-for-q:curl --disable -fsSL -g --max-time 900 --proto =https --tlsv1.2 -o \"\$tmp/dl/\$f\" \"https://go.dev/dl/\$f\":1" \
+         "go-globoff-alias-for-g:curl -q -fsSL --globoff --max-time 900 --proto =https --tlsv1.2 -o \"\$tmp/dl/\$f\" \"https://go.dev/dl/\$f\":1" \
+         "go-single-quoted-url-is-a-literal-dollar:curl $GOFIX 'https://go.dev/dl/\$f':1" \
+         "go-output-default-expansion:curl -q -fsSL -g --max-time 900 --proto =https --tlsv1.2 -o \"\${out-fallback}\" \"https://go.dev/dl/\$f\":1" \
+         "go-output-command-word:curl -q -fsSL -g --max-time 900 --proto =https --tlsv1.2 -o \"\${out:-x}\" \"https://go.dev/dl/\$f\":1" \
+         "go-resolve-option:curl $GOFIX --resolve go.dev:443:10.0.0.1 \"https://go.dev/dl/\$f\":1" \
+         "go-config-option:curl $GOFIX -K /tmp/cfg \"https://go.dev/dl/\$f\":1"; do
   nm=${v%%:*}; rest=${v#*:}; line=${rest%:*}; want=${rest##*:}
   mkrowp "$work/gf-$nm.json" bin/fetch.sh "$line" "$GOP"
   twoc "gf-$nm" bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
@@ -3721,6 +3728,18 @@ for v in "go-ok:curl $GOFIX \"https://go.dev/dl/\$f\" || die \"could not downloa
   CASE="Go-toolchain fetch row, $nm: exit $want"
   check test "$rc" -eq "$want"
 done
+# the Go ruling is for scripts only (a *.sh file outside .github/): the same valid line, carried by a workflow step or a non-script file, is not ruled
+GLW="curl $GOFIX \"https://go.dev/dl/\$f\""
+mkrowp "$work/gf-in-workflow.json" .github/workflows/x.yml "$GLW" "$GOP"
+twoc gf-in-workflow .github/workflows/x.yml $'name: x\non: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' $'name: x\non: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          '"$GLW"$'\n'
+edck gf-in-workflow "$work/gf-in-workflow.json"
+CASE="a Go-toolchain row for a workflow file rules nothing (scripts only): exit 1"
+check test "$rc" -eq 1
+mkrowp "$work/gf-in-py.json" tools/fetch.py "$GLW" "$GOP"
+twoc gf-in-py tools/fetch.py $'#!/usr/bin/env python3\n' $'#!/usr/bin/env python3\n'"$GLW"$'\n'
+edck gf-in-py "$work/gf-in-py.json"
+CASE="a Go-toolchain row for a non-shell file rules nothing: exit 1"
+check test "$rc" -eq 1
 # the two rulings do not lend each other their lines: a Go-shaped line under the Wolfi ruling, and a Wolfi-shaped line under the Go ruling, rule nothing
 GL="curl $GOFIX \"https://go.dev/dl/\$f\""
 mkrowp "$work/gf-under-live.json" bin/fetch.sh "$GL" "$LIVEP"
