@@ -1000,6 +1000,76 @@ check("sweep: the Docker Hub sweep is part of the sweep when configured", rc == 
 check("hub_sweep calls the helper with the repository only (the user and the token travel in the environment, never on a command line)",
       'vex-live-test.py" hub-sweep --repository "$DH_REPO"' in open(os.path.join(root, "bin/vex-live-run.sh")).read())
 
+# --- PR-C part C: the whole leg against stubs. A real attestation tool runs on a fixture layout the stub crane "pulls"; Scout is a stub that answers from canned reports in call
+#     order (fixture before/after, production before/after, then the published tag and digest in the post-publish modes)
+import shutil
+LEG_CVE, OURS_CVE = "CVE-2023-9999", sorted(s["vulnerability"]["name"] for s in real_vex["statements"])[0]
+with tempfile.TemporaryDirectory() as lt:
+    lt = os.path.realpath(lt)
+    fx_src, cand = os.path.join(lt, "fixture-src"), os.path.join(lt, "cand", "images", "production")
+    os.makedirs(fx_src); fx_man = single_layout(fx_src)
+    os.makedirs(cand); prod_man = single_layout(cand, "arm64")
+    for d_ in (fx_src, cand):
+        for base_, dirs_, files_ in os.walk(d_):
+            os.chmod(base_, 0o755)
+            for f_ in files_: os.chmod(os.path.join(base_, f_), 0o644)
+    CRANE = r'''echo "$*" >> "$RUNNER_TEMP/crane.log"
+case "$1" in
+  auth) cat >/dev/null ;;
+  pull) dir="${@: -1}"; cp -R "$FIXTURE_LAYOUT_SRC" "$dir"; chmod -R go-w "$dir" ;;
+  push) d=$(jq -r '.manifests[0].digest' "$2/index.json"); echo "$3 $d" >> "$RUNNER_TEMP/pushed.map" ;;
+  copy) echo "$3 ${2##*@}" >> "$RUNNER_TEMP/pushed.map" ;;
+  digest) if [ -n "${CRANE_DIGEST_OVERRIDE:-}" ]; then echo "$CRANE_DIGEST_OVERRIDE"; else grep "^$2 " "$RUNNER_TEMP/pushed.map" | tail -1 | cut -d' ' -f2; fi ;;
+esac'''
+    SCOUT = r'''printf '%s\n' "$*" >> "$RUNNER_TEMP/docker.log"
+case "$*" in
+  "login "*) cat >/dev/null; exit 0 ;;
+  *"scout cves"*) n=$(grep -c "scout cves" "$RUNNER_TEMP/docker.log"); cat "$RUNNER_TEMP/scout-$n.json" ;;
+  *) exit 0 ;; esac'''
+    def leg(reports, env=None, mode="rc", extra=""):
+        files = "".join("printf %%s '%s' > \"$RUNNER_TEMP/scout-%d.json\"; " % (r, i + 1) for i, r in enumerate(reports))
+        body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0-rc1; ' % mode
+                + 'FIXTURE_SRC=docker.io/library/debian@%s; FIX=%s; RUN=live-1-1; CVE=%s; ' % (fx_man, fx_man, LEG_CVE)
+                + "echo '{\"production\": {\"index\": \"%s\", \"children\": {\"linux/amd64\": \"sha256:%s\", \"linux/arm64\": \"sha256:%s\"}}}' > images.json; " % (prod_man, "2" * 64, "3" * 64)
+                + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" 2>/dev/null")
+        e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src, CANDIDATE_DIR=os.path.join(lt, "cand"))
+        e.update(env or {})
+        return sh(body, {"crane": CRANE, "docker": SCOUT}, e)
+    OK_FIX = [gl_report(LEG_CVE, "CVE-A", OURS_CVE), gl_report("CVE-A", OURS_CVE)]
+    OK_PROD = [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")]
+    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)    # the first two answers belong to the informational probe of the Build layout (an unreadable report there is information)
+    sc = [l for l in out.split("\n") if l.startswith("scout cves")]
+    check("scout leg (rc): passes when the fixture's finding shows with Docker's authors only and is gone with ours, and the same for our production image", "leg-rc=0" in out, (rc, out[-500:]))
+    check("scout leg (rc): the Build layout is probed first (oci-dir://, information), then the Docker Hub test repository by digest",
+          sc and sc[0].startswith("scout cves --format gitlab oci-dir://") and any("registry://docker.io/fosterstack-live/cache-live-test@sha256:" in l for l in sc[2:]), sc)
+    check("scout leg (rc): each registry image is scanned twice, first with Docker's authors, then naming ours as one argument",
+          [("--vex-author ^FosterStack LLC$ " in l) for l in sc[2:]] == [False, True, False, True], sc)
+    check("scout leg (rc): the Docker Hub login uses the push token on stdin, never in an argument", "auth login index.docker.io -u fosterstack-live --password-stdin" in out and "push-tok" not in out)
+    check("scout leg (rc): two pushes, both journaled before the sweep can need them, tagged with the run",
+          open(os.path.join(lt, "x")).read() if False else out.count("index.docker.io/fosterstack-live/cache-live-test:live-1-1-") >= 2, out[-400:])
+    for why, reports, env in (("the fixture's finding still shown with our author", [OK_FIX[0], OK_FIX[0]] + OK_PROD, {}),
+                              ("the fixture's finding not shown without our author", [gl_report("CVE-A"), gl_report("CVE-A")] + OK_PROD, {}),
+                              ("another fixture finding lost with our author", [OK_FIX[0], gl_report(OURS_CVE)] + OK_PROD, {}),
+                              ("our production image keeping the finding our statement covers", OK_FIX + [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B", OURS_CVE)], {}),
+                              ("a candidate that comes out of the registry at another digest", OK_FIX + OK_PROD, {"CRANE_DIGEST_OVERRIDE": "sha256:" + "0" * 64}),
+                              ("an unreadable report for the fixture", ["{}", "{}", "not json", "not json"] + OK_PROD, {})):
+        rc, out = leg(["{}", "{}"] + reports, env)
+        check("scout leg (rc) fails on %s" % why, "leg-rc=0" not in out and "leg-rc=" in out, (rc, out[-300:]))
+    rc, out = leg(["{}", "{}"] + OK_FIX + [gl_report("CVE-B"), gl_report("CVE-B")])
+    check("scout leg (rc): none of our statements reported by Scout on the production image is a warning that AC6 is not shown, not a failure",
+          "leg-rc=0" in out and "::warning::" in out and "REQ-REL-010-AC6" in out, (rc, out[-400:]))
+    for missing in ENV_OK:
+        rc, out = leg(["{}"], {missing: ""})
+        check("scout leg fails closed without %s, before any crane or docker call" % missing, "leg-rc=0" not in out and "crane" not in out.replace("crane.log", "") and "auth login" not in out, (rc, out[-300:]))
+    rc, out = leg(["{}"] * 2 + OK_FIX + OK_PROD, extra='PUSHES=49; ')
+    check("scout leg: the leg's pushes count against the 50 of the run (a second push beyond 50 fails it)", "leg-rc=0" not in out and "more than 50 pushes" in out, (rc, out[-300:]))
+    rc, out = leg(OK_FIX + OK_PROD + OK_FIX[:0] + [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B"), gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")], mode="release",
+                  extra='tag=v0.3.0; ')
+    sc = [l for l in out.split("\n") if l.startswith("scout cves")]
+    check("scout leg (release): the published index is also scanned by tag and by exact digest, with Docker's authors and with ours",
+          "leg-rc=0" in out and any("registry://ghcr.io/fosterstack/cache:0.3.0" in l for l in sc) and any("registry://ghcr.io/fosterstack/cache@" + prod_man in l for l in sc)
+          and not any(l.startswith("scout cves --format gitlab oci-dir://") for l in sc), (rc, sc, out[-300:]))
+
 print("vex-live-test: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
