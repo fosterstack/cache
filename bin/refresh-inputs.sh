@@ -946,6 +946,8 @@ fips-module)
       else
         echo "fips-module: nothing pending: the certified module is the one the FIPS build uses ($_cur)"
       fi
+    else
+      die "cannot read $_cf or $_mf: the certified-module check cannot tell whether a newer module is pending" 1
     fi
     exit 0
   fi

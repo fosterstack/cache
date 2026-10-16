@@ -1310,6 +1310,11 @@ h_before=$(shasum -a 256 "$work/rp3/build/melange-fips.yaml" | cut -d' ' -f1)
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
 t "AC26" "fips-module --plan-dir with a refresh plan already staged still READS the certified module and reports the newer one as pending (the check is postponed, never silent)" bash -c "grep -q 'v1.1.0-deadbeef' '$work/log' && grep -qi 'pending' '$work/log'"
 t "AC29" "fips-module --plan-dir with a refresh plan already staged: exit 0 saying so, no second plan, the recipe not edited" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'already staged' '$work/log' && test \"\$(ls '$work/plan-x' | wc -l)\" -eq 1 && test \"\$(shasum -a 256 '$work/rp3/build/melange-fips.yaml' | cut -d' ' -f1)\" = '$h_before'"
+# Codex #345 r4: a certified-module file that cannot be read is not "nothing pending" while a plan is staged (the check stops, it does not pass silently)
+mv "$gr/lib/fips140/certified.txt" "$gr/lib/fips140/certified.txt.away"
+run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
+mv "$gr/lib/fips140/certified.txt.away" "$gr/lib/fips140/certified.txt"
+t "AC26" "fips-module --plan-dir with a refresh plan already staged and an unreadable certified-module file: exit 1 naming the file (never a silent pass)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'certified.txt' '$work/log' && ! grep -qi 'nothing pending' '$work/log'"
 fr; rm -rf "$work/plan-f"
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-f"
 t "AC29" "fips-module --plan-dir into an empty plan directory still stages its pull request (exit 0, one plan)" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(ls '$work/plan-f' | wc -l)\" -eq 1"

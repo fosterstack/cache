@@ -186,6 +186,10 @@ jobs:
   refresh:
     name: refresh the build inputs and open the refresh pull request
     if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '23 6 * * *') }}
+    # one refresh at a time: two overlapping runs could each pass the open-pull-request check and each open a pull request (AC29)
+    concurrency:
+      group: refresh-inputs
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: agent
     permissions:

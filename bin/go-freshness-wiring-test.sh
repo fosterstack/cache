@@ -123,6 +123,14 @@ cond = str(r.get("if", ""))
 if re.sub(r"\s+", " ", cond).strip() != "${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '23 6 * * *') }}":
     bad.append("AC25: the refresh job's condition is not main plus schedule or dispatch: %s" % cond)
 trig = d.get("on") or d.get(True) or {}
+sched = trig.get("schedule") if isinstance(trig, dict) else None
+if not isinstance(sched, list) or {"cron": "23 6 * * *"} not in sched:
+    bad.append("AC25: the schedule the refresh job runs on (cron 23 6 * * *) is missing from the triggers: %s" % sched)
+conc = r.get("concurrency")
+if not isinstance(conc, dict) or conc.get("group") != "refresh-inputs" or str(conc.get("cancel-in-progress")).lower() != "false" or sorted(conc) != ["cancel-in-progress", "group"]:
+    bad.append("AC29: the refresh jobs are not serialized (concurrency group refresh-inputs, cancel-in-progress false): %s" % r.get("concurrency"))
+if [x.get("name") for x in rsteps if str(x.get("continue-on-error", "false")).lower() not in ("false", "")] or str(r.get("continue-on-error", "false")).lower() != "false":
+    bad.append("AC30: a refresh step or the job is allowed to continue on error (a stop must stop the later steps)")
 if sorted(trig) != ["schedule", "workflow_dispatch"]:
     bad.append("AC25: go-freshness.yml triggers are not schedule and workflow_dispatch only: %s" % sorted(trig))
 wf = sorted(os.path.basename(f) for f in glob.glob(os.path.join(tree, ".github/workflows/*.y*ml")))
@@ -224,6 +232,14 @@ case_ refresh-ref-inverted   bad "$R['if'] = $R['if'].replace(\"github.ref == 'r
 case_ refresh-or-instead-and bad "$R['if'] = $R['if'].replace(\"' && (\", \"' || (\")"
 case_ store-unconditional    bad "[s.__setitem__('run', 'set -euo pipefail\\n./bin/archive-push.sh --dir \"\$RUNNER_TEMP/archive\" # changed\\n') for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
 case_ store-if-inverted      bad "[s.__setitem__('run', s['run'].replace('if [ \"\$after\" = ', 'if [ \"\$after\" != ')) for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
+# Codex #345 r4: overlapping runs, the daily schedule itself, and a stop that is allowed to continue
+case_ refresh-no-concurrency  bad "$R.pop('concurrency', None)"
+case_ refresh-cancel-in-prog  bad "$R['concurrency'] = {'group': 'refresh-inputs', 'cancel-in-progress': True}"
+case_ refresh-other-group     bad "$R['concurrency'] = {'group': 'refresh-inputs-' + '\${{ github.run_id }}', 'cancel-in-progress': False}"
+case_ schedule-emptied        bad "d['on']['schedule'] = []"
+case_ schedule-other-cron     bad "d['on']['schedule'] = [{'cron': '23 6 * * 1'}]"
+case_ keycheck-continues      bad "[s.__setitem__('continue-on-error', True) for s in $R['steps'] if s.get('name') == 'check the live Wolfi key against the pinned one']"
+case_ any-refresh-step-continues bad "$R['steps'][-1]['continue-on-error'] = True"
 # Codex #157 r1's surviving mutations
 case_ input-env-widens       bad "$MINT.setdefault('env', {})['INPUT_PERMISSION-checks'] = 'write'"
 case_ token-alt-spelling     bad "$C['steps'].append({'name': 'x', 'env': {'T': \"\${{ steps['app-token'].outputs.token }}\"}, 'run': 'true'})"
