@@ -116,6 +116,70 @@ def inspector_files(V, vex, images, fixture_digest, cve, version):
     return shipped, {"filters": shipped["filters"] + fixture["filters"]}
 
 
+STATE_KEYS = ("VER", "IMAGE", "DIGEST")
+STATE_VALUE = {"VER": r"[A-Za-z0-9._-]+", "IMAGE": r"[A-Za-z0-9._:/@-]+", "DIGEST": r"sha256:[0-9a-f]{64}"}
+
+
+def read_state(path):
+    """{VER, IMAGE, DIGEST} that are set, from lines NAME='value' (the only form this file is written in); anything else is refused."""
+    out = {}
+    if not os.path.exists(path):
+        return out
+    for ln in open(path).read().split("\n"):
+        if not ln:
+            continue
+        m = re.fullmatch(r"([A-Z]+)='([^']*)'", ln)
+        if not m or m[1] not in STATE_KEYS or not re.fullmatch(STATE_VALUE[m[1]], m[2]) or m[1] in out:
+            raise ValueError("the state file holds a line that is not a plain setting: %r" % ln[:60])
+        out[m[1]] = m[2]
+    return out
+
+
+def write_state(path, values):
+    for k, v in values.items():
+        if k not in STATE_KEYS or not re.fullmatch(STATE_VALUE[k], v):
+            raise ValueError("%s=%r is not a plain value" % (k, v))
+    with open(path, "w") as fh:
+        for k in STATE_KEYS:
+            if k in values:
+                fh.write("%s='%s'\n" % (k, values[k]))
+
+
+def run_guide(plan, state_path, section, plan_dir=None):
+    """Run every command block of one section of the page, exactly as written, in ONE bash under errexit AND pipefail (a failing command anywhere, inside a pipe
+    too, stops the run), with the test's settings (VER, IMAGE, DIGEST) set. Afterwards only those three values are carried on, validated; the blocks may not
+    change VER or IMAGE. Returns bash's exit status (1 for a refused value)."""
+    import shlex, subprocess, tempfile
+    plan_dir = plan_dir or os.path.join(os.path.dirname(os.path.abspath(plan)), "plan")
+    st = read_state(state_path)
+    files = [ln for ln in open(plan).read().split("\n") if ln.endswith("-%s.sh" % section)]
+    script = "set -eo pipefail\n" + "".join("%s=%s\n" % (k, shlex.quote(v)) for k, v in st.items())
+    for f in files:
+        path = os.path.join(plan_dir, f)
+        script += 'echo "::group::guide, as written: %s"\ncat %s\necho "::endgroup::"\nsource %s\n' % (f, shlex.quote(path), shlex.quote(path))
+    fd, out = tempfile.mkstemp(prefix="guide-state-")
+    os.close(fd)
+    try:
+        script += 'printf "%%s\\0%%s\\0%%s\\0" "${VER-}" "${IMAGE-}" "${DIGEST-}" > %s\n' % shlex.quote(out)
+        rc = subprocess.run(["bash", "-c", script]).returncode
+        if rc != 0:
+            return rc
+        ver, image, digest = open(out).read().split("\0")[:3]
+    finally:
+        os.unlink(out)
+    new = {k: v for k, v in (("VER", ver), ("IMAGE", image), ("DIGEST", digest)) if v}
+    for k in ("VER", "IMAGE"):
+        if new.get(k) != st.get(k):
+            print("::error::a guide block changed %s" % k, file=sys.stderr)
+            return 1
+    try:
+        write_state(state_path, new)
+    except ValueError as e:
+        print("::error::%s" % e, file=sys.stderr)
+        return 1
+    return 0
+
+
 def csaf_test_copy(V, vex, images, fixture_digest, cve, version):
     """The shipped CSAF (the real statements over the real images, so the production load finds its own products) with the fixture added as a product of its
     own, under its own id, and its one statement: the generator's CSAF for the fixture statement alone, narrowed to the fixture's branch."""
@@ -407,10 +471,20 @@ def main(argv=None):
     j.add_argument("--cve", required=True)
     j.add_argument("--notes", help="google: a file with the names of the VEX notes this run created, one per line")
     st = sub.add_parser("settings", help="print the test's values as the guide's settings (VAR=value ...)")
+    st.add_argument("--state", help="merge the values into this state file instead of printing them")
     st.add_argument("pairs", nargs="+")
     c2 = sub.add_parser("ca", help="one Container Analysis call as the live-test service account")
-    c2.add_argument("-X", dest="method", default="GET")
+    c2.add_argument("method", choices=("GET", "DELETE"))
     c2.add_argument("url")
+    g = sub.add_parser("guide", help="run the command blocks of one section of the page as written")
+    g.add_argument("--plan", required=True)
+    g.add_argument("--state", required=True)
+    g.add_argument("section")
+    sg = sub.add_parser("state", help="print one value of the state file")
+    sg.add_argument("--state", required=True)
+    sg.add_argument("name", choices=STATE_KEYS)
+    fl = sub.add_parser("field", help="print one field of the JSON read from stdin (names: one per line; next: the next page token or empty)")
+    fl.add_argument("key", choices=("names", "next"))
     r = sub.add_parser("release")
     r.add_argument("--releases", required=True, help="gh release list --json tagName,isDraft + assets names")
     a = ap.parse_args(argv)
@@ -478,7 +552,26 @@ def main(argv=None):
         print("%s: %s shown before and suppressed by our file after; every other finding kept" % (a.kind, a.cve))
         return 0
     if a.cmd == "settings":
-        sys.stdout.write(render_settings(dict(p.split("=", 1) for p in a.pairs)))
+        pairs = dict(p.split("=", 1) for p in a.pairs)
+        if a.state:
+            st = read_state(a.state)
+            render_settings(pairs)      # refuses a value that is not plain
+            st.update(pairs)
+            write_state(a.state, st)
+            return 0
+        sys.stdout.write(render_settings(pairs))
+        return 0
+    if a.cmd == "guide":
+        return run_guide(a.plan, a.state, a.section)
+    if a.cmd == "state":
+        print(read_state(a.state).get(a.name, ""))
+        return 0
+    if a.cmd == "field":
+        doc = json.loads(sys.stdin.read())
+        if a.key == "names":
+            print("\n".join(doc["names"]))
+        else:
+            print(doc["next"])
         return 0
     found = release_under_test(json.load(open(a.releases)))
     print(found or "")

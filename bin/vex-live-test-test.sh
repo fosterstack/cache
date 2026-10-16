@@ -171,6 +171,11 @@ check("the 51st push fails the run", out.returncode == 0, (out.returncode, out.s
 # --- the release candidate under test (v0.3: an rc ends before publishing, so its images exist only as Build's OCI layouts and digests.json): each layout is pushed to
 #     the test repository and must come out at exactly the digest Build attested
 # (the behavioral cases below drive bin/vex-live-run.sh with stubs; "copy_candidate" is the one place that reads a candidate)
+# Codex #387 r1 (P1): the orchestrator runs against real registries, so the action-pin checker must READ it: its name is outside the checker's test-harness exemption, and an
+# appended plain unpinned pull is found in the jobs that run it
+_cap = importlib.util.spec_from_file_location("cap", os.path.join(root, ".github/agent/bin/check-action-pins.py")); CAP = importlib.util.module_from_spec(_cap); _cap.loader.exec_module(CAP)
+check("the orchestrator is not exempt as a test harness", CAP.TEST_HARNESS.search("bin/vex-live-run.sh") is None and CAP.TEST_HARNESS.search("bin/vex-live-test-test.sh") is not None)
+
 # --- AC1/AC3/AC4: the wiring
 wf = lambda n: yaml.load(open(os.path.join(root, ".github/workflows", n)), Loader=yaml.BaseLoader)
 rel, ci = wf("release.yml"), wf("ci.yml")
@@ -296,12 +301,12 @@ def sh(body, stubs, env=None):
             with open(os.path.join(t, "stub", name), "w") as fh:
                 fh.write("#!/usr/bin/env bash\n" + code + "\n")
             os.chmod(os.path.join(t, "stub", name), 0o755)
-        e = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], VEX_LIVE_TEST_LIB="1",
+        e = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], VEX_LIVE_TEST_LIB="1", GITHUB_WORKSPACE=root,
                  RUNNER_TEMP=t, ECR="1.dkr.ecr.us-east-1.amazonaws.com/fosterstack-cache-live-test",
                  GAR="us-east1-docker.pkg.dev/fosterstack-cache/cache-live-test", GITHUB_RUN_ID="1", **(env or {}))
         # the Container Analysis calls go through ca() -> the python helper (urllib, tested below); here ca() is replaced by the stub transport so the shell
         # logic around it is tested offline
-        prelude = 'ca() { ca-transport "$@"; }; ' if "ca-transport" in stubs else ""
+        prelude = 'ca_get() { ca-transport "$1"; }; ca_delete() { ca-transport -X DELETE "$1"; }; ' if "ca-transport" in stubs else ""
         r = subprocess.run(["bash", "-c", 'set -euo pipefail; source "$0"; ' + prelude + body, script], cwd=t, env=e,
                            capture_output=True, text=True)
         return r.returncode, r.stdout + r.stderr
@@ -362,10 +367,40 @@ try:
 except ValueError:
     got = "refused"
 check("ca: no token is refused", got == "refused", got)
-# SEC-169-03: a guide block's failing command fails the run even inside a pipe
-plan_ok = 'mkdir -p plan; printf "00-verify.sh\\n" > plan.txt; printf "%s\\n" "cosign verify-attestation x | jq -r . > out.json" > plan/00-verify.sh; guide verify; echo CONTINUED'
-rc, out = sh(plan_ok, {"cosign": "echo '{}'; exit 42"})
-check("SEC-169-03 a failed cosign inside a pipe stops the run", rc != 0 and "CONTINUED" not in out, (rc, out[-200:]))
+# SEC-169-03 (moved to the python runner, advisor Oct 16): the page's blocks run exactly as written, one bash per section with the test's settings, under errexit AND pipefail:
+# a failing command anywhere, inside a pipe too, stops the run
+def guide_run(blocks, stubs, section, state="VER='0.3.0'\nIMAGE='x/y/cache'\n"):
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "plan")); os.makedirs(os.path.join(t, "stub"))
+        names = []
+        for i, (sec, text) in enumerate(blocks):
+            n = "%02d-%s.sh" % (i, sec); names.append(n)
+            open(os.path.join(t, "plan", n), "w").write(text)
+        open(os.path.join(t, "plan.txt"), "w").write("\n".join(names) + "\n")
+        open(os.path.join(t, "state.env"), "w").write(state)
+        for name, code in stubs.items():
+            open(os.path.join(t, "stub", name), "w").write("#!/usr/bin/env bash\n" + code + "\n"); os.chmod(os.path.join(t, "stub", name), 0o755)
+        r = subprocess.run(["python3", os.path.join(root, "bin/vex-live-test.py"), "guide", "--plan", "plan.txt", "--state", "state.env", section], cwd=t,
+                           env=dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"]), capture_output=True, text=True)
+        return r.returncode, r.stdout + r.stderr, open(os.path.join(t, "state.env")).read()
+PIPE = "cosign verify-attestation x | jq -r . > out.json\n"
+rc, out, _ = guide_run([("verify", PIPE), ("verify", "echo RAN_$((1+1))\n")], {"cosign": "echo '{}'; exit 42"}, "verify")
+check("SEC-169-03 a failed cosign inside a pipe stops the run, and the next block of the section does not run", rc != 0 and "RAN_2" not in out, (rc, out[-200:]))
+rc, out, _ = guide_run([("verify", "false\necho RAN_$((1+1))\n")], {}, "verify")
+check("SEC-169-03 a failing plain command stops the block", rc != 0 and "RAN_2" not in out, (rc, out[-200:]))
+bare = subprocess.run(["bash", "-ec", "false | cat; echo SURVIVED"], capture_output=True, text=True)
+check("SEC-169-03 the bad case is real: without pipefail the same pipe would not stop a bash -e run", bare.returncode == 0 and "SURVIVED" in bare.stdout)
+rc, out, _ = guide_run([("verify", "echo \"$VER $IMAGE\"\n")], {}, "verify")
+check("the blocks see the test's settings", rc == 0 and "0.3.0 x/y/cache" in out, (rc, out[-200:]))
+D = "sha256:" + "a" * 64
+rc, out, st = guide_run([("digest", "DIGEST=$(echo %s)\n" % D), ("download", "echo got-$DIGEST\n")], {}, "digest")
+check("a digest block's DIGEST is kept for the later blocks", rc == 0 and ("DIGEST='%s'" % D) in st, (rc, st))
+rc, out, st = guide_run([("digest", "DIGEST=not-a-digest\n")], {}, "digest")
+check("a DIGEST that is not sha256:<64 hex> is refused", rc != 0, (rc, out[-200:]))
+rc, out, st = guide_run([("verify", "OTHER=1; export OTHER\n")], {}, "verify")
+check("nothing but VER, IMAGE and DIGEST is carried between sections", rc == 0 and "OTHER" not in st, st)
+rc, out, st = guide_run([("verify", "VER=9.9.9\n")], {}, "verify")
+check("a block that changes VER cannot change the test's value", rc != 0 or "VER='0.3.0'" in st, (rc, st))
 # SEC-169-08/09: the sweep fails when it cannot list or delete, pages through notes, and empties the test repositories
 OKAWS = r"""case "$*" in
   *"ecr list-images"*) echo '{"imageIds": []}' ;;

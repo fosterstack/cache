@@ -16,7 +16,6 @@ REGION=us-east-1
 MAX_PUSHES=50
 PUSHES=0
 here_lt=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-LT="python3 $here_lt/vex-live-test.py"
 TEST_FILTER_PREFIX=fosterstack-cache-livetest-
 
 push_copy() {   # <src> <dst>: one push, journaled BEFORE it starts (a copy that dies midway is still swept); the 51st
@@ -43,19 +42,15 @@ copy_candidate() {   # <layout dir> <dst ref> <attested digest>: a release candi
   [ "$got" = "$want" ] || { echo "::error::${dst} came out as ${got}, Build attested ${want}" >&2; return 1; }
 }
 
-guide() {   # <section>: source each command block of that section byte for byte, under errexit AND pipefail — a failing
-  local f   # command anywhere, inside a pipe too, stops the run (Codex #169 r1, SEC-169-03)
-  for f in $(grep -- "-$1\.sh$" plan.txt); do
-    echo "::group::guide, as written: ${f}"
-    cat "plan/$f"
-    echo "::endgroup::"
-    # shellcheck disable=SC1090
-    source "plan/$f"
-  done
+guide() {   # <section>: every command block of that section, exactly as written, in ONE bash under errexit AND pipefail with the test's settings (SEC-169-03)
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" guide --plan plan.txt --state state.env "$1"
 }
 
-ca() {   # Container Analysis REST, as the live-test service account (an API call for data, not a download: the python helper, fixed host)
-  $LT ca "$@"
+ca_get() {   # Container Analysis REST, as the live-test service account (an API call for data, not a download: the python helper, fixed host, no redirects)
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" ca GET "$1"
+}
+ca_delete() {
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" ca DELETE "$1"
 }
 
 notes_of() {   # <uri prefix>: the names of every VULNERABILITY_ASSESSMENT note on images under that prefix, all pages;
@@ -63,11 +58,11 @@ notes_of() {   # <uri prefix>: the names of every VULNERABILITY_ASSESSMENT note 
   project=$(cut -d/ -f2 <<<"$GAR") || return 1        # never an empty answer (Codex #169 r2/r3, SEC-169-08)
   [ -n "$project" ] || return 1
   while :; do
-    page=$(ca "https://containeranalysis.googleapis.com/v1/projects/${project}/notes?filter=kind%3D%22VULNERABILITY_ASSESSMENT%22&pageSize=1000${token:+&pageToken=${token}}") || return 1
-    parsed=$($LT inventory --kind notes --prefix "$1" <<<"$page") || return 1
-    more=$(python3 -c 'import json,sys; print("\n".join(json.loads(sys.argv[1])["names"]))' "$parsed") || return 1
-    [ -z "$more" ] || names+="${more}"$'\n'
-    token=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["next"])' "$parsed") || return 1
+    page=$(ca_get "https://containeranalysis.googleapis.com/v1/projects/${project}/notes?filter=kind%3D%22VULNERABILITY_ASSESSMENT%22&pageSize=1000${token:+&pageToken=${token}}") || return 1
+    parsed=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind notes --prefix "$1" <<<"$page") || return 1
+    more=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" field names <<<"$parsed") || return 1
+    [ -z "$more" ] || names="${names}${more}"$'\n'
+    token=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" field next <<<"$parsed") || return 1
     [ -n "$token" ] || break
   done
   printf '%s' "$names" || return 1
@@ -79,22 +74,22 @@ sweep() {   # empty the two dedicated test repositories, delete every live-test 
   for pass in 1 2 3; do   # indexes first, then the children they held
     out=$(aws ecr list-images --region "$REGION" --repository-name "$repo" --output json) \
       || { echo "::error::cannot list the test ECR repository" >&2; return 1; }
-    lst=$($LT inventory --kind ecr <<<"$out") || return 1
+    lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind ecr <<<"$out") || return 1
     [ -n "$lst" ] || break
     while read -r chunk; do
       r=$(aws ecr batch-delete-image --region "$REGION" --repository-name "$repo" --image-ids "$chunk" --output json) \
         || { echo "::error::ECR delete failed" >&2; rc=1; continue; }
-      n=$($LT inventory --kind ecr-delete <<<"$r") || { rc=1; continue; }
+      n=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind ecr-delete <<<"$r") || { rc=1; continue; }
       [ "$n" = 0 ] || [ "$pass" -lt 3 ] || { echo "::error::ECR could not delete ${n} images" >&2; rc=1; }
     done <<<"$lst"
   done
   out=$(aws ecr list-images --region "$REGION" --repository-name "$repo" --output json) || return 1
-  lst=$($LT inventory --kind ecr <<<"$out") || return 1
+  lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind ecr <<<"$out") || return 1
   [ -z "$lst" ] || { echo "::error::the test ECR repository is not empty after the sweep" >&2; rc=1; }
   for pass in 1 2 3; do
     out=$(gcloud artifacts docker images list "$GAR" --include-tags --format=json) \
       || { echo "::error::cannot list the test Artifact Registry repository" >&2; return 1; }
-    lst=$($LT inventory --kind gar <<<"$out") || return 1
+    lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind gar <<<"$out") || return 1
     [ -n "$lst" ] || break
     while read -r ref; do
       gcloud artifacts docker images delete "$ref" --delete-tags --quiet >/dev/null 2>&1 \
@@ -102,22 +97,22 @@ sweep() {   # empty the two dedicated test repositories, delete every live-test 
     done <<<"$lst"
   done
   out=$(gcloud artifacts docker images list "$GAR" --format=json) || return 1
-  lst=$($LT inventory --kind gar <<<"$out") || return 1
+  lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind gar <<<"$out") || return 1
   [ -z "$lst" ] || { echo "::error::the test Artifact Registry repository is not empty after the sweep" >&2; rc=1; }
   out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) \
     || { echo "::error::cannot list the Inspector filters" >&2; return 1; }
-  lst=$($LT inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
+  lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
   while read -r f; do
     [ -n "$f" ] || continue
     aws inspector2 delete-filter --region "$REGION" --arn "$f" >/dev/null || { echo "::error::cannot delete ${f}" >&2; rc=1; }
   done <<<"$lst"
   out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) || return 1
-  lst=$($LT inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
+  lst=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
   [ -z "$lst" ] || { echo "::error::live-test Inspector filters remain after the sweep" >&2; rc=1; }
   lst=$(notes_of "https://${GAR}/") || { echo "::error::cannot list the VEX notes" >&2; return 1; }
   while read -r n; do
     [ -n "$n" ] || continue
-    ca -X DELETE "https://containeranalysis.googleapis.com/v1/${n}" >/dev/null || { echo "::error::cannot delete ${n}" >&2; rc=1; }
+    ca_delete "https://containeranalysis.googleapis.com/v1/${n}" >/dev/null || { echo "::error::cannot delete ${n}" >&2; rc=1; }
   done <<<"$lst"
   lst=$(notes_of "https://${GAR}/") || return 1
   [ -z "$lst" ] || { echo "::error::VEX notes remain on the test repository's images" >&2; rc=1; }
@@ -128,8 +123,8 @@ check_removal_scope() {   # the page's removal block deletes every Inspector fil
   local out all test
   out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) \
     || { echo "::error::cannot list the Inspector filters" >&2; return 1; }
-  all=$($LT inventory --kind filters --prefix "fosterstack-cache-" <<<"$out") || return 1
-  test=$($LT inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
+  all=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind filters --prefix "fosterstack-cache-" <<<"$out") || return 1
+  test=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
   [ "$all" = "$test" ] || { echo "::error::the guide's removal would delete Inspector filters that are not live-test ones" >&2; return 1; }
 }
 
@@ -145,7 +140,7 @@ select_release() {   # the release under test: MODE rc = the release candidate t
     main)
       gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=50" \
         --jq '[.[] | {tagName: .tag_name, isDraft: .draft, assets: [.assets[].name]}]' > releases.json
-      tag=$($LT release --releases releases.json)
+      tag=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" release --releases releases.json)
       if [ -z "$tag" ]; then   # not a passed live test: an announced skip, until a release carries the files (no v0.3 release exists yet)
         echo "::notice::live test skipped: no published release carries the rule-10 files yet (the guide and the VEX files ship with the first v0.3 release)"
         skip=yes
@@ -174,17 +169,6 @@ RUN="live-${GITHUB_RUN_ID:?}-${GITHUB_RUN_ATTEMPT:-1}"
 export PUSHED_LOG="$work/pushed.txt"
 : > "$PUSHED_LOG"
 mkdir -p plan
-waitfor() {   # <what> <function…>: poll every 30 s for up to 45 min until it succeeds
-  local what=$1
-  shift
-  for _ in $(seq 1 90); do
-    if "$@"; then return 0; fi
-    sleep 30
-  done
-  echo "::error::timed out waiting for ${what}" >&2
-  return 1
-}
-
 # --- start from nothing: leftovers of an earlier run that died are reclaimed first (one run at a time)
 sweep
 select_release
@@ -194,26 +178,26 @@ echo "release under test: ${tag} (${MODE})"
 # --- the guide's blocks; settings take the test's values, commands run as written (REQ-SCAN-012-AC5). A release candidate publishes nothing (v0.3), so
 #     the blocks the cannot-run list names (digest, download, verify) are left out of its plan and run in the post-publish run (MODE release) instead
 if [ "$MODE" = rc ]; then
-  $LT plan --guide "$root/docs/using-our-vex.md" --skip-cannot-run "$root/docs/using-our-vex.cannot-run.json" --out-dir plan > plan.txt
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$root/docs/using-our-vex.md" --skip-cannot-run "$root/docs/using-our-vex.cannot-run.json" --out-dir plan > plan.txt
 else
-  $LT plan --guide "$root/docs/using-our-vex.md" --out-dir plan > plan.txt
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$root/docs/using-our-vex.md" --out-dir plan > plan.txt
 fi
-eval "$($LT settings "VER=${tag#v}")"
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "VER=${tag#v}"
 echo '{}' > images.json
 if [ "$MODE" = rc ]; then
   # the candidate: Build's artifacts (CANDIDATE_DIR holds digests.json, items.json and images/<variant>/ layouts with <variant>.digest and <variant>.manifests);
   # the images map is made by the chain's own tool, so it is exactly what Release gives the generator
   : "${CANDIDATE_DIR:?the candidate Build artifacts}"
-  python3 "$root/bin/release-metadata.py" images --digests "$CANDIDATE_DIR/digests.json" --images-dir "$CANDIDATE_DIR/images" \
+  python3 "$GITHUB_WORKSPACE/bin/release-metadata.py" images --digests "$CANDIDATE_DIR/digests.json" --images-dir "$CANDIDATE_DIR/images" \
     --items "$CANDIDATE_DIR/items.json" --out images.json
-  cp "$root/.vex/fosterstack-cache.openvex.json" .
-  python3 "$root/bin/vex-forms.py" --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" --out-dir . >/dev/null
+  cp "$root/.vex/fosterstack-cache.openvex.json" ./fosterstack-cache.openvex.json
+  python3 "$GITHUB_WORKSPACE/bin/vex-forms.py" --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" --out-dir . >/dev/null
   prod=$(jq -r '.production.index' images.json)
 else
   guide digest
   guide download
   guide verify
-  prod=$DIGEST
+  prod=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" state --state state.env DIGEST)
   # the release's images, as the verified manifest names them, and their linux children
   for v in production fips; do
     d=$(jq -er --arg v "$v" '.images[] | select(.variant == $v) | .digest' release-manifest.verified.json)
@@ -227,7 +211,7 @@ if [ "$MODE" = release ]; then   # a just-published release: the downloaded file
   cmp -s fosterstack-cache.openvex.json "$root/.vex/fosterstack-cache.openvex.json" \
     || { echo "::error::the release's OpenVEX file is not the committed one" >&2; exit 1; }
   mkdir -p regen
-  python3 "$root/bin/vex-forms.py" --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json \
+  python3 "$GITHUB_WORKSPACE/bin/vex-forms.py" --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json \
     --version "$tag" --out-dir regen >/dev/null
   cmp -s "regen/fosterstack-cache-${tag}.inspector-filters.json" "fosterstack-cache-${tag}.inspector-filters.json" \
     || { echo "::error::the release's Inspector file is not the generator's output" >&2; exit 1; }
@@ -264,7 +248,7 @@ google_occ() {   # every vulnerability occurrence of the fixture in Artifact Ana
   local token="" page all="[]" f
   f=$(jq -rn --arg u "https://${GAR}/cache@${FIX}" '"kind=\"VULNERABILITY\" AND resourceUrl=\"" + $u + "\"" | @uri')
   while :; do
-    page=$(ca "https://containeranalysis.googleapis.com/v1/projects/${PROJECT}/occurrences?pageSize=1000&filter=${f}${token:+&pageToken=${token}}") || return 1
+    page=$(ca_get "https://containeranalysis.googleapis.com/v1/projects/${PROJECT}/occurrences?pageSize=1000&filter=${f}${token:+&pageToken=${token}}") || return 1
     all=$(jq -c --argjson a "$all" '$a + (.occurrences // [])' <<<"$page") || return 1
     token=$(jq -r '.nextPageToken // empty' <<<"$page")
     [ -n "$token" ] || break
@@ -273,8 +257,11 @@ google_occ() {   # every vulnerability occurrence of the fixture in Artifact Ana
 }
 inspector_sees_fixture() { local c; c=$(inspector_cves ACTIVE) && [ "$c" != "[]" ]; }
 google_sees_fixture() { local o; o=$(google_occ) && [ "$(jq '.occurrences | length' <<<"$o")" -gt 0 ]; }
-waitfor "Inspector's findings for the fixture" inspector_sees_fixture
-waitfor "Google's findings for the fixture" google_sees_fixture
+# each poll below: every 30 s for up to 45 min until the condition holds
+for _ in $(seq 1 90); do inspector_sees_fixture && break; sleep 30; done
+inspector_sees_fixture || { echo "::error::timed out waiting for Inspector's findings for the fixture" >&2; exit 1; }
+for _ in $(seq 1 90); do google_sees_fixture && break; sleep 30; done
+google_sees_fixture || { echo "::error::timed out waiting for Google's findings for the fixture" >&2; exit 1; }
 grype "${GAR}/cache@${FIX}" -o json -q > grype.before.json
 google_occ > google.before.json
 jq -n --slurpfile g grype.before.json --slurpfile o google.before.json \
@@ -282,18 +269,18 @@ jq -n --slurpfile g grype.before.json --slurpfile o google.before.json \
     grype: ([$g[0].matches[] | {key: .vulnerability.id, value: .vulnerability.severity}] | from_entries),
     inspector: $i,
     google: [$o[0].occurrences[] | .noteName | split("/") | last]}' > reports.json
-CVE=$($LT pick-cve --reports reports.json --openvex "$root/.vex/fosterstack-cache.openvex.json")
+CVE=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" pick-cve --reports reports.json --openvex "$root/.vex/fosterstack-cache.openvex.json")
 echo "the fixture's finding under test: ${CVE}"
 
 # --- the files the guide's commands load: the shipped statements plus the fixture's, the Inspector copy tagged and
 #     test-prefixed and checked to differ in nothing else (advisor 0098)
-$LT test-files --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" \
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" test-files --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" \
   --fixture-digest "$FIX" --cve "$CVE" --out-dir .
 
 # --- Grype: the guide's command as written, then the fixture without and with our file, judged
 guide grype
 grype "${GAR}/cache@${FIX}" --vex fosterstack-cache.openvex.json -o json -q > grype.after.json
-$LT judge --kind grype --before grype.before.json --after grype.after.json --cve "$CVE"
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" judge --kind grype --before grype.before.json --after grype.after.json --cve "$CVE"
 
 # --- Inspector: the CVE active before; the guide's command as written; then every finding of it suppressed
 inspector_inventory() {   # every finding of the fixture in any status: {findings: [{findingArn, vulnerabilityId, status}]}
@@ -311,22 +298,23 @@ inspector_suppressed() {   # at least one finding of the CVE on the fixture, all
         "$(jq -nc --arg h "$FIX" --arg c "$CVE" '{ecrImageHash: [{comparison: "EQUALS", value: $h}], vulnerabilityId: [{comparison: "EQUALS", value: $c}]}')" \
       | jq -er '[.findings[].status] | unique | join(",")') && [ "$s" = SUPPRESSED ]
 }
-waitfor "Inspector to suppress ${CVE} on the fixture" inspector_suppressed
+for _ in $(seq 1 90); do inspector_suppressed && break; sleep 30; done
+inspector_suppressed || { echo "::error::timed out waiting for Inspector to suppress ${CVE} on the fixture" >&2; exit 1; }
 inspector_inventory > inspector.after.json
-$LT judge --kind inspector --before inspector.before.json --after inspector.after.json --cve "$CVE"
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" judge --kind inspector --before inspector.before.json --after inspector.after.json --cve "$CVE"
 
 # --- Google: the guide's command as written for our production image, then for the fixture; the assessment must come
 #     from a note this run's load created (the sweep left none)
-eval "$($LT settings "IMAGE=${GAR}/cache")"
-DIGEST=$prod
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "IMAGE=${GAR}/cache" "DIGEST=${prod}"
 guide google
-DIGEST=$FIX
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "DIGEST=${FIX}"
 guide google
 notes_of "https://${GAR}/cache@${FIX}" > run-notes.txt
-google_judged() { google_occ > google.after.json && $LT judge --kind google --before google.before.json \
+google_judged() { google_occ > google.after.json && python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" judge --kind google --before google.before.json \
                     --after google.after.json --cve "$CVE" --notes run-notes.txt 2>/dev/null; }
-waitfor "Google to assess ${CVE} on the fixture from our note" google_judged
-$LT judge --kind google --before google.before.json --after google.after.json --cve "$CVE" --notes run-notes.txt
+for _ in $(seq 1 90); do google_judged && break; sleep 30; done
+google_judged || { echo "::error::timed out waiting for Google to assess ${CVE} on the fixture from our note" >&2; exit 1; }
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" judge --kind google --before google.before.json --after google.after.json --cve "$CVE" --notes run-notes.txt
 
 # --- staying current: the guide's removal as written leaves none of ours
 check_removal_scope

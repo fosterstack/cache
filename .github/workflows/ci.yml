@@ -751,9 +751,9 @@ jobs:
           set -euo pipefail
           bash bin/install-scanner.sh crane
           bash bin/install-scanner.sh cosign
-          mkdir -p "$RUNNER_TEMP/bin"
-          bash bin/install-scanner.sh grype "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          mkdir -p "$RUNNER_TEMP/tools"
+          bash bin/install-scanner.sh grype "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
       - name: AWS, as the live-test role (federated; the test ECR repository and live-test Inspector filters only)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
