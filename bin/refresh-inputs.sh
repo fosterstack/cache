@@ -650,6 +650,27 @@ committed = {}
 for kind in ("production", "fips"):
     for e in base[kind]["doc"]["contents"]["packages"]:
         committed.setdefault((e["name"], e["version"], e["architecture"]), []).append(e)
+# REQ-REFRESH-001-AC32, the first fill: an archive that holds nothing but the pinned key and a main with no pointer cannot already hold the versions the committed
+# locks name, so the ones Wolfi still serves are fetched below and verified before they are archived. Any other state keeps the rule: a missing version stops the job.
+def first_fill_state():
+    """exactly the key and nothing else: a real archive directory holding one real keys directory that holds one regular file, the pinned key (any other entry,
+    whatever its type, a symlinked archive or keys directory, or a listing that cannot be read is not the first-fill state)"""
+    if os.path.lexists(repo + "/build/archive.json"):
+        return False
+    try:
+        if os.path.islink(archive) or not os.path.isdir(archive) or os.listdir(archive) != ["keys"]:
+            return False
+        kd = archive + "/keys"
+        if os.path.islink(kd) or not os.path.isdir(kd) or os.listdir(kd) != ["wolfi-signing.rsa.pub"]:
+            return False
+        return (os.lstat(archived_key).st_mode & 0o170000) == 0o100000
+    except OSError:
+        return False
+
+
+FIRST_FILL = first_fill_state()
+ff_locked = {}   # (name, version, arch) -> the committed lock entry (checksums): verified like any package
+ff_mel = []      # (name, version, arch) named only by the committed melange.lock (name=version): verified against the signed live index
 for k, es in sorted(committed.items()):
     if len({ident(e) for e in es}) != 1:
         fail("the committed production and FIPS locks disagree about %s-%s (%s): the same package has different checksums; refusing" % k)
@@ -658,6 +679,11 @@ for k, es in sorted(committed.items()):
             fail("the committed lock and the live resolution disagree about %s-%s (%s): the same version has different checksums; refusing" % k)
         continue   # also checked below, from the live entry
     dest = "%s/%s/%s-%s.apk" % (archive, k[2], k[0], k[1])
+    if not os.path.exists(dest) and FIRST_FILL:
+        if not NAME_RE.fullmatch(k[0]) or not VERSION_RE.fullmatch(k[1]) or ".." in k[0] or ".." in k[1] or k[2] not in ARCHS:
+            fail("refused: invalid package name, version or architecture %r in the committed lock" % (k,), 2)
+        ff_locked[k] = es[0]
+        continue
     if not os.path.exists(dest):
         fail("the committed lock names %s-%s.apk (%s), which the archive does not hold; an older version the archive must keep (restore it from backup): a human must look" % k)
     HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again, or find out how it got damaged)" % dest
@@ -670,6 +696,11 @@ for _l in old_mel:
         if (_n, _v, _a) in committed or (_n, _v, _a) in fresh:
             continue   # checked against its lock checksums
         dest = "%s/%s/%s-%s.apk" % (archive, _a, _n, _v)
+        if not os.path.exists(dest) and FIRST_FILL:
+            if not NAME_RE.fullmatch(_n) or not VERSION_RE.fullmatch(_v) or ".." in _n or ".." in _v:
+                fail("refused: invalid package name or version %r in the committed melange.lock" % _l, 2)
+            ff_mel.append((_n, _v, _a))
+            continue
         if not os.path.exists(dest):
             fail("the committed melange.lock names %s-%s.apk (%s), which the archive does not hold; an older version the archive must keep (restore it from backup): a human must look" % (_n, _v, _a))
         HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again, or find out how it got damaged)" % dest
@@ -722,7 +753,7 @@ def preflight(targets):
 stage = tmp + "/dl"
 keep = []
 want_pk = []
-for (name, ver, arch), e in sorted(fresh.items()):
+for (name, ver, arch), e in sorted(list(fresh.items()) + list(ff_locked.items())):
     dest = "%s/%s/%s-%s.apk" % (archive, arch, name, ver)
     if os.path.exists(dest):
         HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again, or find out how it got damaged)" % dest
@@ -732,10 +763,19 @@ for (name, ver, arch), e in sorted(fresh.items()):
     part = "%s/%s/%s-%s.apk" % (stage, arch, name, ver)
     os.makedirs(os.path.dirname(part), exist_ok=True)
     if not os.path.exists(part):   # the shell fetches it (download lines of the ruled grammar), then runs this program again
-        want_pk.append("%s %s/%s-%s.apk" % (e["url"][len(WOLFI_URL):], arch, name, ver))   # the url passed the host and path check above
+        want_pk.append("%s/%s-%s.apk %s/%s-%s.apk" % (arch, name, ver, arch, name, ver))   # name, version and architecture passed the plain-set check above
         continue
     verify(part, e)
     keep.append((part, dest, name, ver, arch))
+ff_mel_parts = []
+for (name, ver, arch) in sorted(ff_mel):
+    part = "%s/%s/%s-%s.apk" % (stage, arch, name, ver)
+    os.makedirs(os.path.dirname(part), exist_ok=True)
+    if not os.path.exists(part):
+        want_pk.append("%s/%s-%s.apk %s/%s-%s.apk" % (arch, name, ver, arch, name, ver))
+        continue
+    verify_integrity(part, "%s-%s.apk (%s)" % (name, ver, arch))
+    ff_mel_parts.append((part, "%s/%s/%s-%s.apk" % (archive, arch, name, ver), name, ver, arch))
 if want_pk:
     open(tmp + "/want-packages", "w").write("".join(l + "\n" for l in want_pk))
     sys.exit(75)
@@ -837,6 +877,10 @@ def verify_index(path, arch):
         f = dict(l.split(":", 1) for l in st.split("\n") if len(l) > 2 and l[1] == ":")
         if "P" in f and "V" in f and "C" in f:
             listed.add((f["P"], f["V"], f["C"]))
+    index_listed[arch] = listed
+    for (_n, _v, _a), _e in sorted(ff_locked.items()):   # a committed version fetched by the first fill is backed by the signed index like every locked package
+        if _a == arch and (_n, _v, _e["checksum"]) not in listed:
+            fail("the signed %s package index does not list the committed package %s-%s (%s); it cannot be checked against the index, a human must look" % (arch, _n, _v, _e["checksum"]))
     for lockpk in (live["production"], live["fips"], live_mel):
         for e in lockpk:
             if e["architecture"] == arch and (e["name"], e["version"], e["checksum"]) not in listed:
@@ -844,6 +888,7 @@ def verify_index(path, arch):
 
 
 index_parts = {}
+index_listed = {}
 want_ix = []
 for arch in ARCHS:
     part = "%s/index/%s/APKINDEX.tar.gz" % (stage, arch)
@@ -856,6 +901,20 @@ for arch in ARCHS:
 if want_ix:
     open(tmp + "/want-index", "w").write("".join(l + "\n" for l in want_ix))
     sys.exit(75)
+# the first fill of a version only the committed melange.lock names (it has no checksums): the package's identity checksum (Q1 + sha1 of its control section) must be
+# the one the SIGNED live index lists for that name, version and architecture (the signature was checked against the archived key above)
+for part, dest, name, ver, arch in ff_mel_parts:
+    wants = {c_ for (p_, v_, c_) in index_listed[arch] if p_ == name and v_ == ver}
+    if not wants:
+        fail("the signed %s package index has no entry for %s-%s, which only the committed melange.lock names; it cannot be checked, a human must look" % (arch, name, ver))
+    raw_ = open(part, "rb").read(); parts_, rest_, budget_ = [], raw_, INFLATE_CAP
+    while rest_:
+        comp_, data_, rest_ = inflate(rest_, "%s-%s.apk" % (name, ver), budget_)
+        budget_ -= len(data_)
+        parts_.append((comp_, data_))
+    if "Q1" + b64(hashlib.sha1(parts_[-2][0]).digest()) not in wants:
+        fail("checksum mismatch: %s-%s.apk (%s) does not have the package checksum the signed live index lists for it" % (name, ver, arch))
+    keep.append((part, dest, name, ver, arch))
 # an existing file under a digest name is trusted only if it hashes to that name (a garbage or truncated file from an earlier run fails closed)
 for arch in ARCHS:
     vdir, cur = "%s/%s/index" % (archive, arch), "%s/%s/APKINDEX.tar.gz" % (archive, arch)
@@ -939,6 +998,7 @@ PY
     [ "$_rc" = 75 ] || break
     if [ -s "$tmp/want-packages" ]; then
       while read -r p f; do
+        echo "refresh-inputs.sh: fetching $p"
         /usr/bin/curl -q -fsSL -g --max-filesize 536870912 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download a package from live Wolfi" 1
       done <"$tmp/want-packages"
       /bin/rm -f "$tmp/want-packages"
