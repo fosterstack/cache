@@ -2185,8 +2185,8 @@ for pattern in (".github/workflows/*.yml", ".github/policy/*.json", "bin/*.sh", 
             named.add(os.path.relpath(path, root))
 stray = sorted(named - allowed)
 assert not stray, "named outside Build's and Rebuild's assemble scripts: %s" % stray       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
-ci = [ln.strip() for ln in open(root + "/.github/workflows/ci.yml") if "vex-index" in ln]
-assert all(ln.startswith("run: bash bin/vex-index-test.sh") or ln.startswith("- name:") for ln in ci), ci      # CI runs the tool's TEST and nothing else of it
+ci = [row.strip() for row in open(root + "/.github/workflows/ci.yml") if "vex-index" in row]
+assert all(row.startswith("run: bash bin/vex-index-test.sh") or row.startswith("- name:") for row in ci), ci      # CI runs the tool's TEST and nothing else of it
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
 users = sorted(p for p, r in rows.items() if "bin/vex-index.py" in r["runs"])
 assert users == sorted(p for p in allowed if p.startswith("bin/build-stage-")), users
