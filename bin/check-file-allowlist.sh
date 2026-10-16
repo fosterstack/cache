@@ -123,7 +123,7 @@ ALLOW_PATTERNS=(
   '^bin/inspector-reuse-test\.sh$'
   '^bin/vex-guide-test\.sh$'
   '^bin/vex-live-test\.py$'
-  '^bin/vex-live-test\.sh$'
+  '^bin/vex-live-run\.sh$'
   '^bin/vex-live-test-test\.sh$'
   '^bin/grype-scan\.sh$'
   '^bin/vex-both-scanners-test\.sh$'
