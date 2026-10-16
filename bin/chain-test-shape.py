@@ -577,8 +577,24 @@ def needs_of(job):
     return [] if needs is None else ([needs] if isinstance(needs, str) else list(needs))
 
 
+class _NoDuplicateKeys(yaml.BaseLoader):
+    """A YAML loader keeps the LAST of two equal mapping keys, so a first, wider definition of a job (or of a key inside one) would be invisible to the specs
+    below. Every mapping key is unique or the file is refused (fail closed)."""
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(None, None, "duplicate mapping key %r" % (key,), key_node.start_mark)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def graph(path):
-    d = yaml.load(read_exact(path), Loader=yaml.BaseLoader)
+    try:
+        d = yaml.load(read_exact(path), Loader=_NoDuplicateKeys)
+    except yaml.YAMLError as e:
+        return ["%s cannot be read as a workflow: %s" % (path, str(e).replace("\n", " ")[:160])]
     jobs, bad = d.get("jobs") or {}, []
     if d.get("permissions") != {"contents": "read"}:
         bad.append("workflow-level permissions must be exactly contents: read (every job asks for what it needs), got %s" % d.get("permissions"))
