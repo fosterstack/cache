@@ -1,6 +1,6 @@
 # Using our VEX with your scanner
 
-Every FosterStack Cache release states, for each known vulnerability that a scanner reports in our images, whether it
+Every FosterStack Cache release states, for each vulnerability we have assessed in our images, whether it
 affects you: *not affected* (with the reason), *fixed*, *affected*, or *under investigation*. We publish those
 statements in three forms, generated from one file, so that your scanner stops reporting what does not affect you and
 keeps reporting what does.
@@ -23,7 +23,7 @@ Set the version you run:
 VER=X.Y.Z
 ```
 
-Look up the image digest you run (`cache:${VER}` is the production image; use the tag of the variant you run):
+Look up the image digest you run (`cache:${VER}` is the production image; for the FIPS image use `cache:${VER}-fips` in this command):
 
 ```sh
 DIGEST=$(docker buildx imagetools inspect "ghcr.io/fosterstack/cache:${VER}" --format '{{.Manifest.Digest}}')
@@ -54,6 +54,7 @@ jq -r '.vex[] | "\(.sha256)  \(.file)"' release-manifest.verified.json | sha256s
 ```
 
 Every line must say `OK`. If `cosign` reports an error, or a line says `FAILED`, stop: do not load the files.
+On macOS use `shasum -a 256 -c` in place of `sha256sum -c`, and `base64 -D` in place of `base64 -d` before macOS 14.
 
 ## 2. Load them into your scanner
 
@@ -73,11 +74,12 @@ Run with credentials allowed to call `inspector2:CreateFilter` in the account an
 our image:
 
 ```sh
-(set -o pipefail; jq -ce '.filters[]' "fosterstack-cache-v${VER}.inspector-filters.json" | while read -r f; do aws inspector2 create-filter --cli-input-json "$f" || exit 1; done)
+(set -o pipefail; jq -c '.filters[]' "fosterstack-cache-v${VER}.inspector-filters.json" | while read -r f; do aws inspector2 create-filter --cli-input-json "$f" || exit 1; done)
 ```
 
-What it does in your account: it creates one Inspector suppression rule per *not affected* or *fixed* statement,
-named `fosterstack-cache-v<version>-<CVE>`. Each rule matches only that CVE on our exact image digests (each variant's
+What it does in your account: it creates Inspector suppression rules for the *not affected* and *fixed* statements, at least one
+per statement, named `fosterstack-cache-v<version>-<CVE>` (a statement that covers more than one scope gets one rule per scope, the
+second and later ending in `-2`, `-3`). If no statement is suppressible the file holds no rule and the command does nothing. Each rule matches only that CVE on our exact image digests (each variant's
 index and its linux/amd64 and linux/arm64 images), and only the named package where a statement names one. It
 suppresses nothing on any other image, including other digests of your own builds on top of ours. The command stops at
 the first rule Inspector refuses.

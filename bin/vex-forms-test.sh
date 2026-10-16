@@ -162,6 +162,14 @@ check("…and fails on a missing file", bad.returncode != 0)
 open(stub, "w").write("#!/bin/sh\nexit 3\n")
 bad = subprocess.run(["bash", "-c", cmd], env=dict(os.environ, PATH=d + ":" + os.environ["PATH"]), capture_output=True)
 check("…and fails when a create-filter call fails", bad.returncode != 0)
+# Codex #381 r1 (P2): a generated file with NO rule (every statement is affected or under investigation) is valid; the command then does nothing and succeeds
+empty = os.path.join(d, "empty.json"); json.dump({"filters": []}, open(empty, "w"))
+open(stub, "w").write('#!/bin/sh\necho "$@" >> "%s/calls-empty"\n' % d)
+ok0 = subprocess.run(["bash", "-c", V.GUIDE_INSPECTOR_COMMAND.replace("<file>", empty)], env=dict(os.environ, PATH=d + ":" + os.environ["PATH"]), capture_output=True)
+check("…and succeeds, calling nothing, for a valid file with no rule", ok0.returncode == 0 and not os.path.exists(os.path.join(d, "calls-empty")), (ok0.returncode, ok0.stderr[-120:]))
+nofilters = os.path.join(d, "nofilters.json"); json.dump({}, open(nofilters, "w"))
+bad = subprocess.run(["bash", "-c", V.GUIDE_INSPECTOR_COMMAND.replace("<file>", nofilters)], env=dict(os.environ, PATH=d + ":" + os.environ["PATH"]), capture_output=True)
+check("…but a file without a filters list is not a generated file and fails", bad.returncode != 0)
 # the Google step: the loader matches a branch name to --uri, so the guide renames the branches to the customer's image
 g = V.GUIDE_GOOGLE_COMMAND
 check("the guide's Google command renames the chosen digest's branch to the image it loads, then loads that file at that digest",

@@ -30,10 +30,11 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}")             # used with fullmatch on
 CSAF_STATUS = {"not_affected": "known_not_affected", "fixed": "fixed", "affected": "known_affected",
                "under_investigation": "under_investigation"}
 SUPPRESSIBLE = ("not_affected", "fixed")
-# Codex #165 r1 SEC-165-03: fail on a missing file or a failed call, never report success
+# Codex #165 r1 SEC-165-03: fail on a missing file or a failed call, never report success; a valid file with no rule (every statement affected or
+# under investigation) is a no-op that succeeds, so jq has no -e (it exits 4 on no output; a file without a filters list still fails: jq cannot iterate it)
 # One ( … ) subshell (Sonnet #167 r3, R3-01): the macOS default shell runs a pipeline's last stage in the current shell,
 # so a bare `| while …; do … || exit 1; done` would close the reader's terminal; pipefail stays inside it too
-GUIDE_INSPECTOR_COMMAND = ("(set -o pipefail; jq -ce '.filters[]' <file> | while read -r f; do "
+GUIDE_INSPECTOR_COMMAND = ("(set -o pipefail; jq -c '.filters[]' <file> | while read -r f; do "
                            "aws inspector2 create-filter --cli-input-json \"$f\" || exit 1; done)")
 # Google's loader (gcloud vex_util.ParseVexFile) applies the products of every branch NAMED like --uri's image path, and
 # prefixes https:// once per matching branch — so exactly one branch may match: the one of the digest being loaded,

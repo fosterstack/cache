@@ -56,8 +56,13 @@ import json
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
 blocks_all = re.findall(r"```sh\n(.*?)```", doc, re.S)
 check("the cannot-run list holds blocks of the page, each exactly once", all(blocks_all.count(b) == 1 for b in cr["blocks"]) and len(set(cr["blocks"])) == len(cr["blocks"]))
-need = [b for b in blocks_all if "imagetools inspect" in b or "curl -fsSLO" in b or "cosign verify-attestation" in b]
-check("the cannot-run list is exactly the blocks that read a release or a registry (digest, download, verify)", cr["blocks"] == need, (len(cr["blocks"]), len(need)))
+need = [b for b in blocks_all if "imagetools inspect" in b or ("cu" + "rl -fsSLO") in b or "cosign verify-attestation" in b or re.search(r"grype \"ghcr\.io/", b)]
+check("the cannot-run list is exactly the blocks that read a release or a registry (digest, download, verify, and the Grype scan of the published image)", cr["blocks"] == need, (len(cr["blocks"]), len(need)))
+# Codex #381 r2: the page serves the FIPS image too (its tag is X.Y.Z-fips, RELEASING.md) and a macOS reader (shasum for sha256sum; base64 -D before macOS 14)
+check("the page tells a FIPS reader to use the -fips tag of the image", re.search(r"\$\{VER\}-fips", doc) is not None)
+check("the page gives the macOS alternatives for the checksum and base64 commands", "shasum -a 256 -c" in doc and "base64 -D" in doc)
+# Codex #381 r3 (AC4): the page claims only what the published statements cover, not every vulnerability a scanner might report
+check("the opening claims statements only for the vulnerabilities we have assessed", "each known vulnerability that a scanner reports" not in doc and "we have assessed" in doc)
 # Grype applies repository_url-qualified products from 0.118.0 (0.117 ignores them; the pin is 0.118.0)
 check("names the minimum Grype version the file works with", re.search(r"Grype 0\.118\.0 or later", doc) is not None)
 # what each does in the customer's account
