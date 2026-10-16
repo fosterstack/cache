@@ -203,6 +203,10 @@ m s_nocos   '      - name: install cosign\n        run: bash bin/install-scanner
 m s_snyk    'install-scanner.sh crane'                      'install-scanner.sh snyk'                                'none of checkout'   "AC1 an install of a tool outside the three"
 m s_nomel   '      - name: install melange\n        run: bash bin/install-build-tools.sh melange\n' ''                                'start with checkout' "AC1 (Astra R4) melange is not installed, so release-apks would fail after the images are published"
 m s_melapko 'install-build-tools.sh melange'               'install-build-tools.sh apko'                            'none of checkout'   "AC1 (Astra R4) the fourth install is apko, not melange"
+# round 1 (Codex seat B): the steps between the first and last Witness step are Witness steps and nothing else, and an install never comes after the first four
+m s_latemel  '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: install melange again\n        run: bash bin/install-build-tools.sh melange\n      - name: release-apks' 'between' "AC1 (Astra R4, round 1) a second melange install between release-verify and release-apks"
+m s_latecos  '=run: bash bin/witnessed.sh release-apks bin/release-apks.sh\n' 'run: bash bin/witnessed.sh release-apks bin/release-apks.sh\n      - name: install cosign again\n        run: bash bin/install-scanner.sh cosign\n' 'between' "AC1 (Astra R4, round 1) an install between two Witness steps"
+m s_latedl   '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: release-apks' 'downloads' "AC1 (Astra R4, round 1) a download between release-verify and release-apks"
 m s_melorder 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install melange\n        run: bash bin/install-build-tools.sh melange' 'install melange\n        run: bash bin/install-build-tools.sh melange\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'start with checkout' "AC1 (Astra R4) melange installed before crane (the order is fixed: the three scanners' tools, then melange)"
 m s_melscan 'install-build-tools.sh melange'               'install-scanner.sh melange'                             'none of checkout'   "AC1 (Astra R4) melange fetched by the scanner installer (it is the build-tools installer's, with its own pin)"
 m s_order   'release-apks bin/release-apks.sh'              'release-sign bin/release-sign.sh'                       'exactly'            "AC1 two witnessed steps swapped (release-sign twice)"
@@ -422,7 +426,7 @@ for n in release-verify release-apks release-publish release-sign release-assets
 done
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"
-EXPECT=205
+EXPECT=208
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
