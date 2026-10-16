@@ -42,6 +42,10 @@ def _sh_fences(text):
             # starts a raw HTML block nor a comment that opens and does not close on its line (the one-line pinned markers at the end of a text line are fine)
             if re.match(r" {0,3}<[A-Za-z/?!]", lines[i]) or re.search(r"<!--(?!.*-->)", lines[i]):
                 raise ValueError("the page holds a raw HTML block or a multi-line comment at line %d: not parsed" % (i + 1))
+            # a fence opened inside a list item or a block quote (a marker, then the fence on the same line) belongs to a container this parser does not model, and the lines
+            # after it are read differently by a Markdown reader: refused, not parsed
+            if re.match(r"[ \t]*(?:>[ \t]*|(?:[-*+]|\d{1,9}[.)])[ \t]+)+(?:`{3,}|~{3,})", lines[i]):
+                raise ValueError("a fence is opened inside a list item or a block quote at line %d: not parsed" % (i + 1))
             i += 1
             continue
         indent, fence, info = m.groups()
@@ -60,7 +64,7 @@ def _sh_fences(text):
     return out
 
 
-def guide_blocks(text, skip=()):
+def guide_blocks(text, skip=(), pins=None):
     """[{kind, section, text}] for every ```sh block of the guide, in order and byte for byte. skip: the exact texts of the blocks
     the cannot-run list names (a release candidate publishes nothing, so the blocks that read a release or a registry cannot run
     on it); each must be a block of the guide and only a digest, download, verify or Grype (the scan of the published image) block may be skipped."""
@@ -75,6 +79,12 @@ def guide_blocks(text, skip=()):
         if len(found) != 1:
             raise ValueError("a guide block is not exactly one known step: %r" % body[:80])
         out.append({"kind": "command", "section": found[0], "text": body})
+    if pins is not None:    # the live test runs ONLY the pinned blocks, in order: whatever a Markdown reader and this parser disagree about is stopped here
+        import hashlib
+        got = [(b["section"], hashlib.sha256(b["text"].encode()).hexdigest()) for b in out]
+        want = [(x["section"], x["sha256"]) for x in pins]
+        if got != want:
+            raise ValueError("the page's command blocks are not the pinned ones (docs/using-our-vex.live-blocks.json): %d found, %d pinned" % (len(got), len(want)))
     texts = [b["text"] for b in out]
     for s in skip:
         if texts.count(s) != 1:
@@ -373,9 +383,10 @@ def judge_google(before, after, cve, run_notes):
         va = assessment(o)
         if va.get("state") != "NOT_AFFECTED" or va.get("noteName") not in run_notes:
             return "%s is not assessed not affected by this run's note" % cve
+    bmap = {ident(o): assessment(o) for o in bo}
     for o in ao:
-        if not target(o) and assessment(o).get("noteName") in run_notes:
-            return "an unrelated finding is assessed by this run's note"
+        if not target(o) and assessment(o) != bmap[ident(o)]:
+            return "an unrelated finding's assessment changed (whoever's note)"
     return None
 
 
@@ -474,6 +485,7 @@ def main(argv=None):
     p = sub.add_parser("plan")
     p.add_argument("--guide", required=True)
     p.add_argument("--out-dir", required=True)
+    p.add_argument("--pins", required=True, help="docs/using-our-vex.live-blocks.json: the only blocks the plan may hold, in order")
     p.add_argument("--skip-cannot-run", help="a release candidate: leave out the blocks this list (docs/using-our-vex.cannot-run.json) names")
     t = sub.add_parser("test-files")
     t.add_argument("--openvex", required=True)
@@ -520,7 +532,8 @@ def main(argv=None):
         return 0
     if a.cmd == "plan":
         skip = json.load(open(a.skip_cannot_run))["blocks"] if a.skip_cannot_run else ()
-        for i, b in enumerate(guide_blocks(open(a.guide).read(), skip)):
+        pins = json.load(open(a.pins))["blocks"]
+        for i, b in enumerate(guide_blocks(open(a.guide).read(), skip, pins)):
             with open(os.path.join(a.out_dir, "%02d-%s.sh" % (i, b["section"])), "w") as fh:
                 fh.write(b["text"])
             print("%02d-%s.sh" % (i, b["section"]))

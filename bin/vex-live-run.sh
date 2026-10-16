@@ -214,9 +214,9 @@ echo "release under test: ${tag} (${MODE})"
 # --- the guide's blocks; settings take the test's values, commands run as written (REQ-SCAN-012-AC5). A release candidate publishes nothing (v0.3), so
 #     the blocks the cannot-run list names (digest, download, verify) are left out of its plan and run in the post-publish run (MODE release) instead
 if [ "$MODE" = rc ]; then
-  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$root/docs/using-our-vex.md" --skip-cannot-run "$root/docs/using-our-vex.cannot-run.json" --out-dir plan > plan.txt
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$root/docs/using-our-vex.md" --pins "$root/docs/using-our-vex.live-blocks.json" --skip-cannot-run "$root/docs/using-our-vex.cannot-run.json" --out-dir plan > plan.txt
 else
-  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$root/docs/using-our-vex.md" --out-dir plan > plan.txt
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" plan --guide "$root/docs/using-our-vex.md" --pins "$root/docs/using-our-vex.live-blocks.json" --out-dir plan > plan.txt
 fi
 python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "VER=${tag#v}"
 echo '{}' > images.json

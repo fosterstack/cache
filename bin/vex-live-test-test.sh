@@ -50,6 +50,25 @@ check("the plan names each command block by the scanner it serves",
                                                                    "google", "inspector-remove"},
       sorted({b["section"] for b in blocks}))
 
+# --- Codex #387 r4: the plan is pinned. Whatever a Markdown reader and this parser disagree about, the live test runs ONLY the blocks listed (in order, by section and sha256) in
+#     docs/using-our-vex.live-blocks.json: an extra, changed, reordered or missing block is refused
+import hashlib
+pins = json.load(open(os.path.join(root, "docs/using-our-vex.live-blocks.json")))["blocks"]
+check("the pin list is exactly the page's blocks (sections and sha256 of their text)", [(b["section"], hashlib.sha256(b["text"].encode()).hexdigest()) for b in blocks] == [(x["section"], x["sha256"]) for x in pins])
+check("the pinned plan of the real page is accepted", [b["text"] for b in L.guide_blocks(guide, pins=pins)] == [b["text"] for b in blocks])
+for why, g in [("an extra block", guide + "\n```sh\ngrype example.invalid/draft:latest\n```\n"), ("a changed block", guide.replace("grype ", "grype --verbose ", 1)),
+               ("a removed block", guide.replace("```sh\nVER=X.Y.Z\n```", "", 1))]:
+    try:
+        L.guide_blocks(g, pins=pins); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("SEC-387 a page with %s is refused by the pin list" % why, got == "refused", got)
+try:
+    L.guide_blocks(guide, pins=list(reversed(pins))); got = "accepted"
+except ValueError:
+    got = "refused"
+check("SEC-387 blocks in another order than the pin list are refused", got == "refused", got)
+
 # --- Markdown structure (Codex #387 r1): only a real top-level ```sh block is a command; an example inside a longer fence, a tilde fence or an indented fence is text
 ex = guide + "\n````text\nan example of the syntax:\n```sh\ntouch TEXT_EXAMPLE_EXECUTED\n```\n````\n"
 check("a three-backtick sh block inside a four-backtick text example is not a command", [b["text"] for b in L.guide_blocks(ex)] == [b["text"] for b in blocks])
@@ -76,6 +95,15 @@ for why, extra in [("a fence inside a multi-line HTML comment", "\n<!--\n```sh\n
     except ValueError:
         got = "refused"
     check("SEC-387 a page with %s is refused" % why, got == "refused", got)
+for why, extra in [("a fence opened after a list marker", "\n- ```text\n```sh\ngrype example.invalid/draft:latest\n```\n"),
+                   ("a fence opened after a numbered list marker", "\n1. ```text\n```sh\ngrype example.invalid/draft:latest\n```\n"),
+                   ("a fence opened inside a block quote", "\n> ```text\n```sh\ngrype example.invalid/draft:latest\n```\n"),
+                   ("a fence opened inside a nested list item", "\n  - ```text\n```sh\ngrype example.invalid/draft:latest\n```\n")]:
+    try:
+        L.guide_blocks(guide + extra); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("SEC-387 a page with %s is refused (a container the parser does not model)" % why, got == "refused", got)
 check("SEC-387 an HTML comment that opens and closes on one line (the pinned markers) is fine", "<!-- pinned:" in guide and len(L.guide_blocks(guide)) == len(blocks))
 
 # --- Codex #387 r2: the page's command blocks are read by the pin checker like any script (a plain unpinned pull added to the page must not run with the job's credentials)
@@ -255,7 +283,7 @@ pat = re.search(r"grep -qE '([^']+)'", gate)
 def gated(path):
     return bool(pat) and subprocess.run(["grep", "-qE", pat.group(1)], input=path + "\n", text=True).returncode == 0
 check("ci.yml: the gate watches the guide, the VEX file and the live test's own code",
-      all(gated(x) for x in ("docs/using-our-vex.md", ".vex/fosterstack-cache.openvex.json", "bin/vex-forms.py",
+      all(gated(x) for x in ("docs/using-our-vex.md", "docs/using-our-vex.live-blocks.json", "docs/using-our-vex.cannot-run.json", ".vex/fosterstack-cache.openvex.json", "bin/vex-forms.py",
                              "bin/vex-live-run.sh", "bin/vex-live-test.py")), pat and pat.group(1))
 check("ci.yml: the gate ignores unrelated changes",
       not any(gated(x) for x in ("README.md", "docs/verify-images.md", "bin/panel.py", "docs/using-our-vex.md.bak/x")))
@@ -323,6 +351,16 @@ for why, after in [("an unrelated finding lost", [T1a, T2a]), ("one of two targe
                    ("an unrelated finding assessed by our note too", [T1a, T2a, occn("o/3", "CVE-U", "NOT_AFFECTED", OURS)]),
                    ("one target occurrence left unassessed", [T1a, T2, U1]), ("a new occurrence that was not there before", [T1a, T2a, U1, occn("o/9", "CVE-X")])]:
     check("SEC-387 google inventory refuses %s" % why, L.judge_google({"occurrences": [T1, T2, U1]}, {"occurrences": after}, "CVE-T", {OURS}) is not None)
+# Codex #387 r4 (P2): an unrelated occurrence keeps the assessment it had, whoever's note: one gained from a foreign note, or one that was dropped, is refused
+UF = occn("o/3", "CVE-U", "NOT_AFFECTED", "projects/other/notes/pre-existing")
+check("SEC-387 google: an unrelated occurrence that already had an assessment and keeps it passes",
+      L.judge_google({"occurrences": [T1, T2, UF]}, {"occurrences": [T1a, T2a, UF]}, "CVE-T", {OURS}) is None)
+check("SEC-387 google refuses an unrelated occurrence that gained an assessment from a foreign note",
+      L.judge_google({"occurrences": [T1, T2, U1]}, {"occurrences": [T1a, T2a, occn("o/3", "CVE-U", "NOT_AFFECTED", "projects/other/notes/x")]}, "CVE-T", {OURS}) is not None)
+check("SEC-387 google refuses an unrelated occurrence whose existing assessment was dropped",
+      L.judge_google({"occurrences": [T1, T2, UF]}, {"occurrences": [T1a, T2a, occn("o/3", "CVE-U")]}, "CVE-T", {OURS}) is not None)
+check("SEC-387 google refuses an unrelated occurrence whose assessment changed state",
+      L.judge_google({"occurrences": [T1, T2, UF]}, {"occurrences": [T1a, T2a, occn("o/3", "CVE-U", "AFFECTED", "projects/other/notes/pre-existing")]}, "CVE-T", {OURS}) is not None)
 
 # Codex #387 r1 (P2): Inspector's judge compares the complete finding inventories too: the target CVE's findings are all SUPPRESSED after, and every other finding is still
 # there, with the status it had (our file suppressed exactly one CVE)
