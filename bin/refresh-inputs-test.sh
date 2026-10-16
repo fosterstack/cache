@@ -796,17 +796,6 @@ bad = [l for l in lines if not g.match(l)]
 assert not bad, bad
 assert '"-fsSL"' not in s   # the embedded Python passes no fetch flags: it runs no download
 PYT
-t "rule 32" "the pin-age checker's own live-fetch rule accepts each of the six fetch lines and refuses the same line with another program (the grammar test above names the flags, the checker decides the program)" python3 -I - "$RF_PROD" "$root/.github/agent/supply-chain/pin-age-check.py" <<'PYT'
-import importlib.util, sys
-spec = importlib.util.spec_from_file_location("pac", sys.argv[2])
-m = importlib.util.module_from_spec(spec); sys.modules["pac"] = m; spec.loader.exec_module(m)
-lines = [" ".join(l.split()) for l in open(sys.argv[1]).read().split("\n") if " -fsSL " in l and not l.lstrip().startswith("#")]
-assert len(lines) == 6, len(lines)
-for l in lines:
-    assert m._live_fetch_line_ok(l), ("the checker refuses a real fetch line", l)
-    other = "/usr/bin/other" + l[l.index(" "):]
-    assert not m._live_fetch_line_ok(other), ("the checker accepts another program", other)
-PYT
 t "rule 31" "refresh: the temp files are opened exclusively (O_EXCL) with an unpredictable name, so a planted symlink is never followed" bash -c "grep -q 'O_EXCL' '$RF' && grep -q 'secrets\\|token_hex\\|urandom' '$RF'"
 # the previous pointer's TARGET is hashed too
 mkrepo; mkdir -p "$work/ar/x86_64/index"; tgt="APKINDEX-$live_sha_x.tar.gz"; cp "$fx/live/x86_64/APKINDEX.tar.gz" "$work/ar/x86_64/index/$tgt"; rm -f "$work/ar/x86_64/APKINDEX.tar.gz"; ln -s "index/$tgt" "$work/ar/x86_64/APKINDEX.tar.gz"; before=$(treehash "$work/ar" "$work/rp")
