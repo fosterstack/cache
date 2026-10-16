@@ -153,7 +153,9 @@ def tree_files(root, rev):
             if n and wanted(n):
                 try:
                     out[n] = open(f"{root}/{n}").read()
-                except OSError:
+                except OSError as e:
+                    if n == PERSONA_TOOLS:
+                        raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its images would go unchecked")
                     continue
                 if len(out[n]) > MAX_FILE:
                     raise RuntimeError(f"{n} is too large to read safely")
@@ -177,22 +179,32 @@ def _strip_tag(name):
     return (head + "/" if head else "") + tail.split(":")[0]
 
 
+PERSONA_IMAGE = re.compile(r"[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")
 PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driver runs, by digest; no workflow names them, so the inventory reads the file itself (REQ-SUP-001-AC2)
 
 
 def _persona_tool_items(path, text):
     """One image item per entry of the persona UAT tools file ({"<tool>": "<image>@sha256:<digest>", ...}). A file that is not JSON, not an object, or holds a value that is not a string is
     an error (exit 2 of the check): an image we cannot read is never skipped. A value without a digest is kept as a tag-only item, so the age check fails it."""
+    def pairs(kv):
+        d = {}
+        for k, v in kv:
+            if k in d:
+                raise ValueError(f"the key {k!r} appears twice")
+            d[k] = v
+        return d
     try:
-        d = json.loads(text)
+        d = json.loads(text, object_pairs_hook=pairs)
     except ValueError as e:
         raise RuntimeError(f"{path} is not JSON: {e}")
     if not isinstance(d, dict) or not d:
         raise RuntimeError(f"{path} is not a non-empty object of tool names and image references")
     out = []
     for k in sorted(d):
-        if not isinstance(d[k], str) or not d[k].strip():
-            raise RuntimeError(f"{path}: the value of {k!r} is not an image reference string")
+        if not k.strip() or not isinstance(d[k], str) or not d[k].strip():
+            raise RuntimeError(f"{path}: the name {k!r} or its value is not an image reference string")
+        if re.search(r"(?i)sha256", d[k]) and not PERSONA_IMAGE.fullmatch(d[k].strip()):
+            raise RuntimeError(f"{path}: the value of {k!r} is not exactly <image>[:tag]@sha256:<64 lowercase hex>")
         it = _image_item(d[k], k)
         it.src = (path, hashlib.sha256(f"{k}={d[k]}".encode("utf-8", "replace")).hexdigest())
         out.append(it)
