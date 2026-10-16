@@ -48,6 +48,32 @@ open_pr() {
     echo "planned: $branch (opened later by open-pr)"
     return 0
   fi
+  # Asked again immediately before the branch is created: two overlapping runs can both have passed the staging check (REQ-REFRESH-001-AC29). Only a
+  # pull request of this repository counts; the list not being readable stops the job (an unknown state is not "no pull request").
+  local _open _rc=0
+  _open=$(cd "$repo" && /usr/bin/gh pr list --state open --limit 1000 --json number,headRefName,isCrossRepository,author) \
+    || die "cannot list the open pull requests (gh pr list failed); changing nothing, pushing nothing, opening nothing" 1
+  printf '%s' "$_open" >"$tmp/open-prs.json"
+  /usr/bin/python3 -I -B - "$branch" "$pr_author" "$tmp/open-prs.json" <<'PY' || _rc=$?
+import json, sys
+def norm(x):
+    y = x.lower()
+    while True:
+        z = y[4:] if y.startswith("app/") else (y[:-5] if y.endswith("[bot]") else y)
+        if z == y:
+            return y
+        y = z
+fips = sys.argv[1].startswith("refresh/fips-module-")
+for pr in json.load(open(sys.argv[3])):
+    h = pr.get("headRefName", "")
+    who = (pr.get("author") or {}).get("login") or ""
+    if pr.get("isCrossRepository") or not h.startswith("refresh/") or (sys.argv[2] and norm(who) != norm(sys.argv[2])):
+        continue
+    if h.startswith("refresh/fips-module-") == fips:
+        print("an earlier pull request (#%s, %s) of this kind is already open; opening no second one" % (pr.get("number"), h)); sys.exit(4)
+PY
+  [ "$_rc" != 4 ] || return 0
+  [ "$_rc" = 0 ] || die "cannot read the open pull request list; changing nothing" 1
   local base=$branch n=1
   # a branch name already taken on the remote (a closed or merged PR) gets a -2, -3, ... suffix instead of a failed push
   while [ -n "$(/usr/bin/git -C "$repo" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null)" ]; do

@@ -293,7 +293,7 @@ jobs:
           git config user.name "$AUDITOR_APP_SLUG[bot]"
           git config user.email "$AUDITOR_APP_SLUG[bot]@users.noreply.github.com"
           if [ -n "$STORED_DIGEST" ]; then
-            ./bin/refresh-inputs.sh open-pr --plan-dir "$RUNNER_TEMP/plan" --repo-dir "$GITHUB_WORKSPACE" --archive "$RUNNER_TEMP/archive" --archive-digest "$STORED_DIGEST"
+            ./bin/refresh-inputs.sh open-pr --plan-dir "$RUNNER_TEMP/plan" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG" --archive "$RUNNER_TEMP/archive" --archive-digest "$STORED_DIGEST"
           else
-            ./bin/refresh-inputs.sh open-pr --plan-dir "$RUNNER_TEMP/plan" --repo-dir "$GITHUB_WORKSPACE"
+            ./bin/refresh-inputs.sh open-pr --plan-dir "$RUNNER_TEMP/plan" --repo-dir "$GITHUB_WORKSPACE" --pr-author "$AUDITOR_APP_SLUG"
           fi

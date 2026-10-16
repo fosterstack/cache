@@ -120,7 +120,7 @@ if r.get("permissions") != {"contents": "read", "packages": "write"}:
 if d.get("permissions") != {"contents": "read"}:
     bad.append("AC28: the top-level permissions are not contents: read")
 cond = str(r.get("if", ""))
-if "refs/heads/main" not in cond or "pull_request" in cond or "workflow_dispatch" not in cond or "github.event.schedule" not in cond:
+if re.sub(r"\s+", " ", cond).strip() != "${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.schedule == '23 6 * * *') }}":
     bad.append("AC25: the refresh job's condition is not main plus schedule or dispatch: %s" % cond)
 trig = d.get("on") or d.get(True) or {}
 if sorted(trig) != ["schedule", "workflow_dispatch"]:
@@ -162,8 +162,9 @@ if len(pull) != 1 or "hashFiles('build/archive.json') != ''" not in str(pull[0].
     bad.append("AC27: the pull step does not run exactly when build/archive.json exists")
 if rnames.index(BOOT) > rnames.index(ORDER[1]) if BOOT in rnames and ORDER[1] in rnames else True:
     bad.append("AC26: the bootstrap step does not come before the refresh step")
-if "./bin/archive-push.sh --dir " not in run_of(ORDER[3]) or "changed" not in run_of(ORDER[3]):
-    bad.append("AC27: the archive is not stored by bin/archive-push.sh only when something changed")
+if not re.search(r'if \[ "\$after" = "\$\(cat "\$RUNNER_TEMP/archive\.before"\)" \]; then\n[^\n]*\n\s*else\n\s*digest=\$\(\./bin/archive-push\.sh --dir "\$RUNNER_TEMP/archive"\)\n', run_of(ORDER[3])) \
+        or [x for x in rsteps if x.get("name") == ORDER[3] and x.get("if")]:
+    bad.append("AC27: the archive is not stored by bin/archive-push.sh only when something changed (the push is on the else branch of the unchanged-digest comparison)")
 for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
     txt = open(f).read()
     if "archive-push.sh" in txt and os.path.basename(f) != "go-freshness.yml":
@@ -217,6 +218,12 @@ case_ app-all-repos          bad "$MINT['with'].pop('repositories')"
 case_ token-to-compare-step  bad "[s.setdefault('env', {}).__setitem__('GH_TOKEN', '\${{ steps.app-token.outputs.token }}') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ checkout-keeps-cred    bad "[s.setdefault('with', {}).__setitem__('persist-credentials', 'true') for s in $C['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ mutation-in-agent      bad "d['jobs']['mutation']['environment'] = 'agent'"
+# Codex #345 r3 (AC31): a copy that changes the meaning of AC25 or AC27 while keeping the words the old judge looked for
+R='d["jobs"]["refresh"]'
+case_ refresh-ref-inverted   bad "$R['if'] = $R['if'].replace(\"github.ref == 'refs/heads/main'\", \"github.ref != 'refs/heads/main'\")"
+case_ refresh-or-instead-and bad "$R['if'] = $R['if'].replace(\"' && (\", \"' || (\")"
+case_ store-unconditional    bad "[s.__setitem__('run', 'set -euo pipefail\\n./bin/archive-push.sh --dir \"\$RUNNER_TEMP/archive\" # changed\\n') for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
+case_ store-if-inverted      bad "[s.__setitem__('run', s['run'].replace('if [ \"\$after\" = ', 'if [ \"\$after\" != ')) for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
 # Codex #157 r1's surviving mutations
 case_ input-env-widens       bad "$MINT.setdefault('env', {})['INPUT_PERMISSION-checks'] = 'write'"
 case_ token-alt-spelling     bad "$C['steps'].append({'name': 'x', 'env': {'T': \"\${{ steps['app-token'].outputs.token }}\"}, 'run': 'true'})"
