@@ -2025,6 +2025,11 @@ ctxno "a comment line joined to the line before by a continuation" "${SH}true \\
 # assignment
 ctxyes "one plain double-quoted assignment" "${SH}CASE=\"mentions curl https://e.example/x\""$'\n' assignment
 ctxyes "one plain single-quoted assignment" "${SH}CASE='mentions curl https://e.example/x'"$'\n' assignment
+ctxyes ">( or <( written inside double quotes is text" "${SH}CASE=\"a <r>(.git) <(x) curl https://e.example/x\""$'\n' assignment
+ctxyes "a dollar-paren inside SINGLE quotes is text" "${SH}CASE='a \$(x) curl https://e.example/x'"$'\n' assignment
+ctxno "a dollar-paren inside DOUBLE quotes still runs" "${SH}CASE=\"a \$(x) curl https://e.example/x\""$'\n' assignment
+ctxno "backticks inside DOUBLE quotes still run" "${SH}CASE=\"a \`x\` curl https://e.example/x\""$'\n' assignment
+ctxno "an unquoted process substitution in the value" "${SH}CASE=a<(x)curl"$'\n' assignment
 ctxno "a command substitution" "${SH}X=\$(curl https://e.example/x)"$'\n' assignment
 ctxno "backticks" "${SH}X=\`curl https://e.example/x\`"$'\n' assignment
 ctxno "a substitution inside a default" "${SH}X=\"\${Y:-\$(curl https://e.example/x)}\""$'\n' assignment
@@ -2040,6 +2045,11 @@ ctxyes "a double-quoted delimiter" "${SH}"$'cat <<"EOF"\ncurl https://e.example/
 ctxyes "a backslash delimiter" "${SH}"$'cat <<\\EOF\ncurl https://e.example/x\nEOF\n' heredoc
 ctxyes "<<- with a tab-indented terminator" "${SH}"$'cat <<-\'EOF\'\n\tcurl https://e.example/x\n\tEOF\n' heredoc
 ctxno "an UNQUOTED delimiter (the shell expands the body)" "${SH}"$'cat <<EOF\ncurl https://e.example/x\nEOF\n' heredoc
+ctxyes "a here-string earlier in the script does not hide a later heredoc" "${SH}"$'cat <<<"not a heredoc"\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a here-string is not a heredoc (the line after it is plain code)" "${SH}"$'cat <<<"x"\ncurl https://e.example/x\n' heredoc
+ctxno "a shift in arithmetic is not a heredoc (the line after it is plain code)" "${SH}"$'x=$((1<<2))\ncurl https://e.example/x\n' heredoc
+ctxno "a heredoc operator inside quotes is not a heredoc (the line after it is plain code)" "${SH}"$'echo "cat <<\'EOF\'"\ncurl https://e.example/x\n' heredoc
+ctxno "a heredoc operator in a comment is not a heredoc (the line after it is plain code)" "${SH}"$'true # cat <<\'EOF\'\ncurl https://e.example/x\n' heredoc
 ctxno "the line after the terminator (outside the heredoc)" "${SH}"$'cat <<\'EOF\'\nok\nEOF\ncurl https://e.example/x\n' heredoc
 ctxno "a heredoc with no terminator" "${SH}"$'cat <<\'EOF\'\ncurl https://e.example/x\n' heredoc
 for op in "bash" "sh" "dash" "zsh" "ksh" "ash" "eval" "source /dev/stdin" ". /dev/stdin" "xargs -I{} echo" "exec cat" "python3 -" "python -" "node" "perl" "ruby" "awk -f -" "cat | sh" "cat | bash -s" "env bash" "sudo sh"; do

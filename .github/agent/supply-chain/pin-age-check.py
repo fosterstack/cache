@@ -599,19 +599,29 @@ def _shell_lex(lines):
                 if c == "\\": j += 1
                 elif c == '"': stack.pop()
                 elif c == "`": stack.append("`")
-                elif c == "$" and line[j + 1:j + 2] == "(": stack.append("$("); j += 1
-            else:                                   # code position: top level, $( ), backticks, ( )
+                elif c == "$" and line[j + 1:j + 2] == "(":
+                    if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
+                    else: stack.append("$("); j += 1
+            else:                                   # code position: top level, $( ), $(( )), (( )), backticks, ( )
                 if c == "\\": j += 1
                 elif c == "'": stack.append("'")
                 elif c == '"': stack.append('"')
                 elif c == "`":
                     if top == "`": stack.pop()
                     else: stack.append("`")
-                elif c == "$" and line[j + 1:j + 2] == "(": stack.append("$("); j += 1
-                elif c == "(": stack.append("(")
-                elif c == ")" and top in ("$(", "("): stack.pop()
+                elif c == "$" and line[j + 1:j + 2] == "(":
+                    if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
+                    else: stack.append("$("); j += 1
+                elif c == "(":
+                    if top == "(" and line[j - 1:j] == "(": stack[-1] = "(("
+                    else: stack.append("(")
+                elif c == ")" and top in ("$(", "(", "$((", "(("):
+                    stack.pop()
+                    if top in ("$((", "((") and line[j + 1:j + 2] == ")": j += 1
                 elif c == "#" and (j == 0 or line[j - 1] in " \t;&|(") : cmt = True
-                elif c == "<" and line[j:j + 2] == "<<" and line[j:j + 3] != "<<<" and "((" not in stack[-1:] :
+                elif c == "<" and line[j:j + 3] == "<<<":
+                    j += 2                          # a here-string, not a heredoc
+                elif c == "<" and line[j:j + 2] == "<<" and top not in ("$((", "(("):
                     m = re.match(r"<<(-?)[ \t]*((?:'[^']*'|\"[^\"]*\"|\\.|[^\s;&|()<>'\"\\])+)", line[j:])
                     if m:
                         raw = m.group(2)
@@ -640,6 +650,28 @@ def _shell_lex(lines):
             if k >= n:
                 break
     return hds, not stack
+
+
+def _plain_value(s):
+    """True when the assignment text has no substitution that RUNS: no $( or backtick outside single quotes, no <( or >( outside every quote, no old-style $[ arithmetic."""
+    sq = dq = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if sq:
+            sq = c != "'"
+        elif c == "\\":
+            i += 1
+        elif c == "'" and not dq:
+            sq = True
+        elif c == '"':
+            dq = not dq
+        elif c == "`" or (c == "$" and s[i + 1:i + 2] in ("(", "[")):
+            return False
+        elif not dq and c in "<>" and s[i + 1:i + 2] == "(":
+            return False
+        i += 1
+    return not (sq or dq)
 
 
 def _func_bodies(lines):
@@ -726,7 +758,7 @@ def _context_holds(context, proof, text, line_hash):
             if context == "comment":
                 if not s.startswith("#"): return False
             else:
-                if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", s) or re.search(r"\$\(|`|<\(|>\(|\$\[|\\\n", s) or s.endswith("\\"): return False
+                if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", s) or s.endswith("\\") or not _plain_value(s): return False
                 lx = shlex.shlex(s, posix=True, punctuation_chars=True); lx.whitespace_split = True; lx.commenters = ""
                 try:
                     toks = list(lx)
