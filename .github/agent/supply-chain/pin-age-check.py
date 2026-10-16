@@ -779,7 +779,7 @@ def _strip_comment(ln):
 
 def _reads_only(seg):
     """True when the (already comment-free) segment writes nothing: no output redirection except to /dev/null or a descriptor, no -o / --output option (also clustered, e.g. -uo)."""
-    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null", " ", seg)
+    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null(?![\w./-])", " ", seg)
     if re.search(r"\d*>|&>", flat):
         return False
     flat = re.sub(r"[\"'\\]", "", flat)                       # judged on the option WORDS: "-o", '--output=x' and -\o spell the same options
@@ -906,7 +906,9 @@ def _py_program_flags(body):
                 root = dotted.split(".")[0] if dotted else None
                 if root in mods:
                     full = mods[root] + dotted[len(root):] if dotted else ""
-                    if not (any(full == m or full.startswith(m + ".") for m in _PY_PURE_MODULES | _PY_PURE_DOTTED)): why.add("call of " + full)
+                    ms = [m for m in _PY_PURE_MODULES | _PY_PURE_DOTTED if full == m or full.startswith(m + ".")]
+                    if not ms: why.add("call of " + full)
+                    elif "." in full[len(max(ms, key=len)):].lstrip("."): why.add("call of " + full)      # a name reached THROUGH the module (os.path.os.replace): only the module's own functions pass
                 elif root == "os": why.add("call of " + dotted)
                 elif f.attr not in _PY_SAFE_METHODS and f.attr not in defined: why.add("method " + f.attr)      # a method on some other object: a closed list of names
             else:
