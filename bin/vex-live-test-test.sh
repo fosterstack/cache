@@ -26,7 +26,7 @@ guide = open(os.path.join(root, "docs/using-our-vex.md")).read()
 # --- AC5: the guide's blocks, run byte for byte; only settings blocks take test values
 blocks = L.guide_blocks(guide)
 raw = re.findall(r"```sh\n(.*?)```", guide, re.S)
-check("every sh block of the guide is in the plan, in order, byte for byte", [b["text"] for b in blocks] == raw,
+check("every sh block of the guide is in the plan, in order, byte for byte (the indent of a closing fence is not part of the block)", [b["text"] for b in blocks] == [r.rstrip(" ") for r in raw],
       len(blocks))
 settings = [b for b in blocks if b["kind"] == "settings"]
 check("a settings block holds only VAR=value lines",
@@ -49,6 +49,22 @@ check("the plan names each command block by the scanner it serves",
       {b["section"] for b in blocks if b["kind"] == "command"} >= {"digest", "download", "verify", "grype", "inspector",
                                                                    "google", "inspector-remove"},
       sorted({b["section"] for b in blocks}))
+
+# --- Markdown structure (Codex #387 r1): only a real top-level ```sh block is a command; an example inside a longer fence, a tilde fence or an indented fence is text
+ex = guide + "\n````text\nan example of the syntax:\n```sh\ntouch TEXT_EXAMPLE_EXECUTED\n```\n````\n"
+check("a three-backtick sh block inside a four-backtick text example is not a command", [b["text"] for b in L.guide_blocks(ex)] == [b["text"] for b in blocks])
+ex = guide + "\n~~~sh\ntouch TILDE_EXECUTED\n~~~\n"
+check("a tilde-fenced sh block is not a command", [b["text"] for b in L.guide_blocks(ex)] == [b["text"] for b in blocks])
+ex = guide + "\n- a list item:\n\n    ```sh\n    touch INDENTED_EXECUTED\n    ```\n"
+check("an indented fenced block is not a command", [b["text"] for b in L.guide_blocks(ex)] == [b["text"] for b in blocks])
+ex = guide + "\n```sh\nunclosed block runs to the end of the file\n"
+try:
+    L.guide_blocks(ex); got = "accepted"
+except ValueError:
+    got = "refused"
+check("a block that is never closed is refused, not run", got == "refused", got)
+ex = guide + "\n``` sh\ntouch SPACED_EXECUTED\n```\n"
+check("an opening fence whose info string is not exactly sh is not a command", [b["text"] for b in L.guide_blocks(ex)] == [b["text"] for b in blocks])
 
 # --- release candidates (v0.3: nothing is published): the blocks the page's cannot-run list names are left out of the plan, every other block stays, in order
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))

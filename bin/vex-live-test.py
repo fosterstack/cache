@@ -29,12 +29,39 @@ def _forms():
     return m
 
 
+def _sh_fences(text):
+    """The bodies of the real top-level ```sh blocks of a Markdown text, byte for byte: a fence is a line of 0-3 spaces then 3 or more backticks or tildes
+    (CommonMark); it closes at a line of the same character, at least as long, and nothing else. Only an opening line that is exactly three backticks and sh
+    (up to 3 spaces of indent: the page's removal block sits in a list item) is a command block; every other fenced block (a longer fence, a tilde fence, one indented 4 or more, a differently named one) is text and its
+    contents, even a nested ```sh line, are never commands; a block that is never closed is refused."""
+    lines, i, out = text.split("\n"), 0, []
+    while i < len(lines):
+        m = re.fullmatch(r"( {0,3})(`{3,}|~{3,})(.*)", lines[i])
+        if not m:
+            i += 1
+            continue
+        indent, fence, info = m.groups()
+        if fence[0] == "`" and "`" in info:     # an inline code span, not a fence
+            i += 1
+            continue
+        closer = re.compile(r" {0,3}%s{%d,}[ \t]*" % (re.escape(fence[0]), len(fence)))
+        j = i + 1
+        while j < len(lines) and not closer.fullmatch(lines[j]):
+            j += 1
+        if j >= len(lines):
+            raise ValueError("a fenced block that starts at line %d is never closed" % (i + 1))
+        if fence == "```" and info == "sh":
+            out.append("\n".join(lines[i + 1:j]) + "\n")
+        i = j + 1
+    return out
+
+
 def guide_blocks(text, skip=()):
     """[{kind, section, text}] for every ```sh block of the guide, in order and byte for byte. skip: the exact texts of the blocks
     the cannot-run list names (a release candidate publishes nothing, so the blocks that read a release or a registry cannot run
     on it); each must be a block of the guide and only a digest, download, verify or Grype (the scan of the published image) block may be skipped."""
     out = []
-    for body in re.findall(r"```sh\n(.*?)```", text, re.S):
+    for body in _sh_fences(text):
         # a setting is a plain value and nothing else: VER=0.3.0; false is a command the plan must run (Codex #169 r1,
         # SEC-169-04), so it is not a setting, and a block that is not one known step is refused below
         if re.fullmatch(r"(?:(?:%s)=[A-Za-z0-9._/:@-]+\n)+" % "|".join(SETTINGS), body):
