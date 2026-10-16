@@ -57,7 +57,16 @@ def wit(step, env):
     cond = "" if step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"   # a release candidate (a tag with a hyphen) ends after release-verify (AC14)
     return f"      - name: {step}\n" + cond + (f"        env:\n{e}" if env else "") + f"        run: bash bin/witnessed.sh {step} bin/{step}.sh\n"
 REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}", "GH_TOKEN": "${{ github.token }}"}
-stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n  release:\n    runs-on: ubuntu-24.04\n    environment: release\n"
+VDOWN = ("witness-build", "digests", "items", "witness-rebuild", "witness-check", "check-results", "provenance")      # what release-verify reads: the records and Check's govulncheck stream
+def vdowns(): return "".join(dn(n) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("witness-check-arm64", "witness-check/witness-arm64")
+RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
+# REQ-CHAIN-007-AC1 (Astra R6): TWO jobs. `verify` holds contents read + id-token write only (Witness needs the identity token), no environment, no secret; `release` needs it, is skipped for a release
+# candidate, holds the environment and the three writes, and re-runs release-verify first on its own downloads before any credential step.
+stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n"
+         "  verify:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
+         f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
+         + inst("witness") + vdowns() + wit("release-verify", {}) + up("witness-release-verify")
+         + "  release:\n    needs: verify\n" + RC_COND + "    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          + inst("witness") + inst("cosign") + inst("crane") + inst_m("melange")
@@ -175,7 +184,7 @@ mkdir -p "$work/rm" && expect ok "fixture: none of the old authorization machine
 m() { # m NAME REGEX REPL WORD LABEL
   if mutate "$work/stage.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" stage "$work/$1.yml"; fi
 }
-m s_job2    'jobs:\n  release:'                           'jobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  release:' 'exactly one job'  "AC1 a second job"
+m s_job2    'jobs:\n  verify:'                           'jobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  verify:' 'exactly'  "AC1 a third job"
 m s_selfh   'runs-on: ubuntu-24.04'                         'runs-on: self-hosted'                                   'ubuntu-24.04'       "AC1 a self-hosted runner"
 m s_envnone '    environment: release\n'                     ''                                                       'environment'        "AC1 no environment (the credentials would not be protected)"
 m s_envoth  'environment: release'                          'environment: agent'                                     'environment'        "AC1 another environment"
@@ -203,6 +212,18 @@ m s_nocos   '      - name: install cosign\n        run: bash bin/install-scanner
 m s_snyk    'install-scanner.sh crane'                      'install-scanner.sh snyk'                                'none of checkout'   "AC1 an install of a tool outside the three"
 m s_nomel   '      - name: install melange\n        run: bash bin/install-build-tools.sh melange\n' ''                                'start with checkout' "AC1 (Astra R4) melange is not installed, so release-apks would fail after the images are published"
 m s_melapko 'install-build-tools.sh melange'               'install-build-tools.sh apko'                            'none of checkout'   "AC1 (Astra R4) the fourth install is apko, not melange"
+# REQ-CHAIN-007-AC1 (Astra R6): two jobs, verify and release
+m s_vwrite   '=contents: read\n      id-token: write\n    steps' 'contents: write\n      id-token: write\n    steps'                    'verify'  "AC1 (Astra R6) the verify job holds contents write"
+m s_vpkg     '=contents: read\n      id-token: write\n    steps' 'contents: read\n      packages: write\n      id-token: write\n    steps'  'verify'  "AC1 (Astra R6) the verify job holds packages write"
+m s_vnoid    '=contents: read\n      id-token: write\n    steps' 'contents: read\n    steps'                                              'verify'  "AC1 (Astra R6) the verify job has no id-token write (Witness cannot sign its record)"
+m s_venv     '=  verify:\n    runs-on: ubuntu-24.04\n'        '  verify:\n    environment: release\n    runs-on: ubuntu-24.04\n'  'verify'  "AC1 (Astra R6) the verify job is in the release environment (it would see its secrets)"
+m s_vcos     '=install witness\n        run: bash bin/install-scanner.sh witness\n      - uses' 'install witness\n        run: bash bin/install-scanner.sh witness\n      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n      - uses' 'verify' "AC1 (Astra R6) the verify job installs a tool it does not need"
+m s_vnorv    'release-verify bin/release-verify.sh'            'release-apks bin/release-apks.sh'                                      'verify'  "AC1 (Astra R6) the verify job's Witness step is not release-verify"
+m s_vgone    '(?s)  verify:\n.*?(?=  release:\n)'              ''                                                                      'verify'  "AC1 (Astra R6) there is no verify job (the credentials job would verify only in itself)"
+m s_rnoneeds '=  release:\n    needs: verify\n'             '  release:\n'                                                          'needs'   "AC1 (Astra R6) the release job does not need verify"
+m s_rneedsot '=needs: verify'                                 'needs: build'                                                          'needs'   "AC1 (Astra R6) the release job needs another job than verify"
+m s_rnoif    "=    needs: verify\n    if: \${{ !contains(github.ref_name, '-') }}\n" '    needs: verify\n'                          'job'     "AC1 (Astra R6) the release job is not skipped for a release candidate (it would enter the environment for an rc)"
+m s_rnorv    '=      - name: release-verify\n        run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks\n' '      - name: release-apks\n' 'exactly' "AC1 (Astra R6) the release job's first witnessed step is not release-verify (no re-run before the credentials)"
 m s_melorder 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install melange\n        run: bash bin/install-build-tools.sh melange' 'install melange\n        run: bash bin/install-build-tools.sh melange\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'start with checkout' "AC1 (Astra R4) melange installed before crane (the order is fixed: the three scanners' tools, then melange)"
 m s_melscan 'install-build-tools.sh melange'               'install-scanner.sh melange'                             'none of checkout'   "AC1 (Astra R4) melange fetched by the scanner installer (it is the build-tools installer's, with its own pin)"
 m s_order   'release-apks bin/release-apks.sh'              'release-sign bin/release-sign.sh'                       'exactly'            "AC1 two witnessed steps swapped (release-sign twice)"
@@ -224,6 +245,9 @@ m s_dlafter '      - name: release-assets'                  '      - uses: actio
 # ---- AC2: who holds which credential ----------------------------------------------------------------------------------------
 c() { if mutate "$work/stage.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" credentials "$work/$1.yml"; fi; }
 c c_melenv  'run: bash bin/install-build-tools.sh melange' 'env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/install-build-tools.sh melange' 'up to release-verify' "AC2 (Astra R4) the melange install step carries the token"
+c c_vsec    '=      - name: release-verify\n'                       '      - name: release-verify\n        env:\n          GH_TOKEN: ${{ github.token }}\n' 'verify job' "AC2 (Astra R6) the verify job's Witness step carries the token (the verify job holds no credential)"
+c c_rcos    '=      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n' '      - name: install cosign\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/install-scanner.sh cosign\n' 'up to release-verify' "AC2 (Astra R6) the release job reads the token before its re-run of release-verify"
+c c_rdlsec  '=name: dist\n          path: dist'                   'name: dist\n          path: dist\n          token: ${{ secrets.DOCKERHUB_TOKEN }}' 'up to release-verify' "AC2 (Astra R6) the release job reads a secret in a download before its re-run of release-verify"
 c c_chk     'persist-credentials: false'                   'persist-credentials: false\n        env:\n          GH_TOKEN: ${{ github.token }}' 'up to release-verify' "AC2 the token on the checkout step"
 c c_dlsec   'name: images\n          path: images'        'name: images\n          path: images\n          token: ${{ secrets.DOCKERHUB_TOKEN }}' 'up to release-verify' "AC2 a secret in a download"
 c c_vfy     '      - name: release-verify\n'               '      - name: release-verify\n        env:\n          GH_TOKEN: ${{ github.token }}\n' 'up to release-verify' "AC2 any env on the verify step"
