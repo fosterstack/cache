@@ -3252,12 +3252,30 @@ hits = [k for k, _, _ in m.unmeasured_occurrences(files) if k[1] == "a line that
 assert not hits, hits[:3]
 naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/"))
           and any(m._names_vendor(l) for l in t.split("\n"))}
-extra = set(m._VENDOR_NAMING_FILES) - naming
+extra = m.vendor_list_extras(root, files)
 assert not extra, "listed but names nothing: %s" % sorted(extra)
 missing = naming - set(m._VENDOR_NAMING_FILES)
 assert not missing, "names vendor but not listed: %s" % sorted(missing)
 PY
 CASE="today's tree passes the rule and the exact list holds no path that names nothing"
+check test $? -eq 0
+# --- advisor ruling Oct 16 (cache#347): a listed path ABSENT from the tree is accepted (the reviewed list pre-authorizes only that one exact path); a listed file that
+#     EXISTS and does not name the folder is still refused.
+python3 - "$work" <<'PY'
+import importlib.util, os, sys, tempfile
+sys.path.insert(0, ".")
+spec = importlib.util.spec_from_file_location("pi", ".github/agent/supply-chain/pin-inventory.py"); m = importlib.util.module_from_spec(spec); sys.modules["pi"] = m; spec.loader.exec_module(m)
+with tempfile.TemporaryDirectory(dir=sys.argv[1]) as td:
+    os.makedirs(td + "/bin")
+    open(td + "/bin/names.sh", "w").write("ls vendor/x\n")
+    open(td + "/bin/quiet.sh", "w").write("echo hello\n")
+    files = {"bin/names.sh": "ls vendor/x\n", "bin/quiet.sh": "echo hello\n"}
+    m._VENDOR_NAMING_FILES = frozenset({"bin/names.sh", "bin/absent.sh"})
+    assert m.vendor_list_extras(td, files) == [], "a listed file that names the folder, and a listed path that is absent, are both accepted"
+    m._VENDOR_NAMING_FILES = frozenset({"bin/names.sh", "bin/quiet.sh", "bin/absent.sh"})
+    assert m.vendor_list_extras(td, files) == ["bin/quiet.sh"], "a listed file that exists and does not name the folder is refused; the absent one is not"
+PY
+CASE="the exact list: an absent listed path is accepted and a present listed file that names nothing is refused"
 check test $? -eq 0
 # --- advisor ruling Oct 15 (owner rule 48 of Oct 9 and exception 2 of Oct 15): one narrow ruled-row kind for a LIVE fetch from the fixed host. A row of form `a download`
 #     carries one of two rulings: the convention `text, not a command: ...` (a line that only mentions a tool), or `live fetch, owner ratified (Oct 9 rule 48 / Oct 15
