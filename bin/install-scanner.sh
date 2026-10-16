@@ -231,6 +231,7 @@ case "$TOOL" in
     "${DEST}/fscache-go/bin/go" version | grep -q "go${GO_VER} " || pipeline_fail "the Go toolchain at ${DEST}/fscache-go is not go${GO_VER}"
     [ -f tools/govulncheck/go.mod ] || pipeline_fail "tools/govulncheck/go.mod is missing: it holds the govulncheck pin"
     [ -s tools/govulncheck/go.sum ] || pipeline_fail "tools/govulncheck/go.sum is missing: its h1 hashes are the govulncheck pin"
+    [ ! -e tools/govulncheck/vendor ] || pipeline_fail "tools/govulncheck/vendor exists: vendor mode does not check contents against go.sum, so the build refuses it (go.sum's h1 hashes are the pin)"
     pin=""
     while read -r key val rest; do
       [ "$key" != require ] || { key=$val; val=${rest%% *}; }

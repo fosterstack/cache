@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "e802e5d6334f59c55249c815b10808f4e55ce551c35e65df0955edd7ef4c3d2a",
+      "sha256": "06731c66ba8c4fd35b5b2fcdfffd509cab58d331ea919463e1591cac98933d02",
       "tools": [
         "at",
         "curl",
