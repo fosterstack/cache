@@ -85,7 +85,7 @@ for _n, _bl in enumerate(_rawlines, 1):
 # PR each declared path belongs to is named in the comments
 DECLARED = set("""
 dependency-provenance.json
-bin/vendor-check.sh bin/vendor-provenance.py bin/vendoring-test.sh
+bin/vendor-check.sh bin/vendor-provenance.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
 build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub
@@ -102,7 +102,7 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
 """.split())
-if len(DECLARED) != 48: errs.append("declared list is not 48 paths: %d" % len(DECLARED))
+if len(DECLARED) != 49: errs.append("declared list is not 49 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -112,7 +112,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 175, 6   # 175: 174 + ^vendor/ (the vendored subtree, REQ-VEND-001, cache#342); 174: 173 + ^bin/marker-(pr-gate\.py|gate-test\.sh)$ (the marker-only gate, PR 4b-6); 173: 171 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 171: 170 + ^bin/suite-guard-run\.py$ (the runner is Python, R-PINS, cache#331); 172 (before that take): 170 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 170: 171 - the Dockerfile pattern (rule 61: the Dockerfiles are removed; the goreleaser name left the config alternation, PR 4b-4); 171: 170 + the PR 4b-1 pattern; 170: 166 + the 4 PR 4a patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 176, 6   # 176: 175 + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001, cache#347); 175: 174 + ^vendor/ (the vendored subtree, REQ-VEND-001, cache#342); 174: 173 + ^bin/marker-(pr-gate\.py|gate-test\.sh)$ (the marker-only gate, PR 4b-6); 173: 171 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 171: 170 + ^bin/suite-guard-run\.py$ (the runner is Python, R-PINS, cache#331); 172 (before that take): 170 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 170: 171 - the Dockerfile pattern (rule 61: the Dockerfiles are removed; the goreleaser name left the config alternation, PR 4b-4); 171: 170 + the PR 4b-1 pattern; 170: 166 + the 4 PR 4a patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -159,7 +159,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "142e7c61080e1703a198691d7f51eafb392266c43c171fa314decb471f109be4"
+PINNED_SHA256 = "f3feae6a7387f3075777ff634db25abd493c7d1b69cd2497533a6c72faff49af"   # take 11: main's ^vendor/ pattern admits a dot-leading final file name (ruling D) and + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); nothing else outside the region differs from take 10
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -680,10 +680,11 @@ runeach fail "feature/x" "v030: other root json refused"                        
 # The vendor/ subtree pattern (REQ-VEND-001): names only; each admitted path alone, and each near-miss refused alone
 runeach pass "feature/x" "vendor: a vendored path is admitted" "vendor/modules.txt" "vendor/github.com/prometheus/client_golang/prometheus/counter.go" "vendor/golang.org/x/sys/unix/zerrors_linux_amd64.go" "vendor/github.com/Azure/x/y_test.go" "vendor/gopkg.in/yaml.v3/LICENSE" "vendor/go.etcd.io/bbolt/internal/common/a.s" "vendor/a/b+c~d@e/f"
 runeach fail "feature/x" "vendor: the directory alone, a trailing slash, an empty component" "vendor" "vendor/" "vendor//a" "vendor/a//b" "vendor/a/"
-runeach fail "feature/x" "vendor: a dot component anywhere is refused" "vendor/.hidden" "vendor/.github/workflows/w.yml" "vendor/a/.git/config" "vendor/a/.b" "vendor/." "vendor/.." "vendor/a/.." "vendor/a/../b" "vendor/./a" "vendor/a/./b" "vendor/..a/b" "vendor/a/..b"
+runeach pass "feature/x" "vendor: a dot-leading FILE name (the final component only) is admitted" "vendor/a/.gitignore" "vendor/.hidden" "vendor/go.etcd.io/bbolt/.gitattributes" "vendor/a/.golangci.yml" "vendor/a/.go-version"
+runeach fail "feature/x" "vendor: a dot DIRECTORY or any other dot component is refused" "vendor/.git/x" "vendor/.github/workflows/w.yml" "vendor/a/.git/config" "vendor/a/.hidden/x" "vendor/.a/b" "vendor/." "vendor/.." "vendor/a/.." "vendor/../x" "vendor/a/../b" "vendor/./a" "vendor/a/./b" "vendor/..a/b" "vendor/a/..b" "vendor/a/." "vendor/a/.." "vendor/a/..." "vendor/a/.b/.c"
 runeach fail "feature/x" "vendor: not at the top, or another case, is refused" "x/vendor/a" "Vendor/a" "VENDOR/a" "vendors/a" "vendor-x/a" "pkg/vendor/a/b.go" "../vendor/a"
 runeach fail "feature/x" "vendor: a space, a backslash, a colon or a glob character is refused" "vendor/a b" "vendor/a\\b" "vendor/a:b" "vendor/a*b" "vendor/a?b" "vendor/a[b]" "vendor/a;b" "vendor/a\$b"
-passfam "feature/x" "v030: the vendoring scripts and their test" "bin/vendor-check.sh" "bin/vendor-provenance.py" "bin/vendoring-test.sh"
+passfam "feature/x" "v030: the vendoring scripts and their test" "bin/vendor-check.sh" "bin/vendor-provenance.py" "bin/vendoring-test.sh" "bin/vendor-provenance-test.sh"
 runeach fail "feature/x" "v030: bin/vendor-check.sh nested refused"        "bin/x/vendor-check.sh"
 runeach fail "feature/x" "v030: bin/vendor-check.py (other extension) refused" "bin/vendor-check.py"
 runeach fail "feature/x" "v030: bin/vendor-provenance.sh (swapped extension) refused" "bin/vendor-provenance.sh"
