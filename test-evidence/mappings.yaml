@@ -957,6 +957,9 @@ mappings:
   - ac: REQ-BUILDTOOLS-001-AC10
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-VEND-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
   - ac: REQ-BUILDTOOLS-002-AC1
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }
@@ -972,9 +975,40 @@ mappings:
   - ac: REQ-VEND-001-AC3
     evidence:
       - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
   - ac: REQ-VEND-001-AC11
     evidence:
       - { type: shell-test, ref: "bin/vendoring-test.sh" }
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
   - ac: REQ-BUILDAPK-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/build-apk-test.sh" }
