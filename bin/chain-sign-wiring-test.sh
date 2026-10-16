@@ -2284,8 +2284,8 @@ probe ci       ci.yml               "a provenance signer job in ci.yml"         
 probe vendorrow vendor-provenance.py "dropping the bin/vendor-provenance.py row from chain-scripts.json" \
   "python3 -c 'import json; p=\".github/policy/chain-scripts.json\"; d=json.load(open(p)); d[\"scripts\"]=[r for r in d[\"scripts\"] if r[\"path\"]!=\"bin/vendor-provenance.py\"]; json.dump(d, open(p,\"w\"), indent=1)'"
 probe vendorbytes vendor-provenance.py "an edit of bin/vendor-provenance.py without its sha256 in the row" "printf '\n# edited\n' >> bin/vendor-provenance.py"
-probe vendorruns vendor-provenance.py "bin/vendor-provenance.py starting another program it does not list (the row says it runs none)" \
-  "printf '\nimport subprocess\nsubprocess.run([\"bash\", \"bin/sneak.sh\"])\n' >> bin/vendor-provenance.py; printf 'echo x\n' > bin/sneak.sh"
+probe vendorruns "bin/vendor-provenance.py: " "bin/vendor-provenance.py starting another program it does not list (the row says it runs none)" \
+  "printf '\nimport subprocess\nsubprocess.run([\"bash\", \"bin/sneak.sh\"])\n' >> bin/vendor-provenance.py; printf 'echo x\n' > bin/sneak.sh; rehash bin/vendor-provenance.py"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
 # a LISTED script that a frozen file runs, turned into a provenance signer with its row and sha256 updated
 probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by frozen stage-build.yml) made a provenance signer, its row and sha256 updated" \
