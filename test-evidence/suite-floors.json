@@ -44,7 +44,7 @@
  "pip-pin-test.sh": 263,
  "release-notes-signed-test.sh": 11,
  "release-patch-wiring-test.sh": 175,
- "required-check-guard-test.sh": 15,
+ "required-check-guard-test.sh": 17,
  "rescan-current-only-test.sh": 33,
  "rescan-statement-test.sh": 198,
  "scout-root-cause-test.sh": 33,
