@@ -2770,15 +2770,15 @@ case3_() {
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; printf '%s\n' "$2" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"
   if [ -n "${3:-}" ]; then (cd "$d" && eval "$3"); fi
-  local out; out=$(python3 "$here/../bin/check-action-pins.py" "$d" 2>&1 || true)
-  if grep -q 'REQ-REL-005-AC3' <<< "$out"; then pass=$((pass+1)); echo "PASS $name → AC3 finding"; else failn=$((failn+1)); echo "FAIL $name → no REQ-REL-005-AC3 finding"; fi
+  local out rc=0; out=$(python3 "$here/../bin/check-action-pins.py" "$d" 2>&1) || rc=$?
+  if [ "$rc" -ne 0 ] && grep -q 'REQ-REL-005-AC3' <<< "$out"; then pass=$((pass+1)); echo "PASS $name → AC3 finding"; else failn=$((failn+1)); echo "FAIL $name → no REQ-REL-005-AC3 finding"; fi
 }
 dlj() { printf '%s\n    steps:\n      - run: |\n' "$head"; printf '%s\n' "$1" | sed 's/^/          /'; }
 DLS='mkdir -p bin tools; printf "echo x\n" > bin/x-test.sh; printf "echo y\n" > tools/y.sh'
 U=https://example.invalid/x-test.sh
 for spelling in "curl -fsSL -o bin/x-test.sh $U" "curl -fsSL -obin/x-test.sh $U" "curl -fsSLo bin/x-test.sh $U" "curl -sSfLO $U" "curl --remote-name $U" "curl --output bin/x-test.sh $U" "curl --output=bin/x-test.sh $U" \
   "curl --output-dir bin -O $U" "curl --output-dir bin -obin/x-test.sh $U" "curl -fsSL -o \$GITHUB_WORKSPACE/bin/x-test.sh $U" "curl -fsSL -o \$PWD/bin/x-test.sh $U" "curl -fsSL -o bin/x-test.sh '$U?v=1'" \
-  "curl -D bin/x-test.sh -o /dev/null $U" "curl --dump-header bin/x-test.sh -o /dev/null $U" "curl -fsSL \"-o\" bin/x-test.sh $U" "opts=(-o bin/x-test.sh); curl \"\${opts[@]}\" $U" "curl \"\$@\" $U" "curl \$1 $U" "curl \"\$1\" $U" "header='X: v -o bin/x-test.sh'; curl -H \$header $U" "curl -s -w '%output{bin/x-test.sh}echo changed' file:///dev/null" "curl -s -w'%output{bin/x-test.sh}x' file:///dev/null" "curl -s --write-out '%{stderr}%output{bin/x-test.sh}x' file:///dev/null" "curl -s -w @fmt $U" "curl -s --write-out=@fmt $U" "curl --header" "curl -H" "wget -O /dev/null $U" "wget --output-document=/dev/null $U" "curl $U --output" "curl $U -o" "wget $U -O" "curl --request=PUT -X GET --bogus-option $U" "curl -Z $U" "curl -fsSL '--output' bin/x-test.sh $U" "curl -fsSL $U > bin/x-test.sh" "curl -fsSL $U >> bin/x-test.sh" \
+  "curl -D bin/x-test.sh -o /dev/null $U" "curl --dump-header bin/x-test.sh -o /dev/null $U" "curl -fsSL \"-o\" bin/x-test.sh $U" "FMT='%output{bin/x-test.sh}x'; curl -s -w \"\$FMT\" file:///dev/null" "FMT=x; curl -s --write-out=\"\$FMT\" file:///dev/null" "H=('X: y' -o bin/x-test.sh); curl -H \"\${H[@]}\" $U" "curl -H \"\$@\" $U" "curl -fsSL $U &> bin/x-test.sh" "curl -fsSL $U &>> bin/x-test.sh" "curl -fsSL $U >| bin/x-test.sh" "echo $U | xargs curl -fsSL" "printf '%s\\n' -o | xargs -n1 curl $U" "opts=(-o bin/x-test.sh); curl \"\${opts[@]}\" $U" "curl \"\$@\" $U" "curl \$1 $U" "curl \"\$1\" $U" "header='X: v -o bin/x-test.sh'; curl -H \$header $U" "curl -s -w '%output{bin/x-test.sh}echo changed' file:///dev/null" "curl -s -w'%output{bin/x-test.sh}x' file:///dev/null" "curl -s --write-out '%{stderr}%output{bin/x-test.sh}x' file:///dev/null" "curl -s -w @fmt $U" "curl -s --write-out=@fmt $U" "curl --header" "curl -H" "wget -O /dev/null $U" "wget --output-document=/dev/null $U" "curl $U --output" "curl $U -o" "wget $U -O" "curl --request=PUT -X GET --bogus-option $U" "curl -Z $U" "curl -fsSL '--output' bin/x-test.sh $U" "curl -fsSL $U > bin/x-test.sh" "curl -fsSL $U >> bin/x-test.sh" \
   "curl -fsSL -o \"\$f\" $U" "curl -fsSL \${opts} $U" "curl -K cfg $U" "curl --config cfg $U" "curl -T bin/x-test.sh $U" "curl --create-dirs -o bin/x-test.sh $U" "env curl -o bin/x-test.sh $U" \
   "sudo curl -o bin/x-test.sh $U" "xargs curl -O" "command curl -o bin/x-test.sh $U" "sh -c 'curl -o bin/x-test.sh $U'" "bash -c \"curl -o bin/x-test.sh $U\"" "curl -fsSL -o /tmp/d $U && cp /tmp/d bin/x-test.sh" \
   "curl -fsSL -o /tmp/d $U && mv /tmp/d bin/x-test.sh" "curl -fsSL -o /tmp/d $U && install -m 755 /tmp/d bin/x-test.sh" "wget -O bin/x-test.sh $U" "wget -obin/x-test.sh $U" "wget -P bin $U" "wget $U" "wget -qO bin/x-test.sh $U" \
@@ -2796,6 +2796,8 @@ done
 case_ ac3-tee-bad bad "$(dlj "curl -fsSL $U | tee bin/x-test.sh
 bash bin/x-test.sh")" "$DLS"
 # a committed script of another language, a download in another step, a composite action: the rule applies to each
+case3_ ac3-python-redirect-bad "$(dlj "curl -fsSL $U &> bin/tool.py
+python3 bin/tool.py")" "$DLS; printf 'print(1)\\\\n' > bin/tool.py"
 case3_ ac3-python-script-bad "$(dlj "curl -fsSL -o bin/tool.py $U
 python3 bin/tool.py")" "$DLS; printf 'print(1)\\n' > bin/tool.py"
 case3_ ac3-python-direct-bad "$(dlj "curl -fsSL -o bin/tool.py $U

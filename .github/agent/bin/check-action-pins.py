@@ -2473,8 +2473,10 @@ _NULL_SINKS = ("/dev/null", "-")
 def _value_reason(opt, val):
     """Why the value of a read-only option is not demonstrably read-only, or None. curl's -w / --write-out takes a format whose %output{FILE} writes a file (and @FILE reads
     a format from a file that may hold it): only a format that does not name output and is not read from a file is accepted."""
-    if opt in ("-w", "--write-out") and (val.startswith("@") or re.search(r"%.*output", val, re.I)):
-        return "the write-out format %s can write a file (%%output{} or @file)" % val
+    if opt in ("-w", "--write-out") and (val.startswith("@") or re.search(r"%.*output", val, re.I) or "$" in val or "`" in val):
+        return "the write-out format %s can write a file (%%output{}, @file, or a format this parser cannot read)" % val
+    if re.search(r"\[[@*]\]|\$[@*]|\$\{[@*]", val):
+        return "the value %s expands to a list of words, any of which may be an option" % val
     return None
 
 
@@ -2575,12 +2577,18 @@ def _unsafe_downloads(text):
             cur = queue.pop()
             cut, inner = _cut_substitutions(re.sub(r"\\\n", "", cur))
             queue += inner
+            cut = re.sub(r"&>>", ">>", cut)                   # `cmd &> file` is a redirection of cmd: the split at & must not detach it
+            cut = re.sub(r"&>|>\|", ">", cut)
             for chunk in _split_commands(cut):
+                chunk = re.sub(r"\$'([^']*)'", r"'\1'", chunk)       # an ANSI-C quoted word is a literal word here (its escapes are not read)
                 toks = _tokens(chunk)
                 for n, t in enumerate(toks):
                     if _base(t.strip("\"'")) in DOWNLOADERS:
+                        wrapped = [w for w in toks[:n] if _base(w.strip("\"'")) in ("xargs", "parallel")]
                         why = _download_reason([_base(t.strip("\"'"))] + toks[n + 1:])
                         after = chunk[chunk.find(t) + len(t):] if t in chunk else chunk
+                        if why is None and wrapped:
+                            why = "%s hands the downloader arguments from its input, which can spell any option" % _base(wrapped[0])
                         if why is None and "$" in re.sub(r"\$'[^']*'|'[^']*'|\"[^\"]*\"", "", after):
                             why = "an unquoted expansion after the program name splits into words this parser cannot read"
                         if why is None:
