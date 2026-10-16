@@ -1303,3 +1303,6 @@ mappings:
   - ac: REQ-IMAGE-001-AC12
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-CHAIN-007-AC20
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
