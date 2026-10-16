@@ -22,16 +22,6 @@
    ]
   },
   {
-   "id": "KR-CHECK-2",
-   "suite": "bin/chain-check-wiring-test.sh",
-   "case": "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)",
-   "reason": "the customer guide docs/verify-release.md is cache-3f's and is not in the repository yet; check-guide.sh has nothing to run (rule 79)",
-   "green_by": "cache-3f (docs/verify-release.md)",
-   "findings": [
-    "the customer guide docs/verify-release.md does not exist (rule 79 cannot be satisfied without it)"
-   ]
-  },
-  {
    "id": "KR-CUTOVER",
    "suite": "bin/chain-build-wiring-test.sh",
    "case": "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case",

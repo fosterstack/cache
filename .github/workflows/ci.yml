@@ -407,6 +407,8 @@ jobs:
         run: bash bin/chain-check-scripts-test.sh
       - name: "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)"
         run: bash bin/chain-check-wiring-test.sh
+      - name: "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)"
+        run: bash bin/verify-release-guide-test.sh </dev/null
       - name: "the pinned crane install (REQ-CHAIN-007-AC7)"
         run: bash bin/chain-install-crane-test.sh
       - name: "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)"

@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 92 |
-| Acceptance criteria | 372 |
+| Active requirements | 93 |
+| Acceptance criteria | 380 |
 | Release-blocking ACs | 121 |
-| ACs with mapped evidence | 356 |
+| ACs with mapped evidence | 363 |
 | Release-blocking ACs with mapped evidence | 121 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 45 |
+| Confidence: documented | 46 |
 | Confidence: implementation-only | 46 |
 
 ## Cache protocol
@@ -1340,3 +1340,24 @@ The production and FIPS images shall be assembled by apko in one offline run for
 | REQ-IMAGE-001-AC10 | Given bin/assemble-image.sh, bin/lock-proof.sh or bin/sealed-proof.sh; when it is started from a working directory that is not the repository root; then it exits 2 naming the repository root (lock-proof.sh and sealed-proof.sh with a usage line saying to run it from there) before any tool; assemble-image.sh names its helpers (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py) by literal repository-relative paths, assigns none of PATH, IFS, BASH_ENV, ENV, LD_*, PYTHON*, runs no python3 -c and no python3 heredoc, builds no command word by substitution, and has no --apko-config, --base-lock, --render-dir, --index-record or --key-record option at all (each is refused as an unknown option, in every mode): those inputs are read only from their committed repository paths, and tests run the same script against a fixture repository root | unit |  | approved | 2 item(s) |
 | REQ-IMAGE-001-AC11 | Given assemble-image.sh run twice with the same archive, melange repository, keyring, committed config and base lock, and the same SOURCE_DATE_EPOCH; when both runs have finished; then the two OUT directories are byte-identical: the same file names and the same bytes in every file of the layout directory, the digest, the manifests, the full lock and the SBOM, whether apko wrote the standard layout or its own tar shape | unit |  | approved | 1 item(s) |
 | REQ-IMAGE-001-AC12 | Given any of bin/assemble-image.sh, bin/lock-proof.sh, bin/sealed-proof.sh or bin/apko-lock.sh; when it runs; then every tool it names (python3, sudo, unshare, apko, sha256sum, openssl, git) is called by a fixed absolute path held in a variable, every python3 call is python3 -I -B, it reads no caller variable beyond a closed list it names, and it has no test hook: the production file is the file the tests run (rule 1). STATED RESIDUAL: the starting environment and the coreutils search path are the invoking stage's (same text as REQ-BUILDAPK-001-AC3) | unit |  | approved | 1 item(s) |
+
+## GUIDE
+
+### REQ-GUIDE-001 — The v0.3.0 customer verification guide
+
+The v0.3.0 customer verification guide (docs/verify-release.md) shall be one page of at most 500 words and at most 10 commands, using only cosign, gh and jq, that verifies signatures, digests, provenance, the SBOM and the inputs for both images (production and -fips); Witness records are extra evidence outside the ten commands; the page claims nothing the chain does not back; the owner reads it cold and a second reader tests it.
+
+*Introduced v0.3.0 · tier community · confidence documented · source: v0.3.0 rule 78 (GUIDE-24); docs/verify-release.md; docs/verify-release.cannot-run.json; bin/verify-release-guide-test.sh*
+
+> The command format is the one pipeline's AC7 run (bin/check-guide.sh, REQ-CHAIN-006-AC7) reads: a command is a line of a ```sh fenced block (a line ending in a backslash joins the next, so a continued command counts once; a pipeline counts once), a pipeline of cosign verify, cosign verify-attestation, cosign verify-blob, cosign verify-blob-attestation, gh attestation verify and jq with no other shell syntax. A verify command whose operand is an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>, oci://..., or a literal registry reference) needs a registry image and cannot run on a candidate, which Check holds as a file: it is listed, with its reason, in docs/verify-release.cannot-run.json, marked "Not run before release" on the page, and keeps the page from being final (AC7) until the owner decides rule 79's open case. The page test checks "in the order a customer runs them" only as "a file is verified before jq reads it"; the full order is judged by AC8's readers. The page is not linked from the README or any other page until v0.3.0 is live; docs/verify-images.md stays the guide for v0.2.x and gets a pointer to this page only when it is final.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-GUIDE-001-AC1 | Given the v0.3.0 customer verification guide; when its words (prose and code counted) and its shell commands are counted; then the page docs/verify-release.md exists and has at most 500 words (prose and code counted) and at most 10 shell commands in total | unit |  | approved | 1 item(s) |
+| REQ-GUIDE-001-AC2 | Given the commands of docs/verify-release.md; when a customer, or pipeline's AC7 run, runs them; then every command is in a fenced sh block, runs unattended (no prompt, no editor, no pager) given only the placeholders <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG> and <IDENTITY> defined once at the top, and the commands are in the order a customer runs them | unit |  | approved | 1 item(s) |
+| REQ-GUIDE-001-AC3 | Given the commands of docs/verify-release.md; when their command words are read; then the commands use only cosign, gh and jq (plus POSIX shell builtins and pipes) | unit |  | approved | 1 item(s) |
+| REQ-GUIDE-001-AC4 | Given the commands of docs/verify-release.md; when a customer runs them against a v0.3.0 release; then the commands verify, each by at least one command: signatures, digests, provenance, the SBOM and the inputs | unit |  | approved | 1 item(s) |
+| REQ-GUIDE-001-AC5 | Given docs/verify-release.md; when it is read; then both images are covered, production and -fips, and no -debug image | unit |  | approved | 1 item(s) |
+| REQ-GUIDE-001-AC6 | Given docs/verify-release.md; when it is read; then Witness records appear only as a pointer outside the ten commands, and no build-chain tool name appears other than cosign, gh and jq (matrix AC47) | unit |  | approved | 1 item(s) |
+| REQ-GUIDE-001-AC7 | Given docs/verify-release.md, in draft or final; when it is checked before it is made final; then the page makes no claim the chain does not back: every command in it has been executed against a candidate image by pipeline's AC7 run, and any command not yet runnable is marked TO-VERIFY in the draft and the page cannot be final while a TO-VERIFY mark remains | unit |  | approved | 1 item(s) |
+| REQ-GUIDE-001-AC8 | Given docs/verify-release.md, complete; when it is accepted; then the owner reads the page cold once; a second reader follows it on a clean machine; and pipeline's AC7 run executes every command against a candidate | manual |  | approved | none mapped |
