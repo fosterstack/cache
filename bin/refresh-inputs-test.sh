@@ -1238,6 +1238,12 @@ for a in ("x86_64", "aarch64"):
     signed_index("%s/%s/APKINDEX.tar.gz" % (ffl, a), (text.rstrip("\n") + "\n\n" + extra).encode())
     noold = "\n\n".join(st for st in text.split("\n\n") if not {"P:busybox", "V:" + bbv} <= set(st.split("\n")))
     signed_index("%s/%s/APKINDEX-noold.tar.gz" % (ffl, a), (noold.rstrip("\n") + "\n\n" + extra).encode())
+    def wrongc(st):   # the stanza of the old busybox lists another package checksum; the package itself stays whole and well-formed
+        L_ = st.split("\n")
+        return "\n".join(("C:Q1" + "A" * 27) if l_.startswith("C:") else l_ for l_ in L_) if {"P:busybox", "V:" + bbv} <= set(L_) else st
+    signed_index("%s/%s/APKINDEX-wrongc.tar.gz" % (ffl, a), ("\n\n".join(wrongc(st) for st in text.split("\n\n")).rstrip("\n") + "\n\n" + extra).encode())
+    noprod = "\n\n".join(st for st in text.split("\n\n") if not {"P:tzdata", "V:2026a-r0"} <= set(st.split("\n")))
+    signed_index("%s/%s/APKINDEX-noprod.tar.gz" % (ffl, a), noprod.encode())
 P
 ffrun() {   # $1 = live fetch dir; the live melange resolution has moved busybox on, the production lock is unchanged
   run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$work/ff-mel-moved.json" STUB_CURL_DIR="$1" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
@@ -1253,7 +1259,10 @@ ffempty; printf '{"version":1}\n' >"$work/rp/build/archive.json"; ffrun "$ffl"
 t "AC32" "first fill mutant: a build/archive.json in the repository never takes the first-fill path: exit 1, the old version is not fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q 'busybox-$ffbv.apk' '$CALLS'"
 rm -rf "$work/ff-bad"; cp -R "$ffl" "$work/ff-bad"; python3 "$work/lib.py" tamper "$work/ff-bad/x86_64/busybox-$ffbv.apk"
 ffempty; ffrun "$work/ff-bad"
-t "AC32" "first fill mutant: the old melange.lock version fails the checksum listed in the signed live index: exit 1 naming busybox, no package archived" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'busybox' '$work/log' && grep -Eqi 'checksum|mismatch|differ' '$work/log' && ! ls '$work/ar'/x86_64/*.apk >/dev/null 2>&1"
+t "AC32" "first fill mutant: a damaged old melange.lock package (a flipped byte) is refused: exit 1 naming busybox, no package archived" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'busybox' '$work/log' && grep -Eqi 'checksum|mismatch|differ|incorrect' '$work/log' && ! ls '$work/ar'/x86_64/*.apk >/dev/null 2>&1"
+rm -rf "$work/ff-wrongc"; cp -R "$ffl" "$work/ff-wrongc"; for a_ in x86_64 aarch64; do cp "$ffl/$a_/APKINDEX-wrongc.tar.gz" "$work/ff-wrongc/$a_/APKINDEX.tar.gz"; done
+ffempty; ff_before=$(treehash "$work/ar" "$work/rp"); ffrun "$work/ff-wrongc"; ff_after=$(treehash "$work/ar" "$work/rp")
+t "AC32" "first fill mutant: a WELL-FORMED old melange.lock package whose identity checksum differs from the one the signed live index lists is refused by the index comparison itself: exit 1, the identity-mismatch message, the archive and the repository unchanged" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'does not have the package checksum the signed live index lists' '$work/log' && test '$ff_before' = '$ff_after'"
 rm -rf "$work/ff-noidx"; cp -R "$ffl" "$work/ff-noidx"; for a_ in x86_64 aarch64; do cp "$ffl/$a_/APKINDEX-noold.tar.gz" "$work/ff-noidx/$a_/APKINDEX.tar.gz"; done
 ffempty; ffrun "$work/ff-noidx"
 t "AC32" "first fill mutant: the old melange.lock version has no entry in the signed live index: exit 1 naming busybox and the index, no package archived" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'busybox' '$work/log' && grep -Eqi 'index' '$work/log' && ! ls '$work/ar'/x86_64/*.apk >/dev/null 2>&1"
@@ -1265,6 +1274,30 @@ t "AC32" "first fill: a version named by the committed production lock that the 
 rm -rf "$work/ff-badprod"; cp -R "$ffl" "$work/ff-badprod"; python3 "$work/lib.py" tamper "$work/ff-badprod/x86_64/tzdata-2026a-r0.apk"
 ffempty; ffprod "$work/ff-badprod"
 t "AC32" "first fill mutant: the committed production lock version fails its lock checksum: exit 1 naming tzdata, no package archived" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'tzdata' '$work/log' && grep -Eqi 'checksum|mismatch' '$work/log' && ! ls '$work/ar'/x86_64/*.apk >/dev/null 2>&1"
+rm -rf "$work/ff-noprod"; cp -R "$ffl" "$work/ff-noprod"; for a_ in x86_64 aarch64; do cp "$ffl/$a_/APKINDEX-noprod.tar.gz" "$work/ff-noprod/$a_/APKINDEX.tar.gz"; done
+ffempty; ff_before=$(treehash "$work/ar" "$work/rp"); ffprod "$work/ff-noprod"; ff_after=$(treehash "$work/ar" "$work/rp")
+t "AC32" "first fill mutant: a committed production lock version (tzdata 2026a) that the signed live index does not list is refused although its lock checksums hold: exit 1 naming tzdata and the index, the archive and the repository unchanged" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'tzdata' '$work/log' && grep -qi 'index' '$work/log' && test '$ff_before' = '$ff_after'"
+ffempty; python3 - "$work/rp/build/locks/apko.base.lock.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["contents"]["packages"] = [e for e in d["contents"]["packages"] if e["name"] != "tzdata"]   # the version is now named by the committed FIPS lock only
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+P
+ffprod "$ffl"
+t "AC32" "first fill: a version named by the committed FIPS lock only (tzdata 2026a) is fetched and checked against that lock: exit 0, archived" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -f '$work/ar/x86_64/tzdata-2026a-r0.apk'"
+# the gate is exact: a FIFO, a socket, an empty extra directory, a symlinked archive directory and a symlinked keys directory are not the key-only state
+for st_ in fifo socket dir symroot symkeys; do
+  ffempty
+  case $st_ in
+    fifo) mkfifo "$work/ar/pipe";;
+    socket) python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])" "$work/ar/sock";;
+    dir) mkdir "$work/ar/x86_64";;
+    symroot) /bin/mv "$work/ar" "$work/ar-real"; ln -s "$work/ar-real" "$work/ar";;
+    symkeys) /bin/mv "$work/ar/keys" "$work/ar/keys-real"; ln -s keys-real "$work/ar/keys";;
+  esac
+  ffrun "$ffl"
+  t "AC32" "first fill gate ($st_): an archive that is not exactly the key and nothing else never takes the first-fill path: exit 1, the old version is not fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q 'busybox-$ffbv.apk' '$CALLS'"
+done
 # ---- round 1 of the second review (both seats named these; the fixes are tests-first) ----------------------------------------------------------
 # AC21: locks that disagree ONLY in the package identity checksum or the signature checksum are refused like a data-checksum disagreement
 for fld in identity signature; do
