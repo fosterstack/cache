@@ -143,6 +143,7 @@ def expected_lines(kind):
         return ([H, POLICY, START] + verify_records("rebuild", "rec-rapk", "rapk-collection.json")
                 + bind_files("rapk", "rec-rapk", "rapk-collection.json", "rapk") + melange_repo("rapk") + SDE
                 + [image_cmd("production"), image_cmd("fips"), archives(), merge("rapk", "--items items.json"),
+                   "cp build-in/digests.json digests.json",          # REQ-CHAIN-005-AC2 (Astra R2): Rebuild's record carries the digest list it was started against as a product
                    "python3 bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json "
                    "--expected build-in/items.json --actual items.json --out witness-rebuild/verdict.json"])
     raise KeyError(kind)
