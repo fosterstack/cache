@@ -393,6 +393,11 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
       - { type: shell-test, ref: ".github/agent/tests/k8s-harness-fence-test.sh" }
+  - ac: REQ-REL-005-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the pm-* cases for the literal-label runner matrix" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — the auditor coverage gate runs the checker's unit tests (test_check_action_pins.py, class LiteralRunnerMatrix) and the fixture cases, and requires every line of the checker covered" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
@@ -430,6 +435,14 @@ mappings:
       - { type: go-test, ref: "tools/requirements:TestOddTestFileNamesAreFound" }
       - { type: go-test, ref: "tools/requirements:TestGoIsParsedAndSymlinkedTestsAreRefused" }
       - { type: go-test, ref: "tools/requirements:TestNothingHidesFromTheScan" }
+  - ac: REQ-REL-007-AC3
+    evidence:
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsAsksTheToolchain" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsFailsClosedWithoutAModule" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsIgnoresPersistedGoFlags" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsAcceptsAPackagePathEndingInTest" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsEdgesOfTheAnswer" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsChecksTheSignatureTheToolchainDoesNot" }
   - ac: REQ-DEP-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
@@ -594,6 +607,17 @@ mappings:
   - ac: REQ-SCAN-014-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-015-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
+  - ac: REQ-SCAN-015-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's pin-wiring judge over every PR head's ci.yml requires the scanner guard step, unweakened, in the allowlist job (required check auditor-review-gate)" }
+  - ac: REQ-SCAN-015-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the default branch's scanner guard over every PR head read as git objects (SCAN_GUARD_JUDGE_GIT); the second review that a change to the guard script needs is enforced outside this repository by the private review tooling (REQ-AUD-018 note); the required check auditor-review-gate judges no review record" }
   - ac: REQ-SCAN-009-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
@@ -704,6 +728,15 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC19
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC20
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC21
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-REPO-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
@@ -800,11 +833,7 @@ mappings:
   - ac: REQ-AUD-018-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: inspection, ref: ".github/agent/bin/tests/test_review_gate.py covers every failing reason of the review gate; it still carries only the AC4 proves header because a change to it needs a real codex entry (header follow-up) (re-verified 2026-10-09)" }
-      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml: the auditor-review-gate check on pull_request_target" }
-  - ac: REQ-AUD-018-AC4
-    evidence:
-      - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
+      - { type: inspection, ref: "the second review is enforced by the private review tooling before merge; the repository's verdict (agent-review-gate.yml) judges no review record, and the matrix test asserts it runs only the pin checker, the allowlist guard, the pin-wiring judge and the scanner guard" }
   - ac: REQ-AUD-019-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
@@ -931,3 +960,185 @@ mappings:
   - ac: REQ-BUILDTOOLS-001-AC10
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-VEND-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-VEND-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-REFRESH-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC16
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC17
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC18
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC19
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC20
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC21
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC22
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC23
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-IMAGE-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }

@@ -62,6 +62,9 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
+  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites, its test, and the committed floors.
+  '^bin/suite-guard(-run|-test)?\.sh$'
+  '^test-evidence/suite-floors\.json$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
@@ -80,6 +83,7 @@ ALLOW_PATTERNS=(
   '^bin/branch-sweep\.py$'
   '^bin/branch_sweep_test\.py$'
   '^bin/branch-sweep-test\.sh$'
+  '^bin/scan-no-workflow-call-test\.sh$'
   '^bin/local-prune\.sh$'
   '^\.github/branch-keep\.json$'
   '^bin/check-version-literals\.sh$'
@@ -142,11 +146,6 @@ ALLOW_PATTERNS=(
   '^\.github/agent/test-requirements\.txt$'
   '^\.github/agent/coverage-exclusions\.txt$'
   '^\.github/agent/docs/[A-Za-z0-9._-]+\.md$'
-  # REQ-AUD-18 AC3: review-loop records, one per reviewed .github/agent/ content hash, read by
-  # .github/agent/bin/auditor-review-gate.py (run from main by .github/workflows/agent-review-gate.yml).
-  '^\.github/agent/reviews/[0-9a-f]{64}\.json$'
-  # REQ-AUD-018 AC4: the owner-recorded second-seat substitutes, read from the default branch by the same gate
-  '^\.github/agent/reviews/substitutes\.json$'
   # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
   # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
   '^\.github/agent/prompts/[A-Za-z0-9._-]+\.md$'
@@ -188,12 +187,19 @@ ALLOW_PATTERNS=(
   '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
   '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 
-  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ is admitted by the PR that adds it.
+  # The vendored dependency tree (REQ-VEND-001): names only. Every directory component starts with a letter, digit, _, +, ~ or @ (no dot
+  # directory, no .github, no .git); only the FINAL component may start with one dot (a dot file go mod vendor itself produces, such as
+  # .gitignore). A name is judged here and the CONTENT is judged by bin/vendor-check.sh, which the required `vendor` job in ci.yml runs
+  # on every pull request: this pattern never lands without that check.
+  '^vendor/([A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*/)*\.?[A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*$'
+
+  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ has its own subtree pattern above (REQ-VEND-001).
   # Vendoring: the dependency record (root), the regenerate-and-compare script, the provenance tool, their test.
   '^dependency-provenance\.json$'
   '^bin/vendor-check\.sh$'
   '^bin/vendor-provenance\.py$'
   '^bin/vendoring-test\.sh$'
+  '^bin/vendor-provenance-test\.sh$'
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
   # (build/apko.yaml, build/apko-fips.yaml).
   '^build/melange(-fips)?\.yaml$'
@@ -221,6 +227,10 @@ ALLOW_PATTERNS=(
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
   # OCI digest and network-probe tools.
   '^bin/(oci-digest|net-probe)\.py$'
+  # The build-apk driver's helper and the sealed-environment list it reads (REQ-BUILDAPK-001): the former inline Python
+  # of bin/build-apk.sh, and the closed rule-23 variable list as data.
+  '^bin/build-apk-helper\.py$'
+  '^build/sealed-env\.json$'
   # Archive scripts: push, pull (.sh) and verify (.py).
   '^bin/archive-(push|pull)\.sh$'
   '^bin/archive-verify\.py$'

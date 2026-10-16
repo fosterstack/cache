@@ -30,6 +30,29 @@ jobs:
       - name: static build (CGO_ENABLED=0)
         run: CGO_ENABLED=0 go build -o /dev/null ./cmd/fscache
 
+  # REQ-VEND-001-AC3: the vendored tree is what CI regenerates, on every pull request (Dependabot's included; no actor or branch
+  # condition). It only compares: no token, no commit, no sumdb opt-out. The whole history is fetched so origin/main is readable:
+  # bin/vendor-check.sh passes a tree without vendor/ only when origin/main has none either.
+  vendor:
+    name: vendor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: false
+      - name: go mod verify
+        run: go mod verify
+      - name: vendor/ is what go mod vendor regenerates
+        run: bash bin/vendor-check.sh
+      - name: dependency-provenance.json lists the modules of vendor/ with the hashes of go.sum (REQ-VEND-001-AC4)
+        run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json
+
   # test-strategy.md §6: the coverage RATCHET. Fails when total statement
   # coverage of non-excluded Go code drops below the committed floor
   # (.github/policy/coverage.json). Coverage says the tests ran the
@@ -277,9 +300,30 @@ jobs:
           pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5
           REQ
           python3 bin/check-workflow-permissions.py
+      # REQ-SCAN-015 (advisor-accepted Oct 9; serves the 0345 hardening): the scanner cloud trust is pinned to scan.yml and
+      # main-candidate-rescan.yml by file, so neither may be callable as a reusable workflow. Runs here, in the required
+      # `allowlist` job, so a violation blocks the merge; it reads the checked-out workflow files with the PyYAML installed above.
+      - name: scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)
+        run: bash bin/scan-no-workflow-call-test.sh
 
       - name: build helper tools regressions (apk tool, recipe generator, lock tool, module SBOM)
         run: bash bin/build-helpers-test.sh
+
+      - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
+        run: bash bin/vendoring-test.sh </dev/null
+      - name: apk build driver and release signing regressions
+        run: bash bin/build-apk-test.sh
+
+      - name: input refresh script regressions
+        run: bash bin/refresh-inputs-test.sh
+
+      - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
+        run: python3 bin/gen-recipes.py --check
+
+      - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
+        run: bash bin/vendor-provenance-test.sh </dev/null
+      - name: image assembly, lock proof and sealed proof regressions
+        run: bash bin/assemble-image-test.sh
 
       # Row 78: every action reference is a full commit digest with its version in
       # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.

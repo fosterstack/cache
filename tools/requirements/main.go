@@ -14,12 +14,15 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io"
 	"os"
 	"os/exec"
@@ -28,6 +31,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gopkg.in/yaml.v3"
@@ -357,31 +362,67 @@ func freeze(args []string) {
 	fmt.Printf("wrote %s (%d release-blocking ACs, fixed at %s, UNAPPROVED)\n", path, len(blocking), head)
 }
 
-// goTestExists reports whether dir — a package directory inside this repository, reached through no
-// symlink — declares, at the top level of a _test.go file, a test named name with the signature
-// `func TestX(t *testing.T)`. The files are parsed, so a name inside a string or a comment never counts,
-// and a helper function is not a test.
+// goTestExists reports whether the Go test function name is declared in a test file of the package in dir that the Go
+// toolchain itself lists (REQ-REL-007-AC3): `go list -e -test` run in dir for linux/amd64 and linux/arm64, each with cgo
+// off and on, no -tags and no GOFLAGS, must report no error and must list the file among the package's test files in
+// all four runs. The tool reads no build constraint, file header or package rule of its own; a go list that fails, or an
+// answer it cannot read, means the name does not count.
 func goTestExists(dir, name string) bool {
-	if dir != filepath.Clean(dir) || filepath.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") || !goTestName.MatchString(name) {
+	if dir != filepath.Clean(dir) || filepath.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") || name == "TestMain" || !goTestName(name) {
 		return false
 	}
 	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
 		return false
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
+	var files map[string]bool
+	for _, arch := range []string{"amd64", "arm64"} {
+		for _, cgo := range []string{"0", "1"} {
+			got, ok := listTestFiles(dir, arch, cgo)
+			if !ok {
+				return false
+			}
+			if files == nil {
+				files = map[string]bool{}
+				for f := range got {
+					files[f] = true
+				}
+				continue
+			}
+			for f := range files {
+				if !got[f] {
+					delete(files, f)
+				}
+			}
+		}
 	}
-	for _, e := range entries {
-		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), "_test.go") {
-			continue
+	names := make([]string, 0, len(files))
+	for f := range files {
+		names = append(names, f)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		path := filepath.Join(dir, n)
+		// the signature and type-parameter rules are the toolchain's: a package with a wrong-signature or generic test
+		// function is refused above by go list itself, so only a top-level function of that name is looked for here
+		info, err := os.Lstat(path)
+		if err == nil && info.Mode().IsRegular() && declaresFunc(path, name) {
+			return true
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
-		if err != nil {
-			continue
-		}
+	}
+	return false
+}
+
+// declaresFunc reports whether the Go file declares, at top level, a test function called name: no receiver, no type
+// parameters, no results, one parameter of type *testing.T under the file's own name for the testing import (an alias
+// is fine; a dot import or a local type T is not). go list refuses most wrong signatures itself, but it checks the
+// parameter by spelling (*T), not by type, and TestMain is a runner hook, not a test.
+func declaresFunc(path, name string) bool {
+	if f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution); err == nil {
+		want := "*" + testingName(f) + ".T"
 		for _, d := range f.Decls {
-			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name && isTestingT(fn) {
+			fn, ok := d.(*ast.FuncDecl)
+			if ok && fn.Recv == nil && fn.Name.Name == name && fn.Type.TypeParams == nil && fn.Type.Results.NumFields() == 0 &&
+				len(fn.Type.Params.List) == 1 && len(fn.Type.Params.List[0].Names) <= 1 && types.ExprString(fn.Type.Params.List[0].Type) == want {
 				return true
 			}
 		}
@@ -389,25 +430,122 @@ func goTestExists(dir, name string) bool {
 	return false
 }
 
-// goTestName is what `go test` runs: Test, then nothing or a character that is not a lower-case letter.
-var goTestName = regexp.MustCompile(`^Test([^a-z].*)?$`)
+// testingName is the name the file gives the "testing" import (testing unless aliased); a file that does not import it
+// gets a name no expression can have, so nothing in it is a test.
+func testingName(f *ast.File) string {
+	for _, im := range f.Imports {
+		if im.Path.Value == `"testing"` {
+			if im.Name != nil {
+				return im.Name.Name
+			}
+			return "testing"
+		}
+	}
+	return "?"
+}
 
-// isTestingT reports whether fn takes exactly one parameter of type *testing.T and returns nothing.
-func isTestingT(fn *ast.FuncDecl) bool {
-	p := fn.Type.Params.List
-	if len(p) != 1 || len(p[0].Names) > 1 || fn.Type.Results != nil {
+// goListPackage is the part of `go list -json` this tool reads.
+type goListPackage struct {
+	ImportPath   string
+	ForTest      string
+	Dir          string
+	TestGoFiles  []string
+	XTestGoFiles []string
+	Incomplete   bool
+	Error        *struct{ Err string }
+	DepsErrors   []struct{ Err string }
+}
+
+var goListCache = map[string]map[string]bool{}
+
+// listTestFiles returns the test files (_test.go, in-package and external) that `go list` reports for the package in dir
+// on linux/<arch> with CGO_ENABLED=cgo, and false when go list fails or reports any error for the package, its test
+// variants or their dependencies. Answers are cached for one run, keyed by the directory and its entries' names (one validation run; the files do not change during it).
+func listTestFiles(dir, arch, cgo string) (map[string]bool, bool) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, false
+	}
+	abs, _ := filepath.Abs(dir)
+	key := arch + cgo + "\x00" + dir + "\x00" + abs
+	for _, e := range ents {
+		key += fmt.Sprintf("\x00%s|%v", e.Name(), e.Type())
+	}
+	if got, ok := goListCache[key]; ok {
+		return got, got != nil
+	}
+	got := runGoList(dir, arch, cgo)
+	goListCache[key] = got
+	return got, got != nil
+}
+
+func runGoList(dir, arch, cgo string) map[string]bool {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		return nil
+	}
+	env := []string{}
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); k == "GOOS" || k == "GOARCH" || k == "CGO_ENABLED" || k == "GOFLAGS" || k == "GOENV" {
+			continue
+		}
+		env = append(env, kv)
+	}
+	// GOENV=off: a persisted `go env -w` (GOFLAGS, tags, overlays) is not read; GOFLAGS is set to an empty list
+	env = append(env, "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED="+cgo, "GOFLAGS= ", "GOENV=off")
+	list := func(args ...string) []goListPackage {
+		cmd := exec.Command(goBin, append([]string{"list", "-e", "-json"}, args...)...)
+		cmd.Dir = dir
+		cmd.Env = env
+		out, err := cmd.Output()
+		if err != nil {
+			return nil
+		}
+		var pkgs []goListPackage
+		dec := json.NewDecoder(bytes.NewReader(out))
+		for dec.More() {
+			var p goListPackage
+			if err := dec.Decode(&p); err != nil {
+				return nil
+			}
+			pkgs = append(pkgs, p)
+		}
+		return pkgs
+	}
+	bad := func(p goListPackage) bool { return p.Error != nil || p.Incomplete || len(p.DepsErrors) > 0 }
+	// the package itself: exactly one object, so the file list is its own and a test variant cannot supply a file
+	self := list(".")
+	if len(self) != 1 || bad(self[0]) {
+		return nil
+	}
+	// its test packages and the generated test main: an error in any of them fails the package
+	all := list("-test", ".")
+	if len(all) == 0 {
+		return nil
+	}
+	for _, p := range all {
+		if bad(p) {
+			return nil
+		}
+	}
+	files := map[string]bool{}
+	for _, f := range append(append([]string{}, self[0].TestGoFiles...), self[0].XTestGoFiles...) {
+		files[f] = true
+	}
+	return files
+}
+
+// goTestName is what `go test` registers (its isTest rule): Test, then nothing or a rune that is not a lower-case
+// letter in any script.
+func goTestName(name string) bool {
+	if !strings.HasPrefix(name, "Test") {
 		return false
 	}
-	star, ok := p[0].Type.(*ast.StarExpr)
-	if !ok {
-		return false
+	if len(name) == len("Test") {
+		return true
 	}
-	sel, ok := star.X.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "testing" && sel.Sel.Name == "T"
+	r, _ := utf8.DecodeRuneInString(name[len("Test"):])
+	return !unicode.IsLower(r)
 }
 
 func repoRoot() string {

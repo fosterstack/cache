@@ -10,6 +10,10 @@ section (.PKGINFO, .melange.yaml) and the data section (the files).
                                           copy is the same), 1 if not (names B), 2 on an unreadable file
   apk-tool.py signer APK                  prints the signing key's name (<key file name>.rsa.pub) or
                                           "unsigned"
+  apk-tool.py verify APK PUBKEY           cryptographically verifies the apk's signature against the public key file PUBKEY (the signature member
+                                          is an RSA signature over the compressed CONTROL stream: .SIGN.RSA.<name> is SHA-1, .SIGN.RSA256.<name>
+                                          SHA-256); prints verified:<name> and exits 0 only when the signature is valid for that key.
+                                          exit 1 if unsigned, the signature does not verify, or its algorithm is not RSA/RSA256; 2 unreadable
   apk-tool.py cat APK MEMBER              writes the bytes of MEMBER from the data section to standard output
                                           (exit 2 if it is not there)
   apk-tool.py binary-check APK FILE       rule 14: exit 0 if FILE equals usr/bin/fscache in APK, 1 if not (prints both
@@ -254,6 +258,56 @@ def cmd_signer(a):
     print(m.group(1))
 
 
+def _openssl():
+    """The OpenSSL this check trusts: a fixed location, never whatever the caller's search path holds (REQ-BUILDAPK-001-AC4)."""
+    import os
+    for p in ("/usr/bin/openssl", "/opt/homebrew/bin/openssl", "/usr/local/bin/openssl"):
+        if os.access(p, os.X_OK):
+            return p
+    refuse("openssl is not installed at a fixed location (/usr/bin/openssl)")
+
+
+def cmd_verify(a):
+    """The signer command reads a NAME; this checks the bytes: openssl dgst verifies the member's RSA signature over the control stream exactly as
+    stored (REQ-BUILDAPK-001-AC4, AC7). PUBKEY may carry comment lines before its PEM block; the first PUBLIC KEY block is the key."""
+    import os, subprocess, tempfile
+    sig, ctrl, data = sections(a[0])
+    names = list(members(sig[1])) if sig else []
+    if len(names) != 1:
+        refuse("%s is %s: nothing to verify" % (a[0], "unsigned" if not names else "signed by %d members" % len(names)), 1)
+    m = re.fullmatch(r"\.SIGN\.(RSA|RSA256)\.(.+)", names[0])
+    if not m:
+        refuse("%s: the signature member %s is not .SIGN.RSA.<name> or .SIGN.RSA256.<name>" % (a[0], names[0]), 1)
+    alg = {"RSA": "sha1", "RSA256": "sha256"}[m.group(1)]
+    # the signature covers the control stream, whose .PKGINFO names the data stream by its sha256 (datahash): the data is part of what was signed only
+    # through that line, so exactly one datahash must be present and must equal the sha256 of the stream as stored
+    pkginfo = members(ctrl[1]).get(".PKGINFO", b"").decode("utf-8", "replace")
+    dh = re.findall(r"(?m)^datahash\s*=\s*([0-9a-f]{64})\s*$", pkginfo)
+    if len(dh) != 1 or len(re.findall(r"(?m)^datahash\b", pkginfo)) != 1:
+        refuse("%s: the control section has no single datahash line: the data section is not bound to the signature" % a[0], 1)
+    if dh[0] != hashlib.sha256(data[0]).hexdigest():
+        refuse("%s: the data section does not match the datahash the signature covers" % a[0], 1)
+    try:
+        text = open(a[1]).read()
+    except (OSError, UnicodeDecodeError) as e:
+        refuse("cannot read the public key %s: %s" % (a[1], e))
+    pem = re.search(r"-----BEGIN PUBLIC KEY-----\n[A-Za-z0-9+/=\n]+?-----END PUBLIC KEY-----\n?", text)
+    if not pem:
+        refuse("%s holds no PEM PUBLIC KEY block" % a[1])
+    with tempfile.TemporaryDirectory() as d:
+        for n, b in (("key.pem", pem.group(0).encode()), ("sig.bin", members(sig[1])[names[0]]), ("ctrl.bin", ctrl[0])):
+            with open(os.path.join(d, n), "wb") as f:
+                f.write(b)
+        try:
+            r = subprocess.run([_openssl(), "dgst", "-" + alg, "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "sig.bin"),
+                                os.path.join(d, "ctrl.bin")], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={"LC_ALL": "C", "PATH": "/nonexistent"})
+        except OSError as e:
+            refuse("cannot run openssl: %s" % e)
+    if r.returncode != 0 or "Verified OK" not in r.stdout:
+        refuse("%s: the signature member %s does not verify against %s" % (a[0], names[0], a[1]), 1)
+    print("verified:" + m.group(2))
+
+
 def member(path, name):
     m = members(sections(path)[2][1])
     return m.get(norm(name))
@@ -309,13 +363,13 @@ def cmd_inputs_manifest(a):
         f.write("\n")
 
 
-CMDS = {"digest": (cmd_digest, 1), "same": (cmd_same, 2), "signer": (cmd_signer, 1), "cat": (cmd_cat, 2),
+CMDS = {"digest": (cmd_digest, 1), "same": (cmd_same, 2), "signer": (cmd_signer, 1), "verify": (cmd_verify, 2), "cat": (cmd_cat, 2),
         "binary-check": (cmd_binary_check, 2), "inputs-manifest": (cmd_inputs_manifest, None)}
 
 
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:
-        refuse("usage: apk-tool.py digest|same|signer|cat|binary-check|inputs-manifest ...")
+        refuse("usage: apk-tool.py digest|same|signer|verify|cat|binary-check|inputs-manifest ...")
     fn, n = CMDS[sys.argv[1]]
     args = sys.argv[2:]
     if n is not None and len(args) != n:
