@@ -557,11 +557,17 @@ SIGN_WITH = {"digests": "${{ needs.build.outputs.digests }}"}
 # patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
 PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
+LIVE_TEST_RC_IF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+LIVE_TEST_FINAL_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 DECIDE_IF = "${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 NON_CHAIN = {
     "decide": {"perm": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}, "agent": True, "if": DECIDE_IF},
     "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
     "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": sorted(CHAIN)},
+    # The rule-12 live tests of our VEX files (REQ-SCAN-012): federated into the dedicated live-test accounts only (environment live-test, whose trust names nothing
+    # else), after Check on a release candidate and after Release on a final tag; they publish nothing, hold no secrets., and cannot run in the dry run.
+    "live-test": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["check"], "if": LIVE_TEST_RC_IF},
+    "live-test-release": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["release"], "if": LIVE_TEST_FINAL_IF},
 }
 HOSTILE = {"perm": {"contents": "read"}, "agent": False}
 
@@ -630,6 +636,9 @@ def graph(path):
         if spec["agent"]:
             if job.get("environment", "agent") != "agent":
                 bad.append("job %s may name only environment: agent, got %r" % (name, job["environment"]))
+        elif spec.get("env"):
+            if job.get("environment") != spec["env"]: bad.append("job %s must name exactly environment: %s, got %r" % (name, spec["env"], job.get("environment")))
+            if "secrets." in json.dumps(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
         else:
             if "environment" in job: bad.append("job %s may not name an environment (the App secrets live in agent), got %r" % (name, job["environment"]))
             if "secrets." in json.dumps(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
