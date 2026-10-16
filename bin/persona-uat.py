@@ -1557,9 +1557,41 @@ def configure(a):
 STATE = {}        # what the last-resort handler needs to write the encrypted reports of what is known: filled by _main as soon as it is known
 
 
+def mint_identity(argv):
+    """persona-uat.py --mint-identity FILE (REQ-UAT-001-AC5): ask the runner's OIDC endpoint for a fresh identity token for the model provider's audience and write it, mode 0600,
+    to FILE. Token fetch from the Actions endpoint; no software is downloaded. Prints nothing; any failure (no endpoint variable, a refusal, a stalled request, a value that is empty,
+    "null" or not text) leaves no file and exits 1. The job's refresher calls it in a loop (the assertion lives about five minutes, the job up to two hours)."""
+    if len(argv) != 1:
+        return 1
+    path = argv[0]
+    try:
+        url, bearer = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"], os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
+        timeout = float(os.environ.get("PERSONA_UAT_MINT_TIMEOUT", "20"))
+        req = urllib.request.Request(url + "&audience=https://api.anthropic.com", headers={"Authorization": "bearer " + bearer})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            value = json.load(resp)["value"]
+        if not isinstance(value, str) or not value or value == "null":
+            return 1
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            os.write(fd, value.encode())
+        finally:
+            os.close(fd)
+        return 0
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        return 1
+
+
 def main():
     """the driver. Nothing but the fixed pass/fail lines (and, if something nobody expected goes wrong, the fixed line `driver error`) is ever printed: whatever raises is
     caught here, the encrypted reports of what is known are still written, and the run fails"""
+    if sys.argv[1:2] == ["--mint-identity"]:
+        return mint_identity(sys.argv[2:])
     try:
         return _main()
     except SystemExit:

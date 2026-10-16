@@ -513,10 +513,9 @@ jobs:
             f="$1"; every="$2"
             while [ -e "$f" ] && sleep "$every"; do
               [ -e "$f" ] || break
-              tok=$(python3 -c "import json,os,urllib.request as u; r=u.Request(os.environ[\"ACTIONS_ID_TOKEN_REQUEST_URL\"]+\"&audience=https://api.anthropic.com\",headers={\"Authorization\":\"bearer \"+os.environ[\"ACTIONS_ID_TOKEN_REQUEST_TOKEN\"]}); print(json.load(u.urlopen(r,timeout=20))[\"value\"])") || continue
-              [ -n "$tok" ] && [ "$tok" != "null" ] || continue
+              python3 bin/persona-uat.py --mint-identity "$f.new" || continue
               [ -e "$f" ] || break
-              ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"
+              mv -f "$f.new" "$f"
             done
           ' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &
           disown

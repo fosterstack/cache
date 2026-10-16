@@ -5402,5 +5402,56 @@ for path in glob.glob(sys.argv[1] + "/*/docker.log") + glob.glob(sys.argv[1] + "
 assert n > 50, n
 PY
 
+# --- the identity-token refresher's fetch is a committed mode of the driver (REQ-UAT-001-AC5): `persona-uat.py --mint-identity FILE` asks the runner's OIDC endpoint for a token for the
+# model provider's audience and writes it, mode 0600, to FILE; it prints nothing; any failure leaves no file and exits 1. No software is downloaded. ---------------------------------
+CASE="persona-uat.py --mint-identity: a good answer writes the token to FILE (mode 0600) and prints nothing; a refusal, an empty or null value, bad JSON, a missing variable and a stalled request each exit 1 and leave no file"
+check python3 - "$driver" <<'PY'
+import http.server, json, os, stat, subprocess, sys, tempfile, threading, time
+driver = sys.argv[1]
+mode = {"m": "good"}
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        ok = self.headers.get("Authorization") == "bearer REQ-TOKEN" and "audience=https://api.anthropic.com" in self.path
+        m = mode["m"]
+        if not ok or m == "refuse":
+            self.send_response(403); self.send_header("Content-Length", "0"); self.end_headers(); return
+        if m == "hang":
+            time.sleep(8); return
+        body = {"good": json.dumps({"value": "TOKEN-VALUE-1"}), "empty": json.dumps({"value": ""}), "null": json.dumps({"value": "null"}),
+                "badjson": "not json", "nokey": json.dumps({"other": "x"}), "nonstring": json.dumps({"value": 5})}[m].encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+url = "http://127.0.0.1:%d/token?api-version=2.0" % srv.server_address[1]
+d = tempfile.mkdtemp(); f = os.path.join(d, "t.new")
+def run(m, env=None, timeout=30):
+    mode["m"] = m
+    e = dict(os.environ, ACTIONS_ID_TOKEN_REQUEST_URL=url, ACTIONS_ID_TOKEN_REQUEST_TOKEN="REQ-TOKEN", PERSONA_UAT_MINT_TIMEOUT="2")
+    e.update(env or {})
+    for k in [k for k, v in e.items() if v is None]: del e[k]
+    if os.path.exists(f): os.remove(f)
+    t0 = time.time()
+    r = subprocess.run([sys.executable, driver, "--mint-identity", f], env=e, capture_output=True, text=True, timeout=timeout)
+    return r, time.time() - t0
+r, _ = run("good")
+assert r.returncode == 0 and r.stdout == "" and r.stderr == "", (r.returncode, r.stdout, r.stderr)
+assert open(f).read() == "TOKEN-VALUE-1" and stat.S_IMODE(os.stat(f).st_mode) == 0o600
+for m in ("refuse", "empty", "null", "badjson", "nokey", "nonstring"):
+    r, _ = run(m)
+    assert r.returncode == 1 and not os.path.exists(f) and "TOKEN-VALUE" not in r.stdout + r.stderr, (m, r.returncode, r.stdout, r.stderr)
+for k in ("ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"):
+    r, _ = run("good", {k: None})
+    assert r.returncode == 1 and not os.path.exists(f), (k, r.returncode)
+r, took = run("hang")
+assert r.returncode == 1 and not os.path.exists(f) and took < 6, (r.returncode, took)
+# a stale file is replaced, not appended to, and a fresh one is mode 0600 even under a permissive umask
+open(f, "w").write("STALE"); os.chmod(f, 0o644)
+mode["m"] = "good"
+r = subprocess.run([sys.executable, driver, "--mint-identity", f], env=dict(os.environ, ACTIONS_ID_TOKEN_REQUEST_URL=url, ACTIONS_ID_TOKEN_REQUEST_TOKEN="REQ-TOKEN"), capture_output=True, text=True, timeout=30)
+assert r.returncode == 0 and open(f).read() == "TOKEN-VALUE-1" and stat.S_IMODE(os.stat(f).st_mode) == 0o600, (r.returncode, open(f).read(), oct(os.stat(f).st_mode))
+srv.shutdown()
+PY
+
 echo "persona-uat: $pass passed, $failn failed"
 test "$failn" -eq 0

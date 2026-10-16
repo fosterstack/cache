@@ -267,7 +267,7 @@ def step_kind(x, pre, weekly):
     if "actions/checkout" in u: return "checkout"
     if "actions/github-script" in u: return "identity"
     if "upload-artifact" in u: return "upload"
-    if "nohup" in r and "ACTIONS_ID_TOKEN_REQUEST_URL" in r: return "refresher"
+    if "nohup" in r and "--mint-identity" in r: return "refresher"
     if re.fullmatch(r'rm -f "?\$\{?RUNNER_TEMP\}?/anthropic-identity-token"?', r): return "cleanup"
     if install_re(pre).match(r): return "install"
     if PIN_PIP_SHAPE.fullmatch(r): return "pinpip"
@@ -343,7 +343,7 @@ def common(name, job, bad):
     for k in ("container", "services"):
         if k in job:
             bad.append(f"{name}: the job declares {k}: the CI tools run only inside the driver, by digest, never as job {k}")
-    drivers = [s for s in steps if "persona-uat.py" in str(s.get("run", ""))]
+    drivers = [s for s in steps if "persona-uat.py" in str(s.get("run", "")) and "--mint-identity" not in str(s.get("run", ""))]
     if len(drivers) != 1:
         bad.append(f"{name}: expected exactly one step running bin/persona-uat.py, found {len(drivers)}"); return None
     d = drivers[0]
@@ -679,8 +679,8 @@ def _run_refresher(script):
     m = re.search(r"PERSONA_UAT_REFRESH_SECONDS:-([0-9]+)", script)
     if not m or not 10 <= int(m.group(1)) <= 300:
         probs.append("the identity refresher's default interval is not between 10 seconds and five minutes (an assertion expires after about five)")
-    if not re.search(r"urlopen\([^\n]*timeout=[0-9]+", script) or re.search(r"\bcurl\b|\bwget\b", script):
-        probs.append("the identity refresher's token fetch is not a python3 urlopen with a timeout (no curl or wget): one stalled request would stop the refreshing for the rest of the job")
+    if not re.search(r'python3 bin/persona-uat\.py --mint-identity "\$f\.new" \|\| continue', script) or re.search(r"\bcurl\b|\bwget\b|python3? -c", script):
+        probs.append("the identity refresher's token fetch is not the driver's committed --mint-identity mode (no curl, wget or inline python -c): the pin checker reads no inline code and a stalled request must not stop the refreshing")
     state = {"n": 0, "auth": [], "inflight": 0}
     class H(http.server.BaseHTTPRequestHandler):
         def log_message(self, *a): pass
@@ -700,14 +700,14 @@ def _run_refresher(script):
         env = dict(os.environ, RUNNER_TEMP=d, ACTIONS_ID_TOKEN_REQUEST_URL="http://127.0.0.1:%d/token?api-version=2.0" % srv.server_address[1],
                    ACTIONS_ID_TOKEN_REQUEST_TOKEN="REQ-TOKEN", PERSONA_UAT_REFRESH_SECONDS="0.3")
         # a refusal: the file does not exist yet
-        r0 = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30)
+        r0 = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=30, cwd=root)
         if r0.returncode == 0:
             probs.append("the identity refresher starts although the token file does not exist yet (the step must fail: the mint comes first)")
         with open(f, "w") as fh:
             fh.write("STALE-0")
         os.chmod(f, 0o600)
         t0 = time.time()
-        p = subprocess.Popen(["bash", "-c", script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, text=True)
+        p = subprocess.Popen(["bash", "-c", script], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True, text=True, cwd=root)
         try:
             p.communicate(timeout=20)
         except subprocess.TimeoutExpired:
@@ -1048,7 +1048,7 @@ def imutate(name, expect, fn, weekly=False):
     pre, st = synth_steps(weekly)
     fn(st)
     bd = []
-    judge_install("synth", st, next(x for x in st if "persona-uat.py" in str(x.get("run", ""))), pre, bd)
+    judge_install("synth", st, next(x for x in st if "persona-uat.py" in str(x.get("run", "")) and "--mint-identity" not in str(x.get("run", ""))), pre, bd)
     result(any(expect in b for b in bd), f"caught: {name} (reason: {expect!r})" + ("" if any(expect in b for b in bd) else f"; saw {bd}"))
 
 def smutate(name, expect, fn):
@@ -1125,7 +1125,7 @@ H40 = "a" * 40
 CLAIMS_JS = "// Print ONLY the identity claims the Anthropic federation rule matches on (never the token, which stays masked): a token-exchange 401 is then diagnosable.\ntry {\n  const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));\n  const claims = {};\n  for (const k of ['sub', 'aud', 'ref', 'job_workflow_ref', 'environment', 'repository', 'repository_owner_id', 'event_name', 'iss']) {\n    claims[k] = payload[k];\n  }\n  core.info('OIDC identity claims (federation-rule inputs): ' + JSON.stringify(claims));\n} catch (e) {\n  core.warning('could not decode OIDC claims for logging');\n}\n"
 IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https://api.anthropic.com');\ncore.setSecret(token);\n"
          "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\n" + CLAIMS_JS)
-REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    tok=$(python3 -c "import json,os,urllib.request as u; r=u.Request(os.environ[\\"ACTIONS_ID_TOKEN_REQUEST_URL\\"]+\\"&audience=https://api.anthropic.com\\",headers={\\"Authorization\\":\\"bearer \\"+os.environ[\\"ACTIONS_ID_TOKEN_REQUEST_TOKEN\\"]}); print(json.load(u.urlopen(r,timeout=20))[\\"value\\"])") || continue\n    [ -n "$tok" ] && [ "$tok" != "null" ] || continue\n    [ -e "$f" ] || break\n    ( umask 077; printf "%s" "$tok" > "$f.new" ) && mv -f "$f.new" "$f"\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
+REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    python3 bin/persona-uat.py --mint-identity "$f.new" || continue\n    [ -e "$f" ] || break\n    mv -f "$f.new" "$f"\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
 CLEANUP = 'rm -f "${RUNNER_TEMP}/anthropic-identity-token"'
 def synth_driver(weekly):
     pre = ""
@@ -1257,12 +1257,12 @@ def _mutate(name, expect, fn, which, BR, BF):
 
 def set_image(job, value):
     """replace the driver's whole --image argument (quoted or not, spaces inside allowed), whatever its formatting"""
-    d = next(s for s in job["steps"] if "persona-uat.py" in str(s.get("run", "")))
+    d = next(s for s in job["steps"] if "persona-uat.py" in str(s.get("run", "")) and "--mint-identity" not in str(s.get("run", "")))
     new, n = re.subn(r"--image\s+(\"[^\"]*\"|'[^']*'|\S+)", lambda m: "--image " + value, d["run"].replace("\\\n", " "), count=1)
     assert n == 1 and new != d["run"], "set_image changed nothing"
     d["run"] = new
 
-def drv(job): return next(s for s in job["steps"] if "persona-uat.py" in str(s.get("run", "")))
+def drv(job): return next(s for s in job["steps"] if "persona-uat.py" in str(s.get("run", "")) and "--mint-identity" not in str(s.get("run", "")))
 def up(job): return next(s for s in job["steps"] if "upload-artifact" in str(s.get("uses", "")))
 
 # release job
@@ -1623,16 +1623,17 @@ for lab, w in (("rc", "rel"), ("weekly", "fresh")):
     mutate(f"{lab} the refresher runs in the foreground", "does not return", lambda j: _sub(j, " </dev/null >/dev/null 2>&1 &\ndisown", " </dev/null >/dev/null 2>&1"), w)
     mutate(f"{lab} the refresher process is killed with its step (a timer in a subshell that is waited for and exits)", "did not replace the stale token file", lambda j: _sub(j, "while [ -e \"$f\" ] && sleep \"$every\"; do", "while false; do"), w)
     mutate(f"{lab} the refresher re-mints only once", "re-minted only once", lambda j: _sub(j, "done\n'", "break; done\n'"), w)
-    mutate(f"{lab} the refresher writes another file", "did not replace the stale token file", lambda j: _sub(j, '> "$f.new" ) && mv -f "$f.new" "$f"', '> "$f.new" ) && mv -f "$f.new" "$f.other"'), w)
-    mutate(f"{lab} the refreshed token file is world-readable", "not 0600", lambda j: _sub(j, "umask 077", "umask 022"), w)
-    mutate(f"{lab} the refresher keeps recreating a removed file", "recreated the token file", lambda j: _sub(j, '    [ -e "$f" ] || break\n    ( umask', '    ( umask'), w)
-    mutate(f"{lab} the refresher never stops when the file is gone", "recreated the token file", lambda j: (_sub(j, 'while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n', 'while sleep "$every"; do\n'), _sub(j, '    [ -e "$f" ] || break\n    ( umask', '    ( umask')), w)
+    mutate(f"{lab} the refresher writes another file", "did not replace the stale token file", lambda j: _sub(j, 'mv -f "$f.new" "$f"', 'mv -f "$f.new" "$f.other"'), w)
+    mutate(f"{lab} the refreshed token file is world-readable", "not 0600", lambda j: _sub(j, 'mv -f "$f.new" "$f"', 'chmod 644 "$f.new"; mv -f "$f.new" "$f"'), w)
+    mutate(f"{lab} the refresher keeps recreating a removed file", "recreated the token file", lambda j: _sub(j, '    [ -e "$f" ] || break\n    mv -f', '    mv -f'), w)
+    mutate(f"{lab} the refresher never stops when the file is gone", "recreated the token file", lambda j: (_sub(j, 'while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n', 'while sleep "$every"; do\n'), _sub(j, '    [ -e "$f" ] || break\n    mv -f', '    mv -f')), w)
     mutate(f"{lab} the refresher interval defaults to 10 minutes", "default interval is not between", lambda j: _sub(j, "REFRESH_SECONDS:-60", "REFRESH_SECONDS:-600"), w)
     mutate(f"{lab} the refresher starts although no token file exists", "starts although the token file does not exist", lambda j: _sub(j, '[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\n', ""), w)
-    mutate(f"{lab} the refresher asks the OIDC endpoint without the request token", "did not replace the stale token file", lambda j: _sub(j, 'os.environ[\\"ACTIONS_ID_TOKEN_REQUEST_TOKEN\\"]', '\\"x\\"'), w)
-    mutate(f"{lab} the refresher's token fetch has no timeout (a stalled request stops the refreshing)", "not a python3 urlopen with a timeout", lambda j: _sub(j, ",timeout=20", ""), w)
-    mutate(f"{lab} the refresher fetches the token with curl again", "not a python3 urlopen with a timeout", lambda j: _sub(j, "python3 -c", "curl -sSf --max-time 20 -c"), w)
-    mutate(f"{lab} the refresher asks for another audience", "did not replace the stale token file", lambda j: _sub(j, "audience=https://api.anthropic.com", "audience=https://example.invalid"), w)
+    # (the request token is presented by the driver's mode: bin/persona-uat-test.sh drives it against a fake endpoint that refuses any other header)
+    mutate(f"{lab} the refresher no longer fetches through the driver's mode", "expected exactly one identity refresher step", lambda j: _sub(j, 'python3 bin/persona-uat.py --mint-identity "$f.new" || continue', "true"), w)
+    mutate(f"{lab} the refresher fetches the token with curl again", "expected exactly one identity refresher step", lambda j: _sub(j, "python3 bin/persona-uat.py --mint-identity", "curl -sSf --max-time 20 -o"), w)
+    mutate(f"{lab} the refresher fetches the token with inline python again", "expected exactly one identity refresher step", lambda j: _sub(j, "python3 bin/persona-uat.py --mint-identity", "python3 -c 'pass' #"), w)
+    # (the audience is asked for by the driver's mode: bin/persona-uat-test.sh drives it against a fake endpoint that refuses any other audience)
     mutate(f"{lab} no token cleanup step at the end", "must end with exactly one `if: always()` step that removes", lambda j: j.update(steps=j["steps"][:-1]), w)
     mutate(f"{lab} the cleanup step is not always()", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"][-1].update({"if": "${{ success() }}"}), w)
     mutate(f"{lab} the cleanup step is not the last step", "must end with exactly one `if: always()` step that removes", lambda j: j["steps"].append({"run": "true"}), w)
