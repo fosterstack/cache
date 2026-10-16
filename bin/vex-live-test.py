@@ -38,6 +38,10 @@ def _sh_fences(text):
     while i < len(lines):
         m = re.fullmatch(r"( {0,3})(`{3,}|~{3,})(.*)", lines[i])
         if not m:
+            # HTML hides Markdown from a reader (a comment or a raw block can wrap a fence the reader never sees), so outside a fence the page may hold neither a line that
+            # starts a raw HTML block nor a comment that opens and does not close on its line (the one-line pinned markers at the end of a text line are fine)
+            if re.match(r" {0,3}<[A-Za-z/?!]", lines[i]) or re.search(r"<!--(?!.*-->)", lines[i]):
+                raise ValueError("the page holds a raw HTML block or a multi-line comment at line %d: not parsed" % (i + 1))
             i += 1
             continue
         indent, fence, info = m.groups()
@@ -257,23 +261,38 @@ def _ids(items, path):
 
 
 def judge_grype(before, after, cve):
-    """None when Grype matched the CVE before, lists it as IGNORED after (our VEX applied — affirmative evidence), and
-    keeps every other match; otherwise why not (Codex #169 r1, SEC-169-05: an empty or broken report is never success)."""
+    """None when Grype matched the CVE before, lists exactly those matches as IGNORED after (our VEX applied: affirmative evidence), and keeps every other match
+    with nothing new: findings are compared by complete identity (id + package name, version, type), so a finding lost on one package or a new one is caught
+    (Codex #169 r1 SEC-169-05: an empty or broken report is never success; Codex #387 r2)."""
+    def ident(m):
+        a = m.get("artifact") if isinstance(m, dict) else None
+        v = m.get("vulnerability") if isinstance(m, dict) else None
+        if not isinstance(v, dict) or not isinstance(v.get("id"), str):
+            raise ValueError("a Grype finding without an identifier")
+        a = a if isinstance(a, dict) else {}
+        return (v["id"], str(a.get("name", "")), str(a.get("version", "")), str(a.get("type", "")))
     try:
         for doc in (before, after):
             if not isinstance(doc, dict) or not isinstance(doc.get("matches"), list) \
                     or not isinstance(doc.get("ignoredMatches", []), list):
                 return "not a Grype report"
-        b, a = set(_ids(before["matches"], ("vulnerability", "id"))), set(_ids(after["matches"], ("vulnerability", "id")))
-        ign = set(_ids(after.get("ignoredMatches", []), ("vulnerability", "id")))
+        b, a = [ident(m) for m in before["matches"]], [ident(m) for m in after["matches"]]
+        ign = [ident(m) for m in after.get("ignoredMatches", [])]
+        bign = [ident(m) for m in before.get("ignoredMatches", [])]
     except ValueError as e:
         return str(e)
-    if cve not in b:
+    target = sorted(x for x in b if x[0] == cve)
+    if not target:
         return "Grype did not report %s before" % cve
-    if cve in a or cve not in ign:
-        return "Grype did not ignore %s with our file" % cve
-    if not b - {cve} or not (b - {cve}) <= a:
+    if any(x[0] == cve for x in a) or sorted(x for x in ign if x[0] == cve) != target:
+        return "Grype did not ignore %s with our file (on every package it matched before)" % cve
+    rest_b = sorted(x for x in b if x[0] != cve)
+    if not rest_b:
         return "Grype dropped findings our file does not cover"
+    if sorted(a) != rest_b:
+        return "Grype's other findings changed (%d before, %d after)" % (len(rest_b), len(a))
+    if sorted(x for x in ign if x[0] != cve) != sorted(bign):
+        return "Grype ignored findings our file does not cover"
     return None
 
 

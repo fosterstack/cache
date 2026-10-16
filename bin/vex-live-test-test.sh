@@ -9,7 +9,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 - "$root" <<'PY'
-import copy, importlib.util, json, os, re, subprocess, sys, tempfile, yaml
+import copy, importlib.util, json, os, re, shutil, subprocess, sys, tempfile, yaml
 root = sys.argv[1]
 passed = failed = 0
 def check(name, ok, got=""):
@@ -65,6 +65,34 @@ except ValueError:
 check("a block that is never closed is refused, not run", got == "refused", got)
 ex = guide + "\n``` sh\ntouch SPACED_EXECUTED\n```\n"
 check("an opening fence whose info string is not exactly sh is not a command", [b["text"] for b in L.guide_blocks(ex)] == [b["text"] for b in blocks])
+
+# --- Codex #387 r2: HTML comments and raw HTML hide Markdown fences from a reader, so a page that holds a multi-line comment or a raw HTML block is refused, not parsed
+for why, extra in [("a fence inside a multi-line HTML comment", "\n<!--\n```sh\ngrype example.invalid/draft:latest\n```\n-->\n"),
+                   ("a fence inside a single-line-opened comment", "\n<!-- draft\n```sh\ngrype example.invalid/draft:latest\n```\n-->\n"),
+                   ("a raw HTML block", "\n<div>\n```sh\ngrype example.invalid/draft:latest\n```\n</div>\n"),
+                   ("a raw pre block", "\n<pre>\n```sh\nid\n```\n</pre>\n")]:
+    try:
+        L.guide_blocks(guide + extra); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("SEC-387 a page with %s is refused" % why, got == "refused", got)
+check("SEC-387 an HTML comment that opens and closes on one line (the pinned markers) is fine", "<!-- pinned:" in guide and len(L.guide_blocks(guide)) == len(blocks))
+
+# --- Codex #387 r2: the page's command blocks are read by the pin checker like any script (a plain unpinned pull added to the page must not run with the job's credentials)
+def pin_findings(doc_text):
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, ".github/workflows")); os.makedirs(os.path.join(t, "bin"))
+        shutil.copy(os.path.join(root, "bin/install-scanner.sh"), os.path.join(t, "bin/install-scanner.sh"))
+        steps = ""
+        for b in L.guide_blocks(doc_text):
+            steps += "      - name: block\n        run: |\n" + "".join(("          " + ln if ln.strip() else "") + "\n" for ln in b["text"].rstrip("\n").split("\n"))
+        open(os.path.join(t, ".github/workflows/page.yml"), "w").write("name: page\non: push\npermissions:\n  contents: read\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + steps)
+        r = subprocess.run(["python3", "-I", os.path.join(root, ".github/agent/bin/check-action-pins.py"), "."], cwd=t, capture_output=True, text=True)
+        return "\n".join(ln for ln in (r.stdout + r.stderr).split("\n") if "page.yml" in ln)   # the findings about the page's steps (the sandbox tree has no gate workflow)
+res = pin_findings(guide)
+check("SEC-387 the page's blocks, run as steps, have no pin-checker finding", res == "", res[-400:])
+bad = guide.replace("```sh\ngrype ", "```sh\ndocker pull busybox:latest\ngrype ", 1)
+check("SEC-387 a plain unpinned pull added to a block of the page is found by the pin checker", bad != guide and pin_findings(bad) != "")
 
 # --- release candidates (v0.3: nothing is published): the blocks the page's cannot-run list names are left out of the plan, every other block stays, in order
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
@@ -246,6 +274,17 @@ for why, after in [("{}", {}), ("no matches list", {"ignoredMatches": []}), ("ev
                    ("not a dict", "x")]:
     check("SEC-169-05 grype refuses after = %s" % why, L.judge_grype(GB, after, "CVE-T") is not None)
 check("SEC-169-05 grype refuses a before without the CVE", L.judge_grype(GA, GA, "CVE-T") is not None)
+# Codex #387 r2: Grype's judge compares complete finding identities (id + package), not CVE sets
+def gm(cve, pkg, ver="1"): return {"vulnerability": {"id": cve}, "artifact": {"name": pkg, "version": ver, "type": "deb"}}
+GB2 = {"matches": [gm("CVE-T", "a"), gm("CVE-U", "lib-a"), gm("CVE-U", "lib-b")], "ignoredMatches": []}
+GA2 = {"matches": [gm("CVE-U", "lib-a"), gm("CVE-U", "lib-b")], "ignoredMatches": [gm("CVE-T", "a")]}
+check("grype identity: the target moved to ignored and every other finding kept passes", L.judge_grype(GB2, GA2, "CVE-T") is None, L.judge_grype(GB2, GA2, "CVE-T"))
+for why, after in [("an unrelated finding on one package lost", {"matches": [gm("CVE-U", "lib-a")], "ignoredMatches": [gm("CVE-T", "a")]}),
+                   ("a new unrelated finding", {"matches": [gm("CVE-U", "lib-a"), gm("CVE-U", "lib-b"), gm("CVE-X", "lib-c")], "ignoredMatches": [gm("CVE-T", "a")]}),
+                   ("an unrelated finding also ignored", {"matches": [gm("CVE-U", "lib-a")], "ignoredMatches": [gm("CVE-T", "a"), gm("CVE-U", "lib-b")]}),
+                   ("the target ignored on another package only", {"matches": [gm("CVE-U", "lib-a"), gm("CVE-U", "lib-b")], "ignoredMatches": [gm("CVE-T", "other")]})]:
+    check("SEC-387 grype identity refuses %s" % why, L.judge_grype(GB2, after, "CVE-T") is not None)
+
 # SEC-169-06: Google's assessment must be NEW and come from a note this run's load created
 occ = lambda state, note=None: {"noteName": "projects/goog-vulnz/notes/CVE-T", "vulnerability": dict(
     {"vexAssessment": {"state": state, "noteName": note}} if state else {})}
@@ -411,6 +450,13 @@ OKCURL = 'echo "{}"'
 # Codex #387 r1 (P2): a failed delete is recorded for good: a later empty listing does not erase it
 GC_FAIL_DEL = r"""case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) if [ -f "$RUNNER_TEMP/del" ]; then echo "[]"; else echo '[{"package": "x/y/cache", "version": "sha256:aaaa"}]'; fi ;;
   *"images delete"*) touch "$RUNNER_TEMP/del"; exit 42 ;; esac"""
+# Codex #387 r2: an ECR per-image failure on an early pass is recorded for good too
+AWS_ECR_FAIL = r"""case "$*" in
+  *"ecr list-images"*) if [ -f "$RUNNER_TEMP/del" ]; then echo '{"imageIds": []}'; else echo '{"imageIds": [{"imageDigest": "sha256:aaaa"}]}'; fi ;;
+  *"ecr batch-delete-image"*) if [ -f "$RUNNER_TEMP/first" ]; then touch "$RUNNER_TEMP/del"; echo '{"failures": [], "imageIds": [{"imageDigest": "sha256:aaaa"}]}'; else touch "$RUNNER_TEMP/first"; echo '{"failures": [{"imageId": {"imageDigest": "sha256:aaaa"}, "failureCode": "KmsError"}], "imageIds": []}'; fi ;;
+  *"inspector2 list-filters"*) echo '{"filters": []}' ;; *) echo '{}' ;; esac"""
+rc, out = sh("sweep", {"aws": AWS_ECR_FAIL, "gcloud": OKGC, "ca-transport": OKCURL})
+check("SEC-387 sweep fails when an ECR per-image delete failed on an early pass and a later pass succeeded", rc != 0, (rc, out[-300:]))
 # Codex #387 r1 (P2): the page's removal block selects every filter named fosterstack-cache-; before it runs, every such filter in the account must be a live-test one
 FLT = lambda *names: """echo '{"filters": [%s]}'""" % ", ".join('{"name": "%s", "arn": "arn:%d"}' % (n, i) for i, n in enumerate(names))
 rc, out = sh("check_removal_scope", {"aws": FLT("fosterstack-cache-livetest-x", "fosterstack-cache-v0.3.0-CVE-1")}, {"REGION": "us-east-1"})

@@ -80,7 +80,7 @@ sweep() {   # empty the two dedicated test repositories, delete every live-test 
       r=$(aws ecr batch-delete-image --region "$REGION" --repository-name "$repo" --image-ids "$chunk" --output json) \
         || { echo "::error::ECR delete failed" >&2; rc=1; continue; }
       n=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" inventory --kind ecr-delete <<<"$r") || { rc=1; continue; }
-      [ "$n" = 0 ] || [ "$pass" -lt 3 ] || { echo "::error::ECR could not delete ${n} images" >&2; rc=1; }
+      [ "$n" = 0 ] || { echo "::error::ECR could not delete ${n} images" >&2; rc=1; }   # recorded for good: a later pass that succeeds does not erase it
     done <<<"$lst"
   done
   out=$(aws ecr list-images --region "$REGION" --repository-name "$repo" --output json) || return 1
