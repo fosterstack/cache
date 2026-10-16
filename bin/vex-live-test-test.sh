@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-012-AC1, REQ-SCAN-012-AC2, REQ-SCAN-012-AC3, REQ-SCAN-012-AC4, REQ-SCAN-012-AC5
+# proves: REQ-SCAN-012-AC1, REQ-SCAN-012-AC2, REQ-SCAN-012-AC3, REQ-SCAN-012-AC4, REQ-SCAN-012-AC5, REQ-SCAN-012-AC6
 # Scanner-panel rule 12 (owner RATIFIED Oct 2; read-back approved, advisor 0098), offline: the live test's plan runs the
 # guide's command blocks byte for byte (only its settings blocks take test values); the test copy of the Inspector file
 # differs from the generator's output only in the live-test tag and the test name prefix (plus exactly the fixture's
@@ -943,6 +943,29 @@ with tempfile.TemporaryDirectory() as t:
     open(bp, "w").write("not json")
     r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-pick", "--before", bp, "--openvex", vp], capture_output=True, text=True)
     check("scout-pick: an unreadable report is an error, never 'none'", r.returncode != 0, (r.returncode, r.stdout))
+
+# --- PR-C part D: the Scout leg's wiring. The Docker Hub test repository is a variable, its user and tokens are secrets of the live-test environment, handed to the steps that need
+#     them as environment variables only; the leg's tool (Docker Scout CLI) is installed pinned by checksum like the rescan's
+SCOUT_RUN_ENV = {"DH_REPO": "${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}", "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}",
+                 "DOCKERHUB_TEST_PUSH_TOKEN": "${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}", "DOCKERHUB_SCOUT_TOKEN": "${{ secrets.DOCKERHUB_SCOUT_TOKEN }}"}
+SCOUT_CLEAN_ENV = {k: SCOUT_RUN_ENV[k] for k in ("DH_REPO", "DOCKERHUB_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN")}
+for name, job in (("release.yml rc job", RJ), ("release.yml post-publish job", PJ), ("ci.yml", cj)):
+    steps = job.get("steps") or []
+    run_step = [s for s in steps if "bin/vex-live-run.sh run" in (s.get("run") or "")]
+    clean_step = [s for s in steps if "bin/vex-live-run.sh cleanup" in (s.get("run") or "")]
+    check("%s: the live-test step carries the Docker Hub repository and the three Docker Hub secrets as environment variables" % name,
+          len(run_step) == 1 and all((run_step[0].get("env") or {}).get(k) == v for k, v in SCOUT_RUN_ENV.items()), run_step and run_step[0].get("env"))
+    check("%s: the cleanup step carries the repository, the user and the push token (not the Scout read token)" % name,
+          len(clean_step) == 1 and all((clean_step[0].get("env") or {}).get(k) == v for k, v in SCOUT_CLEAN_ENV.items())
+          and "DOCKERHUB_SCOUT_TOKEN" not in (clean_step[0].get("env") or {}), clean_step and clean_step[0].get("env"))
+    users = [s.get("name") for s in steps if re.search(r"secrets\.DOCKERHUB", json.dumps(s))]
+    check("%s: the Docker Hub secrets appear in those two steps only, never in a command line" % name,
+          sorted(users) == sorted(s.get("name") for s in run_step + clean_step) and not any("secrets." in (s.get("run") or "") for s in steps), users)
+    inst = [s for s in steps if "docker-scout" in (s.get("run") or "") and "install-scanner" in (s.get("run") or "")]
+    check("%s: Docker Scout is installed pinned by checksum, before the live-test step" % name,
+          len(inst) == 1 and 'install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"' in inst[0]["run"]
+          and steps.index(inst[0]) < steps.index(run_step[0]), [s.get("name") for s in inst])
+    check("%s: no secrets: inherit and no secret outside the live-test steps" % name, "inherit" not in json.dumps(job) and "secrets." not in json.dumps([s for s in steps if s not in run_step + clean_step]))
 
 # --- PR-C part B: the shell leg, with stubs (fail closed without its repository and tokens; the fixture and the production image scanned with Docker's authors
 #     only and with ours; the verdict from bin/scout-selfcheck.py; pushes journaled and counted; the Docker Hub repository swept)
