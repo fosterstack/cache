@@ -154,7 +154,12 @@ case "$TOOL" in
     ;;
   kind)
     # the Kubernetes-in-Docker CLI for the persona UAT (on-call persona): a single binary; the driver finds it on PATH
-    curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VER}/${A_KIND}" || pipeline_fail "download failed: kind v${KIND_VER}"
+    # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (the version here must equal KIND_VER; the wiring test checks)
+    case "$A_KIND" in
+      kind-linux-amd64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64" || pipeline_fail "download failed: kind v${KIND_VER} amd64" ;;
+      kind-linux-arm64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64" || pipeline_fail "download failed: kind v${KIND_VER} arm64" ;;
+      *) pipeline_fail "no kind asset for ${arch}" ;;
+    esac
     verify "$tmp/kind"
     install -m 0755 "$tmp/kind" "${DEST}/kind" || pipeline_fail "install failed for kind"
     "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"

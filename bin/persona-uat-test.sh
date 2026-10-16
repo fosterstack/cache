@@ -2318,8 +2318,8 @@ while [ $# -gt 0 ]; do
 done
 case "$id" in ""|*[!0-9]*) echo "invalid run id: '$id'" >&2; exit 1;; esac
 if [ -z "$repo" ]; then
-  url=$(git config --get remote.origin.url 2>/dev/null) || { echo "failed to determine base repo: no git remotes found (use -R owner/repo)" >&2; exit 1; }
-  repo=$(printf '%s' "$url" | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')
+  origin=$(git config --get remote.origin.url 2>/dev/null) || { echo "failed to determine base repo: no git remotes found (use -R owner/repo)" >&2; exit 1; }
+  repo=$(printf '%s' "$origin" | sed -E 's#^(https://github.com/|git@github.com:)##; s#\.git$##')
 fi
 case "$repo" in */*) ;; *) echo "expected the [HOST/]OWNER/REPO format" >&2; exit 1;; esac
 # the run and its artifacts belong to ONE repository (FAKE_REPO): any other owner/name does not have them

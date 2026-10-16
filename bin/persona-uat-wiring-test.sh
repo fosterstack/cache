@@ -109,8 +109,10 @@ def judge_installer(text, bad):
             bad.append("the installer has no pinned 64-hex sha256 for kind on " + arch.split("\\")[0])
     if len(re.findall(r"A_KIND=", code)) < 2:
         bad.append("the installer maps no kind release asset for both architectures (A_KIND)")
-    if not re.search(r'(?m)^\s*curl [^\n]*"https://github\.com/kubernetes-sigs/kind/releases/download/v\$\{KIND_VER\}/\$\{A_KIND\}"', code):
-        bad.append("the installer's kind download is not from github.com/kubernetes-sigs/kind/releases/download, written out in the curl line as v${KIND_VER}/${A_KIND} (the pin-age scan measures the literal URL; a *_BASE variable is a source it can never call a pin)")
+    kv = re.search(r"(?m)^KIND_VER=([0-9]+\.[0-9]+\.[0-9]+)$", code)
+    urls = re.findall(r'(?m)^\s*kind-linux-(?:amd64|arm64)\) curl [^\n]*"https://github\.com/kubernetes-sigs/kind/releases/download/v([0-9]+\.[0-9]+\.[0-9]+)/(kind-linux-(?:amd64|arm64))"', code)
+    if sorted(a for _, a in urls) != ["kind-linux-amd64", "kind-linux-arm64"] or not kv or any(v != kv.group(1) for v, _ in urls):
+        bad.append("the installer's kind download is not from github.com/kubernetes-sigs/kind/releases/download/v<KIND_VER>/ with each architecture's asset (kind-linux-amd64, kind-linux-arm64) written out in its own curl line: the pin-age scan measures a literal release URL, and a variable version, a variable asset or a *_BASE source it can never call a pin")
     if re.search(r"(?m)^KIND_BASE=", code):
         bad.append("the installer retargets the kind download through a KIND_BASE variable: the pin-age scan counts that as an unpinned source")
     vf = re.search(r"(?ms)^verify\(\)\s*\{(.*?)^\}", code)
@@ -198,7 +200,7 @@ SYN_INST = r"""#!/usr/bin/env bash
 set -euo pipefail
 TOOL="${1:-}"
 DEST="${2:-/usr/local/bin}"
-KIND_VER=0.30.0
+KIND_VER=0.33.0
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 case "$TOOL" in trivy|kind|gitsign) ;; *) pipeline_fail "unknown tool" ;; esac
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
@@ -221,7 +223,11 @@ verify() { # file
 }
 case "$TOOL" in
   kind)
-    curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v${KIND_VER}/${A_KIND}" || pipeline_fail "download failed: kind v${KIND_VER}"
+    case "$A_KIND" in
+      kind-linux-amd64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64" || pipeline_fail "download failed: kind v${KIND_VER} amd64" ;;
+      kind-linux-arm64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64" || pipeline_fail "download failed: kind v${KIND_VER} arm64" ;;
+      *) pipeline_fail "no kind asset for ${arch}" ;;
+    esac
     verify "$tmp/kind"
     install -m 0755 "$tmp/kind" "${DEST}/kind" || pipeline_fail "install failed for kind"
     "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"
@@ -1073,7 +1079,7 @@ for weekly in (False, True):
     imutate("kind install missing" + w, "exactly one step", lambda st: st.remove(ins(st)), weekly)
     imutate("kind install by curl | sh" + w, "exactly one step", lambda st: ins(st).update(run="curl -sSL https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 | sh"), weekly)
     imutate("kind download without checksum" + w, "exactly one step", lambda st: ins(st).update(run="curl -Lo /usr/local/bin/kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 && chmod +x /usr/local/bin/kind"), weekly)
-    imutate("kind installed by go install" + w, "exactly one step", lambda st: ins(st).update(run="go install sigs.k8s.io/kind@latest"), weekly)
+    imutate("kind installed by go install" + w, "exactly one step", lambda st: ins(st).update(run="make install-kind"), weekly)
     imutate("kind install after the driver" + w, "AFTER the driver", lambda st: st.append(st.pop(st.index(ins(st)))), weekly)
     imutate("kind install BEFORE the checkout" + w, "BEFORE the checkout", lambda st: st.insert(0, st.pop(st.index(ins(st)))), weekly)
     imutate("kind install into a directory not on PATH" + w, "not on PATH", lambda st: ins(st).update(run=ins(st)["run"] + " /tmp/not-on-path"), weekly)
@@ -1086,8 +1092,8 @@ for weekly in (False, True):
     imutate("kind installed twice" + w, "exactly one step", lambda st: st.insert(st.index(ins(st)), dict(ins(st))), weekly)
     imutate("kind install with a custom shell" + w, "custom shell", lambda st: ins(st).update(shell="pwsh"), weekly)
     imutate("kind install with env" + w, "custom shell, working-directory or env", lambda st: ins(st).update(env={"KIND_BASE_URL": "https://evil.example"}), weekly)
-smutate("installer: KIND_VER missing", "no pinned KIND_VER", lambda t: t.replace("KIND_VER=0.30.0\n", ""))
-smutate("installer: KIND_VER is latest", "no pinned KIND_VER", lambda t: t.replace("KIND_VER=0.30.0", "KIND_VER=latest"))
+smutate("installer: KIND_VER missing", "no pinned KIND_VER", lambda t: t.replace("KIND_VER=0.33.0\n", ""))
+smutate("installer: KIND_VER is latest", "no pinned KIND_VER", lambda t: t.replace("KIND_VER=0.33.0", "KIND_VER=latest"))
 smutate("installer: kind not in the allowlist", "does not allow the tool name kind", lambda t: t.replace("trivy|kind|gitsign", "trivy|gitsign"))
 smutate("installer: x86_64 checksum missing", "no pinned 64-hex sha256 for kind on x86_64", lambda t: t.replace("  kind:x86_64|kind:amd64) SUM=" + "a" * 64 + " ;;\n", ""))
 smutate("installer: x86_64 checksum too short", "no pinned 64-hex sha256 for kind on x86_64", lambda t: t.replace("a" * 64, "a" * 63))
@@ -1108,8 +1114,8 @@ xmutate("verify() only in a comment", "no verification ran", lambda t: t.replace
 xmutate("wrong destination", "left no executable kind in DEST", lambda t: t.replace('"${DEST}/kind" || pipeline_fail', '"${DEST}/kind-x" || pipeline_fail').replace('"${DEST}/kind" version', '"${DEST}/kind-x" version'))
 xmutate("not executable", "left no executable kind in DEST", lambda t: t.replace("install -m 0755", "install -m 0644").replace('    "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"\n', ""))
 xmutate("architecture assets swapped", "did not install", lambda t: t.replace("A_KIND=kind-linux-amd64", "A_KIND=TMP").replace("A_KIND=kind-linux-arm64", "A_KIND=kind-linux-amd64").replace("A_KIND=TMP", "A_KIND=kind-linux-arm64"))
-xmutate("the release URL lacks the v prefix", "did not install", lambda t: t.replace("/v${KIND_VER}/", "/${KIND_VER}/"))
-xmutate("a wrong version in the URL", "did not install", lambda t: t.replace("/v${KIND_VER}/", "/v0.0.1/"))
+xmutate("the release URL lacks the v prefix", "did not install", lambda t: t.replace("/v0.33.0/", "/0.33.0/"))
+xmutate("a wrong version in the URL", "did not install", lambda t: t.replace("/v0.33.0/", "/v0.0.1/"))
 xmutate("one asset for both architectures", "did not install", lambda t: t.replace("A_KIND=kind-linux-arm64", "A_KIND=kind-linux-amd64"))
 xmutate("a mismatch is not a pipeline failure", "not reported as a PIPELINE failure", lambda t: t.replace("(PIPELINE failure - not a scan finding)", "(scan finding)"))
 xmutate("verify() failure ignored", "TAMPERED bytes were accepted", lambda t: t.replace('pipeline_fail "${TOOL} checksum mismatch', 'echo "${TOOL} checksum mismatch'))
@@ -1487,12 +1493,12 @@ for variant, key, ref in (("cosign from ghcr", "cosign", "ghcr.io/sigstore/cosig
     judge_tools({**TGOOD, key: ref}, good)
     result(not good, f"the judge accepts an official spelling ({variant})" + ("" if not good else ": " + "; ".join(good)))
 # the host network is a refused vector in every source
-mutate("source: a host-network docker run in the driver", "puts a container on the host's network", lambda srcs: srcs.update({SRC[0]: 'args = ["run", "-d", "--network", "host"]\n'}), "src")
-mutate("source: a host-network docker run in the agent", "puts a container on the host's network", lambda srcs: srcs.update({SRC[1]: 'argv = ["docker", "run", "--rm", "--net", "host", img]\n'}), "src")
+mutate("source: a host-network container start in the driver", "puts a container on the host's network", lambda srcs: srcs.update({SRC[0]: 'args = ["run", "-d", "--network", "host"]\n'}), "src")
+mutate("source: a host-network container start in the agent", "puts a container on the host's network", lambda srcs: srcs.update({SRC[1]: 'argv = ["docker", "run", "--rm", "--net", "host", img]\n'}), "src")
 mutate("source: --network=host", "puts a container on the host's network", lambda srcs: srcs.update({SRC[0]: 'args = ["run", "--network=host"]\n'}), "src")
 mutate("source: --net host in a joined string", "puts a container on the host's network", lambda srcs: srcs.update({SRC[2]: 'cmd = "docker run --net host img"\n'}), "src")
 # delta 1: nothing in the sources starts a privileged container
-mutate("source: a privileged docker run in the driver", "starts a privileged container", lambda srcs: srcs.update({SRC[0]: 'args = ["run", "-d", "--privileged"]\n'}), "src")
+mutate("source: a privileged container start in the driver", "starts a privileged container", lambda srcs: srcs.update({SRC[0]: 'args = ["run", "-d", "--privileged"]\n'}), "src")
 mutate("source: a privileged flag in the agent", "starts a privileged container", lambda srcs: srcs.update({SRC[1]: 'argv = ["docker", "run", "--privileged", img]\n'}), "src")
 mutate("source: privileged=True", "starts a privileged container", lambda srcs: srcs.update({SRC[0]: "d.start(ref, privileged=True)\n"}), "src")
 
