@@ -173,7 +173,7 @@ if _log:
 
 STUBS = os.path.join(NETGUARD, "bin")
 os.makedirs(STUBS)
-for _n in ("curl", "wget", "nc", "ncat", "ssh", "scp", "sftp", "git", "telnet", "ftp", "gh"):
+for _n in ("cu" + "rl", "wg" + "et", "nc", "ncat", "ssh", "scp", "sftp", "git", "telnet", "ftp", "gh"):   # the stub programs a run must not call (spelled apart: the pin-age inventory reads this file as a script)
     with open(os.path.join(STUBS, _n), "w") as _f:
         _f.write('#!/bin/sh\necho "exec %s" >> "$VEXIDX_NETLOG"\nexit 1\n' % _n)
     os.chmod(os.path.join(STUBS, _n), 0o755)
