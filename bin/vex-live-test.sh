@@ -97,8 +97,8 @@ sweep() {   # empty the two dedicated test repositories, delete every live-test 
     lst=$($LT inventory --kind gar <<<"$out") || return 1
     [ -n "$lst" ] || break
     while read -r ref; do
-      gcloud artifacts docker images delete "$ref" --delete-tags --quiet >/dev/null 2>&1 || [ "$pass" -lt 3 ] \
-        || { echo "::error::cannot delete ${ref}" >&2; rc=1; }
+      gcloud artifacts docker images delete "$ref" --delete-tags --quiet >/dev/null 2>&1 \
+        || { echo "::error::cannot delete ${ref}" >&2; rc=1; }   # recorded for good: a later empty listing does not erase it
     done <<<"$lst"
   done
   out=$(gcloud artifacts docker images list "$GAR" --format=json) || return 1
@@ -122,6 +122,15 @@ sweep() {   # empty the two dedicated test repositories, delete every live-test 
   lst=$(notes_of "https://${GAR}/") || return 1
   [ -z "$lst" ] || { echo "::error::VEX notes remain on the test repository's images" >&2; rc=1; }
   return "$rc"
+}
+
+check_removal_scope() {   # the page's removal block deletes every Inspector filter named fosterstack-cache-*: run it only when each such filter is a live-test one
+  local out all test
+  out=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS --output json) \
+    || { echo "::error::cannot list the Inspector filters" >&2; return 1; }
+  all=$($LT inventory --kind filters --prefix "fosterstack-cache-" <<<"$out") || return 1
+  test=$($LT inventory --kind filters --prefix "$TEST_FILTER_PREFIX" <<<"$out") || return 1
+  [ "$all" = "$test" ] || { echo "::error::the guide's removal would delete Inspector filters that are not live-test ones" >&2; return 1; }
 }
 
 select_release() {   # the release under test: MODE rc = the release candidate tag (vX.Y.Z-rcN, nothing published); MODE release = the final tag just
@@ -287,6 +296,12 @@ grype "${GAR}/cache@${FIX}" --vex fosterstack-cache.openvex.json -o json -q > gr
 $LT judge --kind grype --before grype.before.json --after grype.after.json --cve "$CVE"
 
 # --- Inspector: the CVE active before; the guide's command as written; then every finding of it suppressed
+inspector_inventory() {   # every finding of the fixture in any status: {findings: [{findingArn, vulnerabilityId, status}]}
+  aws inspector2 list-findings --region "$REGION" --output json --filter-criteria \
+    "$(jq -nc --arg h "$FIX" '{ecrImageHash: [{comparison: "EQUALS", value: $h}]}')" \
+    | jq -ec '{findings: [.findings[] | {findingArn: .findingArn, vulnerabilityId: .packageVulnerabilityDetails.vulnerabilityId, status: .status}]}'
+}
+inspector_inventory > inspector.before.json
 inspector_cves ACTIVE | jq -e --arg c "$CVE" 'index($c) != null' >/dev/null \
   || { echo "::error::Inspector does not show ${CVE} on the fixture before the suppression" >&2; exit 1; }
 guide inspector
@@ -297,6 +312,8 @@ inspector_suppressed() {   # at least one finding of the CVE on the fixture, all
       | jq -er '[.findings[].status] | unique | join(",")') && [ "$s" = SUPPRESSED ]
 }
 waitfor "Inspector to suppress ${CVE} on the fixture" inspector_suppressed
+inspector_inventory > inspector.after.json
+$LT judge --kind inspector --before inspector.before.json --after inspector.after.json --cve "$CVE"
 
 # --- Google: the guide's command as written for our production image, then for the fixture; the assessment must come
 #     from a note this run's load created (the sweep left none)
@@ -312,6 +329,7 @@ waitfor "Google to assess ${CVE} on the fixture from our note" google_judged
 $LT judge --kind google --before google.before.json --after google.after.json --cve "$CVE" --notes run-notes.txt
 
 # --- staying current: the guide's removal as written leaves none of ours
+check_removal_scope
 guide inspector-remove
 left=$(aws inspector2 list-filters --region "$REGION" --action SUPPRESS \
   --query "length(filters[?starts_with(name, 'fosterstack-cache-')])" --output text)

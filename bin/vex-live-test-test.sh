@@ -237,6 +237,37 @@ for why, b, a in [("pre-existing NOT_AFFECTED before", [occ("NOT_AFFECTED", "pro
 check("SEC-169-06 google refuses when this run created no note", L.judge_google({"occurrences": [occ(None)]},
       {"occurrences": [occ("NOT_AFFECTED", "projects/p/notes/ours")]}, "CVE-T", set()) is not None)
 
+# Codex #387 r1 (P2): Google's judge compares the COMPLETE occurrence inventories: every occurrence before is still there after (an unrelated finding or one of two
+# target occurrences lost proves nothing), every target occurrence carries our note's assessment, and nothing else was assessed by it
+def occn(name, cve, state=None, note=None):
+    return {"name": name, "noteName": "projects/goog-vulnz/notes/" + cve, "vulnerability": dict(
+        {"vexAssessment": {"state": state, "noteName": note}} if state else {})}
+OURS = "projects/p/notes/ours"
+T1, T2, U1 = occn("o/1", "CVE-T"), occn("o/2", "CVE-T"), occn("o/3", "CVE-U")
+T1a, T2a = occn("o/1", "CVE-T", "NOT_AFFECTED", OURS), occn("o/2", "CVE-T", "NOT_AFFECTED", OURS)
+check("google inventory: two target occurrences assessed and the unrelated one untouched passes",
+      L.judge_google({"occurrences": [T1, T2, U1]}, {"occurrences": [T1a, T2a, U1]}, "CVE-T", {OURS}) is None,
+      L.judge_google({"occurrences": [T1, T2, U1]}, {"occurrences": [T1a, T2a, U1]}, "CVE-T", {OURS}))
+for why, after in [("an unrelated finding lost", [T1a, T2a]), ("one of two target occurrences lost", [T1a, U1]),
+                   ("an unrelated finding assessed by our note too", [T1a, T2a, occn("o/3", "CVE-U", "NOT_AFFECTED", OURS)]),
+                   ("one target occurrence left unassessed", [T1a, T2, U1]), ("a new occurrence that was not there before", [T1a, T2a, U1, occn("o/9", "CVE-X")])]:
+    check("SEC-387 google inventory refuses %s" % why, L.judge_google({"occurrences": [T1, T2, U1]}, {"occurrences": after}, "CVE-T", {OURS}) is not None)
+
+# Codex #387 r1 (P2): Inspector's judge compares the complete finding inventories too: the target CVE's findings are all SUPPRESSED after, and every other finding is still
+# there, with the status it had (our file suppressed exactly one CVE)
+def fi(arn, cve, status): return {"findingArn": arn, "vulnerabilityId": cve, "status": status}
+IB = {"findings": [fi("a/1", "CVE-T", "ACTIVE"), fi("a/2", "CVE-T", "ACTIVE"), fi("a/3", "CVE-U", "ACTIVE")]}
+check("inspector inventory: the target suppressed and the other finding untouched passes",
+      L.judge_inspector(IB, {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-U", "ACTIVE")]}, "CVE-T") is None)
+for why, after in [("an unrelated CVE suppressed too", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-U", "SUPPRESSED")]),
+                   ("an unrelated finding lost", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED")]),
+                   ("one target finding still active", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "ACTIVE"), fi("a/3", "CVE-U", "ACTIVE")]),
+                   ("one target finding lost", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-U", "ACTIVE")]),
+                   ("a finding that was not there before", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-U", "ACTIVE"), fi("a/4", "CVE-X", "ACTIVE")])]:
+    check("SEC-387 inspector inventory refuses %s" % why, L.judge_inspector(IB, {"findings": after}, "CVE-T") is not None)
+check("SEC-387 inspector refuses a before without the target CVE", L.judge_inspector({"findings": [fi("a/3", "CVE-U", "ACTIVE")]}, {"findings": [fi("a/3", "CVE-U", "ACTIVE")]}, "CVE-T") is not None)
+check("SEC-387 inspector refuses a malformed document", L.judge_inspector(IB, {"findings": "x"}, "CVE-T") is not None and L.judge_inspector(IB, [], "CVE-T") is not None)
+
 # behavioral: the shell library, with stubs
 script = os.path.join(root, "bin/vex-live-test.sh")
 def sh(body, stubs, env=None):
@@ -323,8 +354,23 @@ OKAWS = r"""case "$*" in
   *) echo '{}' ;; esac"""
 OKGC = 'case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) echo "[]" ;; esac'
 OKCURL = 'echo "{}"'
+# Codex #387 r1 (P2): a failed delete is recorded for good: a later empty listing does not erase it
+GC_FAIL_DEL = r"""case "$*" in *"auth print-access-token"*) echo tok ;; *"images list"*) if [ -f "$RUNNER_TEMP/del" ]; then echo "[]"; else echo '[{"package": "x/y/cache", "version": "sha256:aaaa"}]'; fi ;;
+  *"images delete"*) touch "$RUNNER_TEMP/del"; exit 42 ;; esac"""
+# Codex #387 r1 (P2): the page's removal block selects every filter named fosterstack-cache-; before it runs, every such filter in the account must be a live-test one
+FLT = lambda *names: """echo '{"filters": [%s]}'""" % ", ".join('{"name": "%s", "arn": "arn:%d"}' % (n, i) for i, n in enumerate(names))
+rc, out = sh("check_removal_scope", {"aws": FLT("fosterstack-cache-livetest-x", "fosterstack-cache-v0.3.0-CVE-1")}, {"REGION": "us-east-1"})
+check("SEC-387 the guide's removal does not run while a non-test filter of ours exists", rc != 0, (rc, out[-200:]))
+rc, out = sh("check_removal_scope", {"aws": FLT("fosterstack-cache-livetest-x", "fosterstack-cache-livetest-y")}, {"REGION": "us-east-1"})
+check("SEC-387 the guide's removal may run when every filter of ours is a live-test one", rc == 0, (rc, out[-200:]))
+rc, out = sh("check_removal_scope", {"aws": FLT()}, {"REGION": "us-east-1"})
+check("SEC-387 the guide's removal may run when there is no filter", rc == 0, (rc, out[-200:]))
+rc, out = sh("check_removal_scope", {"aws": "exit 254"}, {"REGION": "us-east-1"})
+check("SEC-387 a failed filter listing stops the removal", rc != 0, (rc, out[-200:]))
 rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "ca-transport": OKCURL})
 check("sweep of empty test resources passes", rc == 0, out[-300:])
+rc, out = sh("sweep", {"aws": OKAWS, "gcloud": GC_FAIL_DEL, "ca-transport": OKCURL})
+check("SEC-387 sweep fails when a Google delete fails even though the next listing is empty", rc != 0, (rc, out[-300:]))
 rc, out = sh("sweep", {"aws": 'echo AccessDenied >&2; exit 254', "gcloud": OKGC, "ca-transport": OKCURL})
 check("SEC-169-08 sweep fails when AWS listing fails", rc != 0, out[-200:])
 rc, out = sh("sweep", {"aws": OKAWS, "gcloud": OKGC, "ca-transport": 'echo denied >&2; exit 22'})

@@ -188,31 +188,81 @@ def judge_grype(before, after, cve):
     return None
 
 
+def judge_inspector(before, after, cve):
+    """None when, before, the CVE has findings on the fixture, and after: every finding of before is still there (none new), every finding of the CVE is
+    SUPPRESSED, and every other finding has the status it had (our file suppressed exactly the one CVE). Documents: {"findings": [{findingArn, vulnerabilityId, status}]}."""
+    def fx(doc):
+        fs = doc.get("findings") if isinstance(doc, dict) else None
+        if not isinstance(fs, list) or not all(isinstance(f, dict) and isinstance(f.get("findingArn"), str) and isinstance(f.get("vulnerabilityId"), str)
+                                               and isinstance(f.get("status"), str) for f in fs):
+            raise ValueError("not an Inspector finding list")
+        out = {f["findingArn"]: f for f in fs}
+        if len(out) != len(fs):
+            raise ValueError("two findings carry the same ARN")
+        return out
+    try:
+        b, a = fx(before), fx(after)
+    except ValueError as e:
+        return str(e)
+    if not any(f["vulnerabilityId"] == cve for f in b.values()):
+        return "Inspector did not report %s before" % cve
+    if set(b) != set(a):
+        return "the finding inventory changed: %d lost, %d new" % (len(set(b) - set(a)), len(set(a) - set(b)))
+    for arn, f in a.items():
+        if f["vulnerabilityId"] == cve:
+            if f["status"] != "SUPPRESSED":
+                return "%s is %s after our file, not SUPPRESSED" % (cve, f["status"])
+        elif f["status"] != b[arn]["status"] or f["vulnerabilityId"] != b[arn]["vulnerabilityId"]:
+            return "an unrelated finding changed (%s: %s -> %s)" % (f["vulnerabilityId"], b[arn]["status"], f["status"])
+    return None
+
+
 def judge_google(before, after, cve, run_notes):
-    """None when, before, the CVE's occurrences on the fixture carry no NOT_AFFECTED assessment, and after, every one
-    carries NOT_AFFECTED from a note THIS run's load created (Codex #169 r1, SEC-169-06: a pre-existing or foreign
-    assessment proves nothing)."""
-    def occ(doc):
+    """None when, before, the CVE's occurrences on the fixture carry no NOT_AFFECTED assessment, and after: the inventory is COMPLETE and unchanged (every
+    occurrence of before is there, none is new: an unrelated finding or one of two target occurrences lost proves nothing), every target occurrence carries
+    NOT_AFFECTED from a note THIS run's load created (Codex #169 r1, SEC-169-06: a pre-existing or foreign assessment proves nothing), and no other
+    occurrence is assessed by this run's notes (our file suppressed exactly the one CVE)."""
+    def occs(doc):
         if not isinstance(doc, dict) or not isinstance(doc.get("occurrences", []), list):
             raise ValueError("not an occurrence list")
-        return [o for o in doc.get("occurrences", []) if isinstance(o, dict)
-                and str(o.get("noteName", "")).rsplit("/", 1)[-1] == cve]
+        return [o for o in doc.get("occurrences", []) if isinstance(o, dict)]
+
+    def ident(o):   # the occurrence's resource name; one without a name is identified by its note and the rest of its content minus the assessment
+        if o.get("name"):
+            return str(o["name"])
+        v = {k: x for k, x in (o.get("vulnerability") or {}).items() if k != "vexAssessment"}
+        return json.dumps({"note": o.get("noteName"), "v": v}, sort_keys=True)
+
+    def assessment(o):
+        return ((o.get("vulnerability") or {}).get("vexAssessment")) or {}
+
+    def target(o):
+        return str(o.get("noteName", "")).rsplit("/", 1)[-1] == cve
     try:
-        b, a = occ(before), occ(after)
+        bo, ao = occs(before), occs(after)
     except ValueError as e:
         return str(e)
     if not run_notes:
         return "this run's load created no VEX note"
+    b, a = [o for o in bo if target(o)], [o for o in ao if target(o)]
     if not b:
         return "Google did not report %s before" % cve
-    if any(((o.get("vulnerability") or {}).get("vexAssessment") or {}).get("state") == "NOT_AFFECTED" for o in b):
+    if any(assessment(o).get("state") == "NOT_AFFECTED" for o in b):
         return "%s was already assessed not affected before our load" % cve
     if not a:
         return "Google no longer reports %s at all" % cve
+    bi, ai = [ident(o) for o in bo], [ident(o) for o in ao]
+    if len(set(bi)) != len(bi) or len(set(ai)) != len(ai):
+        return "two occurrences carry the same identity"
+    if set(bi) != set(ai):
+        return "the occurrence inventory changed: %d lost, %d new" % (len(set(bi) - set(ai)), len(set(ai) - set(bi)))
     for o in a:
-        va = (o.get("vulnerability") or {}).get("vexAssessment") or {}
+        va = assessment(o)
         if va.get("state") != "NOT_AFFECTED" or va.get("noteName") not in run_notes:
             return "%s is not assessed not affected by this run's note" % cve
+    for o in ao:
+        if not target(o) and assessment(o).get("noteName") in run_notes:
+            return "an unrelated finding is assessed by this run's note"
     return None
 
 
@@ -326,7 +376,7 @@ def main(argv=None):
     iv.add_argument("--kind", required=True, choices=("ecr", "gar", "filters", "notes", "ecr-delete"))
     iv.add_argument("--prefix", default="")
     j = sub.add_parser("judge")
-    j.add_argument("--kind", choices=("grype", "google"), required=True)
+    j.add_argument("--kind", choices=("grype", "google", "inspector"), required=True)
     j.add_argument("--before", required=True)
     j.add_argument("--after", required=True)
     j.add_argument("--cve", required=True)
@@ -390,7 +440,9 @@ def main(argv=None):
             except (OSError, ValueError):
                 return None
         b, af = load(a.before), load(a.after)
-        if a.kind == "google":
+        if a.kind == "inspector":
+            why = judge_inspector(b, af, a.cve)
+        elif a.kind == "google":
             notes = {ln.strip() for ln in open(a.notes)} - {""} if a.notes else set()
             why = judge_google(b, af, a.cve, notes)
         else:
