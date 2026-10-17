@@ -384,7 +384,7 @@ case "$*" in "pr list"*"--state closed"*) i=50; sep=; printf '['; for b in ${GH_
   for b in ${GH_STUB_CLOSED_FORK:-}; do i=$((i+10)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":true,"mergedAt":null,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
   for b in ${GH_STUB_CLOSED_FOREIGN:-}; do i=$((i+10)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"mergedAt":null,"author":{"login":"someone-else"}}' "$sep" "$i" "$b"; sep=,; done; printf ']\n';; esac
 case "$*" in "pr create"*) [ -z "${GH_STUB_CREATE_FAIL:-}" ] || { echo "gh: HTTP 500" >&2; exit 1; };; esac
-case "$*" in "pr list"*"--head "*) if [ -n "${GH_STUB_HEAD_OPEN:-}" ]; then echo '[{"number":77}]'; else echo '[]'; fi; exit 0;; esac
+case "$*" in "pr list"*"--head "*) case "$*" in *" -q length"*) if [ -n "${GH_STUB_HEAD_OPEN:-}" ]; then echo 1; else echo 0; fi;; *) if [ -n "${GH_STUB_HEAD_OPEN:-}" ]; then echo '[{"number":77}]'; else echo '[]'; fi;; esac; exit 0;; esac
 case "$*" in "pr create"*) [ -z "${GH_STUB_CREATE_SIGNAL:-}" ] || { echo "https://example.invalid/pull/77"; kill -TERM $PPID; sleep 1; exit 0; };; esac   # the shell runs gh as the last command of a subshell it replaces: $PPID is the script
 case "$*" in "pr list"*"--state closed"*) ;; "pr list"*) [ -z "${GH_STUB_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }; i=40; sep=; printf '['
   for b in ${GH_STUB_OPEN:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
@@ -1513,6 +1513,7 @@ printf 'refresh/ro0000001\n' >"$work/ro/plan/1-refresh/branch"; printf 'Refresh\
 run_s4 env GIT_STUB_UNTRACKED=1 "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/ro/plan" --repo-dir "$work/rp"
 t "AC34" "signed commit: when removing an untracked planned file fails the job fails (non-zero) and names the file" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'could not remove rodir/new.txt' '$work/log'"
 chmod 755 "$work/rp/rodir" 2>/dev/null; rm -rf "$work/rp/rodir"
+t "AC34" "the script a workflow step runs holds no inline interpreter code (python3 -c): the action-pin checker refuses it, and main's CI went red on it" bash -c "! grep -Eq 'python3 (-[A-Za-z]+ )*-c ' '$RF_PROD'"
 sgrun GH_STUB_VERIFIED=true
 t "AC34" "signed commit: after the API commit the working tree is put back to the start commit (the files the job edited are restored, so a later invocation in the same checkout sees the start state)" bash -c "grep -Eq '^git( -C [^ ]+)? checkout -q cafe0123 -- ' '$CALLS'"
 mkrepo; rm -rf "$work/plan"
