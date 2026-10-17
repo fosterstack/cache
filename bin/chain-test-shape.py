@@ -573,10 +573,24 @@ SIGN_WITH = {"digests": "${{ needs.build.outputs.digests }}"}
 PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
 LIVE_TEST_RC_IF = "${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 LIVE_TEST_FINAL_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+PERSONA_RC_IF = "${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+# The persona job's only secrets (REQ-UAT-001-AC1, the persona-uat environment): the model names and the federation identifiers. It holds no registry credential or write token.
+PERSONA_SECRETS = {"PERSONA_UAT_MODEL", "PERSONA_UAT_COMPLIANCE_MODEL", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID", "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID"}
 DECIDE_IF = "${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 # The secrets context in any spelling (secrets.X, secrets['X'], toJSON(secrets), secrets ['X']): the word itself, not the dotted form only.
 # Contexts are case-insensitive and an expression may span lines or hold tabs, so every DECODED string of the job (keys too) is searched, never its JSON text.
 SECRETS_CONTEXT = re.compile(r"\bsecrets\b", re.IGNORECASE)
+
+
+def names_other_secrets(obj, allowed):
+    """names_secrets, except for the dotted form secrets.NAME with NAME in `allowed`: every other spelling of the secrets context still counts"""
+    if isinstance(obj, str):
+        return bool(SECRETS_CONTEXT.search(re.sub(r"\bsecrets\.(\w+)", lambda m: "" if m.group(1) in allowed else m.group(0), obj, flags=re.IGNORECASE)))
+    if isinstance(obj, dict):
+        return any(names_other_secrets(k, allowed) or names_other_secrets(v, allowed) for k, v in obj.items())
+    if isinstance(obj, (list, tuple)):
+        return any(names_other_secrets(v, allowed) for v in obj)
+    return False
 
 
 def names_secrets(obj):
@@ -595,6 +609,9 @@ NON_CHAIN = {
     # else), after Check on a release candidate and after Release on a final tag; they publish nothing, hold no secrets., and cannot run in the dry run.
     "live-test": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["check"], "if": LIVE_TEST_RC_IF},
     "live-test-release": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "live-test", "needs": ["release"], "if": LIVE_TEST_FINAL_IF},
+    # The persona UAT of a release candidate (REQ-UAT-001-AC1): after Build only, against Build's own layout loaded into a registry on the runner; the persona-uat environment
+    # holds the model secrets and nothing else; contents read and the federated token (id-token write), no registry credential, no write.
+    "persona-uat": {"perm": {"contents": "read", "id-token": "write"}, "agent": False, "env": "persona-uat", "needs": ["build"], "if": PERSONA_RC_IF, "secrets": PERSONA_SECRETS},
 }
 HOSTILE = {"perm": {"contents": "read"}, "agent": False}
 
@@ -681,7 +698,8 @@ def graph(path):
                 bad.append("job %s may name only environment: agent, got %r" % (name, job["environment"]))
         elif spec.get("env"):
             if job.get("environment") != spec["env"]: bad.append("job %s must name exactly environment: %s, got %r" % (name, spec["env"], job.get("environment")))
-            if names_secrets(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
+            if names_other_secrets(job, spec.get("secrets", set())):
+                bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's%s)" % (name, "; %s holds only %s" % (name, sorted(spec["secrets"])) if spec.get("secrets") else ""))
         else:
             if "environment" in job: bad.append("job %s may not name an environment (the App secrets live in agent), got %r" % (name, job["environment"]))
             if names_secrets(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)

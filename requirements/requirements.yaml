@@ -2743,6 +2743,12 @@ requirements:
         then: "it does so only through bin/loopback-get.sh, which runs curl for exactly one URL and refuses before curl starts any URL that is not http://localhost, http://127.0.0.1 or http://fscache (each with an optional numeric port and a path starting with /, userinfo, fragments, whitespace and lookalike hosts refused) or the value of ACTIONS_ID_TOKEN_REQUEST_URL (https, alone or followed by &audience=); it allows a closed list of options (-s -S -f -I -g, -X GET|PUT|POST|HEAD, -u -H -o -D -w --data-binary, --max-time and --connect-timeout with a number) and refuses every other; it starts curl with -q, no proxy, one protocol and no redirect followed; the acceptance and artifact scripts name no curl of their own"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC25
+        given: "a pull request that adds the line of bin/loopback-get.sh that starts the fetch program for the loopback helper (REQ-SUP-001-AC24), exactly the line whose whole text hashes to the value the checker pins, and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins \"loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): \""
+        when: "pin-age runs"
+        then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line in the helper (one character), and that ruling prefix on any other line (of the helper or of another file) rules nothing, so the one line that fetches for a loopback or token request is the only line this ruling allows"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -2753,10 +2759,12 @@ requirements:
     origin: persona UAT (owner, Oct 3 2026, ops/docs/ratify/2026-10-02-owner-load.md point 9; criteria ratified Oct 4 2026)
     confidence: implementation-only
     acceptance_criteria:
+      # Source: advisor reading Oct 17 of the owner's Oct 3/4 rule and REQ-CHAIN-007-AC14 (a release candidate publishes nothing); settled with the advisor (handoff 0486, read-back line 4).
+      # Earlier wording of the changed fragments: "given: a release candidate tag v*-rc.*; when: its release run promotes; then: five persona agents (... a compliance reviewer verifying signatures, SBOMs and VEX per our guide, ... and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, ...".
       - id: REQ-UAT-001-AC1
-        given: a release candidate tag v*-rc.*
-        when: its release run promotes
-        then: "five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall"
+        given: a release candidate tag (v*-rcN) and the repository variable PERSONA_UAT_ENABLED set to true
+        when: the candidate's own run has built it
+        then: "the personas that can be exercised against an unsigned, unpublished candidate (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, and an evaluator with only the README and ten minutes) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the image is loaded from the run's own build into a registry bound to localhost on the runner (a digest-pinned registry service; nothing is pushed anywhere else), the digest the personas receive is the digest Build made, no registry credential or write token exists in the job (the personas keep their federated model-provider identity token, no stored key), and the only public trace of a persona run is a pass or fail line per persona and overall; the compliance reviewer (signatures, SBOMs, VEX) and the on-call engineer (upgrade, rollback) need a signed, published release and are exercised by the weekly run against the latest release (AC2), not on a candidate"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-UAT-001-AC2

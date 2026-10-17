@@ -382,16 +382,26 @@ def walk(node, path, out, bad, where):
 
 # ---------------------------------------------------------------------------- the rules
 
-def container_keys(where, node, bad):
-    """A job container or service mapping: only image, credentials, and env with plain names."""
+LOOPBACK_PORT = re.compile(r"127\.0\.0\.1:[0-9]{1,5}:[0-9]{1,5}")
+
+
+def container_keys(where, node, bad, ports_ok=False):
+    """A job container or service mapping: only image, credentials, and env with plain names. A SERVICE may also publish ports, each a plain
+    127.0.0.1:<host>:<container> string (the runner puts the value into the docker command, so no other form is read)."""
     for k, v in node.value:
         name = k.value if isinstance(k, yaml.ScalarNode) else None
-        if name == "env" and isinstance(v, yaml.MappingNode):
+        if name == "ports" and ports_ok:
+            if not isinstance(v, yaml.SequenceNode):
+                bad.append(f"{where}.ports: not a list")
+            for item in (v.value if isinstance(v, yaml.SequenceNode) else []):
+                if not (isinstance(item, yaml.ScalarNode) and LOOPBACK_PORT.fullmatch(item.value) and all(1 <= int(n) <= 65535 for n in item.value.split(":")[1:])):
+                    bad.append(f"{where}.ports: only 127.0.0.1:<port>:<port> as plain text is read, got {getattr(item, 'value', None)!r}")
+        elif name == "env" and isinstance(v, yaml.MappingNode):
             for kk, _ in v.value:
                 if not (isinstance(kk, yaml.ScalarNode) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", kk.value)):
                     bad.append(f"{where}.env: a variable name that is not plain: {getattr(kk, 'value', None)!r}")
         elif name not in ("image", "credentials"):
-            bad.append(f"{where}.{name}: refused (only image, credentials and env; the runner splices "
+            bad.append(f"{where}.{name}: refused (only image, credentials and env, and ports on a service; the runner splices "
                        f"the rest into the docker command ahead of the image)")
 
 
@@ -3069,7 +3079,7 @@ def check_file(tree, rel, pins, bad):
                     imgs = [vv for kk, vv in v.value if key_of(kk) == "image"]
                     if not imgs:
                         bad.append(f"{sw}: service without an image")
-                    container_keys(sw, v, bad)
+                    container_keys(sw, v, bad, ports_ok=True)
                     for vv in imgs:
                         check_image(f"{sw}.image", vv, bad)
                 else:
