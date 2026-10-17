@@ -9,6 +9,7 @@ live test. bin/vex-live-run.sh does the cloud calls; this file decides what they
                  Inspector found it in, plus a decoy: another CVE at a version that is not installed, which must hide nothing); the Inspector file's test copy
                  differs from the generator's only in the live-test tag and the test name prefix (check_copy proves it)
 - pick-cve:      a CVE every service reports for the fixture, highest severity first — never a guess
+- fixture-check: the fixture image carries two packages of one source (a CVE active in two package names, by construction)
 - pick-scope:    the package Inspector reports that CVE in, and the decoy CVE (owner Oct 16: every Inspector rule names its package)
 - release:       on main, the newest published release that carries the rule-10 files
 """
@@ -119,6 +120,43 @@ def fixture_vex(vex, images, fixture_digest, cve, repository="ghcr.io/fosterstac
     timages = copy.deepcopy(images)
     timages["production"] = {"index": fixture_digest, "children": images["production"]["children"]}
     return tvex, timages
+
+
+def fixture_manifest_problems(manifest, run_text):
+    """The fixture's manifest (docs/using-our-vex.live-fixture.json) names exactly the image the runner copies, and two distinct packages built from one source:
+    a CVE of that source is then reported on both, which the Inspector case of the live test needs (advisor Oct 17). [] when it holds."""
+    bad = []
+    if not isinstance(manifest, dict) or set(manifest) != {"image", "platform", "packages", "why"}:
+        return ["the manifest is not exactly image, platform, packages and why"]
+    m = re.search(r"(?m)^FIXTURE_SRC=(\S+)$", run_text)
+    if not m or len(re.findall(r"\bFIXTURE_SRC\s*\+?=", run_text)) != 1 or manifest["image"] != m.group(1) \
+            or not re.fullmatch(r"[a-z0-9./-]+@sha256:[0-9a-f]{64}", manifest["image"]):
+        bad.append("the manifest's image is not the one digest the runner copies")
+    exports = re.findall(r'crane export --platform (\S+) "\$FIXTURE_SRC"', run_text)
+    if manifest["platform"] != "linux/amd64" or exports != [manifest["platform"]]:
+        bad.append("the manifest's platform is not the one platform the runner exports (linux/amd64)")
+    pk = manifest["packages"]
+    if not isinstance(pk, list) or len(pk) < 2 or not all(isinstance(x, dict) and set(x) == {"name", "version", "source", "source_version"}
+                                                          and all(isinstance(v, str) and v for v in x.values()) for x in pk):
+        return bad + ["the manifest needs at least two packages, each with a name, a version and a source"]
+    if len({x["name"] for x in pk}) != len(pk):
+        bad.append("the same package is named twice")
+    if len({x["source"] for x in pk}) != 1:
+        bad.append("the packages are not all built from one source")
+    return bad
+
+
+def fixture_image_problems(dpkg_status, manifest):
+    """The image's own package list (var/lib/dpkg/status) holds every package of the manifest, installed, at its version and from its source. [] when it does."""
+    seen = {}
+    for st in dpkg_status.split("\n\n"):
+        f = dict(re.findall(r"(?m)^([A-Za-z-]+): (.*)$", st))
+        if f.get("Package"):
+            m = re.fullmatch(r"(\S+)(?: \((\S+)\))?", f.get("Source", f["Package"]).strip())
+            src, sver = (m.group(1), m.group(2) or f.get("Version")) if m else (None, None)   # no bracket: the source has the binary's version
+            seen[f["Package"]] = (f.get("Version"), src, sver, f.get("Status", "").endswith(" installed"))
+    return ["the fixture image lacks %s %s from %s %s (installed)" % (p["name"], p["version"], p["source"], p["source_version"]) for p in manifest["packages"]
+            if seen.get(p["name"]) != (p["version"], p["source"], p["source_version"], True)]
 
 
 PKG_NAME = r"[A-Za-z0-9._+-]+"
@@ -565,6 +603,12 @@ def main(argv=None):
     c = sub.add_parser("pick-cve")
     c.add_argument("--reports", required=True)
     c.add_argument("--openvex", required=True, help="our statements: their CVEs are never the fixture's")
+    fc = sub.add_parser("fixture-check")
+    fc.add_argument("--manifest", required=True)
+    fc.add_argument("--run", required=True, help="bin/vex-live-run.sh: the digest it copies must be the manifest's")
+    fcx = fc.add_mutually_exclusive_group()    # one input, so one can never stand in for the other (Codex #420 r1)
+    fcx.add_argument("--dpkg-status", help="the fixture image's var/lib/dpkg/status: its packages must be the manifest's")
+    fcx.add_argument("--image-tar", help="the fixture image's filesystem as a tar (crane export): var/lib/dpkg/status is READ from it, nothing is extracted")
     sc = sub.add_parser("pick-scope")
     sc.add_argument("--reports", required=True)
     sc.add_argument("--cve", required=True)
@@ -631,6 +675,24 @@ def main(argv=None):
         ours = {s["vulnerability"]["name"] for s in json.load(open(a.openvex))["statements"]}
         print(pick_cve({k: (v if k in ("grype", "inspector") else set(v)) for k, v in rep.items()}, ours))   # Inspector's CVE -> packages map stays a map (pick_cve needs it)
         return 0
+    if a.cmd == "fixture-check":
+        import tarfile
+        try:
+            manifest = json.load(open(a.manifest))
+            bad = fixture_manifest_problems(manifest, open(a.run).read())
+            if not bad and a.dpkg_status:
+                bad = fixture_image_problems(open(a.dpkg_status, errors="replace").read(), manifest)
+            elif not bad and a.image_tar:
+                with tarfile.open(a.image_tar) as tf:
+                    member = tf.getmember("var/lib/dpkg/status")
+                    if not member.isfile():
+                        raise ValueError("var/lib/dpkg/status is not a regular file in the image")
+                    bad = fixture_image_problems(tf.extractfile(member).read().decode("utf-8", "replace"), manifest)
+        except (OSError, ValueError, KeyError, tarfile.TarError) as e:
+            bad = ["cannot read the fixture check's input: %s" % e]
+        for b in bad:
+            print("::error::%s" % b, file=sys.stderr)
+        return 1 if bad else 0
     if a.cmd == "pick-scope":
         ours = {s["vulnerability"]["name"] for s in json.load(open(a.openvex))["statements"]}
         try:

@@ -737,6 +737,73 @@ with tempfile.TemporaryDirectory() as t:
                                 GITHUB_SHA="b", GITHUB_OUTPUT=outp, RUNNER_TEMP=t))
     got = open(outp).read() if os.path.exists(outp) else ""
 check("SEC-169-10 a long diff with a VEX change still runs the live test", "changed=true" in got, (r.returncode, got))
+# --- the fixture carries, by construction, a CVE active in two package names (advisor Oct 17: the run must not discover on its first try that the fixture lacks one):
+# docs/using-our-vex.live-fixture.json pins the image and the two packages (libc6 and libc-bin, both built from glibc 2.36-9, so every glibc CVE is reported on both);
+# the manifest must name exactly the digest the runner copies, and the runner checks the real image's package list against it before it pushes anything
+run_text = open(os.path.join(root, "bin/vex-live-run.sh")).read()
+man_path = os.path.join(root, "docs/using-our-vex.live-fixture.json")
+man = json.load(open(man_path)) if os.path.exists(man_path) else {}
+check("the fixture manifest exists and holds no problem against the runner", bool(man) and L.fixture_manifest_problems(man, run_text) == [], L.fixture_manifest_problems(man, run_text) if man else "missing")
+check("the manifest pins libc6 and libc-bin from one source", sorted(p["name"] for p in man.get("packages", [])) == ["libc-bin", "libc6"] and len({p["source"] for p in man["packages"]}) == 1, man)
+def mut(**kw):
+    m = copy.deepcopy(man); m.update(kw); return m
+check("OWNER-3 a manifest whose image is not the runner's digest is a problem", L.fixture_manifest_problems(mut(image="docker.io/library/debian@sha256:" + "0" * 64), run_text) != [])
+check("OWNER-3 a manifest with one package is a problem", L.fixture_manifest_problems(mut(packages=man["packages"][:1]), run_text) != [])
+check("OWNER-3 a manifest with two packages of two sources is a problem (a CVE of one source need not reach the other)",
+      L.fixture_manifest_problems(mut(packages=[man["packages"][0], dict(man["packages"][1], source="other")]), run_text) != [])
+check("OWNER-3 a manifest with the same package twice is a problem", L.fixture_manifest_problems(mut(packages=[man["packages"][0], man["packages"][0]]), run_text) != [])
+check("OWNER-3 a manifest with a missing field or an extra key is a problem", L.fixture_manifest_problems(mut(packages=[dict(man["packages"][0], version=""), man["packages"][1]]), run_text) != []
+      and L.fixture_manifest_problems(mut(extra=1), run_text) != [])
+def stanza(name, ver, src=None, status="install ok installed"):
+    return "Package: %s\nStatus: %s\nVersion: %s\n%s\n" % (name, status, ver, ("Source: %s\n" % src) if src else "")
+GOOD = stanza("libc6", "2.36-9", "glibc") + "\n" + stanza("libc-bin", "2.36-9", "glibc") + "\n" + stanza("zlib1g", "1:1.2.13.dfsg-1", "zlib")
+check("the real-shaped package list satisfies the manifest", L.fixture_image_problems(GOOD, man) == [], L.fixture_image_problems(GOOD, man))
+for why, text in [("libc-bin missing", stanza("libc6", "2.36-9", "glibc")), ("libc6 at another version", stanza("libc6", "2.36-10", "glibc") + "\n" + stanza("libc-bin", "2.36-9", "glibc")),
+                  ("libc-bin built from another source", stanza("libc6", "2.36-9", "glibc") + "\n" + stanza("libc-bin", "2.36-9", "other")),
+                  ("libc-bin removed but not purged", stanza("libc6", "2.36-9", "glibc") + "\n" + stanza("libc-bin", "2.36-9", "glibc", "deinstall ok config-files")), ("an empty list", "")]:
+    check("OWNER-3 an image that loses the property is refused: %s" % why, L.fixture_image_problems(text, man) != [])
+check("a Source field with its version in brackets still names the source", L.fixture_image_problems(stanza("libc6", "2.36-9", "glibc (2.36-9)") + "\n" + stanza("libc-bin", "2.36-9", "glibc (2.36-9)"), man) == [])
+# Codex #420 r1 (both seats): platform bound to the export, source version checked, one assignment of the image, exclusive inputs, errors reported, the manifest in the gate
+check("OWNER-3 a manifest platform other than the one the runner exports is a problem", L.fixture_manifest_problems(mut(platform="linux/arm64"), run_text) != []
+      and L.fixture_manifest_problems(mut(platform=None), run_text) != [])
+check("OWNER-3 a second assignment of FIXTURE_SRC in the runner is a problem", L.fixture_manifest_problems(man, run_text + "\nFIXTURE_SRC=docker.io/library/debian@sha256:" + "1" * 64 + "\n") != [])
+check("OWNER-3 an export of another platform than the manifest's is a problem", L.fixture_manifest_problems(man, run_text.replace("--platform linux/amd64", "--platform linux/arm64")) != [])
+check("OWNER-3 a source version that differs from the manifest's is refused (glibc (9.9))",
+      L.fixture_image_problems(stanza("libc6", "2.36-9", "glibc (9.9)") + "\n" + stanza("libc-bin", "2.36-9", "glibc (2.36-9)"), man) != [])
+check("OWNER-3 a manifest without a source_version for a package is a problem", L.fixture_manifest_problems(mut(packages=[{k: v for k, v in man["packages"][0].items() if k != "source_version"}, man["packages"][1]]), run_text) != [])
+import io, contextlib, tarfile
+with tempfile.TemporaryDirectory() as _t:
+    def cli(*args):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            try:
+                rc = L.main(["fixture-check", "--manifest", man_path, "--run", os.path.join(root, "bin/vex-live-run.sh")] + list(args))
+            except SystemExit as e:
+                rc = e.code
+        return rc, err.getvalue()
+    good_status = os.path.join(_t, "status"); open(good_status, "w").write(GOOD)
+    def mktar(name, content):
+        with tarfile.open(os.path.join(_t, name), "w") as tf:
+            if content is not None:
+                ti = tarfile.TarInfo("var/lib/dpkg/status"); data = content.encode(); ti.size = len(data); tf.addfile(ti, io.BytesIO(data))
+        return os.path.join(_t, name)
+    check("fixture-check passes on a good package list given as a file and as a tar", cli("--dpkg-status", good_status)[0] == 0 and cli("--image-tar", mktar("good.tar", GOOD))[0] == 0)
+    check("OWNER-3 fixture-check refuses both inputs at once (one could silently stand in for the other)", cli("--dpkg-status", good_status, "--image-tar", os.path.join(_t, "missing.tar"))[0] not in (0, None))
+    rc, err = cli("--image-tar", mktar("empty.tar", None))
+    check("OWNER-3 a tar without the package list is refused with a message", rc == 1 and "::error::" in err, (rc, err))
+    rc, err = cli("--dpkg-status", os.path.join(_t, "nope"))
+    check("OWNER-3 a missing input is refused with a message, not a crash", rc == 1 and "::error::cannot read" in err, (rc, err))
+    link = os.path.join(_t, "link.tar")
+    with tarfile.open(link, "w") as tf:
+        ti = tarfile.TarInfo("var/lib/dpkg/status"); ti.type = tarfile.SYMTYPE; ti.linkname = "/etc/passwd"; tf.addfile(ti)
+    rc, err = cli("--image-tar", link)
+    check("OWNER-3 a package list that is a link in the image is refused", rc == 1 and "::error::" in err, (rc, err))
+    # the main-push gate runs the live test when only the fixture manifest changed
+    gate_re = re.search(r"grep -qE '([^']+)'", gstep).group(1)
+    check("OWNER-3 the change gate matches the fixture manifest", re.search(gate_re, "docs/using-our-vex.live-fixture.json") is not None, gate_re)
+# the runner does this check on the real image, before any push (static: the order of the lines)
+i_chk, i_push = run_text.find("fixture-check"), run_text.find('push_copy "$FIXTURE_SRC"')
+check("the runner exports the fixture and runs fixture-check on its package list before it pushes the fixture", 0 < i_chk < i_push and "--image-tar" in run_text, (i_chk, i_push))
 print("vex-live-test: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
