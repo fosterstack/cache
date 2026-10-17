@@ -3713,6 +3713,13 @@ assert not hits, hits[:3]
 naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/"))
           and any(m._names_vendor(l) for l in t.split("\n"))}
 extra = m.vendor_list_extras(root, files)
+import tempfile
+_t = tempfile.mkdtemp(); os_ = __import__("os"); os_.makedirs(_t + "/bin")
+_names = ("bin/install-scanner.sh", "bin/check-govulncheck.py", "bin/release-metadata.py")
+for _p in _names: open(_t + "/" + _p, "w").write("nothing here\n")
+_quiet = m.vendor_list_extras(_t, {_p: "nothing here\n" for _p in _names})
+assert _quiet == ["bin/check-govulncheck.py", "bin/install-scanner.sh", "bin/release-metadata.py"], _quiet     # the rule itself still reports every quiet listed file
+assert [p for p in _quiet if p != "bin/install-scanner.sh"] == ["bin/check-govulncheck.py", "bin/release-metadata.py"]   # the one skip below removes that one path and no other
 extra = [p for p in extra if p != "bin/install-scanner.sh"]   # listed ahead of the chain landing: its govulncheck block (REQ-SCAN-012) names tools/govulncheck/vendor on the chain branch and not yet on main
 assert not extra, "listed but names nothing: %s" % sorted(extra)
 missing = naming - set(m._VENDOR_NAMING_FILES)
@@ -3929,6 +3936,16 @@ twoc lr-link bin/loopback-get.sh $'#!/bin/sh\n' "$LL"
 ( cd "$work/lr-link" && rm bin/loopback-get.sh && ln -s "$LL" bin/loopback-get.sh && printf '#!/bin/sh\n' > bin/target.sh && git add -A && git -c user.name=t -c user.email=t@x commit -q --amend --no-edit )
 edck lr-link "$work/lr-link.json"
 CASE="loopback fetch row, a symlink named bin/loopback-get.sh whose target is the line: exit 1"
+check test "$rc" -eq 1
+# the loopback prefix on a line of another form (a gh release download) in the helper's own file rules nothing either: every form, not only a download
+python3 - "$work/lr-other-form.json" bin/loopback-get.sh "$LRP" <<'PY'
+import hashlib, json, sys
+H = lambda s: hashlib.sha256(s.encode()).hexdigest(); line = "gh release download v1 -R x/y"
+json.dump({"exceptions": [], "unmeasured_text": [{"file": sys.argv[2], "form": "a gh release or extension download", "key": H(line), "line": H(line), "ruling": sys.argv[3] + "x"}]}, open(sys.argv[1], "w"))
+PY
+twoc lr-other-form bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n''gh release download v1 -R x/y'$'\n'
+edck lr-other-form "$work/lr-other-form.json"
+CASE="the loopback ruling prefix on a gh release download line of the helper file rules nothing: exit 1"
 check test "$rc" -eq 1
 # the prefix does not lend the line to the other rulings, and the other rulings do not lend theirs to the helper line
 mkrowp "$work/lr-under-live.json" bin/loopback-get.sh "$LL" "$LIVEP"
