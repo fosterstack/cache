@@ -703,7 +703,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "342a0f11d93245283efdb7153078bf1fa052f4a73dda20e3912f4e582a128817",
+      "sha256": "b1a084fc272e8de025c1f7bd84790eaf8b73b73f50119e89e426663a821ab639",
       "tools": [
         "at",
         "awk",

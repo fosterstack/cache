@@ -2776,6 +2776,12 @@ d=$(cfix al_31 'm=pos; m+=ix\n> /dev/null set -o "$m"' '[]'); expm caught "$d" '
 d=$(cfix al_32 '# Only set -eo pipefail is set here' '[]'); expm caught "$d" 'set -o' "prose that says set -eo pipefail is refused too (fail-closed: reword the comment)"
 d=$(cfix al_33 '> /dev/null /usr/bin/curl() { :; }' '["curl"]'); expm caught "$d" 'function' "a path-named function definition behind a spaced redirection: refused (the function check has no prefix gate)"
 d=$(cfix al_34 '> /dev/null unalias -a\nBASH_ALIASES=()' '[]'); expm caught "$d" 'alias' "unalias and BASH_ALIASES behind a prefix: refused (whole-word search, no prefix gate)"
+# round 10 of the seats (433, both seats): `set -e -o posix` (a plain flag before a separate -o) behind an unparsed prefix hid from the count; the count is now every whole-word set followed by an option word, no option-shape to guess
+d=$(cfix al_35 '> /dev/null set -e -o posix' '[]'); expm caught "$d" 'set' "a plain flag before a separate -o posix behind a spaced redirection: refused"
+d=$(cfix al_36 'x="a b" set -e -o posix\nx+=1 set +e -o posix\n2> /dev/null set -eu -o posix' '[]'); expm caught "$d" 'set' "a flag before -o behind a quoted assignment, +=, a spaced fd redirection: refused"
+d=$(cfix al_37 '>| f set -u -o posix\n<<< x set -e -o posix\n> /dev/null set -e +o posix' '[]'); expm caught "$d" 'set' ">|, <<< and +o forms behind a prefix: refused"
+d=$(cfix al_38 '> /dev/null set -oposix\n> /dev/null set -x' '[]'); expm caught "$d" 'set' "any set with an option word behind an unparsed prefix is refused whatever its shape"
+d=$(cfix al_39 '# under `set -e`, a failure' '[]'); expm caught "$d" 'set' "prose naming set -e is refused too (reword the comment)"
 d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
 d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
@@ -3486,7 +3492,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1454
+EXPECT=1459
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -134,7 +134,7 @@ analyze_strace() {
 # UDP/SYN/DNS to any other address, private or public, is flagged.
 #
 # ANY tool/parse failure (unreadable pcap, tshark error, zero packets)
-# returns non-zero and, under `set -e`, fails the job. A broken
+# returns non-zero and, under errexit, fails the job. A broken
 # capture never passes silently.
 # ------------------------------------------------------------------
 analyze_pcap() {
