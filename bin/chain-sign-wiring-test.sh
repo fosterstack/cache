@@ -2723,7 +2723,16 @@ d=$(cfix ff_bt 'x=`/usr/bin/curl() { :; }; /usr/bin/curl u`' '["curl"]'); expm c
 d=$(cfix aq_1 "\$'/usr/bin/cur\\\\l' x" '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$'...' (a different program after bash decodes it): refused"
 d=$(cfix aq_2 "\$'/usr/bin/curl' x" '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$'...': refused even when the decoding agrees"
 d=$(cfix aq_3 '$"/usr/bin/curl" x' '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$\"...\": refused"
-d=$(cfix ff_text 'echo "the (connect)/sendto()/sendmsg() calls"' '[]'); expm ok "$d" - "text that merely looks like a path with parentheses is no function definition"
+# round 3 of the seats (433, seat B): ANY body after /NAME () is a definition (select, a newline before the body, a body keyword nobody listed): refused fail-closed
+d=$(cfix ff_select '/usr/bin/curl() select x in a; do echo H; break; done' '["curl"]'); expm caught "$d" 'function' "path-named function with a select body: refused"
+d=$(cfix ff_select_nl '/usr/bin/tar()\nselect x in a; do :; done' '["tar"]'); expm caught "$d" 'function' "path-named function with a newline before a select body: refused"
+d=$(cfix ff_fn_select 'function /usr/bin/curl select x in a; do :; done' '["curl"]'); expm caught "$d" 'function' "function /usr/bin/curl followed by a select body: refused"
+# round 3 of the seats (433, seat A): the check must not depend on comment stripping, which can diverge from bash (a '#' line inside a quote that spans lines; an ANSI-C escaped quote)
+d=$(cfix ff_multiq "x='\n# '; /usr/bin/curl() { echo H; }\n/usr/bin/curl u" '["curl"]'); expm caught "$d" 'function' "path-named function hidden behind a line that starts with # inside a quote spanning lines: refused"
+d=$(cfix ff_ansiq "echo \$'\\\\''' # x'; /usr/bin/curl() { echo H; }\n/usr/bin/curl u" '["curl"]'); expm caught "$d" 'function' "path-named function hidden after an ANSI-C escaped quote: refused"
+d=$(cfix ff_comment_def '# /usr/bin/curl() { :; }' '["curl"]'); expm caught "$d" 'function' "a path-named definition inside a comment is refused too (fail-closed: the check does not strip comments)"
+d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
+d=$(cfix ff_text_str 'echo "see /sendto() here"' '[]'); expm ok "$d" - "a string holding an absolute-path word and () but no function body is no definition (bash would not accept it as one)"
 d=$(cfix ff_call 'f() { /usr/bin/mktemp -d x; }\n( f )' '["mktemp"]'); expm ok "$d" - "a call of a fixed-path tool inside a subshell is accepted"
 d=$(cfix ff_def4 'f() { /usr/bin/mktemp -d x; }\nf' '["mktemp"]'); expm ok "$d" - "an ordinary function that calls a fixed-path tool is accepted"
 d=$(cfix c_unl 'bash bin/unlisted.sh' '["bash"]'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script (bash bin/unlisted.sh) stays refused"
@@ -3430,7 +3439,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1404
+EXPECT=1411
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

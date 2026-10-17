@@ -1115,7 +1115,7 @@ TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 # redirected through PATH. (2) A python interpreter may be handed the isolation flags -I and -B (each at most once, separate words) before the script it runs; any other option, a
 # combined flag, -c, -m, stdin or an unlisted script stays refused.
 FIXED_DIRS = ("/usr/bin/", "/bin/", "/usr/local/bin/")
-FUNC_BY_PATH = re.compile(r"(?<![^\s;&|{}()!`])(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=\"'$`]*)[ \t]*\([ \t]*\)[ \t\n]*(?:\{|\(|if\b|while\b|until\b|for\b|case\b|\[\[))")
+FUNC_BY_PATH = re.compile(r"(?<![^\s;&|{}()!`])(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=\"'$`]*)[ \t]*\([ \t]*\)[ \t\n]*(?:\{|\(|if\b|while\b|until\b|for\b|select\b|case\b|\[\[))")
 FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
 PY_ISOLATION = ("-I", "-B")
 def fixed_tool(w, tools):
@@ -1295,7 +1295,7 @@ def scan_script(path, text, row, rows, base):
             if (w.startswith("./") or in_tree or script_like(w)) and n != path and n not in runs and n != selfbase:
                 add("script-name", span, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
     if not py:
-        for m in FUNC_BY_PATH.finditer("\n".join(strip_line(l_) for l_ in logical(text).split("\n"))):                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
+        for m in FUNC_BY_PATH.finditer(logical(text)):                       # the RAW logical text, comments included: stripping a "comment" can diverge from bash (a # line inside a quote spanning lines, an ANSI-C escaped quote)                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
             add(None, "", "%s: defines a function named by a path (%s): it could run in place of the fixed-path program it names" % (path, m.group("name") or m.group("name2")))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
