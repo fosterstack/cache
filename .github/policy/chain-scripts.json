@@ -912,9 +912,10 @@
     },
     {
       "path": "bin/install-kind.sh",
-      "sha256": "d950a110760079bc22f9130294e5d62c27a923268cc25713dda8deed93269ff6",
+      "sha256": "f4e7f3e861fdcb46086f6118d2ef3dcdc8934d0442c721f22c69cd0f2c30fc18",
       "tools": [
         "curl",
+        "docker",
         "kubectl",
         "node",
         "trap"
