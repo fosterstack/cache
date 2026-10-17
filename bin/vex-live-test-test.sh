@@ -786,7 +786,6 @@ with tempfile.TemporaryDirectory() as _t:
 i_chk, i_push = run_text.find("fixture-check"), run_text.find('push_copy "$FIXTURE_SRC"')
 check("the runner exports the fixture and runs fixture-check on its package list before it pushes the fixture", 0 < i_chk < i_push and "--image-tar" in run_text, (i_chk, i_push))
 # --- PR-C: the Docker Scout leg (scanner-panel rule 12; REQ-REL-010-AC6; advisor, Oct 16). Part A, the python helpers.
-VI = load("vi", "bin/vex-index.py")
 real_vex = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))
 DHREPO = "docker.io/fosterstack-live/cache-live-test"
 sv = L.scout_vex(real_vex, images, FIX, "CVE-2023-9999", DHREPO)
@@ -796,11 +795,6 @@ check("scout-vex: the shipped statements unchanged plus one not_affected stateme
       and sadded[0]["vulnerability"]["name"] == "CVE-2023-9999"
       and sadded[0]["products"] == [{"@id": "pkg:oci/cache@%s?repository_url=%s" % (FIX, DHREPO)}], sadded)
 check("scout-vex: the document keeps our author (Scout applies only statements of an author the scan names)", sv["author"] == real_vex["author"])
-try:
-    VI.check_vex(json.dumps(sv).encode()); got = "accepted"
-except Exception as e:
-    got = "refused: %s" % e
-check("scout-vex: the attached document passes the attestation tool's own OpenVEX check", got == "accepted", got)
 check("scout author pattern: the anchored, escaped author of the shipped file (the same as bin/scout-vex-scan.sh)", L.scout_author_pattern(real_vex) == "^FosterStack LLC$", L.scout_author_pattern(real_vex))
 check("scout author pattern: regex characters of the author are escaped",
       L.scout_author_pattern({"author": "A.B (x) [y]*"}) == r"^A\.B \(x\) \[y\]\*$", L.scout_author_pattern({"author": "A.B (x) [y]*"}))
@@ -844,9 +838,10 @@ with tempfile.TemporaryDirectory() as t:
     check("wrap-index: the index holds the image as its one child, with the platform read from the image's own config",
           d_doc["schemaVersion"] == 2 and d_doc["mediaType"] == "application/vnd.oci.image.index.v1+json" and len(d_doc["manifests"]) == 1
           and d_doc["manifests"][0]["digest"] == man_dg and d_doc["manifests"][0]["platform"] == {"architecture": "amd64", "os": "linux"}, d_doc)
-    vpath = os.path.join(t, "vex.json"); json.dump(real_vex, open(vpath, "w")); os.chmod(vpath, 0o644)
+    vpath = os.path.join(t, "vex.json"); json.dump(sv, open(vpath, "w")); os.chmod(vpath, 0o644)      # the Scout leg's own document (the shipped statements plus the fixture's)
     r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-index.py"), "layout", "--layout", lay, "--vex", vpath], capture_output=True, text=True)
     check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", r.returncode == 0, r.stderr[-300:])
+    check("scout-vex: the attached document passes the attestation tool's own OpenVEX check (the tool is run, never loaded into this process)", r.returncode == 0, r.stderr[-300:])
 def _already_index(lay):
     open(os.path.join(lay, "index.json"), "w").write(json.dumps({"schemaVersion": 2, "manifests": [
         {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + "a" * 64, "size": 5}]}))
