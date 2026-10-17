@@ -2755,6 +2755,14 @@ d=$(cfix al_12 "declare BASH_AL''IASES[x]=y" '[]'); expm caught "$d" 'alias' "BA
 d=$(cfix al_13 'o=expand_aliases\nshopt -s $o' '[]'); expm caught "$d" 'shopt' "shopt handed a variable (it could name expand_aliases): refused"
 d=$(cfix al_14 'shopt -s nullglob\nshopt -u nullglob' '[]'); expm ok "$d" - "shopt -s/-u nullglob stays accepted (real scripts use it)"
 d=$(cfix al_15 'shopt -s nullglob expand_aliases' '[]'); expm caught "$d" 'shopt' "shopt with a second option name: refused"
+# round 7 of the seats: the enablers (shopt, set -o posix, POSIXLY_CORRECT) are limited to a closed list and the text is read as bash reads it ($".." plain, $'\u61' 1-4 hex digits, substitutions that may be empty, a redirection ends a word)
+d=$(cfix al_16 'shopt>/dev/null -s expand_al$()iases\nalias>/dev/null x=y' '[]'); expm caught "$d" 'alias' "shopt and alias with a redirection right after the word and an empty substitution inside the option name: refused (seat B round 7)"
+d=$(cfix al_17 "\$'\\\\u61lias'>/dev/null x=y" '[]'); expm caught "$d" 'alias' "alias written with a short \\u escape: refused"
+d=$(cfix al_18 '$"shopt" -s expand_$"aliases"\n$"alias" x=y' '[]'); expm caught "$d" 'alias' "locale-quoted shopt and alias: refused (seat A round 7)"
+d=$(cfix al_19 'set -o posix\nx=1' '[]'); expm caught "$d" 'set -o posix' "set -o posix (POSIX mode expands aliases): refused"
+d=$(cfix al_20 'set -o "$m"' '[]'); expm caught "$d" 'set' "set -o with a variable: refused"
+d=$(cfix al_21 'POSIXLY_CORRECT=1 true' '[]'); expm caught "$d" 'POSIXLY_CORRECT' "POSIXLY_CORRECT: refused"
+d=$(cfix al_22 'set -euo pipefail\nset +e -uo pipefail\nset -eo pipefail\nset -- $a\nset +e; x=1; set -e' '[]'); expm ok "$d" - "the set forms real scripts use are accepted"
 d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
 d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
@@ -3465,7 +3473,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1435
+EXPECT=1442
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

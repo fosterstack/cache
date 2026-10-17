@@ -1118,14 +1118,28 @@ TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 FIXED_DIRS = ("/usr/bin/", "/bin/", "/usr/local/bin/")
 FUNC_BY_PATH = re.compile(r"(?<![^\s;&|{}()!`])(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=\"'$`]*)[ \t]*\([ \t]*\)(?=[ \t]*(?:\n|\Z|#|\{|\(|if\b|while\b|until\b|for\b|select\b|case\b|\[\[)))")
 ALIAS_USE = re.compile(r"expand_aliases|BASH_ALIASES|(?<![^\s;&|{}()!`])unalias(?=[\s;&|)]|$)|(?<![^\s;&|{}()!`])alias(?=[\s;&|)]|$)")   # cache#361 (seat A, round 5): an alias can name the function (alias x=$'\x2fusr\x2fbin\x2fcurl'; x() {...}); no listed script uses aliases
-def alias_view(text):
-    """The text as bash reads it for the alias check: ANSI-C strings decoded ($'\\x61lias' is alias), then every quote mark and backslash dropped."""
-    def dec(m):
-        try: return codecs.decode(m.group(1), "unicode_escape")
-        except Exception: return m.group(1)
-    return re.sub(r"[\\'\"]", "", re.sub(r"\$'((?:[^'\\]|\\.)*)'", dec, text))
-SHOPT_CMD = re.compile(r"(?<![^\s;&|{}()!`])shopt(?=[\s;&|)]|$)(?P<rest>[^\n;&|)]*)")
-SHOPT_OK = re.compile(r"\s+-[su]\s+(?:nullglob|extglob|globstar|lastpipe|inherit_errexit|nocaseglob|nocasematch)\s*")   # the only shopt uses a listed script may make; every other option name, flag or variable is refused (expand_aliases can be named in ways the text scan does not see)
+ANSIC = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+ANSIC_ESC = re.compile(r"\\(?:x([0-9A-Fa-f]{1,2})|([0-7]{1,3})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|(.))", re.S)
+def ansic_decode(m):
+    """bash's $'..' decoding: hex (1-2 digits), octal, \\u (1-4 hex digits), \\U (1-8) and the one-letter escapes (an unknown escape keeps its letter)."""
+    def one(e):
+        try:
+            if e.group(1): return chr(int(e.group(1), 16))
+            if e.group(2): return chr(int(e.group(2), 8) & 255)
+            if e.group(3): return chr(int(e.group(3), 16))
+            if e.group(4): return chr(int(e.group(4), 16))
+        except ValueError: return ""
+        return {"n": "\n", "t": "\t", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "r": "\r", "v": "\v"}.get(e.group(5), e.group(5))
+    return ANSIC_ESC.sub(one, m.group(1))
+SUBST = re.compile(r"\$\{[^}]*\}|\$\([^()]*\)|`[^`]*`|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?!$-]")
+def alias_views(text):
+    """The text as bash reads a word before it runs it, in two views: A keeps substitutions, B deletes them (a substitution can be empty: expand_al$()iases). $'..' is decoded, $".." is a plain string, every quote mark and backslash is dropped."""
+    a = re.sub(r"[\\'\"]", "", re.sub(r"\$\"", "\"", ANSIC.sub(ansic_decode, text)))
+    return (a, SUBST.sub("", a))
+ALIAS_USE = re.compile(r"expand_alias|ALIASES|unalias|(?<![A-Za-z0-9_-])alias(?![A-Za-z0-9_-])|POSIXLY_CORRECT|SHELLOPTS|BASHOPTS")   # cache#361 (rounds 5-7): an alias can name a function like a fixed-path program (alias x=$'\x2fusr\x2fbin\x2fcurl'; x() {...}); no listed script uses one. Alias expansion is switched on by shopt expand_aliases or by POSIX mode (set -o posix, POSIXLY_CORRECT, SHELLOPTS)
+ENABLER = re.compile(r"(?:^|[;&|{}()!])[ \t]*(?:(?:then|do|else|elif|if|while|until|time)[ \t]+)*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*[ \t]+)*(?P<cmd>shopt|set)(?=[\s;&|)<>(]|$)(?P<rest>[^\n;&|)]*)", re.M)   # where a command can start; a word inside a comment sentence is not one
+ENABLER_OK = {"shopt": re.compile(r"\s+-[su]\s+(?:nullglob|extglob|globstar|lastpipe|inherit_errexit|nocaseglob|nocasematch)\s*"),
+              "set": re.compile(r"(?:\s+(?:[-+][ceuxfCvEnT]*o\s+(?:pipefail|errexit|nounset|noglob|noclobber|xtrace|errtrace)|[-+][ceuxfCvEnT]+|--(?:\s.*)?))*\s*")}   # the only shopt and set uses a listed script may make; every other option, flag, variable or redirection is refused
 FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
 PY_ISOLATION = ("-I", "-B")
 def fixed_tool(w, tools):
@@ -1308,11 +1322,12 @@ def scan_script(path, text, row, rows, base):
         for m in FUNC_BY_PATH.finditer(logical(text)):                       # the RAW logical text, comments included: stripping a "comment" can diverge from bash (a # line inside a quote spanning lines, an ANSI-C escaped quote)                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
             add(None, "", "%s: defines a function named by a path (%s): it could run in place of the fixed-path program it names" % (path, m.group("name") or m.group("name2")))
     if not py:
-        for m in ALIAS_USE.finditer(alias_view(logical(text))):                          # the raw text with every quote mark and backslash removed (bash drops them before it runs the word: \\alias, 'alias', expand_"aliases"); "alias" counts only where a command can start (a word like product-and-alias-scoped in a comment is not it)
-            add(None, "", "%s: uses shell aliases (%s): an alias can give a function the name of a fixed-path program" % (path, m.group(0)))
-        for m in SHOPT_CMD.finditer(alias_view(logical(text))):
-            if not SHOPT_OK.fullmatch(m.group("rest")):
-                add(None, "", "%s: `shopt%s` is not one of the listed harmless uses (-s/-u of nullglob, extglob, globstar, lastpipe, inherit_errexit, nocaseglob, nocasematch): it could turn on alias expansion" % (path, m.group("rest").rstrip()))
+        for v in alias_views(logical(text)):
+            for m in ALIAS_USE.finditer(v):                                  # "alias" counts only as a whole word (product-and-alias-scoped in a comment is not it)
+                add(None, "", "%s: uses shell aliases or POSIX mode (%s): an alias can give a function the name of a fixed-path program" % (path, m.group(0)))
+            for m in ENABLER.finditer(v):
+                if not ENABLER_OK[m.group("cmd")].fullmatch(m.group("rest")):
+                    add(None, "", "%s: `%s%s` is not one of the listed harmless uses (it could turn on alias expansion)" % (path, m.group("cmd"), m.group("rest").rstrip()))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for x in protected_env_mentions(path, text, row): add(None, "", x)
