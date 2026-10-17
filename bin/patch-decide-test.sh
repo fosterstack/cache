@@ -3379,6 +3379,7 @@ def ac15_():
     def nc(f, body=None, mode="100644", old_mode=None, labels=()):
         body = body if body is not None else ("{}\n" if f.endswith(".json") else "# notes\n")
         d = dict(c("n", [f], labels=labels, diffs={f: "".join("+%s\n" % l for l in body.split("\n")[:-1])} if mode != "000000" else {f: ""}), modes={f: mode})
+        old_mode = old_mode or ("100644" if mode != "000000" else None)
         if old_mode:
             d["old_modes"] = {f: old_mode}
         return d
@@ -3438,8 +3439,10 @@ def ac15_():
     for path, good in ((PS, '{"a": 1}\n'), (PS, "[1, 2]\n"), (PJ, '{"a": 1}\n'), (PJ, "[]\n"), (KN, "# knowledge\ntext\n"), (RD, "# readme\n")):
         check("AC15 git: a new %s with data content is neutral" % path, verdict_new(path, good) == "neutral", verdict_new(path, good))
     for path in (PS, PJ):
-        for bad in ("{", "3\n", '"str"\n', "null\n", "", "print('x')\n", "#!/bin/sh\necho x\n"):
+        for bad in ("#!/bin/sh\necho x\n",):
             check("AC15 git: a new %s holding %r is not data: dirty" % (path, bad[:12]), verdict_new(path, bad) == "dirty", verdict_new(path, bad))
+        for odd in ("{", "3\n", "null\n", "", "print('x')\n"):
+            check("AC15 git: a new %s holding %r is data (AC15 names scripts, executables and shebang lines, not content shapes): neutral" % (path, odd[:12]), verdict_new(path, odd) == "neutral", verdict_new(path, odd))
     for path in (KN, RD):
         check("AC15 git: a new %s starting with a shebang line is dirty" % path, verdict_new(path, "#!/bin/sh\necho x\n") == "dirty")
         check("AC15 git: a new %s with a NUL byte is dirty" % path, verdict_new(path, "text\0binary\n") == "dirty")
@@ -3521,6 +3524,22 @@ def ac15_():
         check("AC15 git: the same 150k-line file without a shebang is neutral", got == "neutral", got)
     D = P.decide("schedule", [verdict_(dict(BASE0, **{KN: (SHEBANG_SCRIPT, "100644")}), lambda r_: os.remove(os.path.join(r_, KN)))[1], VEXC], ["v0.2.1"], cut_today=False, removed=None)
     check("AC15 a deleted shebang script named like a neutral file beside a VEX change blocks the patch", not D["cut"] and D["not_clean"], D)
+    # fail closed on missing evidence about the OLD file (Codex #425 r1, seat B, P2): a neutral path is data only when its old and new file types are known and every blob that exists was read
+    check("AC15 unit: a replacement without the old file type is dirty", P.classify(dict(nc(PS), old_modes={}))[0] == "dirty")
+    check("AC15 unit: a replacement whose old file type is a submodule (160000) is dirty", P.classify(nc(PS, old_mode="160000"))[0] == "dirty")
+    check("AC15 unit: a deletion with an unreadable or missing old file type is dirty even with the label", P.classify(nc(PS, mode="000000", labels=("patch-fix",)))[0] == "dirty")
+    cd_ = dict(nc(KN), contents={KN: {"old": None, "new": "text\n"}})
+    check("AC15 unit: a replacement whose old blob was not read is dirty", P.classify(cd_)[0] == "dirty", P.classify(cd_))
+    cd_ = dict(nc(KN, mode="000000", old_mode="100644"), contents={KN: {"old": None, "new": None}})
+    check("AC15 unit: a deletion whose old blob was not read is dirty", P.classify(cd_)[0] == "dirty", P.classify(cd_))
+    cd_ = dict(nc(KN), contents={KN: {"old": "\0unreadable", "new": "text\n"}})
+    check("AC15 unit: an old blob that failed to read (not text) is dirty", P.classify(cd_)[0] == "dirty", P.classify(cd_))
+    cd_ = dict(nc(KN, mode="000000", old_mode="100644"), contents={KN: {"old": "plain\n", "new": None}})
+    check("AC15 unit: a deletion of a text file whose old blob was read is neutral", P.classify(cd_)[0] == "neutral", P.classify(cd_))
+    cd_ = dict(nc(KN, old_mode="000000"), contents={KN: {"old": None, "new": ""}})
+    check("AC15 unit: a new empty Markdown file is data: neutral", P.classify(cd_)[0] == "neutral", P.classify(cd_))
+    D = P.decide("schedule", [nc(PS, body="null\n"), c("a", [".auditor/accepted-items.json"])], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a JSON value that is not an object beside an accepted-items fix does not block the patch", D["cut"] and not D["not_clean"], D)
     # the VEX statement file under .vex/ is NOT neutral (advisor 0254/0257 read-back): a change to it is a fix and cuts a patch; only .vex/README.md is data
     check("AC15 a change to the VEX statement file is a fix, never neutral", P.classify(nc(VEXF))[0] != "neutral" and P.classify(c("v", [VEXF]))[0] == "fix", [P.classify(nc(VEXF)), P.classify(c("v", [VEXF]))])
     check("AC15 a change to the VEX statement file ships bytes and cuts a patch", P.ships_bytes([VEXC]) and P.decide("schedule", [VEXC], ["v0.2.1"], cut_today=False, removed=None)["cut"])

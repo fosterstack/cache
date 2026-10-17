@@ -207,10 +207,14 @@ def _not_data(f, diff, mode, old_mode, contents=None):
         return "%s was %s before: not data" % (f, "a symlink" if old_mode == "120000" else "executable")
     if mode != "000000" and mode != "100644":
         return "%s has mode %s; data is a regular non-executable file (100644)" % (f, mode or "?")
+    if old_mode not in ("000000", "100644"):
+        return "%s has no usable old file type (%s): a neutral path is data only when its file type before and after is known" % (f, old_mode or "missing")
     if mode == "000000" and old_mode != "100644":
         return "%s is deleted and its old file type is unknown" % f
     if contents is not None:
         old_text, new_text = contents.get("old"), contents.get("new")
+        if (old_mode == "100644" and old_text is None) or (mode == "100644" and new_text is None):
+            return "%s: a blob that exists could not be read: not proven data" % f
     else:
         lines = (diff or "").split("\n")
         old_text = "\n".join(l[1:] for l in lines if l[:1] in ("-", " ")) or None
@@ -222,14 +226,8 @@ def _not_data(f, diff, mode, old_mode, contents=None):
             return "%s has a shebang line in its %s content: a script, not data" % (f, label)
     if mode == "000000":
         return None
-    if not new_text:
+    if new_text is None:
         return "%s shows no content (binary, or a mode-only change): not proven data" % f
-    if f.endswith(".json"):
-        try:
-            if not isinstance(json.loads(new_text), (dict, list)):
-                return "%s is not a JSON object or array" % f
-        except ValueError:
-            return "%s is not valid JSON" % f
     return None
 
 
@@ -1231,10 +1229,11 @@ def _git(*args, cwd="."):
 
 
 def _blob(spec, cwd):
-    """a file's text at a revision (git show rev:path); None when it does not exist there; non-UTF-8 bytes read as binary"""
+    """a file's text at a revision (git show rev:path); non-UTF-8 bytes read as binary; a read that fails is "\0unreadable" (not text),
+    never None: the caller asks only for blobs that exist, so a failure is not an absence"""
     p = subprocess.run(["git", "-C", cwd, "show", spec], capture_output=True)
     if p.returncode != 0:
-        return None
+        return "\0unreadable"
     try:
         return p.stdout.decode("utf-8")
     except UnicodeDecodeError:
@@ -1266,7 +1265,8 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
         contents = {}
         for f in files:
             if f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
-                contents[f] = {"old": _blob("%s^:%s" % (sha, f), cwd), "new": _blob("%s:%s" % (sha, f), cwd)}
+                contents[f] = {"old": None if old_modes.get(f) == "000000" else _blob("%s^1:%s" % (sha, f), cwd),
+                               "new": None if modes.get(f) == "000000" else _blob("%s:%s" % (sha, f), cwd)}
         out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "old_modes": old_modes, "contents": contents, "labels": list(labels(sha))})
     return out
 
