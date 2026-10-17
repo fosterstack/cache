@@ -1545,6 +1545,7 @@ mappings:
   - ac: REQ-SCAN-012-AC3
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/vex-live-pins-test.sh" }
   - ac: REQ-SCAN-012-AC4
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
