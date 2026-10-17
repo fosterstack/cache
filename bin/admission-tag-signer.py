@@ -62,6 +62,7 @@ def route(tag, tag_object, released):
 PIPELINE_ONLY = frozenset([
     "REQ-REL-004", "REQ-REL-005", "REQ-REL-006", "REQ-REL-007", "REQ-REL-008", "REQ-REL-009",
     "REQ-DEP-001", "REQ-DEP-002", "REQ-DEP-003", "REQ-DEP-004",
+    "REQ-UAT-001",   # persona UAT (owner ratified Oct 4; advisor 0161 step 5): governs CI testing only
     "REQ-SUP-001",
 ] + ["REQ-SCAN-%03d" % n for n in range(1, 15)])
 # mirrors tools/requirements/main.go's own publicationACs (kept in sync by hand, same reason)
