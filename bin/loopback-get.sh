@@ -62,6 +62,6 @@ else
     [ -n "$port" ] || fail "port"
     case "$port" in *[!0-9]*) fail "port $port" ;; esac
   fi
-  url="http://$rest"
+  rest="http://$rest"; url=$rest
 fi
 curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?

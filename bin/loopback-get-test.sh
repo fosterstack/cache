@@ -140,6 +140,8 @@ tok t "$TU" -sSf "${TU}&audience="
 if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an empty audience"; else bad "empty audience (rc=$RC)"; fi
 # --- the documented smoke commands run through the helper
 grep -q "^lines.append(.$STUBNAME() { sh bin/loopback-get.sh" "$root/bin/acceptance-k8s-smoke.py" && ok "the k8s smoke script routes the documented commands through the helper" || bad "the k8s smoke script does not route the documented commands through the helper"
+# pin-age reads a line that starts with an assignment to a variable named url as the place a script downloads from, which no ruling can cover: the helper has none
+if grep -Eq '^[ 	]*(export +|readonly +|local +)?(url|URL)=' "$H"; then bad "the helper has a line that starts with an assignment to url"; else ok "the helper has no line that starts with an assignment to url (pin-age reads it as a download source)"; fi
 # --- the call sites no longer name curl
 for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh acceptance-serve.sh acceptance-k8s.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
   n=$(grep -v '^[[:space:]]*#' "$root/bin/$f" | grep -c "\b$STUBNAME\b" || true)

@@ -1571,7 +1571,7 @@
     },
     {
       "path": "bin/loopback-get.sh",
-      "sha256": "bded65cf7238ad2aff1b9d034cc935a913b16bee8cebcee1190db9adf2978b1a",
+      "sha256": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
       "tools": [
         "curl",
         "exec",
