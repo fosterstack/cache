@@ -1350,7 +1350,7 @@ open(p, "w").write(s2)
 P
 ); gorun "$gofx"
 t "AC33" "Go archive: the two recipes pinning the same file with two different sha256 values stop the job (exit 1, names the file), nothing fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'go1.27.2' '$work/log' && ! grep -q 'go.dev/dl' '$CALLS'"
-gorepo; ln -s /nonexistent "$work/ar/go"; gorun "$gofx"
+gorepo; ln -s "$work/no-such-go-target" "$work/ar/go"; gorun "$gofx"
 t "AC33" "Go archive: a go entry that is a symlink stops the job (exit 1)" bash -c "test \"\$(cat '$work/rc')\" = 1"
 gorepo; run_s4 env GH_STUB_OPEN="refresh/00000000" STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$gofx" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC33" "Go archive: while an earlier refresh pull request is open, a missing Go tarball waits (exit 0, nothing fetched from go.dev, nothing changed)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q 'go.dev/dl' '$CALLS' && ! test -d '$work/ar/go'"
