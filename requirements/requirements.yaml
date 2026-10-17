@@ -2446,6 +2446,7 @@ requirements:
     origin: scanner-panel rule 12 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
     confidence: implementation-only
     acceptance_criteria:
+      # Source: advisor reading Oct 17 under the owner's Oct 16 words ("I want max unblockage with least of human effort"); the Docker Hub test repository, its organization access token and the registry-API sweep are the Docker Scout leg's (advisor handoffs, Oct 16-17); no owner ratification asked (advisor ruling on #416).
       - id: REQ-SCAN-012-AC1
         given: "a live test"
         when: "it runs"
@@ -2458,6 +2459,7 @@ requirements:
         then: "they are our release images copied by digest plus one deliberately vulnerable fixture image; nothing is pushed anywhere public"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      # Source: advisor reading Oct 17 under the owner's Oct 16 words ("I want max unblockage with least of human effort"); the Docker Hub test repository, its organization access token and the registry-API sweep are the Docker Scout leg's (advisor handoffs, Oct 16-17); no owner ratification asked (advisor ruling on #416).
       - id: REQ-SCAN-012-AC3
         given: "a live test run"
         when: "it ends"
@@ -2476,6 +2478,7 @@ requirements:
         then: "the finding showed before the suppression, was gone after, and every guide command worked exactly as written"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      # Source: advisor reading Oct 17 under the owner's Oct 16 words ("I want max unblockage with least of human effort"); the Docker Hub test repository, its organization access token and the registry-API sweep are the Docker Scout leg's (advisor handoffs, Oct 16-17); no owner ratification asked (advisor ruling on #416).
       - id: REQ-SCAN-012-AC6
         given: "a live test run"
         when: "its Docker Scout leg runs (the OpenVEX attached to the image index as attestation children, REQ-REL-010)"
