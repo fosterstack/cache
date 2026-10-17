@@ -3242,7 +3242,7 @@ probe gh_check "GH_TOKEN is allowed only" "the run's token in Check" \
 probe perm_apk "must hold exactly the permissions" "a write permission (packages) on Build's apk job" \
   "repl .github/workflows/stage-build.yml '      pull-requests: read\n      id-token: write\n' '      pull-requests: read\n      packages: write\n      id-token: write\n'"
 probe perm_gh_release "must hold exactly the permissions" "the run's token with another permission (attestations: write) in Release" \
-  "repl .github/workflows/stage-promote.yml '      id-token: write\n    steps:' '      id-token: write\n      attestations: write\n    steps:'"
+  "repl .github/workflows/stage-promote.yml '      packages: write\n      id-token: write\n    steps:' '      packages: write\n      id-token: write\n      attestations: write\n    steps:'"
 probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
   "repl .github/workflows/stage-promote.yml '      - name: release-sign under Witness\n        $RCIF\n        env:\n' '      - name: release-sign under Witness\n        $RCIF\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
 probe apk_wrong_step "not in the closed secret list" "the apk signing key on the publish step" \
