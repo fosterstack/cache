@@ -37,6 +37,19 @@ die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 usage() { die "usage: $SELF refresh --repo-dir DIR --archive DIR [--plan-dir DIR] | $SELF fips-module --go-root DIR --repo-dir DIR [--plan-dir DIR] | $SELF open-pr --plan-dir DIR --repo-dir DIR [--archive DIR --archive-digest sha256:HEX] | $SELF bootstrap --repo-dir DIR --archive DIR"; }
 
 # open_pr BRANCH TITLE BODY PATH...: branch, commit, push the branch (never main), open the PR (never merge it)
+# REQ-REFRESH-001-AC34: every planned path must be a regular file of the repository (no symlink, nothing real-pathed outside it, not under .git), checked before any branch is
+# pushed; the commit builder and the restoration after the commit rely on this one check
+check_paths() {
+  /usr/bin/python3 -I -B - "$repo" "$@" <<'PY'
+import os, sys
+repo = sys.argv[1]; root = os.path.realpath(repo); bad = 0
+for p in sys.argv[2:]:
+    full = repo + "/" + p
+    if p.startswith("/") or ".." in p.split("/") or p.split("/")[0] == ".git" or os.path.islink(full) or not os.path.isfile(full) or os.path.commonpath([root, os.path.realpath(full)]) != root:
+        print("refresh-inputs.sh: %r is not a regular file of the repository (a symlink, a path outside it or its .git is refused); no branch was pushed" % p, file=sys.stderr); bad = 1
+sys.exit(bad)
+PY
+}
 # REQ-REFRESH-001-AC34: the pull request's commit through the API. $1 branch (already pushed), $2 the commit it points at, $3 headline, $4 body, then the repository paths.
 signed_commit() {
   local branch=$1 base=$2 headline=$3 cbody=$4 oid ver; shift 4
@@ -114,16 +127,19 @@ PY
   startsha=$(/usr/bin/git -C "$repo" rev-parse HEAD 2>/dev/null || true)
   # REQ-REFRESH-001-AC34: main requires signed commits, so the one commit is made through the API (GitHub signs what the job's App token creates), on a branch that was
   # pushed at the commit the job started from (nothing new to sign locally); the pull request is opened only for a commit the API reports as verified
-  { [ -n "$startsha" ] && /usr/bin/git -C "$repo" checkout -b "$branch" && /usr/bin/git -C "$repo" push -q origin "$branch" && pushed=1 && PENDING_BRANCH=$branch \
+  { [ -n "$startsha" ] && check_paths "$@" && /usr/bin/git -C "$repo" checkout -b "$branch" \
+    && { PENDING_BRANCH=$branch; /usr/bin/git -C "$repo" push -q origin "$branch" || { PENDING_BRANCH=; false; }; } && pushed=1 \
     && signed_commit "$branch" "$startsha" "$title" "$body" "$@" \
     && (cd "$repo" && /usr/bin/gh pr create --base main --head "$branch" --title "$title" --body "$body"); } || rc=$?
   if [ "$rc" = 0 ]; then PENDING_BRANCH=; elif [ -n "$pushed" ]; then PENDING_BRANCH=; drop_branch "$branch"; fi   # no half-made branch is left behind, and a failed deletion is reported
   # the commit was made through the API, so the files the job edited are still in the working tree: put them back to the start commit (a later invocation in the same
   # checkout must see the start state, as it did when the edits were committed to the branch)
-  for _p in "$@"; do
-    if /usr/bin/git -C "$repo" ls-files --error-unmatch -- "$_p" >/dev/null 2>&1; then /usr/bin/git -C "$repo" checkout -q "$startsha" -- "$_p" || echo "refresh-inputs.sh: could not restore $_p to $startsha" >&2
-    else /bin/rm -f -- "$repo/$_p"; fi
-  done
+  if [ -n "$startsha" ] && check_paths "$@" 2>/dev/null; then   # only paths that passed the check are touched: a refused path (.git, a link, an outside file) is never restored or removed
+    for _p in "$@"; do
+      if /usr/bin/git -C "$repo" ls-files --error-unmatch -- "$_p" >/dev/null 2>&1; then /usr/bin/git -C "$repo" checkout -q "$startsha" -- "$_p" || { echo "refresh-inputs.sh: could not restore $_p to $startsha" >&2; rc=1; }
+      else /bin/rm -f -- "$repo/$_p"; fi
+    done
+  fi
   # back to where the job started, whether or not a step failed: a later step of the same job (the FIPS check) must not branch from this commit.
   # A detached start is restored by its commit.
   if [ -n "$startbr" ] && [ "$startbr" != HEAD ]; then /usr/bin/git -C "$repo" checkout -q "$startbr" || { echo "refresh-inputs.sh: could not go back to $startbr; a later step would branch from the refresh commit" >&2; rc=1; }

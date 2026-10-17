@@ -369,6 +369,7 @@ echo "git $*" >>"$CALLS"
 case "$*" in *"rev-parse --abbrev-ref HEAD"*) echo "${GIT_STUB_DETACHED:+HEAD}${GIT_STUB_DETACHED:-main}" | sed 's/^HEAD.*/HEAD/';; esac
 case "$*" in *"rev-parse HEAD"*) echo cafe0123;; esac
 case "$*" in *"push"*"--delete"*) [ -z "${GIT_STUB_DELETE_FAIL:-}" ] || { echo "git: remote delete failed" >&2; exit 1; };; esac
+case "$*" in *"push -q origin refresh/"*) [ -z "${GIT_STUB_PUSH_SIGNAL:-}" ] || { kill -TERM $PPID; sleep 1; };; esac   # the script receives TERM right after the remote made the branch
 case "$*" in *"checkout -q "*) [ -z "${GIT_STUB_CHECKOUT_FAIL:-}" ] || { echo "git: checkout failed" >&2; exit 1; };; esac
 case "$*" in *ls-remote*) for b in ${GIT_STUB_TAKEN:-}; do case "$*" in *"refs/heads/$b") echo "deadbeef	refs/heads/$b";; esac; done;; esac
 exit 0
@@ -1478,10 +1479,23 @@ assert len(paths) == len(set(paths)) and "build/archive.json" in paths, paths
 PY
 rm -rf "$work/plan-link"; cp -R "$work/plan" "$work/plan-link"; ln -sf locks/melange.lock "$work/rp/build/link-to-lock"; for pd_ in "$work/plan-link"/*/; do printf 'build/link-to-lock\n' >>"${pd_}paths"; done
 run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-link" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
-t "AC34" "signed commit: a planned path that is a symlink is refused (no pull request, exit 1, the pushed branch deleted)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete' '$CALLS'"
+t "AC34" "signed commit: a planned path that is a symlink is refused before any branch is pushed (no pull request, exit 1, nothing pushed)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && ! grep -Eq '^git( -C [^ ]+)? push ' '$CALLS'"
 rm -f "$work/rp/build/link-to-lock"
 sgrun GH_STUB_VERIFIED=false GIT_STUB_DELETE_FAIL=1
 t "AC34" "signed commit: a branch that cannot be deleted after a refusal is REPORTED (the log names the branch and says the deletion failed), the job still fails (exit 1) and opens no pull request" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eqi 'could not delete the branch refresh/' '$work/log'"
+# round 2 of the seats: validate the paths BEFORE any branch is pushed and restore only validated paths (a rejected .git/config or an outside file is never removed); a TERM right after
+# the push removes the branch; a failed restoration fails the job
+rm -rf "$work/plan-meta"; cp -R "$work/plan" "$work/plan-meta"; mkdir -p "$work/rp/.git"; printf 'keep me\n' >"$work/rp/.git/config"; for pd_ in "$work/plan-meta"/*/; do printf '.git/config\n' >>"${pd_}paths"; done
+run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-meta" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit: a planned path inside .git is refused BEFORE any branch is pushed (exit 1, no pull request, no push) and the file is untouched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && ! grep -Eq '^git( -C [^ ]+)? push ' '$CALLS' && test \"\$(cat '$work/rp/.git/config')\" = 'keep me'"
+rm -rf "$work/plan-out" "$work/outside-dir"; cp -R "$work/plan" "$work/plan-out"; mkdir -p "$work/outside-dir"; printf 'outside\n' >"$work/outside-dir/f"; ln -sfn "$work/outside-dir" "$work/rp/build/outlink"; for pd_ in "$work/plan-out"/*/; do printf 'build/outlink/f\n' >>"${pd_}paths"; done
+run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-out" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit: a planned path that resolves outside the repository through a linked directory is refused before any push (exit 1, no pull request) and the outside file is untouched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && ! grep -Eq '^git( -C [^ ]+)? push ' '$CALLS' && test \"\$(cat '$work/outside-dir/f')\" = outside"
+rm -f "$work/rp/build/outlink"; rm -rf "$work/rp/.git"
+sgrun GH_STUB_VERIFIED=true GIT_STUB_PUSH_SIGNAL=1
+t "AC34" "signed commit: a TERM that arrives right after the push removes the pushed branch (the branch is registered before the push), opens no pull request and ends the job non-zero" bash -c "test \"\$(cat '$work/rc')\" != 0 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete' '$CALLS'"
+sgrun GH_STUB_VERIFIED=true GIT_STUB_CHECKOUT_FAIL=1
+t "AC34" "signed commit: a restoration that fails fails the job (exit non-zero, says which file) although the pull request was created" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'could not restore' '$work/log'"
 sgrun GH_STUB_VERIFIED=true
 t "AC34" "signed commit: after the API commit the working tree is put back to the start commit (the files the job edited are restored, so a later invocation in the same checkout sees the start state)" bash -c "grep -Eq '^git( -C [^ ]+)? checkout -q cafe0123 -- ' '$CALLS'"
 mkrepo; rm -rf "$work/plan"
