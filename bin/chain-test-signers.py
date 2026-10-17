@@ -67,7 +67,13 @@ def strip_line(l):
         prev_ws = ch.isspace()
     return l                                  # unbalanced quotes: do not guess where a comment starts
 
-HEREDOC_WORD = re.compile(r"[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\"|\\([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*))(?![A-Za-z0-9_'\"\\$`{(-])")
+HEREDOC_WORD = re.compile(r"[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\"|\\([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*))(?=[ \t;&|<>)]|$)")
+
+def prev_ok(l, i, ch):
+    """A shell word starts at i with ch c or e and ends at a blank, ; & | ) or the end (so `case` and `esac` are words, not parts of one)."""
+    if ch == "c": return l[i:i + 5] == "case "
+    if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
+    return False
 
 def strip_lines(lines):
     """([code line], [error]) for the physical lines of a shell text, read as bash reads them (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). A stack of open
@@ -80,12 +86,14 @@ def strip_lines(lines):
     out, errs = [], []
     st, hd = [], None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented)] still to be read inside a heredoc body
     DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
+    cont = False                                       # the previous line ends in a backslash: bash joins this line to it
     for n, l in enumerate(lines):
         if hd is not None:
             out.append(strip_line(l))
             if (l.lstrip("\t") if hd[0][1] else l) == hd[0][0]: hd = hd[1:] or None
             continue
-        if st and st[-1] in DATA and l.lstrip().startswith("#"):
+        if cont: pass                                  # a joined line: a # at its start is inside a word, and the line is kept whole
+        elif st and st[-1] in DATA and l.lstrip().startswith("#"):
             errs.append("line %d: a # line inside a quote or ${ } that is still open from an earlier line (bash reads it as part of the word, not as a comment)" % (n + 1))
         elif not (st and st[-1] in DATA) and l.lstrip().startswith("#"):
             out.append(""); continue
@@ -96,6 +104,9 @@ def strip_lines(lines):
             if skip == i: skip = None; prev_ws = False; continue            # the second character of a two-character opener
             if esc: esc = False; prev_ws = False; continue
             top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
+            if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
+                if l[i:i + 5] == "case " : st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
+                if l[i:i + 4] == "esac" and top == "case": st.pop(); skip = i + 3; continue
             if top == "sq":
                 if ch == "'": st.pop()
             elif top == "ansi":
@@ -120,7 +131,9 @@ def strip_lines(lines):
             elif ch == "}" and top == "brace": st.pop()
             elif ch == "]" and top == "brk": st.pop()
             elif ch == ")" and top == "arith" and nxt == ")": st.pop(); skip = i + 1
-            elif ch == ")" and top in ("cmd", "paren"): st.pop()
+            elif ch == ")" and top == "case": pass
+            elif ch == ")" and top in ("cmd", "paren", "bt"): st.pop()
+            elif ch == "(" and nxt == "(" and top not in ("arith", "brk", "brace"): st.append("arith"); skip = i + 1
             elif ch == "(" and top not in ("arith", "brk", "brace"): st.append("paren")
             elif ch == "<" and nxt == "<" and l[i - 1:i] != "<" and l[i + 2:i + 3] != "<":
                 if top in ("arith", "brk"):
@@ -134,6 +147,7 @@ def strip_lines(lines):
             elif ch == "#" and i > 0 and prev_ws and top not in DATA:
                 cut = i; break
             prev_ws = ch.isspace()
+        cont = esc and cut is None
         out.append(l if cut is None else l[:cut])
         if pend:
             if st and st[-1] in ("sq", "dq", "ansi"): errs.append("line %d: a heredoc is started on a line that leaves a quote open and is not resolved" % (n + 1))

@@ -3231,6 +3231,13 @@ d=$(crr sl_y "${H}x=\$[1<<y]"$'\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'no
 d=$(crr sl_z "${H}echo \"\${x:-'}\""$'\n#\'}" ; /tmp/evil\n'); expm caught "$d" 'single quote inside' "strip_line: a single quote inside \${ } inside double quotes is refused"
 d=$(crr sl_za "${H}cat <<EOF"$'\nx\n'); expm caught "$d" 'heredoc is still open' "strip_line: a heredoc still open at the end of the script is refused"
 d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit\'s\nEOF\n)\n# c\necho "$(echo "a" # c\n)" # d\n(cd x; ls) # e\ncase x in a) y;; esac\n'); expm ok "$d" - "strip_line: control: a heredoc in \$( ), nested double quotes in \$( ), a subshell and a case arm"
+d=$(crr sl_zc "${H}cat <<EOF#x"$'\nEOF\nit\'s\nEOF#x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by # (bash reads the whole word EOF#x) is refused (seat B, PR 436 round 2)"
+d=$(crr sl_zd "${H}cat <<EOF.x"$'\nEOF\nit\'s\nEOF.x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by a dot is refused"
+d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit\'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n(cat <<EOF)\ny\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, |, > or ) is read whole"
+d=$(crr sl_zf "${H}(( z = 1<<true ))"$'\nx=\'\n#\' ; echo MARK; /tmp/evil\ntrue\n'); expm caught "$d" 'not resolved' "strip_line: a << inside a bare (( )) is refused (seat A, PR 436 round 2)"
+d=$(crr sl_zg "${H}x=\"\$(case a in a) echo '"$'\n\'"\n# x" ;; esac)" ; echo MARK; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a case arm's ) inside \$( ) does not end the substitution (seat A, PR 436 round 2)"
+d=$(crr sl_zh "${H}echo a\\"$'\n#; echo MARK; /tmp/evil\n'); expm caught "$d" 'absolute path' "strip_line: a # line after a backslash-newline is part of the joined word, never a comment"
+d=$(crr sl_zi "${H}echo a \\"$'\n  # a real comment in the joined line\n  b\n'); expm ok "$d" - "strip_line: control: a continuation line that has a blank before # is a comment after the join"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3392,7 +3399,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1360
+EXPECT=1367
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
