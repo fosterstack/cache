@@ -1084,6 +1084,18 @@ rc, out = sh("hub_sweep() { echo HUB-SWEPT; }; sweep_ecr() { :; }; sweep_gar() {
 check("sweep: the Docker Hub sweep is part of the sweep when configured", rc == 0 and "HUB-SWEPT" in out, (rc, out[-200:]))
 check("hub_sweep calls the helper with the repository only (the user and the token travel in the environment, never on a command line)",
       'vex-live-test.py" hub-sweep --repository "$DH_REPO"' in open(os.path.join(root, "bin/vex-live-run.sh")).read())
+# Codex-free round 1 (Opus seat A, Sonnet seat B): the CLI itself pairs the TEST user with the push token, whatever the Scout user is in the same environment
+_swept, _real = [], L.hub_sweep
+L.hub_sweep = lambda repo, user, tok, opener=None: _swept.append((repo, user, tok))
+_saved = {k: os.environ.get(k) for k in ("DOCKERHUB_USERNAME", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN")}
+os.environ.update(DOCKERHUB_USERNAME="scout-user-sentinel", DOCKERHUB_TEST_USERNAME="test-user-sentinel", DOCKERHUB_TEST_PUSH_TOKEN="push-sentinel", DOCKERHUB_SCOUT_TOKEN="scout-sentinel")
+try:
+    _rc = L.main(["hub-sweep", "--repository", "ns/name"])
+finally:
+    L.hub_sweep = _real
+    for k, v in _saved.items():
+        os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+check("hub-sweep (the command): logs in as DOCKERHUB_TEST_USERNAME with DOCKERHUB_TEST_PUSH_TOKEN, never the Scout user or token", _rc == 0 and _swept == [("ns/name", "test-user-sentinel", "push-sentinel")], (_rc, _swept))
 
 # --- PR-C part C: the whole leg against stubs. A real attestation tool runs on a fixture layout the stub crane "pulls"; Scout is a stub that answers from canned reports in call
 #     order (fixture before/after, production before/after, then the published tag and digest in the post-publish modes)
@@ -1178,6 +1190,8 @@ case "$*" in
         check("scout leg fails closed without %s, before any crane or docker call" % missing, "leg-rc=0" not in out and "crane" not in out.replace("crane.log", "") and "auth login" not in out, (rc, out[-300:]))
     rc, out = leg(["{}"] * 2 + OK_FIX + OK_PROD, extra='PUSHES=49; ')
     check("scout leg: the leg's pushes count against the 50 of the run (a second push beyond 50 fails it)", "leg-rc=0" not in out and "more than 50 pushes" in out, (rc, out[-300:]))
+    check("scout leg: a push that fails after the push login still logs the push token out and unsets it (it never stays in the job's Docker config)",
+          "PUSH-LOGIN-OK" in out and "PUSH-LOGOUT" in out and "leg-rc=0" not in out and out.index("PUSH-LOGIN-OK") < out.index("PUSH-LOGOUT"), (rc, out[-400:]))
     rc, out = leg(OK_FIX + OK_PROD + OK_FIX[:0] + [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B"), gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")], mode="release",
                   extra='tag=v0.3.0; python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "DIGEST=sha256:%s"; guide() { echo "guide $1: $(cat state.env)" >> "$RUNNER_TEMP/guide.log"; }; ' % FX_DIGEST_STALE)
     check("scout leg (release): the page's own Scout block runs as written (section scout); a release candidate never runs it", "guide scout" in out, out[-300:])

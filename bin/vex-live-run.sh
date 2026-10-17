@@ -248,6 +248,11 @@ scout_judge() {   # <before> <after> <cve> <what>: bin/scout-selfcheck.py's verd
     || { echo "::error::Docker Scout does not apply our VEX to ${4}" >&2; return 1; }
 }
 
+hub_push_out() {   # a failure between the push login and its logout: the push token leaves the Docker config and the environment before the leg returns
+  crane auth logout index.docker.io >/dev/null 2>&1 || true
+  unset DOCKERHUB_TEST_PUSH_TOKEN
+}
+
 scout_leg() {   # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as an attestation made by bin/vex-index.py, in the Docker Hub test repository; (2) our production image
   scout_preflight || return 1                               # there too (AC6), and, after a publication, the published index by tag and by exact digest
   local vexfile="$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" dh="index.docker.io/${DH_REPO}" author prod fx_f target ref what
@@ -259,18 +264,18 @@ scout_leg() {   # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as
   printf '%s' "$DOCKERHUB_TEST_PUSH_TOKEN" | crane auth login index.docker.io -u "$DOCKERHUB_TEST_USERNAME" --password-stdin || return 1
   # (1) the pinned fixture is a single image: wrapped in an index, it gets our attestation like a release does (one child per platform), and goes to the test repository
   rm -rf scout-fixture
-  crane pull --format oci "$FIXTURE_SRC" scout-fixture || return 1
-  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" wrap-index --layout scout-fixture >/dev/null || return 1
+  crane pull --format oci "$FIXTURE_SRC" scout-fixture || { hub_push_out; return 1; }
+  python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" wrap-index --layout scout-fixture >/dev/null || { hub_push_out; return 1; }
   python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" scout-vex --openvex "$vexfile" --images images.json --fixture-digest "$FIX" --cve "$CVE" \
-    --repository "docker.io/${DH_REPO}" --out scout-fixture.vex.json || return 1
-  python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1
-  fx_f=$(jq -er '.manifests[0].digest' scout-fixture/index.json) || return 1
-  copy_candidate scout-fixture "${dh}:${RUN}-fixture-vex" "$fx_f" || return 1
+    --repository "docker.io/${DH_REPO}" --out scout-fixture.vex.json || { hub_push_out; return 1; }
+  python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || { hub_push_out; return 1; }
+  fx_f=$(jq -er '.manifests[0].digest' scout-fixture/index.json) || { hub_push_out; return 1; }
+  copy_candidate scout-fixture "${dh}:${RUN}-fixture-vex" "$fx_f" || { hub_push_out; return 1; }
   # (2) our production image: the candidate from Build's layout, or the published image copied by digest
   if [ "$MODE" = rc ]; then
-    copy_candidate "$CANDIDATE_DIR/images/production" "${dh}:${RUN}-production" "$prod" || return 1
+    copy_candidate "$CANDIDATE_DIR/images/production" "${dh}:${RUN}-production" "$prod" || { hub_push_out; return 1; }
   else
-    push_copy "ghcr.io/fosterstack/cache@${prod}" "${dh}:${RUN}-production" || return 1
+    push_copy "ghcr.io/fosterstack/cache@${prod}" "${dh}:${RUN}-production" || { hub_push_out; return 1; }
     [ "$(crane digest "${dh}:${RUN}-production")" = "$prod" ] || { echo "::error::the production copy does not keep its digest" >&2; return 1; }
   fi
   crane auth logout index.docker.io || return 1
