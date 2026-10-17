@@ -43,11 +43,16 @@ signed_commit() {
   /usr/bin/python3 -I -B - "$repo" "$tmp/commit-input.json" "$branch" "$base" "$headline" "$cbody" "$@" <<'PY' || return 1
 import base64, json, os, sys
 repo, out, branch, base, headline, body = sys.argv[1:7]
-adds = []
+adds, seen = [], set()
+root = os.path.realpath(repo)
 for p in sys.argv[7:]:
-    if p.startswith("/") or ".." in p.split("/") or not os.path.isfile(repo + "/" + p):
-        print("refresh-inputs.sh: %r is not a file of the repository; no commit was made" % p, file=sys.stderr); sys.exit(1)
-    adds.append({"path": p, "contents": base64.b64encode(open(repo + "/" + p, "rb").read()).decode()})
+    full = repo + "/" + p
+    if p.startswith("/") or ".." in p.split("/") or p.split("/")[0] == ".git" or os.path.islink(full) or not os.path.isfile(full) or os.path.commonpath([root, os.path.realpath(full)]) != root:
+        print("refresh-inputs.sh: %r is not a regular file of the repository (a symlink, a path outside it or its .git is refused); no commit was made" % p, file=sys.stderr); sys.exit(1)
+    if p in seen:
+        continue                                   # the API refuses a path twice: the plan may already name build/archive.json when open-pr adds the pointer
+    seen.add(p)
+    adds.append({"path": p, "contents": base64.b64encode(open(full, "rb").read()).decode()})
 q = "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}"
 inp = {"branch": {"repositoryNameWithOwner": os.environ.get("GITHUB_REPOSITORY", "fosterstack/cache"), "branchName": branch}, "message": {"headline": headline, "body": body},
        "fileChanges": {"additions": adds}, "expectedHeadOid": base}
@@ -109,10 +114,16 @@ PY
   startsha=$(/usr/bin/git -C "$repo" rev-parse HEAD 2>/dev/null || true)
   # REQ-REFRESH-001-AC34: main requires signed commits, so the one commit is made through the API (GitHub signs what the job's App token creates), on a branch that was
   # pushed at the commit the job started from (nothing new to sign locally); the pull request is opened only for a commit the API reports as verified
-  { [ -n "$startsha" ] && /usr/bin/git -C "$repo" checkout -b "$branch" && /usr/bin/git -C "$repo" push -q origin "$branch" && pushed=1 \
+  { [ -n "$startsha" ] && /usr/bin/git -C "$repo" checkout -b "$branch" && /usr/bin/git -C "$repo" push -q origin "$branch" && pushed=1 && PENDING_BRANCH=$branch \
     && signed_commit "$branch" "$startsha" "$title" "$body" "$@" \
     && (cd "$repo" && /usr/bin/gh pr create --base main --head "$branch" --title "$title" --body "$body"); } || rc=$?
-  [ "$rc" = 0 ] || [ -z "$pushed" ] || /usr/bin/git -C "$repo" push -q origin --delete "$branch" >/dev/null 2>&1 || true   # no half-made branch is left behind
+  if [ "$rc" = 0 ]; then PENDING_BRANCH=; elif [ -n "$pushed" ]; then PENDING_BRANCH=; drop_branch "$branch"; fi   # no half-made branch is left behind, and a failed deletion is reported
+  # the commit was made through the API, so the files the job edited are still in the working tree: put them back to the start commit (a later invocation in the same
+  # checkout must see the start state, as it did when the edits were committed to the branch)
+  for _p in "$@"; do
+    if /usr/bin/git -C "$repo" ls-files --error-unmatch -- "$_p" >/dev/null 2>&1; then /usr/bin/git -C "$repo" checkout -q "$startsha" -- "$_p" || echo "refresh-inputs.sh: could not restore $_p to $startsha" >&2
+    else /bin/rm -f -- "$repo/$_p"; fi
+  done
   # back to where the job started, whether or not a step failed: a later step of the same job (the FIPS check) must not branch from this commit.
   # A detached start is restored by its commit.
   if [ -n "$startbr" ] && [ "$startbr" != HEAD ]; then /usr/bin/git -C "$repo" checkout -q "$startbr" || { echo "refresh-inputs.sh: could not go back to $startbr; a later step would branch from the refresh commit" >&2; rc=1; }
@@ -139,8 +150,13 @@ case $cmd in archive-key-check) { [ -n "$archive" ] && [ -d "$archive" ]; } || d
 case $cmd in refresh|fips-module) [ -n "$pr_author" ] || die "--pr-author is required (the Auditor App's name; gh reports it as app/<name>, both spellings are accepted): without it a stranger's pull request on a refresh/ branch could be counted";; esac
 
 tmp=$(/usr/bin/mktemp -d)
-cleanup() { local rc=$?; set +e; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
+PENDING_BRANCH=
+drop_branch() { /usr/bin/git -C "$repo" push -q origin --delete "$1" >/dev/null 2>&1 || echo "refresh-inputs.sh: could not delete the branch $1 from the remote; delete it by hand" >&2; }
+cleanup() { local rc=$?; set +e; [ -z "$PENDING_BRANCH" ] || drop_branch "$PENDING_BRANCH"; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status; a branch pushed for a pull request that was not opened (an interrupted run) is removed
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 case $cmd in
 archive-key-check)
