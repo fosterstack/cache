@@ -111,17 +111,21 @@ for v in production fips; do
   loaded=$(docker load -i "$tmp/$v.tar") || fail "the $v image could not be loaded"
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || fail "docker load named no image for the $v candidate"
-  docker tag "$ref" localhost/fscache-artifact-candidate
+  docker tag "$ref" "localhost/fscache-$v-image"   # a fixed local name per image, run below with --pull=never: no variable image for pin-age to refuse
   for probe in busybox:sh busybox:ash bin:sh bin:ash bin:bash bin:dash usr-bin:sh usr-bin:bash sbin:sh; do
     sh="${probe%%:*}"; sh="${sh//-//}/${probe##*:}"   # the directory (a - stands for /) and the shell name
-    if docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-artifact-candidate -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
+    if [ "$v" = fips ]; then
+      if docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-fips-image -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
+    else
+      if docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-production-image -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
+    fi
   done
   name="fscache-art-$v"
   if [ "$v" = fips ]; then
-    docker run --pull=never -d --name "$name" -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw -p 127.0.0.1::8080 localhost/fscache-artifact-candidate > /dev/null || fail "the $v image did not start"
+    docker run --pull=never -d --name "$name" -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw -p 127.0.0.1::8080 localhost/fscache-fips-image > /dev/null || fail "the $v image did not start"
     auth=acc:accpw
   else
-    docker run --pull=never -d --name "$name" -p 127.0.0.1::8080 localhost/fscache-artifact-candidate > /dev/null || fail "the $v image did not start"
+    docker run --pull=never -d --name "$name" -p 127.0.0.1::8080 localhost/fscache-production-image > /dev/null || fail "the $v image did not start"
     auth=""
   fi
   port=$(docker port "$name" 8080/tcp | sed -n '1s/.*://p')
