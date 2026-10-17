@@ -763,6 +763,44 @@ for why, text in [("libc-bin missing", stanza("libc6", "2.36-9", "glibc")), ("li
                   ("libc-bin removed but not purged", stanza("libc6", "2.36-9", "glibc") + "\n" + stanza("libc-bin", "2.36-9", "glibc", "deinstall ok config-files")), ("an empty list", "")]:
     check("OWNER-3 an image that loses the property is refused: %s" % why, L.fixture_image_problems(text, man) != [])
 check("a Source field with its version in brackets still names the source", L.fixture_image_problems(stanza("libc6", "2.36-9", "glibc (2.36-9)") + "\n" + stanza("libc-bin", "2.36-9", "glibc (2.36-9)"), man) == [])
+# Codex #420 r1 (both seats): platform bound to the export, source version checked, one assignment of the image, exclusive inputs, errors reported, the manifest in the gate
+check("OWNER-3 a manifest platform other than the one the runner exports is a problem", L.fixture_manifest_problems(mut(platform="linux/arm64"), run_text) != []
+      and L.fixture_manifest_problems(mut(platform=None), run_text) != [])
+check("OWNER-3 a second assignment of FIXTURE_SRC in the runner is a problem", L.fixture_manifest_problems(man, run_text + "\nFIXTURE_SRC=docker.io/library/debian@sha256:" + "1" * 64 + "\n") != [])
+check("OWNER-3 an export of another platform than the manifest's is a problem", L.fixture_manifest_problems(man, run_text.replace("--platform linux/amd64", "--platform linux/arm64")) != [])
+check("OWNER-3 a source version that differs from the manifest's is refused (glibc (9.9))",
+      L.fixture_image_problems(stanza("libc6", "2.36-9", "glibc (9.9)") + "\n" + stanza("libc-bin", "2.36-9", "glibc (2.36-9)"), man) != [])
+check("OWNER-3 a manifest without a source_version for a package is a problem", L.fixture_manifest_problems(mut(packages=[{k: v for k, v in man["packages"][0].items() if k != "source_version"}, man["packages"][1]]), run_text) != [])
+import io, contextlib, tarfile
+with tempfile.TemporaryDirectory() as _t:
+    def cli(*args):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            try:
+                rc = L.main(["fixture-check", "--manifest", man_path, "--run", os.path.join(root, "bin/vex-live-run.sh")] + list(args))
+            except SystemExit as e:
+                rc = e.code
+        return rc, err.getvalue()
+    good_status = os.path.join(_t, "status"); open(good_status, "w").write(GOOD)
+    def mktar(name, content):
+        with tarfile.open(os.path.join(_t, name), "w") as tf:
+            if content is not None:
+                ti = tarfile.TarInfo("var/lib/dpkg/status"); data = content.encode(); ti.size = len(data); tf.addfile(ti, io.BytesIO(data))
+        return os.path.join(_t, name)
+    check("fixture-check passes on a good package list given as a file and as a tar", cli("--dpkg-status", good_status)[0] == 0 and cli("--image-tar", mktar("good.tar", GOOD))[0] == 0)
+    check("OWNER-3 fixture-check refuses both inputs at once (one could silently stand in for the other)", cli("--dpkg-status", good_status, "--image-tar", os.path.join(_t, "missing.tar"))[0] not in (0, None))
+    rc, err = cli("--image-tar", mktar("empty.tar", None))
+    check("OWNER-3 a tar without the package list is refused with a message", rc == 1 and "::error::" in err, (rc, err))
+    rc, err = cli("--dpkg-status", os.path.join(_t, "nope"))
+    check("OWNER-3 a missing input is refused with a message, not a crash", rc == 1 and "::error::cannot read" in err, (rc, err))
+    link = os.path.join(_t, "link.tar")
+    with tarfile.open(link, "w") as tf:
+        ti = tarfile.TarInfo("var/lib/dpkg/status"); ti.type = tarfile.SYMTYPE; ti.linkname = "/etc/passwd"; tf.addfile(ti)
+    rc, err = cli("--image-tar", link)
+    check("OWNER-3 a package list that is a link in the image is refused", rc == 1 and "::error::" in err, (rc, err))
+    # the main-push gate runs the live test when only the fixture manifest changed
+    gate_re = re.search(r"grep -qE '([^']+)'", gstep).group(1)
+    check("OWNER-3 the change gate matches the fixture manifest", re.search(gate_re, "docs/using-our-vex.live-fixture.json") is not None, gate_re)
 # the runner does this check on the real image, before any push (static: the order of the lines)
 i_chk, i_push = run_text.find("fixture-check"), run_text.find('push_copy "$FIXTURE_SRC"')
 check("the runner exports the fixture and runs fixture-check on its package list before it pushes the fixture", 0 < i_chk < i_push and "--image-tar" in run_text, (i_chk, i_push))

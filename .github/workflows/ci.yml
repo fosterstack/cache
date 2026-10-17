@@ -736,7 +736,7 @@ jobs:
             exit 0
           fi
           git diff --name-only "$BEFORE" "$GITHUB_SHA" > "$RUNNER_TEMP/changed.txt"   # complete before it is read
-          if grep -qE '^(docs/using-our-vex\.md|docs/using-our-vex\.cannot-run\.json|docs/using-our-vex\.live-blocks\.json|\.vex/.+|bin/vex-forms\.py|bin/vex-live-(run\.sh|test\.py))$' "$RUNNER_TEMP/changed.txt"; then
+          if grep -qE '^(docs/using-our-vex\.md|docs/using-our-vex\.cannot-run\.json|docs/using-our-vex\.live-blocks\.json|docs/using-our-vex\.live-fixture\.json|\.vex/.+|bin/vex-forms\.py|bin/vex-live-(run\.sh|test\.py))$' "$RUNNER_TEMP/changed.txt"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"

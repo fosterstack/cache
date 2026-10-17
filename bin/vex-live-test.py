@@ -129,10 +129,14 @@ def fixture_manifest_problems(manifest, run_text):
     if not isinstance(manifest, dict) or set(manifest) != {"image", "platform", "packages", "why"}:
         return ["the manifest is not exactly image, platform, packages and why"]
     m = re.search(r"(?m)^FIXTURE_SRC=(\S+)$", run_text)
-    if not m or manifest["image"] != m.group(1) or not re.fullmatch(r"[a-z0-9./-]+@sha256:[0-9a-f]{64}", manifest["image"]):
-        bad.append("the manifest's image is not the digest the runner copies")
+    if not m or len(re.findall(r"\bFIXTURE_SRC\s*\+?=", run_text)) != 1 or manifest["image"] != m.group(1) \
+            or not re.fullmatch(r"[a-z0-9./-]+@sha256:[0-9a-f]{64}", manifest["image"]):
+        bad.append("the manifest's image is not the one digest the runner copies")
+    exports = re.findall(r'crane export --platform (\S+) "\$FIXTURE_SRC"', run_text)
+    if manifest["platform"] != "linux/amd64" or exports != [manifest["platform"]]:
+        bad.append("the manifest's platform is not the one platform the runner exports (linux/amd64)")
     pk = manifest["packages"]
-    if not isinstance(pk, list) or len(pk) < 2 or not all(isinstance(x, dict) and set(x) == {"name", "version", "source"}
+    if not isinstance(pk, list) or len(pk) < 2 or not all(isinstance(x, dict) and set(x) == {"name", "version", "source", "source_version"}
                                                           and all(isinstance(v, str) and v for v in x.values()) for x in pk):
         return bad + ["the manifest needs at least two packages, each with a name, a version and a source"]
     if len({x["name"] for x in pk}) != len(pk):
@@ -148,10 +152,11 @@ def fixture_image_problems(dpkg_status, manifest):
     for st in dpkg_status.split("\n\n"):
         f = dict(re.findall(r"(?m)^([A-Za-z-]+): (.*)$", st))
         if f.get("Package"):
-            src = f.get("Source", f["Package"]).split(" ")[0]
-            seen[f["Package"]] = (f.get("Version"), src, f.get("Status", "").endswith(" installed"))
-    return ["the fixture image lacks %s %s from %s (installed)" % (p["name"], p["version"], p["source"]) for p in manifest["packages"]
-            if seen.get(p["name"]) != (p["version"], p["source"], True)]
+            m = re.fullmatch(r"(\S+)(?: \((\S+)\))?", f.get("Source", f["Package"]).strip())
+            src, sver = (m.group(1), m.group(2) or f.get("Version")) if m else (None, None)   # no bracket: the source has the binary's version
+            seen[f["Package"]] = (f.get("Version"), src, sver, f.get("Status", "").endswith(" installed"))
+    return ["the fixture image lacks %s %s from %s %s (installed)" % (p["name"], p["version"], p["source"], p["source_version"]) for p in manifest["packages"]
+            if seen.get(p["name"]) != (p["version"], p["source"], p["source_version"], True)]
 
 
 PKG_NAME = r"[A-Za-z0-9._+-]+"
@@ -601,8 +606,9 @@ def main(argv=None):
     fc = sub.add_parser("fixture-check")
     fc.add_argument("--manifest", required=True)
     fc.add_argument("--run", required=True, help="bin/vex-live-run.sh: the digest it copies must be the manifest's")
-    fc.add_argument("--dpkg-status", help="the fixture image's var/lib/dpkg/status: its packages must be the manifest's")
-    fc.add_argument("--image-tar", help="the fixture image's filesystem as a tar (crane export): var/lib/dpkg/status is READ from it, nothing is extracted")
+    fcx = fc.add_mutually_exclusive_group()    # one input, so one can never stand in for the other (Codex #420 r1)
+    fcx.add_argument("--dpkg-status", help="the fixture image's var/lib/dpkg/status: its packages must be the manifest's")
+    fcx.add_argument("--image-tar", help="the fixture image's filesystem as a tar (crane export): var/lib/dpkg/status is READ from it, nothing is extracted")
     sc = sub.add_parser("pick-scope")
     sc.add_argument("--reports", required=True)
     sc.add_argument("--cve", required=True)
@@ -670,13 +676,13 @@ def main(argv=None):
         print(pick_cve({k: (v if k in ("grype", "inspector") else set(v)) for k, v in rep.items()}, ours))   # Inspector's CVE -> packages map stays a map (pick_cve needs it)
         return 0
     if a.cmd == "fixture-check":
+        import tarfile
         try:
             manifest = json.load(open(a.manifest))
             bad = fixture_manifest_problems(manifest, open(a.run).read())
             if not bad and a.dpkg_status:
                 bad = fixture_image_problems(open(a.dpkg_status, errors="replace").read(), manifest)
             elif not bad and a.image_tar:
-                import tarfile
                 with tarfile.open(a.image_tar) as tf:
                     member = tf.getmember("var/lib/dpkg/status")
                     if not member.isfile():
