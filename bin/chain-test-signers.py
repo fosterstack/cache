@@ -75,6 +75,7 @@ def prev_ok(l, i, ch):
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
+ASSIGN_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
 OPENER = {"sq": "'", "dq": '"', "ansi": "$'", "cmd": "$(", "brace": "${", "bt": "`", "arith": "$((", "brk": "$["}
 
 def strip_lines(lines, base=None):
@@ -87,6 +88,8 @@ def strip_lines(lines, base=None):
     whose delimiter is not plain, a heredoc started on a line that leaves a quote open, a single quote inside a ${ } that is inside double quotes."""
     out, errs = [], []
     af = []                                            # per open context: did the word that opened it begin as an assignment (NAME=...)?
+    wsv, wbuf, wbk = [], "", 0                        # per open context: the text of the word before it opened; the current word so far; open [ in it
+    CMDLEVEL = (None, "cmd", "bt", "paren", "case")      # contexts in which a new word begins a command or an argument of it
     st, hd = ([base] if base else []), None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented, quoted)] still to be read inside a heredoc body
     DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
     cont = base == "hb"                                       # the previous line ends in a backslash: bash joins this line to it
@@ -111,8 +114,14 @@ def strip_lines(lines, base=None):
         bd = {}                                        # open [ on this line per context depth (a subscript pairs its own ], and only at its own level)
         for i, ch in enumerate(l):
             if skip == i: skip = None; prev_ws = False; continue            # the second character of a two-character opener
-            if esc: esc = False; prev_ws = False; continue
+            if esc: esc = False; prev_ws = False; wbuf += ch; continue
             top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
+            if top in CMDLEVEL and ch in " \t;&|(){}" and wbk == 0: wbuf = ""
+            else:
+                wbuf += ch
+                if top in CMDLEVEL:
+                    if ch == "[": wbk += 1
+                    elif ch == "]" and wbk: wbk -= 1
             if ch in "()" and top in ("cmd", "paren", "bt", "case", "brk", "arith") and (bd.get(len(st), 0) > 0 or top == "brk") and any(c in ("dq", "brace") for c in st) \
                     and any(c in ("cmd", "bt", "paren") for c in st[max(k for k, c in enumerate(st) if c in ("dq", "brace")):]):
                 errs.append("line %d: a paren inside a bracket subscript or $[ ] inside a substitution inside double quotes or ${ } is not resolved (the command reader closes the substitution at it)" % (n + 1))
@@ -170,17 +179,25 @@ def strip_lines(lines, base=None):
                 cut = i; break
             prev_ws = ch.isspace()
             minlen = min(minlen, len(st))
-            if len(af) > len(st): del af[len(st):]
-            while len(af) < len(st):                   # a context was opened at i: was its word an assignment?
-                wsi = max(l.rfind(c_, 0, i) for c_ in " \t;&|({") + 1
-                af.append(bool(re.match(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=", l[wsi:i + 1])))
+            if len(af) > len(st):
+                del af[len(st):]
+                while len(wsv) > len(st): wbuf = wsv.pop()                  # a context closed: the word it was part of continues
+            while len(af) < len(st):                   # a context was opened at i: did its word begin as an assignment?
+                af.append(bool(ASSIGN_WORD.match(wbuf))); wsv.append(wbuf)
+                if st[len(af) - 1] in ("cmd", "bt", "paren", "case"): wbuf, wbk = "", 0      # inside it a new word starts
         cont = esc and cut is None
+        if cont: wbuf = wbuf[:-1]                       # a continuation: the backslash is not part of the word
+        elif (st[-1] if st else None) in CMDLEVEL: wbuf, wbk = "", 0
+        else: wbuf += "\n"
         # A line that closes a context carried from an earlier line is read from inside ALL the carried contexts (so what bash runs inside a quote or a
         # substitution stays visible, and the quote that closes is not read as an opener); a line that closes nothing keeps the plain reading (over-reports).
         carried = ""
         if minlen < len(start_st) and any(c in OPENER for c in start_st):
-            first = next(k for k, c in enumerate(start_st) if c in OPENER)
-            carried = ("x=" if start_af[first] else "x") + "".join(OPENER.get(c, "") for c in start_st)   # one word (an assignment if the carried word began as one), then the carried openers
+            prev = None
+            for k, c in enumerate(start_st):                # the carried openers; at the first one and wherever a context begins a new word inside a substitution or group, the word is an assignment if it began as one
+                if c in OPENER:
+                    carried += (("x=" if start_af[k] else "x") if prev in (None, "cmd", "bt", "paren", "case") else "") + OPENER[c]
+                prev = c
         out.append(carried + (l if cut is None else l[:cut]))
         if pend:
             if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
