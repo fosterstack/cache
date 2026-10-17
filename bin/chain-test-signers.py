@@ -104,10 +104,15 @@ def strip_lines(lines, base=None):
         esc = prev_ws = False
         cut = skip = None
         pend = []                                      # heredocs opened on this line, in plain shell text
+        bd = {}                                        # open [ on this line per context depth (a subscript pairs its own ], and only at its own level)
         for i, ch in enumerate(l):
             if skip == i: skip = None; prev_ws = False; continue            # the second character of a two-character opener
             if esc: esc = False; prev_ws = False; continue
             top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
+            if ch in "()" and top in ("cmd", "paren", "bt", "case", "brk", "arith") and (bd.get(len(st), 0) > 0 or top == "brk") and any(c in ("dq", "brace") for c in st) \
+                    and any(c in ("cmd", "bt", "paren") for c in st[max(k for k, c in enumerate(st) if c in ("dq", "brace")):]):
+                errs.append("line %d: a paren inside a bracket subscript or $[ ] inside a substitution inside double quotes or ${ } is not resolved (the command reader closes the substitution at it)" % (n + 1))
+            if ch in "[]" and top in ("cmd", "paren", "bt", "case", "arith"): bd[len(st)] = max(0, bd.get(len(st), 0) + (1 if ch == "[" else -1))
             if ch == "c" and l[i:i + 5] == "case\\" and top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{"):
                 errs.append("line %d: case followed by a backslash is not resolved (bash reads case\\ + one character as an ordinary word, or joins the next line)" % (n + 1))
             if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
