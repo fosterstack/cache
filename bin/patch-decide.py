@@ -26,6 +26,9 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
 """
 import argparse, html, json, os, re, subprocess, sys, unicodedata
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
+# data that ships nothing: the auditor's own work (three names) and the .vex README (REQ-REL-009 AC15); every other path under .vex/ and .auditor/ stays fix-class
+NEUTRAL_EXACT = {".auditor/panel-state.json", ".auditor/knowledge.md", ".vex/README.md"}
+NEUTRAL_PROPOSALS = re.compile(r"^\.auditor/proposals/[^/]+\.json$")
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
 # The base inputs are DATA in one committed file, read by the decide job (through `base-moved`) and by `classify` here (rules 61 and 65; advisor Oct 12): a change
@@ -193,6 +196,38 @@ def _reviewed_workflow(f):
     return f.count("/") == 2 and f.split("/")[-1] in NEUTRAL_WORKFLOWS
 
 
+SHEBANG_LINE = re.compile(r"(?m)^#!")
+
+
+def _not_data(f, diff, mode, old_mode, contents=None):
+    """why a neutral-named path is not data (None when it is): its file types before and after, and its committed content.
+    A script line is a shebang line (`#!` at the start of ANY line); it is looked for in the whole new content and in the
+    whole old content (what a commit deletes or replaces), read from the blobs in `contents`; a record without them is not proven data (fail closed)."""
+    if old_mode in ("100755", "120000"):
+        return "%s was %s before: not data" % (f, "a symlink" if old_mode == "120000" else "executable")
+    if mode != "000000" and mode != "100644":
+        return "%s has mode %s; data is a regular non-executable file (100644)" % (f, mode or "?")
+    if old_mode not in ("000000", "100644"):
+        return "%s has no usable old file type (%s): a neutral path is data only when its file type before and after is known" % (f, old_mode or "missing")
+    if mode == "000000" and old_mode != "100644":
+        return "%s is deleted and its old file type is unknown" % f
+    if not isinstance(contents, dict) or "old" not in contents or "new" not in contents:
+        return "%s has no whole-blob evidence (old and new content): not proven data" % f
+    old_text, new_text = contents["old"], contents["new"]
+    if (old_mode == "100644" and old_text is None) or (mode == "100644" and new_text is None):
+        return "%s: a blob that exists could not be read: not proven data" % f
+    for label, text in (("new", new_text), ("old", old_text)):
+        if text is not None and ("\0" in text):
+            return "%s holds NUL or non-text bytes (%s content): not text" % (f, label)
+        if text is not None and SHEBANG_LINE.search(text):
+            return "%s has a shebang line in its %s content: a script, not data" % (f, label)
+    if mode == "000000":
+        return None
+    if new_text is None:
+        return "%s shows no content (binary, or a mode-only change): not proven data" % f
+    return None
+
+
 def classify(commit, base_inputs=None):
     """('fix' | 'neutral' | 'dirty', reason) for one commit. Neutral means non-executable data only — docs/, requirements/,
     test-evidence/ data and the reviewed .github files; an executable test never counts (REQ-REL-009 AC1, owner Oct 3).
@@ -201,8 +236,16 @@ def classify(commit, base_inputs=None):
     kinds, why = set(), []
     base = _base_inputs(base_inputs)
     hard = False      # a base input deleted, made executable or a symlink, or without mode evidence: no label upgrades it (an image change is not "no behavior change")
+    old_modes = commit.get("old_modes") or {}
     for f in files:
-        if f in base and modes.get(f) is None:
+        if f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
+            # neutral only as DATA, proven from the committed content and the old and new file types (REQ-REL-009 AC15)
+            bad = _not_data(f, diffs.get(f), modes.get(f), old_modes.get(f), (commit.get("contents") or {}).get(f))
+            if bad:
+                kinds.add("dirty"); why.append(bad); hard = True       # no label turns this into a fix
+            else:
+                kinds.add("neutral")
+        elif f in base and modes.get(f) is None:
             kinds.add("dirty"); hard = True; why.append("%s has no mode evidence: a base input is a refresh only with its file mode known" % f)
         elif f in base and modes.get(f) == "000000":
             kinds.add("dirty"); hard = True; why.append("%s is deleted: a base input removed is not a refresh" % f)
@@ -1182,6 +1225,18 @@ def _git(*args, cwd="."):
     return subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True, check=True).stdout
 
 
+def _blob(spec, cwd):
+    """a file's text at a revision (git show rev:path); non-UTF-8 bytes read as binary; a read that fails is "\0unreadable" (not text),
+    never None: the caller asks only for blobs that exist, so a failure is not an absence"""
+    p = subprocess.run(["git", "-C", cwd, "show", spec], capture_output=True)
+    if p.returncode != 0:
+        return "\0unreadable"
+    try:
+        return p.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return "\0binary"
+
+
 def gather_commits(since, cwd=".", labels=lambda sha: []):
     """The commits since a tag (oldest first) with the files each changes, each file's changed lines, and the labels of
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
@@ -1193,7 +1248,7 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
         # each file's mode after the commit (":old new oldsha newsha status\tpath"); 000000 is a deletion (Codex B01)
-        modes = {}
+        modes, old_modes = {}, {}
         try:       # against the FIRST parent (a merge is read the same way as the name list and the diffs above); a root commit has none
             raw = _git("diff", "--raw", "-r", "--no-renames", sha + "^1", sha, cwd=cwd)
         except subprocess.CalledProcessError:
@@ -1202,7 +1257,14 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
             meta, _, paths = ln.partition("\t")
             if meta.startswith(":"):
                 modes[paths.split("\t")[-1]] = meta.split()[1]
-        out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "labels": list(labels(sha))})
+                old_modes[paths.split("\t")[-1]] = meta.split()[0].lstrip(":")
+        # the old and new blobs of every neutral-named path, read whole (a diff's context window is no limit on what is checked)
+        contents = {}
+        for f in files:
+            if f in NEUTRAL_EXACT or NEUTRAL_PROPOSALS.match(f):
+                contents[f] = {"old": None if old_modes.get(f) == "000000" else _blob("%s^1:%s" % (sha, f), cwd),
+                               "new": None if modes.get(f) == "000000" else _blob("%s:%s" % (sha, f), cwd)}
+        out.append({"sha": sha, "files": files, "diffs": diffs, "modes": modes, "old_modes": old_modes, "contents": contents, "labels": list(labels(sha))})
     return out
 
 
