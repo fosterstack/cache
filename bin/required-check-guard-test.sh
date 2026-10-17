@@ -88,15 +88,7 @@ step "match opens nothing"                            "$w/match.json"   "$w/no-i
 # REQ-DEP-002-AC3 (advisor reading Oct 16, Astra release review R5): the committed list names the two jobs that were not in it, each as a job of ci.yml
 ci="$repo/.github/workflows/ci.yml"
 # the two jobs and their scopes are read from the criterion's own text (REQ-DEP-002-AC3: "names the job X once with scope S and the job Y once with scope T"), so the list, the criterion and ci.yml are tied to one another
-while read -r ctx scope; do
-  n="$(jq --arg c "$ctx" --arg s "$scope" '[.required_checks[] | select(.context == $c and .scope == $s and .integration_id == 15368)] | length' "$list")"
-  m="$(jq --arg c "$ctx" '[.required_checks[] | select(.context == $c)] | length' "$list")"
-  if [ "$n" = 1 ] && [ "$m" = 1 ] && grep -qE "^    name: ${ctx}\$" "$ci"; then
-    echo "ok: the committed list names ${ctx} once, scope ${scope}, integration 15368, and ci.yml has that job"; pass=$((pass+1))
-  else
-    echo "FAIL: the committed list must name ${ctx} exactly once with scope ${scope} and integration 15368, and ci.yml must have a job named ${ctx} (found ${n}/${m})"; fail=$((fail+1))
-  fi
-done < <(python3 - "$repo/requirements/requirements.yaml" <<'PY'
+ac3pairs="$(python3 - "$repo/requirements/requirements.yaml" <<'PY'
 import re, sys, yaml
 q = next(q for q in yaml.safe_load(open(sys.argv[1]))["requirements"] if q["id"] == "REQ-DEP-002")
 t = next(a for a in q["acceptance_criteria"] if a["id"] == "REQ-DEP-002-AC3")["then"]
@@ -104,7 +96,17 @@ m = re.search(r"names the job (\S+) once with scope (\w+) and the job (\S+) once
 assert m, t[:200]
 print(m.group(1), m.group(2)); print(m.group(3), m.group(4))
 PY
-)
+)" || { echo "FAIL: REQ-DEP-002-AC3's text could not be parsed for the two job names"; fail=$((fail+1)); ac3pairs=""; }
+while read -r ctx scope; do
+  [ -n "$ctx" ] || continue
+  n="$(jq --arg c "$ctx" --arg s "$scope" '[.required_checks[] | select(.context == $c and .scope == $s and .integration_id == 15368)] | length' "$list")"
+  m="$(jq --arg c "$ctx" '[.required_checks[] | select(.context == $c)] | length' "$list")"
+  if [ "$n" = 1 ] && [ "$m" = 1 ] && grep -qE "^    name: ${ctx}\$" "$ci"; then
+    echo "ok: the committed list names ${ctx} once, scope ${scope}, integration 15368, and ci.yml has that job"; pass=$((pass+1))
+  else
+    echo "FAIL: the committed list must name ${ctx} exactly once with scope ${scope} and integration 15368, and ci.yml must have a job named ${ctx} (found ${n}/${m})"; fail=$((fail+1))
+  fi
+done <<< "$ac3pairs"
 
 echo "----"
 echo "required-check-guard: ${pass} passed, ${fail} failed"
