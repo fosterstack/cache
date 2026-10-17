@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -3872,6 +3872,37 @@ mkrowp "$work/gf-edit.json" bin/fetch.sh "$GL" "$GOP"
 twoc gf-edit bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$GL --proxy http://p.example"$'\n'
 edck gf-edit "$work/gf-edit.json"
 CASE="a Go-toolchain row voids when the line is edited (a proxy added): exit 1"
+check test "$rc" -eq 1
+
+# REQ-SUP-001-AC25: the third honored fetch shape, the single line of bin/loopback-get.sh that starts the fetch program for a loopback or token request. The checker pins the
+# file and the sha256 of the whole line (as the ruling's only allowance), so any edit, any other file and any other line under the prefix rule nothing.
+LRP='loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): '
+LL="curl -q -g --noproxy '*' --proto \"=\$proto\" --max-redirs 0 \"\$@\" \"\$url\" || exit \$?"
+for v in "lr-ok:bin/loopback-get.sh:$LL:0" \
+         "lr-other-file:bin/fetch.sh:$LL:1" \
+         "lr-other-name:bin/loopback-get2.sh:$LL:1" \
+         "lr-edited-one-char:bin/loopback-get.sh:${LL/--max-redirs 0/--max-redirs 1}:1" \
+         "lr-extra-option:bin/loopback-get.sh:${LL/-q -g/-q -g -k}:1" \
+         "lr-other-line-same-file:bin/loopback-get.sh:curl -x http://p.example:3128 \"\$url\":1" \
+         "lr-a-fetch-of-software:bin/loopback-get.sh:curl -q -fsSL -o /tmp/x https://example.com/x:1" \
+         "lr-in-a-workflow:.github/workflows/x.yml:$LL:1"; do
+  nm=${v%%:*}; r1=${v#*:}; file=${r1%%:*}; r2=${r1#*:}; line=${r2%:*}; want=${r2##*:}
+  mkrowp "$work/$nm.json" "$file" "$line" "$LRP"
+  twoc "$nm" "$file" $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
+  edck "$nm" "$work/$nm.json"
+  CASE="loopback fetch row, $nm: exit $want"
+  check test "$rc" -eq "$want"
+done
+# the prefix does not lend the line to the other rulings, and the other rulings do not lend theirs to the helper line
+mkrowp "$work/lr-under-live.json" bin/loopback-get.sh "$LL" "$LIVEP"
+twoc lr-under-live bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$LL"$'\n'
+edck lr-under-live "$work/lr-under-live.json"
+CASE="the helper line under the Wolfi live-fetch ruling rules nothing: exit 1"
+check test "$rc" -eq 1
+mkrowp "$work/lr-go-under.json" bin/fetch.sh "curl $GOFIX \"https://go.dev/dl/\$f\"" "$LRP"
+twoc lr-go-under bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"curl $GOFIX \"https://go.dev/dl/\$f\""$'\n'
+edck lr-go-under "$work/lr-go-under.json"
+CASE="a Go-toolchain line under the loopback ruling rules nothing: exit 1"
 check test "$rc" -eq 1
 
 echo "pin-age-check: $pass passed, $failn failed"
