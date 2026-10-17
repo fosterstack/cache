@@ -48,11 +48,49 @@ def jload(path):
 WORKSPACE_ROOT = re.compile(r"(?<![^\s;&|(){}<>`\"'=,])\$(?:GITHUB_WORKSPACE|\{GITHUB_WORKSPACE\})/")   # the runner's checkout root, written as the variable and a slash, at the START of a word (an exact variable name: GITHUB_WORKSPACEX does not match; bin/$GITHUB_WORKSPACE/x and ./$GITHUB_WORKSPACE/x do not either)
 WORKSPACE_PLAIN = re.compile(r"\$GITHUB_WORKSPACE(?![A-Za-z0-9_])|\$\{GITHUB_WORKSPACE\}")   # the only forms in which a listed script may name the variable: a plain read
 WORKSPACE_PIECE = re.compile(r"[A-Z]{3,}")   # an upper-case run that is a piece of WORKSPACE, or holds five letters of it in a row: a name can be built from pieces only if a script holds them
+HEREDOC_QUOTED = re.compile(r"<<-?[ \t]*(?:(['\"])\\?([A-Za-z_][A-Za-z0-9_]*)\1|\\([A-Za-z_][A-Za-z0-9_]*))")
+def single_quoted_spans(body):
+    """(start, end) of every stretch of a shell text whose dollar signs are plain text: single-quoted stretches (across lines) and bodies of quoted here-documents. Quotes inside double quotes, after a backslash or in a comment do not count; an unclosed quote runs to the end."""
+    spans, i, n, st, a = [], 0, len(body), "n", 0
+    pend = []                                                # terminators of quoted here-documents whose body starts after this line
+    while i < n:
+        c = body[i]
+        if st == "n":
+            if c == "\\": i += 2; continue
+            m = HEREDOC_QUOTED.match(body, i) if c == "<" else None
+            if m: pend.append(m.group(2) or m.group(3)); i = m.end(); continue
+            if c == "\n" and pend:
+                pos = i + 1
+                for term in pend:
+                    start = pos
+                    while pos < n:
+                        e = body.find("\n", pos); line = body[pos:n if e < 0 else e]
+                        pos = n if e < 0 else e + 1
+                        if line.strip() == term: break
+                    spans.append((start, pos))
+                pend = []; i = pos; continue
+            if c == "'": st, a = "s", i
+            elif c == '"': st = "d"
+            elif c == "#" and (i == 0 or body[i - 1] in " \t\n;&|(){}"):
+                e = body.find("\n", i); i = n if e < 0 else e; continue
+        elif st == "d":
+            if c == "\\": i += 2; continue
+            if c == '"': st = "n"
+        else:
+            if c == "'": spans.append((a, i)); st = "n"
+        i += 1
+    if st == "s": spans.append((a, n))
+    return spans
+WORKSPACE_SLICE = re.compile(r"\$\{[A-Za-z_0-9@*]+(?::[^-=+?}]|[#%/^,])")   # a slice or pattern edit of a variable's value: ${x:2:4} ${x#?} ${x%?} ${x/a/b} ${x^^}
+def workspace_strict(body):
+    """The script that READS the variable to name a listed helper gets the strictest text test: no slice or pattern edit of any value, and no upper-case run holding even three letters in a row of WORKSPACE."""
+    rest = WORKSPACE_PLAIN.sub("", body)
+    return bool(WORKSPACE_SLICE.search(rest)) or any(r[k:k + 3] in "WORKSPACE" for r in WORKSPACE_PIECE.findall(rest) for k in range(len(r) - 2))
 def workspace_touched(body):
     """Does this script do anything with GITHUB_WORKSPACE but read it plainly (set, export, unset, read into, default-expand, brace-expand, build the name)?"""
-    for m in WORKSPACE_PLAIN.finditer(body):               # a read that is escaped, or follows a single quote on its line, is the text itself: it can be sliced into a name
-        ls = body.rfind("\n", 0, m.start()) + 1
-        if body[max(0, m.start() - 1):m.start()] == "\\" or "'" in body[ls:m.start()]: return True
+    quoted = single_quoted_spans(body)                      # a read inside a single quote (on any line) or after a backslash is the text itself: it can be sliced into a name
+    for m in WORKSPACE_PLAIN.finditer(body):
+        if body[max(0, m.start() - 1):m.start()] == "\\" or any(a <= m.start() < b for a, b in quoted): return True
     if re.search(r"\$\{![A-Za-z_0-9]*[*@]", body): return True       # ${!PREFIX*} lists every variable whose name starts with PREFIX
     rest = WORKSPACE_PLAIN.sub("", body)
     if re.search(r"GITHUB_(?![A-Z])", rest): return True                  # the variable's prefix with no name after it: the name is finished at run time
@@ -1275,7 +1313,7 @@ def scan_script(path, text, row, rows, base):
             if name in SHELL_INTERP or kind == "interp":
                 first = c.operands[0] if c.operands else ""
                 ws = WORKSPACE_ROOT.match(first)                # "$GITHUB_WORKSPACE/<exact listed path>": a script that moves its directory names the helper from the checkout root
-                if ws and workspace_touched(text):              # round 4: the name must still be the runner's own: any use but a plain read is refused
+                if ws and (workspace_touched(text) or workspace_strict(text)):              # round 4: the name must still be the runner's own: any use but a plain read is refused
                     add("script-name", span, "%s: the variable GITHUB_WORKSPACE is set, unset, read into or expanded with a default in this script, so %r no longer names the checkout root" % (path, first)); continue
                 if ws and any(span[max(0, m.start() - 1):m.start()] == "\\" or "'" in span[:m.start()] for m in re.finditer(r"\$\{?GITHUB_WORKSPACE", span)):
                     ws = None                                   # round 4: in a single quote or after a backslash the shell passes the text itself, not the checkout root

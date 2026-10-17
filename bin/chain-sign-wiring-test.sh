@@ -2944,6 +2944,14 @@ kc ws_bad51 'for v in ${!GITHUB_W*}; do printf -v $v /tmp/x; done\nbash "$GITHUB
 kc ws_bad52 'for v in ${!GITHUB_*}; do declare $v=/tmp; done\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad53 'x=QZWORKZZSPACXZEZ\nprintf -v "GITHUB_${x:2:4}${x:8:4}${x:14:1}" %s /tmp/evil\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad54 'p=GITHUB_\nexport "${p}${q}=/tmp/evil"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad55 "x='\n\$GITHUB_WORKSPACE\n'\nprintf -v \"\${x:2:16}\" %s /tmp/evil\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad56 "read -r -d '' x <<'E'\n\$GITHUB_WORKSPACE\nE\nprintf -v \"\${x:1:16}\" %s /tmp/evil\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad57 "x=\$(cat <<'E'\n\$GITHUB_WORKSPACE\nE\n)\nprintf -v \"\${x:1:16}\" %s /tmp/evil\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad58 'x=GITHUB_QWORKQSPACQE\nprintf -v "${x:0:7}${x:8:4}${x:13:4}${x:18:1}" %s /tmp/evil\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad59 'a=GITHUB_WORKQ\nb=SPAQCE\nprintf -v "${a:0:11}${b:0:3}${b:4:2}" %s /tmp/evil\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad60 'x=$(echo QWORKQSPACQE | tr -d Q)\nexport "GITHUB_$x=/tmp/evil"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+ko ws_ok6 "cat <<'E'\nit's text\nE\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" '["bash"]' '["bin/build-apk.sh"]'
+ko ws_ok5 "echo 'it is fine' # the helper's path\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" '["bash"]' '["bin/build-apk.sh"]'
 d=$(cfix ws_bad48 'bash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'); setfile "$d" bin/c.sh "#!/usr/bin/env -S GITHUB_WORKSPACE=/tmp/x bash\nset -euo pipefail\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"\n"; expm caught "$d" 'GITHUB_WORKSPACE' "round-5 ws_bad48: the first line is read too: an env -S assignment of the variable is refused"
 ko r5_ok2 '2>&1 cp x y'
 ko r5_ok3 'echo a > out; cat out'
@@ -3422,7 +3430,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1390
+EXPECT=1398
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
