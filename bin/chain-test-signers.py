@@ -102,7 +102,8 @@ def strip_lines(lines, base=None):
         elif not (st and st[-1] in DATA + ("bt",)) and l.lstrip().startswith("#"):
             out.append(""); continue
         esc = prev_ws = False
-        cut = skip = None
+        cut = skip = close_i = None
+        qdepth = len(st) if (st and st[-1] in ("sq", "dq", "ansi")) else None      # this line begins inside a quote: the command reader must not read the quoted part as code
         pend = []                                      # heredocs opened on this line, in plain shell text
         bd = {}                                        # open [ on this line per context depth (a subscript pairs its own ], and only at its own level)
         for i, ch in enumerate(l):
@@ -165,7 +166,9 @@ def strip_lines(lines, base=None):
             elif ch == "#" and i > 0 and prev_ws and top not in DATA and top != "bt":      # inside backticks bash ends the comment at the closing backtick: the line is kept whole
                 cut = i; break
             prev_ws = ch.isspace()
+            if qdepth is not None and close_i is None and len(st) < qdepth: close_i = i
         cont = esc and cut is None
+        if close_i is not None: l = "x" + " " * close_i + l[close_i + 1:]            # the quoted prefix (up to the closing quote) is data: one word stands for it, the code after it is kept
         out.append(l if cut is None else l[:cut])
         if pend:
             if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))

@@ -3291,8 +3291,8 @@ d=$(crr dq_zb "${H}x=\"\$(declare -A a; echo \$[ a[)] ] ; /tmp/evil)\""$'\n'); e
 d=$(crr dq_zc "${H}x=\"\$(declare -A a; a[k]=1 ; [[ -n \$x ]] && echo \${a[k]})\""$'\n'); expm ok "$d" - "control: balanced subscripts and [[ ]] in a quoted \$( )"
 # seat B, PR 439 round 2: a quote that spans lines: the command reader read every line alone, so a line that begins inside a double quote and holds a lone ' hid what followed
 d=$(crr ml_a "${H}x=\""$'\n\'" ; /tmp/evil ; echo "\'"\n'); expm caught "$d" 'absolute path' "multi-line double quote: a line that starts inside the quote is not read as plain shell"
-d=$(crr ml_b "${H}x='"$'\n" ; /tmp/evil ; echo "\n\'\n'); expm caught "$d" 'absolute path' "multi-line single quote: the same"
-d=$(crr ml_c "${H}x=\$'"$'\n\\\' ; /tmp/evil ; echo \'\n\'\n'); expm caught "$d" 'absolute path' "multi-line ANSI-C quote: the same"
+d=$(crr ml_b "${H}x='a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'absolute path' "multi-line single quote: the line that closes it holds a command"
+d=$(crr ml_c "${H}x=\$'a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'absolute path' "multi-line ANSI-C quote: the same"
 d=$(crr ml_d "${H}echo \"first line"$'\nsecond line"; echo ok\necho \'one\ntwo (still data)\nthree\'\n'); expm ok "$d" - "control: ordinary multi-line double-quoted and single-quoted strings"
 
 
