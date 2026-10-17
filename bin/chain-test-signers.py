@@ -86,6 +86,7 @@ def strip_lines(lines, base=None):
     (fail closed: what the check cannot read is refused, never guessed): a context or a heredoc still open at the end, a << inside $(( )) or $[ ], a <<
     whose delimiter is not plain, a heredoc started on a line that leaves a quote open, a single quote inside a ${ } that is inside double quotes."""
     out, errs = [], []
+    af = []                                            # per open context: did the word that opened it begin as an assignment (NAME=...)?
     st, hd = ([base] if base else []), None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented, quoted)] still to be read inside a heredoc body
     DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
     cont = base == "hb"                                       # the previous line ends in a backslash: bash joins this line to it
@@ -105,7 +106,7 @@ def strip_lines(lines, base=None):
             out.append(""); continue
         esc = prev_ws = False
         cut = skip = None
-        start_st = list(st); minlen = len(st)          # the contexts carried into this line; the fewest still open during it
+        start_st, start_af = list(st), list(af); minlen = len(st)          # the contexts carried into this line; the fewest still open during it
         pend = []                                      # heredocs opened on this line, in plain shell text
         bd = {}                                        # open [ on this line per context depth (a subscript pairs its own ], and only at its own level)
         for i, ch in enumerate(l):
@@ -169,10 +170,17 @@ def strip_lines(lines, base=None):
                 cut = i; break
             prev_ws = ch.isspace()
             minlen = min(minlen, len(st))
+            if len(af) > len(st): del af[len(st):]
+            while len(af) < len(st):                   # a context was opened at i: was its word an assignment?
+                wsi = max(l.rfind(c_, 0, i) for c_ in " \t;&|({") + 1
+                af.append(bool(re.match(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=", l[wsi:i + 1])))
         cont = esc and cut is None
         # A line that closes a context carried from an earlier line is read from inside ALL the carried contexts (so what bash runs inside a quote or a
         # substitution stays visible, and the quote that closes is not read as an opener); a line that closes nothing keeps the plain reading (over-reports).
-        carried = "x" + "".join(OPENER.get(c, "") for c in start_st) if minlen < len(start_st) else ""        # "x": the carried text is one word, never a command word of its own
+        carried = ""
+        if minlen < len(start_st) and any(c in OPENER for c in start_st):
+            first = next(k for k, c in enumerate(start_st) if c in OPENER)
+            carried = ("x=" if start_af[first] else "x") + "".join(OPENER.get(c, "") for c in start_st)   # one word (an assignment if the carried word began as one), then the carried openers
         out.append(carried + (l if cut is None else l[:cut]))
         if pend:
             if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
