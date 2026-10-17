@@ -1468,7 +1468,7 @@ mutate("weekly resolver reads the digest with docker manifest inspect", "uses do
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker manifest inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"')), "fresh")
 mutate("weekly job has no crane install", "must install crane with exactly one step", lambda j: j["steps"].remove(_crane(j)), "fresh")
 mutate("weekly job installs crane twice", "must install crane with exactly one step", lambda j: j["steps"].insert(j["steps"].index(_crane(j)) + 1, dict(_crane(j))), "fresh")
-mutate("weekly crane install is a download of its own", "must install crane with exactly one step", lambda j: _crane(j).update(run="curl -fsSL https://example.test/crane.tgz | tar xz -C /usr/local/bin crane"), "fresh")
+mutate("weekly crane install into a directory of its own (not the installer's default)", "must install crane with exactly one step", lambda j: _crane(j).update(run="./bin/install-scanner.sh crane /opt/crane-elsewhere"), "fresh")
 mutate("weekly crane install runs AFTER the resolver", "AFTER the resolver", lambda j: (lambda c: (j["steps"].remove(c), j["steps"].insert(j["steps"].index(_resolver(j)) + 1, c)))(_crane(j)), "fresh")
 mutate("weekly crane install runs BEFORE the root checkout", "BEFORE the checkout that provides bin/install-scanner.sh", lambda j: (lambda c: (j["steps"].remove(c), j["steps"].insert(0, c)))(_crane(j)), "fresh")
 mutate("weekly crane install is conditional", "crane install step is conditional or non-fatal", lambda j: _crane(j).update({"if": "false"}), "fresh")
