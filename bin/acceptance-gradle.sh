@@ -6,7 +6,6 @@
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
-lg() { sh "$GITHUB_WORKSPACE/bin/loopback-get.sh" "$@"; }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 
 # acceptance.yml, job acceptance-gradle, step 6: gradlew build (cold — populates the remote cache) (working-directory bench/gradle-sample)
 # --info so Gradle logs each task's cache key: the assertions below
@@ -35,11 +34,11 @@ while read -r task; do
     echo "::error::no cache key logged for expected task ${task} — did it execute as cacheable?" >&2; exit 1
   fi
   echo "${task} ${key}" >> /tmp/task-keys.txt
-  code=$(lg -s -o /dev/null -w '%{http_code}' -I "localhost:18095/${key}")
+  code=$(curl -s -o /dev/null -w '%{http_code}' -I "localhost:18095/${key}")
   [ "${code}" = "200" ] || { echo "::error::entry for ${task} (key ${key}) not on the server (HEAD=${code})" >&2; exit 1; }
   echo "stored: ${task} -> ${key}"
 done < bench/gradle-sample/expected-from-cache.txt
-lg -s localhost:18095/metrics > /tmp/metrics-cold.txt
+curl -s localhost:18095/metrics > /tmp/metrics-cold.txt
 hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/metrics-cold.txt)
 [ "${hits:-0}" -eq 0 ] || { echo "::error::cold build had ${hits} hits against an empty cache" >&2; exit 1; }
 )
@@ -93,7 +92,7 @@ step_12() (
 set -euo pipefail
 expected=$(wc -l < bench/gradle-sample/expected-from-cache.txt | tr -d ' ')
 cold_puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-cold.txt)
-lg -s localhost:18095/metrics > /tmp/metrics-warm.txt
+curl -s localhost:18095/metrics > /tmp/metrics-warm.txt
 hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/metrics-warm.txt)
 warm_puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-warm.txt)
 echo "warm: hits=${hits:-0} (>= ${expected} required); PUTs cold=${cold_puts:-0} warm-cumulative=${warm_puts:-0} (must be equal)"

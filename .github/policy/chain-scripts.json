@@ -598,24 +598,20 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "00debded96b09a1a301a3dccd63ab5b1502614eddf83c601592dd7674402ad50",
+      "sha256": "3981c8e18d28038f1683856caa31d5a01a774c5b67f994fd2aaec95e34166715",
       "tools": [
         "at",
         "awk",
         "bash",
         "curl",
         "find",
-        "realpath",
         "script",
         "sed",
-        "sh",
         "source",
         "task",
         "xargs"
       ],
-      "runs": [
-        "bin/loopback-get.sh"
-      ],
+      "runs": [],
       "signs": false,
       "reason": "the Gradle acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
       "exceptions": [
@@ -664,20 +660,16 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "f1ca35fa8065b192975016a9503e77f7d3cae04280a21cfbb8b9a31e1dc76ba9",
+      "sha256": "841f9506d4006d6587439726b1d85bcaaa2202dd6dcf72eb9cb3e570fef8af51",
       "tools": [
         "awk",
         "bash",
         "curl",
         "find",
-        "realpath",
         "sed",
-        "sh",
         "task"
       ],
-      "runs": [
-        "bin/loopback-get.sh"
-      ],
+      "runs": [],
       "signs": false,
       "reason": "the Gradle capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
       "exceptions": [
@@ -704,36 +696,28 @@
     },
     {
       "path": "bin/acceptance-maven.sh",
-      "sha256": "befc8a0addfc4468be1f3a4d9957e1833c79933de6e13de0c70cead2c32d97a3",
+      "sha256": "ea589e342cab0cbae1322566797005b62bf758392e64ce4c946df3829351d5ae",
       "tools": [
         "awk",
         "bash",
         "curl",
         "env",
-        "realpath",
-        "sed",
-        "sh"
+        "sed"
       ],
-      "runs": [
-        "bin/loopback-get.sh"
-      ],
+      "runs": [],
       "signs": false,
       "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
     },
     {
       "path": "bin/acceptance-maven-capped.sh",
-      "sha256": "323127094fed2d6c9d6fee112145e4f0fac3f2404133482ef0bfd02c62edf64a",
+      "sha256": "fa74e14adbc8c0f49a6422bd02746b5b816b1deb523c01906e947ad07bb57bde",
       "tools": [
         "awk",
         "bash",
         "curl",
-        "find",
-        "realpath",
-        "sh"
+        "find"
       ],
-      "runs": [
-        "bin/loopback-get.sh"
-      ],
+      "runs": [],
       "signs": false,
       "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
     },

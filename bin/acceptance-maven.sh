@@ -7,7 +7,6 @@
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
-lg() { sh "$GITHUB_WORKSPACE/bin/loopback-get.sh" "$@"; }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 
 # acceptance.yml, job acceptance-maven, step 6: write settings.xml credential sets
 step_06() (
@@ -37,7 +36,7 @@ mvn -B -s /tmp/m2-good/settings.xml verify \
 # acceptance.yml, job acceptance-maven, step 8: assert the cold build populated the remote (server-side evidence)
 step_08() (
 set -euo pipefail
-lg -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-cold.txt
+curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-cold.txt
 puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/m-cold.txt || true)
 gets404=$(awk '/^fscache_http_requests_total\{method="GET",status="404"\}/ {print $2}' /tmp/m-cold.txt || true)
 echo "cold: uploads=${puts:-0} lookups-missed=${gets404:-0}"
@@ -76,7 +75,7 @@ set -euo pipefail
 restored=$(grep -c 'Found cached build, restoring' /tmp/warm.log || true)
 echo "restored modules: ${restored}"
 [ "${restored}" -eq "$MODULES" ] || { echo "::error::${restored} modules restored, expected $MODULES" >&2; exit 1; }
-lg -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-warm.txt
+curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-warm.txt
 hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/m-warm.txt)
 echo "server-side cache hits: ${hits:-0}"
 [ "${hits:-0}" -ge "$MODULES" ] || { echo "::error::server saw ${hits:-0} hits; the restore did not come from the remote" >&2; exit 1; }
@@ -100,7 +99,7 @@ echo "restored jars byte-identical"
 step_14() (
 cd bench/maven-sample
 set -euo pipefail
-before_puts=$(lg -s -u mvn:acceptance-secret localhost:18098/metrics \
+before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics \
   | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
 
 rm -rf /tmp/mvn-bad lib/target app/target
@@ -119,7 +118,7 @@ mvn -B verify \
 grep -q 'Error downloading cache item' /tmp/none.log \
   || { echo "::error::missing credentials produced no logged download errors" >&2; exit 1; }
 
-after_puts=$(lg -s -u mvn:acceptance-secret localhost:18098/metrics \
+after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics \
   | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
 echo "stored uploads before=${before_puts} after=${after_puts}"
 [ "${after_puts}" -eq "${before_puts}" ] \

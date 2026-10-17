@@ -45,81 +45,6 @@ def jload(path):
     with open(path) as fh:
         return json.load(fh, object_pairs_hook=hook)
 
-WORKSPACE_ROOT = re.compile(r"(?<![^\s;&|(){}<>`\"'=,])\$(?:GITHUB_WORKSPACE|\{GITHUB_WORKSPACE\})/")   # the runner's checkout root, written as the variable and a slash, at the START of a word (an exact variable name: GITHUB_WORKSPACEX does not match; bin/$GITHUB_WORKSPACE/x and ./$GITHUB_WORKSPACE/x do not either)
-WORKSPACE_PLAIN = re.compile(r"(?<!\$)(?:\$GITHUB_WORKSPACE(?![A-Za-z0-9_])|\$\{GITHUB_WORKSPACE\})")   # the only forms in which a listed script may name the variable: a plain read
-WORKSPACE_PIECE = re.compile(r"[A-Z]{3,}")   # an upper-case run that is a piece of WORKSPACE, or holds five letters of it in a row: a name can be built from pieces only if a script holds them
-HEREDOC_QUOTED = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(?:(['\"])([^'\"\n]+)\1|\\([^\s;&|()<>]+))")   # any quoted or backslashed delimiter, whatever characters it holds
-def single_quoted_spans(body):
-    """(start, end) of every stretch of a shell text whose dollar signs are plain text: single-quoted stretches (across lines) and bodies of quoted here-documents. Quotes inside double quotes, after a backslash or in a comment do not count, except that a command substitution (dollar-paren or backquote) inside double quotes is scanned afresh; an unclosed quote runs to the end."""
-    spans, i, n, a = [], 0, len(body), 0
-    stack = ["n"]                                            # n: plain text, d: double quotes, s: single quotes, p: inside $( ), b: inside backquotes
-    depth = [0]
-    pend = []                                                # terminators of quoted here-documents whose body starts after this line
-    while i < n:
-        c, st = body[i], stack[-1]
-        if st in ("n", "p", "b"):
-            if c == "\\": i += 2; continue
-            m = HEREDOC_QUOTED.match(body, i) if c == "<" else None
-            if m: pend.append(m.group(2) or m.group(3)); i = m.end(); continue
-            if c == "\n" and pend:
-                pos = i + 1
-                for term in pend:
-                    start = pos
-                    while pos < n:
-                        e = body.find("\n", pos); line = body[pos:n if e < 0 else e]
-                        pos = n if e < 0 else e + 1
-                        if line.strip() == term: break
-                    spans.append((start, pos))
-                pend = []; i = pos; continue
-            if c == "'": a = i; stack.append("s")
-            elif c == '"': stack.append("d")
-            elif c == "`":
-                if st == "b": stack.pop()
-                else: stack.append("b")
-            elif c == "$" and body[i + 1:i + 2] == "(": stack.append("p"); depth.append(0); i += 2; continue
-            elif c == "(" and st == "p": depth[-1] += 1
-            elif c == ")" and st == "p":
-                if depth[-1] == 0: stack.pop(); depth.pop()
-                else: depth[-1] -= 1
-            elif c == "#" and st != "b" and (i == 0 or body[i - 1] in " \t\n;&|()<>"):
-                e = body.find("\n", i); i = n if e < 0 else e; continue
-        elif st == "d":
-            if c == "\\": i += 2; continue
-            if c == '"': stack.pop()
-            elif c == "`": stack.append("b")
-            elif c == "$" and body[i + 1:i + 2] == "(": stack.append("p"); depth.append(0); i += 2; continue
-        else:
-            if c == "'": spans.append((a, i)); stack.pop()
-        i += 1
-    if stack[-1] == "s": spans.append((a, n))
-    return spans
-WORKSPACE_SLICE = re.compile(r"\$\{[A-Za-z_0-9@*]+(?::[^-=+?}]|[#%/^,])")   # a slice or pattern edit of a variable's value: ${x:2:4} ${x#?} ${x%?} ${x/a/b} ${x^^}
-WORKSPACE_COARSE = re.compile(r"\[\[[^\n]*\s-(?:eq|ne|lt|le|gt|ge)\s|\b(?:declare|typeset|local|export|readonly)\s+-\w*i\b|\[\s+[A-Za-z_$]|\b(?:declare|typeset|local)\s+-\w*[ulc]\b|\benable\b|\bBASH_(?:CMDS|ALIASES)\b|\[[\"']|\bwait\s+-\w*p|\(\(|\$\[|\[[A-Za-z_$]|\bhash\s+-\w*p|\bfunction\s+\w|(?:^|[\s;&|(){}])(?:ba|da|z|k)?sh\s*\(\s*\)|\beval\b|\balias\b|\bexpand_aliases\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
-WORKSPACE_NAMING = re.compile(r"(?:^|[\s;&|(){}])(?:export|readonly|declare|typeset|local|unset|read|let|mapfile|readarray|getopts)\b([^\n;&|<>]*)")
-WORKSPACE_DOLLAR_WORD = re.compile(r"""(?:^|\s)[^\s=]*[$`]""")
-def workspace_by_runtime_name(body):
-    """A builtin that sets or unsets a variable and is handed a name from run-time data: an operand that starts with a dollar sign, or a command that lists the environment."""
-    if re.search(r"\bcompgen\b|\bprintenv\b|\benv\s*$|\bdeclare\s+-\w*p|\bexport\s+-p\b", body, re.M): return True
-    if re.search(r"^[ \t]*[\"']?\$[^\s=]*[\"']?=", body, re.M): return True        # "$1"=x as a command word
-    joined = re.sub(r"\\\n", " ", body)                                    # a backslash-newline continues the line
-    return any(WORKSPACE_DOLLAR_WORD.search(" " + m.group(1)) for m in WORKSPACE_NAMING.finditer(joined))
-def workspace_strict(body):
-    """The script that READS the variable to name a listed helper gets the strictest text test: no eval, name reference, indirection, printf -v or source of a variable path; no slice or pattern edit of any value; and no upper-case run holding even three letters in a row of WORKSPACE.
-    Stated limit: this text check refuses every plain, builtin and name-piece way to change GITHUB_WORKSPACE; deliberately obfuscated shell (for example quoting that only looks like a comment or a quote to a scanner) is caught by review and the sha256 pin of the listed row, not by this check."""
-    rest = WORKSPACE_PLAIN.sub("", body)
-    return bool(WORKSPACE_COARSE.search(body)) or bool(WORKSPACE_SLICE.search(rest)) or workspace_by_runtime_name(body) or any(r[k:k + 3] in "WORKSPACE" for r in WORKSPACE_PIECE.findall(rest) for k in range(len(r) - 2))
-def workspace_touched(body):
-    """Does this script do anything with GITHUB_WORKSPACE but read it plainly (set, export, unset, read into, default-expand, brace-expand, build the name)?"""
-    quoted = single_quoted_spans(body)                      # a read inside a single quote (on any line) or after a backslash is the text itself: it can be sliced into a name
-    for m in WORKSPACE_PLAIN.finditer(body):
-        if body[max(0, m.start() - 1):m.start()] == "\\" or any(a <= m.start() < b for a, b in quoted): return True
-    if re.search(r"[\"']?\$\{?[A-Za-z_]\w*\}?[\"']?[ \t]+(?:-\S+[ \t]+)*[\"']?\$\{?GITHUB_WORKSPACE", body): return True   # a variable as the interpreter handed the operand
-    if re.search(r"\$\{![A-Za-z_0-9]*[*@]", body): return True       # ${!PREFIX*} lists every variable whose name starts with PREFIX
-    rest = WORKSPACE_PLAIN.sub("", body)
-    if re.search(r"GITHUB_(?![A-Z])", rest): return True                  # the variable's prefix with no name after it: the name is finished at run time
-    return "GITHUB_WORKSPACE" in rest or any(r in "WORKSPACE" or any(r[k:k + 5] in "WORKSPACE" for k in range(len(r) - 4)) for r in WORKSPACE_PIECE.findall(rest))   # a name built at run time (any builtin that takes a variable name) needs a piece of it in the text
-
-
 def read_script(path):
     """The text of a listed script with CR and LF kept exactly (no universal-newline translation: a CR is refused by scan_script)."""
     with open(path, "rb") as fh:
@@ -1292,7 +1217,7 @@ def scan_script(path, text, row, rows, base):
             if repo_file(n):                  # Sonnet 1: the existence, shebang and executable tests run on the normalised path (of the tree only)
                 with open(full, "rb") as fh: ok = fh.read(2) == b"#!" or os.access(full, os.X_OK)
         return ok
-    for tm in re.finditer(r"[^\s;&|(){}<>`\"'=,]+", WORKSPACE_ROOT.sub("", body)):      # the checkout root written as the runner's variable is the listed path itself
+    for tm in re.finditer(r"[^\s;&|(){}<>`\"'=,]+", body):
         t = tm.group(0)
         n = t[2:] if t.startswith("./") else t
         name = n.rsplit("/", 1)[-1]
@@ -1307,8 +1232,6 @@ def scan_script(path, text, row, rows, base):
         if script_like(t) and n != path and n not in runs and not (n == selfbase):
             if cw_budget.get(t, 0) > 0: cw_budget[t] -= 1; continue
             add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
-    if not py and workspace_touched(text):               # round 5: a parent script that changes the variable moves every listed child that reads it, so no listed shell script may do more than read it
-        add("script-name", "GITHUB_WORKSPACE", "%s: the variable GITHUB_WORKSPACE is set, unset, read into, brace-expanded or reached by a built name here: a listed script may only read it plainly" % path)
     if not py:
         for t, cline in pathlike_deny(cmds, rows, runs):
             add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)" % (path, t), phys(cline))
@@ -1335,12 +1258,7 @@ def scan_script(path, text, row, rows, base):
                 continue
             if name in SHELL_INTERP or kind == "interp":
                 first = c.operands[0] if c.operands else ""
-                ws = WORKSPACE_ROOT.match(first)                # "$GITHUB_WORKSPACE/<exact listed path>": a script that moves its directory names the helper from the checkout root
-                if ws and (workspace_touched(text) or workspace_strict(text)):              # round 4: the name must still be the runner's own: any use but a plain read is refused
-                    add("script-name", span, "%s: the variable GITHUB_WORKSPACE is set, unset, read into or expanded with a default in this script, so %r no longer names the checkout root" % (path, first)); continue
-                if ws and any(span[max(0, m.start() - 1):m.start()] == "\\" or "'" in span[:m.start()] for m in re.finditer(r"\$\{?GITHUB_WORKSPACE", span)):
-                    ws = None                                   # round 4: in a single quote or after a backslash the shell passes the text itself, not the checkout root
-                fn = first[ws.end():] if ws else (first[2:] if first.startswith("./") else first)
+                fn = first[2:] if first.startswith("./") else first
                 if any(op.startswith("<") for op, _t in c.redirs) or not first or first.startswith("-") or fn not in runs:
                     add("script-name", span, "%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
                 continue

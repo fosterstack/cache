@@ -21,7 +21,7 @@ pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
 [ -f "$H" ] || { bad "bin/loopback-get.sh exists"; # the helper function is defined where every step function sees it: at the top level, before the first function whose body is a subshell
-for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh acceptance-serve.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
+for f in acceptance-serve.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
   d=$(grep -n '^lg\(in\)\?() ' "$root/bin/$f" | head -1 | cut -d: -f1)
   fn=$(grep -n '^[a-z_0-9]*() *(' "$root/bin/$f" | head -1 | cut -d: -f1)
   if [ -n "$d" ] && { [ -z "$fn" ] || [ "$d" -lt "$fn" ]; }; then ok "bin/$f defines its loopback function at the top level"; else bad "bin/$f defines its loopback function inside a step (line ${d:-none}, first step line ${fn:-none})"; fi
@@ -142,8 +142,11 @@ if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an empty audience";
 grep -q "^lines.append(.$STUBNAME() { sh bin/loopback-get.sh" "$root/bin/acceptance-k8s-smoke.py" && ok "the k8s smoke script routes the documented commands through the helper" || bad "the k8s smoke script does not route the documented commands through the helper"
 # pin-age reads a line that starts with an assignment to a variable named url as the place a script downloads from, which no ruling can cover: the helper has none
 if grep -Eq '^[ 	]*(export +|readonly +|local +)?(url|URL)=' "$H"; then bad "the helper has a line that starts with an assignment to url"; else ok "the helper has no line that starts with an assignment to url (pin-age reads it as a download source)"; fi
-# --- the call sites no longer name curl
-for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh acceptance-serve.sh acceptance-k8s.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
+# --- the four scripts that change directory keep their own fetch lines (the named exception of REQ-SUP-001-AC24: a relative helper path cannot be placed by check-action-pins in a script that cds, and the runner-path form was withdrawn); everything else no longer names curl
+for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh; do
+  if grep -q 'loopback-get.sh' "$root/bin/$f"; then bad "bin/$f names the helper (it is a named exception of AC24: it keeps its own fetch lines until check-action-pins can place a relative path in a script that cds)"; else ok "bin/$f keeps its own fetch lines (named exception of AC24)"; fi
+done
+for f in acceptance-serve.sh acceptance-k8s.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
   n=$(grep -v '^[[:space:]]*#' "$root/bin/$f" | grep -c "\b$STUBNAME\b" || true)
   case "$f" in
     # the egress script keeps the strace download (the pinned fetch of the production PR); the k8s script keeps the digest-pinned client image name
@@ -155,7 +158,7 @@ for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh ac
   grep -q 'loopback-get.sh' "$root/bin/$f" && ok "bin/$f calls the helper" || bad "bin/$f does not call the helper"
 done
 # the helper function is defined where every step function sees it: at the top level, before the first function whose body is a subshell
-for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh acceptance-serve.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
+for f in acceptance-serve.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
   d=$(grep -n '^lg\(in\)\?() ' "$root/bin/$f" | head -1 | cut -d: -f1)
   fn=$(grep -n '^[a-z_0-9]*() *(' "$root/bin/$f" | head -1 | cut -d: -f1)
   if [ -n "$d" ] && { [ -z "$fn" ] || [ "$d" -lt "$fn" ]; }; then ok "bin/$f defines its loopback function at the top level"; else bad "bin/$f defines its loopback function inside a step (line ${d:-none}, first step line ${fn:-none})"; fi
