@@ -3248,6 +3248,12 @@ d=$(crr sl_zp "${H}"$'x=`echo a # c` ; /tmp/evil x\ny=`echo b # c`\n'); expm cau
 d=$(crr sl_zq "${H}"$'x=`date` # a comment after the pair\necho ok\n'); expm ok "$d" - "strip_line: control: a # after a closed backtick pair is a comment"
 d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
 d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'inside backticks' "strip_line: a << inside backticks is refused (bash gives it no body)"
+d=$(crr sl_zt "${H}"$'x=`echo a\n#` ; /tmp/evil\ny=`echo b\n#`\n'); expm caught "$d" 'still open' "strip_line: a # line inside backticks open from an earlier line is refused (bash ends the pair at the first backtick; seat A, PR 436 round 5)"
+for sep in $'\x0c' $'\x0b' $'\x1c' $'\xc2\x85' $'\xe2\x80\xa8'; do
+  d=$(crr "sl_sep_$RANDOM" "${H}: ${sep}#; /tmp/evil"$'\n'); expm caught "$d" 'line separator' "strip_line: a line separator bash does not read as one is refused (seat A, PR 436 round 5)"
+done
+d=$(crr sl_zu "${H}: x # a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: control: an ordinary comment after a command"
+d=$(crr sl_zv "${H}: \"\$(case"$'\ta in a) echo "x # c" ;; esac)" ; /tmp/evil'$'\n'); expm caught "$d" 'absolute path' "strip_line: case followed by a tab is a case (seat B, PR 436 round 5)"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3410,7 +3416,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1378
+EXPECT=1386
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

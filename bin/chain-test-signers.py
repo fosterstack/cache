@@ -71,7 +71,7 @@ HEREDOC_WORD = re.compile(r"[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Z
 
 def prev_ok(l, i, ch):
     """A shell word starts at i with ch c or e and ends at a blank, ; & | ) or the end (so `case` and `esac` are words, not parts of one)."""
-    if ch == "c": return l[i:i + 5] == "case "
+    if ch == "c": return l[i:i + 4] == "case" and l[i + 4:i + 5] in (" ", "\t", "\\")
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
@@ -97,9 +97,9 @@ def strip_lines(lines, base=None):
             if (l.lstrip("\t") if hd[0][1] else l) == hd[0][0]: hd = hd[1:] or None
             continue
         if cont: pass                                  # a joined line: a # at its start is inside a word, and the line is kept whole
-        elif st and st[-1] in DATA and l.lstrip().startswith("#"):
+        elif st and st[-1] in DATA + ("bt",) and l.lstrip().startswith("#"):
             errs.append("line %d: a # line inside a quote or ${ } that is still open from an earlier line (bash reads it as part of the word, not as a comment)" % (n + 1))
-        elif not (st and st[-1] in DATA) and l.lstrip().startswith("#"):
+        elif not (st and st[-1] in DATA + ("bt",)) and l.lstrip().startswith("#"):
             out.append(""); continue
         esc = prev_ws = False
         cut = skip = None
@@ -109,7 +109,7 @@ def strip_lines(lines, base=None):
             if esc: esc = False; prev_ws = False; continue
             top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
             if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
-                if l[i:i + 5] == "case " : st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
+                if ch == "c": st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
                 if l[i:i + 4] == "esac" and top == "case": st.pop(); skip = i + 3; continue
             if top == "sq":
                 if ch == "'": st.pop()
@@ -165,7 +165,7 @@ def strip_lines(lines, base=None):
     return out, errs
 
 def strip(text):
-    return "\n".join(strip_lines(text.splitlines())[0])
+    return "\n".join(strip_lines(text.split("\n"))[0])
 
 class DuplicateKey(Exception): pass
 
@@ -1270,6 +1270,8 @@ def scan_script(path, text, row, rows, base):
     entry {rule, text, why} waives the FIRST finding with exactly that rule and exactly that text, and nothing else: a second finding
     with the same text, a different text, or a different rule stays a finding. An entry that waives nothing is itself an error. Findings
     that set PATH, BASH_ENV ... are never waived here (`env_mentions` is the only exception for those)."""
+    if re.search("[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]", text):     # Python splits lines on these, bash does not: a # after one would be read as a comment line here and as plain text there
+        return ["%s: contains a line separator that bash does not read as a line end (VT, FF, FS, GS, RS, NEL, LS or PS)" % path]
     if "\r" in text:                               # bash reads a CR as part of a word: no waiver applies, nothing else is judged
         return ["%s: contains a carriage return, which bash reads as part of a word" % path]
     fnd = []                                       # (rule or None, exact text, message, physical line index or None); rule None = never waived
