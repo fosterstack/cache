@@ -1209,6 +1209,7 @@ def protected_env_mentions(path, text, row):
 
 def scan_script(path, text, row, rows, base):
     """Errors for one LISTED script. Not a shell parser: a conservative TEXT scan over the raw file whatever its extension or shebang
+    LIMIT (cache#433, advisor ruling Oct 17): a command WORD built from an expansion ($x, ${x}, $(...)) is not judged, and spellings beyond what the alias/function/shopt/set checks resolve (quote and backslash removal, $'..' and $".." decoding, empty or deleted substitutions) are not read; ~40 listed scripts legitimately start a command with a variable ($PY3, $SUDO), so refusing the form would refuse them. Such a finding needs deliberately disguised shell: it is information, not a blocker.
     (it over-reports by design): (a) a command from the finite DENY list (interpreters, source/eval/exec, make/xargs/find, curl/wget/ssh,
     gh/git/docker ...) anywhere in the text unless the row lists it in `tools`; (b) any token naming another script (a path ending
     in a script extension, or a file in the tree with a shebang, or a listed path) that is not the file itself and not in its `runs`;
