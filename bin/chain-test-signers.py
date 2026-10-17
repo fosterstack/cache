@@ -48,14 +48,16 @@ def jload(path):
 WORKSPACE_ROOT = re.compile(r"(?<![^\s;&|(){}<>`\"'=,])\$(?:GITHUB_WORKSPACE|\{GITHUB_WORKSPACE\})/")   # the runner's checkout root, written as the variable and a slash, at the START of a word (an exact variable name: GITHUB_WORKSPACEX does not match; bin/$GITHUB_WORKSPACE/x and ./$GITHUB_WORKSPACE/x do not either)
 WORKSPACE_PLAIN = re.compile(r"\$GITHUB_WORKSPACE(?![A-Za-z0-9_])|\$\{GITHUB_WORKSPACE\}")   # the only forms in which a listed script may name the variable: a plain read
 WORKSPACE_PIECE = re.compile(r"[A-Z]{3,}")   # an upper-case run that is a piece of WORKSPACE, or holds five letters of it in a row: a name can be built from pieces only if a script holds them
-HEREDOC_QUOTED = re.compile(r"<<-?[ \t]*(?:(['\"])\\?([A-Za-z_][A-Za-z0-9_]*)\1|\\([A-Za-z_][A-Za-z0-9_]*))")
+HEREDOC_QUOTED = re.compile(r"<<-?[ \t]*(?:(['\"])([^'\"\n]+)\1|\\([^\s;&|()<>]+))")   # any quoted or backslashed delimiter, whatever characters it holds
 def single_quoted_spans(body):
-    """(start, end) of every stretch of a shell text whose dollar signs are plain text: single-quoted stretches (across lines) and bodies of quoted here-documents. Quotes inside double quotes, after a backslash or in a comment do not count; an unclosed quote runs to the end."""
-    spans, i, n, st, a = [], 0, len(body), "n", 0
+    """(start, end) of every stretch of a shell text whose dollar signs are plain text: single-quoted stretches (across lines) and bodies of quoted here-documents. Quotes inside double quotes, after a backslash or in a comment do not count, except that a command substitution (dollar-paren or backquote) inside double quotes is scanned afresh; an unclosed quote runs to the end."""
+    spans, i, n, a = [], 0, len(body), 0
+    stack = ["n"]                                            # n: plain text, d: double quotes, s: single quotes, p: inside $( ), b: inside backquotes
+    depth = [0]
     pend = []                                                # terminators of quoted here-documents whose body starts after this line
     while i < n:
-        c = body[i]
-        if st == "n":
+        c, st = body[i], stack[-1]
+        if st in ("n", "p", "b"):
             if c == "\\": i += 2; continue
             m = HEREDOC_QUOTED.match(body, i) if c == "<" else None
             if m: pend.append(m.group(2) or m.group(3)); i = m.end(); continue
@@ -69,17 +71,27 @@ def single_quoted_spans(body):
                         if line.strip() == term: break
                     spans.append((start, pos))
                 pend = []; i = pos; continue
-            if c == "'": st, a = "s", i
-            elif c == '"': st = "d"
-            elif c == "#" and (i == 0 or body[i - 1] in " \t\n;&|(){}"):
+            if c == "'": a = i; stack.append("s")
+            elif c == '"': stack.append("d")
+            elif c == "`":
+                if st == "b": stack.pop()
+                else: stack.append("b")
+            elif c == "$" and body[i + 1:i + 2] == "(": stack.append("p"); depth.append(0); i += 2; continue
+            elif c == "(" and st == "p": depth[-1] += 1
+            elif c == ")" and st == "p":
+                if depth[-1] == 0: stack.pop(); depth.pop()
+                else: depth[-1] -= 1
+            elif c == "#" and st != "b" and (i == 0 or body[i - 1] in " \t\n;&|("):
                 e = body.find("\n", i); i = n if e < 0 else e; continue
         elif st == "d":
             if c == "\\": i += 2; continue
-            if c == '"': st = "n"
+            if c == '"': stack.pop()
+            elif c == "`": stack.append("b")
+            elif c == "$" and body[i + 1:i + 2] == "(": stack.append("p"); depth.append(0); i += 2; continue
         else:
-            if c == "'": spans.append((a, i)); st = "n"
+            if c == "'": spans.append((a, i)); stack.pop()
         i += 1
-    if st == "s": spans.append((a, n))
+    if stack[-1] == "s": spans.append((a, n))
     return spans
 WORKSPACE_SLICE = re.compile(r"\$\{[A-Za-z_0-9@*]+(?::[^-=+?}]|[#%/^,])")   # a slice or pattern edit of a variable's value: ${x:2:4} ${x#?} ${x%?} ${x/a/b} ${x^^}
 def workspace_strict(body):
