@@ -3267,6 +3267,20 @@ d=$(crr dq_g "${H}case a in a) echo hi ;; esac"$'\necho ok\n'); expm ok "$d" - "
 d=$(crr dq_h "${H}(case a in a) echo hi ;; esac)"$'\necho ok\n'); expm ok "$d" - "control: a case in a subshell"
 d=$(crr dq_i "${H}x=\"\$(echo hi)\""$'\necho ok\n'); expm ok "$d" - "control: a quoted \$( ) without a case"
 d=$(crr dq_j "${H}x=\"case a in a) \$(echo hi) ;; esac\""$'\necho ok\n'); expm ok "$d" - "control: the word case inside plain double quotes, no substitution around it"
+# seat B, PR 439 round 1: the same hole without a case: the quoted $( ) was closed at a ) that is a group, an array or a function paren, and the rest was never read
+d=$(crr dq_k "${H}x=\"\$(declare -a y=(a b); /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): an array assignment's ) does not close it"
+d=$(crr dq_l "${H}x=\"\$(y=(a b); /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): a plain array"
+d=$(crr dq_m "${H}x=\"\$(f() { :; }; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): a function definition"
+d=$(crr dq_n "${H}x=\"\$( ((1)) ; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): an arithmetic command"
+d=$(crr dq_o "${H}x=\"\$(echo \$((1+1)) ; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): an arithmetic expansion"
+d=$(crr dq_p "${H}echo \"\$(f() { :; }; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ) as an argument: a function definition"
+d=$(crr dq_q "${H}x=\"\$(echo ok)\" ; y=\$(a=(1 2); echo \$a)"$'\n'); expm ok "$d" - "control: balanced groups in substitutions raise nothing"
+# seat A, PR 439 round 1: the same close-at-the-first-) hole through ${ } (no double quotes needed), a launcher in `tools`, and a subshell group
+d=$(crr dq_r "${H}x=\${y:-\$( (true) ; /tmp/evil )}"$'\n'); expm caught "$d" 'absolute path' "\${ } with a \$( ) holding a subshell"
+d=$(crr dq_s "${H}x=\${y:-\$(case a in a) echo hi ;; esac ; /tmp/evil)}"$'\n'); expm caught "$d" 'inside double quotes' "\${ } with a \$( ) holding a case (no double quotes)"
+d=$(crr dq_t "${H}x=\"\$( (true) ; /tmp/evil )\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): a subshell group"
+d=$(crr dq_u "${H}x=\"\$([[ a == @(a|b) ]] ; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): an extglob pattern"
+d=$(crr dq_v "${H}x=\"\${y:-\$( (true) ; /tmp/evil )}\""$'\n'); expm caught "$d" 'absolute path' "quoted \${ } with a \$( ) holding a subshell"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3429,7 +3443,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1398
+EXPECT=1410
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
