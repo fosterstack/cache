@@ -1508,10 +1508,10 @@ rm -rf "$work/plan-dot"; cp -R "$work/plan" "$work/plan-dot"; mkdir -p "$work/rp
 run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-dot" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
 t "AC34" "signed commit: ./.git/config is refused like .git/config (before any push, the file untouched)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -Eq '^git( -C [^ ]+)? push ' '$CALLS' && test \"\$(cat '$work/rp/.git/config')\" = 'keep me'"
 rm -rf "$work/rp/.git"
-sgrun GH_STUB_VERIFIED=true GIT_STUB_UNTRACKED=1
-rm -rf "$work/ro"; mkdir -p "$work/ro"; cp -R "$work/plan" "$work/ro/plan"; mkdir -p "$work/rp/rodir"; printf 'x\n' >"$work/rp/rodir/new.txt"; chmod 555 "$work/rp/rodir"; for pd_ in "$work/ro/plan"/*/; do printf 'rodir/new.txt\n' >>"${pd_}paths"; done
-run_s4 env GIT_STUB_UNTRACKED=1 "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/ro/plan" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
-t "AC34" "signed commit: when removing an untracked planned file fails the job fails (non-zero) and names the file" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'rodir/new.txt' '$work/log'"
+rm -rf "$work/ro"; mkdir -p "$work/ro/plan/1-refresh"; mkrepo; mkdir -p "$work/rp/rodir"; printf 'x\n' >"$work/rp/rodir/new.txt"; chmod 555 "$work/rp/rodir"
+printf 'refresh/ro0000001\n' >"$work/ro/plan/1-refresh/branch"; printf 'Refresh\n' >"$work/ro/plan/1-refresh/title"; printf 'body\n' >"$work/ro/plan/1-refresh/body"; printf 'rodir/new.txt\n' >"$work/ro/plan/1-refresh/paths"
+run_s4 env GIT_STUB_UNTRACKED=1 "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/ro/plan" --repo-dir "$work/rp"
+t "AC34" "signed commit: when removing an untracked planned file fails the job fails (non-zero) and names the file" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'could not remove rodir/new.txt' '$work/log'"
 chmod 755 "$work/rp/rodir" 2>/dev/null; rm -rf "$work/rp/rodir"
 sgrun GH_STUB_VERIFIED=true
 t "AC34" "signed commit: after the API commit the working tree is put back to the start commit (the files the job edited are restored, so a later invocation in the same checkout sees the start state)" bash -c "grep -Eq '^git( -C [^ ]+)? checkout -q cafe0123 -- ' '$CALLS'"

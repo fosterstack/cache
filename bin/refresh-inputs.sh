@@ -45,7 +45,8 @@ import os, sys
 repo = sys.argv[1]; root = os.path.realpath(repo); bad = 0
 for p in sys.argv[2:]:
     full = repo + "/" + p
-    if p.startswith("/") or ".." in p.split("/") or p.split("/")[0] == ".git" or os.path.islink(full) or not os.path.isfile(full) or os.path.commonpath([root, os.path.realpath(full)]) != root:
+    n_ = os.path.normpath(p)
+    if p.startswith("/") or ".." in p.split("/") or n_ == ".git" or n_.startswith((".git/", "../")) or os.path.islink(full) or not os.path.isfile(full) or os.path.commonpath([root, os.path.realpath(full)]) != root:
         print("refresh-inputs.sh: %r is not a regular file of the repository (a symlink, a path outside it or its .git is refused); no branch was pushed" % p, file=sys.stderr); bad = 1
 sys.exit(bad)
 PY
@@ -60,7 +61,8 @@ adds, seen = [], set()
 root = os.path.realpath(repo)
 for p in sys.argv[7:]:
     full = repo + "/" + p
-    if p.startswith("/") or ".." in p.split("/") or p.split("/")[0] == ".git" or os.path.islink(full) or not os.path.isfile(full) or os.path.commonpath([root, os.path.realpath(full)]) != root:
+    n_ = os.path.normpath(p)
+    if p.startswith("/") or ".." in p.split("/") or n_ == ".git" or n_.startswith((".git/", "../")) or os.path.islink(full) or not os.path.isfile(full) or os.path.commonpath([root, os.path.realpath(full)]) != root:
         print("refresh-inputs.sh: %r is not a regular file of the repository (a symlink, a path outside it or its .git is refused); no commit was made" % p, file=sys.stderr); sys.exit(1)
     if p in seen:
         continue                                   # the API refuses a path twice: the plan may already name build/archive.json when open-pr adds the pointer
@@ -137,7 +139,7 @@ PY
   if [ -n "$startsha" ] && check_paths "$@" 2>/dev/null; then   # only paths that passed the check are touched: a refused path (.git, a link, an outside file) is never restored or removed
     for _p in "$@"; do
       if /usr/bin/git -C "$repo" ls-files --error-unmatch -- "$_p" >/dev/null 2>&1; then /usr/bin/git -C "$repo" checkout -q "$startsha" -- "$_p" || { echo "refresh-inputs.sh: could not restore $_p to $startsha" >&2; rc=1; }
-      else /bin/rm -f -- "$repo/$_p"; fi
+      else /bin/rm -f -- "$repo/$_p" || { echo "refresh-inputs.sh: could not remove $_p" >&2; rc=1; }; fi
     done
   fi
   # back to where the job started, whether or not a step failed: a later step of the same job (the FIPS check) must not branch from this commit.
@@ -168,7 +170,14 @@ case $cmd in refresh|fips-module) [ -n "$pr_author" ] || die "--pr-author is req
 tmp=$(/usr/bin/mktemp -d)
 PENDING_BRANCH=
 drop_branch() { /usr/bin/git -C "$repo" push -q origin --delete "$1" >/dev/null 2>&1 || echo "refresh-inputs.sh: could not delete the branch $1 from the remote; delete it by hand" >&2; }
-cleanup() { local rc=$?; set +e; [ -z "$PENDING_BRANCH" ] || drop_branch "$PENDING_BRANCH"; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status; a branch pushed for a pull request that was not opened (an interrupted run) is removed
+# a signal can arrive after `gh pr create` succeeded and before PENDING_BRANCH is cleared: the branch of a live pull request is never deleted (deleting it would close the PR); if the
+# open pull requests of the branch cannot be read the branch is kept too (a leftover branch is harmless, a closed pull request is not)
+drop_unless_pr() {
+  local n
+  n=$(cd "$repo" && /usr/bin/gh pr list --state open --head "$1" --json number 2>/dev/null | /usr/bin/python3 -I -B -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null) || n=unknown
+  if [ "$n" = 0 ]; then drop_branch "$1"; else echo "refresh-inputs.sh: kept the branch $1: it has an open pull request, or its pull requests could not be read ($n)" >&2; fi
+}
+cleanup() { local rc=$?; set +e; [ -z "$PENDING_BRANCH" ] || drop_unless_pr "$PENDING_BRANCH"; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status; a branch pushed for a pull request that was not opened (an interrupted run) is removed
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
