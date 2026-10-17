@@ -829,11 +829,12 @@ gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a
        "    needs: [build, sign, rebuild, check, release]" "    needs: [build]" "patch-failed must need exactly"
 gr g45 "005-AC5 the dry-run dispatch input is a string (inputs.dry-run == true would be false and skip the dry run)" \
        "      dry-run:\n        type: boolean" "      dry-run:\n        type: string" "must be type: boolean"
-# REQ-SCAN-012 (the rule-12 live tests of our VEX files): release.yml may hold exactly two non-chain jobs that federate into the dedicated live-test accounts.
+# REQ-SCAN-012 (the rule-12 live tests of our VEX files): release.yml may hold exactly three non-chain jobs: the two that federate into the dedicated live-test accounts and persona-uat (the release candidate's persona run, REQ-UAT-001-AC1: needs Build only, publishes nothing).
 # lj builds release.yml with both jobs inserted before `decide`, optionally mutates ONE text in them, and runs the judge on it.
 LJ_RC_IF="\${{ startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
 LJ_FINAL_IF="\${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') && !inputs.dry-run }}"
-LJ_JOBS="  live-test:\n    needs: [check]\n    if: $LJ_RC_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc\n  live-test-release:\n    needs: [release]\n    if: $LJ_FINAL_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final\n"
+LJ_PERSONA_IF="\${{ vars.PERSONA_UAT_ENABLED == 'true' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}"
+LJ_JOBS="  live-test:\n    needs: [check]\n    if: $LJ_RC_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo rc\n  live-test-release:\n    needs: [release]\n    if: $LJ_FINAL_IF\n    runs-on: ubuntu-latest\n    environment: live-test\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo final\n  persona-uat:\n    needs: [build]\n    if: $LJ_PERSONA_IF\n    runs-on: ubuntu-24.04\n    environment: persona-uat\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n      - run: echo persona\n        env:\n          PERSONA_UAT_MODEL: \${{ secrets.PERSONA_UAT_MODEL }}\n"
 lj() { # lj NAME LABEL OLD NEW ok|caught WORD   (OLD empty: no mutation)
   python3 - "$work/release.yml" "$work/lj-$1.yml" "$3" "$4" "$LJ_JOBS" <<'PY' || { bad "mutation did not apply (lj-$1): $3"; return 0; }
 import sys
@@ -874,6 +875,24 @@ lj s7  "REQ-SCAN-012 live-test with the context spelled in capitals (contexts ar
 # a duplicated mapping key is refused before any spec is read (a YAML loader keeps the LAST of two equal keys, so a first, wider definition would be hidden)
 lj d1  "REQ-SCAN-012 two definitions of live-test (the first in the release environment with a write) are refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    environment: release\n    permissions:\n      contents: write\n    steps:\n      - run: echo first\n  live-test:\n    needs: [check]" caught "duplicate"
 lj d2  "REQ-SCAN-012 a key given twice inside a job is refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    needs: [check]" caught "duplicate"
+lj ok2 "REQ-UAT-001-AC1 the persona-uat job (after Build only, environment persona-uat, id-token write, the model secrets) passes with the live-test jobs" "" "" ok ""
+lj pu1 "REQ-UAT-001-AC1 persona-uat that also needs check (it would wait for the scanners)" "  persona-uat:\n    needs: [build]" "  persona-uat:\n    needs: [build, check]" caught "persona-uat must need exactly"
+lj pu2 "REQ-UAT-001-AC1 persona-uat that needs release (it would run after publishing)" "  persona-uat:\n    needs: [build]" "  persona-uat:\n    needs: [release]" caught "persona-uat must need exactly"
+lj pu3 "REQ-UAT-001-AC1 persona-uat that needs nothing" "  persona-uat:\n    needs: [build]\n" "  persona-uat:\n" caught "persona-uat must need exactly"
+lj pu4 "REQ-UAT-001-AC1 persona-uat with a write it does not need (packages)" "      id-token: write\n    steps:\n      - run: echo persona" "      id-token: write\n      packages: write\n    steps:\n      - run: echo persona" caught "exactly the permissions"
+lj pu5 "REQ-UAT-001-AC1 persona-uat with contents write" "      contents: read\n      id-token: write\n    steps:\n      - run: echo persona" "      contents: write\n      id-token: write\n    steps:\n      - run: echo persona" caught "exactly the permissions"
+lj pu6 "REQ-UAT-001-AC1 persona-uat with no dry-run guard in its if" " && !inputs.dry-run }}\n    runs-on: ubuntu-24.04" " }}\n    runs-on: ubuntu-24.04" caught "must carry exactly the if"
+lj pu7 "REQ-UAT-001-AC1 persona-uat that also runs on final tags (no -rc conjunct)" " && contains(github.ref_name, '-rc') && !inputs.dry-run }}\n    runs-on: ubuntu-24.04" " && !inputs.dry-run }}\n    runs-on: ubuntu-24.04" caught "must carry exactly the if"
+lj pu8 "REQ-UAT-001-AC1 persona-uat without the PERSONA_UAT_ENABLED gate" "vars.PERSONA_UAT_ENABLED == 'true' && " "" caught "must carry exactly the if"
+lj pu9 "REQ-UAT-001-AC1 persona-uat in the live-test environment" "    environment: persona-uat" "    environment: live-test" caught "environment: persona-uat"
+lj pu10 "REQ-UAT-001-AC1 persona-uat in the release environment (the publish credentials)" "    environment: persona-uat" "    environment: release" caught "environment: persona-uat"
+lj pu11 "REQ-UAT-001-AC1 persona-uat without an environment" "    environment: persona-uat\n" "" caught "environment: persona-uat"
+lj pu12 "REQ-UAT-001-AC1 persona-uat reading a secret that is not a model secret (the App key)" "\${{ secrets.PERSONA_UAT_MODEL }}" "\${{ secrets.GH_APP_KEY }}" caught "secrets"
+lj pu13 "REQ-UAT-001-AC1 persona-uat reading the secrets context by index" "\${{ secrets.PERSONA_UAT_MODEL }}" "\${{ secrets['K'] }}" caught "secrets"
+lj pu14 "REQ-UAT-001-AC1 persona-uat passing the whole secrets context" "\${{ secrets.PERSONA_UAT_MODEL }}" "\${{ toJSON(secrets) }}" caught "secrets"
+lj pu15 "REQ-UAT-001-AC1 persona-uat with a registry credential in a step" "          PERSONA_UAT_MODEL: \${{ secrets.PERSONA_UAT_MODEL }}\n" "          PERSONA_UAT_MODEL: \${{ secrets.PERSONA_UAT_MODEL }}\n          CRANE_PASS: \${{ secrets.GHCR_TOKEN }}\n" caught "secrets"
+lj pu16 "REQ-UAT-001-AC1 a second persona job (persona-uat-fast) beside the permitted one" "  persona-uat:\n    needs: [build]" "  persona-uat-fast:\n    needs: [build]" caught "persona-uat-fast"
+lj pu17 "REQ-UAT-001-AC1 persona-uat given a job-level uses" "  persona-uat:\n    needs: [build]" "  persona-uat:\n    uses: ./.github/workflows/ci.yml\n    needs: [build]" caught "job-level uses"
 gr g46 "005-AC5 the dry-run dispatch input has no type (the default is string)" "      dry-run:\n        type: boolean\n        default: false" \
        "      dry-run:\n        default: false" "must be type: boolean"
 replace "$work/release.yml" "$work/g47.yml" "  workflow_dispatch:\n    inputs:\n      dry-run:\n        type: boolean\n        default: false\n" "" \
@@ -2217,7 +2236,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=742
+EXPECT=760
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
