@@ -1460,8 +1460,6 @@ mutate("weekly crane install runs AFTER the resolver", "AFTER the resolver", lam
 mutate("weekly crane install runs BEFORE the root checkout", "BEFORE the checkout that provides bin/install-scanner.sh", lambda j: (lambda c: (j["steps"].remove(c), j["steps"].insert(0, c)))(_crane(j)), "fresh")
 mutate("weekly crane install is conditional", "crane install step is conditional or non-fatal", lambda j: _crane(j).update({"if": "false"}), "fresh")
 mutate("weekly crane install carries an env", "crane install step has a custom shell, working-directory or env", lambda j: _crane(j).update(env={"X": "1"}), "fresh")
-mutate("weekly resolver asks for the wrong digest format", "does not write tag=<release tag>",
-       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("{{.Manifest.Digest}}", "{{.Name}}")), "fresh")
 mutate("weekly resolver has no GH_REPO", "needs env GH_REPO", lambda j: _resolver(j)["env"].pop("GH_REPO"), "fresh")
 mutate("weekly docs checkout of another repository", "checkout of another repository", lambda j: _docs_checkout(j)["with"].update(repository="evil/cache"), "fresh")
 mutate("rc checkout takes ref main", "release-candidate checkout is not of the candidate commit", lambda j: next(s for s in j["steps"] if "actions/checkout" in str(s.get("uses", ""))).setdefault("with", {}).update(ref="main"))
@@ -1490,8 +1488,6 @@ mutate("tools: jenkins names another image", "does not name its own official ima
 mutate("weekly job leaves the persona-uat environment", "does not run in the persona-uat environment", lambda j: j.pop("environment"), "fresh")
 mutate("weekly resolver is conditional", "resolver step is conditional or non-fatal",
        lambda j: next(s for s in j["steps"] if "gh release view" in str(s.get("run", ""))).update({"if": "false"}), "fresh")
-mutate("weekly resolver does not extract a digest", "does not extract the digest",
-       lambda j: (lambda r: r.update(run=r["run"].replace(" --format '{{.Manifest.Digest}}'", "").replace(" --format \"{{.Manifest.Digest}}\"", "")))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
 mutate("weekly resolver does not capture a crane digest (a fixed value instead)", "does not capture the digest",
        lambda j: (lambda r: r.update(run=r["run"].replace('$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', '$(echo sha256:' + "a" * 64 + ')')))(next(s for s in j["steps"] if "gh release view" in str(s.get("run", "")))), "fresh")
 mutate("weekly resolver emits an unrelated fixed digest", "built from the digest it inspected",

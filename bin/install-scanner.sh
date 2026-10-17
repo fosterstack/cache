@@ -171,7 +171,7 @@ case "$TOOL" in
     ;;
   crane)
     # the digest reader of the weekly persona job (the chain's pinned tool; no buildx): a release tarball holding the crane binary, verified against the pinned sum.
-    # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (the version here must equal CRANE_VER; no base-URL hook)
+    # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (no version variable and no base-URL hook)
     case "$A_CRANE" in
       Linux_x86_64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed: crane ${A_CRANE}" ;;
       Linux_arm64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz" || pipeline_fail "download failed: crane ${A_CRANE}" ;;
