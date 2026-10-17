@@ -46,7 +46,7 @@ def jload(path):
         return json.load(fh, object_pairs_hook=hook)
 
 WORKSPACE_ROOT = re.compile(r"(?<![^\s;&|(){}<>`\"'=,])\$(?:GITHUB_WORKSPACE|\{GITHUB_WORKSPACE\})/")   # the runner's checkout root, written as the variable and a slash, at the START of a word (an exact variable name: GITHUB_WORKSPACEX does not match; bin/$GITHUB_WORKSPACE/x and ./$GITHUB_WORKSPACE/x do not either)
-WORKSPACE_PLAIN = re.compile(r"\$GITHUB_WORKSPACE(?![A-Za-z0-9_])|\$\{GITHUB_WORKSPACE\}")   # the only forms in which a listed script may name the variable: a plain read
+WORKSPACE_PLAIN = re.compile(r"(?<!\$)(?:\$GITHUB_WORKSPACE(?![A-Za-z0-9_])|\$\{GITHUB_WORKSPACE\})")   # the only forms in which a listed script may name the variable: a plain read
 WORKSPACE_PIECE = re.compile(r"[A-Z]{3,}")   # an upper-case run that is a piece of WORKSPACE, or holds five letters of it in a row: a name can be built from pieces only if a script holds them
 HEREDOC_QUOTED = re.compile(r"<<-?[ \t]*(?:(['\"])([^'\"\n]+)\1|\\([^\s;&|()<>]+))")   # any quoted or backslashed delimiter, whatever characters it holds
 def single_quoted_spans(body):
@@ -94,10 +94,12 @@ def single_quoted_spans(body):
     if stack[-1] == "s": spans.append((a, n))
     return spans
 WORKSPACE_SLICE = re.compile(r"\$\{[A-Za-z_0-9@*]+(?::[^-=+?}]|[#%/^,])")   # a slice or pattern edit of a variable's value: ${x:2:4} ${x#?} ${x%?} ${x/a/b} ${x^^}
+WORKSPACE_COARSE = re.compile(r"\beval\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
 def workspace_strict(body):
-    """The script that READS the variable to name a listed helper gets the strictest text test: no slice or pattern edit of any value, and no upper-case run holding even three letters in a row of WORKSPACE."""
+    """The script that READS the variable to name a listed helper gets the strictest text test: no eval, name reference, indirection, printf -v or source of a variable path; no slice or pattern edit of any value; and no upper-case run holding even three letters in a row of WORKSPACE.
+    Stated limit: this text check refuses every plain, builtin and name-piece way to change GITHUB_WORKSPACE; deliberately obfuscated shell (for example quoting that only looks like a comment or a quote to a scanner) is caught by review and the sha256 pin of the listed row, not by this check."""
     rest = WORKSPACE_PLAIN.sub("", body)
-    return bool(WORKSPACE_SLICE.search(rest)) or any(r[k:k + 3] in "WORKSPACE" for r in WORKSPACE_PIECE.findall(rest) for k in range(len(r) - 2))
+    return bool(WORKSPACE_COARSE.search(body)) or bool(WORKSPACE_SLICE.search(rest)) or any(r[k:k + 3] in "WORKSPACE" for r in WORKSPACE_PIECE.findall(rest) for k in range(len(r) - 2))
 def workspace_touched(body):
     """Does this script do anything with GITHUB_WORKSPACE but read it plainly (set, export, unset, read into, default-expand, brace-expand, build the name)?"""
     quoted = single_quoted_spans(body)                      # a read inside a single quote (on any line) or after a backslash is the text itself: it can be sliced into a name
