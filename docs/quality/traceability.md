@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 97 |
 | Acceptance criteria | 451 |
 | Release-blocking ACs | 126 |
-| ACs with mapped evidence | 433 |
+| ACs with mapped evidence | 440 |
 | Release-blocking ACs with mapped evidence | 126 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
@@ -905,7 +905,7 @@ Every release shall publish the VEX three ways, all generated from the one OpenV
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement, scoped by CVE and image digest, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | 1 item(s) |
+| REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement that names a package, scoped by CVE, image digest and that package, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC2 | Given the three VEX forms; when they are compared; then they cover exactly the same statements | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC4 | Given documentation of the Google VEX upload; when it is published; then it says the upload is a preview feature | inspection |  | approved | 1 item(s) |
@@ -923,9 +923,9 @@ docs/using-our-vex.md shall ship in the same release as the three VEX forms, nev
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-011-AC1 | Given docs/using-our-vex.md; when a release is cut; then it ships in the same release as the rule-10 files, never before | inspection |  | approved | none mapped |
-| REQ-SCAN-011-AC2 | Given the guide; when it is read; then for each scanner it gives which file, where it lives in each release, how to verify it is ours with the release's existing signing, the exact command, what it does in the customer's account, how to stay current (including removing a suppression when a statement turns affected), and what to do for an unlisted scanner | inspection |  | approved | none mapped |
+| REQ-SCAN-011-AC2 | Given the guide; when it is read; then for each scanner it gives which file, where it lives in each release, how to verify it is ours with the release's existing signing, the exact command, what it does in the customer's account, how to stay current (including removing a suppression when a statement turns affected), and what to do for an unlisted scanner | inspection |  | approved | 1 item(s) |
 | REQ-SCAN-011-AC3 | Given every command in the guide; when the live test runs; then it worked exactly as written | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-011-AC4 | Given the guide; when it is reviewed; then it names no competitor and claims nothing beyond what ships | inspection |  | approved | none mapped |
+| REQ-SCAN-011-AC4 | Given the guide; when it is reviewed; then it names no competitor and claims nothing beyond what ships | inspection |  | approved | 1 item(s) |
 
 ### REQ-SCAN-012 — Live tests
 
@@ -935,11 +935,11 @@ Our VEX files and the customer guide shall be tested against the real services, 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-012-AC1 | Given a live test; when it runs; then it touches only the dedicated test repositories (one ECR, one Google Artifact Registry), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; no keys, nothing from the Mac | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-012-AC2 | Given the live test's images; when they are pushed; then they are our release images copied by digest plus one deliberately vulnerable fixture image; nothing is pushed anywhere public | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-012-AC3 | Given a live test run; when it ends; then it deletes what it created (images, suppression rules, uploaded VEX); the test repositories expire images after one day | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-012-AC4 | Given the live test; when it is triggered; then it runs on each release candidate and on any change to the guide or the VEX files, never on a schedule, with at most 50 pushes per run | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-012-AC5 | Given a live test; when it passes; then the finding showed before the suppression, was gone after, and every guide command worked exactly as written | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-012-AC1 | Given a live test; when it runs; then it touches only the dedicated test repositories (one ECR, one Google Artifact Registry), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; no keys, nothing from the Mac | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-012-AC2 | Given the live test's images; when they are pushed; then they are our release images copied by digest plus one deliberately vulnerable fixture image; nothing is pushed anywhere public | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-012-AC3 | Given a live test run; when it ends; then it deletes what it created (images, suppression rules, uploaded VEX); the test repositories expire images after one day | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-012-AC4 | Given the live test; when it is triggered; then it runs on each release candidate and on any change to the guide or the VEX files, never on a schedule, with at most 50 pushes per run | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-012-AC5 | Given a live test; when it passes; then the finding showed before the suppression, was gone after, and every guide command worked exactly as written | ci-workflow |  | approved | 1 item(s) |
 
 ### REQ-SCAN-013 — Debate scoring
 
