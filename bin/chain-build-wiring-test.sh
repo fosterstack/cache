@@ -2211,7 +2211,7 @@ expect ok "AC3 the five real scripts are rows of .github/policy/chain-scripts.js
 # places: bin/vex-live-run.sh's one fixture call, and bin/vex-live-test-test.sh's loading of the tool and its run on a scratch layout. Every other mention in them, and every
 # other file, is refused. (A comment may name the tool.)
 cat > "$work/vi-named.py" <<'PY'
-import glob, os
+import glob, os, re
 BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
         "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
@@ -2231,9 +2231,13 @@ def stray(root):
             continue
         code = []
         for line in open(os.path.join(root, path), errors="replace"):
-            body = line.split("#", 1)[0] if path == RUN else line
+            body = line.strip()
+            if path == RUN and body.startswith("#"):
+                continue      # a whole-line comment may name the tool; a # elsewhere in a line is no comment to bash (a word, a string, ${x#y}), so such a line is judged whole
             if "vex-index" in body:
-                code.append(body.strip())
+                code.append(body)
+            if path == TEST and re.search(r"\bVI\b(?!\.check_vex\b)", body) and body not in TEST_LINES:
+                code.append(body)      # the loaded module may be used for check_vex only
         bad += ["%s: %s" % (path, c[:90]) for c in code if c not in exact]
         bad += ["%s: %s (must appear exactly once)" % (path, e[:60]) for e in exact if code.count(e) != 1]
     return bad
@@ -2279,6 +2283,10 @@ vim m2 "REQ-REL-010-AC4 a second vex-index call in the live-test run script is r
 vim m3 "REQ-REL-010-AC5 a vex-index call on a published reference in the live-test run script is refused" bin/vex-live-run.sh '' $'\npython3 bin/vex-index.py attach ghcr.io/fosterstack/cache@sha256:0000000000000000000000000000000000000000000000000000000000000000\n'
 vim m4 "REQ-REL-010-AC4 a third file naming vex-index is refused" bin/vex-live-extra.sh '' $'python3 bin/vex-index.py layout --layout x\n'
 vim m5 "REQ-REL-010-AC4 another vex-index run in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nos.system("python3 bin/vex-index.py layout --layout images")\n'
+vim h1 "REQ-REL-010-AC4 a # inside a word hiding a vex-index call on Build's layout (bash still runs it) is refused" bin/vex-live-run.sh '' $'\n: x#; python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout "$CANDIDATE_DIR/images/production" --vex scout-fixture.vex.json >/dev/null || return 1\n'
+vim h2 "REQ-REL-010-AC4 a # inside a quoted string hiding a vex-index call is refused" bin/vex-live-run.sh '' $'\nm="#"; python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
+vim h3 "REQ-REL-010-AC4 a \${var#...} expansion hiding a vex-index call is refused" bin/vex-live-run.sh '' $'\nr=${CANDIDATE_DIR#/}; python3 bin/vex-index.py layout --layout "/$r/images/production" --vex v.json\n'
+vim h5 "REQ-REL-010-AC4 another use of the loaded vex-index module in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nVI.main(["layout", "--layout", os.environ.get("CANDIDATE_DIR", "x"), "--vex", "v.json"])\n'
 vim m6 "REQ-REL-010-AC4 the live-test run script without its one fixture call is refused (the exemption is not a blanket)" bin/vex-live-run.sh 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1' 'true'
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
 expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
@@ -2301,7 +2309,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=791
+EXPECT=795
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
