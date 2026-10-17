@@ -99,8 +99,7 @@ echo "restored jars byte-identical"
 step_14() (
 cd bench/maven-sample
 set -euo pipefail
-before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics \
-  | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
+before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
 
 rm -rf /tmp/mvn-bad lib/target app/target
 mvn -B -s /tmp/m2-bad/settings.xml verify \
@@ -118,8 +117,7 @@ mvn -B verify \
 grep -q 'Error downloading cache item' /tmp/none.log \
   || { echo "::error::missing credentials produced no logged download errors" >&2; exit 1; }
 
-after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics \
-  | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
+after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}')
 echo "stored uploads before=${before_puts} after=${after_puts}"
 [ "${after_puts}" -eq "${before_puts}" ] \
   || { echo "::error::unauthenticated runs stored entries on the server" >&2; exit 1; }
