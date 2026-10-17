@@ -2935,6 +2935,10 @@ kc ws_bad41 'n=GITHUB_\nexport {"${n}WORKSPACE",X}=/tmp\nbash "$GITHUB_WORKSPACE
 kc ws_bad42 'n=GITHUB_\na[${n}WORKSPACE=1]=x\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad43 'n=GITHUB_\n[[ ${n}WORKSPACE=1 -eq 1 ]]\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad44 'a=WOR; b=KSP; c=ACE\nexport "GITHUB_$a$b$c=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad45 'x=AWORKSPACEB\nexport "GITHUB_${x:1:9}=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad46 'x=XWORKSPACEX; n=GITHUB_${x:1:9}\nexport "$n=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad47 'n=GITHUB_; a=QWORKSPACE\nprintf -v "$n${a#Q}" %s /tmp/evil\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+d=$(cfix ws_bad48 'bash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'); setfile "$d" bin/c.sh "#!/usr/bin/env -S GITHUB_WORKSPACE=/tmp/x bash\nset -euo pipefail\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"\n"; expm caught "$d" 'GITHUB_WORKSPACE' "round-5 ws_bad48: the first line is read too: an env -S assignment of the variable is refused"
 ko r5_ok2 '2>&1 cp x y'
 ko r5_ok3 'echo a > out; cat out'
 # (6) the reviewed text starts at the first assignment or redirection of the simple command
@@ -3412,7 +3416,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1380
+EXPECT=1384
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

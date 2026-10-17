@@ -47,11 +47,11 @@ def jload(path):
 
 WORKSPACE_ROOT = re.compile(r"(?<![^\s;&|(){}<>`\"'=,])\$(?:GITHUB_WORKSPACE|\{GITHUB_WORKSPACE\})/")   # the runner's checkout root, written as the variable and a slash, at the START of a word (an exact variable name: GITHUB_WORKSPACEX does not match; bin/$GITHUB_WORKSPACE/x and ./$GITHUB_WORKSPACE/x do not either)
 WORKSPACE_PLAIN = re.compile(r"\$GITHUB_WORKSPACE(?![A-Za-z0-9_])|\$\{GITHUB_WORKSPACE\}")   # the only forms in which a listed script may name the variable: a plain read
-WORKSPACE_PIECE = re.compile(r"[A-Z]{3,}")   # an upper-case run that is a piece of WORKSPACE: a name can be built from pieces only if a script holds them
+WORKSPACE_PIECE = re.compile(r"[A-Z]{3,}")   # an upper-case run that is a piece of WORKSPACE, or holds five letters of it in a row: a name can be built from pieces only if a script holds them
 def workspace_touched(body):
     """Does this script do anything with GITHUB_WORKSPACE but read it plainly (set, export, unset, read into, default-expand, brace-expand, build the name)?"""
     rest = WORKSPACE_PLAIN.sub("", body)
-    return "GITHUB_WORKSPACE" in rest or any(r in "WORKSPACE" for r in WORKSPACE_PIECE.findall(rest))   # a name built at run time (any builtin that takes a variable name) needs a piece of it in the text
+    return "GITHUB_WORKSPACE" in rest or any(r in "WORKSPACE" or any(r[k:k + 5] in "WORKSPACE" for k in range(len(r) - 4)) for r in WORKSPACE_PIECE.findall(rest))   # a name built at run time (any builtin that takes a variable name) needs a piece of it in the text
 
 
 def read_script(path):
@@ -1241,7 +1241,7 @@ def scan_script(path, text, row, rows, base):
         if script_like(t) and n != path and n not in runs and not (n == selfbase):
             if cw_budget.get(t, 0) > 0: cw_budget[t] -= 1; continue
             add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
-    if not py and workspace_touched(body):               # round 5: a parent script that changes the variable moves every listed child that reads it, so no listed shell script may do more than read it
+    if not py and workspace_touched(text):               # round 5: a parent script that changes the variable moves every listed child that reads it, so no listed shell script may do more than read it
         add("script-name", "GITHUB_WORKSPACE", "%s: the variable GITHUB_WORKSPACE is set, unset, read into, brace-expanded or reached by a built name here: a listed script may only read it plainly" % path)
     if not py:
         for t, cline in pathlike_deny(cmds, rows, runs):
@@ -1270,7 +1270,7 @@ def scan_script(path, text, row, rows, base):
             if name in SHELL_INTERP or kind == "interp":
                 first = c.operands[0] if c.operands else ""
                 ws = WORKSPACE_ROOT.match(first)                # "$GITHUB_WORKSPACE/<exact listed path>": a script that moves its directory names the helper from the checkout root
-                if ws and workspace_touched(body):              # round 4: the name must still be the runner's own: any use but a plain read is refused
+                if ws and workspace_touched(text):              # round 4: the name must still be the runner's own: any use but a plain read is refused
                     add("script-name", span, "%s: the variable GITHUB_WORKSPACE is set, unset, read into or expanded with a default in this script, so %r no longer names the checkout root" % (path, first)); continue
                 if ws and any(span[max(0, m.start() - 1):m.start()] == "\\" or "'" in span[:m.start()] for m in re.finditer(r"\$\{?GITHUB_WORKSPACE", span)):
                     ws = None                                   # round 4: in a single quote or after a backslash the shell passes the text itself, not the checkout root
