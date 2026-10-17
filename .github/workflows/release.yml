@@ -601,7 +601,7 @@ jobs:
   # (gradle-platform-engineer, maven-jenkins-ci, readme-evaluator) test the image Build made, BEFORE anything is released, and nothing is published. The job needs Build only.
   # Build's production OCI layout (artifact images) is pushed with the pinned crane to a registry:2 service pinned by digest and published on the runner's loopback only; the pushed
   # digest must equal Build's image-production digest. The job holds no registry credential and no write permission (contents read, id-token write for the federated model
-  # token only); the personas' containers are never on the host network and the token file is 0600. The image is unverified (no release-verify has run): that is what the personas test.
+  # token only); the driver is told the registry's port (--allow-listen 5000) so its stray-listener guard accepts that one listener; the personas' containers are never on the host network and the token file is 0600. The image is unverified (no release-verify has run): that is what the personas test.
   # GATE: PERSONA_UAT_ENABLED is exactly 'true' (unset = off), on the JOB, so while off the persona-uat environment is never entered and no token is minted.
   # compliance-reviewer and on-call-engineer run in the weekly job only (go-freshness.yml).
   persona-uat:
@@ -702,7 +702,7 @@ jobs:
           ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
           ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/anthropic-identity-token
           PERSONA_UAT_IMAGE: localhost:5000/cache@${{ fromJSON(needs.build.outputs.digests)['image-production'] }}
-        run: python3 bin/persona-uat.py --mode rc --image "$PERSONA_UAT_IMAGE" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py"
+        run: python3 bin/persona-uat.py --mode rc --image "$PERSONA_UAT_IMAGE" --repo . --out persona-uat-out --tools bin/persona-uat-tools.json --recipient bin/persona-uat-recipient.pem --agent "python3 bin/persona-uat-agent.py" --allow-listen 5000
 
       - name: upload the encrypted reports and transcripts
         if: ${{ always() }}

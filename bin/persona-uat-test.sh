@@ -2975,6 +2975,21 @@ check test "$rc" -eq 0
 PROCNET="$work/pn-bad" ALLOW_LISTEN=9999 run guardallow '{}' weekly
 CASE="guard: --allow-listen 9999 names the listener and the run proceeds"
 check test "$rc" -eq 0
+# 0486 review of #428 round 1: the rc job's registry service listens on 127.0.0.1:5000 for the whole run; with --allow-listen 5000 the three rc personas run, without it none does
+mkprocnet "$work/pn-reg" "0A:127.0.0.1:5000"
+PROCNET="$work/pn-reg" ALLOW_LISTEN=5000 run regallow '{}' rc
+CASE="guard (rc): the registry service's listener 127.0.0.1:5000 with --allow-listen 5000 is accepted: the three rc personas run and the run is clean"
+check python3 - "$work/regallow/log" "$rc" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1])]
+assert int(sys.argv[2]) == 0 and sorted(r["persona"] for r in rows) == ["gradle-platform-engineer", "maven-jenkins-ci", "readme-evaluator"], (sys.argv[2], rows)
+PY
+PROCNET="$work/pn-reg" run regdeny '{}' rc
+CASE="guard (rc): the same listener WITHOUT --allow-listen is stray: no persona runs, the run fails (any other listener stays refused)"
+check python3 - "$work/regdeny/log" "$rc" <<'PY'
+import os, sys
+assert int(sys.argv[2]) != 0 and os.path.getsize(sys.argv[1]) == 0
+PY
 PROCNET="$work/no-such-procnet" run guardmissing '{}' weekly
 CASE="guard: an unreadable proc-net (no tcp file) refuses: nothing can be said about the loopback, so no agent runs"
 check python3 - "$work/guardmissing" "$rc" <<'PY'

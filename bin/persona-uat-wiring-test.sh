@@ -397,8 +397,13 @@ def common(name, job, bad):
     for flag in ("--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"):
         if opts.count(flag) != 1:
             bad.append(f"{name}: the driver is not run with {flag} exactly once (found {opts.count(flag)}): the last occurrence would win")
-    if sorted(set(opts) - {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"}):
-        bad.append(f"{name}: the driver is given options outside the contract (no --publish, no --gh: results stay private, no issue is opened): {sorted(set(opts) - {'--mode', '--image', '--repo', '--out', '--tools', '--agent', '--recipient'})}")
+    contract = {"--mode", "--image", "--repo", "--out", "--tools", "--agent", "--recipient"} | ({"--allow-listen"} if name == "release persona-uat" else set())
+    if sorted(set(opts) - contract):
+        bad.append(f"{name}: the driver is given options outside the contract (no --publish, no --gh: results stay private, no issue is opened): {sorted(set(opts) - contract)}")
+    if name == "release persona-uat":     # the registry service listens on the runner's loopback; the driver's stray-listener guard must know that one port and no other
+        ports = [argv[i + 1] for i, t in enumerate(argv[:-1]) if t == "--allow-listen"]
+        if ports != ["5000"]:
+            bad.append(f"{name}: the driver must be given --allow-listen 5000 exactly once and no other allowed listener (found {ports}): the registry's port is the one listener that may exist")
     first = next((i for i, t in enumerate(argv) if t == pre + "bin/persona-uat.py"), None)       # the EXACT script token (`python3 <pre>bin/persona-uat.py`), never a suffix such as .py.bak
     if first is None or first != 1 or argv[0] != "python3":
         bad.append(f"{name}: the driver command is not exactly `python3 {pre}bin/persona-uat.py ...` (the tested driver must be the one that runs)")
@@ -816,6 +821,9 @@ def mode_value(run):
     return vals[0] if len(vals) == 1 else None
 
 GATE = "vars.PERSONA_UAT_ENABLED=='true'"
+# the rc job's load step, exactly (comments and blank lines dropped): a closed grammar, so a disabled or weakened digest check cannot pass (review of #428 round 1)
+LOAD_RUN_EXPECTED = ('set -euo pipefail\nwant=$(jq -er \'.["image-production"]\' <<<"$DIGESTS")\ncrane push candidate/images/production localhost:5000/cache:rc\n'
+                     'got=$(crane digest localhost:5000/cache:rc)\n[ "$got" = "$want" ] || { echo "::error::the pushed digest ${got} is not the one Build attested (${want})"; exit 1; }')
 
 def _atom(a, ctx):
     """one atom of a job `if:` conjunction, evaluated on a context {vars, schedule, ref, ref_name}. The model is GitHub's own: `==` on strings IGNORES CASE, so 'true' and
@@ -945,6 +953,8 @@ def judge_rc_registry(j, bad):
     dl = [s_ for s_ in steps if "actions/download-artifact" in str(s_.get("uses", ""))]
     if len(dl) != 1 or not DL_ACTION.search(str(dl[0].get("uses", ""))) or (dl[0].get("with") or {}) != {"name": "images", "path": "candidate/images"}:
         bad.append("release persona-uat must download exactly Build's `images` artifact (the allowlisted download-artifact digest, name images, path candidate/images)")
+    elif set(dl[0]) - {"uses", "with"}:
+        bad.append("release persona-uat's download step is not exactly uses + with (no if, continue-on-error or other key: a skipped download must fail the job, not pass it)")
     loads = [s_ for s_ in steps if "crane push" in str(s_.get("run", ""))]
     if len(loads) != 1:
         bad.append(f"release persona-uat must load Build's layout with exactly one crane push step (found {len(loads)})")
@@ -956,6 +966,9 @@ def judge_rc_registry(j, bad):
         ci = [s_ for s_ in steps if re.fullmatch(r"\./bin/install-scanner\.sh crane\s*", str(s_.get("run", "")).strip())]
         if len(ci) != 1 or steps.index(ci[0]) > steps.index(ld):
             bad.append("release persona-uat does not install the pinned crane (bin/install-scanner.sh crane) once, before the load step")
+        lnorm = "\n".join(l.rstrip() for l in str(ld.get("run", "")).splitlines() if l.strip() and not l.strip().startswith("#"))
+        if set(ld) - {"name", "env", "run"} or lnorm != LOAD_RUN_EXPECTED:
+            bad.append("release persona-uat's load step is not exactly the closed load script (keys name, env, run only: no if, continue-on-error, shell or timeout; the script verbatim, fatal on a digest mismatch)")
         if not expr_is((ld.get("env") or {}).get("DIGESTS", ""), "needs.build.outputs.digests"):
             bad.append("release persona-uat's load step does not take the attested digests from needs.build.outputs.digests")
         if "image-production" not in lrun or not re.search(r'\[ "\$got" = "\$want" \]', lrun):
@@ -1233,6 +1246,7 @@ IDENT = ("const fs = require('fs');\nconst token = await core.getIDToken('https:
          "const f = process.env.RUNNER_TEMP + '/anthropic-identity-token';\nfs.writeFileSync(f, token, { mode: 0o600 });\n" + CLAIMS_JS)
 REFRESHER = 'set -euo pipefail\nf="${RUNNER_TEMP}/anthropic-identity-token"\n[ -f "$f" ] || { echo "::error::the identity token file does not exist yet: mint it first"; exit 1; }\nnohup bash -c \'\n  f="$1"; every="$2"\n  while [ -e "$f" ] && sleep "$every"; do\n    [ -e "$f" ] || break\n    python3 bin/persona-uat.py --mint-identity "$f" || { [ "$?" -eq 3 ] && break; continue; }\n  done\n\' identity-refresher "$f" "${PERSONA_UAT_REFRESH_SECONDS:-60}" </dev/null >/dev/null 2>&1 &\ndisown\n'
 CLEANUP = CLEANUP_RUN
+RC_LOAD_RUN = LOAD_RUN_EXPECTED
 def synth_driver(weekly):
     pre = ""
     env = {v: ("${{ secrets.%s }}" if v in MODEL_SECRETS else "${{ vars.%s }}") % v for v in VARS}
@@ -1241,7 +1255,7 @@ def synth_driver(weekly):
     env["PERSONA_UAT_IMAGE"] = "${{ steps.resolve.outputs.image }}" if weekly else "localhost:5000/cache@${{ fromJSON(needs.build.outputs.digests)['image-production'] }}"
     img = '"$PERSONA_UAT_IMAGE"'
     return {"env": env, "run": f'python3 {pre}bin/persona-uat.py --mode {"weekly" if weekly else "rc"} --image {img} --repo {"release-docs" if weekly else "."} --out persona-uat-out '
-                                f'--tools {pre}bin/persona-uat-tools.json --recipient {pre}bin/persona-uat-recipient.pem --agent "python3 {pre}bin/persona-uat-agent.py"'}
+                                f'--tools {pre}bin/persona-uat-tools.json --recipient {pre}bin/persona-uat-recipient.pem --agent "python3 {pre}bin/persona-uat-agent.py"' + ("" if weekly else " --allow-listen 5000")}
 def synth_persona_job(weekly):
     pre = ""
     co = ([{"uses": "actions/checkout@" + H40, "with": {"persist-credentials": "false"}},
@@ -1253,9 +1267,7 @@ def synth_persona_job(weekly):
     # the weekly job: the root checkout (it provides bin/install-scanner.sh), the pinned crane, the resolver, then the docs checkout; the rc job has the one checkout
     rc_load = [{"uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "with": {"name": "images", "path": "candidate/images"}},
                {"run": "./" + pre + "bin/install-scanner.sh crane"},
-               {"env": {"DIGESTS": "${{ needs.build.outputs.digests }}"},
-                "run": 'set -euo pipefail\nwant=$(jq -er \'.["image-production"]\' <<<"$DIGESTS")\ncrane push candidate/images/production localhost:5000/cache:rc\n'
-                       'got=$(crane digest localhost:5000/cache:rc)\n[ "$got" = "$want" ] || { echo "::error::the pushed digest is not the one Build attested"; exit 1; }'}]
+               {"name": "load", "env": {"DIGESTS": "${{ needs.build.outputs.digests }}"}, "run": RC_LOAD_RUN}]
     head = ([co[0], {"run": "./" + pre + "bin/install-scanner.sh crane"}] + resolver + [co[1]]) if weekly else co + rc_load
     steps = (head + [{"run": "./" + pre + "bin/install-scanner.sh kind"},
              {"run": PIN_PIP_RUN},
@@ -1453,6 +1465,20 @@ mutate("rc job pushes a different layout (fips)", "does not push Build's product
 mutate("rc job downloads another artifact", "must download exactly Build's `images` artifact", lambda j: next(x for x in j["steps"] if "download-artifact" in str(x.get("uses", ""))).update({"with": {"name": "dist", "path": "candidate/images"}}))
 mutate("rc job downloads with an unlisted digest", "must download exactly Build's `images` artifact", lambda j: next(x for x in j["steps"] if "download-artifact" in str(x.get("uses", ""))).update({"uses": "actions/download-artifact@" + "d" * 40}))
 mutate("rc job has no download", "must download exactly Build's `images` artifact", lambda j: j.update(steps=[x for x in j["steps"] if "download-artifact" not in str(x.get("uses", ""))]))
+LOADSTEP = lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", "")))
+DLSTEP = lambda j: next(x for x in j["steps"] if "download-artifact" in str(x.get("uses", "")))
+mutate("rc load step if: false", "is not exactly the closed load script", lambda j: LOADSTEP(j).update({"if": "${{ false }}"}))
+mutate("rc load step continue-on-error", "is not exactly the closed load script", lambda j: LOADSTEP(j).update({"continue-on-error": "true"}))
+mutate("rc load step mismatch exits 0", "is not exactly the closed load script", lambda j: LOADSTEP(j).update(run=LOADSTEP(j)["run"].replace("exit 1", "true")))
+mutate("rc load step compares nothing fatal (|| true)", "is not exactly the closed load script", lambda j: LOADSTEP(j).update(run=LOADSTEP(j)["run"] + " || true"))
+mutate("rc load step drops pipefail", "is not exactly the closed load script", lambda j: LOADSTEP(j).update(run=LOADSTEP(j)["run"].replace("set -euo pipefail", "set -eu")))
+mutate("rc load step with a custom shell", "is not exactly the closed load script", lambda j: LOADSTEP(j).update({"shell": "bash {0}"}))
+mutate("rc download step if: false", "download step is not exactly uses + with", lambda j: DLSTEP(j).update({"if": "${{ false }}"}))
+mutate("rc download step continue-on-error", "download step is not exactly uses + with", lambda j: DLSTEP(j).update({"continue-on-error": "true"}))
+mutate("rc driver is not told about the registry listener", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"].replace(" --allow-listen 5000", "")))
+mutate("rc driver allows another listener port", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"].replace("--allow-listen 5000", "--allow-listen 5001")))
+mutate("rc driver allows a second listener port", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"] + " --allow-listen 22"))
+mutate("weekly driver allows a listener", "outside the contract", lambda j: drv(j).update(run=drv(j)["run"] + " --allow-listen 5000"), "fresh")
 mutate("rc job grants packages read", "permissions are not exactly", lambda j: j["permissions"].update(packages="read"))
 mutate("rc job reads the job token", "names github.token", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).setdefault("env", {}).update(DIGESTS="${{ needs.build.outputs.digests }}", T="${{ github.token }}"))
 mutate("rc job reads a registry secret", "reads secrets.GHCR_TOKEN", lambda j: next(x for x in j["steps"] if "crane push" in str(x.get("run", ""))).setdefault("env", {}).update(P="${{ secrets.GHCR_TOKEN }}"))
