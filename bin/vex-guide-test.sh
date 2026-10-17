@@ -72,7 +72,7 @@ check("says the Google upload is a preview feature", re.search(r"preview", doc, 
 check("reload on every release", re.search(r"every release", doc, re.I) is not None)
 check("removes our old Inspector suppressions by name", "aws inspector2 delete-filter" in code and "fosterstack-cache-" in code
       and "aws inspector2 list-filters" in code)
-check("says what to do when a statement turns affected", re.search(r"turns? .?affected", doc, re.I) is not None)
+check("says what to do when a statement changes (a loaded suppression must go)", re.search(r"statement changes.{0,80}suppression you loaded earlier must go", doc, re.S) is not None)
 # unlisted scanners
 check("unlisted scanners: the OpenVEX file, otherwise ask us", re.search(r"OpenVEX[^.]*otherwise[^.]*ask us", doc, re.I | re.S) is not None)
 # AC4: no competitor named
@@ -131,6 +131,12 @@ check("R1-04 the Inspector line is exactly the constant",
       [l for l in lines if "create-filter" in l] == [V.GUIDE_INSPECTOR_COMMAND.replace("<file>", '"%s"' % insp)])
 check("R1-04 the Google line is exactly the constant",
       [l for l in lines if "load-vex" in l] == [V.GUIDE_GOOGLE_COMMAND.replace("<file>", '"%s"' % csaf)])
+# owner Oct 16 (handoff 0482): the page explains every VEX status our published statements use (it may explain no others)
+used = {x["status"] for x in json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))["statements"]}
+said = {"not_affected": "not affected", "fixed": "fixed", "affected": "affected", "under_investigation": "under investigation"}
+check("the page explains each status our VEX uses", all("*%s*" % said[u] in doc for u in used), sorted(u for u in used if "*%s*" % said[u] not in doc))
+check("the page explains only statuses our VEX uses", all(said[k] in {said[u] for u in used} or "*%s*" % said[k] not in doc for k in said),
+      [said[k] for k in said if k not in used and "*%s*" % said[k] in doc])
 print("vex-guide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

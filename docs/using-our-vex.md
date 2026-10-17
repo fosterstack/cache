@@ -1,7 +1,7 @@
 # Using our VEX with your scanner
 
 Every FosterStack Cache release states, for each vulnerability we have assessed in our images, whether it
-affects you: *not affected* (with the reason), *fixed*, *affected*, or *under investigation*. We publish those
+affects you. Each statement we publish says *not affected*, with the reason. We publish those
 statements in three forms, generated from one file, so that your scanner stops reporting what does not affect you and
 keeps reporting what does.
 
@@ -11,8 +11,8 @@ keeps reporting what does.
 | `fosterstack-cache-v<version>.inspector-filters.json` | Amazon Inspector suppression rules | Amazon Inspector (ECR) |
 | `fosterstack-cache-v<version>.csaf.json` | CSAF 2.0 VEX | Google Artifact Analysis |
 
-The OpenVEX and CSAF files carry every statement. The Inspector file carries only the *not affected* and *fixed*
-ones, as suppression rules: Inspector reports what affects you on its own. Each file lives on the release page of its
+The OpenVEX and CSAF files carry every statement. The Inspector file carries only the *not affected*
+statements that name a package, as suppression rules: Inspector reports what affects you on its own. Each file lives on the release page of its
 version, `https://github.com/fosterstack/cache/releases/tag/v<version>`, next to `release-manifest.json`.
 
 ## 1. Download the files and check they are ours
@@ -65,7 +65,7 @@ grype "ghcr.io/fosterstack/cache@${DIGEST}" --vex fosterstack-cache.openvex.json
 ```
 
 Use Grype 0.118.0 or later: earlier versions do not match our image's identifiers and apply none of the statements. <!-- pinned: upstream -->
-Grype reads the statements at scan time and leaves out findings stated *not affected* or *fixed* for this image. It
+Grype reads the statements at scan time and leaves out findings stated *not affected* for this image. It
 changes nothing outside that scan's output.
 
 ### Amazon Inspector
@@ -77,10 +77,10 @@ our image:
 (set -o pipefail; jq -c '.filters[]' "fosterstack-cache-v${VER}.inspector-filters.json" | while read -r f; do aws inspector2 create-filter --cli-input-json "$f" || exit 1; done)
 ```
 
-What it does in your account: it creates Inspector suppression rules for the *not affected* and *fixed* statements, at least one
+What it does in your account: it creates Inspector suppression rules for the *not affected* statements that name a package, one
 per statement, named `fosterstack-cache-v<version>-<CVE>` (a statement that covers more than one scope gets one rule per scope, the
 second and later ending in `-2`, `-3`). If no statement is suppressible the file holds no rule and the command does nothing. Each rule matches only that CVE on our exact image digests (each variant's
-index and its linux/amd64 and linux/arm64 images), and only the named package where a statement names one. It
+index and its linux/amd64 and linux/arm64 images), and only the named package. It
 suppresses nothing on any other image, including other digests of your own builds on top of ours. The command stops at
 the first rule Inspector refuses.
 
@@ -110,7 +110,7 @@ reporting that finding. Google's VEX upload is a **preview** feature, so its beh
 
 Reload on **every release**: download the new version's files, check them (step 1), and load them (step 2).
 
-When a statement turns *affected*, the new release's files say so, and a suppression you loaded earlier must go.
+If a statement changes, the new release's files say so, and a suppression you loaded earlier must go.
 
 - **Grype:** use the new OpenVEX file. It reads it at each scan, so nothing old remains.
 - **Amazon Inspector:** delete our earlier rules, then load the new file:
@@ -120,8 +120,7 @@ When a statement turns *affected*, the new release's files say so, and a suppres
   ```
 
   This deletes only rules whose names start with `fosterstack-cache-`.
-- **Google Artifact Analysis:** load the new release's CSAF file for the image you run, with the same command. For
-  a whole-image statement it states the vulnerability as *known affected* for that digest.
+- **Google Artifact Analysis:** load the new release's CSAF file for the image you run, with the same command.
 
 ## Other scanners
 
