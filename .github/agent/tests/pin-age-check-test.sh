@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -1924,7 +1924,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b": "printf -v CURL %s /usr/bin/curl # TEST-SUBST",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 (", "loopback fetch, advisor reading Oct 17 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -1999,6 +1999,15 @@ assert not ac._live_fetch_line_ok(GO), "the Wolfi rule accepts a go.dev line"
 assert not ac._live_fetch_line_ok(GO.replace("/usr/bin/curl", "/usr/bin/other", 1), toolchain=True), "another program is accepted"
 assert not ac._live_fetch_line_ok(GO.replace("https://go.dev/", "https://go.dev.example/", 1), toolchain=True), "another host is accepted"
 PY
+CASE="a committed loopback row is exactly the one pinned line of bin/loopback-get.sh (file, form, no count, no context, the pinned whole-line hash) and there is at most one"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith(ac.LOOPBACK_RULING)]
+assert len(rows) <= 1, len(rows)
+for r in rows:
+    assert r["file"] == ac.LOOPBACK_FILE and r["form"] == "a download" and r["line"] == ac.LOOPBACK_LINE_SHA256 and "count" not in r and "context" not in r, r
+PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
 newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"
@@ -2034,7 +2043,7 @@ for r in rows:
     assert ("proof" not in r or "context" in r) and r.get("context", "comment") in ac.CONTEXTS and (r.get("proof", "x").strip() != "" and type(r.get("proof", "x")) is str), r
     assert re.fullmatch(r"[0-9a-f]{64}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
-    pre = next((x for x in ("text, not a command: ", "harness assertion: ", ac.LIVE_RULING, ac.GO_RULING) if r["ruling"].startswith(x)), None)
+    pre = next((x for x in ("text, not a command: ", "harness assertion: ", ac.LIVE_RULING, ac.GO_RULING, ac.LOOPBACK_RULING) if r["ruling"].startswith(x)), None)
     assert re.fullmatch(r"[0-9a-f]{64}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
 
@@ -3214,10 +3223,13 @@ import pathlib
 p = pathlib.Path('build/locks'); p.mkdir(parents=True, exist_ok=True)
 (p / 'archive-keys.sha256').write_text('wolfi-signing.rsa.pub sha256:' + 'a' * 64 + '\\n')
 (p / 'archive-index.sha256').write_text('x86_64 sha256:' + 'b' * 64 + '\\n')"
+# the checker's default list is the copy beside the script: a copy of the agent directory with an EMPTY policy list stands for "no list" (the tree itself may carry a real one)
+mkdir -p "$work/sc/.github/policy" && cp -R "$here/.." "$work/sc/.github/agent" && printf '%s' '{"base_inputs": []}' >"$work/sc/.github/policy/base-inputs.json"
+chk_nolist="$work/sc/.github/agent/supply-chain/pin-age-check.py"
 bick() { # LISTFILE-or-empty [extra] -> rc, $work/bi.out
   local lf=$1; shift; rc=0
   if [ -n "$lf" ]; then python3 "$chk" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --base-inputs "$lf" "$@" >"$work/bi.out" 2>&1 || rc=$?
-  else python3 "$chk" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" "$@" >"$work/bi.out" 2>&1 || rc=$?; fi
+  else python3 "$chk_nolist" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" "$@" >"$work/bi.out" 2>&1 || rc=$?; fi
 }
 printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", "build/locks/archive-index.sha256"]}' >"$work/bi-ok.json"
 printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256"]}' >"$work/bi-one.json"
@@ -3869,6 +3881,58 @@ mkrowp "$work/gf-edit.json" bin/fetch.sh "$GL" "$GOP"
 twoc gf-edit bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$GL --proxy http://p.example"$'\n'
 edck gf-edit "$work/gf-edit.json"
 CASE="a Go-toolchain row voids when the line is edited (a proxy added): exit 1"
+check test "$rc" -eq 1
+
+# REQ-SUP-001-AC25: the third honored fetch shape, the single line of bin/loopback-get.sh that starts the fetch program for a loopback or token request. The checker pins the
+# file and the sha256 of the whole line (as the ruling's only allowance), so any edit, any other file and any other line under the prefix rule nothing.
+LRP='loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): '
+LL="curl -q -g --noproxy '*' --proto \"=\$proto\" --max-redirs 0 \"\$@\" \"\$url\" || exit \$?"
+for v in "lr-ok:bin/loopback-get.sh:$LL:0" \
+         "lr-other-file:bin/fetch.sh:$LL:1" \
+         "lr-other-name:bin/loopback-get2.sh:$LL:1" \
+         "lr-edited-one-char:bin/loopback-get.sh:${LL/--max-redirs 0/--max-redirs 1}:1" \
+         "lr-extra-option:bin/loopback-get.sh:${LL/-q -g/-q -g -k}:1" \
+         "lr-other-line-same-file:bin/loopback-get.sh:curl -x http://p.example:3128 \"\$url\":1" \
+         "lr-a-fetch-of-software:bin/loopback-get.sh:curl -q -fsSL -o /tmp/x https://example.com/x:1" \
+         "lr-in-a-workflow:.github/workflows/x.yml:$LL:1"; do
+  nm=${v%%:*}; r1=${v#*:}; file=${r1%%:*}; r2=${r1#*:}; line=${r2%:*}; want=${r2##*:}
+  mkrowp "$work/$nm.json" "$file" "$line" "$LRP"
+  twoc "$nm" "$file" $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
+  edck "$nm" "$work/$nm.json"
+  CASE="loopback fetch row, $nm: exit $want"
+  check test "$rc" -eq "$want"
+done
+# the pinned line is the raw text, not its whitespace-normalised hash (round 1): a tab for the space, a carriage return, a second copy that only differs in whitespace, and a symlink named like the helper rule nothing
+EDT=$'curl\t'"${LL#curl }"
+for v in "lr-tab:${EDT}" "lr-cr:${LL}"$'\r' "lr-indent: ${LL}" "lr-double-space:${LL/-q -g/-q  -g}"; do
+  nm=${v%%:*}; line=${v#*:}
+  mkrowp "$work/$nm.json" bin/loopback-get.sh "$LL" "$LRP"
+  twoc "$nm" bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
+  edck "$nm" "$work/$nm.json"
+  CASE="loopback fetch row, the line differs in whitespace ($nm): exit 1"
+  check test "$rc" -eq 1
+done
+mkrowp "$work/lr-dup.json" bin/loopback-get.sh "$LL" "$LRP"
+twoc lr-dup bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$LL"$'\n'"$EDT"$'\n'
+edck lr-dup "$work/lr-dup.json"
+CASE="loopback fetch row, the exact line plus a whitespace-variant copy: exit 1"
+check test "$rc" -eq 1
+mkrowp "$work/lr-link.json" bin/loopback-get.sh "$LL" "$LRP"
+twoc lr-link bin/loopback-get.sh $'#!/bin/sh\n' "$LL"
+( cd "$work/lr-link" && rm bin/loopback-get.sh && ln -s "$LL" bin/loopback-get.sh && printf '#!/bin/sh\n' > bin/target.sh && git add -A && git -c user.name=t -c user.email=t@x commit -q --amend --no-edit )
+edck lr-link "$work/lr-link.json"
+CASE="loopback fetch row, a symlink named bin/loopback-get.sh whose target is the line: exit 1"
+check test "$rc" -eq 1
+# the prefix does not lend the line to the other rulings, and the other rulings do not lend theirs to the helper line
+mkrowp "$work/lr-under-live.json" bin/loopback-get.sh "$LL" "$LIVEP"
+twoc lr-under-live bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$LL"$'\n'
+edck lr-under-live "$work/lr-under-live.json"
+CASE="the helper line under the Wolfi live-fetch ruling rules nothing: exit 1"
+check test "$rc" -eq 1
+mkrowp "$work/lr-go-under.json" bin/fetch.sh "curl $GOFIX \"https://go.dev/dl/\$f\"" "$LRP"
+twoc lr-go-under bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"curl $GOFIX \"https://go.dev/dl/\$f\""$'\n'
+edck lr-go-under "$work/lr-go-under.json"
+CASE="a Go-toolchain line under the loopback ruling rules nothing: exit 1"
 check test "$rc" -eq 1
 
 echo "pin-age-check: $pass passed, $failn failed"

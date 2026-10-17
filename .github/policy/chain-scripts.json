@@ -1,0 +1,1666 @@
+{
+  "_note": "The scripts a release-chain stage file may run (rule 66/67 grammar, advisor decision b, Oct 9): by path and sha256. Changing a listed script changes its hash: update the row in the same commit (python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' PATH). The text scan over listed scripts over-reports by design; `tools` lists the denied words a script may contain, `runs` the listed scripts it may start.",
+  "env_names": [
+    "DIGESTS",
+    "MODE"
+  ],
+  "scripts": [
+    {
+      "path": "bin/chain-verify.py",
+      "sha256": "b621d8943fe985c86663c00ac1eb82c957eca981a590f94021fe9efa0efad693",
+      "tools": [
+        "make",
+        "at",
+        "exec"
+      ],
+      "runs": [],
+      "signs": "provenance",
+      "sign_subcommand": "sign",
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec",
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "no cosign on PATH, or not runnable",
+          "why": "a code comment naming where Python looks for cosign; nothing is set"
+        },
+        {
+          "name": "PATH",
+          "text": "cosign not found on PATH",
+          "why": "the refusal message when cosign cannot be started; nothing is set"
+        }
+      ]
+    },
+    {
+      "path": "bin/install-scanner.sh",
+      "sha256": "7249adc2203c65b5baa9d3cf25368692f6c475dbb9abc8fe0ee2b53748c84cbc",
+      "tools": [
+        "at",
+        "curl",
+        "git",
+        "go",
+        "source",
+        "tar",
+        "trap"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "installs one pinned tool by checksum (curl downloads it, trap cleans the temp dir); it names gitsign as a tool it can install and signs nothing; the other listed words appear in its comments"
+    },
+    {
+      "path": "bin/chain-hostile-step.sh",
+      "sha256": "35d5ea6f3ceb69ab76e373d382fba50c65658346634a2818d9d36b677129e7f8",
+      "tools": [
+        "curl",
+        "bash",
+        "at",
+        "sed"
+      ],
+      "runs": [
+        "bin/install-scanner.sh"
+      ],
+      "signs": "other",
+      "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)"
+    },
+    {
+      "path": "bin/chain_common.py",
+      "sha256": "c6ae3f738900c141c24118b6acd8b8ee01bf51685ca62bc0ccf9019be7737e27",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "imported by chain-verify.py and chain_hostile.py: the refusal, base64, the openssl call, strict JSON and the clock"
+    },
+    {
+      "path": "bin/chain_hostile.py",
+      "sha256": "726e3016604e4971aec8e5e69f266cc200e5aed19df11bf567b349c483b94750",
+      "tools": [
+        "at"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
+    },
+    {
+      "path": "bin/chain-bytes-sha.py",
+      "sha256": "8acf83c8af876e6b66c8dac9fdf7c3819e63390ea1b67dc7254655686eef72f2",
+      "tools": [
+        "at",
+        "git"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks (REQ-CHAIN-001-AC6); loaded by chain-verify.py rc-proof, run by build-admit.py (from origin/main) and patch-decide.py rc-proof; reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
+    },
+    {
+      "path": "bin/install-build-tools.sh",
+      "sha256": "4703b2ee829fa12247e1abd1c1fcdaeacece6fb495a1a172e100a58505ae4267",
+      "tools": [
+        "at",
+        "command",
+        "curl",
+        "find",
+        "tar",
+        "trap"
+      ],
+      "runs": [],
+      "signs": "other",
+      "exceptions": [
+        {
+          "rule": "launcher",
+          "text": "command -v sha256sum >/dev/null 2>&1",
+          "why": "a feature test only: `command -v` prints where sha256sum is and launches nothing; the installer picks sha256sum or shasum for the checksum of the archive it fetched"
+        },
+        {
+          "rule": "script-name",
+          "text": "$(uname -m) in",
+          "why": "the operand of `case $(uname -m) in`: a pattern match on this machine's architecture name (x86_64 or aarch64), never run as a command"
+        }
+      ],
+      "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
+    },
+    {
+      "path": "bin/vex-index.py",
+      "tools": [
+        "python3",
+        "at",
+        "command"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
+      "sha256": "71660fbb88c0c317f05cef915717530c5953a651c3483baccb6aa754b3c3507c"
+    },
+    {
+      "path": "bin/witnessed.sh",
+      "tools": [
+        "script",
+        "command",
+        "timeout",
+        "at",
+        "git",
+        "curl",
+        "exec",
+        "bash"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
+      "sha256": "bfd75d3ee399b92efd0e3fa0843977f22b6550fd4ef945ece7da03ba52b5a154",
+      "reads_env": [
+        "GH_TOKEN",
+        "APK_RELEASE_SIGNING_KEY",
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN"
+      ],
+      "arg_map": {
+        "apk": "bin/build-stage-apk.sh",
+        "build": "bin/build-stage-assemble.sh",
+        "rapk": "bin/build-stage-rebuild-apk.sh",
+        "rebuild": "bin/build-stage-rebuild-assemble.sh",
+        "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
+        "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
+        "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
+        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
+        "scanners": "bin/check-phase-scanners.sh",
+        "acceptance": "bin/check-phase-acceptance.sh",
+        "runtime": "bin/check-phase-runtime.sh",
+        "release-verify": "bin/release-verify.sh",
+        "release-apks": "bin/release-apks.sh",
+        "release-publish": "bin/release-publish.sh",
+        "release-sign": "bin/release-sign.sh",
+        "release-assets": "bin/release-assets.sh",
+        "release-postverify": "bin/release-postverify.sh",
+        "arm64": "bin/check-phase-arm64.sh"
+      },
+      "exceptions": [
+        {
+          "rule": "launcher",
+          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key SIGSTORE_ID_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
+          "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
+        },
+        {
+          "rule": "witness-target",
+          "text": "timeout -k 20 540 bash \"$@\"",
+          "why": "REQ-CHAIN-004-AC2 (ratified, rule 68 as amended): the wrapped command runs under timeout -k 20 540 because Fulcio's keyless certificate lives ten minutes; the target is one of the arg_map scripts, bound by the stage line"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/chain-test-shape.py",
+          "why": "a comment naming the helper that judges this file's exact text; it is never run from here"
+        }
+      ]
+    },
+    {
+      "path": "bin/build-stage-apk.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/build-admit.py",
+        "bin/build-version-check.py",
+        "bin/chain-verify.py",
+        "bin/build-apk.sh"
+      ],
+      "signs": false,
+      "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
+      "sha256": "8a0dd834bf709677c2d79218ef4ccd2bcf1de6de7c1ab0454b9c936ebb1d5756",
+      "reads_env": [
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/build-stage-assemble.sh",
+      "tools": [
+        "at",
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-archives.py",
+        "bin/build-apk.sh",
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
+      ],
+      "signs": false,
+      "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "b8204607679e636797bedaeae874a22aa2e3240149101b66814b1b5804a7a370"
+    },
+    {
+      "path": "bin/build-stage-rebuild-apk.sh",
+      "tools": [
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-apk.sh"
+      ],
+      "signs": false,
+      "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
+      "sha256": "54324ab757e81752da108e53eb4eb9de4a483705b801199f8f1794785d8b9e3d"
+    },
+    {
+      "path": "bin/build-stage-rebuild-assemble.sh",
+      "tools": [
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-archives.py",
+        "bin/build-apk.sh",
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
+      ],
+      "signs": false,
+      "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "2d6917aed16eda8d043c69d66ab16cd41d2a167d577b05940306f3369307ae2e"
+    },
+    {
+      "path": "bin/build-admit.py",
+      "tools": [
+        "python3",
+        "command",
+        "gh",
+        "at",
+        "git",
+        "env",
+        "ssh",
+        "bash",
+        "source",
+        "script",
+        "go"
+      ],
+      "runs": [
+        "bin/admission-tag-signer.py",
+        "bin/chain-bytes-sha.py",
+        "bin/install-scanner.sh"
+      ],
+      "signs": "other",
+      "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
+      "sha256": "54ed0504dbc63598c821e681c90d06290c7993b91076f57f45594db2c7e59a6b",
+      "reads_env": [
+        "GH_TOKEN"
+      ],
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "`git show REV:PATH`",
+          "why": "a docstring naming the path operand of git show; nothing is set"
+        }
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "GO_BIN = \"/usr/local/bin/fscache-go/bin/go\"",
+          "line_sha256": "b0307bc8efcdaafbd89419f85d8a61f4af5918195bfe389b355fc0db4ba5b41f",
+          "count": 1,
+          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go); admission runs exactly this go for the freeze check, never the runner's"
+        }
+      ]
+    },
+    {
+      "path": "bin/build-version-check.py",
+      "tools": [
+        "python3",
+        "go",
+        "at",
+        "env"
+      ],
+      "runs": [
+        "bin/apk-tool.py"
+      ],
+      "signs": false,
+      "reason": "the version, revision and clean-tree check of a built binary or apk",
+      "sha256": "dadf64fc26c32813a4cca0028981006b8294226ab2fef7830f50f5e45a704dbc",
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "(--binary PATH | --apk-dir DIR",
+          "why": "the usage line of the module docstring naming a path operand; nothing is set"
+        },
+        {
+          "name": "PATH",
+          "text": "`go version -m PATH`",
+          "why": "a docstring naming the path operand of go version -m; nothing is set"
+        }
+      ]
+    },
+    {
+      "path": "bin/build-archives.py",
+      "tools": [
+        "python3",
+        "at",
+        "tar"
+      ],
+      "runs": [
+        "bin/apk-tool.py"
+      ],
+      "signs": false,
+      "reason": "the four Linux archives from the apks (PROPOSED layout)",
+      "sha256": "0033149642f2c7ed3982ec3ffcc71a6d487d6f2513ae824ea4eac9e24e57d483"
+    },
+    {
+      "path": "bin/chain_items.py",
+      "tools": [
+        "script",
+        "at",
+        "python3",
+        "command"
+      ],
+      "runs": [
+        "bin/apk-tool.py"
+      ],
+      "signs": false,
+      "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
+      "sha256": "629e13abc2d7b885e631ffaeae089a2609f3d65aeae940d29386cc7529ef2909"
+    },
+    {
+      "path": "bin/build-stage-snapshot-apk.sh",
+      "tools": [
+        "at",
+        "git",
+        "grep",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-apk.sh"
+      ],
+      "signs": false,
+      "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
+      "sha256": "7b72a29cda313ec846a94f95ea638fc26dcdc6cf78bcd1921b905ba1b849d81a"
+    },
+    {
+      "path": "bin/build-stage-snapshot-assemble.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-archives.py",
+        "bin/build-apk.sh",
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
+      ],
+      "signs": false,
+      "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "50c16ff497e10b995d846c5fe7ba74ce5a3e97fd921e0efcd5f256fe64cd62ee"
+    },
+    {
+      "path": "bin/build-stage-snapshot-rebuild-apk.sh",
+      "tools": [
+        "at",
+        "git",
+        "grep",
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-apk.sh"
+      ],
+      "signs": false,
+      "reason": "Snapshot Rebuild, job rapk: the same tag discipline, rebuild the apks",
+      "sha256": "1dfce5c4c3e1ce3840c94ac8053e5c605244786043e0a547b1619767e624e3df"
+    },
+    {
+      "path": "bin/build-stage-snapshot-rebuild-assemble.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-archives.py",
+        "bin/build-apk.sh",
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
+      ],
+      "signs": false,
+      "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "64392922a2d944a139c2c585b8e86cff0934bab6203c0e9362f1aa24865d0bd4"
+    },
+    {
+      "path": "bin/admission-tag-signer.py",
+      "tools": [
+        "source",
+        "ssh",
+        "git",
+        "at",
+        "just"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names gitsign and git verify-tag, verifies and signs nothing",
+      "sha256": "2c4eb2557b672c98ed40957734c535cad6e6a363e9bcbd106f4568dc9d415994"
+    },
+    {
+      "path": "bin/build-stage-refuse-mode.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Build and Rebuild guard (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7): runs only when mode is neither release nor snapshot and refuses",
+      "sha256": "8c9b851b6b5819cb72d4182cd83c3596d6e50455ca0f13a3dc44c722b79fa0fe"
+    },
+    {
+      "path": "bin/check-stage.sh",
+      "sha256": "34d873b931d5d67789643114af9a81b1a8d5e1ba24b212a176c1fb8d2f0af0e7",
+      "tools": [
+        "bash",
+        "make",
+        "python3",
+        "script"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/check-scan.sh",
+        "bin/check-govulncheck.py",
+        "bin/check-acceptance.sh",
+        "bin/check-fips.sh",
+        "bin/check-guide.sh",
+        "bin/check-artifacts.sh"
+      ],
+      "signs": false,
+      "reason": "Check's fixed dispatcher: makes the release policy for the tag, verifies Build and Sign, then runs the phase's check scripts (REQ-CHAIN-006-AC3)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out check-results",
+          "why": "Check runs its Go scan isolated (python3 -I -B), as the verifier lines above; the one Python-run script of the scanners phase, pinned by the script judge of the Check wiring test (ruling G, REQ-CHAIN-006-AC4)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-govulncheck.py",
+      "sha256": "50c24d360d311fa88bfba26fc2734c5e2622319bf1d966623aa6aa171bb888c4",
+      "tools": [
+        "env",
+        "source"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Check's Go scan of the module's code: `govulncheck -json ./...` in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the pinned Go first on the tool's search path), the stream written unchanged to check-results/govulncheck.json, a called symbol fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs",
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "env[\"PATH\"] = search",
+          "why": "the tool is started with the pinned Go first on its search path (the one value this script sets; a shell script may not set the search path, so this is Python): the pinned directory, then the inherited path"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-scan.sh",
+      "sha256": "13c15f9217f460863c81595b81ac2bf0cc5513ef09d6b572849bc84659a31b97",
+      "tools": [
+        "find",
+        "python3",
+        "script",
+        "sed",
+        "source",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-osv-db.py",
+        "bin/check-bind.py",
+        "bin/check-osv-vex.py"
+      ],
+      "signs": false,
+      "reason": "Check's scanners phase: runs every scanner of .github/policy/scanners.json on the exact candidate digests and the archives (REQ-CHAIN-006-AC4, AC15)"
+    },
+    {
+      "path": "bin/check-fips.sh",
+      "sha256": "0f4e8a99308eacb828efb6be188ce31f6f9b23eab7ca7654001dd3eaeb903484",
+      "tools": [
+        "curl",
+        "docker",
+        "python3",
+        "sed",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-bind.py"
+      ],
+      "signs": false,
+      "reason": "Check's FIPS check: starts each candidate and reads /statusz (REQ-CHAIN-006-AC6)"
+    },
+    {
+      "path": "bin/check-acceptance.sh",
+      "sha256": "e4e68f95fd045da4878c68f71298306367f884143b12a420ec5af2d6151e7647",
+      "tools": [
+        "bash",
+        "docker",
+        "env",
+        "python3",
+        "script",
+        "sed",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/acceptance-serve.sh",
+        "bin/acceptance-gradle.sh",
+        "bin/acceptance-gradle-capped.sh",
+        "bin/acceptance-maven.sh",
+        "bin/acceptance-maven-capped.sh",
+        "bin/acceptance-egress.sh",
+        "bin/acceptance-k8s.sh",
+        "bin/check-bind.py"
+      ],
+      "signs": false,
+      "reason": "Check's acceptance wrapper: runs one shared suite script against the loaded production candidate (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bin/acceptance-$suite.sh",
+          "why": "the existence test of the suite script the wrapper is about to run (REQ-CHAIN-006-AC5)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-guide.sh",
+      "sha256": "949848ef60ce70a0e55a474d764eef6eb172b59da2ed086f15cc5bf364ea95fd",
+      "tools": [
+        "at",
+        "bash",
+        "command",
+        "gh",
+        "python3",
+        "sh",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-guide-plan.py"
+      ],
+      "signs": false,
+      "reason": "Check's customer-guide runner: runs the guide's verify commands against the candidate (REQ-CHAIN-006-AC7)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bash -o pipefail -c \"$run\" < /dev/null",
+          "why": "runs one customer-guide command that the planner judged runnable (verify forms and jq only, local operands; REQ-CHAIN-006-AC7)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-gradle.sh",
+      "sha256": "3981c8e18d28038f1683856caa31d5a01a774c5b67f994fd2aaec95e34166715",
+      "tools": [
+        "at",
+        "awk",
+        "bash",
+        "curl",
+        "find",
+        "script",
+        "sed",
+        "source",
+        "task",
+        "xargs"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the Gradle acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain --info 2>&1",
+          "why": "the sample project's own Gradle wrapper, run as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "launcher",
+          "text": "xargs -0 sha256sum > /tmp/cold-outputs.sha256",
+          "why": "hashes the compiled outputs for the cold-versus-warm byte comparison (REQ-GRADLE-001-AC3); the suite body as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "script-name",
+          "text": "./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain",
+          "why": "the sample project's own Gradle wrapper, run as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "launcher",
+          "text": "xargs -0 sha256sum > /tmp/warm-outputs.sha256",
+          "why": "hashes the compiled outputs for the cold-versus-warm byte comparison (REQ-GRADLE-001-AC3); the suite body as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "find . -path '*/build/classes/*' -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/cold-outputs.sha256",
+          "line_sha256": "7827ec695ecb49dea962c77f5731de79e62181d51477121c60ea1d7d6a61e34b",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "find . -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +",
+          "line_sha256": "98594c45e2ba7dd4c95e92cd9e5ff06ace516c9d20c48771e9dd3509e90c2fae",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "find . -path '*/build/classes/*' -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/warm-outputs.sha256",
+          "line_sha256": "302d6b11318b44b4a374dba72862f4761a74a564a607675890c232bc522f4fc2",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-gradle-capped.sh",
+      "sha256": "841f9506d4006d6587439726b1d85bcaaa2202dd6dcf72eb9cb3e570fef8af51",
+      "tools": [
+        "awk",
+        "bash",
+        "curl",
+        "find",
+        "sed",
+        "task"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the Gradle capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1",
+          "why": "the sample project's own Gradle wrapper, run as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "  find \"/tmp/gradle-capped-${copy}\" -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +",
+          "line_sha256": "13f896d9a445ba039650005fcb779ebf30128cdc7c807fe201acfa07e80c5bfa",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "find /tmp/gradle-recovery -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +",
+          "line_sha256": "d9c076c8f7bde09da5672e4d89aca5aca209102a9080f56f84089a68e089053a",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-maven.sh",
+      "sha256": "ea589e342cab0cbae1322566797005b62bf758392e64ce4c946df3829351d5ae",
+      "tools": [
+        "awk",
+        "bash",
+        "curl",
+        "env",
+        "sed"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
+    },
+    {
+      "path": "bin/acceptance-maven-capped.sh",
+      "sha256": "fa74e14adbc8c0f49a6422bd02746b5b816b1deb523c01906e947ad07bb57bde",
+      "tools": [
+        "awk",
+        "bash",
+        "curl",
+        "find"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
+    },
+    {
+      "path": "bin/acceptance-egress.sh",
+      "sha256": "0038d29fbe3429cade41e9a264a718f8e1598fda37bc8a4fb556ef5507b6770f",
+      "tools": [
+        "at",
+        "awk",
+        "bash",
+        "command",
+        "curl",
+        "docker",
+        "env",
+        "exec",
+        "make",
+        "nc",
+        "python3",
+        "sed",
+        "sh",
+        "source",
+        "tar"
+      ],
+      "runs": [
+        "bin/analyze-egress-trace.py",
+        "bin/analyze-egress-trace-test.sh"
+      ],
+      "signs": false,
+      "reason": "the no-phone-home (egress) acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "./configure --disable-mpers LDFLAGS=\"-static -pthread\" >/dev/null",
+          "why": "builds the static strace inside a pinned container from a checksum-verified source tarball, as the old egress stage did (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "  if ! docker run --rm -v \"$TRACE_BIN\":/trace:ro --entrypoint /trace/strace \"$DISTROLESS\" -V > /tmp/strace.ver 2>&1; then",
+          "line_sha256": "bcd2a19d1f7e3332ebf52f4cd3096a802eaf418a95ae129d046952bcfcbb417a",
+          "count": 1,
+          "why": "docker runs the static strace as the entrypoint of the candidate or of a libc-less proof image (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "  docker run -d --name \"fscache-cand-${label}\" --net \"container:fscache-net-${label}\" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v \"$TRACE_BIN\":/trace:ro -v \"$TRACE_OUT\":/out --entrypoint /trace/strace \"$REF\" -f -e trace=network -yy -qq -o \"/out/${label}.strace\" \"$CANDIDATE_ENTRYPOINT\" >/dev/null",
+          "line_sha256": "772cea4f885d36e00c57847b4a38b117665ffe55472ee5db3f5379547b302fae",
+          "count": 1,
+          "why": "docker runs the static strace as the entrypoint of the candidate or of a libc-less proof image (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "    make -j\"$(nproc)\" >/dev/null",
+          "line_sha256": "40f690988f6c576fb01cdaab34f5cab69c17a6b6140de9d0707e795a7aea8ca5",
+          "count": 1,
+          "why": "builds the static strace inside a pinned container, as the old egress stage did (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-k8s.sh",
+      "sha256": "34e6aeb3d97af29732a7148ba9f610d15595d52e10975efcc98ae77f621571aa",
+      "tools": [
+        "at",
+        "bash",
+        "command",
+        "curl",
+        "docker",
+        "env",
+        "eval",
+        "exec",
+        "kubectl",
+        "node",
+        "python3",
+        "sh",
+        "trap"
+      ],
+      "runs": [
+        "bin/install-kind.sh",
+        "bin/acceptance-k8s-manifests.py",
+        "bin/acceptance-k8s-smoke.py"
+      ],
+      "signs": false,
+      "reason": "the Kubernetes acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5, AC14)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bash /tmp/pf-forward >/tmp/pf.log 2>&1",
+          "why": "the documented port-forward command that the previous step extracted from docs/kubernetes.md (REQ-DEPLOY-003-AC1)"
+        },
+        {
+          "rule": "script-name",
+          "text": "bash /tmp/smoke-assert",
+          "why": "the documented smoke commands that the previous step extracted from docs/kubernetes.md (REQ-DEPLOY-003-AC1)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-serve.sh",
+      "sha256": "0faec59065857571611a7a57c1e0edf44c6924572f8f5558415b31ad3053b3e0",
+      "tools": [
+        "curl",
+        "docker",
+        "env"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "starts the candidate as acceptance.yml's release-chain mode does (REQ-CHAIN-006-AC5)"
+    },
+    {
+      "path": "bin/install-kind.sh",
+      "sha256": "d950a110760079bc22f9130294e5d62c27a923268cc25713dda8deed93269ff6",
+      "tools": [
+        "curl",
+        "kubectl",
+        "node",
+        "trap"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "installs kind and kubectl at exact versions against committed sha256 (REQ-CHAIN-006-AC14)"
+    },
+    {
+      "path": "bin/check-guide-plan.py",
+      "sha256": "1fe025098c384974dfcf3e1df0503fb01080b3d9bba40c8acfe040f8a8f2bd8d",
+      "tools": [
+        "at",
+        "command",
+        "gh",
+        "sh"
+      ],
+      "runs": [
+        "bin/check-guide.sh"
+      ],
+      "signs": false,
+      "reason": "the planner of bin/check-guide.sh: reads the customer guide and the cannot-run list, judges and substitutes every command (REQ-CHAIN-006-AC7)"
+    },
+    {
+      "path": "bin/check-osv-db.py",
+      "sha256": "3f2533f0e296d7e87eebe1940eded34a727b8aa284b2e35d410881002501486e",
+      "tools": [],
+      "runs": [
+        "bin/check-scan.sh"
+      ],
+      "signs": false,
+      "reason": "reads the osv-scanner databases the scan downloaded and reports source, newest record and digest of each (REQ-CHAIN-006-AC15)"
+    },
+    {
+      "path": "bin/acceptance-k8s-manifests.py",
+      "sha256": "d4c6fd00fd04599846a3ab5e89d2c40f7ccd80b36bd840122ecd070e2f8249c0",
+      "tools": [
+        "script"
+      ],
+      "runs": [
+        "bin/acceptance-k8s.sh"
+      ],
+      "signs": false,
+      "reason": "step 3 of the Kubernetes suite: extracts the documented manifests of docs/kubernetes.md (REQ-CHAIN-006-AC5)"
+    },
+    {
+      "path": "bin/acceptance-k8s-smoke.py",
+      "sha256": "eaa5fbaf1da334c58a43ddd5df30b17232377e1b61ab80a39fa9d65b8a08b81f",
+      "tools": [
+        "at",
+        "bash",
+        "command",
+        "curl",
+        "env",
+        "eval"
+      ],
+      "runs": [
+        "bin/acceptance-k8s.sh"
+      ],
+      "signs": false,
+      "reason": "step 5 of the Kubernetes suite: extracts the documented runner env block and smoke commands (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "open(\"/tmp/pf-forward\", \"w\").write(\"#!/usr/bin/env bash\\n\" + pf_cmd + \"\\n\")",
+          "line_sha256": "4698a67fba883745bda0290df1ef8eeb2287fac40d5c5bb9a41a60a71f935041",
+          "count": 1,
+          "why": "the shebang line of a script the documented commands are written into under /tmp, which the suite then runs (REQ-DEPLOY-003-AC1)"
+        },
+        {
+          "rule": "deny",
+          "line": "lines = [\"#!/usr/bin/env bash\", \"set -euo pipefail\"]",
+          "line_sha256": "6d921fca730abf675a8d77fea71f98859bb078dec20ad551478405f8e6cc27c4",
+          "count": 1,
+          "why": "the shebang line of a script the documented commands are written into under /tmp, which the suite then runs (REQ-DEPLOY-003-AC1)"
+        }
+      ]
+    },
+    {
+      "path": "bin/analyze-egress-trace.py",
+      "sha256": "985d7385c9fae81ceda0c7751d503095c63e734b8c57cbe6a116ca47d0051f6c",
+      "tools": [
+        "awk"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "judges a candidate syscall trace for outbound traffic (the no-phone-home suite, REQ-PRIV-001-AC1)"
+    },
+    {
+      "path": "bin/analyze-egress-trace-test.sh",
+      "sha256": "5e41dda6c26fd7f1e13115dddf84358d8d27eb1a037de5fdad69c30ceb1c9060",
+      "tools": [
+        "python3",
+        "trap"
+      ],
+      "runs": [
+        "bin/analyze-egress-trace.py"
+      ],
+      "signs": false,
+      "reason": "the regression suite of the trace analyzer, run by the no-phone-home suite as control C",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "connect(4, {sa_family=AF_INET6, sin6_port=htons(80), inet_pton(AF_INET6, /* corrupt */ ), sin6_scope_id=0}, 28) = -1 ENETUNREACH",
+          "line_sha256": "e7665a6a05e69090841ff7c64f56dce7d6f2c8e9c59702c268855fa23061e25a",
+          "count": 1,
+          "why": "a fixture line of a syscall trace inside a heredoc: the comment marks are trace text, not a command (REQ-PRIV-001-AC1)"
+        }
+      ]
+    },
+    {
+      "path": "bin/release-verify.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
+      "sha256": "9f064b81de90907e21d78f9cdf70eb731feb5c327d5b3fd72101df03448389dd",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] || { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN\" >&2; exit 1; }",
+          "line_sha256": "8f8d116d24c40ce326b31d13a270a361609939c249925e03a44b3051b3c4cb99",
+          "count": 1,
+          "why": "the refusal message must read `refused at tag` (rule 71: the failure names its stage); `at` is a word of that message, not a command"
+        },
+        {
+          "rule": "deny",
+          "line": "python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
+          "line_sha256": "8fe91de9714fae476faa76135b732fc863b248e97d3d63984719de9bb1a4eb3e",
+          "count": 1,
+          "why": "`make` is the chain-verify.py subcommand `policy make` (rule 57: the policy is made for the tag), not the make program"
+        }
+      ]
+    },
+    {
+      "path": "bin/release-apks.sh",
+      "tools": [
+        "bash",
+        "jq",
+        "python3",
+        "trap"
+      ],
+      "runs": [
+        "bin/apk-tool.py",
+        "bin/release-sign-apks.sh"
+      ],
+      "signs": "other",
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (Build/Rebuild comparison and melange sign) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
+      "sha256": "9acc2f0bd89d3651cd4aee5b96d91df170e5efea003a7eecd670c25709b0d480",
+      "reads_env": [
+        "APK_RELEASE_SIGNING_KEY"
+      ]
+    },
+    {
+      "path": "bin/release-publish.sh",
+      "tools": [
+        "crane",
+        "jq",
+        "python3",
+        "trap"
+      ],
+      "runs": [
+        "bin/release-layout.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
+      "sha256": "308369a11710cfc0c81550bbee596aa4fa45ba9a6490043d1a1228346169b264",
+      "reads_env": [
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN",
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-sign.sh",
+      "tools": [
+        "cosign",
+        "git",
+        "jq",
+        "python3",
+        "trap"
+      ],
+      "runs": [
+        "bin/release-metadata.py",
+        "bin/vendor-provenance.py",
+        "bin/vex-forms.py"
+      ],
+      "signs": "other",
+      "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
+      "sha256": "1a9b567cda4d859dfd73a36f842b6bc2e58dbf98f0165a0db12b0fb77ae46fb4",
+      "reads_env": [
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN",
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-assets.sh",
+      "tools": [
+        "gh",
+        "git",
+        "python3"
+      ],
+      "runs": [
+        "bin/release-metadata.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
+      "sha256": "e9c4402127e0beaab440d4d0f7d6b7d22ca21182d0324bdb6ba2df81152ccff3",
+      "reads_env": [
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-postverify.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/release-postverify.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
+      "sha256": "ab5a70151cbc2f3170d36a1b869e676683af50f57fd423720694b0c0885a0808",
+      "reads_env": [
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-postverify.py",
+      "tools": [
+        "at",
+        "bash",
+        "command",
+        "cosign",
+        "gh",
+        "jq",
+        "just"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
+      "sha256": "8a030a98d013b754c5c8e9806bac1c98e1adf4cdced1ca71aaa17516a5f42b76",
+      "env_mentions": [
+        {
+          "name": "ENV",
+          "text": "m.group(1) == \"ENV\"",
+          "why": "REQ-CHAIN-007-AC20: the jq filter grammar REFUSES the variable named ENV (a jq-only command may not read the environment); the literal is the refusal test, and no environment is read or set"
+        }
+      ]
+    },
+    {
+      "path": "bin/release-metadata.py",
+      "tools": [
+        "at"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
+      "sha256": "7eeee19a6933128d8112965cd25c639f1488c97973b47bde52d4d92aa795cd45"
+    },
+    {
+      "path": "bin/vex-forms.py",
+      "tools": [
+        "at",
+        "aws",
+        "gcloud"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
+      "sha256": "32b419557df99ec925b50b9e2b36bf7bd5048a111e93cf177209721eaffd43b6",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "            # no namespace: the forms carry a package's name only, so pkg:golang/github.com/acme/busybox would widen",
+          "line_sha256": "67b70aee004b9d32aeb202d7ddc726f137ae53b5fe08c950c9ae528a8ae6265c",
+          "count": 1,
+          "why": "a comment quoting the purl pkg:golang/github.com/acme/busybox as the example of a namespaced component the forms refuse; it is text, not a command (cache's REQ-SCAN-010 code)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-phase-scanners.sh",
+      "sha256": "0eba74a24fcaefc173a068e6bd97f03493e8988ec6109b3a2c14f0601c7bf04c",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's scanners step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-phase-acceptance.sh",
+      "sha256": "113c2da8fa43264754f1f4158b245583f8b9aa9a464653697de5f70c5da2831e",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's acceptance step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-phase-runtime.sh",
+      "sha256": "7abe1474108348e53b56066422e51220b81db9ec387817c638331cfa6ea0067d",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's runtime step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-artifacts.sh",
+      "sha256": "7d77aefc27702bef4313eee641a499eded4e7f1f99506d0ec1264707c003f0fe",
+      "tools": [
+        "at",
+        "curl",
+        "docker",
+        "go",
+        "python3",
+        "sed",
+        "sh",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-image-platforms.py",
+        "bin/check-bind.py"
+      ],
+      "signs": false,
+      "reason": "Check's artifact checks: the amd64 binaries execute, the FIPS postures, no shell in the production and -fips images, platform entries and serving (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, AC2, REQ-FIPS-002-AC1)"
+    },
+    {
+      "path": "bin/check-image-platforms.py",
+      "sha256": "972ade07fcb526d19d59333e50c7fc7ffeb7eca5d31b3ac46faee7d13ea9e7fd",
+      "tools": [
+        "at"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "lists the platforms an OCI image archive carries (REQ-PLAT-002-AC1)"
+    },
+    {
+      "path": "bin/check-phase-arm64.sh",
+      "sha256": "6065475e20aac72ccd9ab6f0845e29fe7dc4a67c9dab194cfcdf33a5e8cb2711",
+      "tools": [
+        "bash",
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/check-artifacts.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-bind.py",
+      "sha256": "adeade6b12c7f7c4682a09cfdef29bd2d81955534acf476e7c41e7106a8563ad",
+      "tools": [],
+      "runs": [
+        "bin/chain_items.py"
+      ],
+      "signs": false,
+      "reason": "binds the image layouts and archives Check downloads to the digests Build recorded (round 1 F1); reads and hashes files, signs nothing"
+    },
+    {
+      "path": "bin/check-osv-vex.py",
+      "sha256": "10f8ea45340cf5fb1f14b39a0a269e75c5c81c6497c66a00166f48f4ed382c30",
+      "tools": [],
+      "runs": [
+        "bin/rescan-statement.py"
+      ],
+      "signs": false,
+      "reason": "applies the published VEX to osv-scanner findings with the daily rescan filter"
+    },
+    {
+      "path": "bin/rescan-statement.py",
+      "sha256": "193e0bd7829f10f7aeb77f0326e60f00790439cbbb74b1ff45d62e46ca9ddc90",
+      "tools": [
+        "at",
+        "gh",
+        "go",
+        "make",
+        "python3",
+        "source"
+      ],
+      "runs": [
+        "bin/inspector-gate.py"
+      ],
+      "signs": false,
+      "reason": "the daily rescan statement; Check imports its VEX matcher",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "    # osv-scanner scan image/source : 0 clean, 1 findings, 127/128 (and any",
+          "line_sha256": "be19a58831171af0732e5fe3ad055aa91363be3a19a1d7c5a38dc330ebeb29a2",
+          "count": 1,
+          "why": "a comment naming osv-scanner's `scan image/source` subcommands; prose, not a path run from here"
+        },
+        {
+          "rule": "deny",
+          "line": "    busybox is not alpine/busybox or evil/busybox, and @scope/pkg is not pkg.\"\"\"",
+          "line_sha256": "bfba9fa0e1ca1350beb7bce6a46ff3726a9d14604f70b9758f3eb5fcb31375fd",
+          "count": 1,
+          "why": "a docstring's examples of package namespaces (alpine/busybox is not busybox); prose, not a command"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/rescan-statement-test.sh",
+          "why": "a comment naming the suite that exercises this file; never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "inspector-gate.py",
+          "why": "joins the file name to its own directory to load the PR gate's VEX matcher, which is the listed row bin/inspector-gate.py (one definition of a covered finding)"
+        }
+      ]
+    },
+    {
+      "path": "bin/inspector-gate.py",
+      "sha256": "25a0cdba9df3466d04296a8da3e3883961f280fbc8a8f6ea3b90be48eeb828d1",
+      "tools": [
+        "at",
+        "python3"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
+    },
+    {
+      "path": "bin/release-layout.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, step release-publish: the OCI layout directory is the image Build attested (index.json holds the one attested descriptor, every blob hashes to its name, the index, manifests, configs and layers are present), checked before any login or push (REQ-CHAIN-007-AC7)",
+      "sha256": "0d4ac3dab902f39eb07661617882b0b184dca61403ed91e29d4950c948908662",
+      "reads_env": []
+    },
+    {
+      "path": "bin/apk-tool.py",
+      "tools": [
+        "tar",
+        "at",
+        "make",
+        "command",
+        "env",
+        "openssl"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
+      "sha256": "401743043037b7b02b6d1883027c48c006f073b371670c5cb1e24ef218cd6a17",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "    \"\"\"Walk every 512-byte header block of a section and refuse anything that Go's archive/tar and Python's tarfile could read differently:",
+          "line_sha256": "b063e9cffe2d6620eb5fc3b71cef14774fcb621ee81b0b04fae25f207d7b2601",
+          "count": 1,
+          "why": "a docstring naming Go's archive/tar package; prose, never run"
+        },
+        {
+          "rule": "deny",
+          "line": "    for p in (\"/usr/bin/openssl\", \"/opt/homebrew/bin/openssl\", \"/usr/local/bin/openssl\"):",
+          "line_sha256": "5fead91decc79ed084017554a36c313c5f4ad61e372c7fc9802f9602c66c8dc3",
+          "count": 1,
+          "why": "the three fixed locations the reader looks for openssl at, each tested with os.access(p, os.X_OK) before any run; never searched on PATH"
+        },
+        {
+          "rule": "deny",
+          "line": "    refuse(\"openssl is not installed at a fixed location (/usr/bin/openssl)\")",
+          "line_sha256": "a04ec4cd4028105cb7577852900a340cd9b417283ed2c0b464dabe028adafe00",
+          "count": 1,
+          "why": "the refusal message naming the fixed location; prose, never run"
+        }
+      ],
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "os.path.join(d, \"ctrl.bin\")], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"})",
+          "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
+        }
+      ]
+    },
+    {
+      "path": "bin/net-probe.py",
+      "tools": [
+        "sudo",
+        "python3"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "cache P4's no-network probe: connects to 192.0.2.1:9 and exits 101 when the namespace has no route; sudo and python3 are prose in its docstring",
+      "sha256": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729"
+    },
+    {
+      "path": "bin/build-apk-helper.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
+      "sha256": "f589caa84302a03c3772cb2d315eba0bd53e525da99d67af60e17eaa057a8d0d"
+    },
+    {
+      "path": "bin/release-sign-apks.sh",
+      "tools": [
+        "trap",
+        "env",
+        "find",
+        "make",
+        "at"
+      ],
+      "runs": [
+        "bin/apk-tool.py"
+      ],
+      "signs": "other",
+      "reason": "cache P4's release signing: refuses unless Build and Rebuild agree on every apk, then re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
+      "sha256": "003d9477419f512b6da0f74be9445a37feb557db042574567d4e48fa3d3791c7",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bin/build-apk-test.sh",
+          "why": "a comment naming the test that runs a copy of this file with the TEST-SUBST lines replaced; prose, never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/install-build-tools.sh",
+          "why": "prose naming the installer: the error message that tells the operator how to install melange; never run from here (the script names it once since cache#349 and the one exception waives it)"
+        },
+        {
+          "rule": "script-name",
+          "text": "build-apk.sh",
+          "why": "a comment naming the sibling script whose way of naming its helpers this file follows (repo-relative literal paths); prose, never run from here"
+        }
+      ],
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "r = subprocess.run([sys.argv[2], \"rsa\", \"-pubout\", \"-passin\", \"pass:\"], input=block.encode(), capture_output=True, env={\"LC_ALL\": \"C\", \"PATH\": \"/nonexistent\"})",
+          "why": "the child's environment is pinned to LC_ALL=C and PATH=/nonexistent so the openssl it runs (a fixed absolute path) cannot resolve anything through PATH; PATH is written as a literal, never read"
+        }
+      ]
+    },
+    {
+      "path": "bin/build-apk.sh",
+      "tools": [
+        "sudo",
+        "env",
+        "at",
+        "go",
+        "python3",
+        "git",
+        "script",
+        "trap",
+        "sed",
+        "make",
+        "command",
+        "source",
+        "awk"
+      ],
+      "runs": [
+        "bin/apk-tool.py",
+        "bin/build-apk-helper.py",
+        "bin/net-probe.py",
+        "bin/go-module-sbom.py"
+      ],
+      "signs": false,
+      "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
+      "sha256": "74c79c0513d7b630d9f6c1fb3835a3113aec47223f299ed79bf8c1653440eb3d",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bin/build-apk-test.sh",
+          "why": "a comment naming the test that runs a copy of this file with the TEST-SUBST lines replaced; prose, never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/install-scanner.sh",
+          "why": "a comment naming the installer that puts the pinned Go toolchain at the fixed path; never run from here"
+        }
+      ],
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "no Go toolchain on PATH in CI",
+          "why": "words in a refusal message: nothing is set"
+        }
+      ]
+    },
+    {
+      "path": "bin/assemble-image.sh",
+      "tools": [
+        "script",
+        "at",
+        "sudo",
+        "make",
+        "tar",
+        "bash",
+        "go",
+        "python",
+        "trap",
+        "command"
+      ],
+      "runs": [
+        "bin/apko-lock.sh",
+        "bin/oci-digest.py",
+        "bin/net-probe.py"
+      ],
+      "signs": false,
+      "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
+      "sha256": "35b917e02c4d377e97e5a6cc57cb4339e7abc1b2daf380fb17ab2b29ee13ed18",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bin/assemble-image-test.sh",
+          "why": "a comment or message naming the script; prose, never run from here"
+        }
+      ]
+    },
+    {
+      "path": "bin/apko-lock.sh",
+      "tools": [
+        "at"
+      ],
+      "runs": [
+        "bin/oci-digest.py"
+      ],
+      "signs": false,
+      "reason": "the apko lock proof helper assemble-image.sh runs",
+      "sha256": "4834a34a53fb26f7d53219c85dac617a406978701fabc8aaac619c1bd5e1e1b7"
+    },
+    {
+      "path": "bin/oci-digest.py",
+      "tools": [
+        "tar",
+        "at",
+        "script",
+        "python"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the OCI layout digest tool assemble-image.sh runs",
+      "sha256": "753af3c0964ffd252869cdf9b632a3c53bac4bc8fe6403d6deac48316aea0da8",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "assemble-image.sh",
+          "why": "a comment or message naming the script; prose, never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "apko-lock.sh",
+          "why": "a comment or message naming the script; prose, never run from here"
+        }
+      ]
+    },
+    {
+      "path": "bin/go-module-sbom.py",
+      "tools": [
+        "go"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "cache P4's Go module SBOM: reads vendor/modules.txt and dependency-provenance.json, writes the SBOM; run by bin/build-apk.sh",
+      "sha256": "e73acab6d1ecda6aa444861f29bfeebb273e774152dad0a10de861ac5aab6a26"
+    },
+    {
+      "path": "bin/vendor-provenance.py",
+      "tools": [
+        "at",
+        "command"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, step release-sign (run by bin/release-sign.sh): checks and builds the dependency provenance of the vendored tree and writes vendor-evidence.json for the release to sign (REQ-VEND-001); offline: every input is a file, it reads no environment variable, runs no program and signs nothing",
+      "sha256": "c7dc655ed4236f9eb1e228523766e474e0386027173f04b4407864caf6361eff",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "# the three Go pseudo-version forms, whole-string (cmd/go's pseudoVersionRE): vX.0.0-TS-REV, vX.Y.Z-0.TS-REV and vX.Y.Z-pre.0.TS-REV, each with an",
+          "line_sha256": "704fdce73fefee04a009df1e448bff8a66ac56674db8b9bb4d93786a6a0950a7",
+          "count": 1,
+          "why": "a comment naming Go's own cmd/go (where the pseudo-version pattern comes from); prose, never a command run here"
+        }
+      ]
+    }
+  ],
+  "ambient_env": [
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/witnessed.sh",
+      "why": "the Witness wrapper receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
+      "file": ".github/workflows/stage-build.yml",
+      "job": "apk"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/build-stage-apk.sh",
+      "why": "the stage script runs the admission script first and unsets GH_TOKEN right after, so cache's build scripts never see it (REQ-CHAIN-004-AC3, AC8)",
+      "file": ".github/workflows/stage-build.yml",
+      "job": "apk",
+      "handoff_line": "unset GH_TOKEN"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/build-admit.py",
+      "why": "admission reads GitHub (GET only) through gh, which inherits the token; the step's env is the only route the token has (REQ-CHAIN-004-AC8)",
+      "file": ".github/workflows/stage-build.yml",
+      "job": "apk"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/witnessed.sh",
+      "why": "Release (rule 56, advisor 0386 J row 5): the run's own token, read by gh in this step's script; the wrapper passes its environment on and never reads it",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/release-publish.sh",
+      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/release-sign.sh",
+      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/release-assets.sh",
+      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/release-postverify.sh",
+      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "APK_RELEASE_SIGNING_KEY",
+      "script": "bin/witnessed.sh",
+      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret APK_RELEASE_SIGNING_KEY from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "APK_RELEASE_SIGNING_KEY",
+      "script": "bin/release-apks.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret APK_RELEASE_SIGNING_KEY, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_USERNAME",
+      "script": "bin/witnessed.sh",
+      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_USERNAME from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_USERNAME",
+      "script": "bin/release-publish.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_USERNAME, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_USERNAME",
+      "script": "bin/release-sign.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_USERNAME, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_TOKEN",
+      "script": "bin/witnessed.sh",
+      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_TOKEN from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_TOKEN",
+      "script": "bin/release-publish.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_TOKEN",
+      "script": "bin/release-sign.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    }
+  ],
+  "pinned_steps": [
+    {
+      "file": ".github/workflows/stage-build.yml",
+      "job": "assemble",
+      "id": "digests",
+      "run": "echo \"digests=$(jq -c . digests.json)\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-004-AC2: the stage output Sign reads (the digests.json text); the one reviewed write into the job outputs"
+    }
+  ]
+}

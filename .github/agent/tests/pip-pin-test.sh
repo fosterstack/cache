@@ -392,7 +392,7 @@ def pin_sites(t):
 
 def site_key(s): return (s[0], s[1])
 SITE_KEYS = [site_key(s) for s in pin_sites(tree)]
-EXPECT_SITES = 8   # ci coverage + allowlist (system, venv), auditor audit + panel-probe, dependabot-reviewer review, release + go-freshness persona-uat (system)
+EXPECT_SITES = 8   # ci coverage + allowlist (system, venv), auditor audit + panel-probe, dependabot-reviewer review, go-freshness persona-uat (system), release.yml persona-uat (system, the rc run)
 def prog_for(env): return "python3" if env == "system" else f"{env}/bin/python"
 
 def edit_run(st, fn):

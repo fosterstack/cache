@@ -2,11 +2,15 @@
 # Install a vulnerability scanner CLI, pinned by VERSION and by a
 # repo-pinned SHA256 (audit follow-up: "scanner installers pinned by
 # checksum; a scanner that cannot run is red and labeled as a pipeline
-# failure, never as a finding"). Downloading install.sh from a moving
+# failure, never as a finding"). Downloading the vendors' installer from a moving
 # branch (the old approach) both broke - trivy v0.66.0 was not a real
 # release - and was unpinned. This verifies the exact bytes.
 #
-# Usage: install-scanner.sh <trivy|grype|snyk|osv-scanner|inspector-sbomgen|kind> [dest-dir]
+# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|go|crane|govulncheck|kind> [dest-dir]
+# `go` installs the Go toolchain of the working directory's go.mod (its `toolchain` line, else its `go` line) into <dest-dir>/fscache-go, only when that
+# version is the pinned one (GO_VER); admission's freeze check runs it from there (the runner's own Go may be older than go.mod).
+# `govulncheck` (the Go source scan of Check, ruling G of Oct 12) is a Go MODULE, not release archives (golang/vuln publishes none): it is built from the committed module
+# tools/govulncheck, whose go.sum h1 hashes are the pin, with the pinned toolchain `go` installed (<dest-dir>/fscache-go/bin/go), and installed as <dest-dir>/govulncheck.
 # inspector-sbomgen is Amazon Inspector's SBOM generator (the PR gate's
 # second scanner sends its SBOM to inspector-scan:ScanSbom). It is pinned
 # here rather than downloaded by the vendor action at run time, so its
@@ -29,15 +33,28 @@ SBOMGEN_VER=1.16.0
 SCOUT_VER=1.26.0
 GITSIGN_VER=0.17.1
 KIND_VER=0.33.0
+# cosign signs the release provenance in stage-sign.yml (v0.3.0 rule 52): v3.1.3 linux binaries; the sums below were checked on Oct 9 2026
+# with `cosign verify-blob --bundle` against the release's own signatures (identity keyless@projectsigstore.iam.gserviceaccount.com)
+COSIGN_VER=3.1.3
+# Witness signs every Build and Rebuild step (v0.3.0 rule 68, the Witness wrapper). The two sums are the sha256 of the release tarballs of in-toto/witness
+# v0.12.0, equal to the release's witness_0.12.0_checksums.txt; both tarballs were also checked on Oct 9 2026 with `cosign verify-blob --bundle` against
+# their .sigstore.json (identity https://github.com/in-toto/witness/.github/workflows/release.yml@refs/tags/v0.12.0, issuer token.actions.githubusercontent.com).
+WITNESS_VER=0.12.0
+# The Go toolchain admission's verify-freeze needs (Codex A r3 F4; advisor): the exact go<ver>.linux-<arch>.tar.gz, pinned by sha256 per architecture, values
+# equal to go.dev's published checksums (https://go.dev/dl/?mode=json), checked Oct 11 2026. GO_VER must equal the version go.mod names.
+GO_VER=1.27.2
+# crane copies the exact image bytes by digest in the Release stage (rules 16 and 64 of the release rules: the copy tool is pinned by checksum, no build step).
+# The two crane sums are the sha256 of the Linux release tarballs of google/go-containerregistry v0.22.1, equal to the release's checksums.txt and to the downloaded files (Oct 11 2026).
+CRANE_VER=0.22.1
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign|kind) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|kind)" ;; esac
+case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign|cosign|witness|go|crane|govulncheck|kind) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
-  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64; A_KIND=kind-linux-amd64 ;;
-  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64; A_KIND=kind-linux-arm64 ;;
+  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64; A_COSIGN=linux-amd64; A_CRANE=Linux_x86_64; A_WITNESS=linux_amd64; A_GO=linux-amd64; A_KIND=kind-linux-amd64 ;;
+  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64; A_COSIGN=linux-arm64; A_CRANE=Linux_arm64; A_WITNESS=linux_arm64; A_GO=linux-arm64; A_KIND=kind-linux-arm64 ;;
   *) pipeline_fail "unsupported architecture: $arch" ;;
 esac
 
@@ -64,6 +81,15 @@ case "${TOOL}:${arch}" in
   # kind v0.33.0 release assets; sha256 from the release's asset digests (api.github.com/repos/kubernetes-sigs/kind/releases/tags/v0.33.0) and the .sha256sum files
   kind:x86_64|kind:amd64) SUM=aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d ;;
   kind:aarch64|kind:arm64) SUM=20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2 ;;
+  cosign:x86_64|cosign:amd64) SUM=4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 ;;
+  cosign:aarch64|cosign:arm64) SUM=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a ;;
+  witness:x86_64|witness:amd64) SUM=543d05898731fe5b9c176443ec596a0242bd27f0b327d73aff60f6f7398b7dd0 ;;
+  witness:aarch64|witness:arm64) SUM=3043bba438276c4c2b1afff7deb97cf1c0301c77515a4b1cff15549b378d2aaf ;;
+  crane:x86_64|crane:amd64) SUM=0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 ;;
+  crane:aarch64|crane:arm64) SUM=898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110 ;;
+  go:x86_64|go:amd64) SUM=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5 ;;
+  go:aarch64|go:arm64) SUM=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8 ;;
+  govulncheck:*) SUM="" ;;   # a module: pinned by go.sum (tools/govulncheck), not by the sum of a download
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
@@ -75,9 +101,13 @@ OSV_BASE="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/downloa
 SBOMGEN_BASE="${SBOMGEN_BASE_URL:-https://amazon-inspector-sbomgen.s3.amazonaws.com}"
 SCOUT_BASE="${SCOUT_BASE_URL:-https://github.com/docker/scout-cli/releases/download}"
 GITSIGN_BASE="${GITSIGN_BASE_URL:-https://github.com/sigstore/gitsign/releases/download}"
+COSIGN_BASE="${COSIGN_BASE_URL:-https://github.com/sigstore/cosign/releases/download}"
+WITNESS_BASE="${WITNESS_BASE_URL:-https://github.com/in-toto/witness/releases/download}"
+CRANE_BASE="${CRANE_BASE_URL:-https://github.com/google/go-containerregistry/releases/download}"
+GO_BASE="${GO_BASE_URL:-https://go.dev/dl}"
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'chmod -R u+w "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT   # a Go module cache is read-only: it is writable again before it is removed
 
 verify() { # file
   local got
@@ -152,8 +182,76 @@ case "$TOOL" in
     install -m 0755 "$tmp/gitsign" "${DEST}/gitsign" || pipeline_fail "install failed for gitsign"
     "${DEST}/gitsign" --version >/dev/null || pipeline_fail "gitsign does not run after install"
     ;;
+  cosign)
+    # the release provenance signer (v0.3.0 rule 52): a single binary; cosign asks for the OIDC token inside its own process
+    url="${COSIGN_BASE}/v${COSIGN_VER}/cosign-${A_COSIGN}"
+    curl -fsSL -o "$tmp/cosign" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/cosign"
+    install -m 0755 "$tmp/cosign" "${DEST}/cosign" || pipeline_fail "install failed for cosign"
+    "${DEST}/cosign" version >/dev/null || pipeline_fail "cosign does not run after install"
+    ;;
+  witness)
+    # the step signer of the release chain (rule 68): a release tarball holding the witness binary
+    url="${WITNESS_BASE}/v${WITNESS_VER}/witness_${WITNESS_VER}_${A_WITNESS}.tar.gz"
+    curl -fsSL -o "$tmp/w.tgz" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/w.tgz"
+    tar -xzf "$tmp/w.tgz" -C "$tmp" witness || pipeline_fail "extract failed for witness"
+    install -m 0755 "$tmp/witness" "${DEST}/witness" || pipeline_fail "install failed for witness"
+    "${DEST}/witness" version >/dev/null || pipeline_fail "the installed witness binary does not start"
+    ;;
+  crane)
+    # the copy tool of the Release stage: a release tarball holding the crane binary, verified against the pinned sum
+    url="${CRANE_BASE}/v${CRANE_VER}/go-containerregistry_${A_CRANE}.tar.gz"
+    curl -fsSL -o "$tmp/c.tgz" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/c.tgz"
+    tar -xzf "$tmp/c.tgz" -C "$DEST" crane || pipeline_fail "extract failed for crane"
+    "${DEST}/crane" version >/dev/null || pipeline_fail "the installed crane binary does not start"
+    ;;
+  go)
+    # the toolchain go.mod names: its `toolchain` line wins; a file without one is read by its `go` line; it must be the pinned version
+    [ -f go.mod ] || pipeline_fail "no go.mod in the working directory: cannot tell which Go toolchain to install"
+    want=""; gline=""
+    while read -r key val _; do
+      case "$key" in
+        toolchain) case "$val" in go[0-9]*) want="${val#go}" ;; esac ;;
+        go) [ -n "$gline" ] || gline="$val" ;;
+      esac
+    done < go.mod
+    [ -n "$want" ] || want="$gline"
+    [ "$want" = "$GO_VER" ] || pipeline_fail "go.mod names go '${want}' but the pinned toolchain is ${GO_VER} (go.mod and GO_VER in bin/install-scanner.sh must agree)"
+    url="${GO_BASE}/go${GO_VER}.${A_GO}.tar.gz"
+    curl -fsSL -o "$tmp/go.tgz" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/go.tgz"
+    mkdir -p "$tmp/x" && tar -xzf "$tmp/go.tgz" -C "$tmp/x" || pipeline_fail "extract failed for go"
+    gobin="$tmp/x/go/bin"; [ -x "${gobin}/go" ] || pipeline_fail "the toolchain archive holds no go program"
+    rm -rf "${DEST}/fscache-go" && mkdir -p "${DEST}" && mv "$tmp/x/go" "${DEST}/fscache-go" || pipeline_fail "install failed for go"
+    "${DEST}/fscache-go/bin/go" version | grep -q "go${GO_VER} " || pipeline_fail "the installed go is not go${GO_VER}"
+    ;;
+  govulncheck)
+    # built with the pinned toolchain of `install-scanner.sh go`, in a clean environment: read-only modules (go.sum is the pin), a local toolchain, no cgo, no
+    # workspace, fresh caches, the one module proxy named below and nothing Go-related from the caller; the checksum database stays on
+    gobin="${DEST}/fscache-go/bin/go"
+    [ -x "$gobin" ] || pipeline_fail "no pinned Go toolchain at ${DEST}/fscache-go (run install-scanner.sh go first): govulncheck is built with it"
+    "${DEST}/fscache-go/bin/go" version | grep -q "go${GO_VER} " || pipeline_fail "the Go toolchain at ${DEST}/fscache-go is not go${GO_VER}"
+    [ -f tools/govulncheck/go.mod ] || pipeline_fail "tools/govulncheck/go.mod is missing: it holds the govulncheck pin"
+    [ -s tools/govulncheck/go.sum ] || pipeline_fail "tools/govulncheck/go.sum is missing: its h1 hashes are the govulncheck pin"
+    [ ! -e tools/govulncheck/vendor ] || pipeline_fail "tools/govulncheck/vendor exists: vendor mode does not check contents against go.sum, so the build refuses it (go.sum's h1 hashes are the pin)"
+    pin=""
+    while read -r key val rest; do
+      [ "$key" != require ] || { key=$val; val=${rest%% *}; }
+      [ "$key" != golang.org/x/vuln ] || { pin=$val; break; }
+    done < tools/govulncheck/go.mod
+    [[ "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || pipeline_fail "tools/govulncheck/go.mod does not require golang.org/x/vuln at a version"
+    mkdir -p "$tmp/home" "$tmp/gocache" "$tmp/gomod"
+    # nothing Go-related from the caller's environment reaches the build: those names are unset, the pinned ones exported, in a subshell; GOFLAGS is among the unset names and none is set: tools/govulncheck has no vendor/ directory, so Go's own default (read-only modules) applies
+    ( unset GOFLAGS GOROOT GOPATH GOPRIVATE GONOPROXY GONOSUMDB GONOSUMCHECK GOSUMDB GOINSECURE GOVCS GOEXPERIMENT GODEBUG GOCACHEPROG GOAUTH GOTOOLDIR GOBIN GOTMPDIR GOMODCACHEPROG GOOS GOARCH GOAMD64 GOARM GO386 GOMIPS GOPPC64 GORISCV64 GOWASM CC CXX CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS
+      export HOME="$tmp/home" TMPDIR="$tmp" GOCACHE="$tmp/gocache" GOMODCACHE="$tmp/gomod" GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org CGO_ENABLED=0 GOWORK=off GOENV=off
+      cd tools/govulncheck && "${DEST}/fscache-go/bin/go" build -trimpath -o "$tmp/govulncheck" golang.org/x/vuln/cmd/govulncheck ) || pipeline_fail "go build of govulncheck ${pin} failed"
+    "$tmp/govulncheck" -version 2>/dev/null | grep -qx "Scanner: govulncheck@${pin}" || pipeline_fail "the built govulncheck does not report version ${pin} (the module's pin)"
+    install -m 0755 "$tmp/govulncheck" "${DEST}/govulncheck" || pipeline_fail "install failed for govulncheck"
+    ;;
   kind)
-    # the Kubernetes-in-Docker CLI for the persona UAT (on-call persona): a single binary; the driver finds it on PATH
+    # the Kubernetes-in-Docker CLI for the persona UAT (on-call persona): a single binary; the driver finds it by name
     # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (the version here must equal KIND_VER; the wiring test checks)
     case "$A_KIND" in
       kind-linux-amd64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64" || pipeline_fail "download failed: kind v${KIND_VER} amd64" ;;
@@ -165,7 +263,7 @@ case "$TOOL" in
     "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"
     ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|kind)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|go|crane|govulncheck|kind)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

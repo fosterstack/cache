@@ -340,28 +340,28 @@ mappings:
   - ac: REQ-DEPLOY-002-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestSecondOpenOnSameMetadataStoreDoesNotProceed" }
-  - ac: REQ-PLAT-001-AC1
-    evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: six-archive set asserted, linux/amd64 binaries executed; darwin and arm64 execution are documented equivalents pending runner legs" }
-  - ac: REQ-PLAT-003-AC1
-    evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: no shell in production/fips, /busybox/sh runs and /bin/sh absent in debug - against images assembled from the exact attested binaries" }
   - ac: REQ-PLAT-002-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: production/debug/fips serve cache traffic on linux/amd64 AND linux/arm64 (QEMU, fips authenticated); the REQ-PLAT-002 result is derived from a served-matrix file so a missing variant/arch fails; darwin is the documented equivalent" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-PLAT-003-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-FIPS-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-FIPS-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-PLAT-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-FIPS-002-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: three runtime postures asserted exactly - the validated-module fips build names the certificate, standard is off, and the forced-standard build reports mode-forced and NEVER claims the certificate (the over-claim the reviews flagged)" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
       - { type: go-test, ref: "internal/buildinfo:TestFIPSNoteIsTruthfulPerModeAndModule" }
   - ac: REQ-PRIV-001-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-egress.yml: tcpdump on the candidate netns from before startup through load/idle, in an ordinary and an --internal egress-denied network, asserting no DNS and no connection to any non-allowed address (loopback + the specific bridge gateway only), identical status/bytes across both policies, with negative controls that a real DNS/outbound attempt is observed" }
-  - ac: REQ-FIPS-001-AC1
-    evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: GOFIPS140=v1.0.0 read from the artifact's embedded build info, plus active runtime posture" }
-  - ac: REQ-FIPS-001-AC2
-    evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: the standard binary embeds NO GOFIPS140 selection - the module check distinguishes a mode-enabled impostor from the validated-module build" }
+      - { type: workflow-job, ref: ".github/workflows/stage-verify.yml: the runtime step runs bin/acceptance-egress.sh (bin/check-acceptance.sh egress), the old egress stage body unchanged" }
   - ac: REQ-REL-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
@@ -373,6 +373,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_images_tar.py" }
   - ac: REQ-REL-004-AC4
     evidence:
       - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
@@ -387,6 +388,10 @@ mappings:
   - ac: REQ-REL-004-AC7
     evidence:
       - { type: shell-test, ref: "bin/rescan-statement-test.sh" }
+  - ac: REQ-REL-004-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/inspector-reuse-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml: bin/inspector-reuse-test.sh, whose wiring cases over scan.yml and main-candidate-rescan.yml (reuse program before any ScanSbom call, the pinned stock actions/cache restore and save, same-repo condition, save only on fresh results, permissions unchanged; each mutation caught)" }
   - ac: REQ-REL-005-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
@@ -483,9 +488,16 @@ mappings:
   - ac: REQ-DEP-002-AC2
     evidence:
       - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
+  - ac: REQ-DEP-002-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/required-check-guard-test.sh" }
   - ac: REQ-DEP-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-003-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
   - ac: REQ-DEP-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
@@ -563,6 +575,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_sdk_probe.py" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_images_tar.py" }
   - ac: REQ-SCAN-008-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
@@ -649,9 +662,22 @@ mappings:
   - ac: REQ-SCAN-010-AC4
     evidence:
       - { type: inspection, ref: ".vex/README.md section \"The same statements, three ways\": the Google VEX upload is a preview feature" }
+  - ac: REQ-SCAN-010-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+  - ac: REQ-SCAN-010-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
   - ac: REQ-REL-009-AC1
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-REL-009-AC2
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
@@ -666,6 +692,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
   - ac: REQ-REL-009-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC15
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
   - ac: REQ-REL-009-AC3
@@ -685,6 +714,23 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
       - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-REL-010-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/vex-index-test.sh" }
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-REL-010-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-REL-010-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vex-index-test.sh" }
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-REL-010-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-REL-010-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
   - ac: REQ-UAT-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
@@ -712,6 +758,7 @@ mappings:
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
@@ -769,6 +816,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC23
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC25
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-REPO-001-AC1
@@ -846,6 +896,58 @@ mappings:
   - ac: REQ-REPO-001-AC25
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-CHAIN-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  - ac: REQ-CHAIN-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-hostile-test.sh" }
+  - ac: REQ-CHAIN-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/marker-gate-test.sh" }
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-002-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-002-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-002-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-002-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  - ac: REQ-CHAIN-003-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-003-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-003-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-records-test.sh" }
+  - ac: REQ-CHAIN-003-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+  - ac: REQ-CHAIN-003-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
   # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC1 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
   # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
   #   All auditor code, prompts, fixtures and tests live under `.github/agent/` and nowhere else; the only auditor-related files outside it are the workflow files (`.github/workflows/`), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files `test-evidence/mappings.yaml` and `test-evidence/unmapped.yaml`, which name test paths as metadata; and (amendment, owner Oct 3) the patch-release classifier `bin/patch-decide.py` and its test `bin/patch-decide-test.sh`, which name the auditor directory as data and hold no auditor code.
@@ -868,6 +970,81 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
       - { type: inspection, ref: "the second review is enforced by the private review tooling before merge; the repository's verdict (agent-review-gate.yml) judges no review record, and the matrix test asserts it runs only the pin checker, the allowlist guard, the pin-wiring judge and the scanner guard" }
+  - ac: REQ-CHAIN-004-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
+  - ac: REQ-CHAIN-004-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+  - ac: REQ-CHAIN-004-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+  - ac: REQ-CHAIN-004-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+  - ac: REQ-CHAIN-004-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+  - ac: REQ-CHAIN-004-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+  - ac: REQ-CHAIN-004-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-005-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
+  - ac: REQ-CHAIN-005-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-005-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-rebuild-test.sh" }
+  - ac: REQ-CHAIN-005-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-005-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-005-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+  - ac: REQ-CHAIN-004-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/chain-snapshot-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+  - ac: REQ-CHAIN-004-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/chain-snapshot-test.sh" }
+  - ac: REQ-CHAIN-005-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-rebuild-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
   - ac: REQ-AUD-019-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
@@ -994,6 +1171,139 @@ mappings:
   - ac: REQ-BUILDTOOLS-001-AC10
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-CHAIN-006-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
+  - ac: REQ-CHAIN-006-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/scout-root-cause-test.sh" }
+  - ac: REQ-CHAIN-006-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC17
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC16
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-crane-test.sh" }
+  - ac: REQ-CHAIN-007-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC16
+    evidence:
+      - { type: shell-test, ref: "bin/chain-verify-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC17
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-CHAIN-007-AC18
+    evidence:
+      - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC19
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+  - ac: REQ-CHAIN-007-AC21
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
   - ac: REQ-VEND-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
@@ -1239,3 +1549,52 @@ mappings:
   - ac: REQ-IMAGE-001-AC12
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-GUIDE-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-CHAIN-007-AC20
+    evidence:
+      - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-SCAN-011-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vex-guide-test.sh" }
+  - ac: REQ-SCAN-011-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/vex-guide-test.sh" }
+  - ac: REQ-SCAN-012-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-SCAN-012-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-SCAN-012-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/vex-live-pins-test.sh" }
+  - ac: REQ-SCAN-012-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-SCAN-012-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-SCAN-012-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }

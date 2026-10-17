@@ -161,8 +161,6 @@ Outside this check, each a documented exclusion with its reason (row 78):
     --iidfile; the build itself (FROM lines, context, Dockerfile) is still fully checked;
   - a committed TEST HARNESS a step runs (tests/, *-test.sh): its probes are the very constructs this check refuses,
     as fixture data; it is not read recursively (it is committed and reviewed like any diff);
-  - /tmp/smoke-assert.sh in stage-acceptance-k8s.yml: the documented smoke commands of docs/kubernetes.md
-    (committed, reviewed), written by the step's own python heredoc; they assert against the kind cluster;
   - `runs-on` labels: GitHub-hosted runner images are GitHub's to build and cannot be named by digest;
   - Go tools installed by module version (`go install …@vX.Y.Z`): the module proxy serves them checksum-verified
     against the Go checksum database, so a version names fixed bytes;
@@ -201,6 +199,7 @@ COMMENT = re.compile(r"[ \t]+#[ \t]*(v[0-9][0-9A-Za-z.+-]*)[ \t]*")
 ACTIONS = {
     "actions/attest": "node: signs attestations; no image run",
     "actions/attest-build-provenance": "composite over actions/attest; no image run",
+    "actions/cache": "node: restores/saves one directory (restore and save subactions; REQ-REL-004-AC8); no image run",
     "actions/checkout": "node: git checkout",
     "actions/create-github-app-token": "node: mints a token",
     "actions/dependency-review-action": "node: GitHub API diff review",
@@ -383,16 +382,26 @@ def walk(node, path, out, bad, where):
 
 # ---------------------------------------------------------------------------- the rules
 
-def container_keys(where, node, bad):
-    """A job container or service mapping: only image, credentials, and env with plain names."""
+LOOPBACK_PORT = re.compile(r"127\.0\.0\.1:[0-9]{1,5}:[0-9]{1,5}")
+
+
+def container_keys(where, node, bad, ports_ok=False):
+    """A job container or service mapping: only image, credentials, and env with plain names. A SERVICE may also publish ports, each a plain
+    127.0.0.1:<host>:<container> string (the runner puts the value into the docker command, so no other form is read)."""
     for k, v in node.value:
         name = k.value if isinstance(k, yaml.ScalarNode) else None
-        if name == "env" and isinstance(v, yaml.MappingNode):
+        if name == "ports" and ports_ok:
+            if not isinstance(v, yaml.SequenceNode):
+                bad.append(f"{where}.ports: not a list")
+            for item in (v.value if isinstance(v, yaml.SequenceNode) else []):
+                if not (isinstance(item, yaml.ScalarNode) and LOOPBACK_PORT.fullmatch(item.value) and all(1 <= int(n) <= 65535 for n in item.value.split(":")[1:])):
+                    bad.append(f"{where}.ports: only 127.0.0.1:<port>:<port> as plain text is read, got {getattr(item, 'value', None)!r}")
+        elif name == "env" and isinstance(v, yaml.MappingNode):
             for kk, _ in v.value:
                 if not (isinstance(kk, yaml.ScalarNode) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", kk.value)):
                     bad.append(f"{where}.env: a variable name that is not plain: {getattr(kk, 'value', None)!r}")
         elif name not in ("image", "credentials"):
-            bad.append(f"{where}.{name}: refused (only image, credentials and env; the runner splices "
+            bad.append(f"{where}.{name}: refused (only image, credentials and env, and ports on a service; the runner splices "
                        f"the rest into the docker command ahead of the image)")
 
 
@@ -2213,18 +2222,12 @@ def _drop_foreign_heredocs(text):
     return "\n".join(out)
 
 
-# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023):
-# Fenced (advisor 0084 (4)): exactly these two files of that one workflow; bin/k8s-harness-fence-test.sh proves both
-# are written only from docs/kubernetes.md at the checked-out commit (no env, no network, no other input), and any
-# other eval of a variable, anywhere, is refused by the variable-program rule.
-GENERATED_OK = {
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
-        "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
-        "heredoc; they assert against the kind cluster and fetch nothing",
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/pf-forward.sh"):
-        "the documented kubectl port-forward command of docs/kubernetes.md, written by the same heredoc; run verbatim "
-        "because rule 12 tests the customer's commands exactly as published",
-}
+# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): none now. The two generated scripts of the
+# Kubernetes harness (/tmp/pf-forward, /tmp/smoke-assert; advisor 0084 (4)) were excluded while the harness was a workflow step; it is now Check's
+# listed scripts (bin/acceptance-k8s.sh runs them, bin/acceptance-k8s-smoke.py writes them), which are judged by the chain judges, and the fence
+# facts are proven there by .github/agent/tests/k8s-harness-fence-test.sh. Any other eval of a variable, anywhere, is refused by the
+# variable-program rule; the branch below stays and is proven with an injected entry in that test.
+GENERATED_OK = {}
 
 
 BASE_SHA_REF = "${{ github.event.pull_request.base.sha }}"
@@ -3076,7 +3079,7 @@ def check_file(tree, rel, pins, bad):
                     imgs = [vv for kk, vv in v.value if key_of(kk) == "image"]
                     if not imgs:
                         bad.append(f"{sw}: service without an image")
-                    container_keys(sw, v, bad)
+                    container_keys(sw, v, bad, ports_ok=True)
                     for vv in imgs:
                         check_image(f"{sw}.image", vv, bad)
                 else:

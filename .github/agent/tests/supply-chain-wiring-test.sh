@@ -185,21 +185,30 @@ def judge_wf(d, real=False):
 
 def judge_db(d):
     bad = []
-    ups = {u.get("package-ecosystem"): u for u in d.get("updates", [])}
+    ups = {u.get("package-ecosystem"): u for u in d.get("updates", []) if not (u.get("package-ecosystem") == "gomod" and u.get("directory") == "/tools/govulncheck")}
     for eco in ("github-actions", "pip"):
         cd = (ups.get(eco) or {}).get("cooldown")
         if not cd or cd != {"default-days": "7"}:  # exactly 7 days and no per-semver override that could shorten it
             bad.append(f"the {eco} entry has no 7-day cooldown (default-days: 7)")
-    want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}},
-            "docker": {"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}}  # the product's CVE-fix targets: byte-for-byte unchanged
+    want = {"gomod": {"package-ecosystem": "gomod", "directory": "/", "schedule": {"interval": "weekly"}}}  # the product's CVE-fix target: byte-for-byte unchanged
     for eco, entry in want.items():
         if eco in ups and ups[eco] != entry:
             bad.append(f"the {eco} entry is not unchanged")
-    for eco in ("gomod", "docker"):
+    for eco in ("gomod",):
         if eco not in ups:
             bad.append(f"the {eco} entry is missing")
         elif "cooldown" in ups[eco]:
             bad.append(f"the {eco} entry has a cooldown: product dependencies keep the 24-48h CVE target")
+    # the pinned Go source scanner (advisor Oct 12, ruling G): tools/govulncheck is its own module, bumped through the reviewed path with the same 7-day wait as the
+    # actions and the pip pins (it is a tool, not a product dependency: the product's CVE-fix target above stays without a cooldown)
+    tool = [u for u in d.get("updates", []) if u.get("package-ecosystem") == "gomod" and u.get("directory") == "/tools/govulncheck"]
+    if len(tool) != 1:
+        bad.append(f"the govulncheck tool entry (gomod, /tools/govulncheck) is missing or repeated ({len(tool)})")
+    elif tool[0] != {"package-ecosystem": "gomod", "directory": "/tools/govulncheck", "schedule": {"interval": "weekly"}, "cooldown": {"default-days": "7"}}:
+        bad.append("the govulncheck tool entry is not exactly weekly with a 7-day cooldown (default-days: 7) and nothing else")
+    # rule 61 (advisor Oct 12): no Dockerfile exists, so Dependabot's docker ecosystem watches nothing and has no entry
+    if any(u.get("package-ecosystem") == "docker" for u in d.get("updates", [])):
+        bad.append("a docker entry is back: no Dockerfile exists (rule 61)")
     return bad
 
 def judge_rest():
@@ -232,7 +241,7 @@ def result(ok, msg):
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
 b = judge_db(real_db)
-result(not b, "the real dependabot.yml: 7-day cooldown on github-actions and pip, none on gomod and docker" + ("" if not b else ": " + "; ".join(b)))
+result(not b, "the real dependabot.yml: 7-day cooldown on github-actions, pip and the govulncheck tool module, none on the product gomod, no docker entry" + ("" if not b else ": " + "; ".join(b)))
 b = judge_rest()
 result(not b, "REQ-SUP-001 is pipeline-only and ci.yml runs the three tests" + ("" if not b else ": " + "; ".join(b)))
 
@@ -348,14 +357,23 @@ mut_wf("top-level permissions widened", "no top-level permissions block", lambda
 mut_db("github-actions cooldown gains a semver override", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"semver-major-days": "0"}))
 mut_db("gomod gains an ignore rule", "gomod entry is not unchanged", lambda d: eco(d, "gomod").update(ignore=[{"dependency-name": "x"}]))
 mut_db("gomod's schedule changes", "gomod entry is not unchanged", lambda d: eco(d, "gomod")["schedule"].update(interval="monthly"))
-mut_db("docker's directory changes", "docker entry is not unchanged", lambda d: eco(d, "docker").update(directory="/"))
-mut_db("docker's schedule slows", "docker entry is not unchanged", lambda d: eco(d, "docker")["schedule"].update(interval="weekly"))
+mut_db("a docker entry returns for /build/docker", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}}))
+mut_db("a docker entry returns for the root", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/", "schedule": {"interval": "weekly"}}))
 mut_db("gomod is removed", "the gomod entry is missing", lambda d: d["updates"].remove(eco(d, "gomod")))
+TOOL = lambda d: next(u for u in d["updates"] if u.get("directory") == "/tools/govulncheck")
+mut_db("the govulncheck tool entry is removed", "govulncheck tool entry", lambda d: d["updates"].remove(TOOL(d)))
+mut_db("the govulncheck tool entry loses its cooldown", "govulncheck tool entry", lambda d: TOOL(d).pop("cooldown"))
+mut_db("the govulncheck tool cooldown is 3 days", "govulncheck tool entry", lambda d: TOOL(d)["cooldown"].update({"default-days": "3"}))
+mut_db("the govulncheck tool cooldown gains a semver override", "govulncheck tool entry", lambda d: TOOL(d)["cooldown"].update({"semver-patch-days": "0"}))
+mut_db("the govulncheck tool entry watches another directory", "govulncheck tool entry", lambda d: TOOL(d).update(directory="/tools/requirements"))
+mut_db("the govulncheck tool entry runs daily", "govulncheck tool entry", lambda d: TOOL(d)["schedule"].update(interval="daily"))
+mut_db("the govulncheck tool entry ignores a dependency", "govulncheck tool entry", lambda d: TOOL(d).update(ignore=[{"dependency-name": "golang.org/x/vuln"}]))
+mut_db("the govulncheck tool entry is repeated", "govulncheck tool entry", lambda d: d["updates"].append(copy.deepcopy(TOOL(d))))
 mut_db("github-actions loses its cooldown", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions").pop("cooldown"))
 mut_db("pip loses its cooldown", "pip entry has no 7-day cooldown", lambda d: eco(d, "pip").pop("cooldown"))
 mut_db("github-actions cooldown is the default 3", "github-actions entry has no 7-day cooldown", lambda d: eco(d, "github-actions")["cooldown"].update({"default-days": "3"}))
 mut_db("gomod gets a cooldown", "gomod entry has a cooldown", lambda d: eco(d, "gomod").update(cooldown={"default-days": "7"}))
-mut_db("docker gets a cooldown", "docker entry has a cooldown", lambda d: eco(d, "docker").update(cooldown={"default-days": "7"}))
+mut_db("a docker entry returns with a cooldown", "docker entry is back", lambda d: d["updates"].append({"package-ecosystem": "docker", "directory": "/build/docker", "schedule": {"interval": "daily"}, "cooldown": {"default-days": "7"}}))
 
 print(f"supply-chain wiring: {passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

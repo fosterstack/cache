@@ -112,7 +112,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 152, 6   # 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 189, 6   # 189 (the merge of main's 152 and the chain's 181 over their common base; main's additions: build/archive.json, the persona-uat patterns, vendor-provenance-test, the vendor subtree); 181 (the live-test orchestrator is admitted as ^bin/vex-live-run\.sh$, not under the -test.sh name that the action-pin checker exempts as a harness; same count): 177 + ^bin/vex-guide-test\.sh$ and ^bin/vex-live-test\.py$, ^bin/vex-live-test\.sh$, ^bin/vex-live-test-test\.sh$ (REQ-SCAN-011, REQ-SCAN-012: the VEX customer guide test and the live test, admitted ahead of the PRs that carry them); 177: 175 + ^bin/inspector-reuse\.py$ and ^bin/inspector-reuse-test\.sh$ (REQ-REL-004-AC8, Inspector same-day reuse); 175: 174 + ^vendor/ (the vendored subtree, REQ-VEND-001, cache#342); 174: 173 + ^bin/marker-(pr-gate\.py|gate-test\.sh)$ (the marker-only gate, PR 4b-6); 173: 171 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 171: 170 + ^bin/suite-guard-run\.py$ (the runner is Python, R-PINS, cache#331); 172 (before that take): 170 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 170: 171 - the Dockerfile pattern (rule 61: the Dockerfiles are removed; the goreleaser name left the config alternation, PR 4b-4); 171: 170 + the PR 4b-1 pattern; 170: 166 + the 4 PR 4a patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -159,7 +159,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "f4b006432de37e2d8211fc5d0657fba9eb5d41d1523fb33760a6cd9edf477c7e"   # + the six bin/persona-uat* patterns (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
+PINNED_SHA256 = "910ff742d48de36a024d9800da8f8f079a8bc21f62d9e4cf049d1a141671aa2e"   # the merge of main and chain-v030: the script text outside the region is the union of both sides' changes (take 12)
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -749,8 +749,8 @@ passfam "feature/x" "v030: the split build-chain test files and library" "bin/me
 passfam "feature/x" "v030: the OCI digest and network probe tools" "bin/oci-digest.py" "bin/net-probe.py"
 passfam "feature/x" "REQ-BUILDAPK-001: the build-apk helper and the sealed environment list" "bin/build-apk-helper.py" "build/sealed-env.json"
 runeach fail "feature/x" "REQ-BUILDAPK-001: near-miss siblings refused" "bin/build-apk-helper.sh" "bin/build-apk-helpers.py" "bin/Build-Apk-Helper.py" "build/sealed-env.yaml" "build/sealed-env.json.bak" "build/locks/sealed-env.json" "build/sealed_env.json" "bin/sealed-env.json"
-passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the floors file" "bin/suite-guard.sh" "bin/suite-guard-run.sh" "bin/suite-guard-test.sh" "test-evidence/suite-floors.json"
-runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
+passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the floors file" "bin/suite-guard.sh" "bin/suite-guard-run.py" "bin/suite-guard-test.sh" "test-evidence/suite-floors.json"
+runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-run.sh" "bin/suite-guard-run.pyc" "bin/suite-guard-run-other.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
 passfam "feature/x" "v030: the archive scripts and their test" "bin/archive-push.sh" "bin/archive-pull.sh" "bin/archive-verify.py" "bin/archive-test.sh"
 passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.yml"
 runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "secret_scanning.yml"
@@ -785,6 +785,10 @@ run pass "feature/x" "REQ-GUIDE-001: the cannot-run list" "docs/verify-release.c
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-miss refused" "docs/verify-release.cannot-run.json.bak" "docs/verify-release.cannot-run.jsonx" "docs/verify-release.cannot-run.yaml" "docs/x/verify-release.cannot-run.json" "./docs/verify-release.cannot-run.json" "verify-release.cannot-run.json" "docs/verify-release.cannot-runXjson" "docs/verify-release.cannot-run.json/" "x/docs/verify-release.cannot-run.json" "docs/../verify-release.cannot-run.json" "docs/verify-release.cannot-run.json "
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
+
+# round 1 (Codex B1): every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
+passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
+runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 

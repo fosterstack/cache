@@ -17,7 +17,7 @@ cd "$(dirname "$0")/../../.."
 export DEPLOY_DOC="${DEPLOY_DOC:-docs/docker-deploy.md}" GRADLE_DOC="${GRADLE_DOC:-docs/gradle.md}" MAVEN_DOC="${MAVEN_DOC:-docs/maven.md}"
 export GRADLE_SAMPLE="${GRADLE_SAMPLE:-bench/gradle-sample/settings.gradle.kts}"
 export MAVEN_SAMPLE="${MAVEN_SAMPLE:-bench/maven-sample/.mvn/maven-build-cache-config.xml}"
-export ACCEPTANCE="${ACCEPTANCE:-.github/workflows/acceptance.yml}"
+export ACCEPTANCE="${ACCEPTANCE:-bin/acceptance-maven.sh}"   # the Maven suite, moved unchanged from acceptance.yml (REQ-CHAIN-006-AC5, Q7)
 
 check() {  # prints one "ok:"/"FAIL:" line per assertion; exit code = number of failures
 python3 - <<'PY'
