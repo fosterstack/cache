@@ -93,6 +93,11 @@
   },
   {
    "workflow": "stage-promote.yml",
+   "job": "verify",
+   "reason": "Release, job verify (REQ-CHAIN-007-AC1, Astra R6): release-verify runs under Witness, whose wrapper fetches the identity token for the keyless record; contents read and id-token write only, no environment, no secret, no packages write; signs no provenance"
+  },
+  {
+   "workflow": "stage-promote.yml",
    "job": "release",
    "reason": "Release (REQ-CHAIN-007): Witness steps and the keyless cosign signatures of release-sign.sh mint the signing identity; the one job with a registry credential, the apk signing key and packages: write"
   },
