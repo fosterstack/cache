@@ -265,7 +265,8 @@ scout_leg() {
   return "$rc"
 }
 
-scout_leg_run() {   # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as an attestation made by bin/vex-index.py, in the Docker Hub test repository; (2) our production image
+# the Docker Scout leg: (1) the fixture, carrying our OpenVEX as an attestation made by our index tool, in the Docker Hub test repository; (2) our production image
+scout_leg_run() {
   scout_preflight || return 1                               # there too (AC6), and, after a publication, the published index by tag and by exact digest
   local vexfile="$GITHUB_WORKSPACE/.vex/fosterstack-cache.openvex.json" dh="index.docker.io/${DH_REPO}" author prod fx_f target ref what
   author=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" scout-author --openvex "$vexfile") || return 1
