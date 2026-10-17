@@ -478,8 +478,9 @@ jobs:
       - name: every hostile attempt refused with its own cause, the positive control accepted
         run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
 
-  # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
-  # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
+  # Persona UAT, release-candidate leg (REQ-UAT-001-AC1): NOT in this workflow yet (advisor ruling Oct 17, option B). The old job needed the jobs image and promotion and an image in a registry;
+  # on this chain a release candidate ends after the verify job and publishes nothing (REQ-CHAIN-007-AC14), so there is no image for it. It returns with D: the persona job runs in the
+  # rc's own workflow against the Build layout, loaded into a registry local to the runner, so nothing leaves the runner. The weekly run (go-freshness.yml) is unaffected.
   patch-failed:
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     needs: [build, sign, rebuild, check, release]

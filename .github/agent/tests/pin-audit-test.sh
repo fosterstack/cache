@@ -908,6 +908,38 @@ check test "$rc" -eq 2
 echo 'not json' >"$work/broken.fx.json"; rc=0; ( cd "$work" && GH_LOG="$work/broken.gh" python3 "$aud" --root "$work/r-clean" --fixtures "$work/broken.fx.json" --now "$NOW" --gh "$work/gh" >/dev/null 2>&1 ) || rc=$?
 CASE="unreadable input fails the run (exit 2), it never reports a clean day"
 check test "$rc" -eq 2
+# --- AC5 (round 1 of cache#393, both seats): an image named only in bin/persona-uat-tools.json is in the daily history too: a revision that changed only that file, and was replaced within 90 days, is still read ---
+r="$work/r-ptools"; mkrepo "$r" "100:$CLEANSHA"
+PTD1=sha256:$(printf 'a%.0s' $(seq 64)); PTD2=sha256:$(printf 'b%.0s' $(seq 64))
+for spec in "30:$PTD1" "20:$PTD2"; do
+  printf '{\n  "shell": "ghcr.io/own/ptool@%s"\n}\n' "${spec#*:}" >"$r/bin/persona-uat-tools.json"; git -C "$r" add -A
+  GIT_AUTHOR_DATE="$(dago "${spec%%:*}")" GIT_COMMITTER_DATE="$(dago "${spec%%:*}")" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "tools ${spec#*:}"
+done
+CASE="AC5 persona tools: the history of the last 90 days holds an image that only the tools file named, in a revision that changed nothing else (A then B): both digests are read"
+check python3 - "$aud" "$r" "$PTD1" "$PTD2" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+items = pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+seen = {str(getattr(i, "version", "")) + str(getattr(i, "digest", "")) + repr(i) for i in items.values()} if hasattr(items, "values") else {repr(i) for i in items}
+blob = "\n".join(seen) + "\n".join(repr(k) for k in items)
+assert sys.argv[3] in blob and sys.argv[4] in blob, blob[:2000]
+PY
+CASE="AC5 persona tools: a tools file that is tracked but cannot be read stops the daily scan (an error), never an inventory without its images"
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 000 "$r/bin/persona-uat-tools.json"
+  check python3 - "$here/../supply-chain/pin-inventory.py" "$r" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pi", sys.argv[1]); pi = importlib.util.module_from_spec(spec); spec.loader.exec_module(pi)
+try:
+    pi.tree_files(sys.argv[2], None)
+except RuntimeError:
+    sys.exit(0)
+sys.exit("an unreadable tools file was skipped")
+PY
+  chmod 644 "$r/bin/persona-uat-tools.json"
+else
+  ok "$CASE (skipped as root: file modes do not bind)"
+fi
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
