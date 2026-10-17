@@ -155,11 +155,27 @@ check("the shipped statements are untouched", tvex["statements"][:len(vex["state
 check("the test images map is a valid two-variant digest file for the generator (production's index is the fixture, its children and fips unchanged)",
       timages["production"] == {"index": FIX, "children": images["production"]["children"]} and timages["fips"] == images["fips"]
       and sorted(timages) == ["fips", "production"])
-shipped, test_gen = L.inspector_files(V, vex, images, FIX, "CVE-2023-9999", "v0.3.0-rc.1")
+SCOPE = {"package": {"name": "libfoo", "version": "1.2"}, "decoy": {"cve": "CVE-2023-8888", "name": "libbar"}}
+try:
+    L.inspector_files(V, vex, images, FIX, "CVE-2023-9999", "v0.3.0-rc.1", None); got = "accepted"
+except ValueError:
+    got = "refused"
+check("OWNER-3 the Inspector file for the fixture needs the fixture's package: none is refused, never a rule without one", got == "refused", got)
+shipped, test_gen = L.inspector_files(V, vex, images, FIX, "CVE-2023-9999", "v0.3.0-rc.1", SCOPE)
+fx_rules = test_gen["filters"][len(shipped["filters"]):]
+byc = {f["filterCriteria"]["vulnerabilityId"][0]["value"]: f["filterCriteria"] for f in fx_rules}
+check("OWNER-3 the fixture's rule names the package and version found on the fixture, on the fixture digest only",
+      byc.get("CVE-2023-9999", {}).get("vulnerablePackages") == [{"name": {"comparison": "EQUALS", "value": "libfoo"}, "version": {"comparison": "EQUALS", "value": "1.2"}}]
+      and [x["value"] for x in byc["CVE-2023-9999"]["ecrImageHash"]] == [FIX], byc)
+check("OWNER-3 the decoy's rule names that CVE's package with a version that is not there, on the fixture digest only",
+      byc.get("CVE-2023-8888", {}).get("vulnerablePackages", [{}])[0].get("name") == {"comparison": "EQUALS", "value": "libbar"}
+      and byc["CVE-2023-8888"]["vulnerablePackages"][0]["version"]["value"] not in ("", "1.2")
+      and [x["value"] for x in byc["CVE-2023-8888"]["ecrImageHash"]] == [FIX], byc)
+check("OWNER-3 the fixture adds exactly those two rules", sorted(byc) == ["CVE-2023-8888", "CVE-2023-9999"] and len(fx_rules) == 2, sorted(byc))
 check("the generator's own file for the real statements is the shipped part", shipped == V.inspector(vex, images, "v0.3.0-rc.1"))
 check("no real statement widens to the fixture's digest", all(FIX not in json.dumps(f) for f in test_gen["filters"][:len(shipped["filters"])]))
 try:
-    L.inspector_files(V, vex, images, FIX, "CVE-2024-0001", "v0.3.0-rc.1"); got = "accepted"
+    L.inspector_files(V, vex, images, FIX, "CVE-2024-0001", "v0.3.0-rc.1", SCOPE); got = "accepted"
 except ValueError:
     got = "refused"
 check("the fixture's CVE is never one of our statements", got == "refused", got)
@@ -219,6 +235,21 @@ try:
 except ValueError:
     got = "refused"
 check("no common CVE is a failure, never a guess", got == "refused", got)
+# owner Oct 16: the package under test is one Inspector reports for the chosen CVE; the decoy is another CVE Inspector reports, never ours
+RP = {"CVE-T": [{"name": "zlib", "version": "1.3"}, {"name": "abc", "version": "2.0"}], "CVE-U": [{"name": "curl", "version": "8"}], "CVE-V": [{"name": "bash", "version": "5"}]}
+sc = L.pick_scope({"inspector": RP}, "CVE-T", {"CVE-U"})
+check("OWNER-3 pick_scope: the first package of the CVE (by name) and the first other CVE Inspector reports that is not ours, with its package",
+      sc == {"package": {"name": "abc", "version": "2.0"}, "decoy": {"cve": "CVE-V", "name": "bash"}}, sc)
+for why, rep_, c, ex in [("a CVE Inspector reports no package for", {"inspector": {"CVE-T": []}}, "CVE-T", ()),
+                         ("no other CVE for the decoy", {"inspector": {"CVE-T": RP["CVE-T"]}}, "CVE-T", ()),
+                         ("only our own CVEs for the decoy", {"inspector": RP}, "CVE-T", {"CVE-U", "CVE-V"}),
+                         ("a package name the forms cannot carry", {"inspector": {"CVE-T": [{"name": "a/b", "version": "1"}], "CVE-U": RP["CVE-U"]}}, "CVE-T", ()),
+                         ("a package without a version", {"inspector": {"CVE-T": [{"name": "a", "version": ""}], "CVE-U": RP["CVE-U"]}}, "CVE-T", ())]:
+    try:
+        L.pick_scope(rep_, c, ex); got = "picked"
+    except ValueError:
+        got = "refused"
+    check("OWNER-3 pick_scope refuses %s" % why, got == "refused", got)
 
 # --- the release under test on main: the newest published release that carries the rule-10 files
 rels = [{"tagName": "v0.3.0", "isDraft": False, "assets": ["fosterstack-cache-v0.3.0.csaf.json"]},
@@ -364,26 +395,42 @@ check("SEC-387 google refuses an unrelated occurrence whose assessment changed s
 
 # Codex #387 r1 (P2): Inspector's judge compares the complete finding inventories too: the target CVE's findings are all SUPPRESSED after, and every other finding is still
 # there, with the status it had (our file suppressed exactly one CVE)
-def fi(arn, cve, status): return {"findingArn": arn, "vulnerabilityId": cve, "status": status}
+def fi(arn, cve, status, pkg="p1", ver="1"): return {"findingArn": arn, "vulnerabilityId": cve, "status": status, "packageName": pkg, "packageVersion": ver}
+PKG = {"name": "p1", "version": "1"}
 IB = {"findings": [fi("a/1", "CVE-T", "ACTIVE"), fi("a/2", "CVE-T", "ACTIVE"), fi("a/3", "CVE-U", "ACTIVE")]}
 check("inspector inventory: the target suppressed and the other finding untouched passes",
-      L.judge_inspector(IB, {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-U", "ACTIVE")]}, "CVE-T") is None)
+      L.judge_inspector(IB, {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-U", "ACTIVE")]}, "CVE-T", PKG) is None)
 for why, after in [("an unrelated CVE suppressed too", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-U", "SUPPRESSED")]),
                    ("an unrelated finding lost", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED")]),
                    ("one target finding still active", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "ACTIVE"), fi("a/3", "CVE-U", "ACTIVE")]),
                    ("one target finding lost", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-U", "ACTIVE")]),
                    ("a finding that was not there before", [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-U", "ACTIVE"), fi("a/4", "CVE-X", "ACTIVE")])]:
-    check("SEC-387 inspector inventory refuses %s" % why, L.judge_inspector(IB, {"findings": after}, "CVE-T") is not None)
-check("SEC-387 inspector refuses a before without the target CVE", L.judge_inspector({"findings": [fi("a/3", "CVE-U", "ACTIVE")]}, {"findings": [fi("a/3", "CVE-U", "ACTIVE")]}, "CVE-T") is not None)
-check("SEC-387 inspector refuses a malformed document", L.judge_inspector(IB, {"findings": "x"}, "CVE-T") is not None and L.judge_inspector(IB, [], "CVE-T") is not None)
+    check("SEC-387 inspector inventory refuses %s" % why, L.judge_inspector(IB, {"findings": after}, "CVE-T", PKG) is not None)
+check("SEC-387 inspector refuses a before without the target CVE", L.judge_inspector({"findings": [fi("a/3", "CVE-U", "ACTIVE")]}, {"findings": [fi("a/3", "CVE-U", "ACTIVE")]}, "CVE-T", PKG) is not None)
+check("SEC-387 inspector refuses a malformed document", L.judge_inspector(IB, {"findings": "x"}, "CVE-T", PKG) is not None and L.judge_inspector(IB, [], "CVE-T", PKG) is not None)
+
+# owner Oct 16 (handoff 0482): the rule names the package, so the same CVE in another package is never hidden: the judge compares package identity too
+IB2 = {"findings": [fi("a/1", "CVE-T", "ACTIVE"), fi("a/2", "CVE-T", "ACTIVE", "p2", "9"), fi("a/3", "CVE-U", "ACTIVE", "p3", "1")]}
+check("OWNER-3 inspector: the target package suppressed, the same CVE in another package and the decoy untouched, passes",
+      L.judge_inspector(IB2, {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "ACTIVE", "p2", "9"), fi("a/3", "CVE-U", "ACTIVE", "p3", "1")]}, "CVE-T", PKG) is None)
+check("OWNER-3 inspector refuses the same CVE suppressed in the other package too",
+      L.judge_inspector(IB2, {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "SUPPRESSED", "p2", "9"), fi("a/3", "CVE-U", "ACTIVE", "p3", "1")]}, "CVE-T", PKG) is not None)
+check("OWNER-3 inspector refuses the decoy's CVE suppressed (a rule for a package that is not there must hide nothing)",
+      L.judge_inspector(IB2, {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "ACTIVE", "p2", "9"), fi("a/3", "CVE-U", "SUPPRESSED", "p3", "1")]}, "CVE-T", PKG) is not None)
+check("OWNER-3 inspector refuses a target package finding that stays active",
+      L.judge_inspector(IB2, {"findings": [fi("a/1", "CVE-T", "ACTIVE"), fi("a/2", "CVE-T", "ACTIVE", "p2", "9"), fi("a/3", "CVE-U", "ACTIVE", "p3", "1")]}, "CVE-T", PKG) is not None)
+check("OWNER-3 inspector refuses a before in which the target CVE is not in the named package",
+      L.judge_inspector({"findings": [fi("a/2", "CVE-T", "ACTIVE", "p2", "9")]}, {"findings": [fi("a/2", "CVE-T", "SUPPRESSED", "p2", "9")]}, "CVE-T", PKG) is not None)
+check("OWNER-3 inspector refuses a finding that changed its package", L.judge_inspector(IB2, {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-T", "ACTIVE", "p1", "1"), fi("a/3", "CVE-U", "ACTIVE", "p3", "1")]}, "CVE-T", PKG) is not None)
+check("OWNER-3 inspector refuses a finding without a package", L.judge_inspector({"findings": [{"findingArn": "a/1", "vulnerabilityId": "CVE-T", "status": "ACTIVE"}]}, {"findings": [{"findingArn": "a/1", "vulnerabilityId": "CVE-T", "status": "SUPPRESSED"}]}, "CVE-T", PKG) is not None)
 
 # Codex #387 r3 (P2): a finding that keeps its ID but changes its CVE is not the finding that was there: the CVE association of every ID is compared
 check("SEC-387 inspector refuses an unrelated finding changed to the target CVE and suppressed",
       L.judge_inspector({"findings": [fi("a/1", "CVE-T", "ACTIVE"), fi("a/3", "CVE-U", "ACTIVE")]},
-                        {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-T", "SUPPRESSED")]}, "CVE-T") is not None)
+                        {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/3", "CVE-T", "SUPPRESSED")]}, "CVE-T", PKG) is not None)
 check("SEC-387 inspector refuses a target finding changed to an unrelated CVE",
       L.judge_inspector({"findings": [fi("a/1", "CVE-T", "ACTIVE"), fi("a/2", "CVE-T", "ACTIVE")]},
-                        {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-U", "ACTIVE")]}, "CVE-T") is not None)
+                        {"findings": [fi("a/1", "CVE-T", "SUPPRESSED"), fi("a/2", "CVE-U", "ACTIVE")]}, "CVE-T", PKG) is not None)
 check("SEC-387 google refuses one of two target occurrences changed to an unrelated CVE while the other is assessed",
       L.judge_google({"occurrences": [T1, T2, U1]}, {"occurrences": [T1a, occn("o/2", "CVE-U"), U1]}, "CVE-T", {OURS}) is not None)
 check("SEC-387 google refuses an unrelated occurrence changed to the target CVE",

@@ -288,6 +288,13 @@ inspector_cves() {   # <status>: the fixture's CVEs Inspector lists with that st
     "$(jq -nc --arg h "$FIX" --arg s "$1" '{ecrImageHash: [{comparison: "EQUALS", value: $h}], findingStatus: [{comparison: "EQUALS", value: $s}]}')" \
     | jq -ec '[.findings[].packageVulnerabilityDetails.vulnerabilityId] | unique'
 }
+inspector_packages() {   # <status>: {cve: [{name, version}]} for the fixture's findings with that status; a finding that names other than ONE package is refused (the judge keys findings by package)
+  aws inspector2 list-findings --region "$REGION" --output json --filter-criteria \
+    "$(jq -nc --arg h "$FIX" --arg s "$1" '{ecrImageHash: [{comparison: "EQUALS", value: $h}], findingStatus: [{comparison: "EQUALS", value: $s}]}')" \
+    | jq -ec '[.findings[] | .packageVulnerabilityDetails as $d | ($d.vulnerablePackages // []) as $p
+                | if ($p | length) == 1 then {cve: $d.vulnerabilityId, name: $p[0].name, version: $p[0].version} else error("a finding that does not name exactly one package") end]
+              | group_by(.cve) | map({key: .[0].cve, value: (map({name: .name, version: .version}) | unique)}) | from_entries'
+}
 google_occ() {   # every vulnerability occurrence of the fixture in Artifact Analysis, all pages, as one document
   local token="" page all="[]" f
   f=$(jq -rn --arg u "https://${GAR}/cache@${FIX}" '"kind=\"VULNERABILITY\" AND resourceUrl=\"" + $u + "\"" | @uri')
@@ -309,17 +316,19 @@ google_sees_fixture || { echo "::error::timed out waiting for Google's findings 
 grype "${GAR}/cache@${FIX}" -o json -q > grype.before.json
 google_occ > google.before.json
 jq -n --slurpfile g grype.before.json --slurpfile o google.before.json \
-  --argjson i "$(inspector_cves ACTIVE)" '{
+  --argjson i "$(inspector_packages ACTIVE)" '{
     grype: ([$g[0].matches[] | {key: .vulnerability.id, value: .vulnerability.severity}] | from_entries),
     inspector: $i,
     google: [$o[0].occurrences[] | .noteName | split("/") | last]}' > reports.json
 CVE=$(python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" pick-cve --reports reports.json --openvex "$root/.vex/fosterstack-cache.openvex.json")
 echo "the fixture's finding under test: ${CVE}"
+# the package Inspector found it in, and the decoy: our Inspector rules always name a package (owner Oct 16), and the same CVE in another package stays visible
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" pick-scope --reports reports.json --cve "$CVE" --openvex "$root/.vex/fosterstack-cache.openvex.json" > scope.json
 
 # --- the files the guide's commands load: the shipped statements plus the fixture's, the Inspector copy tagged and
 #     test-prefixed and checked to differ in nothing else (advisor 0098)
 python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" test-files --openvex "$root/.vex/fosterstack-cache.openvex.json" --images images.json --version "$tag" \
-  --fixture-digest "$FIX" --cve "$CVE" --grype-repository "${GAR}/cache" --out-dir .
+  --fixture-digest "$FIX" --cve "$CVE" --scope scope.json --grype-repository "${GAR}/cache" --out-dir .
 
 # --- Grype: the guide's command as written, then the fixture without and with our file, judged
 guide grype
@@ -330,22 +339,25 @@ python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" judge --kind grype --before gry
 inspector_inventory() {   # every finding of the fixture in any status: {findings: [{findingArn, vulnerabilityId, status}]}
   aws inspector2 list-findings --region "$REGION" --output json --filter-criteria \
     "$(jq -nc --arg h "$FIX" '{ecrImageHash: [{comparison: "EQUALS", value: $h}]}')" \
-    | jq -ec '{findings: [.findings[] | {findingArn: .findingArn, vulnerabilityId: .packageVulnerabilityDetails.vulnerabilityId, status: .status}]}'
+    | jq -ec '{findings: [.findings[] | .packageVulnerabilityDetails.vulnerablePackages as $p
+        | if ($p | length) == 1 then {findingArn: .findingArn, vulnerabilityId: .packageVulnerabilityDetails.vulnerabilityId, status: .status, packageName: $p[0].name, packageVersion: $p[0].version}
+          else error("a finding that does not name exactly one package") end]}'
 }
 inspector_inventory > inspector.before.json
 inspector_cves ACTIVE | jq -e --arg c "$CVE" 'index($c) != null' >/dev/null \
   || { echo "::error::Inspector does not show ${CVE} on the fixture before the suppression" >&2; exit 1; }
 guide inspector
-inspector_suppressed() {   # at least one finding of the CVE on the fixture, all SUPPRESSED
+inspector_suppressed() {   # at least one finding of the CVE in the package under test on the fixture, all SUPPRESSED
   local s
   s=$(aws inspector2 list-findings --region "$REGION" --output json --filter-criteria \
         "$(jq -nc --arg h "$FIX" --arg c "$CVE" '{ecrImageHash: [{comparison: "EQUALS", value: $h}], vulnerabilityId: [{comparison: "EQUALS", value: $c}]}')" \
-      | jq -er '[.findings[].status] | unique | join(",")') && [ "$s" = SUPPRESSED ]
+      | jq -er --slurpfile sc scope.json '[.findings[] | select(any(.packageVulnerabilityDetails.vulnerablePackages[]?; .name == $sc[0].package.name and .version == $sc[0].package.version)) | .status] | unique | join(",")') \
+    && [ "$s" = SUPPRESSED ]
 }
 for _ in $(seq 1 90); do inspector_suppressed && break; sleep 30; done
 inspector_suppressed || { echo "::error::timed out waiting for Inspector to suppress ${CVE} on the fixture" >&2; exit 1; }
 inspector_inventory > inspector.after.json
-python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" judge --kind inspector --before inspector.before.json --after inspector.after.json --cve "$CVE"
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" judge --kind inspector --before inspector.before.json --after inspector.after.json --cve "$CVE" --scope scope.json
 
 # --- Google: the guide's command as written for our production image, then for the fixture; the assessment must come
 #     from a note this run's load created (the sweep left none)

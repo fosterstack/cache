@@ -5,9 +5,11 @@ live test. bin/vex-live-run.sh does the cloud calls; this file decides what they
 - plan:          the guide's ```sh blocks, byte for byte, in order — a settings block (only VAR=value lines: VER, IMAGE)
                  takes the test's values, every other block runs exactly as written
 - test-files:    the forms the live test loads: the generator's output for the real OpenVEX file plus ONE test-only
-                 not_affected statement for the fixture's CVE on the fixture's digest; the Inspector file's test copy
+                 not_affected statement for the fixture's CVE on the fixture's digest (in the Inspector file it names the package
+                 Inspector found it in, plus a decoy: another CVE at a version that is not installed, which must hide nothing); the Inspector file's test copy
                  differs from the generator's only in the live-test tag and the test name prefix (check_copy proves it)
 - pick-cve:      a CVE every service reports for the fixture, highest severity first — never a guess
+- pick-scope:    the package Inspector reports that CVE in, and the decoy CVE (owner Oct 16: every Inspector rule names its package)
 - release:       on main, the newest published release that carries the rule-10 files
 """
 import argparse, copy, importlib.util, json, os, re, sys
@@ -119,14 +121,57 @@ def fixture_vex(vex, images, fixture_digest, cve, repository="ghcr.io/fosterstac
     return tvex, timages
 
 
-def inspector_files(V, vex, images, fixture_digest, cve, version):
+PKG_NAME = r"[A-Za-z0-9._+-]+"
+PKG_VERSION = r"[A-Za-z0-9._+:~-]+"
+DECOY_VERSION = "0.0.0-livetest-not-installed"
+
+
+def pick_scope(reports, cve, exclude=()):
+    """The package the fixture's rule names and the decoy (owner Oct 16, handoff 0482: an Inspector rule always names its package, and the same CVE in another
+    package must stay visible). reports["inspector"]: {cve: [{name, version}]} as Inspector lists them for the fixture. The package: the CVE's first package by
+    name and version; the decoy: the first OTHER CVE Inspector reports (never one of ours, exclude) with its first package's name — its rule gets a version that
+    is not installed, so a correct rule hides nothing. A name or version the OpenVEX/Inspector forms cannot carry is refused."""
+    insp = reports.get("inspector")
+    if not isinstance(insp, dict):
+        raise ValueError("the Inspector report is not a CVE -> packages map")
+
+    def first(c):
+        pk = insp.get(c)
+        if not isinstance(pk, list) or not pk:
+            raise ValueError("Inspector reports no package for %s" % c)
+        for x in pk:
+            if not (isinstance(x, dict) and isinstance(x.get("name"), str) and re.fullmatch(PKG_NAME, x["name"])
+                    and isinstance(x.get("version"), str) and re.fullmatch(PKG_VERSION, x["version"])):
+                raise ValueError("a package of %s has a name or version the forms cannot carry: %r" % (c, x))
+        x = sorted(pk, key=lambda y: (y["name"], y["version"]))[0]
+        return {"name": x["name"], "version": x["version"]}
+    package = first(cve)
+    others = sorted(c for c in insp if c != cve and c not in set(exclude))
+    if not others:
+        raise ValueError("Inspector reports no other CVE of its own to use as the decoy")
+    return {"package": package, "decoy": {"cve": others[0], "name": first(others[0])["name"]}}
+
+
+def inspector_files(V, vex, images, fixture_digest, cve, version, scope):
     """(shipped, generated): the generator's file for the real statements, and that file plus the generator's filters
-    for the fixture statement ALONE — so no real statement widens to the fixture's digest."""
+    for the fixture's statements ALONE — so no real statement widens to the fixture's digest. The fixture's statements
+    name a package (the generator makes no rule for a statement that names none): the fixture CVE in the package Inspector
+    found it in, and the decoy CVE in its package at a version that is not installed (it must suppress nothing)."""
     if cve in {s["vulnerability"]["name"] for s in vex["statements"]}:
         raise ValueError("%s is one of our statements: the fixture's CVE must be another" % cve)
+    if not isinstance(scope, dict) or not isinstance(scope.get("package"), dict) or not isinstance(scope.get("decoy"), dict):
+        raise ValueError("the fixture's package and decoy are needed: the Inspector file never holds a rule without a package")
+    if scope["decoy"]["cve"] in (cve, *{s["vulnerability"]["name"] for s in vex["statements"]}):
+        raise ValueError("the decoy CVE must be neither the fixture's nor one of ours")
     tvex, timages = fixture_vex(vex, images, fixture_digest, cve)
+    own = tvex["statements"][-1]
+    st = copy.deepcopy(own)
+    st["products"][0]["subcomponents"] = [{"@id": "pkg:generic/%s@%s" % (scope["package"]["name"], scope["package"]["version"])}]
+    decoy = copy.deepcopy(own)
+    decoy["vulnerability"] = {"name": scope["decoy"]["cve"]}
+    decoy["products"][0]["subcomponents"] = [{"@id": "pkg:generic/%s@%s" % (scope["decoy"]["name"], DECOY_VERSION)}]
     shipped = V.inspector(vex, images, version)
-    fixture = V.inspector({"statements": tvex["statements"][-1:]}, timages, version)
+    fixture = V.inspector({"statements": [st, decoy]}, timages, version)
     return shipped, {"filters": shipped["filters"] + fixture["filters"]}
 
 
@@ -306,13 +351,15 @@ def judge_grype(before, after, cve):
     return None
 
 
-def judge_inspector(before, after, cve):
-    """None when, before, the CVE has findings on the fixture, and after: every finding of before is still there (none new), every finding of the CVE is
-    SUPPRESSED, and every other finding has the status it had (our file suppressed exactly the one CVE). Documents: {"findings": [{findingArn, vulnerabilityId, status}]}."""
+def judge_inspector(before, after, cve, package):
+    """None when, before, the CVE has findings on the fixture in the named package, and after: every finding of before is still there (none new), every finding
+    of the CVE in that package (name and version) is SUPPRESSED, and every other finding has the status it had — the same CVE in another package and the
+    decoy's CVE included (our file suppressed exactly that CVE in that package: owner Oct 16, handoff 0482). Documents:
+    {"findings": [{findingArn, vulnerabilityId, status, packageName, packageVersion}]}."""
     def fx(doc):
         fs = doc.get("findings") if isinstance(doc, dict) else None
-        if not isinstance(fs, list) or not all(isinstance(f, dict) and isinstance(f.get("findingArn"), str) and isinstance(f.get("vulnerabilityId"), str)
-                                               and isinstance(f.get("status"), str) for f in fs):
+        if not isinstance(fs, list) or not all(isinstance(f, dict) and all(isinstance(f.get(k), str) for k in
+                ("findingArn", "vulnerabilityId", "status", "packageName", "packageVersion")) for f in fs):
             raise ValueError("not an Inspector finding list")
         out = {f["findingArn"]: f for f in fs}
         if len(out) != len(fs):
@@ -322,18 +369,20 @@ def judge_inspector(before, after, cve):
         b, a = fx(before), fx(after)
     except ValueError as e:
         return str(e)
-    if not any(f["vulnerabilityId"] == cve for f in b.values()):
-        return "Inspector did not report %s before" % cve
+    hit = lambda f: f["vulnerabilityId"] == cve and f["packageName"] == package["name"] and f["packageVersion"] == package["version"]
+    if not any(hit(f) for f in b.values()):
+        return "Inspector did not report %s in %s %s before" % (cve, package["name"], package["version"])
     if set(b) != set(a):
         return "the finding inventory changed: %d lost, %d new" % (len(set(b) - set(a)), len(set(a) - set(b)))
     for arn, f in a.items():
-        if f["vulnerabilityId"] != b[arn]["vulnerabilityId"]:
-            return "a finding changed its CVE (%s -> %s): it is not the finding that was there" % (b[arn]["vulnerabilityId"], f["vulnerabilityId"])
-        if f["vulnerabilityId"] == cve:
+        if (f["vulnerabilityId"], f["packageName"], f["packageVersion"]) != (b[arn]["vulnerabilityId"], b[arn]["packageName"], b[arn]["packageVersion"]):
+            return "a finding changed its CVE or package (%s %s -> %s %s): it is not the finding that was there" % (
+                b[arn]["vulnerabilityId"], b[arn]["packageName"], f["vulnerabilityId"], f["packageName"])
+        if hit(f):
             if f["status"] != "SUPPRESSED":
                 return "%s is %s after our file, not SUPPRESSED" % (cve, f["status"])
         elif f["status"] != b[arn]["status"]:
-            return "an unrelated finding changed (%s: %s -> %s)" % (f["vulnerabilityId"], b[arn]["status"], f["status"])
+            return "an unrelated finding changed (%s in %s: %s -> %s)" % (f["vulnerabilityId"], f["packageName"], b[arn]["status"], f["status"])
     return None
 
 
@@ -503,17 +552,23 @@ def main(argv=None):
     t.add_argument("--version", required=True)
     t.add_argument("--fixture-digest", required=True)
     t.add_argument("--cve", required=True)
+    t.add_argument("--scope", required=True, help="pick-scope's file: the package the fixture's Inspector rule names and the decoy")
     t.add_argument("--out-dir", required=True)
     t.add_argument("--grype-repository", help="the repository Grype scans the fixture in (the test registry's cache repository); the OpenVEX file names the fixture there")
     c = sub.add_parser("pick-cve")
     c.add_argument("--reports", required=True)
     c.add_argument("--openvex", required=True, help="our statements: their CVEs are never the fixture's")
+    sc = sub.add_parser("pick-scope")
+    sc.add_argument("--reports", required=True)
+    sc.add_argument("--cve", required=True)
+    sc.add_argument("--openvex", required=True)
     iv = sub.add_parser("inventory", help="read one listing from stdin, strictly")
     iv.add_argument("--kind", required=True, choices=("ecr", "ecr-indexes", "gar", "filters", "notes", "ecr-delete"))
     iv.add_argument("--prefix", default="")
     j = sub.add_parser("judge")
     j.add_argument("--kind", choices=("grype", "google", "inspector"), required=True)
     j.add_argument("--before", required=True)
+    j.add_argument("--scope", help="inspector: pick-scope's file (the package under test)")
     j.add_argument("--after", required=True)
     j.add_argument("--cve", required=True)
     j.add_argument("--notes", help="google: a file with the names of the VEX notes this run created, one per line")
@@ -553,7 +608,7 @@ def main(argv=None):
         vex, images = json.load(open(a.openvex)), json.load(open(a.images))
         tvex, timages = fixture_vex(vex, images, a.fixture_digest, a.cve)
         gvex, _ = fixture_vex(vex, images, a.fixture_digest, a.cve, a.grype_repository) if a.grype_repository else (tvex, None)
-        shipped, generated = inspector_files(V, vex, images, a.fixture_digest, a.cve, a.version)
+        shipped, generated = inspector_files(V, vex, images, a.fixture_digest, a.cve, a.version, json.load(open(a.scope)))
         tc = test_copy(generated)
         bad = check_copy(shipped, generated, tc, a.fixture_digest)
         if bad:
@@ -568,6 +623,14 @@ def main(argv=None):
         rep = json.load(open(a.reports))
         ours = {s["vulnerability"]["name"] for s in json.load(open(a.openvex))["statements"]}
         print(pick_cve({k: (v if k == "grype" else set(v)) for k, v in rep.items()}, ours))
+        return 0
+    if a.cmd == "pick-scope":
+        ours = {s["vulnerability"]["name"] for s in json.load(open(a.openvex))["statements"]}
+        try:
+            print(json.dumps(pick_scope(json.load(open(a.reports)), a.cve, ours)))
+        except ValueError as e:
+            print("::error::%s" % e, file=sys.stderr)
+            return 1
         return 0
     if a.cmd == "inventory":
         try:
@@ -589,7 +652,10 @@ def main(argv=None):
                 return None
         b, af = load(a.before), load(a.after)
         if a.kind == "inspector":
-            why = judge_inspector(b, af, a.cve)
+            if not a.scope:
+                print("::error::inspector: the judge needs --scope (the package under test)", file=sys.stderr)
+                return 1
+            why = judge_inspector(b, af, a.cve, json.load(open(a.scope))["package"])
         elif a.kind == "google":
             notes = {ln.strip() for ln in open(a.notes)} - {""} if a.notes else set()
             why = judge_google(b, af, a.cve, notes)
