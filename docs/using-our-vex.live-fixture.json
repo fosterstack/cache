@@ -1,0 +1,9 @@
+{
+ "image": "docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab",
+ "platform": "linux/amd64",
+ "packages": [
+  {"name": "libc6", "version": "2.36-9", "source": "glibc"},
+  {"name": "libc-bin", "version": "2.36-9", "source": "glibc"}
+ ],
+ "why": "The live test shows a rule for one package leaving the same CVE visible in another. Both packages are built from glibc 2.36-9, so every glibc CVE is reported on both; the digest is immutable, so this holds by construction. bin/vex-live-run.sh checks the real image's package list against this file before it pushes anything."
+}

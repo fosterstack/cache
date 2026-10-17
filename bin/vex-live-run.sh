@@ -275,6 +275,11 @@ for v in production fips; do
     push_copy "ghcr.io/fosterstack/cache@${d}" "${GAR}/cache:${RUN}-${v}"
   fi
 done
+# the fixture must carry, by construction, a CVE active in two package names (docs/using-our-vex.live-fixture.json): checked on the real image, before any push of it
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" fixture-check --manifest "$GITHUB_WORKSPACE/docs/using-our-vex.live-fixture.json" --run "$GITHUB_WORKSPACE/bin/vex-live-run.sh"
+crane export --platform linux/amd64 "$FIXTURE_SRC" fixture.tar
+python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" fixture-check --manifest "$GITHUB_WORKSPACE/docs/using-our-vex.live-fixture.json" --run "$GITHUB_WORKSPACE/bin/vex-live-run.sh" --image-tar fixture.tar
+rm -f fixture.tar
 push_copy "$FIXTURE_SRC" "${ECR}:${RUN}-fixture"
 push_copy "$FIXTURE_SRC" "${GAR}/cache:${RUN}-fixture"
 while read -r ref; do
