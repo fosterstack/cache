@@ -1494,6 +1494,69 @@
       "key": "3457c08cad71ac4ef91abeb781f20baf8bf2dd95dffe15d0da13a9070b987b7f",
       "line": "b8f0a9f985f8e6f15bcf0c94e2c10ec47f1d918a0c4317c93b7a4f012702780f",
       "ruling": "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): the Go toolchain tarball download (one per missing tarball) in bin/refresh-inputs.sh; one curl with fixed flags and the single operand https://go.dev/dl/ plus one variable; the file name passed a closed Go-tarball grammar and the fetched bytes are stored only after their sha256 equals the expected-sha256 pinned by the committed recipes"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "163abde8a9ad2a52f3ab36525af0f142ba876c80573bb056d2901870c76ba35f",
+      "line": "163abde8a9ad2a52f3ab36525af0f142ba876c80573bb056d2901870c76ba35f",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "3302e4d5832444de5760f72a1d85a9a4e3a8f1b5a000edf748de33fb080946a3",
+      "line": "659dc68d9000455ee439546337aebf54a82276f80cfcac0274f427ddd5c15d40",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "5ab5f46b653cada0287a938f20d95a121d6c55b627e761556c8e6b786e277ac2",
+      "line": "659dc68d9000455ee439546337aebf54a82276f80cfcac0274f427ddd5c15d40",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "850a8eb481f553b43d0d573eaf65e77d5a18b1e945e560872ffb55910c6d3444",
+      "line": "850a8eb481f553b43d0d573eaf65e77d5a18b1e945e560872ffb55910c6d3444",
+      "ruling": "text, not a command: the value of a plain assignment (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "f6d35a300931a453d22bd3add16a95a5b8ce949e37dc2abb8e9969fe3e2171f8",
+      "line": "f6d35a300931a453d22bd3add16a95a5b8ce949e37dc2abb8e9969fe3e2171f8",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get.sh",
+      "form": "a download",
+      "key": "8588268379fe8c098b1cac023e1913a0180db9c593c20f1d4f364188e18d6493",
+      "line": "68281990c075542da3583a41de174b2fc717e7caf460eccc45771a581d7b28f7",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get.sh",
+      "form": "a download",
+      "key": "f0e3e2f9c65769916baa11aebb72b72e2e2ada67b0d68f27395238bd44798162",
+      "line": "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd",
+      "ruling": "loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): the helper's one curl line, pinned by hash; it reaches only the cache under test or the runner's own token endpoint, host and URL checked before curl starts, and fetches no software"
+    },
+    {
+      "file": "bin/loopback-get.sh",
+      "form": "a download",
+      "key": "f5e678332279f760051bbf0a3ddd394dc97d4b3f3c6074722b671b051ae93c9e",
+      "line": "f5e678332279f760051bbf0a3ddd394dc97d4b3f3c6074722b671b051ae93c9e",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
     }
   ]
 }
