@@ -2745,6 +2745,16 @@ d=$(cfix al_1 'shopt -s expand_aliases\nalias x=$'"'"'\\x2fusr\\x2fbin\\x2fcurl'
 d=$(cfix al_2 'BASH_ALIASES[x]=y' '[]'); expm caught "$d" 'alias' "an assignment to BASH_ALIASES: refused"
 d=$(cfix al_3 'echo ok\nalias fn="function "' '[]'); expm caught "$d" 'alias' "the alias builtin at the start of a line: refused"
 d=$(cfix al_4 'unalias -a' '[]'); expm caught "$d" 'alias' "unalias: refused"
+d=$(cfix al_6 'shopt -s expand_"aliases"\n\\alias x=y' '[]'); expm caught "$d" 'alias' "a backslash before alias and a quoted expand_aliases: refused (seat B round 6)"
+d=$(cfix al_7 "shopt -s expand_\\\\aliases\n'alias' x=y" '[]'); expm caught "$d" 'alias' "an escaped expand_aliases and a single-quoted alias: refused"
+d=$(cfix al_8 '"alias" x=y' '[]'); expm caught "$d" 'alias' "a double-quoted alias command word: refused"
+d=$(cfix al_9 'al'"'"''"'"'ias x=y' '[]'); expm caught "$d" 'alias' "an alias word split by empty quotes: refused"
+d=$(cfix al_10 "\$'\\\\x61lias' x=y" '[]'); expm caught "$d" 'alias' "an ANSI-C quoted alias command word (hex escape): refused"
+d=$(cfix al_11 "shopt -s expand_al''iases\nx() { :; }" '[]'); expm caught "$d" 'alias' "expand_aliases split by empty quotes: refused (seat A round 6)"
+d=$(cfix al_12 "declare BASH_AL''IASES[x]=y" '[]'); expm caught "$d" 'alias' "BASH_ALIASES split by empty quotes: refused"
+d=$(cfix al_13 'o=expand_aliases\nshopt -s $o' '[]'); expm caught "$d" 'shopt' "shopt handed a variable (it could name expand_aliases): refused"
+d=$(cfix al_14 'shopt -s nullglob\nshopt -u nullglob' '[]'); expm ok "$d" - "shopt -s/-u nullglob stays accepted (real scripts use it)"
+d=$(cfix al_15 'shopt -s nullglob expand_aliases' '[]'); expm caught "$d" 'shopt' "shopt with a second option name: refused"
 d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
 d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
@@ -3455,7 +3465,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1425
+EXPECT=1435
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

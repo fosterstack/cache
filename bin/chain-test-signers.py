@@ -31,6 +31,7 @@ Two small things, and nothing else:
      * other workflows (ci.yml, scan.yml ...), composite actions and release.yml's non-stage jobs are NOT stage files: they keep only
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
+import codecs
 import fnmatch, hashlib, json, os, re
 
 def jload(path):
@@ -1117,6 +1118,14 @@ TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 FIXED_DIRS = ("/usr/bin/", "/bin/", "/usr/local/bin/")
 FUNC_BY_PATH = re.compile(r"(?<![^\s;&|{}()!`])(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=\"'$`]*)[ \t]*\([ \t]*\)(?=[ \t]*(?:\n|\Z|#|\{|\(|if\b|while\b|until\b|for\b|select\b|case\b|\[\[)))")
 ALIAS_USE = re.compile(r"expand_aliases|BASH_ALIASES|(?<![^\s;&|{}()!`])unalias(?=[\s;&|)]|$)|(?<![^\s;&|{}()!`])alias(?=[\s;&|)]|$)")   # cache#361 (seat A, round 5): an alias can name the function (alias x=$'\x2fusr\x2fbin\x2fcurl'; x() {...}); no listed script uses aliases
+def alias_view(text):
+    """The text as bash reads it for the alias check: ANSI-C strings decoded ($'\\x61lias' is alias), then every quote mark and backslash dropped."""
+    def dec(m):
+        try: return codecs.decode(m.group(1), "unicode_escape")
+        except Exception: return m.group(1)
+    return re.sub(r"[\\'\"]", "", re.sub(r"\$'((?:[^'\\]|\\.)*)'", dec, text))
+SHOPT_CMD = re.compile(r"(?<![^\s;&|{}()!`])shopt(?=[\s;&|)]|$)(?P<rest>[^\n;&|)]*)")
+SHOPT_OK = re.compile(r"\s+-[su]\s+(?:nullglob|extglob|globstar|lastpipe|inherit_errexit|nocaseglob|nocasematch)\s*")   # the only shopt uses a listed script may make; every other option name, flag or variable is refused (expand_aliases can be named in ways the text scan does not see)
 FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
 PY_ISOLATION = ("-I", "-B")
 def fixed_tool(w, tools):
@@ -1299,8 +1308,11 @@ def scan_script(path, text, row, rows, base):
         for m in FUNC_BY_PATH.finditer(logical(text)):                       # the RAW logical text, comments included: stripping a "comment" can diverge from bash (a # line inside a quote spanning lines, an ANSI-C escaped quote)                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
             add(None, "", "%s: defines a function named by a path (%s): it could run in place of the fixed-path program it names" % (path, m.group("name") or m.group("name2")))
     if not py:
-        for m in ALIAS_USE.finditer(logical(text)):                          # the raw text again; "alias" counts only where a command can start (a word like product-and-alias-scoped in a comment is not it)
+        for m in ALIAS_USE.finditer(alias_view(logical(text))):                          # the raw text with every quote mark and backslash removed (bash drops them before it runs the word: \\alias, 'alias', expand_"aliases"); "alias" counts only where a command can start (a word like product-and-alias-scoped in a comment is not it)
             add(None, "", "%s: uses shell aliases (%s): an alias can give a function the name of a fixed-path program" % (path, m.group(0)))
+        for m in SHOPT_CMD.finditer(alias_view(logical(text))):
+            if not SHOPT_OK.fullmatch(m.group("rest")):
+                add(None, "", "%s: `shopt%s` is not one of the listed harmless uses (-s/-u of nullglob, extglob, globstar, lastpipe, inherit_errexit, nocaseglob, nocasematch): it could turn on alias expansion" % (path, m.group("rest").rstrip()))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for x in protected_env_mentions(path, text, row): add(None, "", x)
