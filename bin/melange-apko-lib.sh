@@ -735,6 +735,7 @@ for g in git gh; do cat >"$stubs2/$g" <<EOF
 #!/bin/bash
 echo "$g \$*" >>"\$CALLS"
 [ "$g" = gh ] && case "\$*" in "pr list"*) echo '[]';; esac
+[ "$g" = gh ] && { case "\$*" in "api graphql"*) [ -z "\${GH_STUB_API_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }; _in=; _p=; for _a in "\$@"; do [ "\$_p" = --input ] && _in=\$_a; _p=\$_a; done; [ -z "\$_in" ] || cp "\$_in" "\$CALLS.graphql"; echo stubsignedoid0000000000000000000000000000; exit 0;; "api repos/"*"/commits/"*) echo "\${GH_STUB_VERIFIED:-true}"; exit 0;; esac }
 exit 0
 EOF
 done

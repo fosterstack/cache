@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30, REQ-REFRESH-001-AC32, REQ-REFRESH-001-AC33
+# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30, REQ-REFRESH-001-AC32, REQ-REFRESH-001-AC33, REQ-REFRESH-001-AC34
 # Tests of the PR: the daily input refresh script and the daily FIPS-module check.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -373,6 +373,7 @@ G
 cat >"$work/stubs4/gh" <<'G'
 #!/bin/bash
 echo "gh $*" >>"$CALLS"
+case "$*" in "api graphql"*) [ -z "${GH_STUB_API_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }; _in=; _p=; for _a in "$@"; do [ "$_p" = --input ] && _in=$_a; _p=$_a; done; [ -z "$_in" ] || cp "$_in" "$CALLS.graphql"; echo stubsignedoid0000000000000000000000000000; exit 0;; "api repos/"*"/commits/"*) echo "${GH_STUB_VERIFIED:-true}"; exit 0;; esac
 [ -z "${GH_STUB_CLOSED_RAW:-}" ] || case "$*" in "pr list"*"--state closed"*) echo "$GH_STUB_CLOSED_RAW"; exit 0;; esac
 case "$*" in "pr list"*"--state closed"*) i=50; sep=; printf '['; for b in ${GH_STUB_CLOSED:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"mergedAt":null,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done; for b in ${GH_STUB_MERGED:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"mergedAt":"2026-10-09T00:00:00Z","author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
   for b in ${GH_STUB_CLOSED_FORK:-}; do i=$((i+10)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":true,"mergedAt":null,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
@@ -1354,6 +1355,35 @@ gorepo; ln -s "$work/no-such-go-target" "$work/ar/go"; gorun "$gofx"
 t "AC33" "Go archive: a go entry that is a symlink stops the job (exit 1)" bash -c "test \"\$(cat '$work/rc')\" = 1"
 gorepo; run_s4 env GH_STUB_OPEN="refresh/00000000" STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$gofx" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC33" "Go archive: while an earlier refresh pull request is open, a missing Go tarball waits (exit 0, nothing fetched from go.dev, nothing changed)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q 'go.dev/dl' '$CALLS' && ! test -d '$work/ar/go'"
+# ---- REQ-REFRESH-001-AC34: the pull request's commit is made through the API so that GitHub signs it, and no pull request is opened for a commit that is not verified ------------
+# main's ruleset requires signed commits; a commit made by `git commit` in the job is unsigned and the pull request can never merge. The job pushes the branch at the commit it
+# started from (nothing new to sign), creates the one commit with createCommitOnBranch (the App token's commit is signed by GitHub), asks the API whether that commit is
+# verified, and only then opens the pull request; otherwise it deletes the branch, opens nothing and exits 1.
+sgrun() {   # a refresh that changes files (the new tzdata) and opens its pull request directly; $1.. = extra env
+  mkrepo; run_s4 env "$@" STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$work/ln.json" STUB_LOCK_FIPS="$work/ln.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
+rm -f "$CALLS.graphql"
+sgrun GH_STUB_VERIFIED=true
+t "AC34" "signed commit: the pull request's commit is made through the API (one createCommitOnBranch call), not by git commit, and a verified commit leads to exactly one gh pr create" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'createCommitOnBranch' '$CALLS.graphql' && ! grep -Eq '^git( -C [^ ]+)? commit' '$CALLS' && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1"
+t "AC34" "signed commit: the commit's files are the working tree's, byte for byte, and its parent is the commit the job started from" python3 - "$CALLS.graphql" "$work/rp" <<'PY'
+import base64, json, subprocess, sys
+d = json.load(open(sys.argv[1]))["variables"]["input"]
+adds = d["fileChanges"]["additions"]
+assert adds and not d["fileChanges"].get("deletions"), adds
+for a in adds:
+    assert base64.b64decode(a["contents"]) == open(sys.argv[2] + "/" + a["path"], "rb").read(), a["path"]
+head = subprocess.run(["git", "-C", sys.argv[2], "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+assert d["expectedHeadOid"] == head, (d["expectedHeadOid"], head)
+assert d["branch"]["branchName"].startswith("refresh/"), d["branch"]
+assert d["message"]["headline"], d["message"]
+PY
+rm -f "$CALLS.graphql"
+sgrun GH_STUB_VERIFIED=false
+t "AC34" "signed commit: a commit the API reports as not verified opens NO pull request, deletes the branch it pushed and fails the job (exit 1, says not verified)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete|^git( -C [^ ]+)? push .*:refs/heads/refresh/' '$CALLS' && grep -qi 'not verified' '$work/log'"
+sgrun GH_STUB_API_FAIL=1
+t "AC34" "signed commit: when the API cannot create the commit no pull request is opened, the branch is deleted and the job fails (exit 1)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete|^git( -C [^ ]+)? push .*:refs/heads/refresh/' '$CALLS'"
+sgrun GH_STUB_VERIFIED=true
+t "AC34" "signed commit: nothing is committed or pushed to main, and the only branch pushed is the refresh/ branch at the commit the job started from" bash -c "! grep -Eq '^git( -C [^ ]+)? push .*(main|HEAD:main)' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*refresh/' '$CALLS'"
+t "AC34" "signed commit: the verification is asked for the commit the API returned (the oid in its reply)" bash -c "grep -Eq '^gh api repos/.*/commits/stubsignedoid' '$CALLS'"
 # ---- round 1 of the second review (both seats named these; the fixes are tests-first) ----------------------------------------------------------
 # AC21: locks that disagree ONLY in the package identity checksum or the signature checksum are refused like a data-checksum disagreement
 for fld in identity signature; do
