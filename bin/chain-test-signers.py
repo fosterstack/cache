@@ -67,53 +67,79 @@ def strip_line(l):
         prev_ws = ch.isspace()
     return l                                  # unbalanced quotes: do not guess where a comment starts
 
-HEREDOC_OPEN = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\"|\\?([A-Za-z_][A-Za-z0-9_]*))")
+HEREDOC_WORD = re.compile(r"[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\"|\\([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*))(?![A-Za-z0-9_'\"\\$`{(-])")
 
 def strip_lines(lines):
-    """([code line], [error]) for the physical lines of a shell text, read as bash reads them (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). The quote state
-    (single, double, ANSI-C $'..', backslash) is carried across lines; a heredoc body is data and opens no quote. A line that begins inside a quote is
-    kept whole (it is never read as a comment), and a `#` line there is an error; a quote still open at the end, and a << inside (( )) (a shift or
-    a heredoc: not resolved), are errors (fail closed: what the check cannot read is refused, never guessed)."""
+    """([code line], [error]) for the physical lines of a shell text, read as bash reads them (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). A stack of open
+    contexts is carried across lines: a single quote, a double quote, an ANSI-C $'..', $( ), $(( )), ${ }, $[ ], a backtick pair and a ( ) group; inside
+    $( ), a backtick pair and a ( ) group the text is read as shell again. A heredoc body is data and opens no quote. A heredoc is started only by a <<
+    in plain shell text (not in a quote, ${ }, $(( )) or $[ ]) that names a plain delimiter (a word, or one in '..', "..", or after a backslash).
+    A line that begins inside a quote, ${ }, $(( )) or $[ ] is kept whole (it is never read as a comment) and a `#` line there is an error. Errors
+    (fail closed: what the check cannot read is refused, never guessed): a context or a heredoc still open at the end, a << inside $(( )) or $[ ], a <<
+    whose delimiter is not plain, a heredoc started on a line that leaves a quote open, a single quote inside a ${ } that is inside double quotes."""
     out, errs = [], []
-    mode, hd = None, None                              # mode None | "sq" | "dq" | "ansi"; hd = (delimiter, tab-indented) while inside a heredoc body
+    st, hd = [], None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented)] still to be read inside a heredoc body
+    DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
     for n, l in enumerate(lines):
         if hd is not None:
             out.append(strip_line(l))
-            if (l.lstrip("\t") if hd[1] else l) == hd[0]: hd = None
+            if (l.lstrip("\t") if hd[0][1] else l) == hd[0][0]: hd = hd[1:] or None
             continue
-        if mode is not None and l.lstrip().startswith("#"):
-            errs.append("line %d: a # line inside a quote that is still open from an earlier line (bash reads it as part of the quoted word, not as a comment)" % (n + 1))
-        elif mode is None and l.lstrip().startswith("#"):
+        if st and st[-1] in DATA and l.lstrip().startswith("#"):
+            errs.append("line %d: a # line inside a quote or ${ } that is still open from an earlier line (bash reads it as part of the word, not as a comment)" % (n + 1))
+        elif not (st and st[-1] in DATA) and l.lstrip().startswith("#"):
             out.append(""); continue
-        sq = mode == "sq"; dq = mode == "dq"; an = mode == "ansi"
         esc = prev_ws = False
         cut = skip = None
+        pend = []                                      # heredocs opened on this line, in plain shell text
         for i, ch in enumerate(l):
-            if skip == i: skip = None; prev_ws = False; continue            # the quote that opened an ANSI-C string
+            if skip == i: skip = None; prev_ws = False; continue            # the second character of a two-character opener
             if esc: esc = False; prev_ws = False; continue
-            if an:
+            top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
+            if top == "sq":
+                if ch == "'": st.pop()
+            elif top == "ansi":
                 if ch == "\\": esc = True
-                elif ch == "'": an = False
-            elif sq:
-                if ch == "'": sq = False
-            elif dq:
-                if ch == "\\": esc = True
-                elif ch == '"': dq = False
+                elif ch == "'": st.pop()
             elif ch == "\\": esc = True
-            elif ch == "'": sq = True
-            elif ch == '"': dq = True
-            elif ch == "$" and l[i + 1:i + 2] == "'": an = True; skip = i + 1
-            elif ch == "#" and i > 0 and prev_ws and not (sq or dq or an):
+            elif top == "dq" and ch == '"': st.pop()
+            elif top != "dq" and ch == "'":
+                if top == "brace" and len(st) > 1 and st[-2] == "dq":
+                    errs.append("line %d: a single quote inside ${ } inside double quotes is not resolved" % (n + 1))
+                else: st.append("sq")
+            elif ch == '"': st.append("dq")
+            elif ch == "$" and nxt == "'" and top != "dq": st.append("ansi"); skip = i + 1
+            elif ch == "$" and nxt == "(" and l[i + 2:i + 3] == "(": st.append("arith"); skip = i + 1
+            elif ch == "$" and nxt == "(": st.append("cmd"); skip = i + 1
+            elif ch == "$" and nxt == "{": st.append("brace"); skip = i + 1
+            elif ch == "$" and nxt == "[" and top != "dq": st.append("brk"); skip = i + 1
+            elif ch == "`":
+                if top == "bt": st.pop()
+                else: st.append("bt")
+            elif top == "dq": pass
+            elif ch == "}" and top == "brace": st.pop()
+            elif ch == "]" and top == "brk": st.pop()
+            elif ch == ")" and top == "arith" and nxt == ")": st.pop(); skip = i + 1
+            elif ch == ")" and top in ("cmd", "paren"): st.pop()
+            elif ch == "(" and top not in ("arith", "brk", "brace"): st.append("paren")
+            elif ch == "<" and nxt == "<" and l[i - 1:i] != "<" and l[i + 2:i + 3] != "<":
+                if top in ("arith", "brk"):
+                    errs.append("line %d: a << inside $(( )) or $[ ] is a shift or a heredoc and is not resolved" % (n + 1))
+                elif top != "brace":
+                    tab = l[i + 2:i + 3] == "-"
+                    m = HEREDOC_WORD.match(l, i + 2 + tab)
+                    if m: pend.append((m.group(1) or m.group(2) or m.group(3) or m.group(4), tab))
+                    else: errs.append("line %d: a << whose delimiter is not a plain word is not resolved" % (n + 1))
+                skip = i + 1
+            elif ch == "#" and i > 0 and prev_ws and top not in DATA:
                 cut = i; break
             prev_ws = ch.isspace()
-        mode = "sq" if sq else "dq" if dq else "ansi" if an else None
         out.append(l if cut is None else l[:cut])
-        code = out[-1]
-        if mode is None and "<<" in code:
-            if "((" in code: errs.append("line %d: a << inside (( )) is a shift or a heredoc and is not resolved" % (n + 1))
-            for m in HEREDOC_OPEN.finditer(code):
-                hd = (m.group(2) or m.group(3) or m.group(4), m.group(1) == "-")
-    if mode is not None: errs.append("a quote is still open at the end of the script")
+        if pend:
+            if st and st[-1] in ("sq", "dq", "ansi"): errs.append("line %d: a heredoc is started on a line that leaves a quote open and is not resolved" % (n + 1))
+            else: hd = pend
+    if st: errs.append("a quote or a %s is still open at the end of the script" % st[-1])
+    if hd is not None: errs.append("a heredoc is still open at the end of the script")
     return out, errs
 
 def strip(text):

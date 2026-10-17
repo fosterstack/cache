@@ -3213,10 +3213,24 @@ d=$(crr sl_g "${H}x='a b'"$'\n# note\necho ok\n'); expm ok "$d" - "strip_line: c
 d=$(crr sl_h "${H}x='a\\'"$'\n'"# it's a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a backslash inside single quotes is literal, so the quote closes and the next # line is a comment"
 d=$(crr sl_i "${H}x=\$'a\\'b'"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a closed ANSI-C quote with an escaped quote"
 d=$(crr sl_j "${H}cat <<EOF"$'\ndon'"'t"$'\n# x\nEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a heredoc body is data, an apostrophe and a # line in it open no quote"
-d=$(crr sl_k "${H}cat <<'EOF'"$'\n# x '"'"' y\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data"
+d=$(crr sl_k "${H}cat <<'EOF'"$'\n# x \' y\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data"
 d=$(crr sl_l "${H}cat <<-EOF"$'\n\tit'"'s"$'\n\tEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a <<- heredoc ends at its tab-indented delimiter"
 d=$(crr sl_m "${H}echo \$((1<<EOF))"$'\nx=\'\n# \'; /tmp/evil\nEOF\n'); expm caught "$d" 'not resolved' "strip_line: a << inside (( )) is no heredoc: the quote after it is still judged"
 d=$(crr sl_n $'#!/usr/bin/env python3\nx = "it\'s"\n# it\'s fine\n\'\'\'doc\n# it\'s\n\'\'\'\n'); expm ok "$d" - "strip_line: control: a Python file is not read with the shell quote model (apostrophes in prose and docstrings)"
+d=$(crr sl_o "${H}echo '<<EOF'"$'\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed single quote starts no heredoc (seat B, PR 436): the open quote after it is still refused"
+d=$(crr sl_p "${H}echo \"a <<EOF\""$'\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed double quote starts no heredoc"
+d=$(crr sl_q "${H}cat <<E\"O\"F"$'\nbody\nEOF\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a heredoc delimiter quoted in the middle of a word is refused, not guessed"
+d=$(crr sl_r "${H}y=a"$'\n'"echo \${y/ #/}; /tmp/evil"$'\n'); expm caught "$d" 'absolute path' "strip_line: a # after a space inside \${..} is no comment"
+d=$(crr sl_s "${H}"$'out=x\nif ! grep -q a <<<"$out"; then fail=$((fail+1)); fi\n'); expm ok "$d" - "strip_line: control: a here-string next to \$((..)) on one line is no heredoc and no shift"
+d=$(crr sl_t "${H}cat <<\"EOF\""$'\n# it\'s\nEOF\ncat <<\\EOF\n# it\'s\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a double-quoted and a backslashed delimiter"
+d=$(crr sl_u "${H}x=\$((1<<2))"$'\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$((..)) is refused"
+d=$(crr sl_v "${H}cat <<EOF-X"$'\ndata\nEOF-X\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter the judge reads only in part is refused (seat A, PR 436)"
+d=$(crr sl_w "${H}cat <<'E-F'"$'\n\'\nE-F\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a quoted delimiter that is not a plain word is refused"
+d=$(crr sl_x "${H}echo \"\$(: ')\""$'\n#\')" ; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a quote inside \$( ) inside double quotes is read as shell"
+d=$(crr sl_y "${H}x=\$[1<<y]"$'\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$[ ] is refused"
+d=$(crr sl_z "${H}echo \"\${x:-'}\""$'\n#\'}" ; /tmp/evil\n'); expm caught "$d" 'single quote inside' "strip_line: a single quote inside \${ } inside double quotes is refused"
+d=$(crr sl_za "${H}cat <<EOF"$'\nx\n'); expm caught "$d" 'heredoc is still open' "strip_line: a heredoc still open at the end of the script is refused"
+d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit\'s\nEOF\n)\n# c\necho "$(echo "a" # c\n)" # d\n(cd x; ls) # e\ncase x in a) y;; esac\n'); expm ok "$d" - "strip_line: control: a heredoc in \$( ), nested double quotes in \$( ), a subshell and a case arm"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3378,7 +3392,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1346
+EXPECT=1360
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
