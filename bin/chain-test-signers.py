@@ -1115,6 +1115,7 @@ TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 # redirected through PATH. (2) A python interpreter may be handed the isolation flags -I and -B (each at most once, separate words) before the script it runs; any other option, a
 # combined flag, -c, -m, stdin or an unlisted script stays refused.
 FIXED_DIRS = ("/usr/bin/", "/bin/", "/usr/local/bin/")
+FUNC_BY_PATH = re.compile(r"(?m)(?:^|[;&|{}]|\bdo\b|\bthen\b)[ \t]*(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=]*)[ \t]*\([ \t]*\))")
 FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
 PY_ISOLATION = ("-I", "-B")
 def fixed_tool(w, tools):
@@ -1134,15 +1135,17 @@ def python_operands(name, operands):
 
 def pathlike_deny(cmds, rows, runs, tools=()):
     """The path-like words (see above) of the commands that are neither the command word of their command (judged by the command-word rule)
-    nor an admitted operand."""
+    nor an admitted operand. A fixed-path command (cache#361) is judged as its bare name: it keeps every operand rule of that name."""
     out = []
     for c in cmds:
         if c.cw is None: continue
-        if fixed_tool(c.cw, tools) is not None: continue              # cache#361: a fixed-path command is judged as its bare name by the command-word rule
-        cw = c.cw[2:] if c.cw.startswith("./") else c.cw
-        admitted = (cw in rows or (cw in SHELL_INTERP and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs)
-                    or family_kind(cw) == "interp" and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs
-                    or (c.cw in DATA_ONLY and not runs_a_program(c.operands)))
+        ecw = fixed_tool(c.cw, tools) or c.cw
+        cw = ecw[2:] if ecw.startswith("./") else ecw
+        ops = python_operands(cw, c.operands)                          # python: -I and -B do not change which operand is the script
+        first = (ops[0][2:] if ops[0].startswith("./") else ops[0]) if ops else ""
+        admitted = (cw in rows or (cw in SHELL_INTERP and bool(ops) and first in runs)
+                    or family_kind(cw) == "interp" and bool(ops) and first in runs
+                    or (ecw in DATA_ONLY and not runs_a_program(c.operands)))
         if admitted: continue
         for o in c.operands:
             for t in TOKEN.findall(o):
@@ -1289,6 +1292,9 @@ def scan_script(path, text, row, rows, base):
             in_tree = ("/" in w or w.startswith("./")) and repo_file(n)
             if (w.startswith("./") or in_tree or script_like(w)) and n != path and n not in runs and n != selfbase:
                 add("script-name", span, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
+    if not py:
+        for m in FUNC_BY_PATH.finditer(logical(text)):                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
+            add(None, "", "%s: defines a function named by a path (%s): it could run in place of the fixed-path program it names" % (path, m.group("name") or m.group("name2")))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for x in protected_env_mentions(path, text, row): add(None, "", x)

@@ -2698,6 +2698,22 @@ d=$(cfix fp_quoted '"/usr/bin/mktemp" -d x' '["mktemp"]'); expm ok "$d" - "fixed
 d=$(cfix fp_env '/usr/bin/env x' '["env"]'); expm caught "$d" 'env' "fixed path: /usr/bin/env stays refused even with env in tools (a launcher)"
 d=$(cfix fp_bashc '/bin/bash -c true' '["bash"]'); expm caught "$d" 'handed' "fixed path: /bin/bash -c stays refused even with bash in tools"
 d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bin/awk with awk NOT in tools stays refused"
+# round 1 of the seats (433): a fixed-path command keeps every operand rule of the bare name; isolation flags do not change how the script's own arguments are judged; a function named by a path cannot replace the fixed program
+d=$(cfix fo_bare_curl 'curl archive/vi' '["curl"]'); expm caught "$d" 'by a path' "operand rule, bare: curl archive/vi (a deny-class path operand) is refused"
+d=$(cfix fo_fixed_curl '/usr/bin/curl archive/vi' '["curl"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/curl archive/vi is refused exactly like the bare form"
+d=$(cfix fo_bare_sed 'sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, bare: sed -f archive/vi is refused"
+d=$(cfix fo_fixed_sed '/usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/sed -f archive/vi is refused"
+d=$(cfix fo_fixed_at '/usr/bin/at -f archive/vi now' '["at"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/at -f archive/vi is refused"
+d=$(cfix fo_assign 'X=1 /usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path after an assignment"
+d=$(cfix fo_subst 'x=$(/usr/bin/sed -f archive/vi)' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path in a command substitution"
+d=$(cfix fa_py_plain 'python3 bin/build-apk.sh archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: a deny-class path after the listed script is the script's own argument (no flags)"
+d=$(cfix fa_py_flags 'python3 -I -B bin/build-apk.sh archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: the same after -I -B"
+d=$(cfix fa_py_fixed '/usr/bin/python3 -I -B bin/build-apk.sh archive/go' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: the same by the fixed path"
+d=$(cfix fa_py_bad 'python3 -I -B -c pass archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm caught "$d" 'handed' "script arguments: -c after the flags is still refused"
+d=$(cfix ff_def '/usr/bin/curl() { echo x; }\n/usr/bin/curl' '["curl"]'); expm caught "$d" 'function' "a function named by a path (/usr/bin/curl() {...}) could replace the fixed program: refused"
+d=$(cfix ff_def2 'function /bin/rm { :; }\n/bin/rm -rf x' '["rm"]'); expm caught "$d" 'function' "function /bin/rm { } is refused"
+d=$(cfix ff_def3 '/usr/local/bin/crane () { :; }' '["crane"]'); expm caught "$d" 'function' "a path-named function with a space before the parentheses is refused"
+d=$(cfix ff_def4 'f() { /usr/bin/mktemp -d x; }\nf' '["mktemp"]'); expm ok "$d" - "an ordinary function that calls a fixed-path tool is accepted"
 d=$(cfix c_unl 'bash bin/unlisted.sh' '["bash"]'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script (bash bin/unlisted.sh) stays refused"
 d=$(cfix c_src 'source bin/unlisted.sh'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script (source form) stays refused"
 d=$(cfix c_arg_ext 'echo bin/unlisted.sh'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script by extension stays refused"
@@ -3402,7 +3418,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1370
+EXPECT=1385
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
