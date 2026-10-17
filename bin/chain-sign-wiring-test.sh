@@ -3281,6 +3281,14 @@ d=$(crr dq_s "${H}x=\${y:-\$(case a in a) echo hi ;; esac ; /tmp/evil)}"$'\n'); 
 d=$(crr dq_t "${H}x=\"\$( (true) ; /tmp/evil )\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): a subshell group"
 d=$(crr dq_u "${H}x=\"\$([[ a == @(a|b) ]] ; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): an extglob pattern"
 d=$(crr dq_v "${H}x=\"\${y:-\$( (true) ; /tmp/evil )}\""$'\n'); expm caught "$d" 'absolute path' "quoted \${ } with a \$( ) holding a subshell"
+# seat A, PR 439 round 2: a ) inside a bracket subscript or $[ ] also closes the substitution early in the command reader
+d=$(crr dq_w "${H}x=\"\$(declare -A a; a[)]=1 ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in an array subscript"
+d=$(crr dq_x "${H}x=\"\${y:-\$(declare -A a; a[)]=1 ; /tmp/evil)}\""$'\n'); expm caught "$d" 'bracket' "quoted \${ }: a ) in an array subscript in a \$( )"
+d=$(crr dq_y "${H}x=\${y:-\$(declare -A a; a[)]=1 ; /tmp/evil)}"$'\n'); expm caught "$d" 'bracket' "\${ } without quotes: a ) in an array subscript in a \$( )"
+d=$(crr dq_z "${H}x=\"\$(declare -A a; (( a[)]=1 )) ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in a subscript inside (( ))"
+d=$(crr dq_za "${H}x=\"\$(declare -A a=([)]=1) ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in a compound array assignment"
+d=$(crr dq_zb "${H}x=\"\$(declare -A a; echo \$[ a[)] ] ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in \$[ ]"
+d=$(crr dq_zc "${H}x=\"\$(declare -A a; a[k]=1 ; [[ -n \$x ]] && echo \${a[k]})\""$'\n'); expm ok "$d" - "control: balanced subscripts and [[ ]] in a quoted \$( )"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3443,7 +3451,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1410
+EXPECT=1417
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
