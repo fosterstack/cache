@@ -937,7 +937,7 @@ Our VEX files and the customer guide shall be tested against the real services, 
 |---|---|---|---|---|---|
 | REQ-SCAN-012-AC1 | Given a live test; when it runs; then it touches only the dedicated test repositories (one ECR, one Google Artifact Registry), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; no keys, nothing from the Mac | ci-workflow |  | approved | 1 item(s) |
 | REQ-SCAN-012-AC2 | Given the live test's images; when they are pushed; then they are our release images copied by digest plus one deliberately vulnerable fixture image; nothing is pushed anywhere public | ci-workflow |  | approved | 1 item(s) |
-| REQ-SCAN-012-AC3 | Given a live test run; when it ends; then it deletes what it created (images, suppression rules, uploaded VEX); the test repositories expire images after one day | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-012-AC3 | Given a live test run; when it ends; then it deletes what it created (images, suppression rules, uploaded VEX); the test repositories expire images after one day | ci-workflow |  | approved | 2 item(s) |
 | REQ-SCAN-012-AC4 | Given the live test; when it is triggered; then it runs on each release candidate and on any change to the guide or the VEX files, never on a schedule, with at most 50 pushes per run | ci-workflow |  | approved | 1 item(s) |
 | REQ-SCAN-012-AC5 | Given a live test; when it passes; then the finding showed before the suppression, was gone after, and every guide command worked exactly as written | ci-workflow |  | approved | 1 item(s) |
 
