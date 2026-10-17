@@ -3382,6 +3382,7 @@ def ac15_():
         old_mode = old_mode or ("100644" if mode != "000000" else None)
         if old_mode:
             d["old_modes"] = {f: old_mode}
+        d["contents"] = {f: {"old": None if old_mode in (None, "000000") else "# notes\n", "new": None if mode == "000000" else body}}
         return d
     VEXF = ".vex/fosterstack-cache.openvex.json"
     VEXC = c("v1", [VEXF])
@@ -3540,6 +3541,12 @@ def ac15_():
     check("AC15 unit: a new empty Markdown file is data: neutral", P.classify(cd_)[0] == "neutral", P.classify(cd_))
     D = P.decide("schedule", [nc(PS, body="null\n"), c("a", [".auditor/accepted-items.json"])], ["v0.2.1"], cut_today=False, removed=None)
     check("AC15 a JSON value that is not an object beside an accepted-items fix does not block the patch", D["cut"] and not D["not_clean"], D)
+    # the classifier asks for whole-blob evidence itself (Codex #425 r2, both seats): a record without `contents` is not proven data
+    check("AC15 unit: a replacement record without blob contents is dirty", P.classify({k: v for k, v in nc(KN).items() if k != "contents"})[0] == "dirty")
+    check("AC15 unit: a deletion record without blob contents is dirty", P.classify({k: v for k, v in nc(KN, mode="000000", old_mode="100644").items() if k != "contents"})[0] == "dirty")
+    check("AC15 unit: a contents record without the old side is dirty", P.classify(dict(nc(KN), contents={KN: {"new": "text\n"}}))[0] == "dirty")
+    D = P.decide("schedule", [{k: v for k, v in nc(KN, mode="000000", old_mode="100644").items() if k != "contents"}, c("a", [".auditor/accepted-items.json"])], ["v0.2.1"], cut_today=False, removed=None)
+    check("AC15 a deletion record without blob contents beside a fix blocks the patch", not D["cut"] and D["not_clean"], D)
     # the VEX statement file under .vex/ is NOT neutral (advisor 0254/0257 read-back): a change to it is a fix and cuts a patch; only .vex/README.md is data
     check("AC15 a change to the VEX statement file is a fix, never neutral", P.classify(nc(VEXF))[0] != "neutral" and P.classify(c("v", [VEXF]))[0] == "fix", [P.classify(nc(VEXF)), P.classify(c("v", [VEXF]))])
     check("AC15 a change to the VEX statement file ships bytes and cuts a patch", P.ships_bytes([VEXC]) and P.decide("schedule", [VEXC], ["v0.2.1"], cut_today=False, removed=None)["cut"])

@@ -202,7 +202,7 @@ SHEBANG_LINE = re.compile(r"(?m)^#!")
 def _not_data(f, diff, mode, old_mode, contents=None):
     """why a neutral-named path is not data (None when it is): its file types before and after, and its committed content.
     A script line is a shebang line (`#!` at the start of ANY line); it is looked for in the whole new content and in the
-    whole old content (what a commit deletes or replaces), read from the blobs when `contents` has them, else from the diff."""
+    whole old content (what a commit deletes or replaces), read from the blobs in `contents`; a record without them is not proven data (fail closed)."""
     if old_mode in ("100755", "120000"):
         return "%s was %s before: not data" % (f, "a symlink" if old_mode == "120000" else "executable")
     if mode != "000000" and mode != "100644":
@@ -211,14 +211,11 @@ def _not_data(f, diff, mode, old_mode, contents=None):
         return "%s has no usable old file type (%s): a neutral path is data only when its file type before and after is known" % (f, old_mode or "missing")
     if mode == "000000" and old_mode != "100644":
         return "%s is deleted and its old file type is unknown" % f
-    if contents is not None:
-        old_text, new_text = contents.get("old"), contents.get("new")
-        if (old_mode == "100644" and old_text is None) or (mode == "100644" and new_text is None):
-            return "%s: a blob that exists could not be read: not proven data" % f
-    else:
-        lines = (diff or "").split("\n")
-        old_text = "\n".join(l[1:] for l in lines if l[:1] in ("-", " ")) or None
-        new_text = "\n".join(l[1:] for l in lines if l[:1] in ("+", " ")) or None
+    if not isinstance(contents, dict) or "old" not in contents or "new" not in contents:
+        return "%s has no whole-blob evidence (old and new content): not proven data" % f
+    old_text, new_text = contents["old"], contents["new"]
+    if (old_mode == "100644" and old_text is None) or (mode == "100644" and new_text is None):
+        return "%s: a blob that exists could not be read: not proven data" % f
     for label, text in (("new", new_text), ("old", old_text)):
         if text is not None and ("\0" in text):
             return "%s holds NUL or non-text bytes (%s content): not text" % (f, label)
