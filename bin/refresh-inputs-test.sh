@@ -368,6 +368,7 @@ mkdir -p "$work/stubs4"; cat >"$work/stubs4/git" <<'G'
 echo "git $*" >>"$CALLS"
 case "$*" in *"rev-parse --abbrev-ref HEAD"*) echo "${GIT_STUB_DETACHED:+HEAD}${GIT_STUB_DETACHED:-main}" | sed 's/^HEAD.*/HEAD/';; esac
 case "$*" in *"rev-parse HEAD"*) echo cafe0123;; esac
+case "$*" in *"push"*"--delete"*) [ -z "${GIT_STUB_DELETE_FAIL:-}" ] || { echo "git: remote delete failed" >&2; exit 1; };; esac
 case "$*" in *"checkout -q "*) [ -z "${GIT_STUB_CHECKOUT_FAIL:-}" ] || { echo "git: checkout failed" >&2; exit 1; };; esac
 case "$*" in *ls-remote*) for b in ${GIT_STUB_TAKEN:-}; do case "$*" in *"refs/heads/$b") echo "deadbeef	refs/heads/$b";; esac; done;; esac
 exit 0
@@ -1466,6 +1467,23 @@ cp -R "$work/ar" "$work/ar-keep"
 run_s2 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
 t "AC29" "open-pr: exactly one pull request is opened, from a refresh/ branch, never merged, and nothing is pushed to main" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -q refresh && ! grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -Eq '( |:|/)main( |\$)' && ! grep -Eq '^gh pr (merge|review)|--admin|--auto' '$CALLS'"
 t "AC29" "open-pr: the pull request carries build/archive.json, a valid pointer naming the stored digest and the archive's files" bash -c "python3 '$rfd/rfcopy/bin/archive-verify.py' verify --pointer '$work/rp/build/archive.json' --dir '$work/ar' --pushed-digest '$DIGEST_X' && $GHPATHS | grep -q '^build/archive.json\$'"
+# AC34, round 1 of the seats: a plan that already names build/archive.json (the Go backfill: the refresh plans the pointer, open-pr adds it again) sends each path once; a symlink
+# among the planned paths is refused; a failed branch deletion is reported; the working tree is put back to the start commit after the API commit
+rm -rf "$work/plan-dup"; cp -R "$work/plan" "$work/plan-dup"; for pd_ in "$work/plan-dup"/*/; do printf 'build/archive.json\n' >>"${pd_}paths"; done
+rm -f "$CALLS.graphql"; run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-dup" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit, staged: a plan that already names build/archive.json sends it once (the API refuses duplicate paths): every path of the commit is unique and the pointer is in it" python3 - "$CALLS.graphql" <<'PY'
+import json, sys
+paths = [a["path"] for a in json.load(open(sys.argv[1]))["variables"]["input"]["fileChanges"]["additions"]]
+assert len(paths) == len(set(paths)) and "build/archive.json" in paths, paths
+PY
+rm -rf "$work/plan-link"; cp -R "$work/plan" "$work/plan-link"; ln -sf locks/melange.lock "$work/rp/build/link-to-lock"; for pd_ in "$work/plan-link"/*/; do printf 'build/link-to-lock\n' >>"${pd_}paths"; done
+run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-link" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit: a planned path that is a symlink is refused (no pull request, exit 1, the pushed branch deleted)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete' '$CALLS'"
+rm -f "$work/rp/build/link-to-lock"
+sgrun GH_STUB_VERIFIED=false GIT_STUB_DELETE_FAIL=1
+t "AC34" "signed commit: a branch that cannot be deleted after a refusal is REPORTED (the log names the branch and says the deletion failed), the job still fails (exit 1) and opens no pull request" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eqi 'could not delete the branch refresh/' '$work/log'"
+sgrun GH_STUB_VERIFIED=true
+t "AC34" "signed commit: after the API commit the working tree is put back to the start commit (the files the job edited are restored, so a later invocation in the same checkout sees the start state)" bash -c "grep -Eq '^git( -C [^ ]+)? checkout -q cafe0123 -- ' '$CALLS'"
 mkrepo; rm -rf "$work/plan"
 run_s2 "${rfn[@]}" "$RF" refresh --plan-dir "$work/plan" --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 run_s2 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp"
