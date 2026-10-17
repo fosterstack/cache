@@ -25,14 +25,16 @@ sut="$root/bin/install-scanner.sh"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 # the download stand-in: the installers fetch from fixed https URLs now, so a curl on PATH serves the local release layout STUB_REL (the part of the URL after /download/ or /dl/), or fails like a refused download
 stubbin="$work/stubbin"; mkdir -p "$stubbin"
-cat > "$stubbin/curl" <<'STUB'
+FXD_2="$stubbin/curl"
+cat > "$FXD_2" <<'STUB'
 #!/usr/bin/env bash
 out=""; u=""
 while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
 rel="${u#*/download/}"; [ "$rel" != "$u" ] || rel="${u#*/dl/}"
 [ -n "$out" ] && [ -f "${STUB_REL:-/nonexistent}/$rel" ] && cp "${STUB_REL}/$rel" "$out" || exit 22
 STUB
-chmod +x "$stubbin/curl"
+FXD_1="$stubbin/curl"
+chmod +x "$FXD_1"
 pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }

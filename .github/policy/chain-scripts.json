@@ -48,7 +48,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "af35a2e03e4a7ec7d1e82761b5b748700b9d7d42de5ca58b1d305a4771c5c9e3",
+      "sha256": "2e8a912b886780a91c3981ab02f04c0d886199db6fa79beb8288bfbf687e1750",
       "tools": [
         "at",
         "bash",
