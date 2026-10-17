@@ -3289,6 +3289,11 @@ d=$(crr dq_z "${H}x=\"\$(declare -A a; (( a[)]=1 )) ; /tmp/evil)\""$'\n'); expm 
 d=$(crr dq_za "${H}x=\"\$(declare -A a=([)]=1) ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in a compound array assignment"
 d=$(crr dq_zb "${H}x=\"\$(declare -A a; echo \$[ a[)] ] ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in \$[ ]"
 d=$(crr dq_zc "${H}x=\"\$(declare -A a; a[k]=1 ; [[ -n \$x ]] && echo \${a[k]})\""$'\n'); expm ok "$d" - "control: balanced subscripts and [[ ]] in a quoted \$( )"
+# seat B, PR 439 round 2: a quote that spans lines: the command reader read every line alone, so a line that begins inside a double quote and holds a lone ' hid what followed
+d=$(crr ml_a "${H}x=\""$'\n\'" ; /tmp/evil ; echo "\'"\n'); expm caught "$d" 'absolute path' "multi-line double quote: a line that starts inside the quote is not read as plain shell"
+d=$(crr ml_b "${H}x='"$'\n" ; /tmp/evil ; echo "\n\'\n'); expm caught "$d" 'absolute path' "multi-line single quote: the same"
+d=$(crr ml_c "${H}x=\$'"$'\n\\\' ; /tmp/evil ; echo \'\n\'\n'); expm caught "$d" 'absolute path' "multi-line ANSI-C quote: the same"
+d=$(crr ml_d "${H}echo \"first line"$'\nsecond line"; echo ok\necho \'one\ntwo (still data)\nthree\'\n'); expm ok "$d" - "control: ordinary multi-line double-quoted and single-quoted strings"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3451,7 +3456,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1417
+EXPECT=1421
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
