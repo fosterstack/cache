@@ -953,6 +953,12 @@ def judge_weekly(f, bad):
             dm = re.search(r"(\w+)=\$\(\s*crane digest [^\n]*\)", rrun)
             if not dm:
                 bad.append("weekly persona-uat's resolver does not capture the digest with `crane digest <registry>/<owner>/cache:<tag>` (the chain's pinned tool; no buildx, no docker)")
+            RESOLVER_SHAPES = (r'set -euo pipefail', r'\w+=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)', r'\w+=\$\(crane digest "[^"\n]*"\)',
+                               r'echo "tag=\$\{?\w+\}?" >> "\$GITHUB_OUTPUT"', r'echo "image=[^"\n]*" >> "\$GITHUB_OUTPUT"')
+            rlines = [l.strip() for l in rrun.splitlines() if l.strip()]
+            odd = [l for l in rlines if not any(re.fullmatch(x, l) for x in RESOLVER_SHAPES)]
+            if odd or not rlines or rlines[0] != "set -euo pipefail":
+                bad.append(f"weekly persona-uat's resolver has a line that is not one of the five allowed shapes (set -euo pipefail first, the gh release view read, the one crane digest read, the tag= and the image= output lines): {(odd or ['set -euo pipefail missing as the first line'])[0][:80]!r}")
             if any(not re.fullmatch(r'\s*\w+=\$\(crane digest "[^"\n]*"\)\s*', l) for l in insp):
                 bad.append("weekly persona-uat's digest line must be one `crane digest` with no pipe or fallback, the whole line exactly NAME=$(crane digest \"<ref>\") (a failing crane must fail the step, never hand the driver another digest)")
             if not dm or not re.search(r"image=[^\n]*@\$\{?" + re.escape(dm.group(1)) + r"\}?(?![\w])[^\n]*>>\s*\"?\$GITHUB_OUTPUT", rrun):
@@ -1176,7 +1182,7 @@ def synth_persona_job(weekly):
            {"uses": "actions/checkout@" + H40, "with": {"path": "release-docs", "ref": "${{ steps.resolve.outputs.tag }}", "persist-credentials": "false"}}] if weekly
           else [{"uses": "actions/checkout@" + H40, "with": {"persist-credentials": "false"}}])
     resolver = [{"id": "resolve", "env": {"GH_REPO": "${{ github.repository }}", "REGISTRY_OWNER": "${{ github.repository_owner }}", "GH_TOKEN": "${{ github.token }}"},
-                 "run": 'tag=$(gh release view --json tagName -q .tagName)\nd=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")\n'
+                 "run": 'set -euo pipefail\ntag=$(gh release view --json tagName -q .tagName)\nd=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")\n'
                         'echo "tag=$tag" >> "$GITHUB_OUTPUT"\necho "image=ghcr.io/${REGISTRY_OWNER}/cache@$d" >> "$GITHUB_OUTPUT"'}] if weekly else []
     head = ([co[0], {"run": "./" + pre + "bin/install-scanner.sh crane"}] + resolver + [co[1]]) if weekly else co
     steps = (head + [{"run": "./" + pre + "bin/install-scanner.sh kind"},
@@ -1463,6 +1469,14 @@ mutate("weekly resolver wraps the digest read in an if-not", "no pipe or fallbac
        lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+)=(\$\(crane digest [^\n]*\))$", r"if ! \1=\2; then \1=sha256:" + "a" * 64 + "; fi", _resolver(j)["run"])), "fresh")
 mutate("weekly resolver pipes the output after the substitution", "no pipe or fallback",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}") | cat')), "fresh")
+mutate("weekly resolver puts the digest read in a group with a fallback after it", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+=\$\(crane digest [^\n]*\))$", lambda m: "{\n" + m.group(1) + "\n} || " + m.group(1).split("=")[0] + "=sha256:" + "a" * 64, _resolver(j)["run"])), "fresh")
+mutate("weekly resolver turns errexit off before the digest read", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("tag=$(gh release view", "set +e\ntag=$(gh release view", 1)), "fresh")
+mutate("weekly resolver reassigns the digest on a line of its own", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+)=\$\(crane digest [^\n]*\)$", lambda m: m.group(0) + "\n" + m.group(1) + "=sha256:" + "a" * 64, _resolver(j)["run"])), "fresh")
+mutate("weekly resolver does not start with set -euo pipefail", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("set -euo pipefail\n", "", 1)), "fresh")
 mutate("weekly resolver pipes the digest through another command", "no pipe or fallback",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" | head -n1)')), "fresh")
 mutate("rc job installs crane it has no use for", "a run step before the driver other than", lambda j: j["steps"].insert(1, {"run": "./bin/install-scanner.sh crane"}))
