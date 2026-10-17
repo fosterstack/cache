@@ -1487,6 +1487,13 @@
       "ruling": "text, not a command: a string constant or comment in a Python program the test runs from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
       "context": "pystring",
       "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "3457c08cad71ac4ef91abeb781f20baf8bf2dd95dffe15d0da13a9070b987b7f",
+      "line": "b8f0a9f985f8e6f15bcf0c94e2c10ec47f1d918a0c4317c93b7a4f012702780f",
+      "ruling": "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): the Go toolchain tarball download (one per missing tarball) in bin/refresh-inputs.sh; one curl with fixed flags and the single operand https://go.dev/dl/ plus one variable; the file name passed a closed Go-tarball grammar and the fetched bytes are stored only after their sha256 equals the expected-sha256 pinned by the committed recipes"
     }
   ]
 }

@@ -37,6 +37,51 @@ die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 usage() { die "usage: $SELF refresh --repo-dir DIR --archive DIR [--plan-dir DIR] | $SELF fips-module --go-root DIR --repo-dir DIR [--plan-dir DIR] | $SELF open-pr --plan-dir DIR --repo-dir DIR [--archive DIR --archive-digest sha256:HEX] | $SELF bootstrap --repo-dir DIR --archive DIR"; }
 
 # open_pr BRANCH TITLE BODY PATH...: branch, commit, push the branch (never main), open the PR (never merge it)
+# REQ-REFRESH-001-AC34: every planned path must be a regular file of the repository (no symlink, nothing real-pathed outside it, not under .git), checked before any branch is
+# pushed; the commit builder and the restoration after the commit rely on this one check
+check_paths() {
+  /usr/bin/python3 -I -B - "$repo" "$@" <<'PY'
+import os, sys
+repo = sys.argv[1]; root = os.path.realpath(repo); bad = 0
+for p in sys.argv[2:]:
+    full = repo + "/" + p
+    n_ = os.path.normpath(p)
+    if p.startswith("/") or ".." in p.split("/") or n_ == ".git" or n_.startswith((".git/", "../")) or os.path.islink(full) or not os.path.isfile(full) or os.path.commonpath([root, os.path.realpath(full)]) != root:
+        print("refresh-inputs.sh: %r is not a regular file of the repository (a symlink, a path outside it or its .git is refused); no branch was pushed" % p, file=sys.stderr); bad = 1
+sys.exit(bad)
+PY
+}
+# REQ-REFRESH-001-AC34: the pull request's commit through the API. $1 branch (already pushed), $2 the commit it points at, $3 headline, $4 body, then the repository paths.
+signed_commit() {
+  local branch=$1 base=$2 headline=$3 cbody=$4 oid ver; shift 4
+  /usr/bin/python3 -I -B - "$repo" "$tmp/commit-input.json" "$branch" "$base" "$headline" "$cbody" "$@" <<'PY' || return 1
+import base64, json, os, sys
+repo, out, branch, base, headline, body = sys.argv[1:7]
+adds, seen = [], set()
+root = os.path.realpath(repo)
+for p in sys.argv[7:]:
+    full = repo + "/" + p
+    n_ = os.path.normpath(p)
+    if p.startswith("/") or ".." in p.split("/") or n_ == ".git" or n_.startswith((".git/", "../")) or os.path.islink(full) or not os.path.isfile(full) or os.path.commonpath([root, os.path.realpath(full)]) != root:
+        print("refresh-inputs.sh: %r is not a regular file of the repository (a symlink, a path outside it or its .git is refused); no commit was made" % p, file=sys.stderr); sys.exit(1)
+    if p in seen:
+        continue                                   # the API refuses a path twice: the plan may already name build/archive.json when open-pr adds the pointer
+    seen.add(p)
+    adds.append({"path": p, "contents": base64.b64encode(open(full, "rb").read()).decode()})
+q = "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}"
+inp = {"branch": {"repositoryNameWithOwner": os.environ.get("GITHUB_REPOSITORY", "fosterstack/cache"), "branchName": branch}, "message": {"headline": headline, "body": body},
+       "fileChanges": {"additions": adds}, "expectedHeadOid": base}
+json.dump({"query": q, "variables": {"input": inp}}, open(out, "w"))
+PY
+  oid=$(cd "$repo" && /usr/bin/gh api graphql --input "$tmp/commit-input.json" -q '.data.createCommitOnBranch.commit.oid') \
+    || { echo "refresh-inputs.sh: the API could not create the commit on $branch; opening no pull request" >&2; return 1; }
+  case $oid in *[!0-9a-f]*|'') echo "refresh-inputs.sh: the API returned no commit id; opening no pull request" >&2; return 1;; esac
+  [ "${#oid}" -eq 40 ] || { echo "refresh-inputs.sh: the API returned no commit id; opening no pull request" >&2; return 1; }
+  ver=$(cd "$repo" && /usr/bin/gh api "repos/{owner}/{repo}/commits/$oid" -q '.commit.verification.verified') \
+    || { echo "refresh-inputs.sh: could not ask whether commit $oid is verified; opening no pull request" >&2; return 1; }
+  [ "$ver" = true ] || { echo "refresh-inputs.sh: commit $oid on $branch is not verified by GitHub (main requires signed commits); opening no pull request" >&2; return 1; }
+  echo "signed commit $oid on $branch (verified by GitHub)"
+}
 open_pr() {
   local branch=$1 title=$2 body=$3; shift 3
   if [ -n "$plan_dir" ] && [ "$cmd" != open-pr ]; then   # staged: the pull request is written down and opened later by `open-pr`, once the archive is stored (rules 6 and 7)
@@ -79,11 +124,24 @@ PY
     n=$((n+1)); [ $n -le 9 ] || die "the branch name $base and its numbered variants are all taken on the remote" 1
     branch=$base-$n
   done
-  local startbr startsha rc=0
+  local startbr startsha rc=0 pushed=
   startbr=$(/usr/bin/git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   startsha=$(/usr/bin/git -C "$repo" rev-parse HEAD 2>/dev/null || true)
-  /usr/bin/git -C "$repo" checkout -b "$branch" && /usr/bin/git -C "$repo" add -- "$@" && /usr/bin/git -C "$repo" commit -q -m "$title" -m "$body" \
-    && /usr/bin/git -C "$repo" push -q origin "$branch" && (cd "$repo" && /usr/bin/gh pr create --base main --head "$branch" --title "$title" --body "$body") || rc=$?
+  # REQ-REFRESH-001-AC34: main requires signed commits, so the one commit is made through the API (GitHub signs what the job's App token creates), on a branch that was
+  # pushed at the commit the job started from (nothing new to sign locally); the pull request is opened only for a commit the API reports as verified
+  { [ -n "$startsha" ] && check_paths "$@" && /usr/bin/git -C "$repo" checkout -b "$branch" \
+    && { PENDING_BRANCH=$branch; /usr/bin/git -C "$repo" push -q origin "$branch" || { PENDING_BRANCH=; false; }; } && pushed=1 \
+    && signed_commit "$branch" "$startsha" "$title" "$body" "$@" \
+    && (cd "$repo" && /usr/bin/gh pr create --base main --head "$branch" --title "$title" --body "$body"); } || rc=$?
+  if [ "$rc" = 0 ]; then PENDING_BRANCH=; elif [ -n "$pushed" ]; then PENDING_BRANCH=; drop_branch "$branch"; fi   # no half-made branch is left behind, and a failed deletion is reported
+  # the commit was made through the API, so the files the job edited are still in the working tree: put them back to the start commit (a later invocation in the same
+  # checkout must see the start state, as it did when the edits were committed to the branch)
+  if [ -n "$startsha" ] && check_paths "$@" 2>/dev/null; then   # only paths that passed the check are touched: a refused path (.git, a link, an outside file) is never restored or removed
+    for _p in "$@"; do
+      if /usr/bin/git -C "$repo" ls-files --error-unmatch -- "$_p" >/dev/null 2>&1; then /usr/bin/git -C "$repo" checkout -q "$startsha" -- "$_p" || { echo "refresh-inputs.sh: could not restore $_p to $startsha" >&2; rc=1; }
+      else /bin/rm -f -- "$repo/$_p" || { echo "refresh-inputs.sh: could not remove $_p" >&2; rc=1; }; fi
+    done
+  fi
   # back to where the job started, whether or not a step failed: a later step of the same job (the FIPS check) must not branch from this commit.
   # A detached start is restored by its commit.
   if [ -n "$startbr" ] && [ "$startbr" != HEAD ]; then /usr/bin/git -C "$repo" checkout -q "$startbr" || { echo "refresh-inputs.sh: could not go back to $startbr; a later step would branch from the refresh commit" >&2; rc=1; }
@@ -110,8 +168,20 @@ case $cmd in archive-key-check) { [ -n "$archive" ] && [ -d "$archive" ]; } || d
 case $cmd in refresh|fips-module) [ -n "$pr_author" ] || die "--pr-author is required (the Auditor App's name; gh reports it as app/<name>, both spellings are accepted): without it a stranger's pull request on a refresh/ branch could be counted";; esac
 
 tmp=$(/usr/bin/mktemp -d)
-cleanup() { local rc=$?; set +e; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
+PENDING_BRANCH=
+drop_branch() { /usr/bin/git -C "$repo" push -q origin --delete "$1" >/dev/null 2>&1 || echo "refresh-inputs.sh: could not delete the branch $1 from the remote; delete it by hand" >&2; }
+# a signal can arrive after `gh pr create` succeeded and before PENDING_BRANCH is cleared: the branch of a live pull request is never deleted (deleting it would close the PR); if the
+# open pull requests of the branch cannot be read the branch is kept too (a leftover branch is harmless, a closed pull request is not)
+drop_unless_pr() {
+  local n
+  n=$(cd "$repo" && /usr/bin/gh pr list --state open --head "$1" --json number -q length 2>/dev/null) || n=unknown
+  if [ "$n" = 0 ]; then drop_branch "$1"; else echo "refresh-inputs.sh: kept the branch $1: it has an open pull request, or its pull requests could not be read ($n)" >&2; fi
+}
+cleanup() { local rc=$?; set +e; [ -z "$PENDING_BRANCH" ] || drop_unless_pr "$PENDING_BRANCH"; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status; a branch pushed for a pull request that was not opened (an interrupted run) is removed
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 case $cmd in
 archive-key-check)
@@ -317,7 +387,7 @@ PY
   # The embedded program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per line); the shell fetches them with the
   # ruled download lines below and runs the program again (it starts from the same state each time, up to three passes: packages, index, the rest).
   refresh_py() { /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY'
-import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, zlib
+import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, yaml, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
 ARCHS = ["x86_64", "aarch64"]
 
@@ -713,8 +783,57 @@ for (name, ver, arch), e in sorted(fresh.items()):
         HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again, or find out how it got damaged)" % dest
         verify(dest, e)
         HINT = ""
+# REQ-REFRESH-001-AC33 (rule 12: Go is kept in the archive): the Go tarballs that the committed recipes pin. A pin is the go.dev file name and its sha256; the recipes must agree.
+GO_FILE = re.compile(r"go[0-9]+(?:\.[0-9]+){1,2}\.linux-(?:amd64|arm64)\.tar\.gz")
+GO_URL = "https://go.dev/dl/"
+
+
+def go_pins():
+    """{file: sha256} of the Go tarballs pinned by build/melange.yaml and build/melange-fips.yaml; every fetch step must be a go.dev/dl uri with a 64-hex pin, and the two
+    recipes may not pin one file with two checksums (a pin that is missing, malformed or in conflict stops the job)"""
+    pins, seen_in = {}, {}
+    for rf in ("melange.yaml", "melange-fips.yaml"):
+        try:
+            doc = yaml.safe_load(open("%s/build/%s" % (repo, rf)))
+            steps = [st for st in (doc.get("pipeline") or []) if isinstance(st, dict) and st.get("uses") == "fetch"]
+        except Exception as e_:
+            fail("build/%s cannot be read for its Go pins: %s" % (rf, e_), 2)
+        for st in steps:
+            w_ = st.get("with") if isinstance(st.get("with"), dict) else {}
+            uri, sha = str(w_.get("uri", "")), w_.get("expected-sha256")
+            if not uri.startswith(GO_URL) or not GO_FILE.fullmatch(uri[len(GO_URL):]):
+                fail("build/%s: a fetch step names %r, which is not %s followed by a Go tarball file name; refusing" % (rf, uri, GO_URL), 2)
+            f_ = uri[len(GO_URL):]
+            if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+                fail("build/%s: the Go fetch of %s has no valid expected-sha256 pin (64 lower-case hex); refusing" % (rf, f_), 2)
+            if f_ in pins and pins[f_] != sha:
+                fail("build/%s and build/%s pin %s with two different sha256 values; refusing" % (seen_in[f_], rf, f_), 1)
+            pins[f_], seen_in[f_] = sha, rf
+    return pins
+
+
+def sha256_file(path):
+    h_ = hashlib.sha256()
+    with open(path, "rb") as fh_:
+        for chunk in iter(lambda: fh_.read(1 << 20), b""):
+            h_.update(chunk)
+    return h_.hexdigest()
+
+
+go_pin = go_pins()
+go_dir = archive + "/go"
+if os.path.lexists(go_dir) and (os.path.islink(go_dir) or not os.path.isdir(go_dir)):
+    fail("%s is a symlink or not a directory; the archive's Go directory must be a real directory (nothing was written)" % go_dir, 1)
+go_missing = []
+for f_, sha_ in sorted(go_pin.items()):
+    dest_ = "%s/%s" % (go_dir, f_)
+    if os.path.lexists(dest_):
+        if os.path.islink(dest_) or not os.path.isfile(dest_) or sha256_file(dest_) != sha_:
+            fail("go/%s is in the archive but does not have the sha256 its recipe pins (%s): delete that file and run again, or find out how it got damaged" % (f_, sha_), 1)
+    else:
+        go_missing.append(f_)
 # only now, before any download: a waiting refresh PR means "wait" (a missing package is fetched by that PR's own run), so a flaky download can never turn a wait into a red run
-if ahead or any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) for (n_, v_, a_) in fresh):
+if ahead or go_missing or any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) for (n_, v_, a_) in fresh):
     open_prs_guard("refresh")
 
 
@@ -778,6 +897,19 @@ for (name, ver, arch) in sorted(ff_mel):
     ff_mel_parts.append((part, "%s/%s/%s-%s.apk" % (archive, arch, name, ver), name, ver, arch))
 if want_pk:
     open(tmp + "/want-packages", "w").write("".join(l + "\n" for l in want_pk))
+    sys.exit(75)
+keep_go, want_go = [], []
+for f_ in go_missing:
+    part = "%s/go/%s" % (stage, f_)
+    os.makedirs(os.path.dirname(part), exist_ok=True)
+    if not os.path.exists(part):
+        want_go.append(f_)       # the file name passed GO_FILE above
+        continue
+    if sha256_file(part) != go_pin[f_]:
+        fail("checksum mismatch: %s fetched from go.dev does not have the sha256 its recipe pins (%s); nothing was stored" % (f_, go_pin[f_]), 1)
+    keep_go.append((part, "%s/%s" % (go_dir, f_), f_))
+if want_go:
+    open(tmp + "/want-go", "w").write("".join(f + "\n" for f in want_go))
     sys.exit(75)
 
 
@@ -849,6 +981,14 @@ for rf in ("melange.yaml", "melange-fips.yaml"):
 
 for n in notes:
     print("note: " + n)
+if go_missing:
+    notes.append("the archive gains the Go toolchain tarball(s) the recipes pin: %s" % ", ".join(go_missing))
+    _ptr = repo + "/build/archive.json"
+    if os.path.exists(_ptr):
+        if _ptr not in changed:
+            changed.append(_ptr)      # the pointer is rewritten by open-pr once the archive is stored; the pull request exists because the archive gained files
+    elif not changed:
+        fail("the archive gains Go tarballs but there is no pointer and nothing else changes, so no pull request could carry it; a human must look", 1)
 record_path = repo + "/build/locks/archive-index.sha256"
 if not changed and os.path.exists(record_path) and not ahead:
     if keep:
@@ -934,13 +1074,15 @@ if not os.path.exists(record_path) or open(record_path).read() != record_text:
     changed.append(record_path)
 
 # before ANY change: directories, temp names and writability (the same checks the re-fetch path ran)
-targets = list(changed) + [dest for _, dest, *_ in keep]
+targets = list(changed) + [dest for _, dest, *_ in keep] + [dest for _, dest, _f in keep_go]
 for arch in ARCHS:
     targets += ["%s/%s/APKINDEX.tar.gz" % (archive, arch), "%s/%s/index/APKINDEX-%s.tar.gz" % (archive, arch, index_parts[arch][1])]
 preflight(targets)
 
 # everything verified: now the archive and the repository change (each file is written under a temp name and renamed)
 for part, dest, *_ in keep:
+    place(part, dest)
+for part, dest, _f in keep_go:
     place(part, dest)
 for arch in ARCHS:
     part, sha = index_parts[arch]
@@ -964,7 +1106,7 @@ if mel_path in changed:
 for path, out in recipes.items():
     write_atomic(path, out)
 
-lines = ["- archived %s-%s.apk (%s)" % (n, v, a) for _, _, n, v, a in keep] + ["- stored the live signed package index (%s) as index/APKINDEX-%s.tar.gz" % (a, index_parts[a][1]) for a in ARCHS]
+lines = ["- archived go/%s (the Go toolchain a recipe pins, checked against that pin)" % f for _, _, f in keep_go] + ["- archived %s-%s.apk (%s)" % (n, v, a) for _, _, n, v, a in keep] + ["- stored the live signed package index (%s) as index/APKINDEX-%s.tar.gz" % (a, index_parts[a][1]) for a in ARCHS]
 supersedes = []
 if ahead:   # the reconcile PR says why the index record jumps: it supersedes a refresh PR that was closed unmerged
     prev = None
@@ -993,7 +1135,7 @@ open(tmp + "/sig", "w").write(sig)
 open(tmp + "/body", "w").write(body)
 PY
   }
-  for _pass in 1 2 3; do
+  for _pass in 1 2 3 4; do
     _rc=0; refresh_py || _rc=$?
     [ "$_rc" = 75 ] || break
     if [ -s "$tmp/want-packages" ]; then
@@ -1002,6 +1144,12 @@ PY
         /usr/bin/curl -q -fsSL -g --max-filesize 536870912 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download a package from live Wolfi" 1
       done <"$tmp/want-packages"
       /bin/rm -f "$tmp/want-packages"
+    elif [ -s "$tmp/want-go" ]; then
+      while read -r f; do
+        echo "refresh-inputs.sh: fetching the Go toolchain $f"
+        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/go/$f" "https://go.dev/dl/$f" || die "could not download a Go toolchain from go.dev" 1
+      done <"$tmp/want-go"
+      /bin/rm -f "$tmp/want-go"
     elif [ -s "$tmp/want-index" ]; then
       while read -r p f; do
         /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 600 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download the live package index" 1

@@ -55,7 +55,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "06731c66ba8c4fd35b5b2fcdfffd509cab58d331ea919463e1591cac98933d02",
+      "sha256": "7249adc2203c65b5baa9d3cf25368692f6c475dbb9abc8fe0ee2b53748c84cbc",
       "tools": [
         "at",
         "curl",
@@ -455,7 +455,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names gitsign and git verify-tag, verifies and signs nothing",
-      "sha256": "bee0007945368f6c515b46e989b9f65a58eda3f7e59d25c66d3445c614c9708f"
+      "sha256": "2c4eb2557b672c98ed40957734c535cad6e6a363e9bcbd106f4568dc9d415994"
     },
     {
       "path": "bin/build-stage-refuse-mode.sh",

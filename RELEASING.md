@@ -27,7 +27,11 @@ signing key or `packages: write`.
   the apks on two native runners (amd64 and arm64) and assembles the images
   and archives. Witness (pinned by checksum, set up first) wraps every step
   through `bin/witnessed.sh` and signs Build's record keyless under Build's
-  identity; `digests.json` is the list of everything Build made.
+  identity; `digests.json` is the list of everything Build made. Before
+  `digests.json`, Build makes each image's final index from the built index
+  and the committed VEX file: the platform manifests plus one VEX attestation
+  child per platform. The final index's digest is the one that is signed,
+  attested, tested and promoted.
 - **Sign** (`stage-sign.yml`): its own job and workflow file; it receives only
   Build's digest list, never runs code from the build, and writes and signs the
   SLSA provenance keyless under its own identity.
