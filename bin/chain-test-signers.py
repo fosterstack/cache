@@ -48,7 +48,7 @@ def jload(path):
 WORKSPACE_ROOT = re.compile(r"(?<![^\s;&|(){}<>`\"'=,])\$(?:GITHUB_WORKSPACE|\{GITHUB_WORKSPACE\})/")   # the runner's checkout root, written as the variable and a slash, at the START of a word (an exact variable name: GITHUB_WORKSPACEX does not match; bin/$GITHUB_WORKSPACE/x and ./$GITHUB_WORKSPACE/x do not either)
 WORKSPACE_PLAIN = re.compile(r"(?<!\$)(?:\$GITHUB_WORKSPACE(?![A-Za-z0-9_])|\$\{GITHUB_WORKSPACE\})")   # the only forms in which a listed script may name the variable: a plain read
 WORKSPACE_PIECE = re.compile(r"[A-Z]{3,}")   # an upper-case run that is a piece of WORKSPACE, or holds five letters of it in a row: a name can be built from pieces only if a script holds them
-HEREDOC_QUOTED = re.compile(r"<<-?[ \t]*(?:(['\"])([^'\"\n]+)\1|\\([^\s;&|()<>]+))")   # any quoted or backslashed delimiter, whatever characters it holds
+HEREDOC_QUOTED = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(?:(['\"])([^'\"\n]+)\1|\\([^\s;&|()<>]+))")   # any quoted or backslashed delimiter, whatever characters it holds
 def single_quoted_spans(body):
     """(start, end) of every stretch of a shell text whose dollar signs are plain text: single-quoted stretches (across lines) and bodies of quoted here-documents. Quotes inside double quotes, after a backslash or in a comment do not count, except that a command substitution (dollar-paren or backquote) inside double quotes is scanned afresh; an unclosed quote runs to the end."""
     spans, i, n, a = [], 0, len(body), 0
@@ -94,12 +94,19 @@ def single_quoted_spans(body):
     if stack[-1] == "s": spans.append((a, n))
     return spans
 WORKSPACE_SLICE = re.compile(r"\$\{[A-Za-z_0-9@*]+(?::[^-=+?}]|[#%/^,])")   # a slice or pattern edit of a variable's value: ${x:2:4} ${x#?} ${x%?} ${x/a/b} ${x^^}
-WORKSPACE_COARSE = re.compile(r"\beval\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
+WORKSPACE_COARSE = re.compile(r"\beval\b|\balias\b|\bexpand_aliases\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
+WORKSPACE_NAMING = re.compile(r"(?:^|[\s;&|(){}])(?:export|readonly|declare|typeset|local|unset|read|let|mapfile|readarray|getopts)\b([^\n;&|<>]*)")
+WORKSPACE_DOLLAR_WORD = re.compile(r"""(?:^|\s)["']?\$""")
+def workspace_by_runtime_name(body):
+    """A builtin that sets or unsets a variable and is handed a name from run-time data: an operand that starts with a dollar sign, or a command that lists the environment."""
+    if re.search(r"\bcompgen\b|\bprintenv\b|\benv\s*$|\bdeclare\s+-\w*p|\bexport\s+-p\b", body, re.M): return True
+    if re.search(r"^[ \t]*[\"']?\$[^\s=]*[\"']?=", body, re.M): return True        # "$1"=x as a command word
+    return any(WORKSPACE_DOLLAR_WORD.search(" " + m.group(1)) for m in WORKSPACE_NAMING.finditer(body))
 def workspace_strict(body):
     """The script that READS the variable to name a listed helper gets the strictest text test: no eval, name reference, indirection, printf -v or source of a variable path; no slice or pattern edit of any value; and no upper-case run holding even three letters in a row of WORKSPACE.
     Stated limit: this text check refuses every plain, builtin and name-piece way to change GITHUB_WORKSPACE; deliberately obfuscated shell (for example quoting that only looks like a comment or a quote to a scanner) is caught by review and the sha256 pin of the listed row, not by this check."""
     rest = WORKSPACE_PLAIN.sub("", body)
-    return bool(WORKSPACE_COARSE.search(body)) or bool(WORKSPACE_SLICE.search(rest)) or any(r[k:k + 3] in "WORKSPACE" for r in WORKSPACE_PIECE.findall(rest) for k in range(len(r) - 2))
+    return bool(WORKSPACE_COARSE.search(body)) or bool(WORKSPACE_SLICE.search(rest)) or workspace_by_runtime_name(body) or any(r[k:k + 3] in "WORKSPACE" for r in WORKSPACE_PIECE.findall(rest) for k in range(len(r) - 2))
 def workspace_touched(body):
     """Does this script do anything with GITHUB_WORKSPACE but read it plainly (set, export, unset, read into, default-expand, brace-expand, build the name)?"""
     quoted = single_quoted_spans(body)                      # a read inside a single quote (on any line) or after a backslash is the text itself: it can be sliced into a name
