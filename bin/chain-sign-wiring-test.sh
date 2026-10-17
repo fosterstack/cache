@@ -2891,6 +2891,11 @@ kc ws_bad2 'bash "$OTHER/bin/build-apk.sh"' 'handed' '["bash"]' '["bin/build-apk
 kc ws_bad3 'bash "$GITHUB_WORKSPACE/../bin/build-apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad4 'bash "$GITHUB_WORKSPACE/bin/build-apk.sh/../evil.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad5 'bash "$GITHUB_WORKSPACEX/bin/build-apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad6 'bash "./$GITHUB_WORKSPACE/bin/build-apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad7 'bash "./${GITHUB_WORKSPACE}/bin/build-apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad8 'bash "bin/$GITHUB_WORKSPACE/build-apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad9 'bash "bin/${GITHUB_WORKSPACE}/build-apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad10 'bash "bin/build-$GITHUB_WORKSPACE/apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
 ko r5_ok2 '2>&1 cp x y'
 ko r5_ok3 'echo a > out; cat out'
 # (6) the reviewed text starts at the first assignment or redirection of the simple command
@@ -3368,7 +3373,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1339
+EXPECT=1344
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
