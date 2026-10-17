@@ -2908,6 +2908,23 @@ kc ws_bad18 "bash '\${GITHUB_WORKSPACE}/bin/build-apk.sh'" 'handed' '["bash"]' '
 kc ws_bad19 'bash \$GITHUB_WORKSPACE/bin/build-apk.sh' 'handed' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad20 'local GITHUB_WORKSPACE=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok3 'cd "$GITHUB_WORKSPACE"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'
+# a variable name built at run time can reach the same variable without ever writing its name: any such form before the call refuses the prefix (round 5)
+kc ws_bad21 'n=GITHUB_\nexport "${n}WORKSPACE=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad22 'n=GITHUB_\nprintf -v "${n}WORKSPACE" %s /tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad23 'n=GITHUB_\ndeclare -n r="${n}WORKSPACE"\nr=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad24 'n=GITHUB_\nread -r "${n}WORKSPACE" <<<"/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad25 'n=GITHUB_WORKSPAC\n: ${!n}\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad26 'n=GITHUB_\n(( ${n}WORKSPACE = 1 ))\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad27 'n=GITHUB_\nmapfile "${n}WORKSPACE" <<<"/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad28 'n=GITHUB_\neval "${n}WORKSPACE=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash","eval"]' '["bin/build-apk.sh"]'
+kc ws_bad29 'n=GITHUB_\nlet "${n}WORKSPACE=1"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+ko ws_ok4 'export FOO="$HOME/x"\nD=$GITHUB_WORKSPACE\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad30 'export {GITHUB_WORKSPACE,X}=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad31 'unset {GITHUB_WORKSPACE,X}\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad32 'read -r {GITHUB_WORKSPACE,X} </dev/null\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+# a parent that changes the variable and then runs a listed child with no prefix of its own is refused too
+kc ws_bad33 'export GITHUB_WORKSPACE=/tmp/x\nbash bin/build-apk.sh' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad34 'GITHUB_WORKSPACE=/tmp/x bash bin/build-apk.sh' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 ko r5_ok2 '2>&1 cp x y'
 ko r5_ok3 'echo a > out; cat out'
 # (6) the reviewed text starts at the first assignment or redirection of the simple command
@@ -3385,7 +3402,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1355
+EXPECT=1370
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
