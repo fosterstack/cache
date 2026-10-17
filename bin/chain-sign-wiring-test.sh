@@ -2768,6 +2768,14 @@ d=$(cfix al_24 '2>/dev/null set -o posix\nx=1 </dev/null shopt -s "$o"' '[]'); e
 d=$(cfix al_25 'time -p set -o posix' '[]'); expm caught "$d" 'set -o posix' "time -p before set -o posix: refused"
 d=$(cfix al_26 'echo x | { cat; } ; trap "shopt -s $o" DEBUG' '[]'); expm caught "$d" 'shopt' "shopt inside a trap string: refused (the word is not a plain command)"
 d=$(cfix al_27 '>/dev/null shopt -s nullglob\nshopt -s nullglob' '[]'); expm ok "$d" - "a redirection before an allowed shopt use is accepted"
+# round 9 of the seats (433, both seats): a blank after a redirection operator, >|, <<<, +=, a quoted assignment value before `set -o posix` hid it from the prefix pattern; the count backstop refuses every set -o / shopt that is not a plain closed-list command
+d=$(cfix al_28 '> /dev/null set -o posix' '[]'); expm caught "$d" 'set -o' "a blank after the redirection operator before set -o posix: refused (backstop by count)"
+d=$(cfix al_29 'x+=1 set -o posix\n>| f set -o posix\n<<< x set -o posix' '[]'); expm caught "$d" 'set -o' "+=, >| and <<< prefixes before set -o posix: refused"
+d=$(cfix al_30 'x="a b" set -o posix' '[]'); expm caught "$d" 'set -o' "a quoted assignment value with a blank before set -o posix: refused"
+d=$(cfix al_31 'm=pos; m+=ix\n> /dev/null set -o "$m"' '[]'); expm caught "$d" 'set -o' "set -o handed a run-time option behind a spaced redirection: refused"
+d=$(cfix al_32 '# Only set -eo pipefail is set here' '[]'); expm caught "$d" 'set -o' "prose that says set -eo pipefail is refused too (fail-closed: reword the comment)"
+d=$(cfix al_33 '> /dev/null /usr/bin/curl() { :; }' '["curl"]'); expm caught "$d" 'function' "a path-named function definition behind a spaced redirection: refused (the function check has no prefix gate)"
+d=$(cfix al_34 '> /dev/null unalias -a\nBASH_ALIASES=()' '[]'); expm caught "$d" 'alias' "unalias and BASH_ALIASES behind a prefix: refused (whole-word search, no prefix gate)"
 d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
 d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
@@ -3478,7 +3486,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1447
+EXPECT=1454
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

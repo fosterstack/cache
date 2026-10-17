@@ -4,7 +4,7 @@
 # Its last step writes the asserted ACs to $GITHUB_OUTPUT (the results step of acceptance.yml; the Check acceptance wrapper reads it).
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
-# step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+# step stops the suite. Only errexit and pipefail are set here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
 # The one Gradle invocation of the three builds below (the sample project's own wrapper, as acceptance.yml ran it).
 capped_build() { ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1; }

@@ -4,7 +4,7 @@
 # bin/install-kind.sh, the node image by digest) and load the candidate. CANDIDATE_LOCAL is the candidate's local tag.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
-# step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+# step stops the suite. Only errexit and pipefail are set here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
 # The job env of stage-acceptance-k8s.yml, unchanged: the pinned client image for the runner pod.
 export CLIENT_IMAGE=curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
