@@ -2292,7 +2292,8 @@ def _resolve_script(path, text, entries, bases=()):
     return None
 
 
-READ_SCRIPTS = []                                       # the committed scripts _run_scripts read, for check_runs
+READ_SCRIPTS = []
+FOREIGN_RUN = []                                      # committed scripts of another language the job runs (REQ-REL-005-AC3 applies to them too)                                       # the committed scripts _run_scripts read, for check_runs
 
 
 def _all_texts(text, depth=0):
@@ -2396,6 +2397,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             continue
         if t[0] == "__foreign__":
             rel = re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", t[1])
+            if entries.get(rel) == "file":
+                FOREIGN_RUN.append(rel)
             if entries.get(rel) != "file" and _resolve_script(t[1], job or text, entries, bases) is None:
                 found.append("runs %s with another language's interpreter, and it is not a committed file; refused "
                              "(handoff 0094: only committed files and heredocs are the boundary)" % t[1])
@@ -2413,6 +2416,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
                 if not path.endswith(".sh"):
                     continue                             # a program, not a script of this repository
             elif tree.read(rel).startswith("#!") and not SHELL_SHEBANG.match(tree.read(rel)):
+                FOREIGN_RUN.append(rel)
                 continue                                 # another language: the documented boundary (0094)
         if (where.split(".jobs.", 1)[0], path) in GENERATED_OK:
             # fenced: written only by the step's python heredoc; a shell write anywhere in the job breaks the fence
@@ -2445,6 +2449,188 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
         added.append(content + ("\n" + more if more else ""))
         found += also
     return "\n".join(added), found
+
+
+# ---- REQ-REL-005-AC3 (advisor reading Oct 16, handoff 0479): a job that runs a committed script refuses every downloader that is not DEMONSTRABLY writing to
+# standard output or to /dev/null. The destination of a download is NEVER parsed: every spelling of "write this file" (-o, -O, a cluster, an attached value, a prefix,
+# a redirect, a variable) was found one by one and each fix exposed the next, so the rule is a closed allow-list of read-only shapes; anything else, and anything this
+# parser cannot read (an unbalanced quote, a bare variable where an option may stand), is a finding. A committed script that a download overwrote before it runs would
+# otherwise be judged on bytes it does not have.
+DOWNLOADERS = ("curl", "wget", "aria2c")
+_CURL_FLAGS = frozenset("sSfLkgIiv")                         # short flags that change nothing but how a request is made or shown
+_CURL_VALUE_LETTERS = frozenset("XuHdwmAe")                  # short options whose value is the next word (or the rest of the cluster)
+_CURL_LONG_FLAGS = frozenset("--silent --show-error --fail --location --head --include --insecure --verbose --compressed --fail-with-body --http1.1 --http2 "
+                             "--no-progress-meter --globoff --get --tlsv1.2 --tlsv1.3".split())
+_CURL_LONG_VALUE = frozenset("--request --user --header --data --data-binary --data-raw --data-urlencode --write-out --max-time --connect-timeout --retry "
+                             "--retry-delay --retry-max-time --user-agent --referer --proto --url --oauth2-bearer".split())
+_WGET_FLAGS = frozenset("qv")
+_WGET_VALUE_LETTERS = frozenset("OtTU")
+_WGET_LONG_FLAGS = frozenset("--quiet --no-verbose --no-check-certificate --server-response".split())
+_WGET_LONG_VALUE = frozenset("--header --timeout --tries --user --password --user-agent --output-document".split())
+_NULL_SINKS = ("/dev/null", "-")
+
+
+def _value_reason(opt, val):
+    """Why the value of a read-only option is not demonstrably read-only, or None. curl's -w / --write-out takes a format whose %output{FILE} writes a file (and @FILE reads
+    a format from a file that may hold it): only a format that does not name output and is not read from a file is accepted."""
+    if re.search(r"['\"`]", val):
+        return "an option value with a quote or backtick this parser cannot read (%s)" % val
+    if opt in ("-w", "--write-out") and (val.startswith("@") or re.search(r"%.*output", val, re.I) or "$" in val or "`" in val):
+        return "the write-out format %s can write a file (%%output{}, @file, or a format this parser cannot read)" % val
+    if re.search(r"\[[@*]\]|\$[@*]|\$\{[@*]", val):
+        return "the value %s expands to a list of words, any of which may be an option" % val
+    return None
+
+
+def _download_reason(toks):
+    """None when the downloader command whose arguments are toks (the words after the program name) demonstrably writes only to standard output or /dev/null;
+    else why it is not demonstrable."""
+    prog = toks[0]
+    args = []
+    skip = 0
+    for t in toks[1:]:                                       # redirections are judged by the caller; they are not arguments
+        if skip:
+            skip -= 1
+            continue
+        if re.match(r"^[0-9]*(<<?-?|>>?|<>|&>>?|>&)", t):
+            if not re.match(r"^[0-9]*(<<?-?|>>?|<>|&>>?|>&)[^<>&]", t):
+                skip = 1
+            continue
+        args.append(t)
+    if prog == "aria2c":
+        return "aria2c always writes files"
+    wget = prog == "wget"
+    flags, vletters = (_WGET_FLAGS, _WGET_VALUE_LETTERS) if wget else (_CURL_FLAGS, _CURL_VALUE_LETTERS)
+    lflags, lvalue = (_WGET_LONG_FLAGS, _WGET_LONG_VALUE) if wget else (_CURL_LONG_FLAGS, _CURL_LONG_VALUE)
+    out_seen = False
+    i = 0
+    while i < len(args):
+        t = args[i]
+        i += 1
+        if re.search(r"[\'\"\\`]", t):
+            return "a word with a quote or backslash this parser cannot read (%s)" % t
+        if t.startswith("--"):
+            name, eq, val = t.partition("=")
+            if name in lflags and not eq:
+                continue
+            if name in ("--output", "--output-document", "--dump-header"):
+                if not eq:
+                    if i >= len(args):
+                        return "%s has no value" % name
+                    val, i = args[i], i + 1
+                if val not in (("-",) if wget else _NULL_SINKS):
+                    return "%s writes %s" % (name, val)
+                out_seen = out_seen or name == "--output-document"
+                continue
+            if name in lvalue:
+                if not eq:
+                    if i >= len(args):
+                        return "%s has no value" % name
+                    val, i = args[i], i + 1
+                r = _value_reason(name, val)
+                if r:
+                    return r
+                continue
+            return "the option %s is not on the list of read-only options" % name
+        if t.startswith("-") and len(t) > 1:
+            j = 1
+            while j < len(t):
+                c = t[j]
+                if c in flags:
+                    j += 1
+                    continue
+                rest = t[j + 1:]
+                if c == ("O" if wget else "o") or (c == "D" and not wget):
+                    val = rest
+                    if not val:
+                        if i >= len(args):
+                            return "-%s has no value" % c
+                        val, i = args[i], i + 1
+                    if val not in (("-",) if wget else _NULL_SINKS):
+                        return "-%s writes %s" % (c, val)
+                    out_seen = out_seen or (wget and c == "O")
+                    break
+                if c in vletters:
+                    val = rest
+                    if not val:
+                        if i >= len(args):
+                            return "-%s has no value" % c
+                        val, i = args[i], i + 1
+                    r = _value_reason("-" + c, val)
+                    if r:
+                        return r
+                    break
+                return "the option -%s is not on the list of read-only options" % c
+            continue
+        if t.startswith("$"):
+            return "an expansion (%s) where an option may stand: it can spell any option" % t
+    if wget and not out_seen:
+        return "wget without -O - writes a file named by the URL"
+    return None
+
+
+def _unsafe_downloads(text):
+    """The downloader commands in text (a step's script, its nested -c / eval / heredoc texts and command substitutions) that are not demonstrably writing to
+    standard output or /dev/null: [(command text, why)]."""
+    found = []
+    for src in _all_texts(text):
+        queue = [src]
+        while queue:
+            cur = queue.pop()
+            cut, inner = _cut_substitutions(re.sub(r"\\\n", "", cur))
+            queue += inner
+            cut = re.sub(r"&>>", ">>", cut)                   # `cmd &> file` is a redirection of cmd: the split at & must not detach it
+            cut = re.sub(r"&>|>\|", ">", cut)
+            cut = re.sub(r"(?<![\w&>])(\d*)>&(?![ \t]*(?:\d+|-)(?=[\s;&|)]|$))", r"\1>", cut)    # `cmd >& file` writes the file; `>&2`, `2>&1` and `>&-` duplicate or close a descriptor
+            for chunk in _split_commands(cut):
+                chunk = re.sub(r"\$'([^']*)'", r"'\1'", chunk)       # an ANSI-C quoted word is a literal word here (its escapes are not read)
+                named = re.search(r"(?<![\w.-])(?:curl|wget|aria2c)(?![\w-])", chunk)       # also /usr/bin/curl
+                if named:
+                    import shlex
+                    try:
+                        shlex.split(chunk)
+                    except ValueError:
+                        found.append((chunk.strip(), "a quote this parser cannot read: the words of the download cannot be told apart"))
+                        continue
+                    outer = [x for x in _redirect_targets(chunk) if x != "/dev/null"]
+                    if outer and not any(_base(w.strip("\"'")) in DOWNLOADERS for w in _tokens(chunk)):
+                        found.append((chunk.strip(), "a command that holds a downloader (sh -c, eval, a quoted program) has its output redirected to %s" % outer[0]))
+                        continue
+                toks = _tokens(chunk)
+                for n, t in enumerate(toks):
+                    if _base(t.strip("\"'")) in DOWNLOADERS:
+                        wrapped = [w for w in toks[:n] if _base(w.strip("\"'")) in ("xargs", "parallel")]
+                        why = _download_reason([_base(t.strip("\"'"))] + toks[n + 1:])
+                        after = chunk[chunk.find(t) + len(t):] if t in chunk else chunk
+                        if why is None and wrapped:
+                            why = "%s hands the downloader arguments from its input, which can spell any option" % _base(wrapped[0])
+                        if why is None and "$" in re.sub(r"\$'[^']*'|'[^']*'|\"[^\"]*\"", "", after):
+                            why = "an unquoted expansion after the program name splits into words this parser cannot read"
+                        if why is None:
+                            bad_sinks = [x for x in _redirect_targets(chunk) if x not in ("/dev/null",)]
+                            if bad_sinks:
+                                why = "its output is redirected to %s" % bad_sinks[0]
+                        if why:
+                            found.append((chunk.strip(), why))
+    return found
+
+
+# exact exclusions: (workflow file, job, step index, sha256 of the step's run text) -> why this download is not a way to change a committed script. A copy of an
+# excluded step anywhere else (another step, job or file), or an edit of it, is a finding again.
+DOWNLOAD_EXCLUSIONS = {
+    (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
+        "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
+        "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
+        "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
+    (".github/workflows/dependabot-reviewer.yml", "review", 4, "bd33b686b13cadaf9d7b3b2216165f30fa6dbe35ef74bcefaebe9c5c86d4e3f1"): (
+        "the identity-token request: curl prints the JSON answer from ${ACTIONS_ID_TOKEN_REQUEST_URL} (set by the runner, quoted, followed by a literal &audience=) into a "
+        "command substitution that jq reads; it writes no file (this exclusion holds only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+        "ACTIONS_ID_TOKEN_REQUEST_URL", None),
+    (".github/workflows/dependabot-reviewer.yml", "review", 8, "95e44c8ccb8ac27ab0ffcf34f61f7111cfbaf6d70676cc36b5dee4724f6c5727"): (
+        "the same identity-token request inside the decision loop's token refresh: stdout into a command substitution that jq reads, no file written (this exclusion holds "
+        "only while the file never assigns ACTIONS_ID_TOKEN_REQUEST_URL itself)",
+        "ACTIONS_ID_TOKEN_REQUEST_URL", None),
+}
 
 
 def check_runs(where_job, scripts, bad, tree=None):
@@ -2480,6 +2666,27 @@ def check_runs(where_job, scripts, bad, tree=None):
     # every committed script read for this job must run as committed: nothing in the job, its -c / eval strings or the
     # scripts it runs writes it first (Codex #164 r3, C02 — after inlining, over normalized paths, harnesses included)
     read_scripts = dict(READ_SCRIPTS)
+    foreign_ran = bool(FOREIGN_RUN)
+    FOREIGN_RUN.clear()
+    if read_scripts or foreign_ran:                                     # REQ-REL-005-AC3: this job runs a committed script
+        for item, ok in zip(scripts, posix):
+            if not ok:
+                continue
+            m = re.match(r"^(.*)\.jobs\.([^.\[]+)\.steps\[(\d+)\]\.run$", item[0])
+            key = (m.group(1), m.group(2), int(m.group(3)), hashlib.sha256(item[1].encode("utf-8", "replace")).hexdigest()) if m else None
+            excl = DOWNLOAD_EXCLUSIONS.get(key)
+            if excl and tree is not None:
+                try:
+                    ftext = tree.read(key[0])
+                except Exception:
+                    ftext = ""
+                assigned = len(re.findall(r"(?m)^\s*" + re.escape(excl[1]) + r"\s*:", ftext))
+                if (excl[2] is None and assigned == 0) or (excl[2] is not None and ftext.count(excl[2]) == 1 and assigned == 1):
+                    continue
+            for cmd, why in _unsafe_downloads(_drop_foreign_heredocs(re.sub(r"\\\n", "", item[1]))):      # the raw text: `${X:-default}` must not be replaced by its default before the downloader is read
+                bad.append(f"{item[0]}: this job runs a committed script, and `{cmd[:80]}` is a download that is not demonstrably writing to standard output or "
+                           f"/dev/null ({why}); a download can overwrite a committed script before it runs, so the destination is never trusted, refused "
+                           f"(REQ-REL-005-AC3)")
     for rel in sorted(read_scripts):
         # what writes it before it runs: the job's own text or ANOTHER script it runs (its own later writes do not count)
         # a harness's own text is fixture data here as everywhere (documented); a write TO a harness still counts
