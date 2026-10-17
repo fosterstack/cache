@@ -106,22 +106,6 @@ for why, extra in [("a fence opened after a list marker", "\n- ```text\n```sh\ng
     check("SEC-387 a page with %s is refused (a container the parser does not model)" % why, got == "refused", got)
 check("SEC-387 an HTML comment that opens and closes on one line (the pinned markers) is fine", "<!-- pinned:" in guide and len(L.guide_blocks(guide)) == len(blocks))
 
-# --- Codex #387 r2: the page's command blocks are read by the pin checker like any script (a plain unpinned pull added to the page must not run with the job's credentials)
-def pin_findings(doc_text):
-    with tempfile.TemporaryDirectory() as t:
-        os.makedirs(os.path.join(t, ".github/workflows")); os.makedirs(os.path.join(t, "bin"))
-        shutil.copy(os.path.join(root, "bin/install-scanner.sh"), os.path.join(t, "bin/install-scanner.sh"))
-        steps = ""
-        for b in L.guide_blocks(doc_text):
-            steps += "      - name: block\n        run: |\n" + "".join(("          " + ln if ln.strip() else "") + "\n" for ln in b["text"].rstrip("\n").split("\n"))
-        open(os.path.join(t, ".github/workflows/page.yml"), "w").write("name: page\non: push\npermissions:\n  contents: read\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n" + steps)
-        r = subprocess.run(["python3", "-I", os.path.join(root, ".github/agent/bin/check-action-pins.py"), "."], cwd=t, capture_output=True, text=True)
-        return "\n".join(ln for ln in (r.stdout + r.stderr).split("\n") if "page.yml" in ln)   # the findings about the page's steps (the sandbox tree has no gate workflow)
-res = pin_findings(guide)
-check("SEC-387 the page's blocks, run as steps, have no pin-checker finding", res == "", res[-400:])
-bad = guide.replace("```sh\ngrype ", "```sh\ndocker pull busybox:latest\ngrype ", 1)
-check("SEC-387 a plain unpinned pull added to a block of the page is found by the pin checker", bad != guide and pin_findings(bad) != "")
-
 # --- release candidates (v0.3: nothing is published): the blocks the page's cannot-run list names are left out of the plan, every other block stays, in order
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
 rc_blocks = L.guide_blocks(guide, skip=cr["blocks"])
@@ -285,10 +269,6 @@ check("the 51st push fails the run", out.returncode == 0, (out.returncode, out.s
 # --- the release candidate under test (v0.3: an rc ends before publishing, so its images exist only as Build's OCI layouts and digests.json): each layout is pushed to
 #     the test repository and must come out at exactly the digest Build attested
 # (the behavioral cases below drive bin/vex-live-run.sh with stubs; "copy_candidate" is the one place that reads a candidate)
-# Codex #387 r1 (P1): the orchestrator runs against real registries, so the action-pin checker must READ it: its name is outside the checker's test-harness exemption, and an
-# appended plain unpinned pull is found in the jobs that run it
-_cap = importlib.util.spec_from_file_location("cap", os.path.join(root, ".github/agent/bin/check-action-pins.py")); CAP = importlib.util.module_from_spec(_cap); _cap.loader.exec_module(CAP)
-check("the orchestrator is not exempt as a test harness", CAP.TEST_HARNESS.search("bin/vex-live-run.sh") is None and CAP.TEST_HARNESS.search("bin/vex-live-test-test.sh") is not None)
 
 # --- AC1/AC3/AC4: the wiring
 wf = lambda n: yaml.load(open(os.path.join(root, ".github/workflows", n)), Loader=yaml.BaseLoader)

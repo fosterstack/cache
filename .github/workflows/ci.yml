@@ -488,6 +488,9 @@ jobs:
       - name: the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)
         run: bash bin/vex-live-test-test.sh
 
+      - name: the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)
+        run: bash .github/agent/tests/vex-live-pins-test.sh
+
       - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
         run: bash bin/scout-root-cause-test.sh
 
