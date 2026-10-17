@@ -2713,6 +2713,18 @@ d=$(cfix fa_py_bad 'python3 -I -B -c pass archive/vi' '["python3"]' '["bin/build
 d=$(cfix ff_def '/usr/bin/curl() { echo x; }\n/usr/bin/curl' '["curl"]'); expm caught "$d" 'function' "a function named by a path (/usr/bin/curl() {...}) could replace the fixed program: refused"
 d=$(cfix ff_def2 'function /bin/rm { :; }\n/bin/rm -rf x' '["rm"]'); expm caught "$d" 'function' "function /bin/rm { } is refused"
 d=$(cfix ff_def3 '/usr/local/bin/crane () { :; }' '["crane"]'); expm caught "$d" 'function' "a path-named function with a space before the parentheses is refused"
+# round 2 of the seats (433, seat B): a path-named function definition in ANY command position (after (, else, !, $(, case ...), until) is refused
+for k in 'ff_sub|( /usr/bin/curl() { :; }; /usr/bin/curl u )' 'ff_else|if false; then :; else /usr/bin/curl() { :; }; fi\n/usr/bin/curl u' 'ff_cs|x=$( /usr/bin/curl() { :; }; /usr/bin/curl u )' 'ff_case|case a in a) /usr/bin/curl() { :; };; esac\n/usr/bin/curl u' 'ff_until|until /usr/bin/curl() { :; }; do :; done' 'ff_bang|! /usr/bin/curl() { :; }' 'ff_paren|(/usr/bin/curl() { :; })' 'ff_nl|/usr/bin/curl()\n{ :; }' 'ff_fn2|function /usr/bin/curl () { :; }' 'ff_if|if /usr/bin/curl() { :; }; then :; fi' 'ff_while|while /bin/rm() { :; }; do :; done' 'ff_arith|x=1; /usr/bin/curl() ( : )'; do
+  d=$(cfix "${k%%|*}" "${k#*|}" '["curl","rm"]'); expm caught "$d" 'function' "path-named function definition, position ${k%%|*}: refused"
+done
+d=$(cfix ff_elif 'if false; then :; elif /usr/bin/curl() { :; }; then :; fi' '["curl"]'); expm caught "$d" 'function' "path-named function definition after elif: refused"
+d=$(cfix ff_bt 'x=`/usr/bin/curl() { :; }; /usr/bin/curl u`' '["curl"]'); expm caught "$d" 'function' "path-named function definition in backticks: refused"
+# ANSI-C / locale quoting decodes differently in bash than in the judge's lexer: a fixed-path command written that way is refused
+d=$(cfix aq_1 "\$'/usr/bin/cur\\\\l' x" '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$'...' (a different program after bash decodes it): refused"
+d=$(cfix aq_2 "\$'/usr/bin/curl' x" '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$'...': refused even when the decoding agrees"
+d=$(cfix aq_3 '$"/usr/bin/curl" x' '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$\"...\": refused"
+d=$(cfix ff_text 'echo "the (connect)/sendto()/sendmsg() calls"' '[]'); expm ok "$d" - "text that merely looks like a path with parentheses is no function definition"
+d=$(cfix ff_call 'f() { /usr/bin/mktemp -d x; }\n( f )' '["mktemp"]'); expm ok "$d" - "a call of a fixed-path tool inside a subshell is accepted"
 d=$(cfix ff_def4 'f() { /usr/bin/mktemp -d x; }\nf' '["mktemp"]'); expm ok "$d" - "an ordinary function that calls a fixed-path tool is accepted"
 d=$(cfix c_unl 'bash bin/unlisted.sh' '["bash"]'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script (bash bin/unlisted.sh) stays refused"
 d=$(cfix c_src 'source bin/unlisted.sh'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script (source form) stays refused"
@@ -3418,7 +3430,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1385
+EXPECT=1404
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
