@@ -1435,7 +1435,7 @@ def scan_script(path, text, row, rows, base):
             if (w.startswith("./") or in_tree or script_like(w)) and n != path and n not in runs and n != selfbase:
                 add("script-name", span, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
     if not py:
-        for m in FUNC_BY_PATH.finditer(logical(text)):                       # the RAW logical text, comments included: stripping a "comment" can diverge from bash (a # line inside a quote spanning lines, an ANSI-C escaped quote)                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
+        for m in (x for v in (logical(text),) + alias_views(logical(text))[:1] for x in FUNC_BY_PATH.finditer(v)):   # also the quote- and backslash-resolved view: bash rejects a quoted function name, the judge does not rely on that                       # the RAW logical text, comments included: stripping a "comment" can diverge from bash (a # line inside a quote spanning lines, an ANSI-C escaped quote)                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
             add(None, "", "%s: defines a function named by a path (%s): it could run in place of the fixed-path program it names" % (path, m.group("name") or m.group("name2")))
     if not py:
         for v in alias_views(logical(text)):

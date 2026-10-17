@@ -2794,6 +2794,13 @@ d=$(cfix st_8 'set -- a >/dev/null' '[]'); expm caught "$d" 'set' "a redirection
 d=$(cfix st_9 'set -o posix' '[]'); expm caught "$d" 'set -o posix' "round 9: the plain POSIX-mode form: refused"
 d=$(cfix st_10 'set -e -o posix' '[]'); expm caught "$d" 'set -e -o posix' "round 10: a plain flag before a separate -o posix: refused"
 d=$(cfix st_11 'set -e   # keep going\nset +e -uo pipefail' '[]'); expm ok "$d" - "a trailing comment after the closed arguments is accepted"
+# round 12 (seat B), defence in depth: bash rejects a quoted or backslashed function name, but the judge also reads the quote-resolved view so the refusal does not depend on that
+d=$(cfix qf_1 '"/usr/bin/curl"() { :; }\n/usr/bin/curl -s https://example.invalid' '["curl"]'); expm caught "$d" 'function' "a double-quoted path-named function definition: refused"
+d=$(cfix qf_2 '\\/usr/bin/curl() { :; }\n/usr/bin/curl u' '["curl"]'); expm caught "$d" 'function' "a backslashed path-named function definition: refused"
+d=$(cfix qf_3 '/usr/bin/"curl"() { :; }' '["curl"]'); expm caught "$d" 'function' "a quote-split path-named function definition: refused"
+d=$(cfix qf_5 "'/usr/bin/curl'() { :; }" '["curl"]'); expm caught "$d" 'function' "a single-quoted path-named function definition: refused"
+d=$(cfix qf_6 'function "/usr/bin/curl" { :; }' '["curl"]'); expm caught "$d" 'function' "function keyword with a quoted path name: refused"
+d=$(cfix qf_4 'f() { /usr/bin/curl -s "$1"; }\necho "usage: /usr/bin/curl url"' '["curl"]'); expm ok "$d" - "control: a call and a string mentioning the path, no definition, is accepted"
 d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
 d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
@@ -3563,7 +3570,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1526
+EXPECT=1532
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
