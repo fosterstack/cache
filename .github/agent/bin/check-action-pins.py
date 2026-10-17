@@ -394,7 +394,7 @@ def container_keys(where, node, bad, ports_ok=False):
             if not isinstance(v, yaml.SequenceNode):
                 bad.append(f"{where}.ports: not a list")
             for item in (v.value if isinstance(v, yaml.SequenceNode) else []):
-                if not (isinstance(item, yaml.ScalarNode) and LOOPBACK_PORT.fullmatch(item.value)):
+                if not (isinstance(item, yaml.ScalarNode) and LOOPBACK_PORT.fullmatch(item.value) and all(1 <= int(n) <= 65535 for n in item.value.split(":")[1:])):
                     bad.append(f"{where}.ports: only 127.0.0.1:<port>:<port> as plain text is read, got {getattr(item, 'value', None)!r}")
         elif name == "env" and isinstance(v, yaml.MappingNode):
             for kk, _ in v.value:

@@ -919,6 +919,10 @@ def judge_release(r, bad):
     if p != want:
         bad.append(f"release persona-uat permissions are not exactly {want}: no packages, no write of any kind (found {p})")
     judge_rc_registry(j, bad)
+    if j.get("env"):
+        bad.append(f"release persona-uat declares no env of its own is the rule (found {sorted(j['env'])}): an inherited variable (BASH_FUNC_*, PATH, BASH_ENV) could change what the closed load script runs")
+    if r.get("env"):
+        bad.append(f"release.yml declares a workflow-level env ({sorted(r['env'])}): the closed rc load script would inherit it; the chain jobs name what they need on the step")
     if d is not None:
         run = str(d.get("run", ""))
         envimg = str((d.get("env") or {}).get("PERSONA_UAT_IMAGE", ""))
@@ -1475,6 +1479,8 @@ mutate("rc load step drops pipefail", "is not exactly the closed load script", l
 mutate("rc load step with a custom shell", "is not exactly the closed load script", lambda j: LOADSTEP(j).update({"shell": "bash {0}"}))
 mutate("rc download step if: false", "download step is not exactly uses + with", lambda j: DLSTEP(j).update({"if": "${{ false }}"}))
 mutate("rc download step continue-on-error", "download step is not exactly uses + with", lambda j: DLSTEP(j).update({"continue-on-error": "true"}))
+mutate("rc job env defines a shell function the load script would call", "declares no env of its own", lambda j: j.update(env={"BASH_FUNC_crane%%": "() { true; }"}))
+mutate("release.yml workflow env defines a shell function", "workflow-level env", lambda r: r.update(env={"BASH_FUNC_crane%%": "() { true; }"}), "rel_wf")
 mutate("rc driver is not told about the registry listener", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"].replace(" --allow-listen 5000", "")))
 mutate("rc driver allows another listener port", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"].replace("--allow-listen 5000", "--allow-listen 5001")))
 mutate("rc driver allows a second listener port", "must be given --allow-listen 5000", lambda j: drv(j).update(run=drv(j)["run"] + " --allow-listen 22"))

@@ -567,6 +567,22 @@ case_ service-port-nested          bad "$head
           - [127.0.0.1:5000:5000]
     steps:
       - run: true"
+case_ service-port-out-of-range    bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:99999:5000
+    steps:
+      - run: true"
+case_ service-port-zero            bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:0:5000
+    steps:
+      - run: true"
 case_ container-port-loopback      bad "$head
     container:
       image: alpine@$DIG
