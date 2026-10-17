@@ -9,16 +9,19 @@ LGROOT=$PWD
 lg() { (cd "$LGROOT" && sh bin/loopback-get.sh "$@"); }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 suite=${1:-} what=${2:-}
 case "$suite:$what" in
-  gradle:main) name=fscache-acc port=18095 env=() ;;
-  gradle:capped) name=fscache-capped port=18096 env=(-e FSCACHE_MAX_BYTES=49152) ;;
-  maven:main) name=fscache-mvn-acc port=18098 env=(-e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret) ;;
-  maven:capped) name=fscache-mvn-capped port=18099 env=(-e FSCACHE_MAX_BYTES=262144 -e FSCACHE_USERNAME=mvn -e FSCACHE_PASSWORD=acceptance-secret) ;;
+  gradle:main) name=fscache-acc port=18095 envs='' ;;
+  gradle:capped) name=fscache-capped port=18096 envs='FSCACHE_MAX_BYTES=49152' ;;
+  maven:main) name=fscache-mvn-acc port=18098 envs='FSCACHE_USERNAME=mvn
+FSCACHE_PASSWORD=acceptance-secret' ;;
+  maven:capped) name=fscache-mvn-capped port=18099 envs='FSCACHE_MAX_BYTES=262144
+FSCACHE_USERNAME=mvn
+FSCACHE_PASSWORD=acceptance-secret' ;;
   gradle:stop|maven:stop) docker rm -f fscache-acc fscache-capped fscache-mvn-acc fscache-mvn-capped > /dev/null 2>&1 || true; exit 0 ;;
   *) echo "acceptance-serve: unknown suite or action: $suite $what" >&2; exit 2 ;;
 esac
 [ -n "${IMAGE_REF:-}" ] || { echo "acceptance-serve: IMAGE_REF is not set" >&2; exit 2; }
 docker tag "$IMAGE_REF" localhost/fscache-serve-candidate
-docker run --pull=never -d --name "$name" "${env[@]}" -p "127.0.0.1:$port:8080" localhost/fscache-serve-candidate
+docker run --pull=never -d --name "$name" --env-file /dev/stdin -p "127.0.0.1:$port:8080" localhost/fscache-serve-candidate <<< "$envs"   # the suite's environment, one NAME=value per line
 for _ in $(seq 1 20); do
   lg -sf "http://localhost:$port/healthz" && exit 0
   sleep 0.5

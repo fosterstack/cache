@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 [ -n "$digests" ] && [ -n "$images" ] && [ -n "$archives" ] && [ -n "$out" ] || usage
-case "$arch" in amd64) plat=() ;; arm64) plat=(--platform linux/arm64) ;; *) echo "check-artifacts: --arch must be amd64 or arm64, not $arch" >&2; exit 2 ;; esac
+case "$arch" in amd64) ;; arm64) export DOCKER_DEFAULT_PLATFORM=linux/arm64 ;; *) echo "check-artifacts: --arch must be amd64 or arm64, not $arch" >&2; exit 2 ;; esac
 [ -f "$digests" ] || fail "the digest list $digests does not exist"
 [ -d "$images" ] || fail "the image directory $images does not exist"
 [ -d "$archives" ] || fail "the archive directory $archives does not exist"
@@ -114,14 +114,14 @@ for v in production fips; do
   docker tag "$ref" localhost/fscache-artifact-candidate
   for probe in busybox:sh busybox:ash bin:sh bin:ash bin:bash bin:dash usr-bin:sh usr-bin:bash sbin:sh; do
     sh="${probe%%:*}"; sh="${sh//-//}/${probe##*:}"   # the directory (a - stands for /) and the shell name
-    if docker run --pull=never --rm ${plat[@]+"${plat[@]}"} --entrypoint "/$sh" localhost/fscache-artifact-candidate -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
+    if docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-artifact-candidate -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
   done
   name="fscache-art-$v"
   if [ "$v" = fips ]; then
-    docker run --pull=never -d ${plat[@]+"${plat[@]}"} --name "$name" -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw -p 127.0.0.1::8080 localhost/fscache-artifact-candidate > /dev/null || fail "the $v image did not start"
+    docker run --pull=never -d --name "$name" -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw -p 127.0.0.1::8080 localhost/fscache-artifact-candidate > /dev/null || fail "the $v image did not start"
     auth=acc:accpw
   else
-    docker run --pull=never -d ${plat[@]+"${plat[@]}"} --name "$name" -p 127.0.0.1::8080 localhost/fscache-artifact-candidate > /dev/null || fail "the $v image did not start"
+    docker run --pull=never -d --name "$name" -p 127.0.0.1::8080 localhost/fscache-artifact-candidate > /dev/null || fail "the $v image did not start"
     auth=""
   fi
   port=$(docker port "$name" 8080/tcp | sed -n '1s/.*://p')
