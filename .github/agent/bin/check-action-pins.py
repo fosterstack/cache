@@ -2473,6 +2473,8 @@ _NULL_SINKS = ("/dev/null", "-")
 def _value_reason(opt, val):
     """Why the value of a read-only option is not demonstrably read-only, or None. curl's -w / --write-out takes a format whose %output{FILE} writes a file (and @FILE reads
     a format from a file that may hold it): only a format that does not name output and is not read from a file is accepted."""
+    if re.search(r"['\"`]", val):
+        return "an option value with a quote or backtick this parser cannot read (%s)" % val
     if opt in ("-w", "--write-out") and (val.startswith("@") or re.search(r"%.*output", val, re.I) or "$" in val or "`" in val):
         return "the write-out format %s can write a file (%%output{}, @file, or a format this parser cannot read)" % val
     if re.search(r"\[[@*]\]|\$[@*]|\$\{[@*]", val):
@@ -2582,7 +2584,7 @@ def _unsafe_downloads(text):
             cut = re.sub(r"(?<![\w&>])(\d*)>&(?![ \t]*(?:\d+|-)(?=[\s;&|)]|$))", r"\1>", cut)    # `cmd >& file` writes the file; `>&2`, `2>&1` and `>&-` duplicate or close a descriptor
             for chunk in _split_commands(cut):
                 chunk = re.sub(r"\$'([^']*)'", r"'\1'", chunk)       # an ANSI-C quoted word is a literal word here (its escapes are not read)
-                named = re.search(r"(?<![\w./-])(?:curl|wget|aria2c)(?![\w-])", chunk)
+                named = re.search(r"(?<![\w.-])(?:curl|wget|aria2c)(?![\w-])", chunk)       # also /usr/bin/curl
                 if named:
                     import shlex
                     try:
