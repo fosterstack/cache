@@ -2207,9 +2207,10 @@ expect ok "AC2 no real stage file or stage script names witness run" "" directwi
 expect ok "AC3 the five real scripts are rows of .github/policy/chain-scripts.json with their sha256" "" listed \
        "$root/.github/policy/chain-scripts.json" "$root"
 # The scope of the vex-index tool (REQ-REL-010-AC4/AC5), shared by the real tree and the mutation cases below. Advisor reading Oct 17 (cache#416 follow-up): the live test's Scout
-# leg (REQ-SCAN-012-AC6) attaches our OpenVEX to its own FIXTURE layout in the Docker Hub test repository, so the two live-test files may name vex-index in exactly three
-# places: bin/vex-live-run.sh's one fixture call, and bin/vex-live-test-test.sh's loading of the tool and its run on a scratch layout. Every other mention in them, and every
-# other file, is refused. (A comment may name the tool.)
+# leg (REQ-SCAN-012-AC6) attaches our OpenVEX to its own FIXTURE layout in the Docker Hub test repository, so the two live-test files may name vex-index in exactly two
+# places: bin/vex-live-run.sh's one fixture call, and bin/vex-live-test-test.sh's run of the tool on a scratch layout (the tool is never loaded into the test's process). Every
+# other mention in them, every other file in the whole tree (the prose directories docs/, requirements/ and test-evidence/ at its top excepted) and every link to the tool is
+# refused; a comment is no exemption (a #-led line can be live code to bash).
 cat > "$work/vi-named.py" <<'PY'
 import glob, os, re
 BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
@@ -2218,13 +2219,22 @@ BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "b
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
 RUN_CALL = 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1'
 TEST_LINES = ('r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-index.py"), "layout", "--layout", lay, "--vex", vpath], capture_output=True, text=True)',)
+TEST_LOADERS = ("import copy, importlib.util, json, os, re, shutil, subprocess, sys, tempfile, yaml", "def load(name, path):",
+                "spec = importlib.util.spec_from_file_location(name, os.path.join(root, path))",
+                "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m",
+                'L = load("lt", "bin/vex-live-test.py")', 'V = load("vf", "bin/vex-forms.py")')      # the test's own helper and its two modules; the index tool is never loaded
 def stray(root):
     named, bad = set(), []
     for d, dirs, files in os.walk(root):      # the whole tree, any extension or none (prose under docs/, requirements/ and test-evidence/ runs nothing)
-        dirs[:] = [x for x in dirs if x not in (".git", "vendor", "node_modules", "docs", "requirements", "test-evidence", "__pycache__")]
+        top = os.path.abspath(d) == os.path.abspath(root)      # the prose directories are skipped at the top of the tree only: a docs/ or requirements/ below it is code like any other
+        dirs[:] = [x for x in dirs if x not in (".git", "__pycache__") and not (top and x in ("vendor", "node_modules", "docs", "requirements", "test-evidence"))]
         for f in files:
             path = os.path.join(d, f)
-            if os.path.islink(path) or not os.path.isfile(path):
+            if os.path.islink(path):
+                if os.path.basename(os.path.realpath(path)) == "vex-index.py":
+                    bad.append(os.path.relpath(path, root) + " (a link to the tool)")
+                continue
+            if not os.path.isfile(path):
                 continue
             if "vex-index" in open(path, errors="replace").read():
                 named.add(os.path.relpath(path, root))
@@ -2239,7 +2249,7 @@ def stray(root):
             # line that names the tool is judged whole and the run script may name it on its one call line only
             if "vex-index" in body:
                 code.append(body)
-            if path == TEST and re.search(r"\bVI\b", body):
+            if path == TEST and (re.search(r"\bVI\b|(?<![\w.])load\(|importlib|spec_from_file_location|exec_module|runpy|__import__|\br\.args\b", body) and body not in TEST_LOADERS):
                 code.append(body)      # the test file never loads the tool into its own process (a loaded module's globals are reachable by reflection): it only runs it
         bad += ["%s: %s" % (path, c[:90]) for c in code if c not in exact]
         bad += ["%s: %s (must appear exactly once)" % (path, e[:60]) for e in exact if code.count(e) != 1]
@@ -2298,6 +2308,14 @@ vim j6 "REQ-REL-010-AC4 reaching the loaded module through VI.check_vex.__global
 vim k1 "REQ-REL-010-AC4 a file with another extension or none, in another directory, naming the tool is refused (bin/lib/x.sh)" bin/lib/x.sh '' $'python3 bin/vex-index.py layout --layout x\n'
 vim k2 "REQ-REL-010-AC4 a workflow with the .yaml extension naming the tool is refused" .github/workflows/x.yaml '' $'run: python3 bin/vex-index.py layout --layout x\n'
 vim k3 "REQ-REL-010-AC4 loading the tool into the live-test test file's own process under another name is refused" bin/vex-live-test-test.sh '' $'\nM = load("m", "bin/vex-index.py")\n'
+vim k4 "REQ-REL-010-AC4 a Go file under tools/requirements (a skipped name below the top level) running the tool is refused" tools/requirements/vexattach.go '' $'exec.Command("python3", "bin/vex-index.py", "layout")\n'
+vim k5 "REQ-REL-010-AC4 a script under bin/docs (a skipped name below the top level) running the tool is refused" bin/docs/attach.sh '' $'python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
+vim k6 "REQ-REL-010-AC4 loading the tool in the live-test test file from the path the allowed subprocess line holds (r.args[1]) is refused" bin/vex-live-test-test.sh '' $'\nM = load("m", r.args[1])\n'
+vim k7 "REQ-REL-010-AC4 an importlib spec on a path variable in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nsp = importlib.util.spec_from_file_location("z", os.path.join(root, "bin", NAME))\n'
+# a link to the tool is the tool: refused wherever it sits
+ld="$work/vim-link"; rm -rf "$ld"; mkdir -p "$ld/bin" "$ld/.github/workflows" "$ld/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld/bin/"
+printf 'x\n' > "$ld/bin/vex-index.py"; ln -s vex-index.py "$ld/bin/attach.py"
+if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); sys.exit(0 if any("attach.py" in x for x in b) else 1)' "$work/vi-named.py" "$ld"; then ok "REQ-REL-010-AC4 a link to the tool under another name is refused"; else bad "REQ-REL-010-AC4 a link to the tool under another name is refused"; fi
 vim m6 "REQ-REL-010-AC4 the live-test run script without its one fixture call is refused (the exemption is not a blanket)" bin/vex-live-run.sh 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1' 'true'
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
 expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
@@ -2320,7 +2338,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=802
+EXPECT=807
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
