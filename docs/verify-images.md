@@ -97,9 +97,10 @@ bundle is `release-policy.bundle`), `checksums.txt` and
 added (`vendor-evidence.json.bundle`, `production.sbom.json.bundle`), except
 the policy's, `release-policy.bundle`. Verify one the same way as
 `checksums.txt` in section 4: `cosign verify-blob --bundle NAME.bundle FILE`
-with the pinned identity. How to verify a Witness record itself (the `*-collection.json`
-files) is in the v0.3.0 release guide, [`docs/verify-release.md`](verify-release.md); <!-- pinned: historical -->
-the commands there are TO-VERIFY until a release candidate has run them.
+with the pinned identity. The Witness records themselves (the `*-collection.json`
+files) are extra evidence that anyone with Witness can check; the release guide,
+[`docs/verify-release.md`](verify-release.md), does not cover them, and
+[`RELEASING.md`](../RELEASING.md) describes what each record holds.
 
 ### The release manifest
 
