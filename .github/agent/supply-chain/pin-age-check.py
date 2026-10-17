@@ -506,7 +506,8 @@ LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): 
 GO_RULING = "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): "   # the Go toolchain tarball (REQ-SUP-001-AC23): honored only for https://go.dev/dl/ plus one variable
 LOOPBACK_RULING = "loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): "   # the one line of the loopback helper that starts the fetch program (REQ-SUP-001-AC24): honored for that file and that line's sha256 only
 LOOPBACK_FILE = "bin/loopback-get.sh"
-LOOPBACK_LINE_SHA256 = "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd"   # the whole line, whitespace collapsed to single spaces; any edit of it turns the row off
+LOOPBACK_LINE = """curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?"""    # the raw text of the line, byte for byte (no indent, no trailing space, no carriage return)
+LOOPBACK_LINE_SHA256 = "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd"   # sha256 of that line as the scan hashes it (whitespace collapsed); the raw text above is what the head file must hold
 DOWNLOAD_FORM = "a download"
 _LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
 # the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash included, so the host cannot change) followed by
@@ -1111,6 +1112,34 @@ def _has_cr(root, rev, path):
     return _RAW_CR[key]
 
 
+_LOOPBACK_OK = {}
+
+
+def _loopback_line_ok(root, head):
+    """True only when the head file bin/loopback-get.sh is a regular file (not a link) holding the pinned line byte for byte exactly once, no carriage return anywhere
+    and no other line that differs from it only in whitespace (the scan hashes with whitespace collapsed, so the raw text is compared here). Unreadable: False."""
+    key = (root, head)
+    if key not in _LOOPBACK_OK:
+        ok = False
+        try:
+            if head is None:
+                path = os.path.join(root, LOOPBACK_FILE)
+                ok = os.path.isfile(path) and not os.path.islink(path)
+                raw = open(path, "rb").read() if ok else b""
+            else:
+                ent = subprocess.run(["git", "-C", root, "ls-tree", head, "--", LOOPBACK_FILE], capture_output=True, check=True, timeout=120).stdout.decode("utf-8", "replace").split()
+                ok = len(ent) >= 4 and ent[0] in ("100644", "100755") and ent[1] == "blob"
+                raw = subprocess.run(["git", "-C", root, "show", f"{head}:{LOOPBACK_FILE}"], capture_output=True, check=True, timeout=120).stdout if ok else b""
+            if ok:
+                lines = raw.split(b"\n")
+                same = [ln for ln in lines if " ".join(ln.decode("utf-8", "replace").split()) == " ".join(LOOPBACK_LINE.split())]
+                ok = b"\r" not in raw and lines.count(LOOPBACK_LINE.encode()) == 1 and len(same) == 1
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            ok = False
+        _LOOPBACK_OK[key] = ok
+    return _LOOPBACK_OK[key]
+
+
 def _context_proved(root, head, path, line_hash, row):
     """A row without a context is as it always was; a row with one rules its line only when the context is proved from the head file."""
     ruling, count, context, proof = row
@@ -1296,7 +1325,7 @@ def _run(a, moved, fx, now):
             rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(GO_RULING) and not (k[0].endswith(".sh") and not k[0].startswith(".github/") and _live_fetch_line_ok(_LINE_TEXT.get(lh, ""), toolchain=True)) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a Go-toolchain ruling on a line that is not exactly the one go.dev/dl/ shape rules nothing (AC23)
-        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LOOPBACK_RULING) and not (k[0] == LOOPBACK_FILE and lh == LOOPBACK_LINE_SHA256) for r, lh in zip(rs, lines[k])):
+        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LOOPBACK_RULING) and not (k[0] == LOOPBACK_FILE and lh == LOOPBACK_LINE_SHA256 and _loopback_line_ok(a.root, a.head)) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # the loopback ruling on any line but the helper's one pinned line rules nothing (AC25)
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))

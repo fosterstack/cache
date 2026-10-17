@@ -3902,6 +3902,27 @@ for v in "lr-ok:bin/loopback-get.sh:$LL:0" \
   CASE="loopback fetch row, $nm: exit $want"
   check test "$rc" -eq "$want"
 done
+# the pinned line is the raw text, not its whitespace-normalised hash (round 1): a tab for the space, a carriage return, a second copy that only differs in whitespace, and a symlink named like the helper rule nothing
+EDT=$'curl\t'"${LL#curl }"
+for v in "lr-tab:${EDT}" "lr-cr:${LL}"$'\r' "lr-indent: ${LL}" "lr-double-space:${LL/-q -g/-q  -g}"; do
+  nm=${v%%:*}; line=${v#*:}
+  mkrowp "$work/$nm.json" bin/loopback-get.sh "$LL" "$LRP"
+  twoc "$nm" bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
+  edck "$nm" "$work/$nm.json"
+  CASE="loopback fetch row, the line differs in whitespace ($nm): exit 1"
+  check test "$rc" -eq 1
+done
+mkrowp "$work/lr-dup.json" bin/loopback-get.sh "$LL" "$LRP"
+twoc lr-dup bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$LL"$'\n'"$EDT"$'\n'
+edck lr-dup "$work/lr-dup.json"
+CASE="loopback fetch row, the exact line plus a whitespace-variant copy: exit 1"
+check test "$rc" -eq 1
+mkrowp "$work/lr-link.json" bin/loopback-get.sh "$LL" "$LRP"
+twoc lr-link bin/loopback-get.sh $'#!/bin/sh\n' "$LL"
+( cd "$work/lr-link" && rm bin/loopback-get.sh && ln -s "$LL" bin/loopback-get.sh && printf '#!/bin/sh\n' > bin/target.sh && git add -A && git -c user.name=t -c user.email=t@x commit -q --amend --no-edit )
+edck lr-link "$work/lr-link.json"
+CASE="loopback fetch row, a symlink named bin/loopback-get.sh whose target is the line: exit 1"
+check test "$rc" -eq 1
 # the prefix does not lend the line to the other rulings, and the other rulings do not lend theirs to the helper line
 mkrowp "$work/lr-under-live.json" bin/loopback-get.sh "$LL" "$LIVEP"
 twoc lr-under-live bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$LL"$'\n'
