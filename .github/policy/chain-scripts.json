@@ -11,14 +11,23 @@
         "python3",
         "mktemp",
         "rm",
-        "crane"
+        "crane",
+        "at",
+        "trap"
       ],
       "runs": [
         "bin/archive-verify.py"
       ],
       "signs": false,
       "reason": "the stage's archive pull: fetches the archive by the digest committed in build/archive.json with the pinned crane into a new directory and checks every file against the pointer (REQ-CHAIN-004-AC16); nothing is pulled by tag and there is no fallback source",
-      "sha256": "adaf57bde6fc73bb2a782743f092f38fa2699bc9464191291dec9693a2cd1a94"
+      "sha256": "adaf57bde6fc73bb2a782743f092f38fa2699bc9464191291dec9693a2cd1a94",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "archive-push.sh",
+          "why": "a comment: the fixed locations are defined by archive-push.sh; the pull never starts it"
+        }
+      ]
     },
     {
       "path": "bin/archive-verify.py",

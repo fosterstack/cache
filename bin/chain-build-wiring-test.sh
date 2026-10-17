@@ -771,7 +771,8 @@ ptr_bad "AC16 fixture: an empty file list is refused" "$work/ptr/empty.json" "no
 ptr_bad "AC16 fixture: a file name that leaves the directory is refused" "$work/ptr/traversal.json" "unsafe file name"
 ptr_bad "AC16 fixture: files out of order are refused" "$work/ptr/unsorted.json" "sorted and unique"
 ptr_bad "AC16 fixture: a short sha256 is refused" "$work/ptr/shortsha.json" "64 lower-case hex"
-if python3 -I "$AV" artifact --pointer "$work/ptr/good.json" 2>/dev/null | grep -Fq "sha256:$(printf 'a%.0s' $(seq 64))"; then ok "AC16 fixture: the digest the pull passes to crane is the pointer's"; else bad "AC16 fixture: the digest the pull passes to crane is not the pointer's"; fi
+av_out=$(python3 -I "$AV" artifact --pointer "$work/ptr/good.json" 2>/dev/null)
+if grep -Fq "sha256:$(printf 'a%.0s' $(seq 64))" <<< "$av_out"; then ok "AC16 fixture: the digest the pull passes to crane is the pointer's"; else bad "AC16 fixture: the digest the pull passes to crane is not the pointer's"; fi
 ptr_ok  "AC16 the committed build/archive.json, the input of every stage pull, is a valid pointer" "$root/build/archive.json"
 # REQ-CHAIN-004-AC16 (release review R1): every part of archive/ that a stage script reads is something the archive holds. The archive the refresh job stores
 # (cache#345, REQ-ARCHIVE-001) holds keys/ and one directory per architecture (apk files, signed indexes); the stage scripts name archive/keys/..., the repository
