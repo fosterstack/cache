@@ -3413,6 +3413,12 @@ requirements:
         then: "a pinned tarball the archive lacks (under go/) is fetched from go.dev, and stored only after its sha256 equals the pin, and the pull request that moves build/archive.json is opened even when no other file changed; a tarball that is already archived must equal its pin (otherwise the job stops, exit 1, naming the file and saying to delete it) and is not fetched again; an older tarball that no recipe pins any more is kept untouched; a fetch that is not served, a sha256 that differs, a pin that is missing or not 64 lower-case hex, the two recipes pinning one file with two different sha256 values, a recipe fetch whose uri is not https://go.dev/dl/ followed by a Go file name, and a go entry of the archive that is a symlink or not a directory stop the job (exit 1 or 2) with nothing stored; while an earlier refresh pull request is open a missing tarball waits like a missing package; the stages never fetch from go.dev (owner rule 12: Go is kept in the archive; advisor reading Oct 16 under the owner's Oct 13 latitude, release review R1)"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-REFRESH-001-AC34
+        given: "a refresh or FIPS-module pull request that bin/refresh-inputs.sh opens, and a main whose ruleset requires signed commits"
+        when: "the pull request is opened (open_pr, directly or from a plan)"
+        then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the changed files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token) with exactly the working tree's bytes for the planned paths, and the API is asked whether that commit is verified; only then is the pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; nothing is committed or pushed to main, and no git commit is made (rule: main requires signed commits; advisor reading Oct 17 after cache#404 and cache#422 were found unmergeable with an unsigned job commit)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-ARCHIVE-001
     title: The archive is pushed, pulled and checked by digest, with no way around the pointer
     statement: >
