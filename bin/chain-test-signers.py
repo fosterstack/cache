@@ -94,7 +94,7 @@ def single_quoted_spans(body):
     if stack[-1] == "s": spans.append((a, n))
     return spans
 WORKSPACE_SLICE = re.compile(r"\$\{[A-Za-z_0-9@*]+(?::[^-=+?}]|[#%/^,])")   # a slice or pattern edit of a variable's value: ${x:2:4} ${x#?} ${x%?} ${x/a/b} ${x^^}
-WORKSPACE_COARSE = re.compile(r"\b(?:declare|typeset|local)\s+-\w*[ulc]\b|\benable\b|\bBASH_(?:CMDS|ALIASES)\b|\[[\"']|\bwait\s+-\w*p|\(\(|\$\[|\[[A-Za-z_$]|\bhash\s+-\w*p|\bfunction\s+(?:ba)?sh\b|(?:^|[\s;&|(){}])(?:ba)?sh\s*\(\s*\)|\beval\b|\balias\b|\bexpand_aliases\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
+WORKSPACE_COARSE = re.compile(r"\[\[[^\n]*\s-(?:eq|ne|lt|le|gt|ge)\s|\b(?:declare|typeset|local|export|readonly)\s+-\w*i\b|\[\s+[A-Za-z_$]|\b(?:declare|typeset|local)\s+-\w*[ulc]\b|\benable\b|\bBASH_(?:CMDS|ALIASES)\b|\[[\"']|\bwait\s+-\w*p|\(\(|\$\[|\[[A-Za-z_$]|\bhash\s+-\w*p|\bfunction\s+\w|(?:^|[\s;&|(){}])(?:ba|da|z|k)?sh\s*\(\s*\)|\beval\b|\balias\b|\bexpand_aliases\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
 WORKSPACE_NAMING = re.compile(r"(?:^|[\s;&|(){}])(?:export|readonly|declare|typeset|local|unset|read|let|mapfile|readarray|getopts)\b([^\n;&|<>]*)")
 WORKSPACE_DOLLAR_WORD = re.compile(r"""(?:^|\s)[^\s=]*[$`]""")
 def workspace_by_runtime_name(body):
