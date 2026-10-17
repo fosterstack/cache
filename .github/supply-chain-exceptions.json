@@ -1607,15 +1607,6 @@
     },
     {
       "file": "bin/chain-release-scripts-test.sh",
-      "form": "a line that names the vendored folder",
-      "key": "f66643f7031875c4c8c62d3bcd6a7883b946d8dfe3ff00ec8e6fe6161f239970",
-      "line": "f66643f7031875c4c8c62d3bcd6a7883b946d8dfe3ff00ec8e6fe6161f239970",
-      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
-      "context": "pystring",
-      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
-    },
-    {
-      "file": "bin/chain-release-scripts-test.sh",
       "form": "a gh release or extension download",
       "key": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
       "line": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
