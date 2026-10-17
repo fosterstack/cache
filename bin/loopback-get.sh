@@ -25,7 +25,7 @@ while [ "$i" -lt "$n" ]; do
     --max-time|--connect-timeout)
       [ "$i" -lt "$n" ] || fail "$a needs a value"
       v=$1; shift; i=$((i + 1))
-      case "$v" in ""|*[!0-9.]*) fail "$a needs a number";; esac
+      case "$v" in ""|*[!0-9.]*|.*|*.|*.*.*) fail "$a needs a number";; esac
       set -- "$@" "$a" "$v" ;;
     -[sSfIg]*)
       case "${a#-}" in *[!sSfIg]*) fail "option $a";; esac
@@ -39,18 +39,19 @@ proto=http
 tok=${ACTIONS_ID_TOKEN_REQUEST_URL:-}
 case "$tok" in https://*) ;; *) tok="" ;; esac
 if [ -n "$tok" ] && { [ "$url" = "$tok" ] || case "$url" in "$tok&audience="*) true;; *) false;; esac; }; then
-  case "${url#"$tok"}" in ""|"&audience="[A-Za-z0-9:/._-]*) ;; *) fail "the token URL has a suffix other than &audience=" ;; esac
+  aud=${url#"$tok"}
+  case "$aud" in "") ;; "&audience="?*) case "${aud#&audience=}" in *[!A-Za-z0-9:/._-]*) fail "the audience holds a character outside the list" ;; esac ;; *) fail "the token URL has a suffix other than &audience=" ;; esac
   proto=https
 else
   case "$url" in
-    *[[:space:]]*|*\\*) fail "a URL with whitespace or a backslash" ;;
+    *[[:space:]]*|*\\*|*"#"*) fail "a URL with whitespace, a backslash or a fragment" ;;
     http://*) rest=${url#http://} ;;
     *://*) fail "scheme of $url" ;;
     *) rest=$url ;;
   esac
   hostport=${rest%%[/?#]*}
   tail=${rest#"$hostport"}
-  case "$tail" in ""|[/]*) ;; *) fail "nothing but a path may follow the host" ;; esac
+  case "$tail" in [/]*) ;; *) fail "the URL needs a path starting with /" ;; esac
   case "$hostport" in *[!A-Za-z0-9.:]*|"") fail "host $hostport" ;; esac
   host=${hostport%%:*}
   case "$host" in localhost|127.0.0.1|fscache) ;; *) fail "host $host" ;; esac
@@ -60,4 +61,4 @@ else
   fi
   url="http://$rest"
 fi
-curl -q --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?
+curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?

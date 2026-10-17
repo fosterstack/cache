@@ -42,7 +42,7 @@ allowed "127.0.0.1 with a port" -sf --max-time 2 http://127.0.0.1:8080/healthz
 allowed "127.0.0.1 without a port" -sf http://127.0.0.1/statusz
 allowed "the in-cluster service name" -sf http://fscache/runnerkey123
 allowed "the service name with a port" -sf http://fscache:8080/k
-allowed "a bare host and port, nothing after" -sf localhost:18095
+allowed "a path of just a slash" -sf localhost:18095/
 allowed "a PUT with a body and credentials" -sf -u "user:pa ss" -X PUT --data-binary payload http://fscache/k -o /dev/null
 allowed "-I, -D and -w" -s -D - -o /dev/null -w '%{http_code}' -I localhost:18096/x
 allowed "combined short flags" -sSf http://127.0.0.1:9/x
@@ -72,6 +72,10 @@ refused "a URL given by --url" -s --url http://example.com/x http://localhost/y
 refused "a file URL" -s file:///etc/passwd
 refused "an ftp URL" -s ftp://localhost/x
 refused "an uppercase scheme trick" -s HTTP://example.com/x
+refused "a bare host and port with no path" -sf localhost:18095
+refused "a host with no path" -s http://localhost
+refused "a fragment after a path" -s "http://localhost/healthz#fragment"
+refused "a question mark and then a fragment" -s "http://localhost/x?a=1#b"
 # --- options
 refused "-L (follow redirects)" -sL http://localhost/x
 refused "--location" -s --location http://localhost/x
@@ -86,12 +90,18 @@ refused "--next" -s --next http://example.com/x
 refused "an unknown option" -s --frobnicate http://localhost/x
 refused "-o with no value" -s http://localhost/x -o
 refused "--max-time with a non-number" -s --max-time abc http://localhost/x
+refused "--max-time 1..2" -s --max-time 1..2 http://localhost/x
+refused "--max-time just a dot" -s --max-time . http://localhost/x
+refused "--connect-timeout 1.2.3" -s --connect-timeout 1.2.3 http://localhost/x
+refused "--connect-timeout .5" -s --connect-timeout .5 http://localhost/x
+allowed "--connect-timeout 1.5" -s --connect-timeout 1.5 http://localhost/x
 # --- what the helper passes to curl
 rm -f "$STUB_OUT"; env -u ACTIONS_ID_TOKEN_REQUEST_URL sh "$H" -s -u mvn:acceptance-secret localhost:18098/metrics > /dev/null 2>&1
 a=$(cat "$STUB_OUT" 2>/dev/null | tr '\n' ' ')
 case "$a" in *"-q "*) ok "curl is started with -q (no .curlrc)";; *) bad "curl is started with -q: $a";; esac
 case "$a" in *"--noproxy * "*) ok "no proxy is used";; *) bad "no proxy: $a";; esac
 case "$a" in *"--proto =http "*) ok "only the http protocol is allowed";; *) bad "--proto =http: $a";; esac
+case "$a" in *"-g "*) ok "curl globbing is off (one operand is one request)";; *) bad "-g: $a";; esac
 case "$a" in *"--max-redirs 0 "*) ok "no redirect is followed";; *) bad "--max-redirs 0: $a";; esac
 case "$a" in *"-u mvn:acceptance-secret "*"http://localhost:18098/metrics"*) ok "the options and the URL are passed through; a bare host:port gets http://";; *) bad "pass-through: $a";; esac
 # --- the runner's token endpoint
@@ -118,6 +128,16 @@ tok t "http://example.com/t" -sSf "http://example.com/t&audience=sigstore"
 if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: a token endpoint that is not https"; else bad "http token endpoint (rc=$RC)"; fi
 tok t "$TU" -sSf "${TU}&audience=sigstore" http://example.com/x
 if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: the token URL beside a second URL"; else bad "token plus second URL (rc=$RC)"; fi
+tok t "$TU" -sSf "${TU}&audience=x&extra=1"
+if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an audience followed by another query parameter"; else bad "audience with extra parameter (rc=$RC)"; fi
+tok t "$TU" -sSf "${TU}&audience=x y"
+if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an audience with a space"; else bad "audience with a space (rc=$RC)"; fi
+tok t "$TU" -sSf "${TU}&audience=x#frag"
+if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an audience with a fragment"; else bad "audience with a fragment (rc=$RC)"; fi
+tok t "$TU" -sSf "${TU}&audience="
+if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an empty audience"; else bad "empty audience (rc=$RC)"; fi
+# --- the documented smoke commands run through the helper
+grep -q '^lines.append(.curl() { sh bin/loopback-get.sh' "$root/bin/acceptance-k8s-smoke.py" && ok "the k8s smoke script defines curl as the helper for the documented commands" || bad "the k8s smoke script does not route the documented commands through the helper"
 # --- the call sites no longer name curl
 for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh acceptance-serve.sh acceptance-k8s.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
   n=$(grep -v '^[[:space:]]*#' "$root/bin/$f" | grep -c '\bcurl\b' || true)

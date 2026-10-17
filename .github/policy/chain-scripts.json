@@ -902,17 +902,19 @@
     },
     {
       "path": "bin/acceptance-k8s-smoke.py",
-      "sha256": "eaa5fbaf1da334c58a43ddd5df30b17232377e1b61ab80a39fa9d65b8a08b81f",
+      "sha256": "65e853b5760f96117b757cfe05a71aaf459cc1e3809319021ceff33cc0c48011",
       "tools": [
         "at",
         "bash",
         "command",
         "curl",
         "env",
-        "eval"
+        "eval",
+        "sh"
       ],
       "runs": [
-        "bin/acceptance-k8s.sh"
+        "bin/acceptance-k8s.sh",
+        "bin/loopback-get.sh"
       ],
       "signs": false,
       "reason": "step 5 of the Kubernetes suite: extracts the documented runner env block and smoke commands (REQ-CHAIN-006-AC5)",
@@ -1569,7 +1571,7 @@
     },
     {
       "path": "bin/loopback-get.sh",
-      "sha256": "fbdc880f448a86ffa1de5daa3f6e66ecb297e1296ab23d07a1556b78d8890488",
+      "sha256": "2994132ec3a1ded21de6368b21f74b4754f634015bbaf671fbb5816b0f3a61fa",
       "tools": [
         "curl",
         "exec"
