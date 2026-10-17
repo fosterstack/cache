@@ -67,8 +67,57 @@ def strip_line(l):
         prev_ws = ch.isspace()
     return l                                  # unbalanced quotes: do not guess where a comment starts
 
+HEREDOC_OPEN = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\"|\\?([A-Za-z_][A-Za-z0-9_]*))")
+
+def strip_lines(lines):
+    """([code line], [error]) for the physical lines of a shell text, read as bash reads them (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). The quote state
+    (single, double, ANSI-C $'..', backslash) is carried across lines; a heredoc body is data and opens no quote. A line that begins inside a quote is
+    kept whole (it is never read as a comment), and a `#` line there is an error; a quote still open at the end, and a << inside (( )) (a shift or
+    a heredoc: not resolved), are errors (fail closed: what the check cannot read is refused, never guessed)."""
+    out, errs = [], []
+    mode, hd = None, None                              # mode None | "sq" | "dq" | "ansi"; hd = (delimiter, tab-indented) while inside a heredoc body
+    for n, l in enumerate(lines):
+        if hd is not None:
+            out.append(strip_line(l))
+            if (l.lstrip("\t") if hd[1] else l) == hd[0]: hd = None
+            continue
+        if mode is not None and l.lstrip().startswith("#"):
+            errs.append("line %d: a # line inside a quote that is still open from an earlier line (bash reads it as part of the quoted word, not as a comment)" % (n + 1))
+        elif mode is None and l.lstrip().startswith("#"):
+            out.append(""); continue
+        sq = mode == "sq"; dq = mode == "dq"; an = mode == "ansi"
+        esc = prev_ws = False
+        cut = skip = None
+        for i, ch in enumerate(l):
+            if skip == i: skip = None; prev_ws = False; continue            # the quote that opened an ANSI-C string
+            if esc: esc = False; prev_ws = False; continue
+            if an:
+                if ch == "\\": esc = True
+                elif ch == "'": an = False
+            elif sq:
+                if ch == "'": sq = False
+            elif dq:
+                if ch == "\\": esc = True
+                elif ch == '"': dq = False
+            elif ch == "\\": esc = True
+            elif ch == "'": sq = True
+            elif ch == '"': dq = True
+            elif ch == "$" and l[i + 1:i + 2] == "'": an = True; skip = i + 1
+            elif ch == "#" and i > 0 and prev_ws and not (sq or dq or an):
+                cut = i; break
+            prev_ws = ch.isspace()
+        mode = "sq" if sq else "dq" if dq else "ansi" if an else None
+        out.append(l if cut is None else l[:cut])
+        code = out[-1]
+        if mode is None and "<<" in code:
+            if "((" in code: errs.append("line %d: a << inside (( )) is a shift or a heredoc and is not resolved" % (n + 1))
+            for m in HEREDOC_OPEN.finditer(code):
+                hd = (m.group(2) or m.group(3) or m.group(4), m.group(1) == "-")
+    if mode is not None: errs.append("a quote is still open at the end of the script")
+    return out, errs
+
 def strip(text):
-    return "\n".join(strip_line(l) for l in text.splitlines())
+    return "\n".join(strip_lines(text.splitlines())[0])
 
 class DuplicateKey(Exception): pass
 
@@ -1190,7 +1239,8 @@ def scan_script(path, text, row, rows, base):
     if bl and bl[-1] == "": bl.pop()
     exotic = len(body.splitlines()) != len(bl)                        # another line separator: line numbers cannot be trusted (fail closed: not waivable)
     starts, i_ = [], 0                                                # first physical body line of each logical (continuation-joined) line
-    pcode = [strip_line(l_) for l_ in body.splitlines()]
+    pcode, qerrs = strip_lines(body.splitlines())
+    for q in qerrs: add(None, "", "%s: %s" % (path, q))
     while i_ < len(pcode):
         starts.append(i_)
         while i_ + 1 < len(pcode) and len(pcode[i_]) - len(pcode[i_].rstrip("\\")) in range(1, len(pcode[i_]) + 1) and (len(pcode[i_]) - len(pcode[i_].rstrip("\\"))) % 2 == 1:
