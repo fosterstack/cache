@@ -51,7 +51,8 @@ for v in production fips; do
   tar -C "$images/$v" -cf "$tmp/$v.tar" . && loaded=$(docker load -i "$tmp/$v.tar") || { echo "check-fips: $v: the image could not be loaded" >&2; failed=1; continue; }
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || { echo "check-fips: $v: docker load named no image" >&2; failed=1; continue; }
-  if ! docker run -d --name "$name" -p 127.0.0.1::8080 "$ref" > /dev/null; then
+  docker tag "$ref" localhost/fscache-fips-candidate
+  if ! docker run --pull=never -d --name "$name" -p 127.0.0.1::8080 localhost/fscache-fips-candidate > /dev/null; then
     echo "check-fips: $v: the image did not start" >&2; failed=1; continue
   fi
   port=$(docker port "$name" 8080/tcp | sed -n '1s/.*://p')

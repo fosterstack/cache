@@ -17,7 +17,8 @@ case "$suite:$what" in
   *) echo "acceptance-serve: unknown suite or action: $suite $what" >&2; exit 2 ;;
 esac
 [ -n "${IMAGE_REF:-}" ] || { echo "acceptance-serve: IMAGE_REF is not set" >&2; exit 2; }
-docker run -d --name "$name" "${env[@]}" -p "127.0.0.1:$port:8080" "$IMAGE_REF"
+docker tag "$IMAGE_REF" localhost/fscache-serve-candidate
+docker run --pull=never -d --name "$name" "${env[@]}" -p "127.0.0.1:$port:8080" localhost/fscache-serve-candidate
 for _ in $(seq 1 20); do
   lg -sf "http://localhost:$port/healthz" && exit 0
   sleep 0.5
