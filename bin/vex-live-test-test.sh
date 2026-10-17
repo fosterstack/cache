@@ -182,7 +182,7 @@ for why, fn in [("a widened criterion", lambda c: c["filters"][0]["filterCriteri
     check("check_copy refuses %s" % why, mut(fn) != [], "accepted")
 check("the shipped file never carries the tag", all("tags" not in f for f in shipped["filters"]))
 
-# --- Codex #387 r1 (P1): the test CSAF keeps the SHIPPED product tree and adds a separately identified fixture product and statement (the production load must still find
+# --- Codex #387 r1 (P1): the test CSAF keeps the SHIPPED product tree and adds a separately identified fixture product and statement (the production loading must still find
 #     its own products)
 vexc = copy.deepcopy(vex)
 csaf = L.csaf_test_copy(V, vexc, images, FIX, "CVE-2023-9999", "v0.3.0-rc1")
@@ -352,7 +352,7 @@ for why, after in [("an unrelated finding on one package lost", {"matches": [gm(
                    ("the target ignored on another package only", {"matches": [gm("CVE-U", "lib-a"), gm("CVE-U", "lib-b")], "ignoredMatches": [gm("CVE-T", "other")]})]:
     check("SEC-387 grype identity refuses %s" % why, L.judge_grype(GB2, after, "CVE-T") is not None)
 
-# SEC-169-06: Google's assessment must be NEW and come from a note this run's load created
+# SEC-169-06: Google's assessment must be NEW and come from a note this run's loading created
 occ = lambda state, note=None: {"noteName": "projects/goog-vulnz/notes/CVE-T", "vulnerability": dict(
     {"vexAssessment": {"state": state, "noteName": note}} if state else {})}
 RUN_NOTES = {"projects/p/notes/ours"}
@@ -839,9 +839,9 @@ with tempfile.TemporaryDirectory() as t:
           d_doc["schemaVersion"] == 2 and d_doc["mediaType"] == "application/vnd.oci.image.index.v1+json" and len(d_doc["manifests"]) == 1
           and d_doc["manifests"][0]["digest"] == man_dg and d_doc["manifests"][0]["platform"] == {"architecture": "amd64", "os": "linux"}, d_doc)
     vpath = os.path.join(t, "vex.json"); json.dump(sv, open(vpath, "w")); os.chmod(vpath, 0o644)      # the Scout leg's own document (the shipped statements plus the fixture's)
-    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-index.py"), "layout", "--layout", lay, "--vex", vpath], capture_output=True, text=True)
-    check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", r.returncode == 0, r.stderr[-300:])
-    check("scout-vex: the attached document passes the attestation tool's own OpenVEX check (the tool is run, never loaded into this process)", r.returncode == 0, r.stderr[-300:])
+    vi_run = subprocess.run([sys.executable, os.path.join(root, "bin/vex-index.py"), "layout", "--layout", lay, "--vex", vpath], capture_output=True, text=True)
+    check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", vi_run.returncode == 0, vi_run.stderr[-300:])
+    check("scout-vex: the attached document passes the attestation tool's own OpenVEX check (the tool is run, never loaded into this process)", vi_run.returncode == 0, vi_run.stderr[-300:])
 def _already_index(lay):
     open(os.path.join(lay, "index.json"), "w").write(json.dumps({"schemaVersion": 2, "manifests": [
         {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + "a" * 64, "size": 5}]}))

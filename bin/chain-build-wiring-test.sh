@@ -2218,7 +2218,9 @@ BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "b
         "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
 RUN_CALL = 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1'
-TEST_LINES = ('r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-index.py"), "layout", "--layout", lay, "--vex", vpath], capture_output=True, text=True)',)
+VI_RESULT_LINES = ('check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", vi_run.returncode == 0, vi_run.stderr[-300:])',
+                   'check("scout-vex: the attached document passes the attestation tool\'s own OpenVEX check (the tool is run, never loaded into this process)", vi_run.returncode == 0, vi_run.stderr[-300:])')
+TEST_LINES = ('vi_run = subprocess.run([sys.executable, os.path.join(root, "bin/vex-index.py"), "layout", "--layout", lay, "--vex", vpath], capture_output=True, text=True)',)
 TEST_LOADERS = ("import copy, importlib.util, json, os, re, shutil, subprocess, sys, tempfile, yaml", "def load(name, path):",
                 "spec = importlib.util.spec_from_file_location(name, os.path.join(root, path))",
                 "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m",
@@ -2231,13 +2233,17 @@ def stray(root):
         for f in files:
             path = os.path.join(d, f)
             if os.path.islink(path):
-                if os.path.basename(os.path.realpath(path)) == "vex-index.py":
-                    bad.append(os.path.relpath(path, root) + " (a link to the tool)")
                 continue
             if not os.path.isfile(path):
                 continue
             if "vex-index" in open(path, errors="replace").read():
                 named.add(os.path.relpath(path, root))
+    for d, dirs, files in os.walk(root):      # a link to the tool is the tool: looked for in every folder, the skipped prose ones too
+        dirs[:] = [x for x in dirs if x not in (".git", "__pycache__")]
+        for f in files + dirs:
+            path = os.path.join(d, f)
+            if os.path.islink(path) and os.path.basename(os.path.realpath(path)) == "vex-index.py":
+                bad.append(os.path.relpath(path, root) + " (a link to the tool)")
     bad += sorted(named - BASE - {RUN, TEST})
     for path, exact in ((RUN, (RUN_CALL,)), (TEST, TEST_LINES)):
         if path not in named and path != RUN:
@@ -2249,10 +2255,15 @@ def stray(root):
             # line that names the tool is judged whole and the run script may name it on its one call line only
             if "vex-index" in body:
                 code.append(body)
-            if path == TEST and (re.search(r"\bVI\b|(?<![\w.])load\(|importlib|spec_from_file_location|exec_module|runpy|__import__|\br\.args\b", body) and body not in TEST_LOADERS):
-                code.append(body)      # the test file never loads the tool into its own process (a loaded module's globals are reachable by reflection): it only runs it
+            if path == TEST and (re.search(r"\bVI\b|(?<![\w.])load(?!\w)|importlib|spec_from_file_location|exec_module|runpy|__import__|\.args\b|\b(?:exec|eval|compile)\(", body) and body not in TEST_LOADERS):
+                code.append(body)
+            if path == TEST and re.search(r"\bvi_run\b", body) and body not in TEST_LINES + VI_RESULT_LINES:
+                code.append(body)      # the allowed call's result is read on its two check lines only (no alias, no .args)      # the test file never loads the tool into its own process (a loaded module's globals are reachable by reflection): it only runs it
         bad += ["%s: %s" % (path, c[:90]) for c in code if c not in exact]
         bad += ["%s: %s (must appear exactly once)" % (path, e[:60]) for e in exact if code.count(e) != 1]
+        if path == TEST:
+            body_all = [l.strip() for l in open(os.path.join(root, path), errors="replace")]
+            bad += ["%s: %s (must appear exactly once)" % (path, e[:60]) for e in VI_RESULT_LINES if body_all.count(e) != 1]
     return bad
 PY
 if python3 - "$root" "$work" <<'PY'
@@ -2316,6 +2327,14 @@ vim k7 "REQ-REL-010-AC4 an importlib spec on a path variable in the live-test te
 ld="$work/vim-link"; rm -rf "$ld"; mkdir -p "$ld/bin" "$ld/.github/workflows" "$ld/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld/bin/"
 printf 'x\n' > "$ld/bin/vex-index.py"; ln -s vex-index.py "$ld/bin/attach.py"
 if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); sys.exit(0 if any("attach.py" in x for x in b) else 1)' "$work/vi-named.py" "$ld"; then ok "REQ-REL-010-AC4 a link to the tool under another name is refused"; else bad "REQ-REL-010-AC4 a link to the tool under another name is refused"; fi
+vim n2 "REQ-REL-010-AC4 re-running the tool from an alias of the allowed call's result (res.args[1]) is refused" bin/vex-live-test-test.sh '' $'\nres = vi_run; subprocess.run([sys.executable, res.args[1], "layout", "--layout", "/x"])\n'
+vim n3 "REQ-REL-010-AC4 loading the tool in-process through an alias of the loader and of the call's result is refused" bin/vex-live-test-test.sh '' $'\nres = vi_run; f = load; M = f("m", res.args[1])\n'
+vim n4 "REQ-REL-010-AC4 exec of the tool's source read from the allowed call's path is refused" bin/vex-live-test-test.sh '' $'\nres = vi_run; exec(compile(open(res.args[1]).read(), "t", "exec"), {"__name__": "t"})\n'
+vim n12 "REQ-REL-010-AC4 any other use of the allowed call's result variable is refused" bin/vex-live-test-test.sh '' $'\nx = vi_run\n'
+# a link to the tool under a prose directory at the top of the tree (docs/, test-evidence/) is the tool too
+ld2="$work/vim-link2"; rm -rf "$ld2"; mkdir -p "$ld2/bin" "$ld2/docs" "$ld2/.github/workflows" "$ld2/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld2/bin/"
+printf 'x\n' > "$ld2/bin/vex-index.py"; ln -s ../bin/vex-index.py "$ld2/docs/attach.md"
+if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); sys.exit(0 if any("attach.md" in x for x in b) else 1)' "$work/vi-named.py" "$ld2"; then ok "REQ-REL-010-AC4 a link to the tool under the top-level docs/ is refused"; else bad "REQ-REL-010-AC4 a link to the tool under the top-level docs/ is refused"; fi
 vim m6 "REQ-REL-010-AC4 the live-test run script without its one fixture call is refused (the exemption is not a blanket)" bin/vex-live-run.sh 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1' 'true'
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
 expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
@@ -2338,7 +2357,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=807
+EXPECT=812
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
