@@ -94,7 +94,7 @@ def single_quoted_spans(body):
     if stack[-1] == "s": spans.append((a, n))
     return spans
 WORKSPACE_SLICE = re.compile(r"\$\{[A-Za-z_0-9@*]+(?::[^-=+?}]|[#%/^,])")   # a slice or pattern edit of a variable's value: ${x:2:4} ${x#?} ${x%?} ${x/a/b} ${x^^}
-WORKSPACE_COARSE = re.compile(r"\bwait\s+-\w*p|\(\(|\$\[|\[[A-Za-z_$]|\bhash\s+-\w*p|\bfunction\s+(?:ba)?sh\b|(?:^|[\s;&|(){}])(?:ba)?sh\s*\(\s*\)|\beval\b|\balias\b|\bexpand_aliases\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
+WORKSPACE_COARSE = re.compile(r"\benable\b|\bBASH_(?:CMDS|ALIASES)\b|\[[\"']|\bwait\s+-\w*p|\(\(|\$\[|\[[A-Za-z_$]|\bhash\s+-\w*p|\bfunction\s+(?:ba)?sh\b|(?:^|[\s;&|(){}])(?:ba)?sh\s*\(\s*\)|\beval\b|\balias\b|\bexpand_aliases\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
 WORKSPACE_NAMING = re.compile(r"(?:^|[\s;&|(){}])(?:export|readonly|declare|typeset|local|unset|read|let|mapfile|readarray|getopts)\b([^\n;&|<>]*)")
 WORKSPACE_DOLLAR_WORD = re.compile(r"""(?:^|\s)["']*\$""")
 def workspace_by_runtime_name(body):
@@ -113,6 +113,7 @@ def workspace_touched(body):
     quoted = single_quoted_spans(body)                      # a read inside a single quote (on any line) or after a backslash is the text itself: it can be sliced into a name
     for m in WORKSPACE_PLAIN.finditer(body):
         if body[max(0, m.start() - 1):m.start()] == "\\" or any(a <= m.start() < b for a, b in quoted): return True
+    if re.search(r"[\"']?\$\{?[A-Za-z_]\w*\}?[\"']?[ \t]+(?:-\S+[ \t]+)*[\"']?\$\{?GITHUB_WORKSPACE", body): return True   # a variable as the interpreter handed the operand
     if re.search(r"\$\{![A-Za-z_0-9]*[*@]", body): return True       # ${!PREFIX*} lists every variable whose name starts with PREFIX
     rest = WORKSPACE_PLAIN.sub("", body)
     if re.search(r"GITHUB_(?![A-Z])", rest): return True                  # the variable's prefix with no name after it: the name is finished at run time

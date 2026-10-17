@@ -2986,6 +2986,11 @@ kc ws_bad94 'read -r v < cfg\n(( v ))\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"
 kc ws_bad95 'a=(1 2)\n: "${a[v]}"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad96 'sleep 0 & wait -p "$y"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad97 'export ""$y\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad98 'b=/evil/sh\n$b "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad99 'bash=/evil\n"$bash" "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad100 'BASH_CMDS["bash"]=/tmp/evx\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad101 "BASH_CMDS=([\"bash\"]=/tmp/evx)\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad102 'enable -f /path/lb.so bash\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok8 'export FOO="$HOME/x"\nread -r line <<< "$FOO"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok7 "x=\"\$(echo \"\$GITHUB_WORKSPACE\")\"\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok6 "cat <<'E'\nit's text\nE\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" '["bash"]' '["bin/build-apk.sh"]'
@@ -3468,7 +3473,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1436
+EXPECT=1441
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
