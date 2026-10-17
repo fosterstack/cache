@@ -2763,6 +2763,11 @@ d=$(cfix al_19 'set -o posix\nx=1' '[]'); expm caught "$d" 'set -o posix' "set -
 d=$(cfix al_20 'set -o "$m"' '[]'); expm caught "$d" 'set' "set -o with a variable: refused"
 d=$(cfix al_21 'POSIXLY_CORRECT=1 true' '[]'); expm caught "$d" 'POSIXLY_CORRECT' "POSIXLY_CORRECT: refused"
 d=$(cfix al_22 'set -euo pipefail\nset +e -uo pipefail\nset -eo pipefail\nset -- $a\nset +e; x=1; set -e' '[]'); expm ok "$d" - "the set forms real scripts use are accepted"
+d=$(cfix al_23 'o=expand_; o+=aliases\n>/dev/null shopt -s "$o"' '[]'); expm caught "$d" 'shopt' "a redirection before shopt, the option built at run time: refused (seat B round 8)"
+d=$(cfix al_24 '2>/dev/null set -o posix\nx=1 </dev/null shopt -s "$o"' '[]'); expm caught "$d" 'harmless' "a redirection or assignment before set/shopt: refused"
+d=$(cfix al_25 'time -p set -o posix' '[]'); expm caught "$d" 'set -o posix' "time -p before set -o posix: refused"
+d=$(cfix al_26 'echo x | { cat; } ; trap "shopt -s $o" DEBUG' '[]'); expm caught "$d" 'shopt' "shopt inside a trap string: refused (the word is not a plain command)"
+d=$(cfix al_27 '>/dev/null shopt -s nullglob\nshopt -s nullglob' '[]'); expm ok "$d" - "a redirection before an allowed shopt use is accepted"
 d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
 d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
@@ -3473,7 +3478,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1442
+EXPECT=1447
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
