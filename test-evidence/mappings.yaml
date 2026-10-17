@@ -1598,3 +1598,6 @@ mappings:
   - ac: REQ-SCAN-012-AC5
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-SCAN-012-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }

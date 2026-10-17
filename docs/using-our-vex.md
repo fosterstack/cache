@@ -106,6 +106,20 @@ Analysis shows with that image's vulnerabilities. Google's loader reads only who
 limited to one package inside the image is in the file, but the loader does not upload it, so Artifact Analysis keeps
 reporting that finding. Google's VEX upload is a **preview** feature, so its behavior may change.
 
+### Docker Scout
+
+> **Draft, not yet verified on a published release.** This section describes how Docker Scout reads our statements from the image. It has not yet been run against a published release, so do not rely on it until this notice is gone.
+
+Docker Scout needs no file: every release's image index carries these statements itself, as attestations attached to the image. <!-- gated: REQ-REL-010-AC6 -->
+Scout applies only statements whose author you name (its default is Docker's own), so name ours. Scan the image by digest, with the `DIGEST` from step 1:
+
+```sh
+docker scout cves --vex-author '^FosterStack LLC$' "registry://ghcr.io/fosterstack/cache@${DIGEST}"
+```
+
+Scout reads the statements at scan time and leaves out findings stated *not affected* for this image. It changes nothing outside that
+scan's output.
+
 ## 3. Stay current
 
 Reload on **every release**: download the new version's files, check them (step 1), and load them (step 2).
@@ -121,6 +135,7 @@ If a statement changes, the new release's files say so, and a suppression you lo
 
   This deletes only rules whose names start with `fosterstack-cache-`.
 - **Google Artifact Analysis:** load the new release's CSAF file for the image you run, with the same command.
+- **Docker Scout:** nothing to load or reload; each release carries its own statements on its image.
 
 ## Other scanners
 

@@ -2446,10 +2446,11 @@ requirements:
     origin: scanner-panel rule 12 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
     confidence: implementation-only
     acceptance_criteria:
+      # Source: advisor reading Oct 17 under the owner's Oct 16 words ("I want max unblockage with least of human effort"); the Docker Hub test repository, its organization access token and the registry-API sweep are the Docker Scout leg's (advisor handoffs, Oct 16-17); no owner ratification asked (advisor ruling on #416).
       - id: REQ-SCAN-012-AC1
         given: "a live test"
         when: "it runs"
-        then: "it touches only the dedicated test repositories (one ECR, one Google Artifact Registry), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; no keys, nothing from the Mac"
+        then: "it touches only the dedicated test repositories (one ECR, one Google Artifact Registry and, for the Docker Scout leg only, one Docker Hub repository), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; the Docker Hub repository, which has no federation, through one push token of an account that holds only that repository, kept as a secret of the live-test environment and never printed; no other keys, nothing from the Mac"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-012-AC2
@@ -2458,10 +2459,11 @@ requirements:
         then: "they are our release images copied by digest plus one deliberately vulnerable fixture image; nothing is pushed anywhere public"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      # Source: advisor reading Oct 17 under the owner's Oct 16 words ("I want max unblockage with least of human effort"); the Docker Hub test repository, its organization access token and the registry-API sweep are the Docker Scout leg's (advisor handoffs, Oct 16-17); no owner ratification asked (advisor ruling on #416).
       - id: REQ-SCAN-012-AC3
         given: "a live test run"
         when: "it ends"
-        then: "it deletes what it created (images, suppression rules, uploaded VEX); the test repositories expire images after one day"
+        then: "it deletes what it created (images, suppression rules, uploaded VEX, the tags of the Docker Hub repository); the test repositories expire images after one day"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-012-AC4
@@ -2474,6 +2476,13 @@ requirements:
         given: "a live test"
         when: "it passes"
         then: "the finding showed before the suppression, was gone after, and every guide command worked exactly as written"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      # Source: advisor reading Oct 17 under the owner's Oct 16 words ("I want max unblockage with least of human effort"); the Docker Hub test repository, its organization access token and the registry-API sweep are the Docker Scout leg's (advisor handoffs, Oct 16-17); no owner ratification asked (advisor ruling on #416).
+      - id: REQ-SCAN-012-AC6
+        given: "a live test run"
+        when: "its Docker Scout leg runs (the OpenVEX attached to the image index as attestation children, REQ-REL-010)"
+        then: "it fails closed unless the Docker Hub test repository, the user and both tokens are present; the fixture carrying our attestation shows its finding when Scout is given Docker's authors only, the finding is gone and every other finding kept when Scout is given ours, and the same holds for the finding of one of our statements that Scout reports on our production image (a production image on which Scout reports none of them is a warning that REQ-REL-010-AC6 is not shown, never a pass of it); after a publication the published index is scanned the same way by tag and by exact digest; a scan of Build's layout directory is information only"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
