@@ -39,8 +39,8 @@ case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
-  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64; A_KIND=kind-linux-amd64; A_CRANE=Linux_x86_64 ;;
-  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64; A_KIND=kind-linux-arm64; A_CRANE=Linux_arm64 ;;
+  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64; A_KIND=kind-linux-amd64 ;;
+  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64; A_KIND=kind-linux-arm64 ;;
   *) pipeline_fail "unsupported architecture: $arch" ;;
 esac
 
@@ -172,10 +172,9 @@ case "$TOOL" in
   crane)
     # the digest reader of the weekly persona job (the chain's pinned tool; no buildx): a release tarball holding the crane binary, verified against the pinned sum.
     # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (no version variable and no base-URL hook)
-    case "$A_CRANE" in
-      Linux_x86_64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed: crane ${A_CRANE}" ;;
-      Linux_arm64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz" || pipeline_fail "download failed: crane ${A_CRANE}" ;;
-      *) pipeline_fail "no crane asset for ${arch}" ;;
+    case "$arch" in
+      x86_64|amd64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;
+      *) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;
     esac
     verify "$tmp/c.tgz"
     tar -xzf "$tmp/c.tgz" -C "$DEST" crane || pipeline_fail "extract failed for crane"

@@ -295,7 +295,7 @@ def step_kind(x, pre, weekly):
     if "upload-artifact" in u: return "upload"
     if "nohup" in r and "--mint-identity" in r: return "refresher"
     if r == CLEANUP_RUN: return "cleanup"
-    if install_re(pre).match(r) or crane_re(pre).match(r): return "install"
+    if install_re(pre).match(r) or (weekly and crane_re(pre).match(r)): return "install"
     if PIN_PIP_SHAPE.fullmatch(r): return "pinpip"
     if "pip install" in r and "persona-uat-requirements" in r: return "sdk"
     if weekly and "gh release view" in r: return "resolver"
@@ -500,7 +500,7 @@ def common(name, job, bad):
         if s is d: continue
         isrun = "run" in s
         is_resolver = isrun and "gh release view" in str(s.get("run", "")) and name.startswith("weekly")
-        is_install = isrun and (install_re(pre).match(str(s.get("run", "")).strip()) is not None or crane_re(pre).match(str(s.get("run", "")).strip()) is not None)
+        is_install = isrun and (install_re(pre).match(str(s.get("run", "")).strip()) is not None or (name.startswith("weekly") and crane_re(pre).match(str(s.get("run", "")).strip()) is not None))
         is_boot = isrun and re.fullmatch(r"python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r " + re.escape(pre) + r"bin/persona-uat-requirements\.txt\s*",
                                          str(s.get("run", "")).strip()) is not None
         is_pin = isrun and is_pin_pip(s)
@@ -938,7 +938,7 @@ def judge_weekly(f, bad):
     else:
         r = res[0]; rrun = "\n".join(l for l in str(r.get("run", "")).splitlines() if not l.strip().startswith("#"))
         if not expr_is((r.get("env", {}) or {}).get("GH_REPO", ""), "github.repository") or not expr_is((r.get("env", {}) or {}).get("REGISTRY_OWNER", ""), "github.repository_owner"):
-            bad.append("weekly persona-uat's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs before any checkout)")
+            bad.append("weekly persona-uat's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs after the root checkout and the crane install, before the docs checkout)")
         bad.extend(run_resolver(rrun))
         m = re.search(r"(\w+)=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)", rrun)
         if not m:
@@ -953,6 +953,8 @@ def judge_weekly(f, bad):
             dm = re.search(r"(\w+)=\$\(\s*crane digest [^\n]*\)", rrun)
             if not dm:
                 bad.append("weekly persona-uat's resolver does not capture the digest with `crane digest <registry>/<owner>/cache:<tag>` (the chain's pinned tool; no buildx, no docker)")
+            if dm and "|" in dm.group(0):
+                bad.append("weekly persona-uat's digest line must be one `crane digest` with no pipe or fallback (a failing crane must fail the step, never hand the driver another digest)")
             if not dm or not re.search(r"image=[^\n]*@\$\{?" + re.escape(dm.group(1)) + r"\}?(?![\w])[^\n]*>>\s*\"?\$GITHUB_OUTPUT", rrun):
                 bad.append("weekly persona-uat's resolver does not write an image= output built from the digest it inspected")
             if not expr_is(r.get("env", {}).get("GH_TOKEN", ""), "github.token"):
@@ -1453,6 +1455,11 @@ mutate("weekly resolver reads the digest with buildx again (rule 61)", "uses doc
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker buildx imagetools inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" --format \'{{.Manifest.Digest}}\'')), "fresh")
 mutate("weekly resolver reads the digest with docker manifest inspect", "uses docker or buildx",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker manifest inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"')), "fresh")
+mutate("weekly resolver falls back to a fixed digest when crane fails", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" || echo sha256:' + "a" * 64 + ')')), "fresh")
+mutate("weekly resolver pipes the digest through another command", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" | head -n1)')), "fresh")
+mutate("rc job installs crane it has no use for", "a run step before the driver other than", lambda j: j["steps"].insert(1, {"run": "./bin/install-scanner.sh crane"}))
 mutate("weekly job has no crane install", "must install crane with exactly one step", lambda j: j["steps"].remove(_crane(j)), "fresh")
 mutate("weekly job installs crane twice", "must install crane with exactly one step", lambda j: j["steps"].insert(j["steps"].index(_crane(j)) + 1, dict(_crane(j))), "fresh")
 mutate("weekly crane install into a directory of its own (not the installer's default)", "must install crane with exactly one step", lambda j: _crane(j).update(run="./bin/install-scanner.sh crane /opt/crane-elsewhere"), "fresh")

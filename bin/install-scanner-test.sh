@@ -93,6 +93,11 @@ else echo "FAIL: crane addresses: $(tr '\n' ' ' <<<"$urls")"; fail=$((fail+1)); 
 v=$(grep -n 'verify "\$tmp/c.tgz"' <<<"$crane_block" | head -1 | cut -d: -f1); t=$(grep -n 'tar -xzf' <<<"$crane_block" | head -1 | cut -d: -f1)
 if [ -n "$v" ] && [ -n "$t" ] && [ "$v" -lt "$t" ]; then echo "ok: crane is checked against the pinned sum before anything is extracted"; pass=$((pass+1)); else echo "FAIL: crane is not verified before extraction"; fail=$((fail+1)); fi
 if grep -q 'CRANE_BASE' "$sut"; then echo "FAIL: crane has a base-URL hook"; fail=$((fail+1)); else echo "ok: crane has no base-URL hook"; pass=$((pass+1)); fi
+if grep -q -F 'crane:x86_64|crane:amd64) SUM=0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 ;;' "$sut" \
+   && grep -q -F 'crane:aarch64|crane:arm64) SUM=898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110 ;;' "$sut"; then
+  echo "ok: crane's two sums are the release tarballs' (amd64 0ab7a1d6..., arm64 898c0cff...)"; pass=$((pass+1)); else echo "FAIL: crane sums differ from the pinned release values"; fail=$((fail+1)); fi
+if grep -q -E 'tar -xzf "\$tmp/c\.tgz" -C "\$DEST" crane \|\|' <<<"$crane_block" && ! grep -q -E -- ' -k |--insecure|--cacert|http://' <<<"$crane_block"; then
+  echo "ok: crane extracts only its own member and the download keeps TLS verification"; pass=$((pass+1)); else echo "FAIL: crane extraction or TLS flags"; fail=$((fail+1)); fi
 n=$(grep -c -E '^  crane:[a-z0-9_|:]+\) SUM=[0-9a-f]{64} ;;' "$sut")
 if [ "$n" = 2 ]; then echo "ok: crane has exactly two pinned sums (amd64, arm64)"; pass=$((pass+1)); else echo "FAIL: crane sums found: $n"; fail=$((fail+1)); fi
 check "crane on an unsupported architecture is a labeled pipeline failure" 1 "unsupported architecture.*PIPELINE failure" \
