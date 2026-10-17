@@ -2740,6 +2740,12 @@ d=$(cfix fc_5 'function /usr/bin/curl # x\n{ echo H; }' '["curl"]'); expm caught
 d=$(cfix fc_hd 'cat >/dev/null <<E; /usr/bin/curl()\nx\nE\n{ echo H; }\n/usr/bin/curl u' '["curl"]'); expm caught "$d" 'function' "path-named function whose body follows a pending here-document: refused (seat A round 4)"
 d=$(cfix fc_eol '/usr/bin/curl()' '["curl"]'); expm caught "$d" 'function' "a path word followed by () at the end of the line is a definition whatever comes next: refused"
 d=$(cfix fc_word 'echo see /usr/bin/curl() here' '["curl"]'); expm ok "$d" - "a path word with () followed by an ordinary word is no definition bash accepts"
+# round 5 of the seats (433, seat A): an alias can give a function the name of a fixed-path program; aliases are refused in a listed script (none uses one)
+d=$(cfix al_1 'shopt -s expand_aliases\nalias x=$'"'"'\\x2fusr\\x2fbin\\x2fcurl'"'"'\nx() { echo H; }\n/usr/bin/curl u' '["curl"]'); expm caught "$d" 'alias' "a path-named function defined through an alias written with escapes: refused"
+d=$(cfix al_2 'BASH_ALIASES[x]=y' '[]'); expm caught "$d" 'alias' "an assignment to BASH_ALIASES: refused"
+d=$(cfix al_3 'echo ok\nalias fn="function "' '[]'); expm caught "$d" 'alias' "the alias builtin at the start of a line: refused"
+d=$(cfix al_4 'unalias -a' '[]'); expm caught "$d" 'alias' "unalias: refused"
+d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
 d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
 d=$(cfix ff_text_str 'echo "see /sendto() here"' '[]'); expm ok "$d" - "a string holding an absolute-path word and () but no function body is no definition (bash would not accept it as one)"
@@ -3449,7 +3455,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1420
+EXPECT=1425
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

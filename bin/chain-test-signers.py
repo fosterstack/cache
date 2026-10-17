@@ -1116,6 +1116,7 @@ TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 # combined flag, -c, -m, stdin or an unlisted script stays refused.
 FIXED_DIRS = ("/usr/bin/", "/bin/", "/usr/local/bin/")
 FUNC_BY_PATH = re.compile(r"(?<![^\s;&|{}()!`])(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=\"'$`]*)[ \t]*\([ \t]*\)(?=[ \t]*(?:\n|\Z|#|\{|\(|if\b|while\b|until\b|for\b|select\b|case\b|\[\[)))")
+ALIAS_USE = re.compile(r"expand_aliases|BASH_ALIASES|(?<![^\s;&|{}()!`])unalias(?=[\s;&|)]|$)|(?<![^\s;&|{}()!`])alias(?=[\s;&|)]|$)")   # cache#361 (seat A, round 5): an alias can name the function (alias x=$'\x2fusr\x2fbin\x2fcurl'; x() {...}); no listed script uses aliases
 FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
 PY_ISOLATION = ("-I", "-B")
 def fixed_tool(w, tools):
@@ -1297,6 +1298,9 @@ def scan_script(path, text, row, rows, base):
     if not py:
         for m in FUNC_BY_PATH.finditer(logical(text)):                       # the RAW logical text, comments included: stripping a "comment" can diverge from bash (a # line inside a quote spanning lines, an ANSI-C escaped quote)                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
             add(None, "", "%s: defines a function named by a path (%s): it could run in place of the fixed-path program it names" % (path, m.group("name") or m.group("name2")))
+    if not py:
+        for m in ALIAS_USE.finditer(logical(text)):                          # the raw text again; "alias" counts only where a command can start (a word like product-and-alias-scoped in a comment is not it)
+            add(None, "", "%s: uses shell aliases (%s): an alias can give a function the name of a fixed-path program" % (path, m.group(0)))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for x in protected_env_mentions(path, text, row): add(None, "", x)
