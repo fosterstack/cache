@@ -864,60 +864,82 @@ for why, mutate in (("a layout that already holds an index", _already_index), ("
         check("wrap-index refuses %s and leaves the layout alone" % why, got == "refused" and open(os.path.join(lay, "index.json")).read() == before, got)
 
 # the Docker Hub test repository is swept through the Hub API: fixed host, bearer token from the login, no redirect, every tag deleted and proven gone
-class HubFake:
-    def __init__(self, tags, fail_login=False, fail_delete=(), keep=()):
-        self.tags, self.calls, self.fail_login, self.fail_delete, self.keep = list(tags), [], fail_login, set(fail_delete), set(keep)
+# --- the Docker Hub test repository is swept through the REGISTRY API (advisor, Oct 17: the push token is an organization access token, which the Hub's own API refuses;
+#     its "Image Delete" scope is the registry endpoints'): the token service at auth.docker.io, tags/list and DELETE manifests/<digest> at registry-1.docker.io; the user and
+#     the token travel only as the token service's Basic credentials
+import base64, hashlib, urllib.parse
+REPO_ = "fosterstack-live/cache-live-test"
+REGB = "https://registry-1.docker.io/v2/" + REPO_
+def dig(name): return "sha256:" + hashlib.sha256(name.encode()).hexdigest()
+class RegResp(FakeResp):
+    def __init__(self, body=b"", headers=None, status=200):
+        super().__init__(body); self.headers, self.status = headers or {}, status
+    def getcode(self): return self.status
+class RegFake:
+    def __init__(self, tags, same=(), fail_auth=False, refuse_delete=False, fail_delete=(), keep=(), page=2, listing=None, link=None, digest_header="ok", name=REPO_, delete_status=202):
+        self.tags = {t: dig(same[0] if t in same else t) for t in tags}     # tags named in `same` share one digest
+        self.calls, self.fail_auth, self.refuse_delete, self.fail_delete, self.keep, self.page = [], fail_auth, refuse_delete, set(fail_delete), set(keep), page
+        self.listing, self.link, self.digest_header, self.name, self.delete_status = listing, link, digest_header, name, delete_status
     def __call__(self, req, timeout=None):
-        m, u = req.get_method(), req.full_url
-        self.calls.append((m, u, req.get_header("Authorization"), req.data))
-        if m == "POST" and u == "https://hub.docker.com/v2/users/login":
-            if self.fail_login: raise urllib.error.HTTPError(u, 401, "no", {}, io.BytesIO(b""))
-            return FakeResp(b'{"token": "jwt-1"}')
-        base = "https://hub.docker.com/v2/repositories/fosterstack-live/cache-live-test/tags"
-        if m == "GET" and u.startswith(base + "?"):
-            page2 = "page=2" in u
-            names = self.tags[:2] if not page2 else self.tags[2:]
-            nxt = (base + "?page_size=2&page=2") if (not page2 and len(self.tags) > 2) else None
-            return FakeResp(json.dumps({"results": [{"name": n} for n in names], "next": nxt}).encode())
-        if m == "DELETE" and u.startswith(base + "/"):
-            name = u[len(base) + 1:].rstrip("/")
-            if name in self.fail_delete: raise urllib.error.HTTPError(u, 500, "boom", {}, io.BytesIO(b""))
-            if name not in self.keep: self.tags = [x for x in self.tags if x != name]
-            return FakeResp(b"")
+        m, u, a = req.get_method(), req.full_url, req.get_header("Authorization")
+        self.calls.append((m, u, a, req.get_header("Accept")))
+        if u.startswith("https://auth.docker.io/token?"):
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(u).query)
+            assert m == "GET" and q == {"service": ["registry.docker.io"], "scope": ["repository:%s:pull,push,delete" % REPO_]}, (m, u)
+            if self.fail_auth or a != "Basic " + base64.b64encode(b"test-user:push-tok").decode(): raise urllib.error.HTTPError(u, 401, "no", {}, io.BytesIO(b""))
+            return RegResp(b'{"token": "reg-1", "access_token": "reg-1"}')
+        if a != "Bearer reg-1": raise urllib.error.HTTPError(u, 401, "no bearer", {}, io.BytesIO(b""))
+        path = urllib.parse.urlsplit(u).path
+        if m == "GET" and path == "/v2/%s/tags/list" % REPO_:
+            if self.listing is not None:
+                return RegResp(json.dumps(self.listing).encode(), {"Link": self.link} if self.link else {})
+            names = sorted(self.tags)
+            last = urllib.parse.parse_qs(urllib.parse.urlsplit(u).query).get("last", [""])[0]
+            rest = [n for n in names if n > last]
+            chunk, more = rest[:self.page], len(rest) > self.page
+            hdr = {"Link": '</v2/%s/tags/list?n=%d&last=%s>; rel="next"' % (REPO_, self.page, chunk[-1])} if more else {}
+            return RegResp(json.dumps({"name": self.name, "tags": chunk or None}).encode(), hdr)
+        if m == "HEAD" and path.startswith("/v2/%s/manifests/" % REPO_):
+            t = path.rsplit("/", 1)[1]
+            if t not in self.tags: raise urllib.error.HTTPError(u, 404, "no", {}, io.BytesIO(b""))
+            d = {"ok": self.tags[t], "short": "sha256:abc", "path": "sha256:" + "0" * 63 + "/../x", "none": None}[self.digest_header]
+            return RegResp(b"", {"Docker-Content-Digest": d} if d else {})
+        if m == "DELETE" and path.startswith("/v2/%s/manifests/" % REPO_):
+            d = path.rsplit("/", 1)[1]
+            if self.refuse_delete: raise urllib.error.HTTPError(u, 403, "denied", {}, io.BytesIO(b""))
+            if d in self.fail_delete: raise urllib.error.HTTPError(u, 500, "boom", {}, io.BytesIO(b""))
+            self.tags = {t: x for t, x in self.tags.items() if x != d or t in self.keep}
+            return RegResp(b"", {}, self.delete_status)
         raise urllib.error.HTTPError(u, 404, "unexpected %s %s" % (m, u), {}, io.BytesIO(b""))
-hub = HubFake(["a", "b", "c"])
-L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", hub)
-check("hub sweep: login once, every tag deleted with the login's token, the list read again and found empty",
-      sum(1 for c in hub.calls if c[0] == "POST") == 1 and sorted(c[1].rsplit("/", 2)[-2] for c in hub.calls if c[0] == "DELETE") == ["a", "b", "c"]
-      and hub.tags == [] and all(c[2] == "Bearer jwt-1" for c in hub.calls if c[0] != "POST"), [(c[0], c[1][-30:]) for c in hub.calls])
-check("hub sweep: the login sends the username and the token, nothing else", json.loads([c for c in hub.calls if c[0] == "POST"][0][3]) == {"username": "user", "password": "tok"})
-for why, h in (("a failed login", HubFake(["a"], fail_login=True)), ("a failed delete", HubFake(["a", "b"], fail_delete=["a"])), ("a tag that is still there", HubFake(["a"], keep=["a"]))):
+def sweep_with(h): return L.hub_sweep(REPO_, "test-user", "push-tok", h)
+reg = RegFake(["a", "b", "c", "d", "e"], same=("a", "b"))
+sweep_with(reg)
+dels = [c[1] for c in reg.calls if c[0] == "DELETE"]
+check("registry sweep: one token request, the tag list read page by page, one DELETE of each distinct digest, the list read again and found empty",
+      sum(1 for c in reg.calls if c[1].startswith("https://auth.docker.io/")) == 1 and sorted(dels) == sorted(REGB + "/manifests/" + d for d in {dig("a"), dig("c"), dig("d"), dig("e")})
+      and reg.tags == {} and sum(1 for c in reg.calls if c[0] == "GET" and "/tags/list" in c[1]) >= 4, [(c[0], c[1][-40:]) for c in reg.calls])
+check("registry sweep: only the token service and the registry are called, every call after the token request carries the bearer token and the manifest requests name the manifest types",
+      all(urllib.parse.urlsplit(c[1]).hostname in ("auth.docker.io", "registry-1.docker.io") for c in reg.calls)
+      and all(c[2] == "Bearer reg-1" for c in reg.calls if not c[1].startswith("https://auth.docker.io/"))
+      and all("image.index" in (c[3] or "") and "manifest.v2" in (c[3] or "") for c in reg.calls if c[0] == "HEAD"), [(c[0], c[1][-40:]) for c in reg.calls][:6])
+for why, h, needle in (("a refused token request", RegFake(["a"], fail_auth=True), "token"), ("a refused delete", RegFake(["a"], refuse_delete=True), "refused the registry delete"),
+                       ("a failed delete", RegFake(["a", "b"], fail_delete=[dig("a")]), "delete"), ("a delete answered 200 instead of 202", RegFake(["a"], delete_status=200), "not 202"), ("a tag that is still there", RegFake(["a"], keep=["a"]), "left")):
     try:
-        L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", h); got = "returned"
-    except (urllib.error.HTTPError, RuntimeError, ValueError):
-        got = "raised"
-    check("hub sweep fails on %s" % why, got == "raised", got)
-h2 = HubFake(["a", "b", "c"], fail_delete=["a"])
-try:
-    L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", h2)
-except Exception:
-    pass
-check("hub sweep: the other tags were deleted although one failed", h2.tags == ["a"], h2.tags)
+        sweep_with(h); got, msg = "returned", ""
+    except (urllib.error.HTTPError, RuntimeError, ValueError) as e:
+        got, msg = "raised", str(e)
+    check("registry sweep fails on %s, with a message that names it and holds neither token" % why, got == "raised" and needle in msg and "push-tok" not in msg and "reg-1" not in msg, (got, msg))
+h2 = RegFake(["a", "b", "c"], fail_delete=[dig("a")])
+try: sweep_with(h2)
+except Exception: pass
+check("registry sweep: the other tags were deleted although one delete failed", sorted(h2.tags) == ["a"], h2.tags)
 for why, repo, user, tok in (("another registry path", "a/b/c", "u", "t"), ("a dot-dot", "../x", "u", "t"), ("an upper-case name", "Foo/bar", "u", "t"), ("no slash", "cache", "u", "t"),
-                             ("a docker.io prefix", "docker.io/ns/name", "u", "t"), ("no user", "ns/name", "", "t"), ("no token", "ns/name", "u", "")):
+                             ("a docker.io prefix", "docker.io/ns/name", "u", "t"), ("no user", "ns/name", "", "t"), ("no token", "ns/name", "u", ""), ("a user with a space", "ns/name", "u v", "t")):
     try:
-        L.hub_sweep(repo, user, tok, HubFake([])); got = "accepted"
+        L.hub_sweep(repo, user, tok, RegFake([])); got = "accepted"
     except ValueError:
         got = "refused"
-    check("hub sweep refuses %s" % why, got == "refused", got)
-def hub_next_elsewhere(req, timeout=None):
-    if req.get_method() == "POST": return FakeResp(b'{"token": "jwt-1"}')
-    return FakeResp(b'{"results": [{"name": "a"}], "next": "https://evil.example/v2/x"}')
-try:
-    L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", hub_next_elsewhere); got = "followed"
-except (ValueError, RuntimeError):
-    got = "refused"
-check("hub sweep never follows a next page on another host", got == "refused", got)
+    check("registry sweep refuses %s" % why, got == "refused", got)
 
 # scout-delta: the informational probe of the Build layout (never a verdict)
 def gl(*ids): return {"vulnerabilities": [{"identifiers": [{"value": i}], "location": {"dependency": {"package": {"name": "p"}, "version": "1"}}} for i in ids]}
@@ -983,39 +1005,31 @@ for section in ("verify", "scout"):
         check("guide child (%s): none of the Docker Hub secrets or the test repository reach the page's commands" % section, r.returncode == 0 and seen == [], (r.returncode, seen, r.stderr[-200:]))
 
 # the Hub path boundary and schema (Codex #416 r1)
-class HubFake2(HubFake):
-    def __init__(self, tags, listing=None, nxt=None):
-        super().__init__(tags)
-        self.listing, self.nxt = listing, nxt
-    def __call__(self, req, timeout=None):
-        m, u = req.get_method(), req.full_url
-        if m == "GET" and "/tags?" in u and (self.listing is not None or self.nxt is not None) and "page=2" not in u:
-            body = self.listing if self.listing is not None else {"results": [{"name": "a"}], "next": self.nxt}
-            self.calls.append((m, u, req.get_header("Authorization"), req.data))
-            return FakeResp(json.dumps(body).encode())
-        return super().__call__(req, timeout)
-BASE_ = "https://hub.docker.com/v2/repositories/fosterstack-live/cache-live-test/tags"
-for why, kw in (("a next page that climbs out of the repository with dot-dot", {"nxt": BASE_ + "/../../other/tags?page=2"}),
-                ("a next page of another repository's tags", {"nxt": "https://hub.docker.com/v2/repositories/fosterstack-live/cache-live-test-2/tags?page=2"}),
-                ("a next page with a path below the tag list", {"nxt": BASE_ + "/x?page=2"}),
-                ("a next page with a user part", {"nxt": "https://hub.docker.com@evil.example/v2/repositories/fosterstack-live/cache-live-test/tags?page=2"}),
-                ("a next page with a fragment", {"nxt": BASE_ + "?page=2#x"}),
-                ("a tag name with a slash", {"listing": {"results": [{"name": "../../other/tags/victim"}], "next": None}}),
-                ("a tag name that is dot-dot", {"listing": {"results": [{"name": ".."}], "next": None}}),
-                ("a tag name with a question mark", {"listing": {"results": [{"name": "a?b"}], "next": None}}),
-                ("a results object instead of a list", {"listing": {"results": {}, "next": None}}),
-                ("a result without a name", {"listing": {"results": [{}], "next": None}}),
-                ("a next that is not a string", {"listing": {"results": [{"name": "a"}], "next": 5}})):
-    h = HubFake2(["a"], **kw)
+LST = lambda tags, name=REPO_: {"name": name, "tags": tags}
+for why, kw in (("a Link to another host", {"listing": LST(["a"]), "link": '<https://evil.example/v2/%s/tags/list?n=1&last=a>; rel="next"' % REPO_}),
+                ("a Link that climbs out of the repository with dot-dot", {"listing": LST(["a"]), "link": '</v2/%s/tags/../../other/tags/list?n=1&last=a>; rel="next"' % REPO_}),
+                ("a Link to another repository's tags", {"listing": LST(["a"]), "link": '</v2/other/repo/tags/list?n=1&last=a>; rel="next"'}),
+                ("a Link with a query key of its own", {"listing": LST(["a"]), "link": '</v2/%s/tags/list?n=1&last=a&x=1>; rel="next"' % REPO_}),
+                ("a Link with a fragment", {"listing": LST(["a"]), "link": '</v2/%s/tags/list?n=1&last=a#x>; rel="next"' % REPO_}),
+                ("a Link with a user part", {"listing": LST(["a"]), "link": '<https://registry-1.docker.io@evil.example/v2/%s/tags/list?n=1&last=a>; rel="next"' % REPO_}),
+                ("a Link that points back at the same page", {"listing": LST(["a"]), "link": '</v2/%s/tags/list?n=100>; rel="next"' % REPO_}),
+                ("a tag name with a slash", {"listing": LST(["../../other/tags/victim"])}), ("a tag name that is dot-dot", {"listing": LST([".."])}),
+                ("a tag name with a question mark", {"listing": LST(["a?b"])}), ("a tag list that is an object", {"listing": LST({})}),
+                ("a tag that is not a string", {"listing": LST([5])}), ("the list of another repository", {"listing": LST(["a"], "other/repo")}),
+                ("a manifest answer without a digest", {"digest_header": "none"}), ("a short digest", {"digest_header": "short"}), ("a digest that is a path", {"digest_header": "path"})):
+    h = RegFake(["a"], **kw)
     try:
-        L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", h); got = "returned"
+        sweep_with(h); got = "returned"
     except (ValueError, RuntimeError, KeyError, TypeError):
         got = "refused"
-    deleted = [c[1] for c in h.calls if c[0] == "DELETE"]
-    check("hub sweep refuses %s and sends no request outside the repository's tag path" % why, got == "refused" and all(u.startswith(BASE_ + "/") and u.count("/") == BASE_.count("/") + 2 and ".." not in u for u in deleted), (got, deleted))
-hp = HubFake(["a", "b", "c"])
-L.hub_sweep("fosterstack-live/cache-live-test", "user", "tok", hp)
-check("hub sweep still follows the repository's own next page", hp.tags == [] and any("page=2" in c[1] for c in hp.calls), [c[1][-40:] for c in hp.calls])
+    sent = [c[1] for c in h.calls]
+    check("registry sweep refuses %s and sends no request outside the repository's own registry paths" % why,
+          got == "refused" and all(urllib.parse.urlsplit(u).hostname in ("auth.docker.io", "registry-1.docker.io") and ".." not in u and "evil" not in u
+                                   and (u.startswith("https://auth.docker.io/") or urllib.parse.urlsplit(u).path.startswith("/v2/%s/" % REPO_)) for u in sent)
+          and not any(c[0] == "DELETE" and not re.fullmatch(r"sha256:[0-9a-f]{64}", c[1].rsplit("/", 1)[1]) for c in h.calls), (got, sent[-3:]))
+hp = RegFake(["a", "b", "c", "d", "e"], page=2)
+sweep_with(hp)
+check("registry sweep still follows the repository's own next page (relative Link)", hp.tags == {} and any("last=" in c[1] for c in hp.calls), [c[1][-40:] for c in hp.calls])
 
 # strict reports: an unreadable or malformed Scout report is an error everywhere it is read
 with tempfile.TemporaryDirectory() as t:

@@ -147,7 +147,7 @@ sweep_notes() {
   return "$rc"
 }
 
-hub_sweep() {   # the Docker Hub test repository (the Scout leg's), through the Hub API: the user and the push token travel in the environment, never on a command line
+hub_sweep() {   # the Docker Hub test repository (the Scout leg's), through the registry API (the push token is an organization access token): the test user and the push token travel in the environment, never on a command line
   python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" hub-sweep --repository "$DH_REPO"
 }
 

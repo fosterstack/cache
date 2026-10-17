@@ -654,68 +654,101 @@ def wrap_index(layout):
     return digest
 
 
-HUB_HOST = "hub.docker.com"
 HUB_REPO = re.compile(r"[a-z0-9]+(?:[._-][a-z0-9]+)*/[a-z0-9]+(?:[._-][a-z0-9]+)*")
+REG_AUTH_HOST, REG_HOST = "auth.docker.io", "registry-1.docker.io"
+TAG_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+MANIFEST_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+MANIFEST_ACCEPT = ("application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, "
+                   "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
 
 
-def hub_request(url, method, token, body=None, opener=None):
-    """One call to the Docker Hub API (an API call for data): the fixed host over https, no redirect, a bearer token (none for the login). Raises on an HTTP error."""
+def reg_call(url, method, headers, opener=None):
+    """One call to Docker's token service or registry (an API call for data): the two fixed hosts over https, no redirect, GET, HEAD or DELETE. Returns
+    (status, response headers with lower-case names, body text); an HTTP error is raised."""
     import urllib.parse, urllib.request
     p = urllib.parse.urlsplit(url)
-    if p.scheme != "https" or p.hostname != HUB_HOST or p.username is not None or p.password is not None or p.port not in (None, 443):
-        raise ValueError("not a Docker Hub URL: %r" % url[:80])
-    if method not in ("GET", "POST", "DELETE"):
-        raise ValueError("method %r is not GET, POST or DELETE" % method)
-    headers = {"Content-Type": "application/json"} if body is not None else {}
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(url, method=method, headers=headers, data=json.dumps(body).encode() if body is not None else None)
+    if p.scheme != "https" or p.hostname not in (REG_AUTH_HOST, REG_HOST) or p.username is not None or p.password is not None or p.port not in (None, 443) or p.fragment:
+        raise ValueError("not a Docker registry URL: %r" % url[:80])
+    if method not in ("GET", "HEAD", "DELETE"):
+        raise ValueError("method %r is not GET, HEAD or DELETE" % method)
+    req = urllib.request.Request(url, method=method, headers=headers)
     with (opener or _opener().open)(req, timeout=60) as r:
-        return r.read().decode("utf-8")
-
-
-TAG_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+        hdrs = {k.lower(): v for k, v in (r.headers.items() if hasattr(r.headers, "items") else [])}
+        return getattr(r, "status", None) or r.getcode(), hdrs, r.read().decode("utf-8")
 
 
 def hub_sweep(repository, user, token, opener=None):
-    """Delete every tag of the dedicated Docker Hub test repository and prove the repository empty. A failed delete does not stop the others; any failure, or a tag
-    left, raises at the end. Every answer is read strictly: a tag name is one path segment, the next page is exactly this repository's tag list."""
-    import urllib.parse
+    """Delete every manifest the dedicated Docker Hub test repository's tags point at, through the registry API (the test token is an organization access token: the Hub's
+    own API refuses it, its "Image Delete" scope is the registry endpoints'), and prove the tag list empty. A failed delete does not stop the others; any failure, or a tag
+    left, raises at the end with a message that names it and holds neither the user's token nor the registry token. Every answer is read strictly."""
+    import base64, urllib.error, urllib.parse
     if not HUB_REPO.fullmatch(repository or ""):
         raise ValueError("not a Docker Hub repository name (namespace/name): %r" % (repository,))
     if not user or not token or any(c.isspace() for c in user):
-        raise ValueError("the Docker Hub user and the push token are both needed")
-    base = "https://%s/v2/repositories/%s/tags" % (HUB_HOST, repository)
-    base_path = urllib.parse.urlsplit(base).path
-    jwt = json.loads(hub_request("https://%s/v2/users/login" % HUB_HOST, "POST", None, {"username": user, "password": token}, opener))["token"]
+        raise ValueError("the Docker Hub test user and the push token are both needed")
+
+    def call(what, url, method, headers):
+        try:
+            return reg_call(url, method, headers, opener)
+        except urllib.error.HTTPError as e:
+            hint = " (the push token's Image Delete scope may be missing)" if what.startswith("delete") and e.code in (401, 403) else ""
+            raise RuntimeError("Docker Hub refused the registry %s: HTTP %d%s" % (what, e.code, hint)) from None
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError("Docker Hub registry %s failed: %s" % (what, type(e).__name__)) from None
+
+    q = urllib.parse.urlencode({"service": "registry.docker.io", "scope": "repository:%s:pull,push,delete" % repository})
+    basic = "Basic " + base64.b64encode(("%s:%s" % (user, token)).encode()).decode()
+    _, _, body = call("token request", "https://%s/token?%s" % (REG_AUTH_HOST, q), "GET", {"Authorization": basic})
+    doc = json.loads(body)
+    bearer = (doc.get("token") or doc.get("access_token")) if isinstance(doc, dict) else None
+    if not isinstance(bearer, str) or not bearer or any(c.isspace() for c in bearer):
+        raise ValueError("Docker Hub's token service gave no token")
+    auth = {"Authorization": "Bearer " + bearer}
+    reg_path = "/v2/%s" % repository
+    tags_path = reg_path + "/tags/list"
 
     def own_page(url):
         u = urllib.parse.urlsplit(url)
-        if (u.scheme != "https" or u.hostname != HUB_HOST or u.username is not None or u.password is not None or u.port not in (None, 443)
-                or u.path != base_path or u.fragment or not all(k in ("page", "page_size") and v.isdigit() for k, v in urllib.parse.parse_qsl(u.query, keep_blank_values=True))):
+        qs = urllib.parse.parse_qsl(u.query, keep_blank_values=True)
+        if (u.scheme != "https" or u.hostname != REG_HOST or u.username is not None or u.password is not None or u.port not in (None, 443)
+                or u.path != tags_path or u.fragment or len({k for k, _ in qs}) != len(qs)
+                or not all((k == "n" and v.isdigit()) or (k == "last" and TAG_NAME.fullmatch(v)) for k, v in qs)):
             raise ValueError("the tag list points away from the repository's own tag list: %r" % url[:100])
 
     def tags():
-        names, url = [], base + "?page_size=100"
+        names, url, seen = [], "https://%s%s?n=100" % (REG_HOST, tags_path), set()
         while url:
+            if url in seen:
+                raise ValueError("Docker Hub's tag list points back at a page already read")
+            seen.add(url)
             own_page(url)
-            page = json.loads(hub_request(url, "GET", jwt, None, opener))
-            if not isinstance(page, dict) or not isinstance(page.get("results"), list):
-                raise ValueError("Docker Hub's tag list has no results list")
-            for r in page["results"]:
-                if not isinstance(r, dict) or not isinstance(r.get("name"), str) or not TAG_NAME.fullmatch(r["name"]) or r["name"] in (".", ".."):
-                    raise ValueError("Docker Hub's tag list holds a tag name that is not one path segment: %r" % (r,))
-                names.append(r["name"])
-            url = page.get("next")
-            if url is not None and not isinstance(url, str):
-                raise ValueError("Docker Hub's next page is not a string")
+            _, hdrs, body = call("tag list", url, "GET", auth)
+            page = json.loads(body)
+            if not isinstance(page, dict) or page.get("name") != repository or not (page.get("tags") is None or isinstance(page.get("tags"), list)):
+                raise ValueError("Docker Hub's tag list is not this repository's list of tags")
+            for t in page.get("tags") or []:
+                if not isinstance(t, str) or not TAG_NAME.fullmatch(t) or t in (".", ".."):
+                    raise ValueError("Docker Hub's tag list holds a tag name that is not one path segment: %r" % (t,))
+                names.append(t)
+            m = re.search(r'<([^>]*)>\s*;\s*rel="?next"?', hdrs.get("link", ""))
+            url = urllib.parse.urljoin(url, m.group(1)) if m else None
         return names
+
+    digests = {}
+    for t in tags():
+        _, hdrs, _ = call("manifest request", "https://%s%s/manifests/%s" % (REG_HOST, reg_path, t), "HEAD", dict(auth, Accept=MANIFEST_ACCEPT))
+        d = hdrs.get("docker-content-digest", "")
+        if not MANIFEST_DIGEST.fullmatch(d):
+            raise ValueError("Docker Hub gave no valid manifest digest for tag %s" % t)
+        digests[d] = t
     failures = []
-    for name in tags():
+    for d in sorted(digests):
         try:
-            hub_request("%s/%s/" % (base, name), "DELETE", jwt, None, opener)
-        except Exception as e:
-            failures.append("%s: %s" % (name, e))
+            status, _, _ = call("delete of a manifest", "https://%s%s/manifests/%s" % (REG_HOST, reg_path, d), "DELETE", auth)
+            if status != 202:
+                raise RuntimeError("Docker Hub answered the registry delete with HTTP %s, not 202" % status)
+        except RuntimeError as e:
+            failures.append("%s: %s" % (d[:19], e))
     left = tags()
     if failures or left:
         raise RuntimeError("the Docker Hub test repository was not emptied: %d delete failures %s, %d tags left %s" % (len(failures), failures[:3], len(left), left[:5]))
