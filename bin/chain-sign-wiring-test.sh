@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
+# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC7, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
 # The Sign boundary (v0.3.0 rules 50, 50a, 52, 52a, 53a; owner RATIFIED Oct 9), static half. Three judges, each first proven
 # on a known-good fixture and on every mutated copy (a judge that cannot fail proves nothing), then applied to the real repo:
 #   judge_sign  stage-sign.yml is an ALLOWLIST: a reusable workflow of one job on a GitHub-hosted runner whose only input is
@@ -2323,7 +2323,7 @@ scriptcase s8_xargs caught "${S0}printf x | xargs bash\n" 'rows["bin/build-stage
 scriptcase s8_sudo caught "${S0}sudo bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'sudo launching another program'
 probe othersc "other/install-scanner.sh" "the real bin/chain-hostile-step.sh with bash other/install-scanner.sh appended and its sha256 updated (Codex #249 r7 B3a)" \
   "printf 'bash other/install-scanner.sh\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
-probe absbash  "/bin/bash" "the real bin/chain-hostile-step.sh with /bin/bash -c true appended and its sha256 updated (B3b)" \
+probe absbash  "is handed '-c'" "the real bin/chain-hostile-step.sh with /bin/bash -c true appended and its sha256 updated (B3b)" \
   "printf '/bin/bash -c true\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
 # (Codex #249 r8 B3 + Sonnet 1/2/3/6, the class closed) listed scripts: a launcher or evaluator word at ANY command position, and any word handed
 # to an interpreter or run as a path, must be an exact listed path or a word the row allows; a launcher is refused outright
@@ -3402,7 +3402,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1332
+EXPECT=1370
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

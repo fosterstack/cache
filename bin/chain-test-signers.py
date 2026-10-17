@@ -1110,12 +1110,35 @@ def runs_a_program(operands):
     return False
 TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 
-def pathlike_deny(cmds, rows, runs):
+# cache#361 (REQ-CHAIN-001-AC1; REQ-ARCHIVE-001-AC9 / REQ-REFRESH-001-AC23): two closed forms that are STRICTER than the bare name. (1) A command word that is exactly /usr/bin/NAME, /bin/NAME
+# or /usr/local/bin/NAME (NAME a plain word: no slash, no .., no $, backquote, glob or quote) is judged as the bare NAME, and only when NAME is in the row's `tools`: a fixed path cannot be
+# redirected through PATH. (2) A python interpreter may be handed the isolation flags -I and -B (each at most once, separate words) before the script it runs; any other option, a
+# combined flag, -c, -m, stdin or an unlisted script stays refused.
+FIXED_DIRS = ("/usr/bin/", "/bin/", "/usr/local/bin/")
+FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
+PY_ISOLATION = ("-I", "-B")
+def fixed_tool(w, tools):
+    """NAME when `w` is exactly a fixed-directory path of a tool that the row lists in `tools`, else None."""
+    for d in FIXED_DIRS:
+        if w.startswith(d):
+            n = w[len(d):]
+            return n if FIXED_NAME.fullmatch(n) and n in tools else None
+    return None
+def python_operands(name, operands):
+    """The operands of a python interpreter command after its leading isolation flags (-I, -B, each at most once); other interpreters are returned unchanged."""
+    if not re.fullmatch(r"python[0-9.]*", name): return list(operands)
+    ops, seen = list(operands), set()
+    while ops and ops[0] in PY_ISOLATION and ops[0] not in seen:
+        seen.add(ops[0]); ops.pop(0)
+    return ops
+
+def pathlike_deny(cmds, rows, runs, tools=()):
     """The path-like words (see above) of the commands that are neither the command word of their command (judged by the command-word rule)
     nor an admitted operand."""
     out = []
     for c in cmds:
         if c.cw is None: continue
+        if fixed_tool(c.cw, tools) is not None: continue              # cache#361: a fixed-path command is judged as its bare name by the command-word rule
         cw = c.cw[2:] if c.cw.startswith("./") else c.cw
         admitted = (cw in rows or (cw in SHELL_INTERP and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs)
                     or family_kind(cw) == "interp" and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs
@@ -1233,11 +1256,11 @@ def scan_script(path, text, row, rows, base):
             if cw_budget.get(t, 0) > 0: cw_budget[t] -= 1; continue
             add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
     if not py:
-        for t, cline in pathlike_deny(cmds, rows, runs):
+        for t, cline in pathlike_deny(cmds, rows, runs, tools):
             add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)" % (path, t), phys(cline))
         for c in cmds:
             if c.cw is None: continue
-            w = c.cw
+            w = fixed_tool(c.cw, tools) or c.cw                                   # cache#361: /usr/bin|/bin|/usr/local/bin/NAME with NAME in `tools` is judged as the bare NAME
             n = w[2:] if w.startswith("./") else w
             name = n.rsplit("/", 1)[-1]
             span = c.text                          # the whole simple command, from its first assignment or redirection, as written
@@ -1257,7 +1280,8 @@ def scan_script(path, text, row, rows, base):
                 if name not in tools: add("evaluator", span, "%s: %r at command position is an evaluator not in this script's `tools` list" % (path, w))
                 continue
             if name in SHELL_INTERP or kind == "interp":
-                first = c.operands[0] if c.operands else ""
+                pops = python_operands(name, c.operands)                          # python: -I and -B (each once) may precede the listed script
+                first = pops[0] if pops else ""
                 fn = first[2:] if first.startswith("./") else first
                 if any(op.startswith("<") for op, _t in c.redirs) or not first or first.startswith("-") or fn not in runs:
                     add("script-name", span, "%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
