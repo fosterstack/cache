@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
+# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC7, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
 # The Sign boundary (v0.3.0 rules 50, 50a, 52, 52a, 53a; owner RATIFIED Oct 9), static half. Three judges, each first proven
 # on a known-good fixture and on every mutated copy (a judge that cannot fail proves nothing), then applied to the real repo:
 #   judge_sign  stage-sign.yml is an ALLOWLIST: a reusable workflow of one job on a GitHub-hosted runner whose only input is
@@ -2323,7 +2323,7 @@ scriptcase s8_xargs caught "${S0}printf x | xargs bash\n" 'rows["bin/build-stage
 scriptcase s8_sudo caught "${S0}sudo bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'sudo launching another program'
 probe othersc "other/install-scanner.sh" "the real bin/chain-hostile-step.sh with bash other/install-scanner.sh appended and its sha256 updated (Codex #249 r7 B3a)" \
   "printf 'bash other/install-scanner.sh\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
-probe absbash  "/bin/bash" "the real bin/chain-hostile-step.sh with /bin/bash -c true appended and its sha256 updated (B3b)" \
+probe absbash  "is handed '-c'" "the real bin/chain-hostile-step.sh with /bin/bash -c true appended and its sha256 updated (B3b)" \
   "printf '/bin/bash -c true\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
 # (Codex #249 r8 B3 + Sonnet 1/2/3/6, the class closed) listed scripts: a launcher or evaluator word at ANY command position, and any word handed
 # to an interpreter or run as a path, must be an exact listed path or a word the row allows; a launcher is refused outright
@@ -2648,13 +2648,93 @@ d=$(cfix c_cp 'cp x archive/go'); expm ok "$d" - "argument: cp x archive/go is a
 d=$(cfix c_awkarg 'echo archive/awk'); expm ok "$d" - "argument: archive/awk as an argument is accepted"
 d=$(cfix c_sedarg 'ls dist/sed'); expm ok "$d" - "argument: dist/sed as an argument is accepted"
 d=$(cfix c_awk '/bin/awk x'); expm caught "$d" 'awk' "command position: /bin/awk x stays refused"
-d=$(cfix c_awk_t '/bin/awk x' '["awk"]'); expm caught "$d" 'by a path' "command position: /bin/awk x stays refused even when tools lists awk (the row governs the bare name only)"
+d=$(cfix c_awk_t '/bin/awk x' '["awk"]'); expm ok "$d" - "fixed path: /bin/awk x is judged as the bare awk when awk is in tools (REQ-CHAIN-001-AC1, cache#361: a literal /usr/bin|/bin|/usr/local/bin path is stricter than the bare name)"
 d=$(cfix c_relawk 'archive/awk x'); expm caught "$d" 'awk' "command position: archive/awk x stays refused"
 d=$(cfix c_env '/usr/bin/env x'); expm caught "$d" 'env' "command position: /usr/bin/env x stays refused"
-d=$(cfix c_bash '/bin/bash bin/build-apk.sh' '["bash"]' '["bin/build-apk.sh"]'); expm caught "$d" 'by a path' "command position: /bin/bash bin/build-apk.sh stays refused even with bash in tools and the script in runs"
+d=$(cfix c_bash '/bin/bash bin/build-apk.sh' '["bash"]' '["bin/build-apk.sh"]'); expm ok "$d" - "fixed path: /bin/bash bin/build-apk.sh is judged as the bare bash: bash in tools and the script in runs"
 d=$(cfix c_quoted '"/bin/sh" x'); expm caught "$d" 'sh' "command position: a quoted /bin/sh stays refused"
 d=$(cfix c_pipe 'echo a | /usr/bin/awk 1'); expm caught "$d" 'awk' "command position: a path-named command after a pipe stays refused"
 d=$(cfix c_go 'archive/go build' '["go"]'); expm caught "$d" 'by a path' "command position: archive/go build stays refused even with go in tools"
+# ---- fixed-path commands and python isolation flags (REQ-CHAIN-001-AC1; cache#361: bin/archive-pull.sh names every tool by a literal absolute path and runs python3 -I -B) ----------------------------
+# ACCEPTED: a literal /usr/bin/NAME, /bin/NAME or /usr/local/bin/NAME is judged exactly as the bare NAME when NAME is in the row's tools; python is handed only -I and -B (each at most once) before a listed script
+d=$(cfix fp_mktemp '/usr/bin/mktemp -d x' '["mktemp"]'); expm ok "$d" - "fixed path: /usr/bin/mktemp with mktemp in tools"
+d=$(cfix fp_rm '/bin/rm -rf x' '["rm"]'); expm ok "$d" - "fixed path: /bin/rm with rm in tools"
+d=$(cfix fp_crane '/usr/local/bin/crane pull a b' '["crane"]'); expm ok "$d" - "fixed path: /usr/local/bin/crane with crane in tools"
+d=$(cfix fp_subst 'x=$(/usr/bin/mktemp -d y)' '["mktemp"]'); expm ok "$d" - "fixed path inside a command substitution"
+d=$(cfix py_ib '/usr/bin/python3 -I -B bin/build-apk.sh a --b c' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "python3: -I -B before the listed script, the script's own arguments after it, by the fixed path"
+d=$(cfix py_bi 'python3 -B -I bin/build-apk.sh a' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "python3: -B -I (either order), bare name"
+d=$(cfix py_i 'python3 -I bin/build-apk.sh' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "python3: -I alone before the listed script"
+d=$(cfix py_none 'python3 bin/build-apk.sh' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "python3: no option (as before)"
+# REFUSED: python3 with any other option or a combined/repeated flag, an unlisted script, stdin
+pyx() { d=$(cfix "$1" "$2" '["python3"]' '["bin/build-apk.sh"]'); expm caught "$d" 'handed' "python3 refused: $3"; }
+pyx py_c 'python3 -I -B -c pass' "-c"
+pyx py_cfirst '/usr/bin/python3 -c pass' "-c, fixed path"
+pyx py_m 'python3 -I -B -m http.server' "-m"
+pyx py_s 'python3 -S bin/build-apk.sh' "-S"
+pyx py_e 'python3 -I -E bin/build-apk.sh' "-E"
+pyx py_ib_comb 'python3 -IB bin/build-apk.sh' "a combined -IB"
+pyx py_ii 'python3 -I -I bin/build-apk.sh' "-I twice"
+pyx py_bb 'python3 -B -B bin/build-apk.sh' "-B twice"
+pyx py_other_after_flags 'python3 -I -B -u bin/build-apk.sh' "-u after the two flags"
+pyx py_unlisted 'python3 -I -B bin/unlisted.py' "an unlisted script after -I -B"
+pyx py_stdin 'python3 -I -B < bin/build-apk.sh' "stdin"
+pyx py_nothing 'python3 -I -B' "no script"
+pyx py_dash 'python3 -I -B - bin/build-apk.sh' "- (stdin) before the script"
+pyx py_long '/usr/bin/python3 --version' "a long option"
+# REFUSED: the fixed-path form needs NAME in tools, exactly the three directories, a plain name
+d=$(cfix fp_notin '/usr/bin/mktemp -d x' '[]'); expm caught "$d" 'absolute path or built at run time' "fixed path: /usr/bin/mktemp with mktemp NOT in tools stays refused"
+d=$(cfix fp_notin2 '/usr/bin/python3 -I -B bin/build-apk.sh' '[]' '["bin/build-apk.sh"]'); expm caught "$d" 'python3' "fixed path: /usr/bin/python3 with python3 NOT in tools stays refused"
+d=$(cfix fp_otherdir '/opt/bin/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: /opt/bin outside the three directories"
+d=$(cfix fp_sbin '/usr/sbin/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: /usr/sbin is not one of the three directories"
+d=$(cfix fp_dots '/usr/bin/../bin/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: .. in the path"
+d=$(cfix fp_dslash '/usr//bin/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a doubled slash in the directory"
+d=$(cfix fp_dslash2 '/usr/bin//mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a doubled slash before the name"
+d=$(cfix fp_sub '/usr/bin/sub/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a deeper directory"
+d=$(cfix fp_var '/usr/bin/$N -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a variable as the name"
+d=$(cfix fp_cs '/usr/bin/$(echo mktemp) -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a command substitution in the name"
+d=$(cfix fp_brace '/usr/bin/${N} -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a braced variable as the name"
+d=$(cfix fp_glob '/usr/bin/mk* -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a glob in the name"
+d=$(cfix fp_quoted '"/usr/bin/mktemp" -d x' '["mktemp"]'); expm ok "$d" - "fixed path: a quoted literal is the same word"
+d=$(cfix fp_env '/usr/bin/env x' '["env"]'); expm caught "$d" 'env' "fixed path: /usr/bin/env stays refused even with env in tools (a launcher)"
+d=$(cfix fp_bashc '/bin/bash -c true' '["bash"]'); expm caught "$d" 'handed' "fixed path: /bin/bash -c stays refused even with bash in tools"
+d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bin/awk with awk NOT in tools stays refused"
+# round 1 of the seats (433): a fixed-path command keeps every operand rule of the bare name; isolation flags do not change how the script's own arguments are judged; a function named by a path cannot replace the fixed program
+d=$(cfix fo_bare_curl 'curl archive/vi' '["curl"]'); expm caught "$d" 'by a path' "operand rule, bare: curl archive/vi (a deny-class path operand) is refused"
+d=$(cfix fo_fixed_curl '/usr/bin/curl archive/vi' '["curl"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/curl archive/vi is refused exactly like the bare form"
+d=$(cfix fo_bare_sed 'sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, bare: sed -f archive/vi is refused"
+d=$(cfix fo_fixed_sed '/usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/sed -f archive/vi is refused"
+d=$(cfix fo_fixed_at '/usr/bin/at -f archive/vi now' '["at"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/at -f archive/vi is refused"
+d=$(cfix fo_assign 'X=1 /usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path after an assignment"
+d=$(cfix fo_subst 'x=$(/usr/bin/sed -f archive/vi)' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path in a command substitution"
+d=$(cfix fa_py_plain 'python3 bin/build-apk.sh archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: a deny-class path after the listed script is the script's own argument (no flags)"
+d=$(cfix fa_py_flags 'python3 -I -B bin/build-apk.sh archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: the same after -I -B"
+d=$(cfix fa_py_fixed '/usr/bin/python3 -I -B bin/build-apk.sh archive/go' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: the same by the fixed path"
+d=$(cfix fa_py_bad 'python3 -I -B -c pass archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm caught "$d" 'handed' "script arguments: -c after the flags is still refused"
+d=$(cfix ff_def '/usr/bin/curl() { echo x; }\n/usr/bin/curl' '["curl"]'); expm caught "$d" 'function' "a function named by a path (/usr/bin/curl() {...}) could replace the fixed program: refused"
+d=$(cfix ff_def2 'function /bin/rm { :; }\n/bin/rm -rf x' '["rm"]'); expm caught "$d" 'function' "function /bin/rm { } is refused"
+d=$(cfix ff_def3 '/usr/local/bin/crane () { :; }' '["crane"]'); expm caught "$d" 'function' "a path-named function with a space before the parentheses is refused"
+# round 2 of the seats (433, seat B): a path-named function definition in ANY command position (after (, else, !, $(, case ...), until) is refused
+for k in 'ff_sub|( /usr/bin/curl() { :; }; /usr/bin/curl u )' 'ff_else|if false; then :; else /usr/bin/curl() { :; }; fi\n/usr/bin/curl u' 'ff_cs|x=$( /usr/bin/curl() { :; }; /usr/bin/curl u )' 'ff_case|case a in a) /usr/bin/curl() { :; };; esac\n/usr/bin/curl u' 'ff_until|until /usr/bin/curl() { :; }; do :; done' 'ff_bang|! /usr/bin/curl() { :; }' 'ff_paren|(/usr/bin/curl() { :; })' 'ff_nl|/usr/bin/curl()\n{ :; }' 'ff_fn2|function /usr/bin/curl () { :; }' 'ff_if|if /usr/bin/curl() { :; }; then :; fi' 'ff_while|while /bin/rm() { :; }; do :; done' 'ff_arith|x=1; /usr/bin/curl() ( : )'; do
+  d=$(cfix "${k%%|*}" "${k#*|}" '["curl","rm"]'); expm caught "$d" 'function' "path-named function definition, position ${k%%|*}: refused"
+done
+d=$(cfix ff_elif 'if false; then :; elif /usr/bin/curl() { :; }; then :; fi' '["curl"]'); expm caught "$d" 'function' "path-named function definition after elif: refused"
+d=$(cfix ff_bt 'x=`/usr/bin/curl() { :; }; /usr/bin/curl u`' '["curl"]'); expm caught "$d" 'function' "path-named function definition in backticks: refused"
+# ANSI-C / locale quoting decodes differently in bash than in the judge's lexer: a fixed-path command written that way is refused
+d=$(cfix aq_1 "\$'/usr/bin/cur\\\\l' x" '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$'...' (a different program after bash decodes it): refused"
+d=$(cfix aq_2 "\$'/usr/bin/curl' x" '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$'...': refused even when the decoding agrees"
+d=$(cfix aq_3 '$"/usr/bin/curl" x' '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$\"...\": refused"
+# round 3 of the seats (433, seat B): ANY body after /NAME () is a definition (select, a newline before the body, a body keyword nobody listed): refused fail-closed
+d=$(cfix ff_select '/usr/bin/curl() select x in a; do echo H; break; done' '["curl"]'); expm caught "$d" 'function' "path-named function with a select body: refused"
+d=$(cfix ff_select_nl '/usr/bin/tar()\nselect x in a; do :; done' '["tar"]'); expm caught "$d" 'function' "path-named function with a newline before a select body: refused"
+d=$(cfix ff_fn_select 'function /usr/bin/curl select x in a; do :; done' '["curl"]'); expm caught "$d" 'function' "function /usr/bin/curl followed by a select body: refused"
+# round 3 of the seats (433, seat A): the check must not depend on comment stripping, which can diverge from bash (a '#' line inside a quote that spans lines; an ANSI-C escaped quote)
+d=$(cfix ff_multiq "x='\n# '; /usr/bin/curl() { echo H; }\n/usr/bin/curl u" '["curl"]'); expm caught "$d" 'function' "path-named function hidden behind a line that starts with # inside a quote spanning lines: refused"
+d=$(cfix ff_ansiq "echo \$'\\\\''' # x'; /usr/bin/curl() { echo H; }\n/usr/bin/curl u" '["curl"]'); expm caught "$d" 'function' "path-named function hidden after an ANSI-C escaped quote: refused"
+d=$(cfix ff_comment_def '# /usr/bin/curl() { :; }' '["curl"]'); expm caught "$d" 'function' "a path-named definition inside a comment is refused too (fail-closed: the check does not strip comments)"
+d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
+d=$(cfix ff_text_str 'echo "see /sendto() here"' '[]'); expm ok "$d" - "a string holding an absolute-path word and () but no function body is no definition (bash would not accept it as one)"
+d=$(cfix ff_call 'f() { /usr/bin/mktemp -d x; }\n( f )' '["mktemp"]'); expm ok "$d" - "a call of a fixed-path tool inside a subshell is accepted"
+d=$(cfix ff_def4 'f() { /usr/bin/mktemp -d x; }\nf' '["mktemp"]'); expm ok "$d" - "an ordinary function that calls a fixed-path tool is accepted"
 d=$(cfix c_unl 'bash bin/unlisted.sh' '["bash"]'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script (bash bin/unlisted.sh) stays refused"
 d=$(cfix c_src 'source bin/unlisted.sh'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script (source form) stays refused"
 d=$(cfix c_arg_ext 'echo bin/unlisted.sh'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script by extension stays refused"
@@ -3359,7 +3439,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1332
+EXPECT=1411
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

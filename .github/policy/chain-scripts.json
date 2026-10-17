@@ -461,24 +461,7 @@
         "bin/check-artifacts.sh"
       ],
       "signs": false,
-      "reason": "Check's fixed dispatcher: makes the release policy for the tag, verifies Build and Sign, then runs the phase's check scripts (REQ-CHAIN-006-AC3)",
-      "exceptions": [
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out check-results",
-          "why": "Check runs its Go scan isolated (python3 -I -B), as the verifier lines above; the one Python-run script of the scanners phase, pinned by the script judge of the Check wiring test (ruling G, REQ-CHAIN-006-AC4)"
-        }
-      ]
+      "reason": "Check's fixed dispatcher: makes the release policy for the tag, verifies Build and Sign, then runs the phase's check scripts (REQ-CHAIN-006-AC3)"
     },
     {
       "path": "bin/check-govulncheck.py",
@@ -1194,19 +1177,7 @@
         "bin/check-artifacts.sh"
       ],
       "signs": false,
-      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)",
-      "exceptions": [
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        }
-      ]
+      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)"
     },
     {
       "path": "bin/check-bind.py",
