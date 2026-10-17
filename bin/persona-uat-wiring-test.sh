@@ -953,8 +953,8 @@ def judge_weekly(f, bad):
             dm = re.search(r"(\w+)=\$\(\s*crane digest [^\n]*\)", rrun)
             if not dm:
                 bad.append("weekly persona-uat's resolver does not capture the digest with `crane digest <registry>/<owner>/cache:<tag>` (the chain's pinned tool; no buildx, no docker)")
-            if dm and "|" in dm.group(0):
-                bad.append("weekly persona-uat's digest line must be one `crane digest` with no pipe or fallback (a failing crane must fail the step, never hand the driver another digest)")
+            if any(not re.fullmatch(r'\s*\w+=\$\(crane digest "[^"\n]*"\)\s*', l) for l in insp):
+                bad.append("weekly persona-uat's digest line must be one `crane digest` with no pipe or fallback, the whole line exactly NAME=$(crane digest \"<ref>\") (a failing crane must fail the step, never hand the driver another digest)")
             if not dm or not re.search(r"image=[^\n]*@\$\{?" + re.escape(dm.group(1)) + r"\}?(?![\w])[^\n]*>>\s*\"?\$GITHUB_OUTPUT", rrun):
                 bad.append("weekly persona-uat's resolver does not write an image= output built from the digest it inspected")
             if not expr_is(r.get("env", {}).get("GH_TOKEN", ""), "github.token"):
@@ -1457,6 +1457,12 @@ mutate("weekly resolver reads the digest with docker manifest inspect", "uses do
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker manifest inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"')), "fresh")
 mutate("weekly resolver falls back to a fixed digest when crane fails", "no pipe or fallback",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" || echo sha256:' + "a" * 64 + ')')), "fresh")
+mutate("weekly resolver follows the digest with a plain || fallback (no later parenthesis)", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}") || d=sha256:' + "a" * 64)), "fresh")
+mutate("weekly resolver wraps the digest read in an if-not", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+)=(\$\(crane digest [^\n]*\))$", r"if ! \1=\2; then \1=sha256:" + "a" * 64 + "; fi", _resolver(j)["run"])), "fresh")
+mutate("weekly resolver pipes the output after the substitution", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}") | cat')), "fresh")
 mutate("weekly resolver pipes the digest through another command", "no pipe or fallback",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" | head -n1)')), "fresh")
 mutate("rc job installs crane it has no use for", "a run step before the driver other than", lambda j: j["steps"].insert(1, {"run": "./bin/install-scanner.sh crane"}))
