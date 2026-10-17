@@ -1494,6 +1494,160 @@
       "key": "3457c08cad71ac4ef91abeb781f20baf8bf2dd95dffe15d0da13a9070b987b7f",
       "line": "b8f0a9f985f8e6f15bcf0c94e2c10ec47f1d918a0c4317c93b7a4f012702780f",
       "ruling": "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): the Go toolchain tarball download (one per missing tarball) in bin/refresh-inputs.sh; one curl with fixed flags and the single operand https://go.dev/dl/ plus one variable; the file name passed a closed Go-tarball grammar and the fetched bytes are stored only after their sha256 equals the expected-sha256 pinned by the committed recipes"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "90a39ff8541a167a4092c81e297431bacb5be373245ccc2b2b21e948665370f5",
+      "line": "7b2b9d80b7bf114493c993484905803e4f3d99bf4ee12204f3c695a9718601ce",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "b7d49812771f13dc26b07b5abddc5e972500844f2cc3ffb8432ee22f243a2a41",
+      "line": "dc3454e28258fedb5e9022feafbf85cb1c40a75ba9b1c1f6b121fc6f1db4cad5",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "521c1d39df980c55321712ed60cce216aa70a0ac62aadbb6c93806e8c738e5e2",
+      "line": "c231a4dc9ce568dad97a9eb8c4f485688801f8b1b6f1189d21b2be6dc6638ad4",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "48e6f8822226006b3b468cd1f57965a6d05868e4f40c2b799b2e2ec5ef293d45",
+      "line": "48e6f8822226006b3b468cd1f57965a6d05868e4f40c2b799b2e2ec5ef293d45",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "d0d81e00cb6d078a9ebaaa9bb6a059c4addcd900c34fb98837e191f32e17a842",
+      "line": "d0d81e00cb6d078a9ebaaa9bb6a059c4addcd900c34fb98837e191f32e17a842",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "4808c379e5a5443128785f55cea0079477dcecb8cae0845e90df84a1b6f333a4",
+      "line": "4808c379e5a5443128785f55cea0079477dcecb8cae0845e90df84a1b6f333a4",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "26b3cee8af41ed931a9799b93c8a88221bfb36537c37592208d411f765981da8",
+      "line": "26b3cee8af41ed931a9799b93c8a88221bfb36537c37592208d411f765981da8",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a download",
+      "key": "dcbc74d8453fd62b7878d419c352604675e05c12c23a9d2bdd8441e0785e3e87",
+      "line": "84c16b84df32069fbb13dc2aa6afa16ef4968b5d4cbcbb35bda408cf27be4087",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/chain-check-scripts-test.sh",
+      "form": "a gh release or extension download",
+      "key": "987bafbc711ea170f3927f4ce7ed570637c12d32c3cb6b6c13f7cb631453d1bb",
+      "line": "987bafbc711ea170f3927f4ce7ed570637c12d32c3cb6b6c13f7cb631453d1bb",
+      "ruling": "text, not a command: the value of a plain assignment (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-check-wiring-test.sh",
+      "form": "a download",
+      "key": "43923de19e1bf45c27826881fd42196b1460d2858c70a277e7af731eae713318",
+      "line": "48851fcc32d18e1c40dabea9db14e655699070d3fb6d9d36f4fe49227fe5adfe",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-check-wiring-test.sh",
+      "form": "a download",
+      "key": "04f7e813d69eb5d32b6e680452456f750be622cee00228ac3fd9058ca8d5d7a1",
+      "line": "2fba4fadf13fe87a65101b59473f2a58d78d8846cf1c7583fc5111181b00e5cf",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-check-wiring-test.sh",
+      "form": "a download",
+      "key": "684aa03e308780a2567880285dd1aeedbb983170167041f2137b11a3da307c47",
+      "line": "684aa03e308780a2567880285dd1aeedbb983170167041f2137b11a3da307c47",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-hostile-test.sh",
+      "form": "a download",
+      "key": "a60b4c8678fec999218474c78955e7eff63c3fba7249e6143676378b5cec67d7",
+      "line": "a60b4c8678fec999218474c78955e7eff63c3fba7249e6143676378b5cec67d7",
+      "ruling": "text, not a command: the value of a plain assignment (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-release-scripts-test.sh",
+      "form": "a line that names the vendored folder",
+      "key": "f66643f7031875c4c8c62d3bcd6a7883b946d8dfe3ff00ec8e6fe6161f239970",
+      "line": "f66643f7031875c4c8c62d3bcd6a7883b946d8dfe3ff00ec8e6fe6161f239970",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-release-scripts-test.sh",
+      "form": "a gh release or extension download",
+      "key": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
+      "line": "21ad3b395233b3baa8f00164d5deb9cf5d66c8b97333d1def138f467d519e184",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-release-scripts-test.sh",
+      "form": "a download",
+      "key": "79e7659c1a2056476a68c25b2f567b52580cee016ff7aff348f01a790978d8f5",
+      "line": "8e9bce3842b02632d74b106efe79b2cba26d0804e9bdbbc394fef535f32415a1",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-verify-test.sh",
+      "form": "a package-manager install",
+      "key": "9794c47d867fc898ef9d8f1ecb860c55866f695e3b5007fe72fd049d494273a1",
+      "line": "9794c47d867fc898ef9d8f1ecb860c55866f695e3b5007fe72fd049d494273a1",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/vex-live-test-test.sh",
+      "form": "a download",
+      "key": "5687bdfd5589d092abd20c55ef486914c67ae2bb36c17b565b7c5fbd93343770",
+      "line": "5687bdfd5589d092abd20c55ef486914c67ae2bb36c17b565b7c5fbd93343770",
+      "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
+      "context": "pystring",
+      "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
     }
   ]
 }
