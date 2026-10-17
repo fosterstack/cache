@@ -3254,6 +3254,8 @@ for sep in $'\x0c' $'\x0b' $'\x1c' $'\xc2\x85' $'\xe2\x80\xa8'; do
 done
 d=$(crr sl_zu "${H}: x # a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: control: an ordinary comment after a command"
 d=$(crr sl_zv "${H}: \"\$(case"$'\ta in a) echo "x # c" ;; esac)" ; /tmp/evil'$'\n'); expm caught "$d" 'absolute path' "strip_line: case followed by a tab is a case (seat B, PR 436 round 5)"
+d=$(crr sl_zw "${H}x=\"\$(case\\ y)\""$'\ny=" #$(env echo MARK >&2)"\n: esac;#)"\n'); expm caught "$d" 'case followed by a backslash' "strip_line: case followed by a backslash is refused, not read as a case (seat A, PR 436 round 5 verification)"
+d=$(crr sl_zx "${H}x=\$(case\\"$'\n a) echo 1 ;;\nesac)\n'); expm caught "$d" 'case followed by a backslash' "strip_line: case followed by a backslash-newline is refused"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3416,7 +3418,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1386
+EXPECT=1388
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

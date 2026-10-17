@@ -71,7 +71,7 @@ HEREDOC_WORD = re.compile(r"[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Z
 
 def prev_ok(l, i, ch):
     """A shell word starts at i with ch c or e and ends at a blank, ; & | ) or the end (so `case` and `esac` are words, not parts of one)."""
-    if ch == "c": return l[i:i + 4] == "case" and l[i + 4:i + 5] in (" ", "\t", "\\")
+    if ch == "c": return l[i:i + 4] == "case" and l[i + 4:i + 5] in (" ", "\t")
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
@@ -108,6 +108,8 @@ def strip_lines(lines, base=None):
             if skip == i: skip = None; prev_ws = False; continue            # the second character of a two-character opener
             if esc: esc = False; prev_ws = False; continue
             top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
+            if ch == "c" and l[i:i + 5] == "case\\" and top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{"):
+                errs.append("line %d: case followed by a backslash is not resolved (bash reads case\\ + one character as an ordinary word, or joins the next line)" % (n + 1))
             if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
                 if ch == "c": st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
                 if l[i:i + 4] == "esac" and top == "case": st.pop(); skip = i + 3; continue
