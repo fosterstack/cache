@@ -3198,6 +3198,24 @@ d=$(crf cr_a '#!/usr/bin/env bash\nset -euo pipefail\necho x\\\r\ncurl x\n'); ex
 d=$(crf cr_b '#!/usr/bin/env bash\necho a\r\n'); expm caught "$d" 'carriage return' "line-bound: any script with a CR is refused"
 d=$(crf cr_c '#!/usr/bin/env bash\ncurl a\r\n'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("curl a\r")]'; expm caught "$d" 'carriage return' "line-bound: no waiver applies to a script with a CR"
 d=$(crf cr_ok '#!/usr/bin/env bash\necho a\n'); expm ok "$d" - "line-bound: control: the same script without a CR"
+# strip_line reads a script as bash does (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3; advisor Oct 17, reproduced by a reviewer): a # line inside a quote that is still
+# open from an earlier line is part of the quoted word, never a comment, and an ANSI-C quote $'..' ends at the first quote that is not backslash-escaped. The judge
+# REFUSES what it cannot read this way (fail closed) and never drops such a line. crr writes the script text raw (no escape processing).
+crr() { local d; d=$(cfix "$1" 'echo a'); printf '%s' "$2" > "$d/bin/c.sh"; edit_spec "$d" 'rows["bin/c.sh"]["tools"]=[]'; echo "$d"; }
+H=$'#!/usr/bin/env bash\n'
+d=$(crr sl_a "${H}x='"$'\n'"# '; /tmp/evil"$'\n'); expm caught "$d" 'still open' "strip_line: a # line inside a single quote open from an earlier line is refused (the reproducer)"
+d=$(crr sl_b "${H}x=\""$'\n'"# \"; /tmp/evil"$'\n'); expm caught "$d" 'still open' "strip_line: the same inside a double quote"
+d=$(crr sl_c "${H}x=\"a\\\""$'\n'"# \"; /tmp/evil"$'\n'); expm caught "$d" 'still open' "strip_line: an escaped double quote does not close the double quote"
+d=$(crr sl_d "${H}echo \$'a\\'b # c'; /tmp/evil"$'\n'); expm caught "$d" 'absolute path' "strip_line: an ANSI-C quote \$'a\\'b # c' is read to its real end, so what follows it is judged"
+d=$(crr sl_e "${H}x=\$'"$'\n'"# '; /tmp/evil"$'\n'); expm caught "$d" 'still open' "strip_line: a # line inside an ANSI-C quote open from an earlier line is refused"
+d=$(crr sl_f "${H}x='abc"$'\necho ok\n'); expm caught "$d" 'still open' "strip_line: a quote still open at the end of the script is refused"
+d=$(crr sl_g "${H}x='a b'"$'\n# note\necho ok\n'); expm ok "$d" - "strip_line: control: a comment line after a closed quote is a comment"
+d=$(crr sl_h "${H}x='a\\'"$'\n'"# it's a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a backslash inside single quotes is literal, so the quote closes and the next # line is a comment"
+d=$(crr sl_i "${H}x=\$'a\\'b'"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a closed ANSI-C quote with an escaped quote"
+d=$(crr sl_j "${H}cat <<EOF"$'\ndon'"'t"$'\n# x\nEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a heredoc body is data, an apostrophe and a # line in it open no quote"
+d=$(crr sl_k "${H}cat <<'EOF'"$'\n# x '"'"' y\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data"
+d=$(crr sl_l "${H}cat <<-EOF"$'\n\tit'"'s"$'\n\tEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a <<- heredoc ends at its tab-indented delimiter"
+d=$(crr sl_m "${H}echo \$((1<<EOF))"$'\nx=\'\n# \'; /tmp/evil\nEOF\n'); expm caught "$d" 'still open\|cannot' "strip_line: a << inside (( )) is no heredoc: the quote after it is still judged"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
