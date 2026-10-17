@@ -75,6 +75,8 @@ def prev_ok(l, i, ch):
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
+OPENER = {"sq": "'", "dq": '"', "ansi": "$'", "cmd": "$(", "brace": "${", "bt": "`", "arith": "$((", "brk": "$["}
+
 def strip_lines(lines, base=None):
     """([code line], [error]) for the physical lines of a shell text, read as bash reads them (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). A stack of open
     contexts is carried across lines: a single quote, a double quote, an ANSI-C $'..', $( ), $(( )), ${ }, $[ ], a backtick pair and a ( ) group; inside
@@ -102,8 +104,8 @@ def strip_lines(lines, base=None):
         elif not (st and st[-1] in DATA + ("bt",)) and l.lstrip().startswith("#"):
             out.append(""); continue
         esc = prev_ws = False
-        cut = skip = close_i = None
-        qdepth = len(st) if (st and st[-1] in ("sq", "dq", "ansi")) else None      # this line begins inside a quote: the command reader must not read the quoted part as code
+        cut = skip = None
+        start_st = list(st); minlen = len(st)          # the contexts carried into this line; the fewest still open during it
         pend = []                                      # heredocs opened on this line, in plain shell text
         bd = {}                                        # open [ on this line per context depth (a subscript pairs its own ], and only at its own level)
         for i, ch in enumerate(l):
@@ -166,10 +168,12 @@ def strip_lines(lines, base=None):
             elif ch == "#" and i > 0 and prev_ws and top not in DATA and top != "bt":      # inside backticks bash ends the comment at the closing backtick: the line is kept whole
                 cut = i; break
             prev_ws = ch.isspace()
-            if qdepth is not None and close_i is None and len(st) < qdepth: close_i = i
+            minlen = min(minlen, len(st))
         cont = esc and cut is None
-        if close_i is not None: l = "x" + " " * close_i + l[close_i + 1:]            # the quoted prefix (up to the closing quote) is data: one word stands for it, the code after it is kept
-        out.append(l if cut is None else l[:cut])
+        # A line that closes a context carried from an earlier line is read from inside ALL the carried contexts (so what bash runs inside a quote or a
+        # substitution stays visible, and the quote that closes is not read as an opener); a line that closes nothing keeps the plain reading (over-reports).
+        carried = "x" + "".join(OPENER.get(c, "") for c in start_st) if minlen < len(start_st) else ""        # "x": the carried text is one word, never a command word of its own
+        out.append(carried + (l if cut is None else l[:cut]))
         if pend:
             if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
             if st and st[-1] in ("sq", "dq", "ansi"): errs.append("line %d: a heredoc is started on a line that leaves a quote open and is not resolved" % (n + 1))
