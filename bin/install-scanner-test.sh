@@ -82,6 +82,34 @@ check "syft checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" 
   env INSTALL_SCANNER_ARCH=x86_64 SYFT_BASE_URL="file://$work/syft" bash "$sut" syft "$work/bin"
 check "syft download failure rejected" 1 "download failed.*PIPELINE failure" \
   env INSTALL_SCANNER_ARCH=arm64 SYFT_BASE_URL="file://$work/nope" bash "$sut" syft "$work/bin"
+# 4g. crane (the chain's pinned tool for digest reads; the weekly persona job installs it, handoff 0490): a literal download URL, no base-URL hook (advisor 2b ruling), so the
+#     offline cases use a stub curl on PATH. The tarball is the pinned release of google/go-containerregistry v0.22.1.
+mkdir -p "$work/stubcurl"
+cat > "$work/stubcurl/curl" <<'STUB'
+#!/usr/bin/env bash
+# records the URL it is asked for; serves wrong bytes (or fails) as the case needs
+out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; -*) shift ;; *) url="$1"; shift ;; esac; done
+echo "$url" >> "$STUB_LOG"
+[ "${STUB_MODE:-bytes}" = fail ] && exit 22
+echo "not the real crane tarball" > "$out"
+STUB
+chmod +x "$work/stubcurl/curl"
+: > "$work/curl.log"
+check "crane checksum mismatch rejected" 1 "checksum mismatch.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=x86_64 STUB_LOG="$work/curl.log" PATH="$work/stubcurl:$PATH" bash "$sut" crane "$work/bin"
+check "crane download failure rejected" 1 "download failed.*PIPELINE failure" \
+  env INSTALL_SCANNER_ARCH=arm64 STUB_MODE=fail STUB_LOG="$work/curl.log" PATH="$work/stubcurl:$PATH" bash "$sut" crane "$work/bin"
+if [ "$(sed -n 1p "$work/curl.log")" = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" ] \
+   && [ "$(sed -n 2p "$work/curl.log")" = "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz" ]; then
+  echo "ok: crane is fetched from the literal release URL of v0.22.1 for both architectures"; pass=$((pass+1))
+else echo "FAIL: crane download URLs: $(cat "$work/curl.log" | tr '\n' ' ')"; fail=$((fail+1)); fi
+if [ ! -e "$work/bin/crane" ]; then echo "ok: a refused crane leaves no binary behind"; pass=$((pass+1)); else echo "FAIL: crane binary left behind"; fail=$((fail+1)); fi
+# no base-URL hook for crane (the chain drops those hooks; a download-source line is a pin-age matter)
+if grep -q 'CRANE_BASE' "$sut"; then echo "FAIL: crane has a base-URL hook"; fail=$((fail+1)); else echo "ok: crane has no base-URL hook"; pass=$((pass+1)); fi
+# a pinned sum for both architectures (a sum is 64 hex digits), none for anything else
+n=$(grep -c -E '^  crane:[a-z0-9_|:]+\) SUM=[0-9a-f]{64} ;;' "$sut")
+if [ "$n" = 2 ]; then echo "ok: crane has exactly two pinned sums (amd64, arm64)"; pass=$((pass+1)); else echo "FAIL: crane sums found: $n"; fail=$((fail+1)); fi
 # 5. No arg is a labeled pipeline failure (empty tool).
 check "missing scanner arg rejected" 1 "unknown scanner.*PIPELINE failure" \
   bash "$sut"
