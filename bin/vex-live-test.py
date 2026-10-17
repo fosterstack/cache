@@ -244,7 +244,7 @@ def write_state(path, values):
                 fh.write("%s='%s'\n" % (k, values[k]))
 
 
-SECRET_ENV = ("DOCKERHUB_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN", "DH_REPO")
+SECRET_ENV = ("DOCKERHUB_USERNAME", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN", "DH_REPO")
 
 
 def guide_env():
@@ -817,7 +817,7 @@ def main(argv=None):
     sa.add_argument("--openvex", required=True)
     wi = sub.add_parser("wrap-index", help="wrap the one image of an OCI layout in an OCI image index; prints the index digest")
     wi.add_argument("--layout", required=True)
-    hs = sub.add_parser("hub-sweep", help="delete every tag of the Docker Hub test repository (DOCKERHUB_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN in the environment)")
+    hs = sub.add_parser("hub-sweep", help="delete every tag of the Docker Hub test repository (DOCKERHUB_TEST_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN in the environment)")
     hs.add_argument("--repository", required=True)
     sw = sub.add_parser("scout-valid", help="succeed only for a well-formed Scout GitLab report")
     sw.add_argument("--report", required=True)
@@ -846,7 +846,7 @@ def main(argv=None):
         return 0
     if a.cmd == "hub-sweep":
         try:
-            hub_sweep(a.repository, os.environ.get("DOCKERHUB_USERNAME", ""), os.environ.get("DOCKERHUB_TEST_PUSH_TOKEN", ""))
+            hub_sweep(a.repository, os.environ.get("DOCKERHUB_TEST_USERNAME", ""), os.environ.get("DOCKERHUB_TEST_PUSH_TOKEN", ""))
         except (ValueError, RuntimeError, OSError, KeyError) as e:
             print("::error::Docker Hub sweep: %s" % e, file=sys.stderr)
             return 1

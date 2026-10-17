@@ -948,17 +948,17 @@ with tempfile.TemporaryDirectory() as t:
 # --- PR-C part D: the Scout leg's wiring. The Docker Hub test repository is a variable, its user and tokens are secrets of the live-test environment, handed to the steps that need
 #     them as environment variables only; the leg's tool (Docker Scout CLI) is installed pinned by checksum like the rescan's
 SCOUT_RUN_ENV = {"DH_REPO": "${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}", "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}",
-                 "DOCKERHUB_TEST_PUSH_TOKEN": "${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}", "DOCKERHUB_SCOUT_TOKEN": "${{ secrets.DOCKERHUB_SCOUT_TOKEN }}"}
-SCOUT_CLEAN_ENV = {k: SCOUT_RUN_ENV[k] for k in ("DH_REPO", "DOCKERHUB_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN")}
+                 "DOCKERHUB_TEST_USERNAME": "${{ secrets.DOCKERHUB_TEST_USERNAME }}", "DOCKERHUB_TEST_PUSH_TOKEN": "${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}", "DOCKERHUB_SCOUT_TOKEN": "${{ secrets.DOCKERHUB_SCOUT_TOKEN }}"}
+SCOUT_CLEAN_ENV = {k: SCOUT_RUN_ENV[k] for k in ("DH_REPO", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN")}
 for name, job in (("release.yml rc job", RJ), ("release.yml post-publish job", PJ), ("ci.yml", cj)):
     steps = job.get("steps") or []
     run_step = [s for s in steps if "bin/vex-live-run.sh run" in (s.get("run") or "")]
     clean_step = [s for s in steps if "bin/vex-live-run.sh cleanup" in (s.get("run") or "")]
     check("%s: the live-test step carries the Docker Hub repository and the three Docker Hub secrets as environment variables" % name,
           len(run_step) == 1 and all((run_step[0].get("env") or {}).get(k) == v for k, v in SCOUT_RUN_ENV.items()), run_step and run_step[0].get("env"))
-    check("%s: the cleanup step carries the repository, the user and the push token (not the Scout read token)" % name,
+    check("%s: the cleanup step carries the repository, the test user and the push token (not the Scout read token or the Scout user)" % name,
           len(clean_step) == 1 and all((clean_step[0].get("env") or {}).get(k) == v for k, v in SCOUT_CLEAN_ENV.items())
-          and "DOCKERHUB_SCOUT_TOKEN" not in (clean_step[0].get("env") or {}), clean_step and clean_step[0].get("env"))
+          and not {"DOCKERHUB_SCOUT_TOKEN", "DOCKERHUB_USERNAME"} & set(clean_step[0].get("env") or {}), clean_step and clean_step[0].get("env"))
     users = [s.get("name") for s in steps if re.search(r"secrets\.DOCKERHUB", json.dumps(s))]
     check("%s: the Docker Hub secrets appear in those two steps only, never in a command line" % name,
           sorted(users) == sorted(s.get("name") for s in run_step + clean_step) and not any("secrets." in (s.get("run") or "") for s in steps), users)
@@ -970,7 +970,7 @@ for name, job in (("release.yml rc job", RJ), ("release.yml post-publish job", P
 
 # --- Codex #416 r1: the page's blocks run without the Docker Hub secrets; Docker Hub auth goes in private config files, never on a command line; strict reports; the Hub
 #     path boundary and schema
-SECRETS_ENV = dict(DOCKERHUB_USERNAME="hubuser-secret", DOCKERHUB_TEST_PUSH_TOKEN="push-tok", DOCKERHUB_SCOUT_TOKEN="scout-tok", DH_REPO="ns/name")
+SECRETS_ENV = dict(DOCKERHUB_USERNAME="hubuser-secret", DOCKERHUB_TEST_USERNAME="hubtest-user", DOCKERHUB_TEST_PUSH_TOKEN="push-tok", DOCKERHUB_SCOUT_TOKEN="scout-tok", DH_REPO="ns/name")
 for section in ("verify", "scout"):
     with tempfile.TemporaryDirectory() as t:
         os.makedirs(os.path.join(t, "plan"))
@@ -1031,10 +1031,10 @@ with tempfile.TemporaryDirectory() as t:
 
 # --- PR-C part B: the shell leg, with stubs (fail closed without its repository and tokens; the fixture and the production image scanned with Docker's authors
 #     only and with ours; the verdict from bin/scout-selfcheck.py; pushes journaled and counted; the Docker Hub repository swept)
-ENV_OK = {"DH_REPO": "fosterstack-live/cache-live-test", "DOCKERHUB_USERNAME": "hubuser-secret", "DOCKERHUB_TEST_PUSH_TOKEN": "push-tok", "DOCKERHUB_SCOUT_TOKEN": "scout-tok"}
+ENV_OK = {"DH_REPO": "fosterstack-live/cache-live-test", "DOCKERHUB_USERNAME": "hubuser-secret", "DOCKERHUB_TEST_USERNAME": "hubtest-user", "DOCKERHUB_TEST_PUSH_TOKEN": "push-tok", "DOCKERHUB_SCOUT_TOKEN": "scout-tok"}
 for missing in ENV_OK:
     env = {k: v for k, v in ENV_OK.items() if k != missing}
-    rc, out = sh("for v in DH_REPO DOCKERHUB_USERNAME DOCKERHUB_TEST_PUSH_TOKEN DOCKERHUB_SCOUT_TOKEN; do eval \"[ -n \\\"\\${$v-}\\\" ]\" || unset $v; done; scout_preflight",
+    rc, out = sh("for v in DH_REPO DOCKERHUB_USERNAME DOCKERHUB_TEST_USERNAME DOCKERHUB_TEST_PUSH_TOKEN DOCKERHUB_SCOUT_TOKEN; do eval \"[ -n \\\"\\${$v-}\\\" ]\" || unset $v; done; scout_preflight",
                  {"crane": "echo CALLED >> calls; exit 0", "docker": "echo CALLED >> calls; exit 0"}, dict(env, **{missing: ""}))
     check("scout preflight fails closed without %s, naming it" % missing, rc != 0 and missing in out, (rc, out[-200:]))
 rc, out = sh("scout_preflight", {}, ENV_OK)
@@ -1143,8 +1143,10 @@ case "$*" in
     cats = [c for c in map(cat_of, ev) if c]
     check("scout leg (rc): the push token is on the machine only for the pushes (login, pushes, logout), then the Scout token only for the scans (login, scans, logout); neither is ever on a command line",
           cats == sorted(cats) and {1, 2, 3, 4, 5, 6} <= set(cats) and "BAD-" not in out and "push-tok" not in "\n".join(ev) and "scout-tok" not in "\n".join(ev), (cats, out[-500:]))
-    check("scout leg (rc): the user name is the only secret-backed value on a command line (the Docker Hub namespace, public)",
-          all("hubuser-secret" in l for l in ev if "auth login" in l or l.startswith("docker login")) and not any("hubuser-secret" in l for l in ev if "scout cves" in l or " push " in l or " copy " in l))
+    check("scout leg (rc): the user names are the only secret-backed values on a command line (public Docker Hub account names): the push login uses the test user, the Scout login the Scout user",
+          all("hubtest-user" in l and "hubuser-secret" not in l for l in ev if "auth login" in l)
+          and all("hubuser-secret" in l and "hubtest-user" not in l for l in ev if l.startswith("docker login"))
+          and not any("hubuser-secret" in l or "hubtest-user" in l for l in ev if "scout cves" in l or " push " in l or " copy " in l))
     check("scout leg (rc): the push token is gone from the environment once it is logged out (a Scout scan or the page's Scout block never sees it)",
           "SCAN-ENV push-env=\n" in out and "SCAN-ENV push-env=set" not in out, out[-300:])
     for why, call in (("copy_candidate", 'copy_candidate "$RUNNER_TEMP/layout" dst/cache:x sha256:%s' % ("a" * 64)), ("push_copy", "push_copy a b")):

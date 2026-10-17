@@ -462,6 +462,7 @@ jobs:
           CANDIDATE_DIR: ${{ github.workspace }}/candidate
           DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
           DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
           DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
         run: bash bin/vex-live-run.sh run
@@ -471,7 +472,7 @@ jobs:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
           DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
           DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
         run: bash bin/vex-live-run.sh cleanup
 
@@ -526,6 +527,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
           DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
           DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
         run: bash bin/vex-live-run.sh run
@@ -535,7 +537,7 @@ jobs:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
           DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
           DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
         run: bash bin/vex-live-run.sh cleanup
 

@@ -173,11 +173,11 @@ sweep() {
 #     (its default is Docker's own), so "before" is a scan with Docker's authors and "after" the same scan naming ours.
 scout_preflight() {   # fails closed: the leg runs only with its test repository, its user and both tokens (the owner sets them in the live-test environment)
   local v miss=""
-  for v in DH_REPO DOCKERHUB_USERNAME DOCKERHUB_TEST_PUSH_TOKEN DOCKERHUB_SCOUT_TOKEN; do
+  for v in DH_REPO DOCKERHUB_USERNAME DOCKERHUB_TEST_USERNAME DOCKERHUB_TEST_PUSH_TOKEN DOCKERHUB_SCOUT_TOKEN; do
     [ -n "${!v:-}" ] || miss="${miss} ${v}"
   done
   if [ -n "$miss" ]; then
-    echo "::error::the Docker Scout leg needs${miss} in the live-test environment (the variable LIVE_TEST_DOCKERHUB_REPOSITORY, the secrets DOCKERHUB_USERNAME, DOCKERHUB_TEST_PUSH_TOKEN, DOCKERHUB_SCOUT_TOKEN); it does not run without them" >&2
+    echo "::error::the Docker Scout leg needs${miss} in the live-test environment (the variable LIVE_TEST_DOCKERHUB_REPOSITORY, the secrets DOCKERHUB_USERNAME and DOCKERHUB_SCOUT_TOKEN for the read-only Scout login, DOCKERHUB_TEST_USERNAME and DOCKERHUB_TEST_PUSH_TOKEN for the push login); it does not run without them" >&2
     return 1
   fi
   [[ "$DH_REPO" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]] \
@@ -256,7 +256,7 @@ scout_leg() {   # the Docker Scout leg: (1) the fixture, carrying our OpenVEX as
   # The push token is on the machine only while the two images are pushed (it goes in on stdin and is logged out again before anything else runs); the read-only Scout token
   # only while Scout scans. The user name is the Docker Hub namespace, public (it is in the repository name); neither token is ever on a command line, and the page's
   # commands run in an environment without any of them (bin/vex-live-test.py guide).
-  printf '%s' "$DOCKERHUB_TEST_PUSH_TOKEN" | crane auth login index.docker.io -u "$DOCKERHUB_USERNAME" --password-stdin || return 1
+  printf '%s' "$DOCKERHUB_TEST_PUSH_TOKEN" | crane auth login index.docker.io -u "$DOCKERHUB_TEST_USERNAME" --password-stdin || return 1
   # (1) the pinned fixture is a single image: wrapped in an index, it gets our attestation like a release does (one child per platform), and goes to the test repository
   rm -rf scout-fixture
   crane pull --format oci "$FIXTURE_SRC" scout-fixture || return 1
