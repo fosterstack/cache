@@ -94,14 +94,15 @@ def single_quoted_spans(body):
     if stack[-1] == "s": spans.append((a, n))
     return spans
 WORKSPACE_SLICE = re.compile(r"\$\{[A-Za-z_0-9@*]+(?::[^-=+?}]|[#%/^,])")   # a slice or pattern edit of a variable's value: ${x:2:4} ${x#?} ${x%?} ${x/a/b} ${x^^}
-WORKSPACE_COARSE = re.compile(r"\beval\b|\balias\b|\bexpand_aliases\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
+WORKSPACE_COARSE = re.compile(r"\bwait\s+-\w*p|\(\(|\$\[|\[[A-Za-z_$]|\bhash\s+-\w*p|\bfunction\s+(?:ba)?sh\b|(?:^|[\s;&|(){}])(?:ba)?sh\s*\(\s*\)|\beval\b|\balias\b|\bexpand_aliases\b|\b(?:declare|typeset|local)\s+-\w*n\b|\$\{!|\bprintf\s+-\w*v\b|(?:^|[\s;&|(])(?:source|\.)\s+[\"']?\$")   # eval, name references, indirection, printf -v, and sourcing a path held in a variable
 WORKSPACE_NAMING = re.compile(r"(?:^|[\s;&|(){}])(?:export|readonly|declare|typeset|local|unset|read|let|mapfile|readarray|getopts)\b([^\n;&|<>]*)")
-WORKSPACE_DOLLAR_WORD = re.compile(r"""(?:^|\s)["']?\$""")
+WORKSPACE_DOLLAR_WORD = re.compile(r"""(?:^|\s)["']*\$""")
 def workspace_by_runtime_name(body):
     """A builtin that sets or unsets a variable and is handed a name from run-time data: an operand that starts with a dollar sign, or a command that lists the environment."""
     if re.search(r"\bcompgen\b|\bprintenv\b|\benv\s*$|\bdeclare\s+-\w*p|\bexport\s+-p\b", body, re.M): return True
     if re.search(r"^[ \t]*[\"']?\$[^\s=]*[\"']?=", body, re.M): return True        # "$1"=x as a command word
-    return any(WORKSPACE_DOLLAR_WORD.search(" " + m.group(1)) for m in WORKSPACE_NAMING.finditer(body))
+    joined = re.sub(r"\\\n", " ", body)                                    # a backslash-newline continues the line
+    return any(WORKSPACE_DOLLAR_WORD.search(" " + m.group(1)) for m in WORKSPACE_NAMING.finditer(joined))
 def workspace_strict(body):
     """The script that READS the variable to name a listed helper gets the strictest text test: no eval, name reference, indirection, printf -v or source of a variable path; no slice or pattern edit of any value; and no upper-case run holding even three letters in a row of WORKSPACE.
     Stated limit: this text check refuses every plain, builtin and name-piece way to change GITHUB_WORKSPACE; deliberately obfuscated shell (for example quoting that only looks like a comment or a quote to a scanner) is caught by review and the sha256 pin of the listed row, not by this check."""

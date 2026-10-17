@@ -2977,6 +2977,15 @@ kc ws_bad85 'read -a "$1"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WO
 kc ws_bad86 'read -r "${n}" <<< x\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad87 "shopt -s expand_aliases\nalias bash='bash ./hijack'\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad88 'for v in $(compgen -e); do val=$(printenv "$v"); case "$val" in *:*) ;; *) export "$v=/tmp/evil";; esac; done\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad89 'hash -p /tmp/evil bash\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad90 'function bash { echo hi; }\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad91 'function bash() { echo hi; }\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad92 'y=$(cat cfg)\nexport \\\n  "$y"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad93 'read -r v < cfg\n: $(( v ))\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad94 'read -r v < cfg\n(( v ))\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad95 'a=(1 2)\n: "${a[v]}"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad96 'sleep 0 & wait -p "$y"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad97 'export ""$y\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok8 'export FOO="$HOME/x"\nread -r line <<< "$FOO"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok7 "x=\"\$(echo \"\$GITHUB_WORKSPACE\")\"\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok6 "cat <<'E'\nit's text\nE\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" '["bash"]' '["bin/build-apk.sh"]'
@@ -3459,7 +3468,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1427
+EXPECT=1436
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
