@@ -18,7 +18,7 @@
  "chain-release-metadata-test.sh": 100,
  "chain-release-scripts-test.sh": 385,
  "chain-release-wiring-test.sh": 244,
- "chain-sign-wiring-test.sh": 1327,
+ "chain-sign-wiring-test.sh": 1380,
  "chain-snapshot-test.sh": 160,
  "chain-verify-test.sh": 816,
  "check-action-pins-test.sh": 1159,
