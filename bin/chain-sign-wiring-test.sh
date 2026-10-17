@@ -2991,6 +2991,12 @@ kc ws_bad99 'bash=/evil\n"$bash" "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_W
 kc ws_bad100 'BASH_CMDS["bash"]=/tmp/evx\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad101 "BASH_CMDS=([\"bash\"]=/tmp/evx)\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad102 'enable -f /path/lb.so bash\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad103 'export `echo github_workspace=/x | tr a-z A-Z`\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad104 'unset `echo github_workspace | tr a-z A-Z`\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad105 'declare "`echo github_workspace=/x | tr a-z A-Z`"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad106 'declare -u y=ithub_workspace\nexport G"$y"=/tmp/evil\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad107 'f() { local -u y=ithub_workspace; export G"$y"=/tmp/evil; }\nf\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad108 'y=ithub_workspace\nread -r G"$y" <<< /tmp/evil\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok8 'export FOO="$HOME/x"\nread -r line <<< "$FOO"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok7 "x=\"\$(echo \"\$GITHUB_WORKSPACE\")\"\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok6 "cat <<'E'\nit's text\nE\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" '["bash"]' '["bin/build-apk.sh"]'
@@ -3473,7 +3479,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1441
+EXPECT=1447
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
