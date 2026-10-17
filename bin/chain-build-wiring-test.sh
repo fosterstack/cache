@@ -2244,6 +2244,9 @@ def stray(root):
             path = os.path.join(d, f)
             if os.path.islink(path) and os.path.basename(os.path.realpath(path)) == "vex-index.py":
                 bad.append(os.path.relpath(path, root) + " (a link to the tool)")
+    page = os.path.join(root, "docs", "using-our-vex.md")      # the one prose file that runs: the live test executes its shell blocks, so it is code like any other
+    if os.path.isfile(page) and not os.path.islink(page) and "vex-index" in open(page, errors="replace").read():
+        named.add("docs/using-our-vex.md")
     bad += sorted(named - BASE - {RUN, TEST})
     for path, exact in ((RUN, (RUN_CALL,)), (TEST, TEST_LINES)):
         if path not in named and path != RUN:
@@ -2335,6 +2338,7 @@ vim n12 "REQ-REL-010-AC4 any other use of the allowed call's result variable is 
 ld2="$work/vim-link2"; rm -rf "$ld2"; mkdir -p "$ld2/bin" "$ld2/docs" "$ld2/.github/workflows" "$ld2/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld2/bin/"
 printf 'x\n' > "$ld2/bin/vex-index.py"; ln -s ../bin/vex-index.py "$ld2/docs/attach.md"
 if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); sys.exit(0 if any("attach.md" in x for x in b) else 1)' "$work/vi-named.py" "$ld2"; then ok "REQ-REL-010-AC4 a link to the tool under the top-level docs/ is refused"; else bad "REQ-REL-010-AC4 a link to the tool under the top-level docs/ is refused"; fi
+vim q1 "REQ-REL-010-AC4 the customer page, whose shell blocks the live test runs, is code like any other: a command naming the tool in it is refused" docs/using-our-vex.md '' $'\n```sh\n"$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout "$GITHUB_WORKSPACE/other-layout" --vex v.json\n```\n'
 vim m6 "REQ-REL-010-AC4 the live-test run script without its one fixture call is refused (the exemption is not a blanket)" bin/vex-live-run.sh 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1' 'true'
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
 expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
@@ -2357,7 +2361,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=812
+EXPECT=813
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
