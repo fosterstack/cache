@@ -368,6 +368,7 @@ mkdir -p "$work/stubs4"; cat >"$work/stubs4/git" <<'G'
 echo "git $*" >>"$CALLS"
 case "$*" in *"rev-parse --abbrev-ref HEAD"*) echo "${GIT_STUB_DETACHED:+HEAD}${GIT_STUB_DETACHED:-main}" | sed 's/^HEAD.*/HEAD/';; esac
 case "$*" in *"rev-parse HEAD"*) echo cafe0123;; esac
+case "$*" in *"ls-files --error-unmatch"*) [ -z "${GIT_STUB_UNTRACKED:-}" ] || exit 1;; esac
 case "$*" in *"push"*"--delete"*) [ -z "${GIT_STUB_DELETE_FAIL:-}" ] || { echo "git: remote delete failed" >&2; exit 1; };; esac
 case "$*" in *"push -q origin refresh/"*) [ -z "${GIT_STUB_PUSH_SIGNAL:-}" ] || { kill -TERM $PPID; sleep 1; };; esac   # the script receives TERM right after the remote made the branch
 case "$*" in *"checkout -q "*) [ -z "${GIT_STUB_CHECKOUT_FAIL:-}" ] || { echo "git: checkout failed" >&2; exit 1; };; esac
@@ -383,6 +384,8 @@ case "$*" in "pr list"*"--state closed"*) i=50; sep=; printf '['; for b in ${GH_
   for b in ${GH_STUB_CLOSED_FORK:-}; do i=$((i+10)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":true,"mergedAt":null,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
   for b in ${GH_STUB_CLOSED_FOREIGN:-}; do i=$((i+10)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"mergedAt":null,"author":{"login":"someone-else"}}' "$sep" "$i" "$b"; sep=,; done; printf ']\n';; esac
 case "$*" in "pr create"*) [ -z "${GH_STUB_CREATE_FAIL:-}" ] || { echo "gh: HTTP 500" >&2; exit 1; };; esac
+case "$*" in "pr list"*"--head "*) if [ -n "${GH_STUB_HEAD_OPEN:-}" ]; then echo '[{"number":77}]'; else echo '[]'; fi; exit 0;; esac
+case "$*" in "pr create"*) [ -z "${GH_STUB_CREATE_SIGNAL:-}" ] || { echo "https://example.invalid/pull/77"; kill -TERM $PPID; sleep 1; exit 0; };; esac   # the shell runs gh as the last command of a subshell it replaces: $PPID is the script
 case "$*" in "pr list"*"--state closed"*) ;; "pr list"*) [ -z "${GH_STUB_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }; i=40; sep=; printf '['
   for b in ${GH_STUB_OPEN:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
   for b in ${GH_STUB_FORK:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":true,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
@@ -1496,6 +1499,20 @@ sgrun GH_STUB_VERIFIED=true GIT_STUB_PUSH_SIGNAL=1
 t "AC34" "signed commit: a TERM that arrives right after the push removes the pushed branch (the branch is registered before the push), opens no pull request and ends the job non-zero" bash -c "test \"\$(cat '$work/rc')\" != 0 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete' '$CALLS'"
 sgrun GH_STUB_VERIFIED=true GIT_STUB_CHECKOUT_FAIL=1
 t "AC34" "signed commit: a restoration that fails fails the job (exit non-zero, says which file) although the pull request was created" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'could not restore' '$work/log'"
+# round 3 of the seats: a signal after the pull request was created must not delete its branch; ./.git is metadata too; a failed removal of an untracked planned file fails the job
+sgrun GH_STUB_VERIFIED=true GH_STUB_CREATE_SIGNAL=1 GH_STUB_HEAD_OPEN=1
+t "AC34" "signed commit: a TERM right after gh pr create, when the branch has an open pull request, does NOT delete the branch (it asked for the branch's open pull requests first) and says it was kept" bash -c "! grep -Eq '^git( -C [^ ]+)? push .*--delete' '$CALLS' && grep -q '^gh pr create' '$CALLS' && grep -Eqi 'kept|has an open pull request' '$work/log'"
+sgrun GH_STUB_VERIFIED=true GH_STUB_CREATE_SIGNAL=1
+t "AC34" "signed commit: the same TERM when the branch has NO open pull request deletes the branch" bash -c "grep -Eq '^git( -C [^ ]+)? push .*--delete' '$CALLS'"
+rm -rf "$work/plan-dot"; cp -R "$work/plan" "$work/plan-dot"; mkdir -p "$work/rp/.git"; printf 'keep me\n' >"$work/rp/.git/config"; for pd_ in "$work/plan-dot"/*/; do printf './.git/config\n' >>"${pd_}paths"; done
+run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-dot" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit: ./.git/config is refused like .git/config (before any push, the file untouched)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -Eq '^git( -C [^ ]+)? push ' '$CALLS' && test \"\$(cat '$work/rp/.git/config')\" = 'keep me'"
+rm -rf "$work/rp/.git"
+sgrun GH_STUB_VERIFIED=true GIT_STUB_UNTRACKED=1
+rm -rf "$work/ro"; mkdir -p "$work/ro"; cp -R "$work/plan" "$work/ro/plan"; mkdir -p "$work/rp/rodir"; printf 'x\n' >"$work/rp/rodir/new.txt"; chmod 555 "$work/rp/rodir"; for pd_ in "$work/ro/plan"/*/; do printf 'rodir/new.txt\n' >>"${pd_}paths"; done
+run_s4 env GIT_STUB_UNTRACKED=1 "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/ro/plan" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit: when removing an untracked planned file fails the job fails (non-zero) and names the file" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'rodir/new.txt' '$work/log'"
+chmod 755 "$work/rp/rodir" 2>/dev/null; rm -rf "$work/rp/rodir"
 sgrun GH_STUB_VERIFIED=true
 t "AC34" "signed commit: after the API commit the working tree is put back to the start commit (the files the job edited are restored, so a later invocation in the same checkout sees the start state)" bash -c "grep -Eq '^git( -C [^ ]+)? checkout -q cafe0123 -- ' '$CALLS'"
 mkrepo; rm -rf "$work/plan"
