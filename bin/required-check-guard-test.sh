@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-002-AC1, REQ-DEP-002-AC2
+# proves: REQ-DEP-002-AC1, REQ-DEP-002-AC2, REQ-DEP-002-AC3
 # Offline suite for bin/required-check-guard.sh (register row 75). Fixtures stand
 # in for the ruleset API response; the list side uses the committed file and
 # edited copies. What must hold: an exact match passes; a missing check, an extra
@@ -84,6 +84,19 @@ step "drift with the issue open updates it, no dup"   "$w/missing.json" "$w/open
 grep -qx "issue=7" "$w/out" 2>/dev/null && { echo "ok: the updated issue's number is the job output"; pass=$((pass+1)); } || { echo "FAIL: updated issue output"; fail=$((fail+1)); }
 step "no required checks on main opens the issue"     "$w/none.json"    "$w/no-issues.json"  '^gh issue create'
 step "match opens nothing"                            "$w/match.json"   "$w/no-issues.json"  '^gh api ' '^gh issue (create|edit)'
+
+# REQ-DEP-002-AC3 (advisor reading Oct 16, Astra release review R5): the committed list names the two jobs that were not in it, each as a job of ci.yml
+ci="$repo/.github/workflows/ci.yml"
+for want in "vendor:push" "marker-gate:pull_request"; do
+  ctx="${want%%:*}"; scope="${want##*:}"
+  n="$(jq --arg c "$ctx" --arg s "$scope" '[.required_checks[] | select(.context == $c and .scope == $s and .integration_id == 15368)] | length' "$list")"
+  m="$(jq --arg c "$ctx" '[.required_checks[] | select(.context == $c)] | length' "$list")"
+  if [ "$n" = 1 ] && [ "$m" = 1 ] && grep -qE "^    name: ${ctx}\$" "$ci"; then
+    echo "ok: the committed list names ${ctx} once, scope ${scope}, integration 15368, and ci.yml has that job"; pass=$((pass+1))
+  else
+    echo "FAIL: the committed list must name ${ctx} exactly once with scope ${scope} and integration 15368, and ci.yml must have a job named ${ctx} (found ${n}/${m})"; fail=$((fail+1))
+  fi
+done
 
 echo "----"
 echo "required-check-guard: ${pass} passed, ${fail} failed"

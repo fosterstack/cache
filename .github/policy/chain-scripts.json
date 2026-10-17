@@ -947,8 +947,8 @@
         "bin/chain-verify.py"
       ],
       "signs": false,
-      "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no credential exists in this step",
-      "sha256": "f37dc534305a7b2d5380d690a15408edf87fa44e3ee40877e36a10177b17241d",
+      "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
+      "sha256": "9f064b81de90907e21d78f9cdf70eb731feb5c327d5b3fd72101df03448389dd",
       "exceptions": [
         {
           "rule": "deny",
@@ -1517,6 +1517,26 @@
       "signs": false,
       "reason": "cache P4's Go module SBOM: reads vendor/modules.txt and dependency-provenance.json, writes the SBOM; run by bin/build-apk.sh",
       "sha256": "e73acab6d1ecda6aa444861f29bfeebb273e774152dad0a10de861ac5aab6a26"
+    },
+    {
+      "path": "bin/vendor-provenance.py",
+      "tools": [
+        "at",
+        "command"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, step release-sign (run by bin/release-sign.sh): checks and builds the dependency provenance of the vendored tree and writes vendor-evidence.json for the release to sign (REQ-VEND-001); offline: every input is a file, it reads no environment variable, runs no program and signs nothing",
+      "sha256": "c7dc655ed4236f9eb1e228523766e474e0386027173f04b4407864caf6361eff",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "# the three Go pseudo-version forms, whole-string (cmd/go's pseudoVersionRE): vX.0.0-TS-REV, vX.Y.Z-0.TS-REV and vX.Y.Z-pre.0.TS-REV, each with an",
+          "line_sha256": "704fdce73fefee04a009df1e448bff8a66ac56674db8b9bb4d93786a6a0950a7",
+          "count": 1,
+          "why": "a comment naming Go's own cmd/go (where the pseudo-version pattern comes from); prose, never a command run here"
+        }
+      ]
     }
   ],
   "ambient_env": [

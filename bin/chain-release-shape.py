@@ -24,11 +24,18 @@ docs/tutorials/artifact-policy.md:58-70 (the envelope: base64 payload); PR 3's b
 fixtures); PR 1's chain-scripts.json rows (tools, runs, signs)."""
 import base64, hashlib, json, os, re, sys, yaml
 
+# a stored secret or the job token read in any expression syntax (dotted or bracket), or a credential name; used by the credential judges (fail closed on the bracket form too)
+CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*token)|GH_TOKEN|DOCKERHUB|APK_RELEASE", re.I)
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
+MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-AC1 (Astra R4): the one build tool Release needs, for release-sign-apks.sh; the fourth install, after crane
 DOWN = {"witness-build", "witness-rebuild", "witness-check", "witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"}   # Build's and Rebuild's real artifact names (AC17)
-UP = {"release-evidence", "witness-release"}
+VERIFY_PAIRS = {"witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "witness-rebuild": "witness-rebuild",
+                "witness-check": "witness-check", "witness-check-arm64": "witness-check/witness-arm64", "check-results": "check-results", "provenance": "provenance"}   # what release-verify reads, and where
+RELEASE_PAIRS = dict(VERIFY_PAIRS, **{"dist": "dist", "images": "images", "apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm",
+                                      "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm"})   # the release job: the nine above, then what the later steps use
+UP = {"release-evidence", "witness-release", "witness-release-verify"}
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
        "release-postverify": {"GH_TOKEN"}}   # read access to the published image only: no registry login, no registry credential (rule 66)
@@ -77,8 +84,80 @@ def load(path):
     return yaml.load(open(path), Loader=yaml.BaseLoader)
 
 
+def has_expression(obj):
+    """True when any decoded string (a key or a value, however nested) holds a GitHub expression opener. The protected steps (the whole verify job and every release step up to and
+    including release-verify) carry NO expression at all: that closes every spelling of a read of a secret or of the job token (dotted, bracket, whole-context, function-wrapped)
+    instead of matching spellings."""
+    if isinstance(obj, str):
+        return "${{" in obj
+    if isinstance(obj, dict):
+        return any(has_expression(k) or has_expression(v) for k, v in obj.items())
+    if isinstance(obj, list):
+        return any(has_expression(x) for x in obj)
+    return False
+
+
 def run_of(step):
     return (step.get("run") or "").strip()
+
+
+def verify_job(j):
+    """REQ-CHAIN-007-AC1 (Astra R6): the verify job holds contents read and id-token write ONLY (Witness mints its certificate from the identity token), no environment,
+    no secret, no env, no condition: checkout, the Witness install, the downloads release-verify reads, release-verify under Witness, then uploads."""
+    bad = []
+    if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes"}:
+        bad.append("verify job: job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes"}))
+    if j.get("runs-on") != "ubuntu-24.04":
+        bad.append("verify job: must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
+    if j.get("permissions") != {"contents": "read", "id-token": "write"}:
+        bad.append("verify job: permissions must be exactly contents read and id-token write: %s" % j.get("permissions"))
+    kinds = []
+    for s in j.get("steps") or []:
+        if set(s) - {"name", "uses", "with", "run"}:
+            bad.append("verify job: step keys not allowed (no env, no if): %s" % sorted(set(s) - {"name", "uses", "with", "run"}))
+        u, r = s.get("uses", ""), run_of(s)
+        if u.startswith("actions/checkout@"):
+            kinds.append("checkout")
+            if not PIN.match(u.split(" ")[0]) or s.get("with") != {"persist-credentials": "false"}:
+                bad.append("verify job: checkout must be digest-pinned with persist-credentials: false only")
+        elif u.startswith("actions/download-artifact@"):
+            kinds.append("down"); w = s.get("with") or {}
+            if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".")):
+                bad.append("verify job: download-artifact must be digest-pinned, name in the allowlist, an explicit path outside bin/ and .github/: %s" % w)
+        elif u.startswith("actions/upload-artifact@"):
+            kinds.append("up"); w = s.get("with") or {}
+            if not PIN.match(u.split(" ")[0]) or w.get("name") not in UP:
+                bad.append("verify job: upload-artifact must be digest-pinned with a name in %s: %s" % (sorted(UP), w))
+        elif u:
+            bad.append("verify job: uses not allowed: %s" % u)
+        elif r == "bash bin/install-scanner.sh witness":
+            kinds.append("install:witness")
+        elif r == "bash bin/witnessed.sh release-verify bin/release-verify.sh":
+            kinds.append("W:release-verify")
+        else:
+            bad.append("verify job: a step that is none of checkout, the Witness install, download, release-verify or upload: %r" % (r or s.get("name")))
+    ds = [i for i, k in enumerate(kinds) if k == "down"]
+    ws = [i for i, k in enumerate(kinds) if k == "W:release-verify"]
+    ups = [i for i, k in enumerate(kinds) if k == "up"]
+    if kinds[:2] != ["checkout", "install:witness"] or not ds or ds != list(range(2, 2 + len(ds))):
+        bad.append("verify job: the steps must start with checkout and the install of witness, then the downloads: got %s" % kinds[:4])
+    if len(ws) != 1 or ws[0] != 2 + len(ds):
+        bad.append("verify job: exactly one release-verify under Witness must follow the downloads directly: %s" % kinds)
+    dl = {(x.get("with") or {}).get("name"): (x.get("with") or {}).get("path") for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@")}
+    for nm, want in (("witness-check", "witness-check"), ("admission-baseline", "witness-build"), ("check-results", "check-results"), ("witness-check-arm64", "witness-check/witness-arm64")):
+        if dl.get(nm) != want:
+            bad.append("verify job: artifact %s must be downloaded to %s (where release-verify reads it), got %r" % (nm, want, dl.get(nm)))
+    if not ups or ups != list(range(len(kinds) - len(ups), len(kinds))):
+        bad.append("verify job: only uploads may follow release-verify, and there must be at least one")
+    upl = [(x.get("with") or {}) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/upload-artifact@")]
+    if upl != [{"name": "witness-release-verify", "path": "witness-release-verify", "if-no-files-found": "error"}]:
+        bad.append("verify job: its one upload must be exactly name witness-release-verify, path witness-release-verify and if-no-files-found error (the Witness record of release-verify; a missing record fails the job; the release job's own upload is witness-release): %s" % upl)
+    got = sorted((((x.get("with") or {}).get("name")), ((x.get("with") or {}).get("path"))) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@"))
+    if got != sorted(VERIFY_PAIRS.items()):
+        bad.append("verify job: its downloads must be exactly these nine artifact/path pairs, each once and spelled exactly (the action trims whitespace from a path, so nothing else may reach the uploaded directory): %s" % got)
+    if has_expression(j.get("steps")):
+        bad.append("verify job: no step may hold an expression (${{ }}): a protected step carries no expression and no explicit credential binding; the checkout action's default token use and Witness's identity token are token uses that no expression or binding in these steps accounts for")
+    return bad
 
 
 def stage(path):
@@ -89,11 +168,18 @@ def stage(path):
     if set(d) - {"name", "on", "permissions", "jobs"}:
         bad.append("workflow keys not allowed: %s" % sorted(set(d) - {"name", "on", "permissions", "jobs"}))
     jobs = d.get("jobs") or {}
-    if list(jobs) != ["release"]:
-        return bad + ["exactly one job named release is required, found %s" % list(jobs)]
+    if list(jobs) != ["verify", "release"]:
+        return bad + ["exactly two jobs named verify and release (in this order) are required, found %s" % list(jobs)]
+    bad += verify_job(jobs["verify"])
     j = jobs["release"]
-    if set(j) - {"runs-on", "permissions", "steps", "name", "environment", "timeout-minutes"}:
-        bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "environment", "timeout-minutes"}))
+    # REQ-CHAIN-007-AC1 (Astra R6): the release job starts only after the verify job passed, and not at all for a release candidate
+    nd = j.get("needs")
+    if nd not in ("verify", ["verify"]):
+        bad.append("the release job must need exactly the verify job (needs: verify), got %r" % nd)
+    if j.get("if") != RC_IF:
+        bad.append("the release job must carry exactly the job-level if %s (a release candidate never enters the release environment), got %r" % (RC_IF, j.get("if")))
+    if set(j) - {"runs-on", "permissions", "steps", "name", "environment", "timeout-minutes", "needs", "if"}:
+        bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "environment", "timeout-minutes", "needs", "if"}))
     if j.get("runs-on") != "ubuntu-24.04":
         bad.append("release must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
     if j.get("environment") != "release":
@@ -112,8 +198,8 @@ def stage(path):
                 bad.append("checkout must be digest-pinned with persist-credentials: false only")
         elif u.startswith("actions/download-artifact@"):
             kinds.append("down"); w = s.get("with") or {}
-            if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".")):
-                bad.append("download-artifact must be digest-pinned, name in %s, an explicit path outside bin/ and .github/: %s" % (sorted(DOWN), w))
+            if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or w.get("path", ".") != w.get("path", ".").strip() or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".").strip()):
+                bad.append("download-artifact must be digest-pinned, name in %s, an explicit path with no surrounding whitespace (the action trims it) outside bin/ and .github/: %s" % (sorted(DOWN), w))
         elif u.startswith("actions/upload-artifact@"):
             kinds.append("up"); w = s.get("with") or {}
             if not PIN.match(u.split(" ")[0]) or w.get("name") not in UP:
@@ -122,6 +208,8 @@ def stage(path):
             bad.append("uses not allowed in the Release stage: %s" % u)
         elif r in ["bash bin/install-scanner.sh " + t for t in INSTALLS]:   # the form the closed stage grammar accepts (bash PATH ARGS), as Build, Sign and Check run it
             kinds.append("install:" + r.split()[-1])
+        elif r == MELANGE_INSTALL:
+            kinds.append("install:melange")
         elif re.fullmatch(r"bash bin/witnessed\.sh (release-[a-z]+) bin/\1\.sh", r):
             kinds.append("W:" + r.split()[2])
         else:
@@ -130,17 +218,20 @@ def stage(path):
         if len(kinds) > nk and s.get("if") != want_if:   # nk: kinds before this step; only a step that was classified is judged for its if
             bad.append("step %r must carry %s, found %r (a release candidate ends after release-verify; release-verify and every non-Witness step carry no if)"
                        % (r or u, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
-    want = ["checkout"] + ["install:" + t for t in INSTALLS]
+    want = ["checkout"] + ["install:" + t for t in INSTALLS] + ["install:melange"]
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]
     ups = [i for i, k in enumerate(kinds) if k == "up"]
-    if kinds[:4] != want:
-        bad.append("steps must start with checkout and the installs of witness, cosign, crane: got %s" % kinds[:4])
-    if not ds or ds != list(range(4, 4 + len(ds))):
+    if kinds[:5] != want:
+        bad.append("steps must start with checkout and the installs of witness, cosign, crane, melange: got %s" % kinds[:5])
+    if not ds or ds != list(range(5, 5 + len(ds))):
         bad.append("the downloads must follow the installs directly and all come before Witness starts (rule 68)")
     # REQ-CHAIN-007-AC16: Check's two uploads meet where bin/chain-verify.py check-list reads them: witness-check/ holds witness-scanners, witness-acceptance and
     # witness-runtime (artifact witness-check), and the arm64 leg's separate artifact witness-check-arm64 lands in witness-check/witness-arm64/
     dl = {(x.get("with") or {}).get("name"): (x.get("with") or {}).get("path") for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@")}
+    rgot = sorted((((x.get("with") or {}).get("name")), ((x.get("with") or {}).get("path"))) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@"))
+    if rgot != sorted(RELEASE_PAIRS.items()):
+        bad.append("the release job: its downloads must be exactly these fifteen artifact/path pairs, each once and spelled exactly (the action trims whitespace from a path, and the job's upload holds the Witness record directories): %s" % rgot)
     if dl.get("witness-check") != "witness-check":
         bad.append("artifact witness-check must be downloaded to witness-check, got %r" % dl.get("witness-check"))
     if dl.get("admission-baseline") != "witness-build":
@@ -152,6 +243,11 @@ def stage(path):
     if ws != ["W:" + s for s in STEPS]:
         bad.append("the witnessed steps must be exactly %s, in this order, found %s" % (STEPS, [w[2:] for w in ws]))
     last_w = max((i for i, k in enumerate(kinds) if k.startswith("W:")), default=-1)
+    first_w = min((i for i, k in enumerate(kinds) if k.startswith("W:")), default=-1)
+    if first_w >= 0 and any(not k.startswith("W:") for k in kinds[first_w:last_w + 1]):
+        bad.append("between the first and the last Witness step there must be Witness steps only (an install, a download or an upload in between is refused): %s" % kinds[first_w:last_w + 1])
+    if any(k.startswith("install:") for k in kinds[5:]):
+        bad.append("between the checkout and the downloads exactly the four installs are allowed, and no install after them: %s" % kinds)
     if any(k != "up" for k in kinds[last_w + 1:]) or not ups:
         bad.append("only uploads may follow the witnessed steps, and there must be at least one")
     text = open(path).read()
@@ -160,20 +256,31 @@ def stage(path):
     return bad
 
 
+def j_names_credential(j):
+    blob = yaml.dump(j.get("steps") or [])
+    return any(st.get("env") is not None for st in (j.get("steps") or [])) or bool(CRED_RE.search(blob) or re.search(r"environment", blob + " " + str(j.get("environment") or "")))
+
+
 def credentials(path):
-    j = (load(path).get("jobs") or {}).get("release") or {}
+    jobs = load(path).get("jobs") or {}
+    vj = jobs.get("verify")
     bad, seen_verify = [], False
+    if vj is None:
+        bad.append("no verify job found")
+    elif j_names_credential(vj) or has_expression(vj.get("steps")):
+        bad.append("a step up to release-verify has an env or names a secret or token: the verify job must hold no credential (it holds contents read and id-token write only)")
+    j = jobs.get("release") or {}
     for s in j.get("steps") or []:
         r, env = run_of(s), s.get("env")
         name = r.split()[2] if r.startswith("bash bin/witnessed.sh ") and len(r.split()) > 3 else None
         blob = yaml.dump(s)
         if not seen_verify:
-            if env is not None or re.search(r"secrets\.|github\.token|GH_TOKEN|DOCKERHUB|APK_RELEASE", blob):
+            if env is not None or CRED_RE.search(blob) or has_expression(s):
                 bad.append("a step up to release-verify has an env or names a secret or token: %s" % (r or s.get("uses", "")))
             seen_verify = name == "release-verify"
             continue
         if name is None:
-            if env is not None or re.search(r"secrets\.|github\.token", blob):
+            if env is not None or CRED_RE.search(blob):
                 bad.append("only the witnessed steps may carry an env or a secret: %s" % (r or s.get("uses", "")))
             continue
         want = WHO.get(name, set())
