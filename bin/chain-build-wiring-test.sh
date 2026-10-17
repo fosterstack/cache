@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
 # Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
@@ -150,6 +150,9 @@ def stage_text(family):
         out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
         if sp.get("setup_go"): out += "      - name: install Go (pinned by checksum)\n        run: %s\n" % S.INSTALL_GO
         for tl in sp.get("tools", ()): out += "      - name: install %s (pinned by checksum)\n        run: %s\n" % (tl.rsplit(" ", 1)[1], tl)
+        # REQ-CHAIN-004-AC16: every job that builds from the archive installs crane (pinned) and pulls the archive by its committed digest, before the downloads
+        out += "      - name: install crane (pinned by checksum)\n        run: %s\n" % S.INSTALL_CRANE
+        out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
@@ -307,6 +310,22 @@ st s_bt_tool   "004-AC3 a third build tool through the same installer" "download
 st s_bt_dest   "004-AC3 the installer given another destination" "install-build-tools.sh melange" 'install-build-tools.sh melange' 'install-build-tools.sh melange /tmp/bin'
 st s_bt_env    "004-AC3 an env on the installer step (a token or secret could reach it before admission)" "install-build-tools.sh apko" "$APKINST" '      - name: install apko (pinned by checksum)\n        env:\n          K: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh apko\n'
 st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
+# REQ-CHAIN-004-AC16 (advisor ACs 10-13 of Oct 15, owner rules 3 and 9): the archive is pulled by the committed digest, by the pinned crane, before anything builds
+CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash bin/install-scanner.sh crane\n'
+PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'
+PULLRUN='run: bash bin/archive-pull.sh --pointer build/archive.json --out archive'
+st s_ar_gone    "AC16 the archive pull is missing from Build's apk job (build-apk.sh --repo archive would find nothing)" "archive-pull.sh" "$PULLSTEP" ''
+st s_ar_crane   "AC16 the crane install is missing (the pull needs the pinned tool)" "install-scanner.sh crane" "$CRANEINST" ''
+st s_ar_order   "AC16 the pull before the crane install" "install-scanner.sh crane" "$CRANEINST$PULLSTEP" "$PULLSTEP$CRANEINST"
+st s_ar_digest  "AC16 the pull names a digest of its own (only the committed one is allowed)" "archive-pull.sh" "$PULLRUN" "$PULLRUN --digest sha256:0000000000000000000000000000000000000000000000000000000000000000"
+st s_ar_out     "AC16 the pull into another directory than archive" "archive-pull.sh" "$PULLRUN" 'run: bash bin/archive-pull.sh --pointer build/archive.json --out arch'
+st s_ar_ptr     "AC16 the pull reads another pointer than build/archive.json" "archive-pull.sh" "$PULLRUN" 'run: bash bin/archive-pull.sh --pointer archive.json --out archive'
+st s_ar_soft    "AC16 a pull that may fail (continue-on-error)" "archive-pull.sh" "$PULLSTEP" "$PULLSTEP        continue-on-error: true\n"
+st s_ar_ortrue  "AC16 a pull whose failure is swallowed" "archive-pull.sh" "$PULLRUN" "$PULLRUN || true"
+st s_ar_env     "AC16 an env on the pull step (a token could reach it before admission)" "archive-pull.sh" "$PULLSTEP" "$PULLSTEP        env:\n          GH_TOKEN: x\n"
+st s_ar_if      "AC16 an if on the pull step (a skipped pull is a build with no archive)" "archive-pull.sh" 'name: pull the archive by its committed digest\n' 'name: pull the archive by its committed digest\n        if: always()\n'
+st s_ar_cdest   "AC16 crane installed to another directory (archive-pull.sh names /usr/local/bin/crane)" "install-scanner.sh crane" 'install-scanner.sh crane' 'install-scanner.sh crane /tmp/bin'
+st s_ar_bycrane "AC16 the archive fetched by a crane command in the stage instead of archive-pull.sh" "archive-pull.sh" "$PULLRUN" 'run: crane pull ghcr.io/fosterstack/archive:latest archive'
 st s_go_other "AC4 the Go install line names another target" "install-scanner.sh go" 'install-scanner.sh go' 'install-scanner.sh go 1.20'
 st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
 st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
@@ -713,6 +732,65 @@ d["scripts"] = d["scripts"][1:]
 json.dump(d, open(sys.argv[2], "w"))
 PY
 expect caught "AC3 a script that is not a row of chain-scripts.json is refused" "not a row" listed "$work/chain-scripts-short.json" "$work/listed"
+# REQ-CHAIN-004-AC16: the two files the stage's pull step runs are rows of the committed list with their committed sha256
+python3 - "$root/.github/policy/chain-scripts.json" "$work/ar-nosha.json" "$work/ar-norow.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+e = json.loads(json.dumps(d)); [r.update(sha256="0" * 64) for r in e["scripts"] if r["path"] == "bin/archive-pull.sh"]; json.dump(e, open(sys.argv[2], "w"))
+f = json.loads(json.dumps(d)); f["scripts"] = [r for r in f["scripts"] if r["path"] != "bin/archive-verify.py"]; json.dump(f, open(sys.argv[3], "w"))
+PY
+expect ok     "AC16 the real chain-scripts.json lists bin/archive-pull.sh and bin/archive-verify.py with their committed sha256" "" archive-listed "$root/.github/policy/chain-scripts.json" "$root"
+expect caught "AC16 archive-pull.sh listed with a sha256 that is not the committed file's" "sha256" archive-listed "$work/ar-nosha.json" "$root"
+expect caught "AC16 archive-verify.py (run by the pull) is not a row of chain-scripts.json" "not a row" archive-listed "$work/ar-norow.json" "$root"
+# REQ-CHAIN-004-AC16: the pointer the stage's pull step reads, in the format cache#345 defines (bin/archive-verify.py): a fixture pointer is accepted, malformed ones are
+# refused, and the committed build/archive.json, the real input of every pull, is held to the same check. It does not exist until the first refresh run's pull request
+# merges: that one case is the only red of this block (known-red KR-ARCHIVE-1, green by the pointer pull request).
+AV="$root/bin/archive-verify.py"
+python3 - "$work" <<'PY'
+import json, os, sys
+w = sys.argv[1]; os.makedirs(w + "/ptr", exist_ok=True)
+D = "ghcr.io/fosterstack/cache-archive@sha256:" + "a" * 64
+good = {"schema": 1, "artifact": D, "files": [{"name": "keys/wolfi-signing.rsa.pub", "sha256": "b" * 64}, {"name": "x86_64/busybox-1.37.0-r5.apk", "sha256": "c" * 64}]}
+def w_(n, d): json.dump(d, open("%s/ptr/%s.json" % (w, n), "w"))
+w_("good", good)
+w_("tag", dict(good, artifact="ghcr.io/fosterstack/cache-archive:latest"))
+w_("noschema", {k: v for k, v in good.items() if k != "schema"})
+w_("extra", dict(good, note="x"))
+w_("empty", dict(good, files=[]))
+w_("traversal", dict(good, files=[{"name": "../x", "sha256": "b" * 64}]))
+w_("unsorted", dict(good, files=list(reversed(good["files"]))))
+w_("shortsha", dict(good, files=[{"name": "a", "sha256": "b" * 63}]))
+PY
+ptr_ok()  { if python3 -I "$AV" pointer-check --pointer "$2" >"$work/ptr.out" 2>&1; then ok "$1"; else bad "$1 -> $(head -c 160 "$work/ptr.out")"; fi; }
+ptr_bad() { if python3 -I "$AV" pointer-check --pointer "$2" >"$work/ptr.out" 2>&1; then bad "$1 -> accepted"; elif grep -Fq -- "$3" "$work/ptr.out"; then ok "$1 (refused: $(head -c 80 "$work/ptr.out"))"; else bad "$1 -> refused for another reason: $(head -c 160 "$work/ptr.out")"; fi; }
+ptr_ok  "AC16 fixture: a pointer in cache#345's format (schema 1, the archive by digest, sorted unique files) is accepted by the check the pull runs" "$work/ptr/good.json"
+ptr_bad "AC16 fixture: an archive named by a tag, not a digest, is refused" "$work/ptr/tag.json" "by digest only"
+ptr_bad "AC16 fixture: a pointer without schema is refused" "$work/ptr/noschema.json" "exactly schema"
+ptr_bad "AC16 fixture: a pointer with an extra field is refused" "$work/ptr/extra.json" "exactly schema"
+ptr_bad "AC16 fixture: an empty file list is refused" "$work/ptr/empty.json" "non-empty"
+ptr_bad "AC16 fixture: a file name that leaves the directory is refused" "$work/ptr/traversal.json" "unsafe file name"
+ptr_bad "AC16 fixture: files out of order are refused" "$work/ptr/unsorted.json" "sorted and unique"
+ptr_bad "AC16 fixture: a short sha256 is refused" "$work/ptr/shortsha.json" "64 lower-case hex"
+if python3 -I "$AV" artifact --pointer "$work/ptr/good.json" 2>/dev/null | grep -Fq "sha256:$(printf 'a%.0s' $(seq 64))"; then ok "AC16 fixture: the digest the pull passes to crane is the pointer's"; else bad "AC16 fixture: the digest the pull passes to crane is not the pointer's"; fi
+ptr_ok  "AC16 the committed build/archive.json, the input of every stage pull, is a valid pointer" "$root/build/archive.json"
+# REQ-CHAIN-004-AC16 (release review R1): every part of archive/ that a stage script reads is something the archive holds. The archive the refresh job stores
+# (cache#345, REQ-ARCHIVE-001) holds keys/ and one directory per architecture (apk files, signed indexes); the stage scripts name archive/keys/..., the repository
+# directory archive itself, and archive/go (the Go toolchain tarball that build-apk.sh requires, rule 12: "kept in the archive"). What the stored archive holds is read from the
+# committed pointer (build/archive.json), so this case is green exactly when the pointer lists go/.
+if python3 - "$root" <<'PY'
+import glob, re, sys
+root = sys.argv[1]
+import json
+HELD = {f["name"].split("/")[0] for f in json.load(open(root + "/build/archive.json"))["files"]}     # what the committed pointer says the stored archive holds at its top level (a bare "archive" names the repository directory itself)
+seen = {}
+for f in sorted(glob.glob(root + "/bin/build-stage-*.sh")):
+    for m in re.finditer(r"(?<![A-Za-z0-9_./-])archive/([A-Za-z0-9_.-]+)", open(f).read()):
+        seen.setdefault(m.group(1), set()).add(f.rsplit("/", 1)[1])
+miss = {k: sorted(v) for k, v in seen.items() if k not in HELD}
+if miss:
+    print("stage scripts read archive/ parts that the archive does not hold: %s" % miss); sys.exit(1)
+PY
+then ok "AC16 every archive/ path the stage scripts read is held by the stored archive"; else bad "AC16 every archive/ path the stage scripts read is held by the stored archive"; fi
 # ---- the job graph of release.yml (REQ-CHAIN-005-AC5) -----------------------------------------------------------------------------------------
 expect ok "005-AC5 fixture: build -> sign -> check, rebuild beside them, (rebuild, check, sign) -> release; other jobs ignored" "" graph "$work/release.yml"
 gr() { replace "$work/release.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" graph "$work/$1.yml"; return 0; }
@@ -2217,7 +2295,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=742
+EXPECT=768
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -3344,6 +3344,15 @@ requirements:
         then: "the record is refused BEFORE ANY CERTIFICATE is looked at, whatever its collection is called, with the first line `refused at <stage>: snapshot version` (an apk, the fips apk or an archive of the standard or fips variant naming 0.0.0 among its product subjects), and a digests.json given to stage-start, check-build-record or sign --check that NAMES a 0.0.0 file is refused the same way (by name only, never by its values), and the refusal belongs to the VERIFIERS only (verify, stage-start, check-build-record, sign --check, and policy make), never to the shared record reader: bind, items-apk, items-merge and rebuild-compare --snapshot ACCEPT the 0.0.0 files of a real snapshot run; and policy make refuses the tag with `refused at policy: snapshot version` and writes no policy, so no policy, hence no Sign or Release, can exist for a snapshot version; the same record naming 0.3.0 is refused later, for what it is, never as a snapshot version, and versions that merely contain the digits (10.0.0, 0.10.0, 1.0.0_rc1) and the tags v10.0.0, v0.0.1, v0.10.0 and v1.0.0 are not refused as snapshots (cache-3f's finding: a snapshot apk can never be released, even if it were smuggled in under a release name)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
+      # ADVISOR ACs 10-13 of the archive pull (advisor, Oct 15, under the owner's ratified build-script rules 9, "every file is checked against a recorded
+      # list on the way in and out", and 3, "the record names the exact archive index used"), folded into one chain AC because REQ-ARCHIVE-001 is not on this
+      # branch; the number differs from the advisor's AC10-13 on purpose. Needs the owner's ratification like every new English AC.
+      - id: REQ-CHAIN-004-AC16
+        given: "the Build and Rebuild stage files (stage-build.yml, stage-reproducibility.yml): each of their four jobs builds from archive/, and the committed pointer build/archive.json names the archive by digest"
+        when: "a stage job runs"
+        then: "right after the build tool that job installs (melange in an apk job, apko in an assemble job) and before any download or Witness step, it installs the checksum-pinned crane with bin/install-scanner.sh crane and pulls the archive with bin/archive-pull.sh --pointer build/archive.json --out archive, each a step of a name and a run and nothing else (no env, no if, no continue-on-error, no digest of its own, no other directory or pointer), so the build runs only after a pull that exited 0 and verified every file against the committed record, and a failed pull or a missing pointer stops the job with no fallback to Wolfi or any other source; both files the step runs (bin/archive-pull.sh, bin/archive-verify.py) are rows of .github/policy/chain-scripts.json with their sha256; the workflow edit adds no new workflow file and every action stays a commit digest"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
 
   - id: REQ-CHAIN-005
     title: Rebuild repeats the build on a fresh machine and blocks on any difference
