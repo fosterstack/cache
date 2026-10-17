@@ -2731,6 +2731,16 @@ d=$(cfix ff_fn_select 'function /usr/bin/curl select x in a; do :; done' '["curl
 d=$(cfix ff_multiq "x='\n# '; /usr/bin/curl() { echo H; }\n/usr/bin/curl u" '["curl"]'); expm caught "$d" 'function' "path-named function hidden behind a line that starts with # inside a quote spanning lines: refused"
 d=$(cfix ff_ansiq "echo \$'\\\\''' # x'; /usr/bin/curl() { echo H; }\n/usr/bin/curl u" '["curl"]'); expm caught "$d" 'function' "path-named function hidden after an ANSI-C escaped quote: refused"
 d=$(cfix ff_comment_def '# /usr/bin/curl() { :; }' '["curl"]'); expm caught "$d" 'function' "a path-named definition inside a comment is refused too (fail-closed: the check does not strip comments)"
+# round 4 of the seats (433, seat B): bash accepts comments and blank lines between "()" and the body of a function; a path-named definition written that way is refused too
+d=$(cfix fc_1 '/usr/bin/curl() # x\n{ echo H; }\n/usr/bin/curl u' '["curl"]'); expm caught "$d" 'function' "path-named function with a comment between () and the body: refused"
+d=$(cfix fc_2 '/usr/bin/curl()\t#\n{ echo H; }' '["curl"]'); expm caught "$d" 'function' "path-named function with a tab and an empty comment between () and the body: refused"
+d=$(cfix fc_3 '/usr/bin/curl() # x\nif true; then echo H; fi' '["curl"]'); expm caught "$d" 'function' "path-named function with a comment before an if body: refused"
+d=$(cfix fc_4 '/usr/bin/curl()\n\n# one\n  # two\n\n{ echo H; }' '["curl"]'); expm caught "$d" 'function' "path-named function with blank lines and several comment lines before the body: refused"
+d=$(cfix fc_5 'function /usr/bin/curl # x\n{ echo H; }' '["curl"]'); expm caught "$d" 'function' "function /usr/bin/curl with a comment before the body: refused"
+d=$(cfix fc_hd 'cat >/dev/null <<E; /usr/bin/curl()\nx\nE\n{ echo H; }\n/usr/bin/curl u' '["curl"]'); expm caught "$d" 'function' "path-named function whose body follows a pending here-document: refused (seat A round 4)"
+d=$(cfix fc_eol '/usr/bin/curl()' '["curl"]'); expm caught "$d" 'function' "a path word followed by () at the end of the line is a definition whatever comes next: refused"
+d=$(cfix fc_word 'echo see /usr/bin/curl() here' '["curl"]'); expm ok "$d" - "a path word with () followed by an ordinary word is no definition bash accepts"
+d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
 d=$(cfix ff_text_str 'echo "see /sendto() here"' '[]'); expm ok "$d" - "a string holding an absolute-path word and () but no function body is no definition (bash would not accept it as one)"
 d=$(cfix ff_call 'f() { /usr/bin/mktemp -d x; }\n( f )' '["mktemp"]'); expm ok "$d" - "a call of a fixed-path tool inside a subshell is accepted"
@@ -3439,7 +3449,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1411
+EXPECT=1420
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

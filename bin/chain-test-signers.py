@@ -1115,7 +1115,7 @@ TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 # redirected through PATH. (2) A python interpreter may be handed the isolation flags -I and -B (each at most once, separate words) before the script it runs; any other option, a
 # combined flag, -c, -m, stdin or an unlisted script stays refused.
 FIXED_DIRS = ("/usr/bin/", "/bin/", "/usr/local/bin/")
-FUNC_BY_PATH = re.compile(r"(?<![^\s;&|{}()!`])(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=\"'$`]*)[ \t]*\([ \t]*\)[ \t\n]*(?:\{|\(|if\b|while\b|until\b|for\b|select\b|case\b|\[\[))")
+FUNC_BY_PATH = re.compile(r"(?<![^\s;&|{}()!`])(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=\"'$`]*)[ \t]*\([ \t]*\)(?=[ \t]*(?:\n|\Z|#|\{|\(|if\b|while\b|until\b|for\b|select\b|case\b|\[\[)))")
 FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
 PY_ISOLATION = ("-I", "-B")
 def fixed_tool(w, tools):
