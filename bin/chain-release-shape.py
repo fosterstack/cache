@@ -33,6 +33,8 @@ MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-
 DOWN = {"witness-build", "witness-rebuild", "witness-check", "witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"}   # Build's and Rebuild's real artifact names (AC17)
 VERIFY_PAIRS = {"witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "witness-rebuild": "witness-rebuild",
                 "witness-check": "witness-check", "witness-check-arm64": "witness-check/witness-arm64", "check-results": "check-results", "provenance": "provenance"}   # what release-verify reads, and where
+RELEASE_PAIRS = dict(VERIFY_PAIRS, **{"dist": "dist", "images": "images", "apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm",
+                                      "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm"})   # the release job: the nine above, then what the later steps use
 UP = {"release-evidence", "witness-release", "witness-release-verify"}
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
@@ -154,7 +156,7 @@ def verify_job(j):
     if got != sorted(VERIFY_PAIRS.items()):
         bad.append("verify job: its downloads must be exactly these nine artifact/path pairs, each once and spelled exactly (the action trims whitespace from a path, so nothing else may reach the uploaded directory): %s" % got)
     if has_expression(j.get("steps")):
-        bad.append("verify job: no step may hold an expression (${{ }}): a protected step carries no expression and no explicit credential binding; the checkout action's default token use and Witness's identity token are the job's only token uses")
+        bad.append("verify job: no step may hold an expression (${{ }}): a protected step carries no expression and no explicit credential binding; the checkout action's default token use and Witness's identity token are token uses that no expression or binding in these steps accounts for")
     return bad
 
 
@@ -227,6 +229,9 @@ def stage(path):
     # REQ-CHAIN-007-AC16: Check's two uploads meet where bin/chain-verify.py check-list reads them: witness-check/ holds witness-scanners, witness-acceptance and
     # witness-runtime (artifact witness-check), and the arm64 leg's separate artifact witness-check-arm64 lands in witness-check/witness-arm64/
     dl = {(x.get("with") or {}).get("name"): (x.get("with") or {}).get("path") for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@")}
+    rgot = sorted((((x.get("with") or {}).get("name")), ((x.get("with") or {}).get("path"))) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@"))
+    if rgot != sorted(RELEASE_PAIRS.items()):
+        bad.append("the release job: its downloads must be exactly these fifteen artifact/path pairs, each once and spelled exactly (the action trims whitespace from a path, and the job's upload holds the Witness record directories): %s" % rgot)
     if dl.get("witness-check") != "witness-check":
         bad.append("artifact witness-check must be downloaded to witness-check, got %r" % dl.get("witness-check"))
     if dl.get("admission-baseline") != "witness-build":
