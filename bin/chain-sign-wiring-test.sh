@@ -3310,6 +3310,14 @@ d=$(crr ml_o "${H}y=\"\${v:-\$(echo \""$'\na")}" ; /tmp/evil ; z="\n"\n'); expm 
 d=$(crr ml_p "${H}y=\"\$(echo a"$'\nb)" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'absolute path' "a line that begins inside a \$( ) inside a quote and closes both"
 d=$(crr ml_q "${H}y=\"\$(echo '"$'\na\')" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'absolute path' "the same with a single quote inside the \$( )"
 d=$(crr ml_r "${H}y=\"\$(echo a"$'\nb)" ; echo ok\n'); expm ok "$d" - "control: the same without a command after it"
+# seat B, PR 439 round 4: after a carried assignment context closes, the next word is the COMMAND (y=$(...) EVIL runs EVIL); after a carried argument context it is an operand
+d=$(crr ml_s "${H}y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment with a multi-line \$( ): the word after the closing ) is the command"
+d=$(crr ml_t "${H}z=\`"$'\n:\n` /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment with multi-line backticks: the word after them is the command"
+d=$(crr ml_u "${H}x=\$(cat <<F"$'\nbody\nF\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment with a heredoc in a multi-line \$( )"
+d=$(crr ml_v "${H}x=\$("$'\n# c\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment with a comment line inside a multi-line \$( )"
+d=$(crr ml_w "${H}y=\"\$("$'\n:\n)" /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment with a quoted multi-line \$( ): the word after the closing quote is the command"
+d=$(crr ml_x "${H}echo \$("$'\n:\n) /tmp/out.txt\n'); expm ok "$d" - "control: the word after a multi-line \$( ) that is an ARGUMENT is an operand, not a command"
+d=$(crr ml_y "${H}echo 'a"$'\nb\' "/tmp/out.txt" > /tmp/o\n'); expm ok "$d" - "control: the word after a multi-line quote that is an argument is an operand"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3472,7 +3480,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1435
+EXPECT=1442
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
