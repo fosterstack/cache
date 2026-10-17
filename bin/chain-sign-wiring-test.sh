@@ -2925,6 +2925,16 @@ kc ws_bad32 'read -r {GITHUB_WORKSPACE,X} </dev/null\nbash "$GITHUB_WORKSPACE/bi
 # a parent that changes the variable and then runs a listed child with no prefix of its own is refused too
 kc ws_bad33 'export GITHUB_WORKSPACE=/tmp/x\nbash bin/build-apk.sh' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad34 'GITHUB_WORKSPACE=/tmp/x bash bin/build-apk.sh' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad35 'n=GITHUB_; m=WORKSPACE\nexport A=1 "$n$m=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad36 'n=GITHUB_; m=WORKSPACE\nexport \\\n "$n$m=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad37 'n=GITHUB_; m=WORKSPACE\ngetopts a "$n$m" -a\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad38 'n=GITHUB_W; m=ORKSPACE\ndeclare "$n$m=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad39 'n=GITHUB_W\nexport "${n}ORKSPACE=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad40 'n=GITHUB_\nunset X "${n}WORKSPACE"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad41 'n=GITHUB_\nexport {"${n}WORKSPACE",X}=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad42 'n=GITHUB_\na[${n}WORKSPACE=1]=x\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad43 'n=GITHUB_\n[[ ${n}WORKSPACE=1 -eq 1 ]]\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad44 'a=WOR; b=KSP; c=ACE\nexport "GITHUB_$a$b$c=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 ko r5_ok2 '2>&1 cp x y'
 ko r5_ok3 'echo a > out; cat out'
 # (6) the reviewed text starts at the first assignment or redirection of the simple command
@@ -3402,7 +3412,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1370
+EXPECT=1380
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

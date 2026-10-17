@@ -47,11 +47,11 @@ def jload(path):
 
 WORKSPACE_ROOT = re.compile(r"(?<![^\s;&|(){}<>`\"'=,])\$(?:GITHUB_WORKSPACE|\{GITHUB_WORKSPACE\})/")   # the runner's checkout root, written as the variable and a slash, at the START of a word (an exact variable name: GITHUB_WORKSPACEX does not match; bin/$GITHUB_WORKSPACE/x and ./$GITHUB_WORKSPACE/x do not either)
 WORKSPACE_PLAIN = re.compile(r"\$GITHUB_WORKSPACE(?![A-Za-z0-9_])|\$\{GITHUB_WORKSPACE\}")   # the only forms in which a listed script may name the variable: a plain read
-WORKSPACE_BUILT = re.compile(r"\$\{!|\bprintf\s+-\w*v|\b(?:declare|typeset|local)\s+-\w*n|\b(?:export|readonly|declare|typeset|local|unset|read|mapfile|readarray|getopts|let|eval)\b(?:\s+-\S+)*\s+[\"']?[A-Za-z_0-9]*\$|\(\([^\n]*\$")   # a name built at run time, or a form that sets, unsets or reads into a variable by a computed name
+WORKSPACE_PIECE = re.compile(r"[A-Z]{3,}")   # an upper-case run that is a piece of WORKSPACE: a name can be built from pieces only if a script holds them
 def workspace_touched(body):
     """Does this script do anything with GITHUB_WORKSPACE but read it plainly (set, export, unset, read into, default-expand, brace-expand, build the name)?"""
     rest = WORKSPACE_PLAIN.sub("", body)
-    return "GITHUB_WORKSPACE" in rest or (bool(WORKSPACE_BUILT.search(body)) and re.search(r"(?<![A-Z])(?:WORKSPACE|WORKSPAC|WORK|SPACE)(?![A-Z])|GITHUB_\$|GITHUB_\{", rest) is not None)   # a computed name can reach it only if the script holds an upper-case piece of the name
+    return "GITHUB_WORKSPACE" in rest or any(r in "WORKSPACE" for r in WORKSPACE_PIECE.findall(rest))   # a name built at run time (any builtin that takes a variable name) needs a piece of it in the text
 
 
 def read_script(path):
