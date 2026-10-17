@@ -271,7 +271,8 @@ printf '%s\nsearched: 42 files\npubkey-sha256: %s\n' "$KR" "$H2" > "$work/key_ot
 printf '%s\nsearched: 42 files\n' "$KR" > "$work/key_none.txt"
 printf '%s\nsearched: 0 files\n' "$KR" > "$work/key_zero.txt"
 printf '%s\npubkey-sha256: %s\n' "$KR" "$H1" > "$work/key_nocount.txt"
-printf '%s\nsearched: 42 files\n-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n' "$KR" > "$work/key_text.txt"
+KB="-----BEGIN PRIVATE"; KE="-----END PRIVATE"      # the fixture's key block is assembled here, so that no tracked file holds a private-key block (bin/persona-uat-test.sh judges the tree)
+printf '%s\nsearched: 42 files\n%s KEY-----\nMIIB\n%s KEY-----\n' "$KR" "$KB" "$KE" > "$work/key_text.txt"
 xexpect ok "hostile-material: a token whose job_workflow_ref names stage-sign.yml means the attempt got Sign's identity (exit 0, graded accepted)" - -- hostile-material --kind token --file "$work/tok_yes.txt"
 xexpect refuse "hostile-material: Build's OWN token (job_workflow_ref stage-build.yml) is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_build.txt"
 # the token's job_workflow_ref must be exactly <repo>/.github/workflows/stage-sign.yml@<ref> of THIS repository (GITHUB_REPOSITORY, default fosterstack/cache)

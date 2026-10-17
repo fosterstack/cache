@@ -144,7 +144,7 @@ _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version 
 def tree_files(root, rev):
     """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
     def wanted(n):
-        return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
+        return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or re.search(r"(^|/)action\.ya?ml$", n)
                 or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
                 or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
     out = {}
@@ -153,7 +153,9 @@ def tree_files(root, rev):
             if n and wanted(n):
                 try:
                     out[n] = open(f"{root}/{n}").read()
-                except OSError:
+                except OSError as e:
+                    if n == PERSONA_TOOLS:
+                        raise RuntimeError(f"{n} is tracked but cannot be read ({e.strerror}): its images would go unchecked")
                     continue
                 if len(out[n]) > MAX_FILE:
                     raise RuntimeError(f"{n} is too large to read safely")
@@ -175,6 +177,38 @@ def _strip_tag(name):
     """name:tag -> name (a colon after the last slash is a tag, a colon before it is a registry port)."""
     head, _, tail = name.rpartition("/")
     return (head + "/" if head else "") + tail.split(":")[0]
+
+
+PERSONA_IMAGE = re.compile(r"(?:[a-z0-9][a-z0-9.-]*(?::[0-9]+)?/)?(?:[a-z0-9._-]+/)*[a-z0-9._-]+(?::[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")      # [registry[:port]/]path/name[:tag]@sha256:<digest>
+PERSONA_TOOLS = "bin/persona-uat-tools.json"   # the images the persona UAT driver runs, by digest; no workflow names them, so the inventory reads the file itself (REQ-SUP-001-AC2)
+
+
+def _persona_tool_items(path, text):
+    """One image item per entry of the persona UAT tools file ({"<tool>": "<image>@sha256:<digest>", ...}). A file that is not JSON, not an object, or holds a value that is not a string is
+    an error (exit 2 of the check): an image we cannot read is never skipped. A value without a digest is kept as a tag-only item, so the age check fails it."""
+    def pairs(kv):
+        d = {}
+        for k, v in kv:
+            if k in d:
+                raise ValueError(f"the key {k!r} appears twice")
+            d[k] = v
+        return d
+    try:
+        d = json.loads(text, object_pairs_hook=pairs)
+    except ValueError as e:
+        raise RuntimeError(f"{path} is not JSON: {e}")
+    if not isinstance(d, dict) or not d:
+        raise RuntimeError(f"{path} is not a non-empty object of tool names and image references")
+    out = []
+    for k in sorted(d):
+        if not k.strip() or not isinstance(d[k], str) or not d[k].strip():
+            raise RuntimeError(f"{path}: the name {k!r} or its value is not an image reference string")
+        if re.search(r"(?i)sha256", d[k]) and not PERSONA_IMAGE.fullmatch(d[k].strip()):
+            raise RuntimeError(f"{path}: the value of {k!r} is not exactly <image>[:tag]@sha256:<64 lowercase hex>")
+        it = _image_item(d[k], k)
+        it.src = (path, hashlib.sha256(f"{k}={d[k]}".encode("utf-8", "replace")).hexdigest())
+        out.append(it)
+    return out
 
 
 def _image_item(ref, label=""):
@@ -677,6 +711,8 @@ def inventory(files):
                 _step({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found, {})
                 for it in found[before:]:
                     it.src = (path, lid)
+        elif path == PERSONA_TOOLS:
+            found = _persona_tool_items(path, text)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
             found = [Item("tool", "file:" + path, "(file)")]
             found[0].raw = path   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
