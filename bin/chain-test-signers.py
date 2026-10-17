@@ -67,8 +67,107 @@ def strip_line(l):
         prev_ws = ch.isspace()
     return l                                  # unbalanced quotes: do not guess where a comment starts
 
+HEREDOC_WORD = re.compile(r"[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|\"([A-Za-z_][A-Za-z0-9_]*)\"|\\([A-Za-z_][A-Za-z0-9_]*)|([A-Za-z_][A-Za-z0-9_]*))(?=[ \t;&|<>)]|$)")
+
+def prev_ok(l, i, ch):
+    """A shell word starts at i with ch c or e and ends at a blank, ; & | ) or the end (so `case` and `esac` are words, not parts of one)."""
+    if ch == "c": return l[i:i + 4] == "case" and l[i + 4:i + 5] in (" ", "\t")
+    if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
+    return False
+
+def strip_lines(lines, base=None):
+    """([code line], [error]) for the physical lines of a shell text, read as bash reads them (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). A stack of open
+    contexts is carried across lines: a single quote, a double quote, an ANSI-C $'..', $( ), $(( )), ${ }, $[ ], a backtick pair and a ( ) group; inside
+    $( ), a backtick pair and a ( ) group the text is read as shell again. A heredoc body is data and opens no quote. A heredoc is started only by a <<
+    in plain shell text (not in a quote, ${ }, $(( )) or $[ ]) that names a plain delimiter (a word, or one in '..', "..", or after a backslash).
+    A line that begins inside a quote, ${ }, $(( )) or $[ ] is kept whole (it is never read as a comment) and a `#` line there is an error. Errors
+    (fail closed: what the check cannot read is refused, never guessed): a context or a heredoc still open at the end, a << inside $(( )) or $[ ], a <<
+    whose delimiter is not plain, a heredoc started on a line that leaves a quote open, a single quote inside a ${ } that is inside double quotes."""
+    out, errs = [], []
+    st, hd = ([base] if base else []), None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented, quoted)] still to be read inside a heredoc body
+    DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
+    cont = base == "hb"                                       # the previous line ends in a backslash: bash joins this line to it
+    for n, l in enumerate(lines):
+        if hd is not None:
+            if hd[0][2]: out.append(strip_line(l))                           # a quoted delimiter: the body is data
+            else:                                                            # an unquoted body still runs $( ) and backticks, # or no #: keep it whole, and refuse what runs on past the line
+                out.append(l)
+                if strip_lines([l], "hb")[1] or re.search(r"(?<!\\)(?:\\\\)*\\$", l):
+                    errs.append("line %d: an unquoted heredoc body line that opens a substitution it does not close, or ends in a backslash, is not resolved" % (n + 1))
+            if (l.lstrip("\t") if hd[0][1] else l) == hd[0][0]: hd = hd[1:] or None
+            continue
+        if cont: pass                                  # a joined line: a # at its start is inside a word, and the line is kept whole
+        elif st and st[-1] in DATA + ("bt",) and l.lstrip().startswith("#"):
+            errs.append("line %d: a # line inside a quote or ${ } that is still open from an earlier line (bash reads it as part of the word, not as a comment)" % (n + 1))
+        elif not (st and st[-1] in DATA + ("bt",)) and l.lstrip().startswith("#"):
+            out.append(""); continue
+        esc = prev_ws = False
+        cut = skip = None
+        pend = []                                      # heredocs opened on this line, in plain shell text
+        for i, ch in enumerate(l):
+            if skip == i: skip = None; prev_ws = False; continue            # the second character of a two-character opener
+            if esc: esc = False; prev_ws = False; continue
+            top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
+            if ch == "c" and l[i:i + 5] == "case\\" and top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{"):
+                errs.append("line %d: case followed by a backslash is not resolved (bash reads case\\ + one character as an ordinary word, or joins the next line)" % (n + 1))
+            if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
+                if ch == "c": st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
+                if l[i:i + 4] == "esac" and top == "case": st.pop(); skip = i + 3; continue
+            if top == "sq":
+                if ch == "'": st.pop()
+            elif top == "ansi":
+                if ch == "\\": esc = True
+                elif ch == "'": st.pop()
+            elif ch == "\\": esc = True
+            elif top == "dq" and ch == '"': st.pop()
+            elif top not in ("dq", "hb") and ch == "'":
+                if top == "brace" and len(st) > 1 and st[-2] == "dq":
+                    errs.append("line %d: a single quote inside ${ } inside double quotes is not resolved" % (n + 1))
+                else: st.append("sq")
+            elif top == "hb" and ch == '"': pass
+            elif ch == '"': st.append("dq")
+            elif ch == "$" and nxt == "'" and top not in ("dq", "hb"): st.append("ansi"); skip = i + 1
+            elif ch == "$" and nxt == "(" and l[i + 2:i + 3] == "(": st.append("arith"); skip = i + 1
+            elif ch == "$" and nxt == "(": st.append("cmd"); skip = i + 1
+            elif ch == "$" and nxt == "{": st.append("brace"); skip = i + 1
+            elif ch == "$" and nxt == "[" and top not in ("dq", "hb"): st.append("brk"); skip = i + 1
+            elif ch == "`":
+                if top == "bt": st.pop()
+                else: st.append("bt")
+            elif top in ("dq", "hb"): pass
+            elif ch == "}" and top == "brace": st.pop()
+            elif ch == "]" and top == "brk": st.pop()
+            elif ch == ")" and top == "arith" and nxt == ")": st.pop(); skip = i + 1
+            elif ch == ")" and top == "case": pass
+            elif ch == ")" and top in ("cmd", "paren", "bt"): st.pop()
+            elif ch == "(" and nxt == "(" and top not in ("arith", "brk", "brace"): st.append("arith"); skip = i + 1
+            elif ch == "(" and top not in ("arith", "brk", "brace"): st.append("paren")
+            elif ch == "<" and nxt == "<" and l[i - 1:i] != "<" and l[i + 2:i + 3] != "<":
+                if top in ("arith", "brk"):
+                    errs.append("line %d: a << inside $(( )) or $[ ] is a shift or a heredoc and is not resolved" % (n + 1))
+                elif top == "bt":
+                    errs.append("line %d: a << inside backticks is not resolved (bash reads the backtick text on its own)" % (n + 1))
+                elif top != "brace":
+                    tab = l[i + 2:i + 3] == "-"
+                    m = HEREDOC_WORD.match(l, i + 2 + tab)
+                    if m: pend.append((m.group(1) or m.group(2) or m.group(3) or m.group(4), tab, m.group(4) is None))
+                    else: errs.append("line %d: a << whose delimiter is not a plain word is not resolved" % (n + 1))
+                skip = i + 1
+            elif ch == "#" and i > 0 and prev_ws and top not in DATA and top != "bt":      # inside backticks bash ends the comment at the closing backtick: the line is kept whole
+                cut = i; break
+            prev_ws = ch.isspace()
+        cont = esc and cut is None
+        out.append(l if cut is None else l[:cut])
+        if pend:
+            if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
+            if st and st[-1] in ("sq", "dq", "ansi"): errs.append("line %d: a heredoc is started on a line that leaves a quote open and is not resolved" % (n + 1))
+            else: hd = pend
+    if st[1:] if base else st: errs.append("a quote or a %s is still open at the end of the script" % st[-1])
+    if hd is not None: errs.append("a heredoc is still open at the end of the script")
+    return out, errs
+
 def strip(text):
-    return "\n".join(strip_line(l) for l in text.splitlines())
+    return "\n".join(strip_lines(text.split("\n"))[0])
 
 class DuplicateKey(Exception): pass
 
@@ -1173,6 +1272,8 @@ def scan_script(path, text, row, rows, base):
     entry {rule, text, why} waives the FIRST finding with exactly that rule and exactly that text, and nothing else: a second finding
     with the same text, a different text, or a different rule stays a finding. An entry that waives nothing is itself an error. Findings
     that set PATH, BASH_ENV ... are never waived here (`env_mentions` is the only exception for those)."""
+    if re.search("[\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029]", text):     # Python splits lines on these, bash does not: a # after one would be read as a comment line here and as plain text there
+        return ["%s: contains a line separator that bash does not read as a line end (VT, FF, FS, GS, RS, NEL, LS or PS)" % path]
     if "\r" in text:                               # bash reads a CR as part of a word: no waiver applies, nothing else is judged
         return ["%s: contains a carriage return, which bash reads as part of a word" % path]
     fnd = []                                       # (rule or None, exact text, message, physical line index or None); rule None = never waived
@@ -1190,7 +1291,8 @@ def scan_script(path, text, row, rows, base):
     if bl and bl[-1] == "": bl.pop()
     exotic = len(body.splitlines()) != len(bl)                        # another line separator: line numbers cannot be trusted (fail closed: not waivable)
     starts, i_ = [], 0                                                # first physical body line of each logical (continuation-joined) line
-    pcode = [strip_line(l_) for l_ in body.splitlines()]
+    pcode, qerrs = ([strip_line(l_) for l_ in body.splitlines()], []) if py else strip_lines(body.splitlines())   # a Python file has docstrings and prose quotes: the shell quote model is for shell only
+    for q in qerrs: add(None, "", "%s: %s" % (path, q))
     while i_ < len(pcode):
         starts.append(i_)
         while i_ + 1 < len(pcode) and len(pcode[i_]) - len(pcode[i_].rstrip("\\")) in range(1, len(pcode[i_]) + 1) and (len(pcode[i_]) - len(pcode[i_].rstrip("\\"))) % 2 == 1:
