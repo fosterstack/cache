@@ -1239,7 +1239,7 @@ def scan_script(path, text, row, rows, base):
     if bl and bl[-1] == "": bl.pop()
     exotic = len(body.splitlines()) != len(bl)                        # another line separator: line numbers cannot be trusted (fail closed: not waivable)
     starts, i_ = [], 0                                                # first physical body line of each logical (continuation-joined) line
-    pcode, qerrs = strip_lines(body.splitlines())
+    pcode, qerrs = ([strip_line(l_) for l_ in body.splitlines()], []) if py else strip_lines(body.splitlines())   # a Python file has docstrings and prose quotes: the shell quote model is for shell only
     for q in qerrs: add(None, "", "%s: %s" % (path, q))
     while i_ < len(pcode):
         starts.append(i_)

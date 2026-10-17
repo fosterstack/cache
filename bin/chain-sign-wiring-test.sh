@@ -3215,7 +3215,8 @@ d=$(crr sl_i "${H}x=\$'a\\'b'"$'\necho ok\n'); expm ok "$d" - "strip_line: contr
 d=$(crr sl_j "${H}cat <<EOF"$'\ndon'"'t"$'\n# x\nEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a heredoc body is data, an apostrophe and a # line in it open no quote"
 d=$(crr sl_k "${H}cat <<'EOF'"$'\n# x '"'"' y\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data"
 d=$(crr sl_l "${H}cat <<-EOF"$'\n\tit'"'s"$'\n\tEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a <<- heredoc ends at its tab-indented delimiter"
-d=$(crr sl_m "${H}echo \$((1<<EOF))"$'\nx=\'\n# \'; /tmp/evil\nEOF\n'); expm caught "$d" 'still open\|cannot' "strip_line: a << inside (( )) is no heredoc: the quote after it is still judged"
+d=$(crr sl_m "${H}echo \$((1<<EOF))"$'\nx=\'\n# \'; /tmp/evil\nEOF\n'); expm caught "$d" 'not resolved' "strip_line: a << inside (( )) is no heredoc: the quote after it is still judged"
+d=$(crr sl_n $'#!/usr/bin/env python3\nx = "it\'s"\n# it\'s fine\n\'\'\'doc\n# it\'s\n\'\'\'\n'); expm ok "$d" - "strip_line: control: a Python file is not read with the shell quote model (apostrophes in prose and docstrings)"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3377,7 +3378,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1345
+EXPECT=1346
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
