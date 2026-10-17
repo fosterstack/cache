@@ -81,7 +81,7 @@ def single_quoted_spans(body):
             elif c == ")" and st == "p":
                 if depth[-1] == 0: stack.pop(); depth.pop()
                 else: depth[-1] -= 1
-            elif c == "#" and st != "b" and (i == 0 or body[i - 1] in " \t\n;&|("):
+            elif c == "#" and st != "b" and (i == 0 or body[i - 1] in " \t\n;&|()<>"):
                 e = body.find("\n", i); i = n if e < 0 else e; continue
         elif st == "d":
             if c == "\\": i += 2; continue
