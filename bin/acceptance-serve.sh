@@ -5,6 +5,8 @@
 # Used by the Check acceptance wrapper (REQ-CHAIN-006-AC5). The Maven password below is the suite's fixture credential, the one its
 # settings.xml step writes; it protects nothing.
 set -euo pipefail
+LGROOT=$PWD
+lg() { (cd "$LGROOT" && sh bin/loopback-get.sh "$@"); }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 suite=${1:-} what=${2:-}
 case "$suite:$what" in
   gradle:main) name=fscache-acc port=18095 env=() ;;
@@ -17,7 +19,7 @@ esac
 [ -n "${IMAGE_REF:-}" ] || { echo "acceptance-serve: IMAGE_REF is not set" >&2; exit 2; }
 docker run -d --name "$name" "${env[@]}" -p "127.0.0.1:$port:8080" "$IMAGE_REF"
 for _ in $(seq 1 20); do
-  curl -sf "http://localhost:$port/healthz" && exit 0
+  lg -sf "http://localhost:$port/healthz" && exit 0
   sleep 0.5
 done
 echo "candidate $name never became healthy" >&2

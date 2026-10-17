@@ -131,7 +131,7 @@ PYD
 mkdig() { python3 "$work/mkdig.py" "$1"; }
 # ---- the throw-away tree and the fake tools ---------------------------------------------------------------------------------
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
-cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$fx/bin/" 2> /dev/null || true
+cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh "$fx/bin/" 2> /dev/null || true
 mkdir -p "$fx/.vex"; cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
 D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
 for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
@@ -525,7 +525,7 @@ ART=(check-artifacts.sh --digests digests.json --images images --archives dist -
 arun() { # arun [VAR=val ...] -- SCRIPT ARGS : the artifact check in its own tree with the artifact fakes first on PATH
   local envs=(FAKE_NONE=1); while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
   rm -rf "$work/fakedir"; mkdir -p "$work/fakedir"; cp "$fa/server.py" "$work/fakedir/server.py"; : > "$work/log"; rc=0
-  cp "$root"/bin/check-artifacts.sh "$root"/bin/check-image-platforms.py "$root"/bin/check-bind.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$fa/bin/" 2> /dev/null || true
+  cp "$root"/bin/check-artifacts.sh "$root"/bin/check-image-platforms.py "$root"/bin/check-bind.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/loopback-get.sh "$fa/bin/" 2> /dev/null || true
   out=$( (cd "$fa" && env "${envs[@]}" PATH="$fake2:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$work/fakedir" bash "bin/$1" "${@:2}") 2>&1) || rc=$?
 }
 aok() { local l=$1; shift; arun "$@"; if [ "$rc" = 0 ]; then ok "$l"; else bad "$l -> rc=$rc: ${out:0:200}"; fi; }
