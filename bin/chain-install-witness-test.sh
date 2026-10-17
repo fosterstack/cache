@@ -153,7 +153,7 @@ gvins "govulncheck: no tools/govulncheck module at all is refused" "$gv/repo-nom
 gvins "govulncheck: a tools/govulncheck/vendor directory is refused (vendor mode does not check contents against go.sum), and nothing is installed" "$gv/repo-vendor" "$gv/dest" "vendor.*PIPELINE failure|PIPELINE failure.*vendor"
 gvins "govulncheck: a failing build is a pipeline failure and installs nothing" "$gv/repo" "$gv/dest" "build.*PIPELINE failure|PIPELINE failure.*build" GV_BUILD_RC=1
 gvins "govulncheck: a built binary that reports another version than the module pins is refused" "$gv/repo" "$gv/dest" "version.*PIPELINE failure|PIPELINE failure.*version" GV_REPORTS=v9.9.9
-# the pin is ONE version in two places that Dependabot moves separately (it bumps tools/govulncheck/go.mod and go.sum; ci.yml's `go install ...@vX` is by hand): the
+# the pin is ONE version in two places that Dependabot moves separately (it bumps tools/govulncheck/go.mod and go.sum; the install line in ci.yml is by hand): the
 # equality is a test, so a bump of either one alone is red (ruling G; the module has its own Dependabot entry)
 gvpin_ok() { # gvpin_ok GOMOD GOSUM CIYML: the module pins golang.org/x/vuln at a version, go.sum holds its h1, ci.yml installs that same version, no replace/exclude
   local gm=$1 gs=$2 ci=$3 pin
@@ -184,7 +184,7 @@ else bad "govulncheck: a go.sum without the pin's hash was accepted"; fi
 sed "s/govulncheck@$GV_PIN/govulncheck@$GV_PIN-rc1/" "$root/.github/workflows/ci.yml" > "$gv/eq/ci-suffix.yml"
 if ! gvpin_ok "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$gv/eq/ci-suffix.yml"; then ok "govulncheck: a ci.yml that installs $GV_PIN-rc1 while the module pins $GV_PIN is red (the version token is compared whole)"
 else bad "govulncheck: a prerelease suffix on the install token was accepted"; fi
-{ printf '# go install golang.org/x/vuln/cmd/govulncheck@%s\n' "$GV_PIN"; sed "s/govulncheck@$GV_PIN/govulncheck@v9.9.9/" "$root/.github/workflows/ci.yml"; } > "$gv/eq/ci-comment.yml"
+{ printf '# the pin: golang.org/x/vuln/cmd/govulncheck@%s\n' "$GV_PIN"; sed "s/govulncheck@$GV_PIN/govulncheck@v9.9.9/" "$root/.github/workflows/ci.yml"; } > "$gv/eq/ci-comment.yml"
 if ! gvpin_ok "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$gv/eq/ci-comment.yml"; then ok "govulncheck: the pinned version only in a comment while the install runs another is red"
 else bad "govulncheck: a comment holding the version satisfied the equality"; fi
 sed "s/govulncheck@$GV_PIN/govulncheck@v9.9.9 # govulncheck@$GV_PIN/" "$root/.github/workflows/ci.yml" > "$gv/eq/ci-inline.yml"

@@ -334,7 +334,7 @@ st s_if "AC2 an if: other than the mode on the Witness step" "release Witness st
        '      - name: apk under Witness\n        if: always()\n'
 st s_shell "AC2 a shell: override on the Witness step" "Witness step may carry" '      - name: apk under Witness\n' \
        '      - name: apk under Witness\n        shell: bash -c "{0}"\n'
-st s_two "AC2 a second command in the Witness step" "exactly the one line" 'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: |\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\n          pip install requests'
+st s_two "AC2 a second command in the Witness step" "exactly the one line" 'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: |\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\n          echo second'
 st s_direct "AC2 a direct witness run in a stage file (every stage goes through bin/witnessed.sh)" "witness run" \
        'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: witness run --step apk -- timeout 540 bash bin/build-stage-apk.sh'
 st s_kind   "AC2 the apk job running the assemble script" "exactly the one line" 'bin/build-stage-apk.sh' 'bin/build-stage-assemble.sh'
