@@ -31,7 +31,10 @@
     },
     {
       "path": "bin/archive-verify.py",
-      "tools": [],
+      "tools": [
+        "at",
+        "command"
+      ],
       "runs": [],
       "signs": false,
       "reason": "reads the archive pointer and verifies the archive artifact and each file's sha256 and size against it (run by bin/archive-pull.sh)",
