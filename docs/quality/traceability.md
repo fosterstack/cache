@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 97 |
 | Acceptance criteria | 451 |
 | Release-blocking ACs | 126 |
-| ACs with mapped evidence | 428 |
+| ACs with mapped evidence | 430 |
 | Release-blocking ACs with mapped evidence | 126 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
@@ -905,7 +905,7 @@ Every release shall publish the VEX three ways, all generated from the one OpenV
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement, scoped by CVE and image digest, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | 1 item(s) |
+| REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement that names a package, scoped by CVE, image digest and that package, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC2 | Given the three VEX forms; when they are compared; then they cover exactly the same statements | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC4 | Given documentation of the Google VEX upload; when it is published; then it says the upload is a preview feature | inspection |  | approved | 1 item(s) |
@@ -923,9 +923,9 @@ docs/using-our-vex.md shall ship in the same release as the three VEX forms, nev
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-011-AC1 | Given docs/using-our-vex.md; when a release is cut; then it ships in the same release as the rule-10 files, never before | inspection |  | approved | none mapped |
-| REQ-SCAN-011-AC2 | Given the guide; when it is read; then for each scanner it gives which file, where it lives in each release, how to verify it is ours with the release's existing signing, the exact command, what it does in the customer's account, how to stay current (including removing a suppression when a statement turns affected), and what to do for an unlisted scanner | inspection |  | approved | none mapped |
+| REQ-SCAN-011-AC2 | Given the guide; when it is read; then for each scanner it gives which file, where it lives in each release, how to verify it is ours with the release's existing signing, the exact command, what it does in the customer's account, how to stay current (including removing a suppression when a statement turns affected), and what to do for an unlisted scanner | inspection |  | approved | 1 item(s) |
 | REQ-SCAN-011-AC3 | Given every command in the guide; when the live test runs; then it worked exactly as written | ci-workflow |  | approved | none mapped |
-| REQ-SCAN-011-AC4 | Given the guide; when it is reviewed; then it names no competitor and claims nothing beyond what ships | inspection |  | approved | none mapped |
+| REQ-SCAN-011-AC4 | Given the guide; when it is reviewed; then it names no competitor and claims nothing beyond what ships | inspection |  | approved | 1 item(s) |
 
 ### REQ-SCAN-012 — Live tests
 

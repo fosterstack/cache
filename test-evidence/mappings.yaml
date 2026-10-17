@@ -1530,3 +1530,9 @@ mappings:
   - ac: REQ-CHAIN-007-AC20
     evidence:
       - { type: shell-test, ref: "bin/chain-release-scripts-test.sh" }
+  - ac: REQ-SCAN-011-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vex-guide-test.sh" }
+  - ac: REQ-SCAN-011-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/vex-guide-test.sh" }

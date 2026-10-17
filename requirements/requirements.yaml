@@ -2341,7 +2341,7 @@ requirements:
       - id: REQ-SCAN-010-AC1
         given: "a release"
         when: "it is published"
-        then: "it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement, scoped by CVE and image digest, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file"
+        then: "it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement that names a package, scoped by CVE, image digest and that package, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SCAN-010-AC2
