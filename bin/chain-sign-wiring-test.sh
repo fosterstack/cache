@@ -3303,6 +3303,13 @@ d=$(crr ml_i "${H}x=\"\$(echo \""$'\n$(/tmp/evil)" )"\n'); expm caught "$d" 'abs
 d=$(crr ml_j "${H}echo \""$'\nfoo $(/tmp/evil) bar"\n'); expm caught "$d" 'absolute path' "multi-line double quote: text then a \$( ) then the closing quote"
 d=$(crr ml_k "${H}x=\$'"$'\n$(/tmp/evil)\'\necho ok\n'); expm ok "$d" - "control: a \$( ) inside an ANSI-C quote is data (bash runs nothing)"
 d=$(crr ml_l "${H}x='"$'\n$(/tmp/evil)\'\necho ok\n'); expm ok "$d" - "control: a \$( ) inside a single quote is data"
+# seat A, PR 439 round 3: a line that begins inside SEVERAL contexts (a quote in a $( ) in a quote) and closes them: the command reader must start inside all of them
+d=$(crr ml_m "${H}y=\"\$(echo \""$'\na")" ; /tmp/evil ; z="x"\n'); expm caught "$d" 'absolute path' "line closes a quote, a \$( ) and the outer quote, code follows"
+d=$(crr ml_n "${H}y=\"\$(echo \""$'\na")" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'absolute path' "the same, with a quote left open after the code"
+d=$(crr ml_o "${H}y=\"\${v:-\$(echo \""$'\na")}" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'absolute path' "the same through \${ }"
+d=$(crr ml_p "${H}y=\"\$(echo a"$'\nb)" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'absolute path' "a line that begins inside a \$( ) inside a quote and closes both"
+d=$(crr ml_q "${H}y=\"\$(echo '"$'\na\')" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'absolute path' "the same with a single quote inside the \$( )"
+d=$(crr ml_r "${H}y=\"\$(echo a"$'\nb)" ; echo ok\n'); expm ok "$d" - "control: the same without a command after it"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3465,7 +3472,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1429
+EXPECT=1435
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
