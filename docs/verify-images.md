@@ -100,7 +100,7 @@ the policy's, `release-policy.bundle`. Verify one the same way as
 with the pinned identity. The Witness records themselves (the `*-collection.json`
 files) are extra evidence that anyone with Witness can check; the release guide,
 [`docs/verify-release.md`](verify-release.md), does not cover them, and
-[`RELEASING.md`](../RELEASING.md) describes what each record holds.
+[`RELEASING.md`](../RELEASING.md) describes the stages that make them.
 
 ### The release manifest
 
