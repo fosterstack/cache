@@ -176,9 +176,10 @@ def _scopes(statement, digests):
         if not subs:
             out.append((ds, None))
         for sub in subs:
+            # generic packages only: Inspector's filter has no ecosystem, so pkg:npm/foo and pkg:pypi/foo would be one rule (Codex #381 r5/r6)
             # no namespace: the forms carry a package's name only, so pkg:golang/github.com/acme/busybox would widen
             # to every "busybox" (Codex #165 r3, SEC-165-01) — refused, as is a qualifier or subpath
-            pm = re.fullmatch(r"pkg:[a-z]+/([^/@?#]+)(?:@([^?#]+))?", _purl_of(sub, _cve(statement)))
+            pm = re.fullmatch(r"pkg:generic/([^/@?#]+)(?:@([^?#]+))?", _purl_of(sub, _cve(statement)))
             if not pm:                                   # a namespace, qualifier or subpath: not represented
                 raise ValueError("%s: subcomponent %r cannot be represented" % (_cve(statement), sub.get("@id")))
             out.append((ds, (urllib.parse.unquote(pm.group(1)), urllib.parse.unquote(pm.group(2) or ""))))

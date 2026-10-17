@@ -140,6 +140,13 @@ check("OWNER-3 one digest and one package: that digest and that package",
       [x["value"] for x in rc.get("CVE-2099-32", {}).get("ecrImageHash", [])] == [D("8")]
       and rc.get("CVE-2099-32", {}).get("vulnerablePackages", [{}])[0].get("name", {}).get("value") == "busybox", rc.get("CVE-2099-32"))
 check("OWNER-3 the rules are exactly the package-named, suppressible statements", sorted(rc) == ["CVE-2099-30", "CVE-2099-32", "CVE-2099-33"], sorted(rc))
+# Codex #381 r5/r6: Inspector's package filter has no ecosystem, so an ecosystem-specific package (npm, pypi, ...) would give one rule for two different packages: refused
+for kind in ("npm", "pypi", "deb", "golang"):
+    try:
+        V.inspector({"statements": [scoped("CVE-2099-50", "not_affected", [{"@id": REPO_P, "subcomponents": [{"@id": "pkg:%s/foo@1" % kind}]}])]}, IMAGES, "v0.3.0"); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("OWNER-3 a pkg:%s package is refused before any rule is made (only pkg:generic names a package these forms can carry)" % kind, got == "refused", got)
 # the same CVE in two packages, only one of them not affected: the rule names that package alone
 TWO = {"statements": [scoped("CVE-2099-40", "not_affected", BB), scoped("CVE-2099-40", "affected", TOY)]}
 r2p = V.inspector(TWO, IMAGES, "v0.3.0")["filters"]
