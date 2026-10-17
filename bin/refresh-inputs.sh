@@ -174,7 +174,7 @@ drop_branch() { /usr/bin/git -C "$repo" push -q origin --delete "$1" >/dev/null 
 # open pull requests of the branch cannot be read the branch is kept too (a leftover branch is harmless, a closed pull request is not)
 drop_unless_pr() {
   local n
-  n=$(cd "$repo" && /usr/bin/gh pr list --state open --head "$1" --json number 2>/dev/null | /usr/bin/python3 -I -B -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null) || n=unknown
+  n=$(cd "$repo" && /usr/bin/gh pr list --state open --head "$1" --json number -q length 2>/dev/null) || n=unknown
   if [ "$n" = 0 ]; then drop_branch "$1"; else echo "refresh-inputs.sh: kept the branch $1: it has an open pull request, or its pull requests could not be read ($n)" >&2; fi
 }
 cleanup() { local rc=$?; set +e; [ -z "$PENDING_BRANCH" ] || drop_unless_pr "$PENDING_BRANCH"; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status; a branch pushed for a pull request that was not opened (an interrupted run) is removed
