@@ -3324,6 +3324,12 @@ d=$(crr ml_za "${H}case a in a) true"$'\n/tmp/evil ;; esac\n'); expm caught "$d"
 d=$(crr ml_zb "${H}{ ( true"$'\n/tmp/evil ) ; }\n'); expm caught "$d" 'absolute path' "a line closing a group inside { }"
 d=$(crr ml_zc "${H}if ( true"$'\n/tmp/evil ) ; then :; fi\n'); expm caught "$d" 'absolute path' "a line closing a group in an if condition"
 d=$(crr ml_zd "${H}( true"$'\nenv /tmp/x )\n'); expm caught "$d" 'launches another program' "a launcher on a line that closes a multi-line group"
+# seat B, PR 439 round 5: the word that opened a carried context began as an assignment in forms the word-start guess missed
+d=$(crr ml_ze "${H}y=\\"$'\n$(\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a continuation before the opener: y=\\<nl>\$( is y=\$("
+d=$(crr ml_zf "${H}a[\$(:)]=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "an assignment subscript that holds a \$( )"
+d=$(crr ml_zg "${H}a[ 1 ]=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "an assignment subscript with spaces"
+d=$(crr ml_zh "${H}X=1 y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "an assignment after another assignment"
+d=$(crr ml_zi "${H}echo a=b \$("$'\n:\n) /tmp/out\n'); expm ok "$d" - "control: an argument that merely contains an = is not an assignment"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3486,7 +3492,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1447
+EXPECT=1452
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
