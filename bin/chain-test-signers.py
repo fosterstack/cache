@@ -46,6 +46,7 @@ def jload(path):
         return json.load(fh, object_pairs_hook=hook)
 
 WORKSPACE_ROOT = re.compile(r"(?<![^\s;&|(){}<>`\"'=,])\$(?:GITHUB_WORKSPACE|\{GITHUB_WORKSPACE\})/")   # the runner's checkout root, written as the variable and a slash, at the START of a word (an exact variable name: GITHUB_WORKSPACEX does not match; bin/$GITHUB_WORKSPACE/x and ./$GITHUB_WORKSPACE/x do not either)
+WORKSPACE_TOUCHED = re.compile(r"(?<![${])GITHUB_WORKSPACE|\$\{GITHUB_WORKSPACE[^}]")   # the name anywhere but as a plain read ($GITHUB_WORKSPACE or ${GITHUB_WORKSPACE}): an assignment, export, unset, read, declaration or a default expansion
 
 
 def read_script(path):
@@ -1262,6 +1263,10 @@ def scan_script(path, text, row, rows, base):
             if name in SHELL_INTERP or kind == "interp":
                 first = c.operands[0] if c.operands else ""
                 ws = WORKSPACE_ROOT.match(first)                # "$GITHUB_WORKSPACE/<exact listed path>": a script that moves its directory names the helper from the checkout root
+                if ws and WORKSPACE_TOUCHED.search(body):       # round 4: the name must still be the runner's own: any use but a plain read is refused
+                    add("script-name", span, "%s: the variable GITHUB_WORKSPACE is set, unset, read into or expanded with a default in this script, so %r no longer names the checkout root" % (path, first)); continue
+                if ws and any(span[max(0, m.start() - 1):m.start()] == "\\" or "'" in span[:m.start()] for m in re.finditer(r"\$\{?GITHUB_WORKSPACE", span)):
+                    ws = None                                   # round 4: in a single quote or after a backslash the shell passes the text itself, not the checkout root
                 fn = first[ws.end():] if ws else (first[2:] if first.startswith("./") else first)
                 if any(op.startswith("<") for op, _t in c.redirs) or not first or first.startswith("-") or fn not in runs:
                     add("script-name", span, "%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))

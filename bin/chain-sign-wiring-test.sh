@@ -2896,6 +2896,18 @@ kc ws_bad7 'bash "./${GITHUB_WORKSPACE}/bin/build-apk.sh"' 'handed' '["bash"]' '
 kc ws_bad8 'bash "bin/$GITHUB_WORKSPACE/build-apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad9 'bash "bin/${GITHUB_WORKSPACE}/build-apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad10 'bash "bin/build-$GITHUB_WORKSPACE/apk.sh"' 'handed' '["bash"]' '["bin/build-apk.sh"]'
+# the variable must still be the runner's: a script that sets, exports, unsets or reads into it, or names it in a single quote or after a backslash, is refused (round 4)
+kc ws_bad11 'GITHUB_WORKSPACE=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad12 'export GITHUB_WORKSPACE=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad13 'readonly GITHUB_WORKSPACE=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad14 'unset GITHUB_WORKSPACE\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad15 'read GITHUB_WORKSPACE\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad16 ': "${GITHUB_WORKSPACE:=/tmp}"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad17 "bash '\$GITHUB_WORKSPACE/bin/build-apk.sh'" 'handed' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad18 "bash '\${GITHUB_WORKSPACE}/bin/build-apk.sh'" 'handed' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad19 'bash \$GITHUB_WORKSPACE/bin/build-apk.sh' 'handed' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad20 'local GITHUB_WORKSPACE=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+ko ws_ok3 'cd "$GITHUB_WORKSPACE"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'
 ko r5_ok2 '2>&1 cp x y'
 ko r5_ok3 'echo a > out; cat out'
 # (6) the reviewed text starts at the first assignment or redirection of the simple command
@@ -3373,7 +3385,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1344
+EXPECT=1355
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
