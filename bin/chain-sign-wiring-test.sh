@@ -3256,6 +3256,17 @@ d=$(crr sl_zu "${H}: x # a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: 
 d=$(crr sl_zv "${H}: \"\$(case"$'\ta in a) echo "x # c" ;; esac)" ; /tmp/evil'$'\n'); expm caught "$d" 'absolute path' "strip_line: case followed by a tab is a case (seat B, PR 436 round 5)"
 d=$(crr sl_zw "${H}x=\"\$(case\\ y)\""$'\ny=" #$(env echo MARK >&2)"\n: esac;#)"\n'); expm caught "$d" 'case followed by a backslash' "strip_line: case followed by a backslash is refused, not read as a case (seat A, PR 436 round 5 verification)"
 d=$(crr sl_zx "${H}x=\$(case\\"$'\n a) echo 1 ;;\nesac)\n'); expm caught "$d" 'case followed by a backslash' "strip_line: case followed by a backslash-newline is refused"
+# a case inside a $( ) inside double quotes: the command-position lexer closes the $( ) at the case arm's ), so what follows is never read (REQ-CHAIN-001-AC1; advisor Oct 17, found by seat B of PR 436)
+d=$(crr dq_a "${H}x=\"\$(case a in a) echo hi ; /tmp/evil ;; esac)\""$'\n'); expm caught "$d" 'inside double quotes' "case in quoted \$( ): the reproducer is refused"
+d=$(crr dq_b "${H}x=\"\$(case"$'\ta in a) echo hi ; /tmp/evil ;; esac)"'$'\n'); expm caught "$d" 'inside double quotes' "case in quoted \$( ): a tab after case"
+d=$(crr dq_c "${H}x=\"\$(echo \$(case a in a) /tmp/evil ;; esac))\""$'\n'); expm caught "$d" 'inside double quotes' "case in quoted \$( ): nested in a second \$( )"
+d=$(crr dq_d "${H}x=\"\`case a in a) /tmp/evil ;; esac\`\""$'\n'); expm caught "$d" 'inside double quotes' "case in quoted backticks"
+d=$(crr dq_e "${H}x=\"\$(echo \"\$(case a in a) /tmp/evil ;; esac)\")\""$'\n'); expm caught "$d" 'inside double quotes' "case in a \$( ) quoted inside another quoted \$( )"
+d=$(crr dq_f "${H}x=\$(case a in a) echo hi ;; esac)"$'\necho ok\n'); expm ok "$d" - "control: an unquoted case in \$( ) is read as before"
+d=$(crr dq_g "${H}case a in a) echo hi ;; esac"$'\necho ok\n'); expm ok "$d" - "control: a top-level case"
+d=$(crr dq_h "${H}(case a in a) echo hi ;; esac)"$'\necho ok\n'); expm ok "$d" - "control: a case in a subshell"
+d=$(crr dq_i "${H}x=\"\$(echo hi)\""$'\necho ok\n'); expm ok "$d" - "control: a quoted \$( ) without a case"
+d=$(crr dq_j "${H}x=\"case a in a) \$(echo hi) ;; esac\""$'\necho ok\n'); expm ok "$d" - "control: the word case inside plain double quotes, no substitution around it"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3418,7 +3429,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1388
+EXPECT=1398
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
