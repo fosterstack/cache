@@ -54,7 +54,8 @@ else
   echo "not the real witness tarball either" > "$work/rel/v${VER:-0.12.0}/witness_${VER:-0.12.0}_linux_arm64.tar.gz"
   for tool_ in COSIGN WITNESS CRANE; do   # the release URL of each tool names the pinned version literally: the two must agree
     pinned_=$(sed -n "s/^${tool_}_VER=\([0-9.]*\).*/\1/p" "$sut" | head -1)
-    if [ -n "$pinned_" ] && grep -q "releases/download/v${pinned_}/" <(grep -i "${tool_}\|$(printf '%s' "$tool_" | tr 'A-Z' 'a-z')" "$sut"); then ok "$tool_: the release URL names the pinned version $pinned_"; else bad "$tool_: the release URL does not name the pinned version '${pinned_}'"; fi
+    lines_=$(grep -i "${tool_}\|$(printf '%s' "$tool_" | tr 'A-Z' 'a-z')" "$sut" | grep 'releases/download/'); total_=$(grep -c . <<< "$lines_"); good_=$(grep -c "releases/download/v${pinned_}/" <<< "$lines_")
+    if [ -n "$pinned_" ] && [ "$total_" -ge 2 ] && [ "$total_" = "$good_" ]; then ok "$tool_: every release URL ($total_, one per architecture) names the pinned version $pinned_"; else bad "$tool_: $good_ of $total_ release URLs name the pinned version '${pinned_}'"; fi
   done
   check "an unknown tool is still refused" 1 "unknown scanner.*PIPELINE failure" -- bash "$sut" bogus "$work/bin"
   check "witness checksum mismatch (amd64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$sut" witness "$work/bin"
@@ -65,7 +66,7 @@ else
   amd=$(grep -E 'witness:x86_64\|witness:amd64' "$sut" | grep -oE '[0-9a-f]{64}' | head -1)
   arm=$(grep -E 'witness:aarch64\|witness:arm64' "$sut" | grep -oE '[0-9a-f]{64}' | head -1)
   if [ "${VER:-}" = 0.12.0 ] && [ "$amd" = 543d05898731fe5b9c176443ec596a0242bd27f0b327d73aff60f6f7398b7dd0 ] && [[ "$arm" =~ ^[0-9a-f]{64}$ ]] && [ "$arm" != "$amd" ]; then ok "the pins: version 0.12.0, the amd64 sha256 the harness spike recorded, a different arm64 sha256"; else bad "the pins: version='${VER:-}' amd64='${amd:0:16}' arm64='${arm:0:16}'"; fi
-  if grep -Eq 'WITNESS_(SHA256|SUM|CHECKSUM)[^=]*[:-]|\$\{WITNESS_(SHA256|SUM|CHECKSUM)' "$sut"; then bad "the script lets the environment override the witness checksum"; else ok "there is no environment override of a checksum (the only hook is WITNESS_BASE_URL)"; fi
+  if grep -Eq 'WITNESS_(SHA256|SUM|CHECKSUM)[^=]*[:-]|\$\{WITNESS_(SHA256|SUM|CHECKSUM)' "$sut"; then bad "the script lets the environment override the witness checksum"; else ok "there is no environment override of a checksum (the release URL is fixed in the script)"; fi
 fi
 # ---- the Go toolchain (Codex A r3 F4, advisor): `bash bin/install-scanner.sh go [dest-dir]` -----------------------------------------------------------------
 # The exact go<ver>.linux-<arch>.tar.gz of go.mod's `toolchain` line (the `go` line only when the file has no toolchain line), pinned by a committed sha256
@@ -106,7 +107,7 @@ else
   gocheck "go: a failed download is refused" "$gwork/mod-ok" "download failed.*PIPELINE failure" INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/nope"
   gocheck "go: no go.mod is refused" "$gwork/mod-none" "go\\.mod.*PIPELINE failure|PIPELINE failure.*go\\.mod|no go\\.mod" INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
   [ ! -e "$gwork/bin/fscache-go" ] && ok "go: a failed install leaves no toolchain" || bad "go: a failed install left $gwork/bin/fscache-go"
-  if grep -Eq 'GO_(SHA256|SUM|CHECKSUM)[^=]*[:-]|\$\{GO_(SHA256|SUM|CHECKSUM|VER|VERSION):?[-=]|GOVERSION=|GOTOOLCHAIN=auto' "$sut"; then bad "go: the script lets the environment override the checksum or the version"; else ok "go: there is no environment override of a checksum or of the version (the only hook is GO_BASE_URL)"; fi
+  if grep -Eq 'GO_(SHA256|SUM|CHECKSUM)[^=]*[:-]|\$\{GO_(SHA256|SUM|CHECKSUM|VER|VERSION):?[-=]|GOVERSION=|GOTOOLCHAIN=auto' "$sut"; then bad "go: the script lets the environment override the checksum or the version"; else ok "go: there is no environment override of a checksum or of the version (the release URL is fixed in the script)"; fi
 fi
 # ---- govulncheck (advisor Oct 12, ruling G): `bash bin/install-scanner.sh govulncheck [dest-dir]` --------------------------------------------------------------
 # golang/vuln publishes no release binaries (its tags carry no assets), so the tool is a Go MODULE pinned by go.sum h1 hashes in the committed module
