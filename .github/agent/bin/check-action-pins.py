@@ -2579,9 +2579,21 @@ def _unsafe_downloads(text):
             queue += inner
             cut = re.sub(r"&>>", ">>", cut)                   # `cmd &> file` is a redirection of cmd: the split at & must not detach it
             cut = re.sub(r"&>|>\|", ">", cut)
-            cut = re.sub(r"(?<![\w&>])(\d*)>&(?=[ \t]*[^\s\d&>-])", r"\1>", cut)    # `cmd >& file` writes the file; `>&2`, `2>&1` and `>&-` duplicate or close a descriptor
+            cut = re.sub(r"(?<![\w&>])(\d*)>&(?![ \t]*(?:\d+|-)(?=[\s;&|)]|$))", r"\1>", cut)    # `cmd >& file` writes the file; `>&2`, `2>&1` and `>&-` duplicate or close a descriptor
             for chunk in _split_commands(cut):
                 chunk = re.sub(r"\$'([^']*)'", r"'\1'", chunk)       # an ANSI-C quoted word is a literal word here (its escapes are not read)
+                named = re.search(r"(?<![\w./-])(?:curl|wget|aria2c)(?![\w-])", chunk)
+                if named:
+                    import shlex
+                    try:
+                        shlex.split(chunk)
+                    except ValueError:
+                        found.append((chunk.strip(), "a quote this parser cannot read: the words of the download cannot be told apart"))
+                        continue
+                    outer = [x for x in _redirect_targets(chunk) if x != "/dev/null"]
+                    if outer and not any(_base(w.strip("\"'")) in DOWNLOADERS for w in _tokens(chunk)):
+                        found.append((chunk.strip(), "a command that holds a downloader (sh -c, eval, a quoted program) has its output redirected to %s" % outer[0]))
+                        continue
                 toks = _tokens(chunk)
                 for n, t in enumerate(toks):
                     if _base(t.strip("\"'")) in DOWNLOADERS:
