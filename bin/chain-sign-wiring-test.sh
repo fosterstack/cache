@@ -3330,6 +3330,15 @@ d=$(crr ml_zf "${H}a[\$(:)]=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolu
 d=$(crr ml_zg "${H}a[ 1 ]=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "an assignment subscript with spaces"
 d=$(crr ml_zh "${H}X=1 y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "an assignment after another assignment"
 d=$(crr ml_zi "${H}echo a=b \$("$'\n:\n) /tmp/out\n'); expm ok "$d" - "control: an argument that merely contains an = is not an assignment"
+# seat A, PR 439 round 5: the assignment word's start must follow quotes, escapes, ${ } and continuations; and a nested context takes its word from inside the enclosing substitution
+d=$(crr ml_zj "${H}y=\"a b\"\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment word with a quoted space before the opener"
+d=$(crr ml_zk "${H}y='a;b'\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment word with a single-quoted ; before the opener"
+d=$(crr ml_zl "${H}y=\${v:-a b}\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment word with \${ } holding a space before the opener"
+d=$(crr ml_zm "${H}y=a\\ b\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment word with an escaped space before the opener"
+d=$(crr ml_zn "${H}y=a\\"$'\nb$(\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment word continued across a backslash-newline"
+d=$(crr ml_zo "${H}y=\"(\"\""$'\n" /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment word of two quoted parts, the second multi-line"
+d=$(crr ml_zp "${H}echo \$("$'\ny="\n" /tmp/evil\n)\n'); expm caught "$d" 'absolute path' "an assignment opened inside a substitution that is itself an argument"
+d=$(crr ml_zq "${H}echo \"\$("$'\ny="\n" /tmp/evil\n)"\n'); expm caught "$d" 'absolute path' "the same inside a double-quoted substitution"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3492,7 +3501,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1452
+EXPECT=1460
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
