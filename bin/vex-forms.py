@@ -5,13 +5,14 @@ Generated at release time from the ONE OpenVEX file (.vex/fosterstack-cache.open
 release's images (REQ-SCAN-010-AC5): exactly the two variants production and fips, each an index digest and its
 linux/amd64 and linux/arm64 children. No registry read, no network, no cloud call, no clock:
   - an Amazon Inspector suppression-rule file: {"filters": [...]}, one `create-filter --cli-input-json` document per
-    suppressible statement scope (not_affected, fixed), scoped by CVE, by the image digests the statement covers and,
-    for a package-scoped statement, by that package and version; the guide applies it with GUIDE_INSPECTOR_COMMAND;
+    suppressible statement scope (not_affected, fixed) that names a package, scoped by CVE, by the image digests the
+    statement covers and by that package (and version where the statement gives one); a statement that names no package
+    has no rule, so the same CVE in another package is never hidden (owner Oct 16, handoff 0482); the guide applies it with GUIDE_INSPECTOR_COMMAND;
   - a CSAF 2.0 VEX file (csaf_vex) carrying every OpenVEX statement about this release's images, each with its own
     scope, in the shape `gcloud artifacts vulnerabilities load-vex` reads (applied with GUIDE_GOOGLE_COMMAND; a preview
     feature; loading is proven by rule 12's live test).
 "The same statements" (advisor's words): the CSAF file carries every OpenVEX statement; the Inspector file carries one
-rule per suppressible statement (not_affected, fixed) and none for affected or under_investigation.
+rule per suppressible, package-named statement (not_affected, fixed) and none for affected or under_investigation.
 Our own pipeline keeps filtering against the OpenVEX file itself (rule 4); these forms are for customers.
 
 The digest file (AC5, AC6; advisor step 5, Oct 11, handoff 0389): the generator checks its SHAPE AND KEY SET ONLY:
@@ -30,9 +31,12 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}")             # used with fullmatch on
 CSAF_STATUS = {"not_affected": "known_not_affected", "fixed": "fixed", "affected": "known_affected",
                "under_investigation": "under_investigation"}
 SUPPRESSIBLE = ("not_affected", "fixed")
-# Codex #165 r1 SEC-165-03: fail on a missing file or a failed call, never report success
-GUIDE_INSPECTOR_COMMAND = ("set -o pipefail; jq -ce '.filters[]' <file> | while read -r f; do "
-                           "aws inspector2 create-filter --cli-input-json \"$f\" || exit 1; done")
+# Codex #165 r1 SEC-165-03: fail on a missing file or a failed call, never report success; a valid file with no rule (every statement affected or
+# under investigation) is a no-op that succeeds, so jq has no -e (it exits 4 on no output; a file without a filters list still fails: jq cannot iterate it)
+# One ( … ) subshell (Sonnet #167 r3, R3-01): the macOS default shell runs a pipeline's last stage in the current shell,
+# so a bare `| while …; do … || exit 1; done` would close the reader's terminal; pipefail stays inside it too
+GUIDE_INSPECTOR_COMMAND = ("(set -o pipefail; jq -c '.filters[]' <file> | while read -r f; do "
+                           "aws inspector2 create-filter --cli-input-json \"$f\" || exit 1; done)")
 # Google's loader (gcloud vex_util.ParseVexFile) applies the products of every branch NAMED like --uri's image path, and
 # prefixes https:// once per matching branch — so exactly one branch may match: the one of the digest being loaded,
 # renamed to the customer's own image path; --uri carries that digest, so the notes bind to it (Codex #165 r2, SEC-165-06)
@@ -172,9 +176,10 @@ def _scopes(statement, digests):
         if not subs:
             out.append((ds, None))
         for sub in subs:
+            # generic packages only: Inspector's filter has no ecosystem, so pkg:npm/foo and pkg:pypi/foo would be one rule (Codex #381 r5/r6)
             # no namespace: the forms carry a package's name only, so pkg:golang/github.com/acme/busybox would widen
             # to every "busybox" (Codex #165 r3, SEC-165-01) — refused, as is a qualifier or subpath
-            pm = re.fullmatch(r"pkg:[a-z]+/([^/@?#]+)(?:@([^?#]+))?", _purl_of(sub, _cve(statement)))
+            pm = re.fullmatch(r"pkg:generic/([^/@?#]+)(?:@([^?#]+))?", _purl_of(sub, _cve(statement)))
             if not pm:                                   # a namespace, qualifier or subpath: not represented
                 raise ValueError("%s: subcomponent %r cannot be represented" % (_cve(statement), sub.get("@id")))
             out.append((ds, (urllib.parse.unquote(pm.group(1)), urllib.parse.unquote(pm.group(2) or ""))))
@@ -207,21 +212,21 @@ def inspector(vex, images, version):
             continue
         cve = _cve(st)
         why = st.get("impact_statement") or ("fixed in this release" if st["status"] == "fixed" else st.get("justification", ""))
-        for k, (ds, pkg) in enumerate(_scopes(st, digests)):
-            if not ds:
+        for ds, pkg in _scopes(st, digests):
+            if not ds or pkg is None:                    # no package named: Inspector cannot narrow the rule to it, so no rule (owner Oct 16)
                 continue
             crit = {"vulnerabilityId": [{"comparison": "EQUALS", "value": cve}],
                     "ecrImageHash": [{"comparison": "EQUALS", "value": d} for d in ds]}
-            if pkg is not None:
-                p = {"name": {"comparison": "EQUALS", "value": pkg[0]}}
-                if pkg[1]:
-                    p["version"] = {"comparison": "EQUALS", "value": pkg[1]}
-                crit["vulnerablePackages"] = [p]
+            p = {"name": {"comparison": "EQUALS", "value": pkg[0]}}
+            if pkg[1]:
+                p["version"] = {"comparison": "EQUALS", "value": pkg[1]}
+            crit["vulnerablePackages"] = [p]
+            k = sum(1 for f in filters if f["filterCriteria"]["vulnerabilityId"][0]["value"] == cve)
             filters.append({
                 "name": ("fosterstack-cache-%s-%s%s" % (version, cve, "" if k == 0 else "-%d" % (k + 1)))[:128],
                 "action": "SUPPRESS",
                 "description": ("FosterStack Cache %s VEX: %s is %s%s (%s)" % (
-                    version, cve, st["status"], "" if pkg is None else " in %s %s" % pkg, why))[:512],
+                    version, cve, st["status"], " in %s %s" % pkg, why))[:512],
                 "reason": "FosterStack Cache published VEX statement",
                 "filterCriteria": crit,
             })

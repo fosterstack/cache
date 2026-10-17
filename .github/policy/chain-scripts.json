@@ -141,6 +141,18 @@
       "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
     },
     {
+      "path": "bin/vex-index.py",
+      "tools": [
+        "python3",
+        "at",
+        "command"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
+      "sha256": "71660fbb88c0c317f05cef915717530c5953a651c3483baccb6aa754b3c3507c"
+    },
+    {
       "path": "bin/witnessed.sh",
       "tools": [
         "script",
@@ -229,11 +241,12 @@
         "bin/chain-verify.py",
         "bin/build-archives.py",
         "bin/build-apk.sh",
-        "bin/assemble-image.sh"
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
       ],
       "signs": false,
-      "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json",
-      "sha256": "80219e55402fd8ae50870cf0c23f8bec4a2237d2aeab1b486ae3c12f4e1e914c"
+      "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "b8204607679e636797bedaeae874a22aa2e3240149101b66814b1b5804a7a370"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -259,11 +272,12 @@
         "bin/chain-verify.py",
         "bin/build-archives.py",
         "bin/build-apk.sh",
-        "bin/assemble-image.sh"
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
       ],
       "signs": false,
-      "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's",
-      "sha256": "52eca0cca35acc611ff5ad34142f6c580badee55784097dbb86fc06f13e8782c"
+      "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "2d6917aed16eda8d043c69d66ab16cd41d2a167d577b05940306f3369307ae2e"
     },
     {
       "path": "bin/build-admit.py",
@@ -389,11 +403,12 @@
         "bin/chain-verify.py",
         "bin/build-archives.py",
         "bin/build-apk.sh",
-        "bin/assemble-image.sh"
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
       ],
       "signs": false,
-      "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify)",
-      "sha256": "b1437012bd97d644eeb530b207b6bf9bcc378b952fd2729ba9b67bdebe8279ed"
+      "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "50c16ff497e10b995d846c5fe7ba74ce5a3e97fd921e0efcd5f256fe64cd62ee"
     },
     {
       "path": "bin/build-stage-snapshot-rebuild-apk.sh",
@@ -421,11 +436,12 @@
         "bin/chain-verify.py",
         "bin/build-archives.py",
         "bin/build-apk.sh",
-        "bin/assemble-image.sh"
+        "bin/assemble-image.sh",
+        "bin/vex-index.py"
       ],
       "signs": false,
-      "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot)",
-      "sha256": "388378561dd203bfef362990ee2efba517ba1d22d0b3d9da1898faf457219d1f"
+      "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
+      "sha256": "64392922a2d944a139c2c585b8e86cff0934bab6203c0e9362f1aa24865d0bd4"
     },
     {
       "path": "bin/admission-tag-signer.py",
@@ -954,8 +970,8 @@
         "bin/chain-verify.py"
       ],
       "signs": false,
-      "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no credential exists in this step",
-      "sha256": "f37dc534305a7b2d5380d690a15408edf87fa44e3ee40877e36a10177b17241d",
+      "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
+      "sha256": "9f064b81de90907e21d78f9cdf70eb731feb5c327d5b3fd72101df03448389dd",
       "exceptions": [
         {
           "rule": "deny",
@@ -1028,7 +1044,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "91d4cee0ebb15b8db3a25fd3d0eade9f31ef18bc7dcc0cb1f832d55e2f5d1599",
+      "sha256": "1a9b567cda4d859dfd73a36f842b6bc2e58dbf98f0165a0db12b0fb77ae46fb4",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1098,7 +1114,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "11fe5a78b03035f4631a80618d6781761938c232758451a3ccfb14d2dd3e13b0"
+      "sha256": "7eeee19a6933128d8112965cd25c639f1488c97973b47bde52d4d92aa795cd45"
     },
     {
       "path": "bin/vex-forms.py",
@@ -1110,7 +1126,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "6463dbd0ff912140d6d57b6ce01593c4cd9436dde4995c04a0954c63b811fa0d",
+      "sha256": "32b419557df99ec925b50b9e2b36bf7bd5048a111e93cf177209721eaffd43b6",
       "exceptions": [
         {
           "rule": "deny",
@@ -1524,6 +1540,26 @@
       "signs": false,
       "reason": "cache P4's Go module SBOM: reads vendor/modules.txt and dependency-provenance.json, writes the SBOM; run by bin/build-apk.sh",
       "sha256": "e73acab6d1ecda6aa444861f29bfeebb273e774152dad0a10de861ac5aab6a26"
+    },
+    {
+      "path": "bin/vendor-provenance.py",
+      "tools": [
+        "at",
+        "command"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, step release-sign (run by bin/release-sign.sh): checks and builds the dependency provenance of the vendored tree and writes vendor-evidence.json for the release to sign (REQ-VEND-001); offline: every input is a file, it reads no environment variable, runs no program and signs nothing",
+      "sha256": "c7dc655ed4236f9eb1e228523766e474e0386027173f04b4407864caf6361eff",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "# the three Go pseudo-version forms, whole-string (cmd/go's pseudoVersionRE): vX.0.0-TS-REV, vX.Y.Z-0.TS-REV and vX.Y.Z-pre.0.TS-REV, each with an",
+          "line_sha256": "704fdce73fefee04a009df1e448bff8a66ac56674db8b9bb4d93786a6a0950a7",
+          "count": 1,
+          "why": "a comment naming Go's own cmd/go (where the pseudo-version pattern comes from); prose, never a command run here"
+        }
+      ]
     }
   ],
   "ambient_env": [

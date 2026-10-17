@@ -29,6 +29,8 @@ def st(cve, status, just=None):
     s = {"vulnerability": {"name": cve, "@id": "https://nvd.nist.gov/vuln/detail/" + cve}, "status": status,
          "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}],
          "timestamp": "2026-09-07T12:00:00-04:00"}
+    if status in ("not_affected", "fixed"):           # a suppressible statement names its package (owner Oct 16: an Inspector rule always does)
+        s["products"][0]["subcomponents"] = [{"@id": "pkg:generic/busybox@1.37.0"}]
     if just: s["justification"] = just; s["impact_statement"] = "why " + cve
     if status == "affected": s["action_statement"] = "upgrade"
     return s
@@ -103,7 +105,7 @@ try:                                # the real loader's own checks too, when the
         check("the installed gcloud loader's own _Validate accepts the CSAF", True)
 except Exception as e:
     check("the installed gcloud loader's own _Validate accepts the CSAF", False, repr(e))
-check("a statement on the whole image lists every released image product", all(sorted(list(v["product_status"].values())[0]) == sorted(pids) for v in csaf["vulnerabilities"]))
+check("a statement on the whole image lists every released image product", all(sorted(list(v["product_status"].values())[0]) == sorted(pids) for v in csaf["vulnerabilities"] if v["cve"] in ("CVE-2099-3", "CVE-2099-4")))
 # --- Codex #165 r1 SEC-165-01: each statement keeps its product and package scope
 def scoped(cve, status, products, just="component_not_present"):
     x = st(cve, status, just if status == "not_affected" else None); x["products"] = products; return x
@@ -117,7 +119,40 @@ check("a package-scoped statement suppresses only that package and version",
       ri.get("CVE-2099-10", {}).get("vulnerablePackages") == [{"name": {"comparison": "EQUALS", "value": "busybox"},
                                                             "version": {"comparison": "EQUALS", "value": "1.37.0"}}], ri.get("CVE-2099-10"))
 check("a statement about another repository's product suppresses nothing here", "CVE-2099-11" not in ri, sorted(ri))
-check("a statement about one digest suppresses that digest only", [x["value"] for x in ri.get("CVE-2099-12", {}).get("ecrImageHash", [])] == [D("8")], ri.get("CVE-2099-12"))
+check("a statement about one digest and no package has no Inspector rule (owner Oct 16: a rule always names the package)", "CVE-2099-12" not in ri, ri.get("CVE-2099-12"))
+# --- owner Oct 16 (handoff 0482): every Inspector rule names the vulnerable package; where a statement names none, the
+# file has no rule for it (the finding stays visible); the same CVE in another package is never hidden
+REPO_P = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+ONEBB = [{"@id": ONE[0]["@id"], "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]
+ANYVER = [{"@id": REPO_P, "subcomponents": [{"@id": "pkg:generic/zlib"}]}]
+TOY = [{"@id": REPO_P, "subcomponents": [{"@id": "pkg:generic/toybox@0.8"}]}]
+PK = {"statements": [scoped("CVE-2099-30", "not_affected", BB), scoped("CVE-2099-31", "not_affected", [{"@id": REPO_P}]),
+                     scoped("CVE-2099-32", "fixed", ONEBB), scoped("CVE-2099-33", "not_affected", ANYVER),
+                     scoped("CVE-2099-34", "affected", TOY)]}
+rp = V.inspector(PK, IMAGES, "v0.3.0")["filters"]
+rc = {r["filterCriteria"]["vulnerabilityId"][0]["value"]: r["filterCriteria"] for r in rp}
+check("OWNER-3 every Inspector rule carries a vulnerablePackages entry with a name", rp and all(
+      r["filterCriteria"].get("vulnerablePackages") and all(p.get("name", {}).get("value") for p in r["filterCriteria"]["vulnerablePackages"]) for r in rp), rp)
+check("OWNER-3 a whole-image statement has no rule, so the CVE stays visible in every package", "CVE-2099-31" not in rc, sorted(rc))
+check("OWNER-3 a package statement without a version names the package only",
+      rc.get("CVE-2099-33", {}).get("vulnerablePackages") == [{"name": {"comparison": "EQUALS", "value": "zlib"}}], rc.get("CVE-2099-33"))
+check("OWNER-3 one digest and one package: that digest and that package",
+      [x["value"] for x in rc.get("CVE-2099-32", {}).get("ecrImageHash", [])] == [D("8")]
+      and rc.get("CVE-2099-32", {}).get("vulnerablePackages", [{}])[0].get("name", {}).get("value") == "busybox", rc.get("CVE-2099-32"))
+check("OWNER-3 the rules are exactly the package-named, suppressible statements", sorted(rc) == ["CVE-2099-30", "CVE-2099-32", "CVE-2099-33"], sorted(rc))
+# Codex #381 r5/r6: Inspector's package filter has no ecosystem, so an ecosystem-specific package (npm, pypi, ...) would give one rule for two different packages: refused
+for kind in ("npm", "pypi", "deb", "golang"):
+    try:
+        V.inspector({"statements": [scoped("CVE-2099-50", "not_affected", [{"@id": REPO_P, "subcomponents": [{"@id": "pkg:%s/foo@1" % kind}]}])]}, IMAGES, "v0.3.0"); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("OWNER-3 a pkg:%s package is refused before any rule is made (only pkg:generic names a package these forms can carry)" % kind, got == "refused", got)
+# the same CVE in two packages, only one of them not affected: the rule names that package alone
+TWO = {"statements": [scoped("CVE-2099-40", "not_affected", BB), scoped("CVE-2099-40", "affected", TOY)]}
+r2p = V.inspector(TWO, IMAGES, "v0.3.0")["filters"]
+check("OWNER-3 the same CVE in two packages, one not affected: one rule, for that package and version only",
+      len(r2p) == 1 and r2p[0]["filterCriteria"]["vulnerablePackages"] == [{"name": {"comparison": "EQUALS", "value": "busybox"},
+                                                                          "version": {"comparison": "EQUALS", "value": "1.37.0"}}], r2p)
 cs = V.csaf(SV, IMAGES, "v0.3.0")
 rel = {r["full_product_name"]["product_id"]: r for r in cs["product_tree"].get("relationships", [])}
 v10 = next(v for v in cs["vulnerabilities"] if v["cve"] == "CVE-2099-10")
@@ -143,7 +178,7 @@ try:
 except ValueError:
     ok = True
 check("a product qualifier the forms cannot represent stops generation (fail closed)", ok)
-mixed = V.inspector({"statements": [scoped("CVE-2099-23", "affected", ONE), scoped("CVE-2099-23", "not_affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache" % D("1").replace(":", "%3A")}])]}, IMAGES, "v0.3.0")
+mixed = V.inspector({"statements": [scoped("CVE-2099-23", "affected", ONE), scoped("CVE-2099-23", "not_affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache" % D("1").replace(":", "%3A"), "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}])]}, IMAGES, "v0.3.0")
 check("disjoint scopes are fine: only the not_affected digest is suppressed",
       [x["value"] for r in mixed["filters"] for x in r["filterCriteria"]["ecrImageHash"]] == [D("1")], mixed)
 # --- the command the guide will print, tested exactly as written against a stub aws (advisor 0077 check 2)
@@ -162,6 +197,14 @@ check("…and fails on a missing file", bad.returncode != 0)
 open(stub, "w").write("#!/bin/sh\nexit 3\n")
 bad = subprocess.run(["bash", "-c", cmd], env=dict(os.environ, PATH=d + ":" + os.environ["PATH"]), capture_output=True)
 check("…and fails when a create-filter call fails", bad.returncode != 0)
+# Codex #381 r1 (P2): a generated file with NO rule (every statement is affected or under investigation) is valid; the command then does nothing and succeeds
+empty = os.path.join(d, "empty.json"); json.dump({"filters": []}, open(empty, "w"))
+open(stub, "w").write('#!/bin/sh\necho "$@" >> "%s/calls-empty"\n' % d)
+ok0 = subprocess.run(["bash", "-c", V.GUIDE_INSPECTOR_COMMAND.replace("<file>", empty)], env=dict(os.environ, PATH=d + ":" + os.environ["PATH"]), capture_output=True)
+check("…and succeeds, calling nothing, for a valid file with no rule", ok0.returncode == 0 and not os.path.exists(os.path.join(d, "calls-empty")), (ok0.returncode, ok0.stderr[-120:]))
+nofilters = os.path.join(d, "nofilters.json"); json.dump({}, open(nofilters, "w"))
+bad = subprocess.run(["bash", "-c", V.GUIDE_INSPECTOR_COMMAND.replace("<file>", nofilters)], env=dict(os.environ, PATH=d + ":" + os.environ["PATH"]), capture_output=True)
+check("…but a file without a filters list is not a generated file and fails", bad.returncode != 0)
 # the Google step: the loader matches a branch name to --uri, so the guide renames the branches to the customer's image
 g = V.GUIDE_GOOGLE_COMMAND
 check("the guide's Google command renames the chosen digest's branch to the image it loads, then loads that file at that digest",
@@ -204,8 +247,8 @@ check("AC5 the forms name exactly the file's six digests and no other image dige
       sorted(digests_in(out) ^ six_of(IMAGES)))
 if r.returncode == 0:
     fi, fc = (json.load(open(os.path.join(out, f))) for f in FORMS)
-    whole = [x for x in fi["filters"] if "vulnerablePackages" not in x["filterCriteria"]]
-    check("AC5 every whole-image Inspector rule's ecrImageHash set is exactly the file's six digests",
+    whole = fi["filters"]                                # every rule names a package; none is digest-limited in SYN
+    check("AC5 every Inspector rule's ecrImageHash set is exactly the file's six digests",
           whole and all({c["value"] for c in x["filterCriteria"]["ecrImageHash"]} == six_of(IMAGES) for x in whole))
     check("AC5 the CSAF branches are exactly the file's six digests",
           sorted(b["product"]["product_identification_helper"]["purl"].split("@", 1)[1].split("?")[0] for b in fc["product_tree"]["branches"])
@@ -307,9 +350,10 @@ rc = V.csaf(real, IMAGES, "v0.3.0")
 want = sorted(s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES))
 check("AC2 the real file: the CSAF carries every statement that applies to this release's images, and no other",
       want and sorted(v["cve"] for v in rc["vulnerabilities"]) == want, (sorted(v["cve"] for v in rc["vulnerabilities"]), want))
-wsup = sorted({s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES) and s["status"] in ("not_affected", "fixed")})
+named = lambda s: any(p.get("subcomponents") for p in s["products"] if "pkg:oci/cache?" in p["@id"] or "pkg:oci/cache@" in p["@id"])   # owner Oct 16: a rule needs a named package
+wsup = sorted({s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES) and s["status"] in ("not_affected", "fixed") and named(s)})
 rcv = sorted({r["filterCriteria"]["vulnerabilityId"][0]["value"] for r in V.inspector(real, IMAGES, "v0.3.0")["filters"]})
-check("AC2 the real file: the Inspector file has a rule for each suppressible statement that applies, and no other", rcv == wsup, (rcv, wsup))
+check("AC2 the real file: the Inspector file has a rule for each suppressible statement that applies and names a package, and no other", rcv == wsup, (rcv, wsup))
 check("the real file's CSAF passes the loader's checks; its busybox statements stay scoped to busybox 1.37.0",
       bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox@1.37.0" for r in rc["product_tree"].get("relationships", [])))
 if src:
