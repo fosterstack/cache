@@ -37,10 +37,13 @@ for g in ("build", "sign"):
         bad.append("%s is not guarded by the gate G (a v* tag push or a dry run): %s" % (g, (jobs.get(g) or {}).get("if")))
 # the dry run's own jobs (sign, hostile-*) hang off the Sign boundary; they are judged by bin/chain-hostile-test.sh. The OLD downstream jobs (scans,
 # acceptance*, authorization, promotion; replaced by PRs 3 and 4) are skipped in a dry run and need a chain job.
-chain = [j for j in jobs if j not in ("decide", "patch-failed", "patch-notes", "build", "sign", "rebuild", "hostile-verify", "hostile-verdict", "rc-refusal")]
+chain = [j for j in jobs if j not in ("decide", "patch-failed", "patch-notes", "build", "sign", "rebuild", "hostile-verify", "hostile-verdict", "rc-refusal", "persona-uat")]   # persona-uat: REQ-UAT-001, an RC-tag-only job after promotion; its own shape is pinned by persona-uat-wiring-test.sh
 for j in chain:
     # a job that needs Sign also carries the positive tag conjunct (bin/chain-hostile-test.sh: a branch run never reaches it)
-    if jobs[j].get("if", "").replace(" ", "") not in ("", "${{!inputs.dry-run}}", "${{startsWith(github.ref,'refs/tags/v')&&!inputs.dry-run}}", "${{!inputs.dry-run&&!contains(github.ref_name,'-rc')}}", "${{startsWith(github.ref,'refs/tags/v')&&!inputs.dry-run&&!contains(github.ref_name,'-rc')}}") or not jobs[j].get("needs"):
+    if jobs[j].get("if", "").replace(" ", "") not in ("", "${{!inputs.dry-run}}", "${{startsWith(github.ref,'refs/tags/v')&&!inputs.dry-run}}", "${{!inputs.dry-run&&!contains(github.ref_name,'-rc')}}", "${{startsWith(github.ref,'refs/tags/v')&&!inputs.dry-run&&!contains(github.ref_name,'-rc')}}",
+                                                 # the cache lane's live test of our VEX files (REQ-SCAN-012): the rc leg after Check, the final leg after Release; each carries the tag conjunct and the dry-run conjunct
+                                                 "${{startsWith(github.ref,'refs/tags/v')&&contains(github.ref_name,'-rc')&&!inputs.dry-run}}",
+                                                 "${{startsWith(github.ref,'refs/tags/v')&&!contains(github.ref_name,'-rc')&&!inputs.dry-run}}") or not jobs[j].get("needs"):
         bad.append("chain job %s is not skipped in a dry run or hangs off nothing" % j)
 dec = jobs.get("decide") or {}
 if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'&&github.event_name!='workflow_dispatch'&&!inputs.dry-run}}":
