@@ -5,22 +5,22 @@
 # the same file names, so each is attached under its architecture's or variant's name.
 set -euo pipefail
 shopt -s nullglob
-if [ -z "${GH_TOKEN:-}" ]; then echo "release-assets: GH_TOKEN is not set" >&2; exit 2; fi
+if [ -z "${GH_TOKEN:-}" ]; then echo "release-assets: GH_TOKEN is unset" >&2; exit 2; fi
 [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-assets: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 rel="$GITHUB_REF_NAME"
 # Everything is staged under its release name in release-upload/. The apks of the two architectures, and the SBOMs and lock files of the two images,
 # have the same file names, so each is staged under its architecture's or variant's name.
-# Round 1 B3: what is attached is what Build recorded and the set is complete, checked before a release is created or anything is staged. The four
+# Round 1 B3: what is attached is what Build recorded and the list is complete, checked before a release is created or anything is staged. The four
 # Linux archives are exactly Build's (digests.json item archive-linux-ARCH / archive-fips-linux-ARCH names the sha256 of fscache_VER_linux_ARCH.tar.gz /
 # fscache-fips_VER_linux_ARCH.tar.gz); both architectures have an apk; the Check records are there to attach.
 for arch in x86_64 aarch64; do
   std=(release-apks/$arch/fscache-[0-9]*.apk); fips=(release-apks/$arch/fscache-fips-*.apk); all=(release-apks/$arch/*.apk)
-  [ "${#std[@]}" = 1 ] || { echo "release-assets: release-apks/$arch must hold exactly one standard apk (fscache-VERSION.apk), it holds ${#std[@]}: the set is incomplete" >&2; exit 1; }
-  [ "${#fips[@]}" = 1 ] || { echo "release-assets: release-apks/$arch must hold exactly one -fips apk (fscache-fips-VERSION.apk), it holds ${#fips[@]}: the set is incomplete" >&2; exit 1; }
+  [ "${#std[@]}" = 1 ] || { echo "release-assets: release-apks/$arch must hold exactly one standard apk (fscache-VERSION.apk), it holds ${#std[@]}: the list is incomplete" >&2; exit 1; }
+  [ "${#fips[@]}" = 1 ] || { echo "release-assets: release-apks/$arch must hold exactly one -fips apk (fscache-fips-VERSION.apk), it holds ${#fips[@]}: the list is incomplete" >&2; exit 1; }
   [ "${#all[@]}" = 2 ] || { echo "release-assets: release-apks/$arch holds ${#all[@]} apks, exactly the two Build attested are attached" >&2; exit 1; }
 done
 for n in scanners acceptance runtime arm64; do
-  [ -f "witness-check/witness-$n/$n-collection.json" ] || { echo "release-assets: the Check record witness-check/witness-$n/$n-collection.json is missing: the set is incomplete" >&2; exit 1; }
+  [ -f "witness-check/witness-$n/$n-collection.json" ] || { echo "release-assets: the Check record witness-check/witness-$n/$n-collection.json is missing: the list is incomplete" >&2; exit 1; }
 done
 python3 bin/release-metadata.py bind-archives --version "${rel#v}" --digests witness-build/digests.json --dist dist
 rm -rf release-upload release-published

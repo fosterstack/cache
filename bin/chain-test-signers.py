@@ -1138,10 +1138,21 @@ def alias_views(text):
     return (a, SUBST.sub("", a))
 ALIAS_USE = re.compile(r"expand_alias|ALIASES|unalias|(?<![A-Za-z0-9_-])alias(?![A-Za-z0-9_-])|POSIXLY_CORRECT|SHELLOPTS|BASHOPTS")   # cache#361 (rounds 5-7): an alias can name a function like a fixed-path program (alias x=$'\x2fusr\x2fbin\x2fcurl'; x() {...}); no listed script uses one. Alias expansion is switched on by shopt expand_aliases or by POSIX mode (set -o posix, POSIXLY_CORRECT, SHELLOPTS)
 SHOPT_W = re.compile(r"(?<![A-Za-z0-9_-])shopt(?![A-Za-z0-9_-])")
-SET_O = re.compile(r"(?<![A-Za-z0-9_-])set[ \t]+[-+]")      # a whole-word set followed by ANY option word: no option shape to guess
-ENABLER = re.compile(r"(?:^|[;&|{}()!])[ \t]*(?:(?:then|do|else|elif|if|while|until|time|-p|[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*|[0-9]*[<>]+&?[^\s;&|]*)[ \t]+)*(?P<cmd>shopt|set)(?=[\s;&|)<>(]|$)(?P<rest>[^\n;&|)]*)", re.M)   # where a command can start; a word inside a comment sentence is not one
-ENABLER_OK = {"shopt": re.compile(r"\s+-[su]\s+(?:nullglob|extglob|globstar|lastpipe|inherit_errexit|nocaseglob|nocasematch)\s*"),
-              "set": re.compile(r"(?:\s+(?:[-+][ceuxfCvEnT]*o\s+(?:pipefail|errexit|nounset|noglob|noclobber|xtrace|errtrace)|[-+][ceuxfCvEnT]+|--(?:\s.*)?))*\s*")}   # the only shopt and set uses a listed script may make; every other option, flag, variable or redirection is refused
+SET_W = re.compile(r"(?<![A-Za-z0-9_-])set(?![A-Za-z0-9_-])")
+SET_ARG = r"[ \t]+(?:[-+][ceuxfCvEnT]*o[ \t]+(?:pipefail|errexit|nounset|noglob|noclobber|xtrace|errtrace)|[-+][ceuxfCvEnT]+|--(?:[ \t]+[^;&|)<>\n]*)?)"
+SET_AFTER = re.compile("(?:" + SET_ARG + r")*[ \t]*(?:[;&|)}\n]|#|\Z)")
+SET_BEFORE = re.compile(r"(?:\A|[\n;&|{(]|(?<![A-Za-z0-9_-])(?:then|do|else))[ \t]*\Z")
+def set_uses(v):
+    """Every whole word `set` in the text that is NOT a plain command of the closed form: right after a command delimiter (line start, ; & | { ( then do else), only closed arguments (-e -u -x ... letters, -o NAME of a short list, or -- and plain words), then a terminator. An anchored whitelist: a prefix, a redirection, an assignment, prose or a string holding the word is refused, never guessed at."""
+    bad = []
+    for m in SET_W.finditer(v):
+        if SET_BEFORE.search(v[:m.start()]) and SET_AFTER.match(v, m.end()): continue
+        a = v.rfind("\n", 0, m.start()) + 1; b = v.find("\n", m.end()); b = len(v) if b < 0 else b
+        bad.append(v[a:b].strip()[:80])
+    return bad
+
+ENABLER = re.compile(r"(?:^|[;&|{}()!])[ \t]*(?:(?:then|do|else|elif|if|while|until|time|-p|[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*|[0-9]*[<>]+&?[^\s;&|]*)[ \t]+)*(?P<cmd>shopt)(?=[\s;&|)<>(]|$)(?P<rest>[^\n;&|)]*)", re.M)   # where a command can start; a word inside a comment sentence is not one
+ENABLER_OK = {"shopt": re.compile(r"\s+-[su]\s+(?:nullglob|extglob|globstar|lastpipe|inherit_errexit|nocaseglob|nocasematch)\s*")}
 FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
 PY_ISOLATION = ("-I", "-B")
 def fixed_tool(w, tools):
@@ -1328,17 +1339,16 @@ def scan_script(path, text, row, rows, base):
         for v in alias_views(logical(text)):
             for m in ALIAS_USE.finditer(v):                                  # "alias" counts only as a whole word (product-and-alias-scoped in a comment is not it)
                 add(None, "", "%s: uses shell aliases or POSIX mode (%s): an alias can give a function the name of a fixed-path program" % (path, m.group(0)))
-            okshopt = okset = 0
+            okshopt = 0
             for m in ENABLER.finditer(v):
                 if not ENABLER_OK[m.group("cmd")].fullmatch(m.group("rest")):
                     add(None, "", "%s: `%s%s` is not one of the listed harmless uses (it could turn on alias expansion)" % (path, m.group("cmd"), m.group("rest").rstrip()))
-                elif m.group("cmd") == "shopt": okshopt += 1
-                elif SET_O.match(m.group("cmd") + m.group("rest")): okset += 1
-            # the backstop, by count: every whole-word shopt, and every `set` followed by an option word, must be one of the matches above (a prefix the ENABLER pattern does not parse, a group, a trap string or prose is refused, not guessed at)
+                else: okshopt += 1
+            # the backstop, by count: every whole-word shopt must be one of the matches above (a prefix the ENABLER pattern does not parse, a group, a trap string or prose is refused, not guessed at)
             if len(SHOPT_W.findall(v)) != okshopt:
                 add(None, "", "%s: the word shopt appears somewhere other than as a plain `shopt -s|-u OPTION` command of the closed list" % path)
-            if len(SET_O.findall(v)) != okset:
-                add(None, "", "%s: `set` with an option appears somewhere other than as a plain command of the closed list (set -o posix turns on alias expansion)" % path)
+            for line in set_uses(v):
+                add(None, "", "%s: the word `set` appears other than as a plain `set` command of the closed form (set -o posix turns on alias expansion; a prefix, a redirection, prose or a string is refused): %s" % (path, line))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for x in protected_env_mentions(path, text, row): add(None, "", x)

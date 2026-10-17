@@ -2782,6 +2782,18 @@ d=$(cfix al_36 'x="a b" set -e -o posix\nx+=1 set +e -o posix\n2> /dev/null set 
 d=$(cfix al_37 '>| f set -u -o posix\n<<< x set -e -o posix\n> /dev/null set -e +o posix' '[]'); expm caught "$d" 'set' ">|, <<< and +o forms behind a prefix: refused"
 d=$(cfix al_38 '> /dev/null set -oposix\n> /dev/null set -x' '[]'); expm caught "$d" 'set' "any set with an option word behind an unparsed prefix is refused whatever its shape"
 d=$(cfix al_39 '# under `set -e`, a failure' '[]'); expm caught "$d" 'set' "prose naming set -e is refused too (reword the comment)"
+# design 4 (advisor ruling Oct 17, after rounds 9-11): any whole word set anywhere in a listed script is refused unless it follows a command delimiter and only closed-list arguments come before a terminator (an anchored whitelist, no shape to guess)
+d=$(cfix st_1 '> /dev/null set 2>/dev/null -o posix' '[]'); expm caught "$d" 'set 2>/dev/null -o posix' "round 11: a redirection between set and its option word: refused"
+d=$(cfix st_2 'x+=1 set >&2 -o posix\n> /dev/null set {fd}>/dev/null -o posix\n<<< x set 2>&1 -o posix\n>| f set >|g -o posix' '[]'); expm caught "$d" 'set' "round 11: prefixes with a redirection after set: refused"
+d=$(cfix st_3 'x=1 set -e -o pipefail' '[]'); expm caught "$d" 'set -e -o pipefail' "an assignment before even a harmless set is refused (the anchored form allows nothing before set but a delimiter)"
+d=$(cfix st_4 'echo a; set -e -o pipefail; echo b\nif x; then set +e; fi\n{ set -u; }\n( set -e )' '[]'); expm ok "$d" - "set after ; then { ( at line start with closed arguments: accepted"
+d=$(cfix st_5 'echo "FOO is not set"' '[]'); expm caught "$d" 'set' "prose or a message with the word set is refused (reword it)"
+d=$(cfix st_6 'set' '[]'); expm ok "$d" - "a bare set command (prints variables) is accepted"
+d=$(cfix st_7 'set -e -- -o posix\nset -- $a $b' '[]'); expm ok "$d" - "set -- and what follows is positional arguments: accepted"
+d=$(cfix st_8 'set -- a >/dev/null' '[]'); expm caught "$d" 'set' "a redirection after set -- is not in the closed form: refused"
+d=$(cfix st_9 'set -o posix' '[]'); expm caught "$d" 'set -o posix' "round 9: the plain POSIX-mode form: refused"
+d=$(cfix st_10 'set -e -o posix' '[]'); expm caught "$d" 'set -e -o posix' "round 10: a plain flag before a separate -o posix: refused"
+d=$(cfix st_11 'set -e   # keep going\nset +e -uo pipefail' '[]'); expm ok "$d" - "a trailing comment after the closed arguments is accepted"
 d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
 d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
@@ -3492,7 +3504,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1459
+EXPECT=1470
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

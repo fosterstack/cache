@@ -4,7 +4,7 @@
 # or the candidate image), and in Check the Check acceptance wrapper starts the candidate from Build's tarball.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
-# step stops the suite. Only errexit and pipefail are set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+# step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
 
 # acceptance.yml, job acceptance-gradle, step 6: gradlew build (cold — populates the remote cache) (working-directory bench/gradle-sample)
@@ -66,8 +66,8 @@ cd bench/gradle-sample
 )
 
 # acceptance.yml, job acceptance-gradle, step 11: assert the exact expected tasks were restored from cache
-# REQ-GRADLE-001-AC1: the EXACT expected task set restored FROM-CACHE
-# — not "at least one". An unexpected miss in this set fails; a task
+# REQ-GRADLE-001-AC1: the EXACT expected task list restored FROM-CACHE
+# — not "at least one". An unexpected miss in this list fails; a task
 # appearing that is not in the list fails too, because it means the
 # sample changed and the expectation file must change with it.
 step_11() (
@@ -78,7 +78,7 @@ sort bench/gradle-sample/expected-from-cache.txt > /tmp/expected-from-cache.txt
 echo "expected:"; cat /tmp/expected-from-cache.txt
 echo "actual:"; cat /tmp/actual-from-cache.txt
 if ! diff -u /tmp/expected-from-cache.txt /tmp/actual-from-cache.txt; then
-  echo "::error::FROM-CACHE task set differs from bench/gradle-sample/expected-from-cache.txt — an unexpected miss or an unlisted task. If the sample changed, change the expectation file in the same PR." >&2
+  echo "::error::FROM-CACHE task list differs from bench/gradle-sample/expected-from-cache.txt — an unexpected miss or an unlisted task. If the sample changed, change the expectation file in the same PR." >&2
   exit 1
 fi
 )

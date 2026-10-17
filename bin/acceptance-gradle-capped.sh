@@ -4,7 +4,7 @@
 # Its last step writes the asserted ACs to $GITHUB_OUTPUT (the results step of acceptance.yml; the Check acceptance wrapper reads it).
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
-# step stops the suite. Only errexit and pipefail are set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+# step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
 # The one Gradle invocation of the three builds below (the sample project's own wrapper, as acceptance.yml ran it).
 capped_build() { ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1; }
@@ -111,7 +111,7 @@ step_19() (
 set -euo pipefail
 (cd /tmp/gradle-capped-b && capped_build | tee /tmp/capped-warm.log) \
   || { echo "::error::second (warm) build against the capped server failed" >&2; exit 1; }
-# (5) The restore set is EXACTLY the small task stored before the
+# (5) The restore list is EXACTLY the small task stored before the
 # 413 (:core:compileJava). module-a must NOT be restored — it
 # re-executes and 413s again — and the summary must read 1 from cache.
 { grep -E '> Task .* FROM-CACHE' /tmp/capped-warm.log || true; } \
@@ -119,7 +119,7 @@ set -euo pipefail
 printf ':core:compileJava\n' > /tmp/capped-warm-expected.txt
 echo "restored FROM-CACHE:"; cat /tmp/capped-warm-from-cache.txt
 if ! diff -u /tmp/capped-warm-expected.txt /tmp/capped-warm-from-cache.txt; then
-  echo "::error::warm restore set is not exactly the pre-stored small task (:core:compileJava)" >&2
+  echo "::error::warm restore list is not exactly the pre-stored small task (:core:compileJava)" >&2
   exit 1
 fi
 if grep -qE '^> Task :module-a:compileJava FROM-CACHE' /tmp/capped-warm.log; then

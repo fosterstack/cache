@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "7249adc2203c65b5baa9d3cf25368692f6c475dbb9abc8fe0ee2b53748c84cbc",
+      "sha256": "a5625f6cb2da0d5a0ba6223d3e9455738c0b357a1a984d47a90f571b308b8429",
       "tools": [
         "at",
         "curl",
@@ -369,7 +369,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
-      "sha256": "7b72a29cda313ec846a94f95ea638fc26dcdc6cf78bcd1921b905ba1b849d81a"
+      "sha256": "dd63810714b7e024842018b7353c1ca9953943d78c62f5f12ab514aa25aa6f6a"
     },
     {
       "path": "bin/build-stage-snapshot-assemble.sh",
@@ -483,7 +483,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "13c15f9217f460863c81595b81ac2bf0cc5513ef09d6b572849bc84659a31b97",
+      "sha256": "ff28939bc293f498968880832fdef0715594340f9d3c09e6f8a9f2cb9da4bf5c",
       "tools": [
         "find",
         "python3",
@@ -578,7 +578,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "202fa186d84242bc4884cfb42509231c76bd74cbdf7e78dea571b31f647f3e5b",
+      "sha256": "202210fa9630bbb49e322fe597a98c0320bf467c6fae399000347a59a3857db7",
       "tools": [
         "at",
         "awk",
@@ -640,7 +640,7 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "f5f037b953cf46c101471971c3374587f0e5c98423ee7fb5d8ad7ebfab63b2d7",
+      "sha256": "aab318ef556e89bc9b4871be6cf4458fc5eb81c562f0af56b0425e8d4c71d1ee",
       "tools": [
         "awk",
         "bash",
@@ -676,7 +676,7 @@
     },
     {
       "path": "bin/acceptance-maven.sh",
-      "sha256": "708495e532ca108f18fbcb12537c27c53b8a2b910e1b055bd714e9f3443dc4cd",
+      "sha256": "92c39c7c22f4c04c7910a0b0f110e0da7acaa7f97961757d9765d161c0505324",
       "tools": [
         "awk",
         "bash",
@@ -690,7 +690,7 @@
     },
     {
       "path": "bin/acceptance-maven-capped.sh",
-      "sha256": "eb986bf18ed450e190325a19f7d739d6ac95e885a288b8d1177f28a1be6c588b",
+      "sha256": "9d5136ab1a7a16188e4e66553fe53fef7ec927560086aac83d0698722ca4266e",
       "tools": [
         "awk",
         "bash",
@@ -703,7 +703,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "b1a084fc272e8de025c1f7bd84790eaf8b73b73f50119e89e426663a821ab639",
+      "sha256": "027a702061878190c65d432329b4ab8150e353a0eb124bbdcb26fa82d1c12abc",
       "tools": [
         "at",
         "awk",
@@ -758,7 +758,7 @@
     },
     {
       "path": "bin/acceptance-k8s.sh",
-      "sha256": "dd77e56e75a10864e60c892dad45ca50de80ca34bd61bb58d4b67eb5862bc2ac",
+      "sha256": "ee6ecf0b05da282b7eae31104c11343c6b28fdfecb92680e678eaf7b40f52661",
       "tools": [
         "at",
         "bash",
@@ -796,7 +796,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "0faec59065857571611a7a57c1e0edf44c6924572f8f5558415b31ad3053b3e0",
+      "sha256": "2b9da56eae7d248dfff7d9a7aba9f2acb3527b57f24f1b5b1a7ce74b0521f9e3",
       "tools": [
         "curl",
         "docker",
@@ -963,7 +963,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (Build/Rebuild comparison and melange sign) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
-      "sha256": "9acc2f0bd89d3651cd4aee5b96d91df170e5efea003a7eecd670c25709b0d480",
+      "sha256": "c9492711e09669c9d8c7ffce59ce35a7350363b3facb99034458da911e332de8",
       "reads_env": [
         "APK_RELEASE_SIGNING_KEY"
       ]
@@ -981,7 +981,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "308369a11710cfc0c81550bbee596aa4fa45ba9a6490043d1a1228346169b264",
+      "sha256": "7562be1b5cbcd9d57a051d309ba07dfad02ccee935e817bb6e645052b29fb8b3",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1004,7 +1004,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "1a9b567cda4d859dfd73a36f842b6bc2e58dbf98f0165a0db12b0fb77ae46fb4",
+      "sha256": "04eadba6c1483964a1a766da09226e69ac9500e7fd7a6af9c36657ba640bd293",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1023,7 +1023,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "e9c4402127e0beaab440d4d0f7d6b7d22ca21182d0324bdb6ba2df81152ccff3",
+      "sha256": "b46bbe571ce4a4146cb3ae2a846e44230f05cf875e88546d4f918e9bbf6c579f",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -1038,7 +1038,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
-      "sha256": "ab5a70151cbc2f3170d36a1b869e676683af50f57fd423720694b0c0885a0808",
+      "sha256": "2b706582f3d46ec1f22e0ebda52f0878376c75e77ccf36212054f58b41e84f9b",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -1391,7 +1391,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "74c79c0513d7b630d9f6c1fb3835a3113aec47223f299ed79bf8c1653440eb3d",
+      "sha256": "5136b1ef162888a4637e4f766eeff9a79762d72bf11e7b1f7ad5008a5c68e6d7",
       "exceptions": [
         {
           "rule": "script-name",
@@ -1433,7 +1433,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "35b917e02c4d377e97e5a6cc57cb4339e7abc1b2daf380fb17ab2b29ee13ed18",
+      "sha256": "069016ac6b8cab75977bf8bc4f3f4137bf5a1caeb8ccef0e3bbd66335b519800",
       "exceptions": [
         {
           "rule": "script-name",
