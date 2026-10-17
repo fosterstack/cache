@@ -2229,7 +2229,7 @@ def stray(root):
     named, bad = set(), []
     for d, dirs, files in os.walk(root):      # the whole tree, any extension or none (prose under docs/, requirements/ and test-evidence/ runs nothing)
         top = os.path.abspath(d) == os.path.abspath(root)      # the prose directories are skipped at the top of the tree only: a docs/ or requirements/ below it is code like any other
-        dirs[:] = [x for x in dirs if x not in (".git", "__pycache__") and not (top and x in ("vendor", "node_modules", "docs", "requirements", "test-evidence"))]
+        dirs[:] = [x for x in dirs if x not in (".git", "__pycache__") and not (top and x in ("docs", "requirements", "test-evidence"))]
         for f in files:
             path = os.path.join(d, f)
             if os.path.islink(path):
