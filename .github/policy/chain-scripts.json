@@ -598,7 +598,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "065af519cbbae26623f14cfe8537c0e52507bdb9e09a21b22d353fcc2be483e4",
+      "sha256": "ff833fa0c9ff3b635e515a50fdc8807a152bbae86ea8e76ea3ab0a31518eba15",
       "tools": [
         "at",
         "awk",
@@ -664,7 +664,7 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "eccc5578b1d076006e6ac9e4152f206ba28b89f25b2de889e57b3624bdbc4fc9",
+      "sha256": "8dfad63b19ce033b742f3b5416a03e945d78731ca143f78d533dfb0f16548e9a",
       "tools": [
         "awk",
         "bash",
@@ -704,7 +704,7 @@
     },
     {
       "path": "bin/acceptance-maven.sh",
-      "sha256": "6a8b2c29e5bd5845d767f49445bd859b25d8cde381d83f56f7f61151e3766726",
+      "sha256": "188be013c89c6f2585cd5a5fb1fbaf3c51aacf5d9bc1a51b7c3e3e6b01674fbc",
       "tools": [
         "awk",
         "bash",
@@ -722,7 +722,7 @@
     },
     {
       "path": "bin/acceptance-maven-capped.sh",
-      "sha256": "bd1aee086c829706cec0e64b302995967361c5317e0bc8f90c380162e3f11324",
+      "sha256": "0514c80abc438d32d8f460a105548da12bf0588fa0fb3bc5bc3368b0b5993ce9",
       "tools": [
         "awk",
         "bash",

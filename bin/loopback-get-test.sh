@@ -18,7 +18,13 @@ export PATH="$work/bin:$PATH" STUB_OUT="$work/args"
 pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
-[ -f "$H" ] || { bad "bin/loopback-get.sh exists"; echo "loopback-get: $pass passed, $failn failed"; exit 1; }
+[ -f "$H" ] || { bad "bin/loopback-get.sh exists"; # the helper function is defined where every step function sees it: at the top level, before the first function whose body is a subshell
+for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh acceptance-serve.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
+  d=$(grep -n '^lg\(in\)\?() ' "$root/bin/$f" | head -1 | cut -d: -f1)
+  fn=$(grep -n '^[a-z_0-9]*() *(' "$root/bin/$f" | head -1 | cut -d: -f1)
+  if [ -n "$d" ] && { [ -z "$fn" ] || [ "$d" -lt "$fn" ]; }; then ok "bin/$f defines its loopback function at the top level"; else bad "bin/$f defines its loopback function inside a step (line ${d:-none}, first step line ${fn:-none})"; fi
+done
+echo "loopback-get: $pass passed, $failn failed"; exit 1; }
 allowed() {   # allowed NAME ARGS...: the helper runs curl
   local name="$1"; shift; rm -f "$STUB_OUT"
   out=$(env -u ACTIONS_ID_TOKEN_REQUEST_URL sh "$H" "$@" 2>&1); rc=$?
@@ -122,6 +128,12 @@ for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh ac
   esac
   if [ "$n" -le "$lim" ]; then ok "bin/$f has no curl outside the loopback helper ($n)"; else bad "bin/$f still names curl $n time(s)"; fi
   grep -q 'loopback-get.sh' "$root/bin/$f" && ok "bin/$f calls the helper" || bad "bin/$f does not call the helper"
+done
+# the helper function is defined where every step function sees it: at the top level, before the first function whose body is a subshell
+for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh acceptance-serve.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
+  d=$(grep -n '^lg\(in\)\?() ' "$root/bin/$f" | head -1 | cut -d: -f1)
+  fn=$(grep -n '^[a-z_0-9]*() *(' "$root/bin/$f" | head -1 | cut -d: -f1)
+  if [ -n "$d" ] && { [ -z "$fn" ] || [ "$d" -lt "$fn" ]; }; then ok "bin/$f defines its loopback function at the top level"; else bad "bin/$f defines its loopback function inside a step (line ${d:-none}, first step line ${fn:-none})"; fi
 done
 echo "loopback-get: $pass passed, $failn failed"
 [ "$failn" = 0 ]
