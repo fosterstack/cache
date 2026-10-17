@@ -3318,6 +3318,12 @@ d=$(crr ml_v "${H}x=\$("$'\n# c\n) /tmp/evil\n'); expm caught "$d" 'absolute pat
 d=$(crr ml_w "${H}y=\"\$("$'\n:\n)" /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment with a quoted multi-line \$( ): the word after the closing quote is the command"
 d=$(crr ml_x "${H}echo \$("$'\n:\n) /tmp/out.txt\n'); expm ok "$d" - "control: the word after a multi-line \$( ) that is an ARGUMENT is an operand, not a command"
 d=$(crr ml_y "${H}echo 'a"$'\nb\' "/tmp/out.txt" > /tmp/o\n'); expm ok "$d" - "control: the word after a multi-line quote that is an argument is an operand"
+# seat A, PR 439 round 4: a line that closes a carried ( ) group or case begins at a command position: the stand-in word must not stick to its first word
+d=$(crr ml_z "${H}( true"$'\n/tmp/evil )\n'); expm caught "$d" 'absolute path' "a line closing a multi-line ( ) group starts a command"
+d=$(crr ml_za "${H}case a in a) true"$'\n/tmp/evil ;; esac\n'); expm caught "$d" 'absolute path' "a line inside a multi-line case arm starts a command"
+d=$(crr ml_zb "${H}{ ( true"$'\n/tmp/evil ) ; }\n'); expm caught "$d" 'absolute path' "a line closing a group inside { }"
+d=$(crr ml_zc "${H}if ( true"$'\n/tmp/evil ) ; then :; fi\n'); expm caught "$d" 'absolute path' "a line closing a group in an if condition"
+d=$(crr ml_zd "${H}( true"$'\nenv /tmp/x )\n'); expm caught "$d" 'launches another program' "a launcher on a line that closes a multi-line group"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3480,7 +3486,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1442
+EXPECT=1447
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
