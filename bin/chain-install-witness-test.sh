@@ -52,6 +52,10 @@ else
   mkdir -p "$work/rel/v${VER:-0.12.0}"
   echo "not the real witness tarball" > "$work/rel/v${VER:-0.12.0}/witness_${VER:-0.12.0}_linux_amd64.tar.gz"
   echo "not the real witness tarball either" > "$work/rel/v${VER:-0.12.0}/witness_${VER:-0.12.0}_linux_arm64.tar.gz"
+  for tool_ in COSIGN WITNESS CRANE; do   # the release URL of each tool names the pinned version literally: the two must agree
+    pinned_=$(sed -n "s/^${tool_}_VER=\([0-9.]*\).*/\1/p" "$sut" | head -1)
+    if [ -n "$pinned_" ] && grep -q "releases/download/v${pinned_}/" <(grep -i "${tool_}\|$(printf '%s' "$tool_" | tr 'A-Z' 'a-z')" "$sut"); then ok "$tool_: the release URL names the pinned version $pinned_"; else bad "$tool_: the release URL does not name the pinned version '${pinned_}'"; fi
+  done
   check "an unknown tool is still refused" 1 "unknown scanner.*PIPELINE failure" -- bash "$sut" bogus "$work/bin"
   check "witness checksum mismatch (amd64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$sut" witness "$work/bin"
   check "witness checksum mismatch (arm64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=aarch64 PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$sut" witness "$work/bin"
