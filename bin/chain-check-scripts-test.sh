@@ -799,7 +799,7 @@ if ! grep -q '^docker' "$work/log"; then ok "AC5 F1 nothing was loaded behind th
 rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
 # ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed.sh and its 9-minute cap -------------------------------------------
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
-cp "$root/bin/witnessed.sh" "$hw/bin/" 2> /dev/null || true
+cp "$root/bin/witnessed.sh" "$root/bin/loopback-get.sh" "$hw/bin/" 2> /dev/null || true
 printf '#!/usr/bin/env bash\necho "step $*" >> "$HW_LOG"\n[ -z "${STEP_FAIL:-}" ] || exit 1\n' > "$hw/bin/step.sh"
 cat > "$hw/fakebin/curl" <<'EOF'
 #!/usr/bin/env bash
@@ -823,7 +823,7 @@ chmod +x "$hw/fakebin/"*
 hrun() { # hrun [VAR=val...] -- STEP SCRIPT ARGS...  (runs in the helper tree, fakes first on PATH)
   local env=(); while [ "$1" != -- ]; do env+=("$1"); shift; done; shift; rc=0
   out=$( (cd "$hw" && env "${env[@]}" PATH="$hw/fakebin:$PATH" HW_LOG="$work/hwlog" HW_ARGV="$work/hwargv" RUNNER_TEMP="$hw/tmp" \
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="http://x/?a=b" bash bin/witnessed.sh "$@") 2>&1) || rc=$?
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="https://x/?a=b" bash bin/witnessed.sh "$@") 2>&1) || rc=$?
 }
 reset_h() { rm -rf "$hw"/witness-*; : > "$work/hwlog"; : > "$work/hwargv"; }
 reset_h; hrun X=1 -- scanners bin/step.sh scanners

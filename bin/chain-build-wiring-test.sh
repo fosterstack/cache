@@ -969,7 +969,7 @@ fi
 # The fake timeout enforces FAKE_TIMEOUT_SECONDS (a short test limit) and logs the limit it was given: the helper must give 540. The fake witness runs the
 # command after `--` and writes its -o record only when the command succeeded, as the real Witness does.
 helper_tree() { # helper_tree DIR HELPER
-  rm -rf "$1"; mkdir -p "$1/bin" "$1/fake" "$1/tmp"; cp "$2" "$1/bin/witnessed.sh"
+  rm -rf "$1"; mkdir -p "$1/bin" "$1/fake" "$1/tmp"; cp "$2" "$1/bin/witnessed.sh"; cp bin/loopback-get.sh "$1/bin/loopback-get.sh"
   cat > "$1/bin/wrapped.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "wrapped $*" >> calls.log
