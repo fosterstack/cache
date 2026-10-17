@@ -111,7 +111,10 @@ def strip_lines(lines, base=None):
             if ch == "c" and l[i:i + 5] == "case\\" and top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{"):
                 errs.append("line %d: case followed by a backslash is not resolved (bash reads case\\ + one character as an ordinary word, or joins the next line)" % (n + 1))
             if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
-                if ch == "c": st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
+                if ch == "c":
+                    if "dq" in st and any(c in ("cmd", "bt", "paren") for c in st[len(st) - 1 - st[::-1].index("dq"):]):
+                        errs.append("line %d: a case inside $( ), backticks or ( ) inside double quotes is not resolved (the command reader closes the group at the case arm's ))" % (n + 1))
+                    st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
                 if l[i:i + 4] == "esac" and top == "case": st.pop(); skip = i + 3; continue
             if top == "sq":
                 if ch == "'": st.pop()
