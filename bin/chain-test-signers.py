@@ -75,7 +75,7 @@ def prev_ok(l, i, ch):
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
-def strip_lines(lines):
+def strip_lines(lines, base=None):
     """([code line], [error]) for the physical lines of a shell text, read as bash reads them (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). A stack of open
     contexts is carried across lines: a single quote, a double quote, an ANSI-C $'..', $( ), $(( )), ${ }, $[ ], a backtick pair and a ( ) group; inside
     $( ), a backtick pair and a ( ) group the text is read as shell again. A heredoc body is data and opens no quote. A heredoc is started only by a <<
@@ -84,12 +84,16 @@ def strip_lines(lines):
     (fail closed: what the check cannot read is refused, never guessed): a context or a heredoc still open at the end, a << inside $(( )) or $[ ], a <<
     whose delimiter is not plain, a heredoc started on a line that leaves a quote open, a single quote inside a ${ } that is inside double quotes."""
     out, errs = [], []
-    st, hd = [], None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented)] still to be read inside a heredoc body
+    st, hd = ([base] if base else []), None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented, quoted)] still to be read inside a heredoc body
     DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
-    cont = False                                       # the previous line ends in a backslash: bash joins this line to it
+    cont = base == "hb"                                       # the previous line ends in a backslash: bash joins this line to it
     for n, l in enumerate(lines):
         if hd is not None:
-            out.append(strip_line(l))
+            if hd[0][2]: out.append(strip_line(l))                           # a quoted delimiter: the body is data
+            else:                                                            # an unquoted body still runs $( ) and backticks, # or no #: keep it whole, and refuse what runs on past the line
+                out.append(l)
+                if strip_lines([l], "hb")[1] or re.search(r"(?<!\\)(?:\\\\)*\\$", l):
+                    errs.append("line %d: an unquoted heredoc body line that opens a substitution it does not close, or ends in a backslash, is not resolved" % (n + 1))
             if (l.lstrip("\t") if hd[0][1] else l) == hd[0][0]: hd = hd[1:] or None
             continue
         if cont: pass                                  # a joined line: a # at its start is inside a word, and the line is kept whole
@@ -114,20 +118,21 @@ def strip_lines(lines):
                 elif ch == "'": st.pop()
             elif ch == "\\": esc = True
             elif top == "dq" and ch == '"': st.pop()
-            elif top != "dq" and ch == "'":
+            elif top not in ("dq", "hb") and ch == "'":
                 if top == "brace" and len(st) > 1 and st[-2] == "dq":
                     errs.append("line %d: a single quote inside ${ } inside double quotes is not resolved" % (n + 1))
                 else: st.append("sq")
+            elif top == "hb" and ch == '"': pass
             elif ch == '"': st.append("dq")
-            elif ch == "$" and nxt == "'" and top != "dq": st.append("ansi"); skip = i + 1
+            elif ch == "$" and nxt == "'" and top not in ("dq", "hb"): st.append("ansi"); skip = i + 1
             elif ch == "$" and nxt == "(" and l[i + 2:i + 3] == "(": st.append("arith"); skip = i + 1
             elif ch == "$" and nxt == "(": st.append("cmd"); skip = i + 1
             elif ch == "$" and nxt == "{": st.append("brace"); skip = i + 1
-            elif ch == "$" and nxt == "[" and top != "dq": st.append("brk"); skip = i + 1
+            elif ch == "$" and nxt == "[" and top not in ("dq", "hb"): st.append("brk"); skip = i + 1
             elif ch == "`":
                 if top == "bt": st.pop()
                 else: st.append("bt")
-            elif top == "dq": pass
+            elif top in ("dq", "hb"): pass
             elif ch == "}" and top == "brace": st.pop()
             elif ch == "]" and top == "brk": st.pop()
             elif ch == ")" and top == "arith" and nxt == ")": st.pop(); skip = i + 1
@@ -141,7 +146,7 @@ def strip_lines(lines):
                 elif top != "brace":
                     tab = l[i + 2:i + 3] == "-"
                     m = HEREDOC_WORD.match(l, i + 2 + tab)
-                    if m: pend.append((m.group(1) or m.group(2) or m.group(3) or m.group(4), tab))
+                    if m: pend.append((m.group(1) or m.group(2) or m.group(3) or m.group(4), tab, m.group(4) is None))
                     else: errs.append("line %d: a << whose delimiter is not a plain word is not resolved" % (n + 1))
                 skip = i + 1
             elif ch == "#" and i > 0 and prev_ws and top not in DATA:
@@ -152,7 +157,7 @@ def strip_lines(lines):
         if pend:
             if st and st[-1] in ("sq", "dq", "ansi"): errs.append("line %d: a heredoc is started on a line that leaves a quote open and is not resolved" % (n + 1))
             else: hd = pend
-    if st: errs.append("a quote or a %s is still open at the end of the script" % st[-1])
+    if st[1:] if base else st: errs.append("a quote or a %s is still open at the end of the script" % st[-1])
     if hd is not None: errs.append("a heredoc is still open at the end of the script")
     return out, errs
 

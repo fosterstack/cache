@@ -3238,6 +3238,12 @@ d=$(crr sl_zf "${H}(( z = 1<<true ))"$'\nx=\'\n#\' ; echo MARK; /tmp/evil\ntrue\
 d=$(crr sl_zg "${H}x=\"\$(case a in a) echo '"$'\n\'"\n# x" ;; esac)" ; echo MARK; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a case arm's ) inside \$( ) does not end the substitution (seat A, PR 436 round 2)"
 d=$(crr sl_zh "${H}echo a\\"$'\n#; echo MARK; /tmp/evil\n'); expm caught "$d" 'absolute path' "strip_line: a # line after a backslash-newline is part of the joined word, never a comment"
 d=$(crr sl_zi "${H}echo a \\"$'\n  # a real comment in the joined line\n  b\n'); expm ok "$d" - "strip_line: control: a continuation line that has a blank before # is a comment after the join"
+d=$(crr sl_zj "${H}cat <<EOF >/dev/null"$'\n# $(/tmp/evil)\nEOF\n'); expm caught "$d" 'absolute path' "strip_line: an unquoted heredoc body still runs \$( ) after a #, so the body is kept whole (seat B, PR 436 round 3)"
+d=$(crr sl_zk "${H}cat <<EOF >/dev/null"$'\nx # `/tmp/evil`\nEOF\n'); expm caught "$d" 'absolute path' "strip_line: the same with backticks"
+d=$(crr sl_zl "${H}cat <<'EOF' >/dev/null"$'\n# $(/tmp/evil)\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data, \$( ) in it runs nothing"
+d=$(crr sl_zm "${H}cat <<EOF"$'\nE\\\nOF\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line that ends in a backslash is refused (bash joins it, so the delimiter may be another line; seat A, PR 436 round 3)"
+d=$(crr sl_zn "${H}cat <<EOF"$'\nx $(echo \'\n#\' ; /tmp/evil)\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line whose \$( ) runs on to the next line is refused"
+d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm ok "$d" - "strip_line: control: an unquoted heredoc body with quotes and closed substitutions on one line"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3249,7 +3255,8 @@ dl lc_e 'foo archive/vi' '[D("foo archive/vi")]' ok -
 dl lc_f 'echo \\\n  $(foo archive/vi)' '[D("echo \\")]' caught 'by a path'
 dl lc_g 'echo \\\n  $(foo archive/vi)' '[D("  $(foo archive/vi)")]' caught 'by a path'
 dl lc_h 'find . \\\n -exec dist/sed {} +' '[D("find . \\")]' caught 'program-running option' '["find"]'
-dl lc_i 'cat <<EOF\nline \\\ngit x\nEOF' '[D("git x")]' ok -
+dl lc_i 'cat <<"EOF"\nline \\\ngit x\nEOF' '[D("git x")]' ok -   # a quoted delimiter: the backslash is data, the lines stay apart (an unquoted body that ends in a backslash is refused)
+dl lc_ia 'cat <<EOF\nline \\\ngit x\nEOF' '[D("git x")]' caught 'heredoc body line'
 dl lc_j 'git status \\\n  archive/vi' '[D("git status \\")]' caught 'by a path'
 dl lc_k 'git status \\\n  b' '[D("git status \\")]' ok -
 dl lc_l 'tar -I sh x f' '[D("tar -I sh x f")]' ok - '["tar"]'
@@ -3399,7 +3406,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1367
+EXPECT=1374
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
