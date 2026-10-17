@@ -117,7 +117,7 @@ Scout applies only statements whose author you name (its default is Docker's own
 docker scout cves --vex-author '^FosterStack LLC$' "registry://ghcr.io/fosterstack/cache@${DIGEST}"
 ```
 
-Scout reads the statements at scan time and leaves out findings stated *not affected* or *fixed* for this image. It changes nothing outside that
+Scout reads the statements at scan time and leaves out findings stated *not affected* for this image. It changes nothing outside that
 scan's output.
 
 ## 3. Stay current
