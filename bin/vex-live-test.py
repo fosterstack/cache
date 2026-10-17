@@ -629,7 +629,7 @@ def main(argv=None):
     if a.cmd == "pick-cve":
         rep = json.load(open(a.reports))
         ours = {s["vulnerability"]["name"] for s in json.load(open(a.openvex))["statements"]}
-        print(pick_cve({k: (v if k == "grype" else set(v)) for k, v in rep.items()}, ours))
+        print(pick_cve({k: (v if k in ("grype", "inspector") else set(v)) for k, v in rep.items()}, ours))   # Inspector's CVE -> packages map stays a map (pick_cve needs it)
         return 0
     if a.cmd == "pick-scope":
         ours = {s["vulnerability"]["name"] for s in json.load(open(a.openvex))["statements"]}

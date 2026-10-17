@@ -248,6 +248,14 @@ for why, insp in [("every CVE in one package", {"CVE-1": [{"name": "a", "version
     except ValueError:
         got = "refused"
     check("OWNER-3 pick_cve refuses %s" % why, got == "refused", got)
+# Codex #387 r9 (both seats): the same choice through the CLI the runner calls (pick-cve), not only the helper: the CLI must hand Inspector's package map on
+import subprocess as _sp, tempfile as _tf
+with _tf.TemporaryDirectory() as _t:
+    json.dump({"grype": {"CVE-1": "Critical", "CVE-2": "Low"}, "inspector": {"CVE-1": [{"name": "a", "version": "1"}],
+               "CVE-2": [{"name": "a", "version": "1"}, {"name": "b", "version": "1"}]}, "google": ["CVE-1", "CVE-2"]}, open(_t + "/r.json", "w"))
+    json.dump({"statements": []}, open(_t + "/v.json", "w"))
+    _r = _sp.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "pick-cve", "--reports", _t + "/r.json", "--openvex", _t + "/v.json"], capture_output=True, text=True)
+    check("OWNER-3 the pick-cve command takes the CVE in two package names over a more severe one in one (the runner's real path)", _r.stdout.strip() == "CVE-2" and _r.returncode == 0, (_r.returncode, _r.stdout, _r.stderr[-200:]))
 check("OWNER-3 pick_scope: the first package of the CVE (by name) and the first other CVE Inspector reports that is not ours, with its package",
       sc == {"package": {"name": "abc", "version": "2.0"}, "decoy": {"cve": "CVE-V", "name": "bash"}}, sc)
 for why, rep_, c, ex in [("a CVE in one package name only", {"inspector": {"CVE-T": [{"name": "zlib", "version": "1.3"}], "CVE-U": RP["CVE-U"]}}, "CVE-T", ()),
