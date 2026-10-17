@@ -146,6 +146,8 @@ def pick_scope(reports, cve, exclude=()):
         x = sorted(pk, key=lambda y: (y["name"], y["version"]))[0]
         return {"name": x["name"], "version": x["version"]}
     package = first(cve)
+    if len({x["name"] for x in insp[cve]}) < 2:
+        raise ValueError("Inspector reports %s in one package only: the run could not show the same CVE staying visible in another" % cve)
     others = sorted(c for c in insp if c != cve and c not in set(exclude))
     if not others:
         raise ValueError("Inspector reports no other CVE of its own to use as the decoy")
@@ -298,6 +300,9 @@ def pick_cve(reports, exclude=()):
     common = set(reports["grype"]) - set(exclude)
     for k in ("inspector", "google"):
         common &= set(reports[k])
+    insp = reports["inspector"]
+    if isinstance(insp, dict):      # owner Oct 16: the run must show the same CVE in a second package staying visible, so the CVE is one Inspector reports in two package names
+        common = {c for c in common if isinstance(insp[c], list) and len({x.get("name") for x in insp[c] if isinstance(x, dict)}) >= 2}
     if not common:
         raise ValueError("no CVE that every service reports for the fixture")
     return sorted(common, key=lambda c: (SEVERITY.get(reports["grype"][c], 9), c))[0]
@@ -372,6 +377,8 @@ def judge_inspector(before, after, cve, package):
     hit = lambda f: f["vulnerabilityId"] == cve and f["packageName"] == package["name"] and f["packageVersion"] == package["version"]
     if not any(hit(f) for f in b.values()):
         return "Inspector did not report %s in %s %s before" % (cve, package["name"], package["version"])
+    if not any(f["vulnerabilityId"] == cve and f["packageName"] != package["name"] and f["status"] == "ACTIVE" for f in b.values()):
+        return "Inspector did not report %s active in a second package before: the run could not show a rule for one package leaves the other visible" % cve
     if set(b) != set(a):
         return "the finding inventory changed: %d lost, %d new" % (len(set(b) - set(a)), len(set(a) - set(b)))
     for arn, f in a.items():
