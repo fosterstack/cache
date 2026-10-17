@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "809dc6ee2359b7447284fbc8e7a2f3e64b35bb7060d5706e5b971f0bcee725a3",
+      "sha256": "e31098a5ce5dd04bb890fb259ae7b6a81dbd52d7790a8ca2d3278470c18bd6ef",
       "tools": [
         "at",
         "curl",
@@ -778,13 +778,12 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "f08e8620d1164d556b2710c66a15d7ddfa8437cc7779e1f47632317b55078583",
+      "sha256": "1f8f1f8ca4ea6f1c3b0e7f641ddd7d349fee12df22a76d187ee015448033a0ed",
       "tools": [
         "at",
         "awk",
         "bash",
         "command",
-        "curl",
         "docker",
         "env",
         "exec",
@@ -795,7 +794,8 @@
         "sed",
         "sh",
         "source",
-        "tar"
+        "tar",
+        "wget"
       ],
       "runs": [
         "bin/analyze-egress-trace-test.sh",

@@ -44,7 +44,7 @@ PY
 [ "${BUMP_CURL:-ok}" = down ] && exit 7
 req=""; out=""; while [ \$# -gt 0 ]; do case "\$1" in -o) out="\$2"; shift ;; https://*) req="\$1" ;; esac; shift; done
 case "\$req" in
-  https://go.dev/dl/?mode=json*) printf '%s' '${list}' ;;
+  https://go.dev/dl/?mode=json*) if [ -n "\$out" ]; then printf '%s' '${list}' > "\$out"; else printf '%s' '${list}'; fi ;;
   https://go.dev/dl/go1.27.0.linux-amd64.tar.gz) printf 'go1.27.0 amd64 tarball' > "\$out" ;;
   https://go.dev/dl/go1.27.0.linux-arm64.tar.gz) printf 'go1.27.0 arm64 tarball' > "\$out" ;;
   *) echo "UNEXPECTED curl \$req" >> "${log}"; exit 22 ;;
@@ -138,7 +138,7 @@ cat > "$e2e/fake/curl" <<CURL
 #!/usr/bin/env bash
 req=""; out=""; while [ \$# -gt 0 ]; do case "\$1" in -o) out="\$2"; shift ;; https://*) req="\$1" ;; esac; shift; done
 case "\$req" in
-  https://go.dev/dl/?mode=json*) printf '%s' '[{"version":"go${new}","files":[{"filename":"go${new}.linux-amd64.tar.gz","sha256":"${t_amd}"},{"filename":"go${new}.linux-arm64.tar.gz","sha256":"${t_arm}"}]}]' ;;
+  https://go.dev/dl/?mode=json*) printf '%s' '[{"version":"go${new}","files":[{"filename":"go${new}.linux-amd64.tar.gz","sha256":"${t_amd}"},{"filename":"go${new}.linux-arm64.tar.gz","sha256":"${t_arm}"}]}]' > "\$out" ;;
   https://go.dev/dl/go${new}.linux-amd64.tar.gz) printf 'e2e amd64' > "\$out" ;;
   https://go.dev/dl/go${new}.linux-arm64.tar.gz) printf 'e2e arm64' > "\$out" ;;
   *) exit 22 ;;

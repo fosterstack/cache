@@ -48,6 +48,7 @@ GO_VER=1.27.2
 CRANE_VER=0.22.1
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
+die() { pipeline_fail "$@"; }   # the plain-text failure word of the pinned Go fetch line (pin-age honours that line shape, REQ-SUP-001-AC23)
 
 case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign|cosign|witness|go|crane|govulncheck|kind) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
 
@@ -224,7 +225,8 @@ case "$TOOL" in
     done < go.mod
     [ -n "$want" ] || want="$gline"
     [ "$want" = "$GO_VER" ] || pipeline_fail "go.mod names go '${want}' but the pinned toolchain is ${GO_VER} (go.mod and GO_VER in bin/install-scanner.sh must agree)"
-    curl -fsSL -o "$tmp/go.tgz" "https://go.dev/dl/go${GO_VER}.${A_GO}.tar.gz" || pipeline_fail "download failed: go ${GO_VER}"
+    gofile="go${GO_VER}.${A_GO}.tar.gz"
+    curl -q -fsSL -g -o "$tmp/go.tgz" "https://go.dev/dl/${gofile}" || die "download failed: go toolchain"
     verify "$tmp/go.tgz"
     mkdir -p "$tmp/x" && tar -xzf "$tmp/go.tgz" -C "$tmp/x" || pipeline_fail "extract failed for go"
     gobin="$tmp/x/go/bin"; [ -x "${gobin}/go" ] || pipeline_fail "the toolchain archive holds no go program"
