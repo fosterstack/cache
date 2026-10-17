@@ -2903,9 +2903,9 @@ kc ws_bad13 'readonly GITHUB_WORKSPACE=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-a
 kc ws_bad14 'unset GITHUB_WORKSPACE\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad15 'read GITHUB_WORKSPACE\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad16 ': "${GITHUB_WORKSPACE:=/tmp}"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
-kc ws_bad17 "bash '\$GITHUB_WORKSPACE/bin/build-apk.sh'" 'handed' '["bash"]' '["bin/build-apk.sh"]'
-kc ws_bad18 "bash '\${GITHUB_WORKSPACE}/bin/build-apk.sh'" 'handed' '["bash"]' '["bin/build-apk.sh"]'
-kc ws_bad19 'bash \$GITHUB_WORKSPACE/bin/build-apk.sh' 'handed' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad17 "bash '\$GITHUB_WORKSPACE/bin/build-apk.sh'" 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad18 "bash '\${GITHUB_WORKSPACE}/bin/build-apk.sh'" 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad19 'bash \$GITHUB_WORKSPACE/bin/build-apk.sh' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad20 'local GITHUB_WORKSPACE=/tmp\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 ko ws_ok3 'cd "$GITHUB_WORKSPACE"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'
 # a variable name built at run time can reach the same variable without ever writing its name: any such form before the call refuses the prefix (round 5)
@@ -2938,6 +2938,10 @@ kc ws_bad44 'a=WOR; b=KSP; c=ACE\nexport "GITHUB_$a$b$c=/tmp"\nbash "$GITHUB_WOR
 kc ws_bad45 'x=AWORKSPACEB\nexport "GITHUB_${x:1:9}=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad46 'x=XWORKSPACEX; n=GITHUB_${x:1:9}\nexport "$n=/tmp"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 kc ws_bad47 'n=GITHUB_; a=QWORKSPACE\nprintf -v "$n${a#Q}" %s /tmp/evil\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad49 "x='\$GITHUB_WORKSPACE'\nexport \"\${x#?}=/tmp/evil\"\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"" 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad50 'x=\$GITHUB_WORKSPACE\nexport "${x#?}=/tmp/evil"\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad51 'for v in ${!GITHUB_W*}; do printf -v $v /tmp/x; done\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
+kc ws_bad52 'for v in ${!GITHUB_*}; do declare $v=/tmp; done\nbash "$GITHUB_WORKSPACE/bin/build-apk.sh"' 'GITHUB_WORKSPACE' '["bash"]' '["bin/build-apk.sh"]'
 d=$(cfix ws_bad48 'bash "$GITHUB_WORKSPACE/bin/build-apk.sh"' '["bash"]' '["bin/build-apk.sh"]'); setfile "$d" bin/c.sh "#!/usr/bin/env -S GITHUB_WORKSPACE=/tmp/x bash\nset -euo pipefail\nbash \"\$GITHUB_WORKSPACE/bin/build-apk.sh\"\n"; expm caught "$d" 'GITHUB_WORKSPACE' "round-5 ws_bad48: the first line is read too: an env -S assignment of the variable is refused"
 ko r5_ok2 '2>&1 cp x y'
 ko r5_ok3 'echo a > out; cat out'
@@ -3416,7 +3420,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1384
+EXPECT=1388
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

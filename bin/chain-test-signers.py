@@ -50,6 +50,10 @@ WORKSPACE_PLAIN = re.compile(r"\$GITHUB_WORKSPACE(?![A-Za-z0-9_])|\$\{GITHUB_WOR
 WORKSPACE_PIECE = re.compile(r"[A-Z]{3,}")   # an upper-case run that is a piece of WORKSPACE, or holds five letters of it in a row: a name can be built from pieces only if a script holds them
 def workspace_touched(body):
     """Does this script do anything with GITHUB_WORKSPACE but read it plainly (set, export, unset, read into, default-expand, brace-expand, build the name)?"""
+    for m in WORKSPACE_PLAIN.finditer(body):               # a read that is escaped, or follows a single quote on its line, is the text itself: it can be sliced into a name
+        ls = body.rfind("\n", 0, m.start()) + 1
+        if body[max(0, m.start() - 1):m.start()] == "\\" or "'" in body[ls:m.start()]: return True
+    if re.search(r"\$\{![A-Za-z_0-9]*[*@]", body): return True       # ${!PREFIX*} lists every variable whose name starts with PREFIX
     rest = WORKSPACE_PLAIN.sub("", body)
     return "GITHUB_WORKSPACE" in rest or any(r in "WORKSPACE" or any(r[k:k + 5] in "WORKSPACE" for k in range(len(r) - 4)) for r in WORKSPACE_PIECE.findall(rest))   # a name built at run time (any builtin that takes a variable name) needs a piece of it in the text
 
