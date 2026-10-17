@@ -1130,7 +1130,7 @@ case "$*" in
         body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0-rc1; ' % mode
                 + 'FIXTURE_SRC=docker.io/library/debian@%s; FIX=%s; RUN=live-1-1; CVE=%s; ' % (fx_man, fx_man, LEG_CVE)
                 + "echo '{\"production\": {\"index\": \"%s\", \"children\": {\"linux/amd64\": \"sha256:%s\", \"linux/arm64\": \"sha256:%s\"}}}' > images.json; " % (prod_man, "2" * 64, "3" * 64)
-                + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null || true; echo =EVENTS=; cat \"$RUNNER_TEMP/events.log\"")
+                + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; echo \"push-tok-after=${DOCKERHUB_TEST_PUSH_TOKEN-UNSET} scout-tok-after=${DOCKERHUB_SCOUT_TOKEN-UNSET}\"; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null || true; echo =EVENTS=; cat \"$RUNNER_TEMP/events.log\"")
         e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src, CANDIDATE_DIR=os.path.join(lt, "cand"))
         e.update(env or {})
         return sh(body, {"crane": CRANE, "docker": SCOUT}, e)
@@ -1192,6 +1192,18 @@ case "$*" in
     check("scout leg: the leg's pushes count against the 50 of the run (a second push beyond 50 fails it)", "leg-rc=0" not in out and "more than 50 pushes" in out, (rc, out[-300:]))
     check("scout leg: a push that fails after the push login still logs the push token out and unsets it (it never stays in the job's Docker config)",
           "PUSH-LOGIN-OK" in out and "PUSH-LOGOUT" in out and "leg-rc=0" not in out and out.index("PUSH-LOGIN-OK") < out.index("PUSH-LOGOUT"), (rc, out[-400:]))
+    check("…and the push token is gone from the environment too", "push-tok-after=UNSET" in out, (rc, out[-400:]))
+    BAD_DIGEST = 'crane() { if [ "$1" = digest ] && [[ "$2" == *-production ]]; then echo sha256:' + "0" * 64 + '; else command crane "$@"; fi; }; '
+    for md in ("release", "main"):
+        rc, out = leg(["{}"] * 2 + OK_FIX + OK_PROD, mode=md, extra=BAD_DIGEST)
+        check("scout leg (%s): a production copy that does not keep its digest fails the leg, and the push token is logged out and unset first" % md,
+              "leg-rc=0" not in out and "does not keep its digest" in out and "PUSH-LOGOUT" in out and "push-tok-after=UNSET" in out, (rc, out[-400:]))
+    rc, out = leg(["{}", "{}"] + OK_FIX + ['{"vulnerabilities": {}}', gl_report("CVE-B")])
+    check("scout leg (rc): a failure after the Scout login logs the Scout token out and unsets it (it never stays in the job's Docker config)",
+          "SCOUT-LOGIN-OK" in out and "SCOUT-LOGOUT" in out and "leg-rc=0" not in out and "scout-tok-after=UNSET" in out, (rc, out[-400:]))
+    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)
+    check("scout leg (rc): on success both tokens are also gone from the environment, with one login and one logout of each (no extra cleanup call)",
+          "leg-rc=0" in out and "push-tok-after=UNSET scout-tok-after=UNSET" in out and out.count("PUSH-LOGOUT") == 1 and out.count("SCOUT-LOGOUT") == 1, (rc, out[-400:]))
     rc, out = leg(OK_FIX + OK_PROD + OK_FIX[:0] + [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B"), gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")], mode="release",
                   extra='tag=v0.3.0; python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "DIGEST=sha256:%s"; guide() { echo "guide $1: $(cat state.env)" >> "$RUNNER_TEMP/guide.log"; }; ' % FX_DIGEST_STALE)
     check("scout leg (release): the page's own Scout block runs as written (section scout); a release candidate never runs it", "guide scout" in out, out[-300:])
