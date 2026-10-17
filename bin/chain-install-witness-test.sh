@@ -9,7 +9,7 @@
 # THE INTERFACE (PROPOSED/UNVERIFIED where marked; it follows the other scanners in bin/install-scanner.sh):
 #   WITNESS_VER=0.12.0 (the version the harness spikes verified, ops/handoffs/outbox/2026-10-09-harness-witness-spikes-a-c.md:15), pinned with a repo-pinned
 #   sha256 PER ARCHITECTURE inside the script; asset names witness_<ver>_linux_amd64.tar.gz and witness_<ver>_linux_arm64.tar.gz under
-#   WITNESS_BASE_URL/v<ver>/ (the release asset names of in-toto/witness v0.12.0: PROPOSED, the implementer confirms them against the release page);
+#   <release URL>/v<ver>/ (the release asset names of in-toto/witness v0.12.0: PROPOSED, the implementer confirms them against the release page);
 #   INSTALL_SCANNER_ARCH selects the architecture (x86_64|amd64|aarch64|arm64); the default destination is /usr/local/bin (a directory on PATH, so the helper
 #   bin/witnessed.sh finds `witness`); failures print `::error::scanner installer: ... (PIPELINE failure - not a scan finding)` and exit 1.
 #   There is NO environment override of a checksum: the only test hook is the base URL, as for the other scanners.
@@ -23,6 +23,16 @@ set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 sut="$root/bin/install-scanner.sh"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+# the download stand-in: the installers fetch from fixed https URLs now, so a curl on PATH serves the local release layout STUB_REL (the part of the URL after /download/ or /dl/), or fails like a refused download
+stubbin="$work/stubbin"; mkdir -p "$stubbin"
+cat > "$stubbin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""; u=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
+rel="${u#*/download/}"; [ "$rel" != "$u" ] || rel="${u#*/dl/}"
+[ -n "$out" ] && [ -f "${STUB_REL:-/nonexistent}/$rel" ] && cp "${STUB_REL}/$rel" "$out" || exit 22
+STUB
+chmod +x "$stubbin/curl"
 pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
@@ -43,10 +53,10 @@ else
   echo "not the real witness tarball" > "$work/rel/v${VER:-0.12.0}/witness_${VER:-0.12.0}_linux_amd64.tar.gz"
   echo "not the real witness tarball either" > "$work/rel/v${VER:-0.12.0}/witness_${VER:-0.12.0}_linux_arm64.tar.gz"
   check "an unknown tool is still refused" 1 "unknown scanner.*PIPELINE failure" -- bash "$sut" bogus "$work/bin"
-  check "witness checksum mismatch (amd64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=x86_64 WITNESS_BASE_URL="file://$work/rel" bash "$sut" witness "$work/bin"
-  check "witness checksum mismatch (arm64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=aarch64 WITNESS_BASE_URL="file://$work/rel" bash "$sut" witness "$work/bin"
-  check "a failed download is a pipeline failure" 1 "download failed.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=x86_64 WITNESS_BASE_URL="file://$work/nope" bash "$sut" witness "$work/bin"
-  check "an unsupported architecture is a pipeline failure" 1 "unsupported architecture.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=mips WITNESS_BASE_URL="file://$work/rel" bash "$sut" witness "$work/bin"
+  check "witness checksum mismatch (amd64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$sut" witness "$work/bin"
+  check "witness checksum mismatch (arm64) is a pipeline failure" 1 "checksum mismatch.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=aarch64 PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$sut" witness "$work/bin"
+  check "a failed download is a pipeline failure" 1 "download failed.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$work/nope" bash "$sut" witness "$work/bin"
+  check "an unsupported architecture is a pipeline failure" 1 "unsupported architecture.*PIPELINE failure" -- env INSTALL_SCANNER_ARCH=mips PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$sut" witness "$work/bin"
   [ ! -e "$work/bin/witness" ] && ok "a failed install leaves no witness binary" || bad "a failed install left $work/bin/witness"
   amd=$(grep -E 'witness:x86_64\|witness:amd64' "$sut" | grep -oE '[0-9a-f]{64}' | head -1)
   arm=$(grep -E 'witness:aarch64\|witness:arm64' "$sut" | grep -oE '[0-9a-f]{64}' | head -1)
@@ -56,7 +66,7 @@ fi
 # ---- the Go toolchain (Codex A r3 F4, advisor): `bash bin/install-scanner.sh go [dest-dir]` -----------------------------------------------------------------
 # The exact go<ver>.linux-<arch>.tar.gz of go.mod's `toolchain` line (the `go` line only when the file has no toolchain line), pinned by a committed sha256
 # PER ARCHITECTURE (values checked against go.dev's published checksums), unpacked to the fixed directory <dest-dir>/fscache-go (default /usr/local/bin/fscache-go),
-# refused on any mismatch. Offline: the tarball comes from a local file:// base (GO_BASE_URL). The SUCCESS path needs the real tarball; the dry run proves it.
+# refused on any mismatch. Offline: the tarball comes from a stub curl on PATH serving a local layout. The SUCCESS path needs the real tarball; the dry run proves it.
 GOVER=$(sed -n 's/^GO_VER=\([0-9.]*\).*/\1/p' "$sut" | head -1)
 # the installer's OWN pins are the source (Codex A r5 #3): a Go bump rewrites GO_VER and both sums in bin/install-scanner.sh, and this test then judges THAT
 # bump, so no version or sum is typed here; what stays independent is go.mod (the version must equal it) and the structure of the pin
@@ -83,14 +93,14 @@ else
   if [ "$GOVER" = "$repo_gomod_ver" ] && [[ "$GO_AMD" =~ ^[0-9a-f]{64}$ ]] && [[ "$GO_ARM" =~ ^[0-9a-f]{64}$ ]] && [ "$GO_AMD" != "$GO_ARM" ]; then
     ok "go: the pinned version ($GOVER) is the repo go.mod's and the two sha256 values are 64-hex and different (go.dev's published values are checked by the bump script, which downloads and compares them)"
   else bad "go: pins: version '$GOVER' vs go.mod '$repo_gomod_ver'; amd64/arm64 values"; fi
-  gocheck "go: a wrong checksum (amd64) is refused" "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
-  gocheck "go: a wrong checksum (arm64) is refused" "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" INSTALL_SCANNER_ARCH=aarch64 GO_BASE_URL="file://$gwork/rel"
-  gocheck "go: a go.mod version that is not the pinned one is refused" "$gwork/mod-old" "go\\.mod.*(0\\.0\\.1).*pinned|pinned.*go\\.mod" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
-  gocheck "go: the toolchain line wins over the go line (it reaches the checksum, so the version matched)" "$gwork/mod-tool" "checksum mismatch" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
-  gocheck "go: the go line is used when there is no toolchain line (it reaches the checksum)" "$gwork/mod-ok" "checksum mismatch" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
-  gocheck "go: an unknown architecture is refused" "$gwork/mod-ok" "unsupported architecture.*PIPELINE failure" INSTALL_SCANNER_ARCH=mips GO_BASE_URL="file://$gwork/rel"
-  gocheck "go: a failed download is refused" "$gwork/mod-ok" "download failed.*PIPELINE failure" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/nope"
-  gocheck "go: no go.mod is refused" "$gwork/mod-none" "go\\.mod.*PIPELINE failure|PIPELINE failure.*go\\.mod|no go\\.mod" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
+  gocheck "go: a wrong checksum (amd64) is refused" "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: a wrong checksum (arm64) is refused" "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" INSTALL_SCANNER_ARCH=aarch64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: a go.mod version that is not the pinned one is refused" "$gwork/mod-old" "go\\.mod.*(0\\.0\\.1).*pinned|pinned.*go\\.mod" INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: the toolchain line wins over the go line (it reaches the checksum, so the version matched)" "$gwork/mod-tool" "checksum mismatch" INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: the go line is used when there is no toolchain line (it reaches the checksum)" "$gwork/mod-ok" "checksum mismatch" INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: an unknown architecture is refused" "$gwork/mod-ok" "unsupported architecture.*PIPELINE failure" INSTALL_SCANNER_ARCH=mips PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
+  gocheck "go: a failed download is refused" "$gwork/mod-ok" "download failed.*PIPELINE failure" INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/nope"
+  gocheck "go: no go.mod is refused" "$gwork/mod-none" "go\\.mod.*PIPELINE failure|PIPELINE failure.*go\\.mod|no go\\.mod" INSTALL_SCANNER_ARCH=x86_64 PATH="$stubbin:$PATH" STUB_REL="$gwork/rel"
   [ ! -e "$gwork/bin/fscache-go" ] && ok "go: a failed install leaves no toolchain" || bad "go: a failed install left $gwork/bin/fscache-go"
   if grep -Eq 'GO_(SHA256|SUM|CHECKSUM)[^=]*[:-]|\$\{GO_(SHA256|SUM|CHECKSUM|VER|VERSION):?[-=]|GOVERSION=|GOTOOLCHAIN=auto' "$sut"; then bad "go: the script lets the environment override the checksum or the version"; else ok "go: there is no environment override of a checksum or of the version (the only hook is GO_BASE_URL)"; fi
 fi

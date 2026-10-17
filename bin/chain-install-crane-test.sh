@@ -4,12 +4,22 @@
 # Failure-path suite for the crane entry of bin/install-scanner.sh, in the style of bin/install-scanner-test.sh: a tool that cannot be installed
 # or verified exits NON-ZERO and is LABELED a pipeline failure. The success path pulls a real vendor binary and cannot run offline.
 # RED until PR 4 adds the entry. PROPOSED/UNVERIFIED: the version (v0.22.1, the one the old stage-promote.yml went-installed), the asset names
-# go-containerregistry_Linux_x86_64.tar.gz and go-containerregistry_Linux_arm64.tar.gz, and the override CRANE_BASE_URL (every other tool has one).
+# go-containerregistry_Linux_x86_64.tar.gz and go-containerregistry_Linux_arm64.tar.gz, and the release URL, which a stub curl on PATH serves from a local layout.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 sut="${here}/install-scanner.sh"
 pass=0; fail=0
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
+# the download stand-in: the installers fetch from fixed https URLs now, so a curl on PATH serves the local release layout STUB_REL (the part of the URL after /download/ or /dl/), or fails like a refused download
+stubbin="$work/stubbin"; mkdir -p "$stubbin"
+cat > "$stubbin/curl" <<'STUB'
+#!/usr/bin/env bash
+out=""; u=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; https://*) u="$1" ;; esac; shift; done
+rel="${u#*/download/}"; [ "$rel" != "$u" ] || rel="${u#*/dl/}"
+[ -n "$out" ] && [ -f "${STUB_REL:-/nonexistent}/$rel" ] && cp "${STUB_REL}/$rel" "$out" || exit 22
+STUB
+chmod +x "$stubbin/curl"
 check() { # name expected_rc regex -- run...
   local name="$1" want_rc="$2" re="$3"; shift 3
   local out rc; out="$("$@" 2>&1)"; rc=$?
@@ -22,9 +32,9 @@ for arch in x86_64 aarch64; do
   case "$arch" in x86_64) asset=go-containerregistry_Linux_x86_64.tar.gz ;; aarch64) asset=go-containerregistry_Linux_arm64.tar.gz ;; esac
   mkdir -p "$work/rel/${ver:-v0.0.0}"; echo "not the real crane tarball" > "$work/rel/${ver:-v0.0.0}/$asset"
   check "crane checksum mismatch rejected on $arch" 1 "checksum mismatch.*PIPELINE failure" \
-    env INSTALL_SCANNER_ARCH=$arch CRANE_BASE_URL="file://$work/rel" bash "$sut" crane "$work/bin-$arch"
+    env INSTALL_SCANNER_ARCH=$arch PATH="$stubbin:$PATH" STUB_REL="$work/rel" bash "$sut" crane "$work/bin-$arch"
   check "crane download failure rejected on $arch" 1 "download failed.*PIPELINE failure" \
-    env INSTALL_SCANNER_ARCH=$arch CRANE_BASE_URL="file://$work/nope" bash "$sut" crane "$work/bin-$arch"
+    env INSTALL_SCANNER_ARCH=$arch PATH="$stubbin:$PATH" STUB_REL="$work/nope" bash "$sut" crane "$work/bin-$arch"
 done
 check "crane unsupported architecture rejected" 1 "unsupported architecture.*PIPELINE failure" env INSTALL_SCANNER_ARCH=mips bash "$sut" crane "$work/bin"
 # the pin itself: one version, one 64-hex sha256 per architecture, in the crane entry (a placeholder or a missing sum is a failure)

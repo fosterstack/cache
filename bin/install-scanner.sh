@@ -101,10 +101,6 @@ OSV_BASE="${OSV_BASE_URL:-https://github.com/google/osv-scanner/releases/downloa
 SBOMGEN_BASE="${SBOMGEN_BASE_URL:-https://amazon-inspector-sbomgen.s3.amazonaws.com}"
 SCOUT_BASE="${SCOUT_BASE_URL:-https://github.com/docker/scout-cli/releases/download}"
 GITSIGN_BASE="${GITSIGN_BASE_URL:-https://github.com/sigstore/gitsign/releases/download}"
-COSIGN_BASE="${COSIGN_BASE_URL:-https://github.com/sigstore/cosign/releases/download}"
-WITNESS_BASE="${WITNESS_BASE_URL:-https://github.com/in-toto/witness/releases/download}"
-CRANE_BASE="${CRANE_BASE_URL:-https://github.com/google/go-containerregistry/releases/download}"
-GO_BASE="${GO_BASE_URL:-https://go.dev/dl}"
 
 tmp=$(mktemp -d)
 trap 'chmod -R u+w "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT   # a Go module cache is read-only: it is writable again before it is removed
@@ -184,16 +180,14 @@ case "$TOOL" in
     ;;
   cosign)
     # the release provenance signer (v0.3.0 rule 52): a single binary; cosign asks for the OIDC token inside its own process
-    url="${COSIGN_BASE}/v${COSIGN_VER}/cosign-${A_COSIGN}"
-    curl -fsSL -o "$tmp/cosign" "$url" || pipeline_fail "download failed: $url"
+    curl -fsSL -o "$tmp/cosign" "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VER}/cosign-${A_COSIGN}" || pipeline_fail "download failed: cosign v${COSIGN_VER}"
     verify "$tmp/cosign"
     install -m 0755 "$tmp/cosign" "${DEST}/cosign" || pipeline_fail "install failed for cosign"
     "${DEST}/cosign" version >/dev/null || pipeline_fail "cosign does not run after install"
     ;;
   witness)
     # the step signer of the release chain (rule 68): a release tarball holding the witness binary
-    url="${WITNESS_BASE}/v${WITNESS_VER}/witness_${WITNESS_VER}_${A_WITNESS}.tar.gz"
-    curl -fsSL -o "$tmp/w.tgz" "$url" || pipeline_fail "download failed: $url"
+    curl -fsSL -o "$tmp/w.tgz" "https://github.com/in-toto/witness/releases/download/v${WITNESS_VER}/witness_${WITNESS_VER}_${A_WITNESS}.tar.gz" || pipeline_fail "download failed: witness v${WITNESS_VER}"
     verify "$tmp/w.tgz"
     tar -xzf "$tmp/w.tgz" -C "$tmp" witness || pipeline_fail "extract failed for witness"
     install -m 0755 "$tmp/witness" "${DEST}/witness" || pipeline_fail "install failed for witness"
@@ -201,8 +195,7 @@ case "$TOOL" in
     ;;
   crane)
     # the copy tool of the Release stage: a release tarball holding the crane binary, verified against the pinned sum
-    url="${CRANE_BASE}/v${CRANE_VER}/go-containerregistry_${A_CRANE}.tar.gz"
-    curl -fsSL -o "$tmp/c.tgz" "$url" || pipeline_fail "download failed: $url"
+    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VER}/go-containerregistry_${A_CRANE}.tar.gz" || pipeline_fail "download failed: crane v${CRANE_VER}"
     verify "$tmp/c.tgz"
     tar -xzf "$tmp/c.tgz" -C "$DEST" crane || pipeline_fail "extract failed for crane"
     "${DEST}/crane" version >/dev/null || pipeline_fail "the installed crane binary does not start"
@@ -219,8 +212,7 @@ case "$TOOL" in
     done < go.mod
     [ -n "$want" ] || want="$gline"
     [ "$want" = "$GO_VER" ] || pipeline_fail "go.mod names go '${want}' but the pinned toolchain is ${GO_VER} (go.mod and GO_VER in bin/install-scanner.sh must agree)"
-    url="${GO_BASE}/go${GO_VER}.${A_GO}.tar.gz"
-    curl -fsSL -o "$tmp/go.tgz" "$url" || pipeline_fail "download failed: $url"
+    curl -fsSL -o "$tmp/go.tgz" "https://go.dev/dl/go${GO_VER}.${A_GO}.tar.gz" || pipeline_fail "download failed: go ${GO_VER}"
     verify "$tmp/go.tgz"
     mkdir -p "$tmp/x" && tar -xzf "$tmp/go.tgz" -C "$tmp/x" || pipeline_fail "extract failed for go"
     gobin="$tmp/x/go/bin"; [ -x "${gobin}/go" ] || pipeline_fail "the toolchain archive holds no go program"
