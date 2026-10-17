@@ -34,6 +34,10 @@
    "sha256": "608a9d76265d66264759ef7404eb9ec5994d837ced4ae7688e10332ad1c2903f"
   },
   {
+   "section": "scout",
+   "sha256": "f52ec39ec7064875835846a5100b5bc32b1b27cc15b4b5da270e8c82ab44e79b"
+  },
+  {
    "section": "inspector-remove",
    "sha256": "da9da4fbdc128dced881dfb086452b4965e30949ada8dd1345e308a771c2a9cd"
   }

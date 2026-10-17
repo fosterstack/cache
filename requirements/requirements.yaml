@@ -2446,10 +2446,12 @@ requirements:
     origin: scanner-panel rule 12 (owner, Oct 2 2026; ops/docs/ratify/2026-10-02-scanner-panel-rules.md)
     confidence: implementation-only
     acceptance_criteria:
+      # Source: advisor reading Oct 17 under the owner's Oct 16 words ("I want max unblockage with least of human effort"); the Docker Hub test repository, its organization access token and the registry-API sweep are the Docker Scout leg's (advisor handoffs, Oct 16-17); no owner ratification asked (advisor ruling on #416).
+      # Source: advisor reading Oct 17 of the owner's Oct 16 words, marked as such (cache#416 follow-up, the chain-build-wiring reds): the Docker Scout leg uses the organization access token of the test repository (its user name is the organization's) and the read-only Scout token that was already in the live-test environment before this AC was written; it describes what exists and adds no access. Earlier wording of the changed fragment, kept here: "through one push token of an account that holds only that repository, kept as a secret of the live-test environment and never printed".
       - id: REQ-SCAN-012-AC1
         given: "a live test"
         when: "it runs"
-        then: "it touches only the dedicated test repositories (one ECR, one Google Artifact Registry), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; no keys, nothing from the Mac"
+        then: "it touches only the dedicated test repositories (one ECR, one Google Artifact Registry and, for the Docker Scout leg only, one Docker Hub repository), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; the Docker Hub repository, which has no federation, through one push token (an organization access token scoped to that repository only) with its user name, kept as secrets of the live-test environment, and the read-only Docker Scout token already held there (it only reads) with its user name, none ever printed; no other keys, nothing from the Mac"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-012-AC2
@@ -2458,10 +2460,11 @@ requirements:
         then: "they are our release images copied by digest plus one deliberately vulnerable fixture image; nothing is pushed anywhere public"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      # Source: advisor reading Oct 17 under the owner's Oct 16 words ("I want max unblockage with least of human effort"); the Docker Hub test repository, its organization access token and the registry-API sweep are the Docker Scout leg's (advisor handoffs, Oct 16-17); no owner ratification asked (advisor ruling on #416).
       - id: REQ-SCAN-012-AC3
         given: "a live test run"
         when: "it ends"
-        then: "it deletes what it created (images, suppression rules, uploaded VEX); the test repositories expire images after one day"
+        then: "it deletes what it created (images, suppression rules, uploaded VEX, the tags of the Docker Hub repository); the test repositories expire images after one day"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-012-AC4
@@ -2474,6 +2477,13 @@ requirements:
         given: "a live test"
         when: "it passes"
         then: "the finding showed before the suppression, was gone after, and every guide command worked exactly as written"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      # Source: advisor reading Oct 17 under the owner's Oct 16 words ("I want max unblockage with least of human effort"); the Docker Hub test repository, its organization access token and the registry-API sweep are the Docker Scout leg's (advisor handoffs, Oct 16-17); no owner ratification asked (advisor ruling on #416).
+      - id: REQ-SCAN-012-AC6
+        given: "a live test run"
+        when: "its Docker Scout leg runs (the OpenVEX attached to the image index as attestation children, REQ-REL-010)"
+        then: "it fails closed unless the Docker Hub test repository, the user and both tokens are present; the fixture carrying our attestation shows its finding when Scout is given Docker's authors only, the finding is gone and every other finding kept when Scout is given ours, and the same holds for the finding of one of our statements that Scout reports on our production image (a production image on which Scout reports none of them is a warning that REQ-REL-010-AC6 is not shown, never a pass of it); after a publication the published index is scanned the same way by tag and by exact digest; a scan of Build's layout directory is information only"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -2735,6 +2745,12 @@ requirements:
         given: "a pull request that adds a script line that is exactly one curl (with -q first, only fixed flags with plain values, and -g) whose single operand is https://go.dev/dl/ followed by one variable and nothing else, and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins \"pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): \""
         when: "pin-age runs"
         then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); a row for any file that is not a shell script outside .github/ (a workflow step, another file type) rules nothing; a line of another shape under that ruling (the spellings --disable and --globoff in place of -q and -g, a single-quoted operand, an output value with a default or command expansion, another host, a lookalike host, userinfo, a port, http, another path, a literal file name, two variables, a variable host, a second operand, a pipe, a proxy or resolve option, no -g, no leading -q) rules nothing; a Go-toolchain line under the Wolfi live-fetch ruling, and a Wolfi line under the Go-toolchain ruling, rule nothing; the Wolfi ruling's own shapes are unchanged (advisor reading Oct 16 under the owner's Oct 13 latitude: owner rule 12 keeps the Go toolchain in the archive, the refresh job verifies each tarball against the sha256 its committed recipe pins before storing it)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC25
+        given: "a pull request that adds the line of bin/loopback-get.sh that starts the fetch program for the loopback helper (REQ-SUP-001-AC24), exactly the line whose whole text hashes to the value the checker pins, and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins \"loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): \""
+        when: "pin-age runs"
+        then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line in the helper (one character), and that ruling prefix on any other line (of the helper or of another file) rules nothing, so the one line that fetches for a loopback or token request is the only line this ruling allows"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
   - id: REQ-UAT-001

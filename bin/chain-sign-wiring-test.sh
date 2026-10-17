@@ -3343,6 +3343,64 @@ d=$(crf cr_a '#!/usr/bin/env bash\nset -euo pipefail\necho x\\\r\ncurl x\n'); ex
 d=$(crf cr_b '#!/usr/bin/env bash\necho a\r\n'); expm caught "$d" 'carriage return' "line-bound: any script with a CR is refused"
 d=$(crf cr_c '#!/usr/bin/env bash\ncurl a\r\n'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("curl a\r")]'; expm caught "$d" 'carriage return' "line-bound: no waiver applies to a script with a CR"
 d=$(crf cr_ok '#!/usr/bin/env bash\necho a\n'); expm ok "$d" - "line-bound: control: the same script without a CR"
+# strip_line reads a script as bash does (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3; advisor Oct 17, reproduced by a reviewer): a # line inside a quote that is still
+# open from an earlier line is part of the quoted word, never a comment, and an ANSI-C quote $'..' ends at the first quote that is not backslash-escaped. The judge
+# REFUSES what it cannot read this way (fail closed) and never drops such a line. crr writes the script text raw (no escape processing).
+crr() { local d; d=$(cfix "$1" 'echo a'); printf '%s' "$2" > "$d/bin/c.sh"; edit_spec "$d" 'rows["bin/c.sh"]["tools"]=[]'; echo "$d"; }
+H=$'#!/usr/bin/env bash\n'
+d=$(crr sl_a "${H}x='"$'\n'"# '; /tmp/evil"$'\n'); expm caught "$d" 'still open' "strip_line: a # line inside a single quote open from an earlier line is refused (the reproducer)"
+d=$(crr sl_b "${H}x=\""$'\n'"# \"; /tmp/evil"$'\n'); expm caught "$d" 'still open' "strip_line: the same inside a double quote"
+d=$(crr sl_c "${H}x=\"a\\\""$'\n'"# \"; /tmp/evil"$'\n'); expm caught "$d" 'still open' "strip_line: an escaped double quote does not close the double quote"
+d=$(crr sl_d "${H}echo \$'a\\'b # c'; /tmp/evil"$'\n'); expm caught "$d" 'absolute path' "strip_line: an ANSI-C quote \$'a\\'b # c' is read to its real end, so what follows it is judged"
+d=$(crr sl_e "${H}x=\$'"$'\n'"# '; /tmp/evil"$'\n'); expm caught "$d" 'still open' "strip_line: a # line inside an ANSI-C quote open from an earlier line is refused"
+d=$(crr sl_f "${H}x='abc"$'\necho ok\n'); expm caught "$d" 'still open' "strip_line: a quote still open at the end of the script is refused"
+d=$(crr sl_g "${H}x='a b'"$'\n# note\necho ok\n'); expm ok "$d" - "strip_line: control: a comment line after a closed quote is a comment"
+d=$(crr sl_h "${H}x='a\\'"$'\n'"# it's a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a backslash inside single quotes is literal, so the quote closes and the next # line is a comment"
+d=$(crr sl_i "${H}x=\$'a\\'b'"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a closed ANSI-C quote with an escaped quote"
+d=$(crr sl_j "${H}cat <<EOF"$'\ndon'"'t"$'\n# x\nEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a heredoc body is data, an apostrophe and a # line in it open no quote"
+d=$(crr sl_k "${H}cat <<'EOF'"$'\n# x \' y\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data"
+d=$(crr sl_l "${H}cat <<-EOF"$'\n\tit'"'s"$'\n\tEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a <<- heredoc ends at its tab-indented delimiter"
+d=$(crr sl_m "${H}echo \$((1<<EOF))"$'\nx=\'\n# \'; /tmp/evil\nEOF\n'); expm caught "$d" 'not resolved' "strip_line: a << inside (( )) is no heredoc: the quote after it is still judged"
+d=$(crr sl_n $'#!/usr/bin/env python3\nx = "it\'s"\n# it\'s fine\n\'\'\'doc\n# it\'s\n\'\'\'\n'); expm ok "$d" - "strip_line: control: a Python file is not read with the shell quote model (apostrophes in prose and docstrings)"
+d=$(crr sl_o "${H}echo '<<EOF'"$'\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed single quote starts no heredoc (seat B, PR 436): the open quote after it is still refused"
+d=$(crr sl_p "${H}echo \"a <<EOF\""$'\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed double quote starts no heredoc"
+d=$(crr sl_q "${H}cat <<E\"O\"F"$'\nbody\nEOF\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a heredoc delimiter quoted in the middle of a word is refused, not guessed"
+d=$(crr sl_r "${H}y=a"$'\n'"echo \${y/ #/}; /tmp/evil"$'\n'); expm caught "$d" 'absolute path' "strip_line: a # after a space inside \${..} is no comment"
+d=$(crr sl_s "${H}"$'out=x\nif ! grep -q a <<<"$out"; then fail=$((fail+1)); fi\n'); expm ok "$d" - "strip_line: control: a here-string next to \$((..)) on one line is no heredoc and no shift"
+d=$(crr sl_t "${H}cat <<\"EOF\""$'\n# it\'s\nEOF\ncat <<\\EOF\n# it\'s\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a double-quoted and a backslashed delimiter"
+d=$(crr sl_u "${H}x=\$((1<<2))"$'\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$((..)) is refused"
+d=$(crr sl_v "${H}cat <<EOF-X"$'\ndata\nEOF-X\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter the judge reads only in part is refused (seat A, PR 436)"
+d=$(crr sl_w "${H}cat <<'E-F'"$'\n\'\nE-F\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a quoted delimiter that is not a plain word is refused"
+d=$(crr sl_x "${H}echo \"\$(: ')\""$'\n#\')" ; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a quote inside \$( ) inside double quotes is read as shell"
+d=$(crr sl_y "${H}x=\$[1<<y]"$'\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$[ ] is refused"
+d=$(crr sl_z "${H}echo \"\${x:-'}\""$'\n#\'}" ; /tmp/evil\n'); expm caught "$d" 'single quote inside' "strip_line: a single quote inside \${ } inside double quotes is refused"
+d=$(crr sl_za "${H}cat <<EOF"$'\nx\n'); expm caught "$d" 'heredoc is still open' "strip_line: a heredoc still open at the end of the script is refused"
+d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit\'s\nEOF\n)\n# c\necho "$(echo "a" # c\n)" # d\n(cd x; ls) # e\ncase x in a) y;; esac\n'); expm ok "$d" - "strip_line: control: a heredoc in \$( ), nested double quotes in \$( ), a subshell and a case arm"
+d=$(crr sl_zc "${H}cat <<EOF#x"$'\nEOF\nit\'s\nEOF#x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by # (bash reads the whole word EOF#x) is refused (seat B, PR 436 round 2)"
+d=$(crr sl_zd "${H}cat <<EOF.x"$'\nEOF\nit\'s\nEOF.x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by a dot is refused"
+d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit\'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n(cat <<EOF)\ny\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, |, > or ) is read whole"
+d=$(crr sl_zf "${H}(( z = 1<<true ))"$'\nx=\'\n#\' ; echo MARK; /tmp/evil\ntrue\n'); expm caught "$d" 'not resolved' "strip_line: a << inside a bare (( )) is refused (seat A, PR 436 round 2)"
+d=$(crr sl_zg "${H}x=\"\$(case a in a) echo '"$'\n\'"\n# x" ;; esac)" ; echo MARK; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a case arm's ) inside \$( ) does not end the substitution (seat A, PR 436 round 2)"
+d=$(crr sl_zh "${H}echo a\\"$'\n#; echo MARK; /tmp/evil\n'); expm caught "$d" 'absolute path' "strip_line: a # line after a backslash-newline is part of the joined word, never a comment"
+d=$(crr sl_zi "${H}echo a \\"$'\n  # a real comment in the joined line\n  b\n'); expm ok "$d" - "strip_line: control: a continuation line that has a blank before # is a comment after the join"
+d=$(crr sl_zj "${H}cat <<EOF >/dev/null"$'\n# $(/tmp/evil)\nEOF\n'); expm caught "$d" 'absolute path' "strip_line: an unquoted heredoc body still runs \$( ) after a #, so the body is kept whole (seat B, PR 436 round 3)"
+d=$(crr sl_zk "${H}cat <<EOF >/dev/null"$'\nx # `/tmp/evil`\nEOF\n'); expm caught "$d" 'absolute path' "strip_line: the same with backticks"
+d=$(crr sl_zl "${H}cat <<'EOF' >/dev/null"$'\n# $(/tmp/evil)\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data, \$( ) in it runs nothing"
+d=$(crr sl_zm "${H}cat <<EOF"$'\nE\\\nOF\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line that ends in a backslash is refused (bash joins it, so the delimiter may be another line; seat A, PR 436 round 3)"
+d=$(crr sl_zn "${H}cat <<EOF"$'\nx $(echo \'\n#\' ; /tmp/evil)\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line whose \$( ) runs on to the next line is refused"
+d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm ok "$d" - "strip_line: control: an unquoted heredoc body with quotes and closed substitutions on one line"
+d=$(crr sl_zp "${H}"$'x=`echo a # c` ; /tmp/evil x\ny=`echo b # c`\n'); expm caught "$d" 'absolute path' "strip_line: a # inside backticks does not cut the line (bash ends the comment at the closing backtick; seat B, PR 436 round 4)"
+d=$(crr sl_zq "${H}"$'x=`date` # a comment after the pair\necho ok\n'); expm ok "$d" - "strip_line: control: a # after a closed backtick pair is a comment"
+d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
+d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'inside backticks' "strip_line: a << inside backticks is refused (bash gives it no body)"
+d=$(crr sl_zt "${H}"$'x=`echo a\n#` ; /tmp/evil\ny=`echo b\n#`\n'); expm caught "$d" 'still open' "strip_line: a # line inside backticks open from an earlier line is refused (bash ends the pair at the first backtick; seat A, PR 436 round 5)"
+for sep in $'\x0c' $'\x0b' $'\x1c' $'\xc2\x85' $'\xe2\x80\xa8'; do
+  d=$(crr "sl_sep_$RANDOM" "${H}: ${sep}#; /tmp/evil"$'\n'); expm caught "$d" 'line separator' "strip_line: a line separator bash does not read as one is refused (seat A, PR 436 round 5)"
+done
+d=$(crr sl_zu "${H}: x # a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: control: an ordinary comment after a command"
+d=$(crr sl_zv "${H}: \"\$(case"$'\ta in a) echo "x # c" ;; esac)" ; /tmp/evil'$'\n'); expm caught "$d" 'absolute path' "strip_line: case followed by a tab is a case (seat B, PR 436 round 5)"
+d=$(crr sl_zw "${H}x=\"\$(case\\ y)\""$'\ny=" #$(env echo MARK >&2)"\n: esac;#)"\n'); expm caught "$d" 'case followed by a backslash' "strip_line: case followed by a backslash is refused, not read as a case (seat A, PR 436 round 5 verification)"
+d=$(crr sl_zx "${H}x=\$(case\\"$'\n a) echo 1 ;;\nesac)\n'); expm caught "$d" 'case followed by a backslash' "strip_line: case followed by a backslash-newline is refused"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3354,7 +3412,8 @@ dl lc_e 'foo archive/vi' '[D("foo archive/vi")]' ok -
 dl lc_f 'echo \\\n  $(foo archive/vi)' '[D("echo \\")]' caught 'by a path'
 dl lc_g 'echo \\\n  $(foo archive/vi)' '[D("  $(foo archive/vi)")]' caught 'by a path'
 dl lc_h 'find . \\\n -exec dist/sed {} +' '[D("find . \\")]' caught 'program-running option' '["find"]'
-dl lc_i 'cat <<EOF\nline \\\ngit x\nEOF' '[D("git x")]' ok -
+dl lc_i 'cat <<"EOF"\nline \\\ngit x\nEOF' '[D("git x")]' ok -   # a quoted delimiter: the backslash is data, the lines stay apart (an unquoted body that ends in a backslash is refused)
+dl lc_ia 'cat <<EOF\nline \\\ngit x\nEOF' '[D("git x")]' caught 'heredoc body line'
 dl lc_j 'git status \\\n  archive/vi' '[D("git status \\")]' caught 'by a path'
 dl lc_k 'git status \\\n  b' '[D("git status \\")]' ok -
 dl lc_l 'tar -I sh x f' '[D("tar -I sh x f")]' ok - '["tar"]'
@@ -3504,7 +3563,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1470
+EXPECT=1526
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
