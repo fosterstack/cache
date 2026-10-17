@@ -78,8 +78,8 @@ our image:
 ```
 
 What it does in your account: it creates Inspector suppression rules for the *not affected* statements that name a package, one
-per statement, named `fosterstack-cache-v<version>-<CVE>` (a statement that covers more than one scope gets one rule per scope, the
-second and later ending in `-2`, `-3`). If no statement is suppressible the file holds no rule and the command does nothing. Each rule matches only that CVE on our exact image digests (each variant's
+per statement, named `fosterstack-cache-v<version>-<CVE>` (when one CVE gets more than one rule, whether from one statement with several scopes or from
+several statements, the second and later end in `-2`, `-3`). If no statement is suppressible the file holds no rule and the command does nothing. Each rule matches only that CVE on our exact image digests (each variant's
 index and its linux/amd64 and linux/arm64 images), and only the named package. It
 suppresses nothing on any other image, including other digests of your own builds on top of ours. The command stops at
 the first rule Inspector refuses.

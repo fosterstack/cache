@@ -135,8 +135,10 @@ check("R1-04 the Google line is exactly the constant",
 used = {x["status"] for x in json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))["statements"]}
 said = {"not_affected": "not affected", "fixed": "fixed", "affected": "affected", "under_investigation": "under investigation"}
 check("the page explains each status our VEX uses", all("*%s*" % said[u] in doc for u in used), sorted(u for u in used if "*%s*" % said[u] not in doc))
-check("the page explains only statuses our VEX uses", all(said[k] in {said[u] for u in used} or "*%s*" % said[k] not in doc for k in said),
-      [said[k] for k in said if k not in used and "*%s*" % said[k] in doc])
+word = {"not_affected": r"\bnot affected\b", "fixed": r"\bfixed\b", "affected": r"(?<!not )(?<!known )\baffected\b", "under_investigation": r"\bunder investigation\b"}
+check("the page mentions no status our VEX does not use, emphasized or not", all(k in used or not re.search(word[k], doc, re.I) for k in word),
+      [k for k in word if k not in used and re.search(word[k], doc, re.I)])
+check("…and the guard sees an unused status explained in plain text (Codex #381 r5)", re.search(word["fixed"], doc + "\nA fixed status means it was fixed.\n", re.I) is not None and "fixed" not in used)
 print("vex-guide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
