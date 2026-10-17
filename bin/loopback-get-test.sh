@@ -138,6 +138,31 @@ tok t "$TU" -sSf "${TU}&audience=x#frag"
 if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an audience with a fragment"; else bad "audience with a fragment (rc=$RC)"; fi
 tok t "$TU" -sSf "${TU}&audience="
 if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an empty audience"; else bad "empty audience (rc=$RC)"; fi
+# --- a refused or failed token request never prints the bearer value or the request token (advisor, Oct 17): not on stdout, not on stderr, whatever the failure
+FAKE=fakebearer-Zx81Qq-do-not-print
+TOKURL="https://pipelines.actions.example.invalid/_apis/token?x=1"
+cat > "$work/bin/$STUBNAME" <<'STUB'
+#!/bin/sh
+case "$STUB_MODE" in
+  http) echo "fetch: (22) The requested URL returned error: 403" >&2; exit 22 ;;
+  net)  echo "fetch: (6) Could not resolve host" >&2; exit 6 ;;
+  *)    echo "stub-ran" ;;
+esac
+STUB
+leakcheck() {   # leakcheck NAME MODE URL...: the helper refuses or the fetch fails, and neither stream names the bearer value
+  local name="$1" mode="$2"; shift 2
+  out=$(STUB_MODE="$mode" ACTIONS_ID_TOKEN_REQUEST_URL="$TOKURL" ACTIONS_ID_TOKEN_REQUEST_TOKEN="$FAKE" sh "$H" -sSf -H "Authorization: bearer $FAKE" "$@" 2>&1); rc=$?
+  case "$out" in *"$FAKE"*) bad "no leak: $name (the bearer value is in the output)";; *) if [ "$rc" != 0 ]; then ok "no leak: $name"; else bad "no leak: $name (expected a failure, rc=0)"; fi;; esac
+}
+leakcheck "a refused URL (another host)" ok "https://example.com/_apis/token?x=1&audience=sigstore"
+leakcheck "a refused URL (suffix after the token URL)" ok "${TOKURL}x&audience=sigstore"
+leakcheck "a refused audience" ok "${TOKURL}&audience=a b"
+leakcheck "an HTTP error from the fetch program" http "${TOKURL}&audience=sigstore"
+leakcheck "a network error from the fetch program" net "${TOKURL}&audience=sigstore"
+leakcheck "no URL at all" ok
+leakcheck "an option that is not allowed" ok --config /tmp/x "${TOKURL}&audience=sigstore"
+# the helper never traces itself and never echoes its arguments
+if grep -nE '(^|[[:space:];])set +-[A-Za-z]*x|set +-o +xtrace|echo +"?\$[@*]|printf .*"\$[@*]"' "$H" > /dev/null; then bad "the helper traces or echoes its arguments"; else ok "the helper never traces itself or echoes its arguments"; fi
 # --- the documented smoke commands run through the helper
 grep -q "^lines.append(.$STUBNAME() { sh bin/loopback-get.sh" "$root/bin/acceptance-k8s-smoke.py" && ok "the k8s smoke script routes the documented commands through the helper" || bad "the k8s smoke script does not route the documented commands through the helper"
 # pin-age reads a line that starts with an assignment to a variable named url as the place a script downloads from, which no ruling can cover: the helper has none
@@ -163,6 +188,15 @@ for f in acceptance-serve.sh acceptance-egress.sh check-artifacts.sh check-fips.
   d=$(grep -n '^lg\(in\)\?() ' "$root/bin/$f" | head -1 | cut -d: -f1)
   fn=$(grep -n '^[a-z_0-9]*() *(' "$root/bin/$f" | head -1 | cut -d: -f1)
   if [ -n "$d" ] && { [ -z "$fn" ] || [ "$d" -lt "$fn" ]; }; then ok "bin/$f defines its loopback function at the top level"; else bad "bin/$f defines its loopback function inside a step (line ${d:-none}, first step line ${fn:-none})"; fi
+done
+# the three requests to the runner's token endpoint go through the helper, with the bearer in the header option and nothing else changed
+for f in witnessed.sh chain-hostile-step.sh; do
+  n=$(grep -v '^[[:space:]]*#' "$root/bin/$f" | grep -c "\b$STUBNAME\b" || true)
+  lim=0
+  # the hostile step keeps one fixture string that spells a malicious step name
+  [ "$f" = chain-hostile-step.sh ] && lim=1
+  if [ "$n" -le "$lim" ]; then ok "bin/$f has no fetch program of its own ($n)"; else bad "bin/$f still names the fetch program $n time(s)"; fi
+  grep -q 'sh bin/loopback-get.sh ' "$root/bin/$f" && ok "bin/$f calls the helper" || bad "bin/$f does not call the helper"
 done
 echo "loopback-get: $pass passed, $failn failed"
 [ "$failn" = 0 ]

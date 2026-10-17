@@ -48,15 +48,17 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "35d5ea6f3ceb69ab76e373d382fba50c65658346634a2818d9d36b677129e7f8",
+      "sha256": "af35a2e03e4a7ec7d1e82761b5b748700b9d7d42de5ca58b1d305a4771c5c9e3",
       "tools": [
-        "curl",
-        "bash",
         "at",
-        "sed"
+        "bash",
+        "curl",
+        "sed",
+        "sh"
       ],
       "runs": [
-        "bin/install-scanner.sh"
+        "bin/install-scanner.sh",
+        "bin/loopback-get.sh"
       ],
       "signs": "other",
       "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)"
@@ -132,19 +134,22 @@
     {
       "path": "bin/witnessed.sh",
       "tools": [
-        "script",
-        "command",
-        "timeout",
         "at",
-        "git",
+        "bash",
+        "command",
         "curl",
         "exec",
-        "bash"
+        "git",
+        "script",
+        "sh",
+        "timeout"
       ],
-      "runs": [],
+      "runs": [
+        "bin/loopback-get.sh"
+      ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "bfd75d3ee399b92efd0e3fa0843977f22b6550fd4ef945ece7da03ba52b5a154",
+      "sha256": "4d7ecb9b7a2ed64e2323b507450f056fdd388aceac8f51fd6f9b3861e6a9d0be",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
