@@ -27,6 +27,8 @@ cd bench/gradle-sample
 # an empty cache.
 step_07() (
 set -euo pipefail
+LGROOT=$PWD
+lg() { (cd "$LGROOT" && sh bin/loopback-get.sh "$@"); }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 : > /tmp/task-keys.txt
 while read -r task; do
   key=$(grep -oE "Build cache key for task '${task}' is [0-9a-f]+" /tmp/cold.log | awk '{print $NF}' | head -1)
@@ -34,11 +36,11 @@ while read -r task; do
     echo "::error::no cache key logged for expected task ${task} — did it execute as cacheable?" >&2; exit 1
   fi
   echo "${task} ${key}" >> /tmp/task-keys.txt
-  code=$(curl -s -o /dev/null -w '%{http_code}' -I "localhost:18095/${key}")
+  code=$(lg -s -o /dev/null -w '%{http_code}' -I "localhost:18095/${key}")
   [ "${code}" = "200" ] || { echo "::error::entry for ${task} (key ${key}) not on the server (HEAD=${code})" >&2; exit 1; }
   echo "stored: ${task} -> ${key}"
 done < bench/gradle-sample/expected-from-cache.txt
-curl -s localhost:18095/metrics > /tmp/metrics-cold.txt
+lg -s localhost:18095/metrics > /tmp/metrics-cold.txt
 hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/metrics-cold.txt)
 [ "${hits:-0}" -eq 0 ] || { echo "::error::cold build had ${hits} hits against an empty cache" >&2; exit 1; }
 )
@@ -92,7 +94,7 @@ step_12() (
 set -euo pipefail
 expected=$(wc -l < bench/gradle-sample/expected-from-cache.txt | tr -d ' ')
 cold_puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-cold.txt)
-curl -s localhost:18095/metrics > /tmp/metrics-warm.txt
+lg -s localhost:18095/metrics > /tmp/metrics-warm.txt
 hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/metrics-warm.txt)
 warm_puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-warm.txt)
 echo "warm: hits=${hits:-0} (>= ${expected} required); PUTs cold=${cold_puts:-0} warm-cumulative=${warm_puts:-0} (must be equal)"

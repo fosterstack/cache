@@ -72,13 +72,12 @@ set -euo pipefail
 # Use ONLY the credentials the documented env block injected (never
 # read out-of-band from the Secret) against the cluster-internal
 # Service. A broken mapping yields empty creds -> 401 -> failure.
+# The requests run through the loopback helper (REQ-SUP-001-AC24), fed on stdin to the pod's own shell (nothing is written in the pod).
+lgin() { "$@" < bin/loopback-get.sh; }
 # shellcheck disable=SC2016
-kubectl exec fscache-runner -- sh -c '
-  set -e
-  curl -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" -X PUT --data-binary runner-roundtrip http://fscache/runnerkey123 -o /dev/null
-  got=$(curl -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" http://fscache/runnerkey123)
-  [ "$got" = runner-roundtrip ] || { echo "runner-pod authenticated round-trip failed (got: $got)" >&2; exit 1; }
-'
+lgin kubectl exec -i fscache-runner -- sh -c 'sh -s -- -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" -X PUT --data-binary runner-roundtrip http://fscache/runnerkey123 -o /dev/null'
+got=$(lgin kubectl exec -i fscache-runner -- sh -c 'sh -s -- -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" http://fscache/runnerkey123')
+[ "$got" = runner-roundtrip ] || { echo "runner-pod authenticated round-trip failed (got: $got)" >&2; exit 1; }
 )
 
 # stage-acceptance-k8s.yml, job k8s, step 10: run the documented port-forward smoke commands

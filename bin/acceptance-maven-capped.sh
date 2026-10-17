@@ -9,6 +9,8 @@ set -eo pipefail
 # acceptance.yml, job acceptance-maven, step 17: REQ-EVICT-002-AC4 — oversized module output never caches, the build never cares
 step_17() (
 set -euo pipefail
+LGROOT=$PWD
+lg() { (cd "$LGROOT" && sh bin/loopback-get.sh "$@"); }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 # One incompressible 512 KiB resource, generated ONCE and copied
 # byte-for-byte into BOTH workspaces. A per-workspace random file
 # (the old bug) gave the app module a DIFFERENT cache key in a and
@@ -70,7 +72,7 @@ if find /tmp/mvn-bc-capped-a /tmp/mvn-bc-capped-b -type f -path '*/app/*/fscache
 fi
 # ...and confirm directly on the server that the real app key holds
 # no artifact: HEAD the exact remote path -> 404.
-app_code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' \
+app_code=$(lg -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' \
   -I "http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar")
 [ "$app_code" = "404" ] \
   || { echo "::error::app/${app_key}/app.jar is retrievable from the remote (${app_code}) - the oversized artifact was stored" >&2; exit 1; }
@@ -93,12 +95,12 @@ echo "lib sha256: a=${lib_a} b=${lib_b}"
 # Mechanism check (kept, but NOT a substitute for the build evidence
 # above): the server's rejection contract, probed directly.
 head -c 524288 /dev/urandom > /tmp/mvn-oversized-probe.bin
-hdr=$(curl -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT \
+hdr=$(lg -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT \
   --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)
 grep -q '^HTTP/[0-9.]* 413' <<<"$hdr" || { echo "::error::oversized probe was not 413" >&2; exit 1; }
 grep -qi '^X-FSCache-Reject: entry-exceeds-cache-cap' <<<"$hdr" \
   || { echo "::error::413 lacks the X-FSCache-Reject: entry-exceeds-cache-cap header" >&2; exit 1; }
-code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' -I http://localhost:18099/maven/oversizedprobe)
+code=$(lg -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' -I http://localhost:18099/maven/oversizedprobe)
 [ "$code" = "404" ] || { echo "::error::rejected entry is retrievable (${code}) - it was stored" >&2; exit 1; }
 echo "REQ-EVICT-002-AC4: identical app key ${app_key} across builds; oversized app upload 413'd and absent from the remote; small lib restored remotely byte-for-byte; reject mechanism verified"
 )

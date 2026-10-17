@@ -21,6 +21,8 @@ capped_build() { ./gradlew build --build-cache -PcacheUrl=http://localhost:18096
 # locally. A later small-only build must still reuse the remote cache.
 step_17() (
 set -euo pipefail
+LGROOT=$PWD
+lg() { (cd "$LGROOT" && sh bin/loopback-get.sh "$@"); }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 gen_big_java() { # target-file, package
   mkdir -p "$(dirname "$1")"
   {
@@ -60,7 +62,7 @@ find /tmp/gradle-recovery -name build -type d -not -path '*/.gradle/*' -exec rm 
 step_18() (
 set -euo pipefail
 key_of() { grep -oE "Build cache key for task '$1' is [0-9a-f]+" /tmp/capped-cold.log | awk '{print $NF}' | head -1; }
-head_code() { curl -s -o /dev/null -w '%{http_code}' -I "localhost:18096/$1"; }
+head_code() { lg -s -o /dev/null -w '%{http_code}' -I "localhost:18096/$1"; }
 
 # (2) A small task that finished BEFORE the 413 uploaded and IS on
 # the server.
@@ -96,7 +98,7 @@ done
 
 # The cap really fired, a small entry really stored, and Gradle
 # really disabled the remote cache after the error.
-curl -s localhost:18096/metrics > /tmp/capped-metrics.txt
+lg -s localhost:18096/metrics > /tmp/capped-metrics.txt
 put201=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/capped-metrics.txt)
 put413=$(awk '/^fscache_http_requests_total\{method="PUT",status="413"\}/ {print $2}' /tmp/capped-metrics.txt)
 echo "capped server (after cold build): 201s=${put201:-0} 413s=${put413:-0}"
@@ -159,11 +161,11 @@ set -euo pipefail
 # AND the entry is not retrievable. A mechanism check only — NOT a
 # substitute for the real build evidence asserted above.
 head -c 65536 /dev/zero | tr '\0' 'y' > /tmp/oversized-probe.bin
-hdr=$(curl -s -D - -o /dev/null -X PUT --data-binary @/tmp/oversized-probe.bin http://localhost:18096/oversizedprobe)
+hdr=$(lg -s -D - -o /dev/null -X PUT --data-binary @/tmp/oversized-probe.bin http://localhost:18096/oversizedprobe)
 grep -q '^HTTP/[0-9.]* 413' <<<"$hdr" || { echo "::error::oversized probe was not 413" >&2; exit 1; }
 grep -qi '^X-FSCache-Reject: entry-exceeds-cache-cap' <<<"$hdr" \
   || { echo "::error::413 lacks the X-FSCache-Reject: entry-exceeds-cache-cap header" >&2; exit 1; }
-code=$(curl -s -o /dev/null -w '%{http_code}' -I http://localhost:18096/oversizedprobe)
+code=$(lg -s -o /dev/null -w '%{http_code}' -I http://localhost:18096/oversizedprobe)
 [ "$code" = "404" ] || { echo "::error::rejected entry is retrievable (${code}) - it was stored" >&2; exit 1; }
 echo "REQ-EVICT-002-AC3: both builds succeeded; oversized 413'd and absent; recovery confirmed"
 )

@@ -5,6 +5,8 @@
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+LGROOT=$PWD
+lgin() { (cd "$LGROOT" && "$@" < bin/loopback-get.sh); }   # the loopback helper, fed on stdin to the client inside the shared network namespace (REQ-SUP-001-AC24)
 set -eo pipefail
 
 # stage-acceptance-egress.yml, job egress, step 2: capture from before startup, prove the monitor, run both policies
@@ -263,7 +265,7 @@ run_scenario() {
   # ordinary and the --internal networks.
   local ok=0 t
   for ((t = 1; t <= 30; t++)); do
-    if docker exec "$owner" curl -sf "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then ok=1; break; fi
+    if lgin docker exec -i "$owner" sh -s -- -sf "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then ok=1; break; fi
     sleep 1
   done
   if [ "$ok" != 1 ]; then
@@ -278,13 +280,13 @@ run_scenario() {
   for ((i = 1; i <= 20; i++)); do
     key="k${i}"
     payload="fostercache-payload-${i}-abcdefgh"
-    put=$(docker exec "$owner" curl -s -o /dev/null -w '%{http_code}' -X PUT --data-binary "$payload" "http://127.0.0.1:8080/${key}")
+    put=$(lgin docker exec -i "$owner" sh -s -- -s -o /dev/null -w '%{http_code}' -X PUT --data-binary "$payload" "http://127.0.0.1:8080/${key}")
     case "$put" in
       200|201) ;;
       *) echo "::error::${label}: PUT ${key} returned status ${put} (expected 200/201)" >&2
          freeze_capture "$label"; teardown "$label"; return 1;;
     esac
-    resp=$(docker exec "$owner" curl -s -w $'\n%{http_code}' "http://127.0.0.1:8080/${key}")
+    resp=$(lgin docker exec -i "$owner" sh -s -- -s -w $'\n%{http_code}' "http://127.0.0.1:8080/${key}")
     get=${resp##*$'\n'}
     body=${resp%$'\n'*}
     if [ "$get" != 200 ]; then
