@@ -101,6 +101,7 @@ mkrepo() { rm -rf "$work/rp"; mkdir -p "$work/rp"; cp -R "$fx/repo/." "$work/rp/
   printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)" "$(shasum -a 256 "$fx/archive/aarch64/APKINDEX.tar.gz" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-index.sha256"; }   # the record names the index the archive holds now
 rfe=(env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live")
 RUNNER=run_s2
+GHPATHS="python3 -c 'import json,sys;print(chr(10).join(a[\"path\"] for a in json.load(open(sys.argv[1]))[\"variables\"][\"input\"][\"fileChanges\"][\"additions\"]))' '$CALLS.graphql'"   # the paths of the commit the API was asked to make (the old assertions read them from git add)
 mkrepo; run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 if [ "$(rc)" = 0 ] && [ "$(grep -c '^apko lock ' "$CALLS")" -ge 3 ]; then ok; else bad "rule 44" "refresh: apko lock runs for production, fips and the melange environment (>= 3 calls)"; fi
 if [ "$(rc)" = 0 ] && grep '^apko lock ' "$CALLS" | grep -q -- '--repository-append https://packages.wolfi.dev/os'; then ok; else bad "rule 44" "refresh: the locks are made against live Wolfi (--repository-append https://packages.wolfi.dev/os)"; fi
@@ -202,6 +203,7 @@ t "rule 48" "refresh: ...archive and repo unchanged" test "$(treehash "$work/ar"
 mkdir -p "$work/stubs3"; cat >"$work/stubs3/git" <<'G'
 #!/bin/bash
 echo "git $*" >>"$CALLS"
+case "$*" in *"rev-parse HEAD"*) echo cafe0123;; esac
 case "$*" in *ls-remote*"refs/heads/${GIT_STUB_EXISTING:-none}") echo "deadbeef	refs/heads/${GIT_STUB_EXISTING}";; esac
 exit 0
 G
@@ -373,7 +375,7 @@ G
 cat >"$work/stubs4/gh" <<'G'
 #!/bin/bash
 echo "gh $*" >>"$CALLS"
-case "$*" in "api graphql"*) [ -z "${GH_STUB_API_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }; _in=; _p=; for _a in "$@"; do [ "$_p" = --input ] && _in=$_a; _p=$_a; done; [ -z "$_in" ] || cp "$_in" "$CALLS.graphql"; echo stubsignedoid0000000000000000000000000000; exit 0;; "api repos/"*"/commits/"*) echo "${GH_STUB_VERIFIED:-true}"; exit 0;; esac
+case "$*" in "api graphql"*) [ -z "${GH_STUB_API_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }; _in=; _p=; for _a in "$@"; do [ "$_p" = --input ] && _in=$_a; _p=$_a; done; [ -z "$_in" ] || cp "$_in" "$CALLS.graphql"; echo abcdef0123456789abcdef0123456789abcdef01; exit 0;; "api repos/"*"/commits/"*) echo "${GH_STUB_VERIFIED:-true}"; exit 0;; esac
 [ -z "${GH_STUB_CLOSED_RAW:-}" ] || case "$*" in "pr list"*"--state closed"*) echo "$GH_STUB_CLOSED_RAW"; exit 0;; esac
 case "$*" in "pr list"*"--state closed"*) i=50; sep=; printf '['; for b in ${GH_STUB_CLOSED:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"mergedAt":null,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done; for b in ${GH_STUB_MERGED:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"mergedAt":"2026-10-09T00:00:00Z","author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
   for b in ${GH_STUB_CLOSED_FORK:-}; do i=$((i+10)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":true,"mergedAt":null,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
@@ -1089,12 +1091,12 @@ mkrepo; tpl_before=$(tsha "$work/rp"); gcheck "$work/rp" >/dev/null 2>&1 || echo
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 21" "refresh: after a closure change the generator --check passes on the job's output (the job edits the lock; the recipes are the generator's output)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'zlib=1.3.2-r0' '$work/rp/build/locks/melange.lock' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange.yaml' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange-fips.yaml'" && t "rule 21" "...--check passes" gcheck "$work/rp"
 t "rule 21" "...the template is byte-for-byte what it was (an automated change never edits the template or its pin)" test "$(tsha "$work/rp")" = "$tpl_before"
-t "rule 21" "...and the daily PR adds the lock and the two regenerated recipes, never the template" bash -c "grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'melange.lock' && grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'build/melange.yaml' && ! grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'tmpl'"
+t "rule 21" "...and the daily PR adds the lock and the two regenerated recipes, never the template" bash -c "$GHPATHS | grep -q 'melange.lock' && $GHPATHS | grep -q 'build/melange.yaml' && ! $GHPATHS | grep -q 'tmpl'"
 fr; tpl_before=$(tsha "$work/rp3" 2>/dev/null || shasum -a 256 "$work/rp3/build/melange.yaml.tmpl" | cut -d' ' -f1)
 mkdir -p "$work/gr3/lib/fips140"; echo "v1.1.0-deadbeef" >"$work/gr3/lib/fips140/certified.txt"
 run_s4 "$RF" fips-module --pr-author app/bot --go-root "$work/gr3" --repo-dir "$work/rp3"
 t "rule 21" "fips-module: after the job the generator --check passes, the data file holds the new module, and the template is unchanged" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qx 'v1.1.0-deadbeef' '$work/rp3/build/locks/fips-module.txt' && test \"\$(shasum -a 256 '$work/rp3/build/melange.yaml.tmpl' | cut -d' ' -f1)\" = '$tpl_before'" && t "rule 21" "...--check passes" gcheck "$work/rp3"
-t "rule 21" "fips-module: the PR adds the data file and the regenerated FIPS recipe, never the template" bash -c "grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'fips-module.txt' && grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'melange-fips.yaml' && ! grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'tmpl'"
+t "rule 21" "fips-module: the PR adds the data file and the regenerated FIPS recipe, never the template" bash -c "$GHPATHS | grep -q 'fips-module.txt' && $GHPATHS | grep -q 'melange-fips.yaml' && ! $GHPATHS | grep -q 'tmpl'"
 
 # ---- Codex security-final on P3 (findings 2, 3, 5) ----------------------------------------------------------------------------------------------------------------------
 # F2: the archived inputs the COMMITTED locks require are checked before either guard can return success
@@ -1371,8 +1373,7 @@ adds = d["fileChanges"]["additions"]
 assert adds and not d["fileChanges"].get("deletions"), adds
 for a in adds:
     assert base64.b64decode(a["contents"]) == open(sys.argv[2] + "/" + a["path"], "rb").read(), a["path"]
-head = subprocess.run(["git", "-C", sys.argv[2], "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-assert d["expectedHeadOid"] == head, (d["expectedHeadOid"], head)
+assert d["expectedHeadOid"] == "cafe0123", d["expectedHeadOid"]      # the commit the stubbed git reports as the job's start
 assert d["branch"]["branchName"].startswith("refresh/"), d["branch"]
 assert d["message"]["headline"], d["message"]
 PY
@@ -1383,7 +1384,7 @@ sgrun GH_STUB_API_FAIL=1
 t "AC34" "signed commit: when the API cannot create the commit no pull request is opened, the branch is deleted and the job fails (exit 1)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete|^git( -C [^ ]+)? push .*:refs/heads/refresh/' '$CALLS'"
 sgrun GH_STUB_VERIFIED=true
 t "AC34" "signed commit: nothing is committed or pushed to main, and the only branch pushed is the refresh/ branch at the commit the job started from" bash -c "! grep -Eq '^git( -C [^ ]+)? push .*(main|HEAD:main)' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*refresh/' '$CALLS'"
-t "AC34" "signed commit: the verification is asked for the commit the API returned (the oid in its reply)" bash -c "grep -Eq '^gh api repos/.*/commits/stubsignedoid' '$CALLS'"
+t "AC34" "signed commit: the verification is asked for the commit the API returned (the oid in its reply)" bash -c "grep -Eq '^gh api repos/.*/commits/abcdef0123456789' '$CALLS'"
 # ---- round 1 of the second review (both seats named these; the fixes are tests-first) ----------------------------------------------------------
 # AC21: locks that disagree ONLY in the package identity checksum or the signature checksum are refused like a data-checksum disagreement
 for fld in identity signature; do
@@ -1464,7 +1465,7 @@ t "AC29" "refresh --plan-dir: the plan names a refresh/ branch and the changed l
 cp -R "$work/ar" "$work/ar-keep"
 run_s2 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
 t "AC29" "open-pr: exactly one pull request is opened, from a refresh/ branch, never merged, and nothing is pushed to main" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -q refresh && ! grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -Eq '( |:|/)main( |\$)' && ! grep -Eq '^gh pr (merge|review)|--admin|--auto' '$CALLS'"
-t "AC29" "open-pr: the pull request carries build/archive.json, a valid pointer naming the stored digest and the archive's files" bash -c "python3 '$rfd/rfcopy/bin/archive-verify.py' verify --pointer '$work/rp/build/archive.json' --dir '$work/ar' --pushed-digest '$DIGEST_X' && grep -Eq '^git( -C [^ ]+)? add .*build/archive.json' '$CALLS'"
+t "AC29" "open-pr: the pull request carries build/archive.json, a valid pointer naming the stored digest and the archive's files" bash -c "python3 '$rfd/rfcopy/bin/archive-verify.py' verify --pointer '$work/rp/build/archive.json' --dir '$work/ar' --pushed-digest '$DIGEST_X' && $GHPATHS | grep -q '^build/archive.json\$'"
 mkrepo; rm -rf "$work/plan"
 run_s2 "${rfn[@]}" "$RF" refresh --plan-dir "$work/plan" --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 run_s2 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp"

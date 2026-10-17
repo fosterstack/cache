@@ -37,6 +37,31 @@ die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 usage() { die "usage: $SELF refresh --repo-dir DIR --archive DIR [--plan-dir DIR] | $SELF fips-module --go-root DIR --repo-dir DIR [--plan-dir DIR] | $SELF open-pr --plan-dir DIR --repo-dir DIR [--archive DIR --archive-digest sha256:HEX] | $SELF bootstrap --repo-dir DIR --archive DIR"; }
 
 # open_pr BRANCH TITLE BODY PATH...: branch, commit, push the branch (never main), open the PR (never merge it)
+# REQ-REFRESH-001-AC34: the pull request's commit through the API. $1 branch (already pushed), $2 the commit it points at, $3 headline, $4 body, then the repository paths.
+signed_commit() {
+  local branch=$1 base=$2 headline=$3 cbody=$4 oid ver; shift 4
+  /usr/bin/python3 -I -B - "$repo" "$tmp/commit-input.json" "$branch" "$base" "$headline" "$cbody" "$@" <<'PY' || return 1
+import base64, json, os, sys
+repo, out, branch, base, headline, body = sys.argv[1:7]
+adds = []
+for p in sys.argv[7:]:
+    if p.startswith("/") or ".." in p.split("/") or not os.path.isfile(repo + "/" + p):
+        print("refresh-inputs.sh: %r is not a file of the repository; no commit was made" % p, file=sys.stderr); sys.exit(1)
+    adds.append({"path": p, "contents": base64.b64encode(open(repo + "/" + p, "rb").read()).decode()})
+q = "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}"
+inp = {"branch": {"repositoryNameWithOwner": os.environ.get("GITHUB_REPOSITORY", "fosterstack/cache"), "branchName": branch}, "message": {"headline": headline, "body": body},
+       "fileChanges": {"additions": adds}, "expectedHeadOid": base}
+json.dump({"query": q, "variables": {"input": inp}}, open(out, "w"))
+PY
+  oid=$(cd "$repo" && /usr/bin/gh api graphql --input "$tmp/commit-input.json" -q '.data.createCommitOnBranch.commit.oid') \
+    || { echo "refresh-inputs.sh: the API could not create the commit on $branch; opening no pull request" >&2; return 1; }
+  case $oid in *[!0-9a-f]*|'') echo "refresh-inputs.sh: the API returned no commit id; opening no pull request" >&2; return 1;; esac
+  [ "${#oid}" -eq 40 ] || { echo "refresh-inputs.sh: the API returned no commit id; opening no pull request" >&2; return 1; }
+  ver=$(cd "$repo" && /usr/bin/gh api "repos/{owner}/{repo}/commits/$oid" -q '.commit.verification.verified') \
+    || { echo "refresh-inputs.sh: could not ask whether commit $oid is verified; opening no pull request" >&2; return 1; }
+  [ "$ver" = true ] || { echo "refresh-inputs.sh: commit $oid on $branch is not verified by GitHub (main requires signed commits); opening no pull request" >&2; return 1; }
+  echo "signed commit $oid on $branch (verified by GitHub)"
+}
 open_pr() {
   local branch=$1 title=$2 body=$3; shift 3
   if [ -n "$plan_dir" ] && [ "$cmd" != open-pr ]; then   # staged: the pull request is written down and opened later by `open-pr`, once the archive is stored (rules 6 and 7)
@@ -79,11 +104,15 @@ PY
     n=$((n+1)); [ $n -le 9 ] || die "the branch name $base and its numbered variants are all taken on the remote" 1
     branch=$base-$n
   done
-  local startbr startsha rc=0
+  local startbr startsha rc=0 pushed=
   startbr=$(/usr/bin/git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   startsha=$(/usr/bin/git -C "$repo" rev-parse HEAD 2>/dev/null || true)
-  /usr/bin/git -C "$repo" checkout -b "$branch" && /usr/bin/git -C "$repo" add -- "$@" && /usr/bin/git -C "$repo" commit -q -m "$title" -m "$body" \
-    && /usr/bin/git -C "$repo" push -q origin "$branch" && (cd "$repo" && /usr/bin/gh pr create --base main --head "$branch" --title "$title" --body "$body") || rc=$?
+  # REQ-REFRESH-001-AC34: main requires signed commits, so the one commit is made through the API (GitHub signs what the job's App token creates), on a branch that was
+  # pushed at the commit the job started from (nothing new to sign locally); the pull request is opened only for a commit the API reports as verified
+  { [ -n "$startsha" ] && /usr/bin/git -C "$repo" checkout -b "$branch" && /usr/bin/git -C "$repo" push -q origin "$branch" && pushed=1 \
+    && signed_commit "$branch" "$startsha" "$title" "$body" "$@" \
+    && (cd "$repo" && /usr/bin/gh pr create --base main --head "$branch" --title "$title" --body "$body"); } || rc=$?
+  [ "$rc" = 0 ] || [ -z "$pushed" ] || /usr/bin/git -C "$repo" push -q origin --delete "$branch" >/dev/null 2>&1 || true   # no half-made branch is left behind
   # back to where the job started, whether or not a step failed: a later step of the same job (the FIPS check) must not branch from this commit.
   # A detached start is restored by its commit.
   if [ -n "$startbr" ] && [ "$startbr" != HEAD ]; then /usr/bin/git -C "$repo" checkout -q "$startbr" || { echo "refresh-inputs.sh: could not go back to $startbr; a later step would branch from the refresh commit" >&2; rc=1; }
