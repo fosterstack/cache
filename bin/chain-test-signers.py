@@ -112,8 +112,9 @@ def strip_lines(lines, base=None):
                 errs.append("line %d: case followed by a backslash is not resolved (bash reads case\\ + one character as an ordinary word, or joins the next line)" % (n + 1))
             if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
                 if ch == "c":
-                    if "dq" in st and any(c in ("cmd", "bt", "paren") for c in st[len(st) - 1 - st[::-1].index("dq"):]):
-                        errs.append("line %d: a case inside $( ), backticks or ( ) inside double quotes is not resolved (the command reader closes the group at the case arm's ))" % (n + 1))
+                    last = max((k for k, c in enumerate(st) if c in ("dq", "brace")), default=None)
+                    if last is not None and any(c in ("cmd", "bt", "paren") for c in st[last:]):
+                        errs.append("line %d: a case inside $( ), backticks or ( ) inside double quotes or ${ } is not resolved (the command reader closes the group at the case arm's ))" % (n + 1))
                     st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
                 if l[i:i + 4] == "esac" and top == "case": st.pop(); skip = i + 3; continue
             if top == "sq":
@@ -1103,12 +1104,16 @@ def _word(s, i, cmds):
     return j, s[i:j], "".join(parts)
 
 def _lex(s, i, closer, cmds):
-    n, items, kw = len(s), [], None
+    n, items, kw, depth = len(s), [], None, 0
     while i < n:
         c = s[i]
         if c in " \t": i += 1; continue
+        if closer == ")" and c == "(":                      # a group, array, function paren or (( )) inside the substitution: its ) is not the end of it
+            depth += 1; _flush(s, items, i, cmds); i += 1; continue
         if closer == ")" and c == ")":
-            _flush(s, items, i, cmds); return i + 1
+            _flush(s, items, i, cmds); i += 1
+            if depth: depth -= 1; continue
+            return i
         m = _REDIR_RE.match(s, i)
         if m and not (m.end() < n and s[m.end()] == "(" and m.group(0) in ("<", ">")):
             j = m.end()
