@@ -3244,6 +3244,10 @@ d=$(crr sl_zl "${H}cat <<'EOF' >/dev/null"$'\n# $(/tmp/evil)\nEOF\necho ok\n'); 
 d=$(crr sl_zm "${H}cat <<EOF"$'\nE\\\nOF\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line that ends in a backslash is refused (bash joins it, so the delimiter may be another line; seat A, PR 436 round 3)"
 d=$(crr sl_zn "${H}cat <<EOF"$'\nx $(echo \'\n#\' ; /tmp/evil)\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line whose \$( ) runs on to the next line is refused"
 d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm ok "$d" - "strip_line: control: an unquoted heredoc body with quotes and closed substitutions on one line"
+d=$(crr sl_zp "${H}"$'x=`echo a # c` ; /tmp/evil x\ny=`echo b # c`\n'); expm caught "$d" 'absolute path' "strip_line: a # inside backticks does not cut the line (bash ends the comment at the closing backtick; seat B, PR 436 round 4)"
+d=$(crr sl_zq "${H}"$'x=`date` # a comment after the pair\necho ok\n'); expm ok "$d" - "strip_line: control: a # after a closed backtick pair is a comment"
+d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
+d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'inside backticks' "strip_line: a << inside backticks is refused (bash gives it no body)"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3406,7 +3410,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1374
+EXPECT=1378
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

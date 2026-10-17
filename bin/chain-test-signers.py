@@ -143,18 +143,21 @@ def strip_lines(lines, base=None):
             elif ch == "<" and nxt == "<" and l[i - 1:i] != "<" and l[i + 2:i + 3] != "<":
                 if top in ("arith", "brk"):
                     errs.append("line %d: a << inside $(( )) or $[ ] is a shift or a heredoc and is not resolved" % (n + 1))
+                elif top == "bt":
+                    errs.append("line %d: a << inside backticks is not resolved (bash reads the backtick text on its own)" % (n + 1))
                 elif top != "brace":
                     tab = l[i + 2:i + 3] == "-"
                     m = HEREDOC_WORD.match(l, i + 2 + tab)
                     if m: pend.append((m.group(1) or m.group(2) or m.group(3) or m.group(4), tab, m.group(4) is None))
                     else: errs.append("line %d: a << whose delimiter is not a plain word is not resolved" % (n + 1))
                 skip = i + 1
-            elif ch == "#" and i > 0 and prev_ws and top not in DATA:
+            elif ch == "#" and i > 0 and prev_ws and top not in DATA and top != "bt":      # inside backticks bash ends the comment at the closing backtick: the line is kept whole
                 cut = i; break
             prev_ws = ch.isspace()
         cont = esc and cut is None
         out.append(l if cut is None else l[:cut])
         if pend:
+            if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
             if st and st[-1] in ("sq", "dq", "ansi"): errs.append("line %d: a heredoc is started on a line that leaves a quote open and is not resolved" % (n + 1))
             else: hd = pend
     if st[1:] if base else st: errs.append("a quote or a %s is still open at the end of the script" % st[-1])
