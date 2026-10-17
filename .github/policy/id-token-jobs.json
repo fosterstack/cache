@@ -125,6 +125,21 @@
    "workflow": "stage-verify.yml",
    "job": "check-arm64",
    "reason": "Check, arm64 leg: the Witness wrapper fetches the identity token for the keyless record of the arm64 artifact checks (REQ-CHAIN-006-AC17); signs no provenance"
+  },
+  {
+   "workflow": "ci.yml",
+   "job": "live-test",
+   "reason": "the rule-12 live test of our VEX files (REQ-SCAN-012): OIDC federation into the dedicated live-test AWS account and Google project only (environment live-test); signs and publishes nothing"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "live-test",
+   "reason": "the rule-12 live test on a release candidate (REQ-SCAN-012): the same federation into the dedicated live-test accounts only (environment live-test), after Check; signs and publishes nothing"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "live-test-release",
+   "reason": "the rule-12 live test right after a final release is published (REQ-SCAN-012): the same federation (environment live-test); signs and publishes nothing"
   }
  ]
 }
