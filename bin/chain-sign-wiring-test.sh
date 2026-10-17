@@ -3294,6 +3294,15 @@ d=$(crr ml_a "${H}x=\""$'\n\'" ; /tmp/evil ; echo "\'"\n'); expm caught "$d" 'ab
 d=$(crr ml_b "${H}x='a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'absolute path' "multi-line single quote: the line that closes it holds a command"
 d=$(crr ml_c "${H}x=\$'a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'absolute path' "multi-line ANSI-C quote: the same"
 d=$(crr ml_d "${H}echo \"first line"$'\nsecond line"; echo ok\necho \'one\ntwo (still data)\nthree\'\n'); expm ok "$d" - "control: ordinary multi-line double-quoted and single-quoted strings"
+# seat B, PR 439 round 3: a substitution inside the quoted prefix of the line that closes a multi-line double quote runs in bash and must stay visible
+d=$(crr ml_e "${H}x=\""$'\n$(/tmp/evil)"\n'); expm caught "$d" 'absolute path' "multi-line double quote: a \$( ) on the closing line runs"
+d=$(crr ml_f "${H}x=\""$'\n`/tmp/evil`"\n'); expm caught "$d" 'absolute path' "multi-line double quote: backticks on the closing line run"
+d=$(crr ml_g "${H}x=\""$'\n${y:-$(/tmp/evil)}"\n'); expm caught "$d" 'absolute path' "multi-line double quote: a \${ :- \$( ) } on the closing line runs"
+d=$(crr ml_h "${H}x=\"a"$'\n$(/tmp/evil)" ; echo\n'); expm caught "$d" 'absolute path' "multi-line double quote: a \$( ) before the closing quote, code after it"
+d=$(crr ml_i "${H}x=\"\$(echo \""$'\n$(/tmp/evil)" )"\n'); expm caught "$d" 'absolute path' "multi-line double quote nested in a \$( )"
+d=$(crr ml_j "${H}echo \""$'\nfoo $(/tmp/evil) bar"\n'); expm caught "$d" 'absolute path' "multi-line double quote: text then a \$( ) then the closing quote"
+d=$(crr ml_k "${H}x=\$'"$'\n$(/tmp/evil)\'\necho ok\n'); expm ok "$d" - "control: a \$( ) inside an ANSI-C quote is data (bash runs nothing)"
+d=$(crr ml_l "${H}x='"$'\n$(/tmp/evil)\'\necho ok\n'); expm ok "$d" - "control: a \$( ) inside a single quote is data"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3456,7 +3465,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1421
+EXPECT=1429
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
