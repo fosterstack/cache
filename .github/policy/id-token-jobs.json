@@ -102,6 +102,11 @@
    "reason": "Persona UAT, weekly run (REQ-UAT-001, owner ratified Oct 3 and Oct 4): behind the PERSONA_UAT_ENABLED gate (off unless the repository variable is exactly 'true'), the job mints a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, packages read"
   },
   {
+   "workflow": "release.yml",
+   "job": "persona-uat",
+   "reason": "Persona UAT, release-candidate run (REQ-UAT-001-AC1; advisor reading Oct 17 of the owner's Oct 3/4 rule and REQ-CHAIN-007-AC14): needs Build only, behind the PERSONA_UAT_ENABLED gate and only on an rc tag; the job mints a federated identity token for the model provider in the persona-uat environment; it signs no provenance and publishes nothing; contents read, no packages, no registry credential; Build's image reaches only a registry on the runner's loopback"
+  },
+  {
    "workflow": "stage-promote.yml",
    "job": "release",
    "reason": "Release (REQ-CHAIN-007): Witness steps and the keyless cosign signatures of release-sign.sh mint the signing identity; the one job with a registry credential, the apk signing key and packages: write"
