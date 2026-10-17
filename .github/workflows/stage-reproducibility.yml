@@ -49,11 +49,11 @@ jobs:
       - name: snapshot-rapk under Witness
         if: ${{ inputs.mode == 'snapshot' }}
         run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rapk-${{ matrix.runner }}
           path: out
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-rapk-${{ matrix.runner }}
           path: witness-rapk
@@ -111,7 +111,7 @@ jobs:
         if: ${{ inputs.mode == 'snapshot' }}
         run: bash bin/witnessed.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh
       # always(): the verdict (snapshot-verdict.json in snapshot mode) is the only place the per-image digests and the differing items are readable, failed comparison or not
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: witness-rebuild

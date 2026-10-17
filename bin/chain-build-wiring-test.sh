@@ -2205,15 +2205,17 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
 # take 15 (Codex PR 421): the four chain stage files pin download-artifact to ONE digest, and that digest is on the action allowlist; a bump that reached some of them (the Dependabot bump of main's #402 did all four) leaves two digests in one chain
-python3 - "$root" <<'PY' && ok "the four chain stage files (build, reproducibility, verify, promote) pin download-artifact to one and the same digest, which .github/policy/allowed-actions.json lists" || bad "the chain stage files pin download-artifact to different digests, or to one the allowlist does not list"
+python3 - "$root" <<'PY' && ok "the four chain stage files (build, reproducibility, verify, promote) pin download-artifact and upload-artifact each to one and the same digest, which .github/policy/allowed-actions.json lists" || bad "the chain stage files pin download-artifact to different digests, or to one the allowlist does not list"
 import json, re, sys
 root = sys.argv[1]
 found = set()
-for f in ("stage-build", "stage-reproducibility", "stage-verify", "stage-promote"):
-    found |= set(re.findall(r"actions/download-artifact@([0-9a-f]{40})", open("%s/.github/workflows/%s.yml" % (root, f)).read()))
-allowed = {a for a in json.load(open(root + "/.github/policy/allowed-actions.json"))["actions"] if a.startswith("actions/download-artifact@")}
-assert len(found) == 1, "stage files pin %d different download-artifact digests: %s" % (len(found), sorted(found))
-assert "actions/download-artifact@" + next(iter(found)) in allowed, "the pinned digest is not on the allowlist"
+for action in ("download-artifact", "upload-artifact"):
+    found = set()
+    for f in ("stage-build", "stage-reproducibility", "stage-verify", "stage-promote"):
+        found |= set(re.findall(r"actions/" + action + r"@([0-9a-f]{40})", open("%s/.github/workflows/%s.yml" % (root, f)).read()))
+    allowed = {a for a in json.load(open(root + "/.github/policy/allowed-actions.json"))["actions"] if a.startswith("actions/" + action + "@")}
+    assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
+    assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
 EXPECT=742
 echo "pass=$pass fail=$failn"

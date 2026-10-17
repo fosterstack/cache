@@ -317,7 +317,7 @@ PY
   # The embedded program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per line); the shell fetches them with the
   # ruled download lines below and runs the program again (it starts from the same state each time, up to three passes: packages, index, the rest).
   refresh_py() { /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY'
-import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, zlib
+import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, yaml, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
 ARCHS = ["x86_64", "aarch64"]
 
@@ -713,8 +713,57 @@ for (name, ver, arch), e in sorted(fresh.items()):
         HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again, or find out how it got damaged)" % dest
         verify(dest, e)
         HINT = ""
+# REQ-REFRESH-001-AC33 (rule 12: Go is kept in the archive): the Go tarballs that the committed recipes pin. A pin is the go.dev file name and its sha256; the recipes must agree.
+GO_FILE = re.compile(r"go[0-9]+(?:\.[0-9]+){1,2}\.linux-(?:amd64|arm64)\.tar\.gz")
+GO_URL = "https://go.dev/dl/"
+
+
+def go_pins():
+    """{file: sha256} of the Go tarballs pinned by build/melange.yaml and build/melange-fips.yaml; every fetch step must be a go.dev/dl uri with a 64-hex pin, and the two
+    recipes may not pin one file with two checksums (a pin that is missing, malformed or in conflict stops the job)"""
+    pins, seen_in = {}, {}
+    for rf in ("melange.yaml", "melange-fips.yaml"):
+        try:
+            doc = yaml.safe_load(open("%s/build/%s" % (repo, rf)))
+            steps = [st for st in (doc.get("pipeline") or []) if isinstance(st, dict) and st.get("uses") == "fetch"]
+        except Exception as e_:
+            fail("build/%s cannot be read for its Go pins: %s" % (rf, e_), 2)
+        for st in steps:
+            w_ = st.get("with") if isinstance(st.get("with"), dict) else {}
+            uri, sha = str(w_.get("uri", "")), w_.get("expected-sha256")
+            if not uri.startswith(GO_URL) or not GO_FILE.fullmatch(uri[len(GO_URL):]):
+                fail("build/%s: a fetch step names %r, which is not %s followed by a Go tarball file name; refusing" % (rf, uri, GO_URL), 2)
+            f_ = uri[len(GO_URL):]
+            if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+                fail("build/%s: the Go fetch of %s has no valid expected-sha256 pin (64 lower-case hex); refusing" % (rf, f_), 2)
+            if f_ in pins and pins[f_] != sha:
+                fail("build/%s and build/%s pin %s with two different sha256 values; refusing" % (seen_in[f_], rf, f_), 1)
+            pins[f_], seen_in[f_] = sha, rf
+    return pins
+
+
+def sha256_file(path):
+    h_ = hashlib.sha256()
+    with open(path, "rb") as fh_:
+        for chunk in iter(lambda: fh_.read(1 << 20), b""):
+            h_.update(chunk)
+    return h_.hexdigest()
+
+
+go_pin = go_pins()
+go_dir = archive + "/go"
+if os.path.lexists(go_dir) and (os.path.islink(go_dir) or not os.path.isdir(go_dir)):
+    fail("%s is a symlink or not a directory; the archive's Go directory must be a real directory (nothing was written)" % go_dir, 1)
+go_missing = []
+for f_, sha_ in sorted(go_pin.items()):
+    dest_ = "%s/%s" % (go_dir, f_)
+    if os.path.lexists(dest_):
+        if os.path.islink(dest_) or not os.path.isfile(dest_) or sha256_file(dest_) != sha_:
+            fail("go/%s is in the archive but does not have the sha256 its recipe pins (%s): delete that file and run again, or find out how it got damaged" % (f_, sha_), 1)
+    else:
+        go_missing.append(f_)
 # only now, before any download: a waiting refresh PR means "wait" (a missing package is fetched by that PR's own run), so a flaky download can never turn a wait into a red run
-if ahead or any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) for (n_, v_, a_) in fresh):
+if ahead or go_missing or any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) for (n_, v_, a_) in fresh):
     open_prs_guard("refresh")
 
 
@@ -778,6 +827,19 @@ for (name, ver, arch) in sorted(ff_mel):
     ff_mel_parts.append((part, "%s/%s/%s-%s.apk" % (archive, arch, name, ver), name, ver, arch))
 if want_pk:
     open(tmp + "/want-packages", "w").write("".join(l + "\n" for l in want_pk))
+    sys.exit(75)
+keep_go, want_go = [], []
+for f_ in go_missing:
+    part = "%s/go/%s" % (stage, f_)
+    os.makedirs(os.path.dirname(part), exist_ok=True)
+    if not os.path.exists(part):
+        want_go.append(f_)       # the file name passed GO_FILE above
+        continue
+    if sha256_file(part) != go_pin[f_]:
+        fail("checksum mismatch: %s fetched from go.dev does not have the sha256 its recipe pins (%s); nothing was stored" % (f_, go_pin[f_]), 1)
+    keep_go.append((part, "%s/%s" % (go_dir, f_), f_))
+if want_go:
+    open(tmp + "/want-go", "w").write("".join(f + "\n" for f in want_go))
     sys.exit(75)
 
 
@@ -849,6 +911,14 @@ for rf in ("melange.yaml", "melange-fips.yaml"):
 
 for n in notes:
     print("note: " + n)
+if go_missing:
+    notes.append("the archive gains the Go toolchain tarball(s) the recipes pin: %s" % ", ".join(go_missing))
+    _ptr = repo + "/build/archive.json"
+    if os.path.exists(_ptr):
+        if _ptr not in changed:
+            changed.append(_ptr)      # the pointer is rewritten by open-pr once the archive is stored; the pull request exists because the archive gained files
+    elif not changed:
+        fail("the archive gains Go tarballs but there is no pointer and nothing else changes, so no pull request could carry it; a human must look", 1)
 record_path = repo + "/build/locks/archive-index.sha256"
 if not changed and os.path.exists(record_path) and not ahead:
     if keep:
@@ -934,13 +1004,15 @@ if not os.path.exists(record_path) or open(record_path).read() != record_text:
     changed.append(record_path)
 
 # before ANY change: directories, temp names and writability (the same checks the re-fetch path ran)
-targets = list(changed) + [dest for _, dest, *_ in keep]
+targets = list(changed) + [dest for _, dest, *_ in keep] + [dest for _, dest, _f in keep_go]
 for arch in ARCHS:
     targets += ["%s/%s/APKINDEX.tar.gz" % (archive, arch), "%s/%s/index/APKINDEX-%s.tar.gz" % (archive, arch, index_parts[arch][1])]
 preflight(targets)
 
 # everything verified: now the archive and the repository change (each file is written under a temp name and renamed)
 for part, dest, *_ in keep:
+    place(part, dest)
+for part, dest, _f in keep_go:
     place(part, dest)
 for arch in ARCHS:
     part, sha = index_parts[arch]
@@ -964,7 +1036,7 @@ if mel_path in changed:
 for path, out in recipes.items():
     write_atomic(path, out)
 
-lines = ["- archived %s-%s.apk (%s)" % (n, v, a) for _, _, n, v, a in keep] + ["- stored the live signed package index (%s) as index/APKINDEX-%s.tar.gz" % (a, index_parts[a][1]) for a in ARCHS]
+lines = ["- archived go/%s (the Go toolchain a recipe pins, checked against that pin)" % f for _, _, f in keep_go] + ["- archived %s-%s.apk (%s)" % (n, v, a) for _, _, n, v, a in keep] + ["- stored the live signed package index (%s) as index/APKINDEX-%s.tar.gz" % (a, index_parts[a][1]) for a in ARCHS]
 supersedes = []
 if ahead:   # the reconcile PR says why the index record jumps: it supersedes a refresh PR that was closed unmerged
     prev = None
@@ -993,7 +1065,7 @@ open(tmp + "/sig", "w").write(sig)
 open(tmp + "/body", "w").write(body)
 PY
   }
-  for _pass in 1 2 3; do
+  for _pass in 1 2 3 4; do
     _rc=0; refresh_py || _rc=$?
     [ "$_rc" = 75 ] || break
     if [ -s "$tmp/want-packages" ]; then
@@ -1002,6 +1074,12 @@ PY
         /usr/bin/curl -q -fsSL -g --max-filesize 536870912 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download a package from live Wolfi" 1
       done <"$tmp/want-packages"
       /bin/rm -f "$tmp/want-packages"
+    elif [ -s "$tmp/want-go" ]; then
+      while read -r f; do
+        echo "refresh-inputs.sh: fetching the Go toolchain $f"
+        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/go/$f" "https://go.dev/dl/$f" || die "could not download a Go toolchain from go.dev" 1
+      done <"$tmp/want-go"
+      /bin/rm -f "$tmp/want-go"
     elif [ -s "$tmp/want-index" ]; then
       while read -r p f; do
         /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 600 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download the live package index" 1

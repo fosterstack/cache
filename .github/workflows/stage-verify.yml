@@ -52,14 +52,14 @@ jobs:
         run: bash bin/witnessed.sh acceptance bin/check-phase-acceptance.sh
       - name: runtime under Witness
         run: bash bin/witnessed.sh runtime bin/check-phase-runtime.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-check
           path: |
             witness-scanners
             witness-acceptance
             witness-runtime
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: check-results
           path: check-results
@@ -93,7 +93,7 @@ jobs:
           path: images
       - name: arm64 under Witness
         run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-check-arm64
           path: witness-arm64
