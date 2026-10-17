@@ -2227,17 +2227,17 @@ def stray(root):
                 named.add(os.path.relpath(path, root))
     bad += sorted(named - BASE - {RUN, TEST})
     for path, exact in ((RUN, (RUN_CALL,)), (TEST, TEST_LINES)):
-        if path not in named:
+        if path not in named and path != RUN:
             continue
         code = []
         for line in open(os.path.join(root, path), errors="replace"):
             body = line.strip()
-            if path == RUN and body.startswith("#"):
-                continue      # a whole-line comment may name the tool; a # elsewhere in a line is no comment to bash (a word, a string, ${x#y}), so such a line is judged whole
+            # no comment exemption: a line that starts with # is not always a comment to bash (a backslash-joined line, a heredoc body, a line inside a quoted string), so every
+            # line that names the tool is judged whole and the run script may name it on its one call line only
             if "vex-index" in body:
                 code.append(body)
-            if path == TEST and re.search(r"\bVI\b(?!\.check_vex\b)", body) and body not in TEST_LINES:
-                code.append(body)      # the loaded module may be used for check_vex only
+            if path == TEST and re.search(r"\bVI\b(?!\.check_vex\()", body) and body not in TEST_LINES:
+                code.append(body)      # the loaded module may be called as VI.check_vex( only (not aliased, not read for its globals)
         bad += ["%s: %s" % (path, c[:90]) for c in code if c not in exact]
         bad += ["%s: %s (must appear exactly once)" % (path, e[:60]) for e in exact if code.count(e) != 1]
     return bad
@@ -2287,6 +2287,10 @@ vim h1 "REQ-REL-010-AC4 a # inside a word hiding a vex-index call on Build's lay
 vim h2 "REQ-REL-010-AC4 a # inside a quoted string hiding a vex-index call is refused" bin/vex-live-run.sh '' $'\nm="#"; python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
 vim h3 "REQ-REL-010-AC4 a \${var#...} expansion hiding a vex-index call is refused" bin/vex-live-run.sh '' $'\nr=${CANDIDATE_DIR#/}; python3 bin/vex-index.py layout --layout "/$r/images/production" --vex v.json\n'
 vim h5 "REQ-REL-010-AC4 another use of the loaded vex-index module in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nVI.main(["layout", "--layout", os.environ.get("CANDIDATE_DIR", "x"), "--vex", "v.json"])\n'
+vim j2 "REQ-REL-010-AC4 a #-led line that bash joins to the previous line (backslash) and runs is refused" bin/vex-live-run.sh '' $'\necho a\\\n#; python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
+vim j4 "REQ-REL-010-AC4 a #-led heredoc body line that read splits and runs is refused" bin/vex-live-run.sh '' $'\nwhile read -r _ c; do $c; done <<\'EOT\'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\nEOT\n'
+vim j5 "REQ-REL-010-AC4 a #-led line inside a multi-line quoted string that is later run is refused" bin/vex-live-run.sh '' $'\nx=\'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\'\nread -r _ c <<<"${x#?}"; $c\n'
+vim j6 "REQ-REL-010-AC4 reaching the loaded module through VI.check_vex.__globals__ in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nVI.check_vex.__globals__["main"](["layout"])\n'
 vim m6 "REQ-REL-010-AC4 the live-test run script without its one fixture call is refused (the exemption is not a blanket)" bin/vex-live-run.sh 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1' 'true'
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
 expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
@@ -2309,7 +2313,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=795
+EXPECT=799
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
