@@ -45,6 +45,9 @@ def jload(path):
     with open(path) as fh:
         return json.load(fh, object_pairs_hook=hook)
 
+WORKSPACE_ROOT = re.compile(r"\$(?:GITHUB_WORKSPACE|\{GITHUB_WORKSPACE\})/")   # the runner's checkout root, written as the variable and a slash (an exact variable name: GITHUB_WORKSPACEX does not match)
+
+
 def read_script(path):
     """The text of a listed script with CR and LF kept exactly (no universal-newline translation: a CR is refused by scan_script)."""
     with open(path, "rb") as fh:
@@ -1217,7 +1220,7 @@ def scan_script(path, text, row, rows, base):
             if repo_file(n):                  # Sonnet 1: the existence, shebang and executable tests run on the normalised path (of the tree only)
                 with open(full, "rb") as fh: ok = fh.read(2) == b"#!" or os.access(full, os.X_OK)
         return ok
-    for tm in re.finditer(r"[^\s;&|(){}<>`\"'=,]+", body):
+    for tm in re.finditer(r"[^\s;&|(){}<>`\"'=,]+", WORKSPACE_ROOT.sub("", body)):      # the checkout root written as the runner's variable is the listed path itself
         t = tm.group(0)
         n = t[2:] if t.startswith("./") else t
         name = n.rsplit("/", 1)[-1]
@@ -1259,6 +1262,7 @@ def scan_script(path, text, row, rows, base):
             if name in SHELL_INTERP or kind == "interp":
                 first = c.operands[0] if c.operands else ""
                 fn = first[2:] if first.startswith("./") else first
+                fn = WORKSPACE_ROOT.sub("", fn, count=1)        # "$GITHUB_WORKSPACE/<exact listed path>": a script that moves its directory names the helper from the checkout root
                 if any(op.startswith("<") for op, _t in c.redirs) or not first or first.startswith("-") or fn not in runs:
                     add("script-name", span, "%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
                 continue

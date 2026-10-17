@@ -25,7 +25,8 @@ while [ "$i" -lt "$n" ]; do
     --max-time|--connect-timeout)
       [ "$i" -lt "$n" ] || fail "$a needs a value"
       v=$1; shift; i=$((i + 1))
-      case "$v" in ""|*[!0-9.]*|.*|*.|*.*.*) fail "$a needs a number";; esac
+      [ -n "$v" ] || fail "$a needs a number"
+      case "$v" in *[!0-9.]*|.*|*.|*.*.*) fail "$a needs a number";; esac
       set -- "$@" "$a" "$v" ;;
     -[sSfIg]*)
       case "${a#-}" in *[!sSfIg]*) fail "option $a";; esac
@@ -43,8 +44,9 @@ if [ -n "$tok" ] && { [ "$url" = "$tok" ] || case "$url" in "$tok&audience="*) t
   case "$aud" in "") ;; "&audience="?*) case "${aud#&audience=}" in *[!A-Za-z0-9:/._-]*) fail "the audience holds a character outside the list" ;; esac ;; *) fail "the token URL has a suffix other than &audience=" ;; esac
   proto=https
 else
+  bad=$(printf '%s' "$url" | tr -d 'A-Za-z0-9._~:/?=&%+-' | wc -c)
+  [ "$bad" -eq 0 ] || fail "a URL with a character outside the plain URL characters (whitespace, backslash, fragment, glob)"
   case "$url" in
-    *[[:space:]]*|*\\*|*"#"*) fail "a URL with whitespace, a backslash or a fragment" ;;
     http://*) rest=${url#http://} ;;
     *://*) fail "scheme of $url" ;;
     *) rest=$url ;;
@@ -57,7 +59,8 @@ else
   case "$host" in localhost|127.0.0.1|fscache) ;; *) fail "host $host" ;; esac
   if [ "$host" != "$hostport" ]; then
     port=${hostport#*:}
-    case "$port" in ""|*[!0-9]*) fail "port $port" ;; esac
+    [ -n "$port" ] || fail "port"
+    case "$port" in *[!0-9]*) fail "port $port" ;; esac
   fi
   url="http://$rest"
 fi

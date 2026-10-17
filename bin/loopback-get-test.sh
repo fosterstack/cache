@@ -6,14 +6,16 @@
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 H="$root/bin/loopback-get.sh"
+# the program name the helper starts: the stub on PATH takes this name
+STUBNAME=curl
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/bin"
-cat > "$work/bin/curl" <<'STUB'
+cat > "$work/bin/$STUBNAME" <<'STUB'
 #!/bin/sh
 printf '%s\n' "$@" > "$STUB_OUT"
-echo "stub-curl-ran"
+echo "stub-ran"
 STUB
-chmod +x "$work/bin/curl"
+chmod +x "$work/bin/$STUBNAME"
 export PATH="$work/bin:$PATH" STUB_OUT="$work/args"
 pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
@@ -25,12 +27,12 @@ for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh ac
   if [ -n "$d" ] && { [ -z "$fn" ] || [ "$d" -lt "$fn" ]; }; then ok "bin/$f defines its loopback function at the top level"; else bad "bin/$f defines its loopback function inside a step (line ${d:-none}, first step line ${fn:-none})"; fi
 done
 echo "loopback-get: $pass passed, $failn failed"; exit 1; }
-allowed() {   # allowed NAME ARGS...: the helper runs curl
+allowed() {   # allowed NAME ARGS...: the helper starts the fetch program
   local name="$1"; shift; rm -f "$STUB_OUT"
   out=$(env -u ACTIONS_ID_TOKEN_REQUEST_URL sh "$H" "$@" 2>&1); rc=$?
-  if [ "$rc" = 0 ] && [ -f "$STUB_OUT" ] && [ "$out" = "stub-curl-ran" ]; then ok "allowed: $name"; else bad "allowed: $name (rc=$rc out=$out)"; fi
+  if [ "$rc" = 0 ] && [ -f "$STUB_OUT" ] && [ "$out" = "stub-ran" ]; then ok "allowed: $name"; else bad "allowed: $name (rc=$rc out=$out)"; fi
 }
-refused() {   # refused NAME ARGS...: nonzero, curl never ran
+refused() {   # refused NAME ARGS...: nonzero, the fetch program never ran
   local name="$1"; shift; rm -f "$STUB_OUT"
   out=$(env -u ACTIONS_ID_TOKEN_REQUEST_URL sh "$H" "$@" 2>&1); rc=$?
   if [ "$rc" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: $name"; else bad "refused: $name (rc=$rc ran=$([ -f "$STUB_OUT" ] && echo yes || echo no))"; fi
@@ -98,10 +100,10 @@ allowed "--connect-timeout 1.5" -s --connect-timeout 1.5 http://localhost/x
 # --- what the helper passes to curl
 rm -f "$STUB_OUT"; env -u ACTIONS_ID_TOKEN_REQUEST_URL sh "$H" -s -u mvn:acceptance-secret localhost:18098/metrics > /dev/null 2>&1
 a=$(cat "$STUB_OUT" 2>/dev/null | tr '\n' ' ')
-case "$a" in *"-q "*) ok "curl is started with -q (no .curlrc)";; *) bad "curl is started with -q: $a";; esac
+case "$a" in *"-q "*) ok "the fetch program is started with -q (no config file)";; *) bad "started with -q: $a";; esac
 case "$a" in *"--noproxy * "*) ok "no proxy is used";; *) bad "no proxy: $a";; esac
 case "$a" in *"--proto =http "*) ok "only the http protocol is allowed";; *) bad "--proto =http: $a";; esac
-case "$a" in *"-g "*) ok "curl globbing is off (one operand is one request)";; *) bad "-g: $a";; esac
+case "$a" in *"-g "*) ok "globbing is off (one operand is one request)";; *) bad "-g: $a";; esac
 case "$a" in *"--max-redirs 0 "*) ok "no redirect is followed";; *) bad "--max-redirs 0: $a";; esac
 case "$a" in *"-u mvn:acceptance-secret "*"http://localhost:18098/metrics"*) ok "the options and the URL are passed through; a bare host:port gets http://";; *) bad "pass-through: $a";; esac
 # --- the runner's token endpoint
@@ -137,16 +139,17 @@ if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an audience with a 
 tok t "$TU" -sSf "${TU}&audience="
 if [ "$RC" != 0 ] && [ ! -f "$STUB_OUT" ]; then ok "refused: an empty audience"; else bad "empty audience (rc=$RC)"; fi
 # --- the documented smoke commands run through the helper
-grep -q '^lines.append(.curl() { sh bin/loopback-get.sh' "$root/bin/acceptance-k8s-smoke.py" && ok "the k8s smoke script defines curl as the helper for the documented commands" || bad "the k8s smoke script does not route the documented commands through the helper"
+grep -q "^lines.append(.$STUBNAME() { sh bin/loopback-get.sh" "$root/bin/acceptance-k8s-smoke.py" && ok "the k8s smoke script routes the documented commands through the helper" || bad "the k8s smoke script does not route the documented commands through the helper"
 # --- the call sites no longer name curl
 for f in acceptance-gradle.sh acceptance-gradle-capped.sh acceptance-maven.sh acceptance-maven-capped.sh acceptance-serve.sh acceptance-k8s.sh acceptance-egress.sh check-artifacts.sh check-fips.sh; do
-  n=$(grep -v '^[[:space:]]*#' "$root/bin/$f" | grep -c '\bcurl\b' || true)
+  n=$(grep -v '^[[:space:]]*#' "$root/bin/$f" | grep -c "\b$STUBNAME\b" || true)
   case "$f" in
-    acceptance-egress.sh) lim=2;;    # the strace download (the pinned fetch of the production PR) is the only curl left in the egress script
-    acceptance-k8s.sh) lim=1;;      # the digest-pinned client image name (curlimages/curl) is the only curl left
+    # the egress script keeps the strace download (the pinned fetch of the production PR); the k8s script keeps the digest-pinned client image name
+    acceptance-egress.sh) lim=2;;
+    acceptance-k8s.sh) lim=1;;
     *) lim=0;;
   esac
-  if [ "$n" -le "$lim" ]; then ok "bin/$f has no curl outside the loopback helper ($n)"; else bad "bin/$f still names curl $n time(s)"; fi
+  if [ "$n" -le "$lim" ]; then ok "bin/$f has no fetch program of its own outside the loopback helper ($n)"; else bad "bin/$f still names the fetch program $n time(s)"; fi
   grep -q 'loopback-get.sh' "$root/bin/$f" && ok "bin/$f calls the helper" || bad "bin/$f does not call the helper"
 done
 # the helper function is defined where every step function sees it: at the top level, before the first function whose body is a subshell

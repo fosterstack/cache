@@ -6,8 +6,7 @@
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
-LGROOT=$PWD
-lg() { (cd "$LGROOT" && sh bin/loopback-get.sh "$@"); }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
+lg() { sh "$GITHUB_WORKSPACE/bin/loopback-get.sh" "$@"; }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 # The one Gradle invocation of the three builds below (the sample project's own wrapper, as acceptance.yml ran it).
 capped_build() { ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1; }
 
