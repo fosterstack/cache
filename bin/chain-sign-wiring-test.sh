@@ -3445,7 +3445,7 @@ d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit\'s\nEOF\n)\n'); expm caught "$d" 'closes
 d=$(crr sl_zb2 "${H}"$'echo "$(echo "a")" # d\n(cd x; ls) # e\ncase x in a) y;; esac\n'); expm ok "$d" - "strip_line: control: nested double quotes in \\$( ), a subshell and a case arm on single lines"
 d=$(crr sl_zc "${H}cat <<EOF#x"$'\nEOF\nit\'s\nEOF#x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by # (bash reads the whole word EOF#x) is refused (seat B, PR 436 round 2)"
 d=$(crr sl_zd "${H}cat <<EOF.x"$'\nEOF\nit\'s\nEOF.x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by a dot is refused"
-d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit\'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n(cat <<EOF)\ny\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, |, > or ) is read whole"
+d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit\'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, | or > is read whole"
 d=$(crr sl_zf "${H}(( z = 1<<true ))"$'\nx=\'\n#\' ; echo MARK; /tmp/evil\ntrue\n'); expm caught "$d" 'not resolved' "strip_line: a << inside a bare (( )) is refused (seat A, PR 436 round 2)"
 d=$(crr sl_zg "${H}x=\"\$(case a in a) echo '"$'\n\'"\n# x" ;; esac)" ; echo MARK; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a case arm's ) inside \$( ) does not end the substitution (seat A, PR 436 round 2)"
 d=$(crr sl_zh "${H}echo a\\"$'\n#; echo MARK; /tmp/evil\n'); expm caught "$d" 'absolute path' "strip_line: a # line after a backslash-newline is part of the joined word, never a comment"
@@ -3459,7 +3459,7 @@ d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\n
 d=$(crr sl_zp "${H}"$'x=`echo a # c` ; /tmp/evil x\ny=`echo b # c`\n'); expm caught "$d" 'absolute path' "strip_line: a # inside backticks does not cut the line (bash ends the comment at the closing backtick; seat B, PR 436 round 4)"
 d=$(crr sl_zq "${H}"$'x=`date` # a comment after the pair\necho ok\n'); expm ok "$d" - "strip_line: control: a # after a closed backtick pair is a comment"
 d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
-d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'inside backticks' "strip_line: a << inside backticks is refused (bash gives it no body)"
+d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'opens a heredoc inside' "strip_line: a << inside backticks is refused (bash gives it no body)"
 d=$(crr sl_zt "${H}"$'x=`echo a\n#` ; /tmp/evil\ny=`echo b\n#`\n'); expm caught "$d" 'still open' "strip_line: a # line inside backticks open from an earlier line is refused (bash ends the pair at the first backtick; seat A, PR 436 round 5)"
 for sep in $'\x0c' $'\x0b' $'\x1c' $'\xc2\x85' $'\xe2\x80\xa8'; do
   d=$(crr "sl_sep_$RANDOM" "${H}: ${sep}#; /tmp/evil"$'\n'); expm caught "$d" 'line separator' "strip_line: a line separator bash does not read as one is refused (seat A, PR 436 round 5)"
@@ -3621,6 +3621,73 @@ hd hd_j $'cat <<EOF >/dev/null\nx $(\'/tmp/evil\')\nEOF\n' "a single-quoted comm
 hd hd_k $'cat <<EOF >/dev/null\nx `"/tmp/evil"`\nEOF\n' "a quoted command word in backticks"
 hd hd_l $'cat <<EOF >/dev/null\nx $(: ; "/tmp/evil")\nEOF\n' "a quoted command word after a separator in a \$( )"
 hd hd_m $'cat <<EOF >/dev/null\nx $(""/tmp/evil)\nEOF\n' "an empty quoted string before the path in a \$( )"
+# seat A, PR 439 second fix check (a known pre-existing form, follow-up PR): a line that opens MORE THAN ONE heredoc, or a heredoc inside a $( ) / backticks that closes on the same line,
+# is refused (bash reads the substitution's heredoc body first and runs its $( ); the reader queues the bodies in written order). Default deny, waivable by a reviewed line-bound exception.
+hm() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "heredoc order: $5"; }
+hm hm_a $': <<\'A\' $(cat <<B)\n\'$(/tmp/evil)\'\nB\nx\nA\n: <<\'Z\'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'two heredocs, one inside a $( ) on the same line (the reproducer)'
+hm hm_b $': <<\'A\'; x=$(cat <<B)\n\'$(/tmp/evil)\'\nB\nx\nA\n: <<\'Z\'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'the same after a ;'
+hm hm_c $'cat <<A <<B\na\nA\nb\nB\n' caught 'opens more than one heredoc' 'two heredocs on one line'
+hm hm_d $': <<\'A\' <<\'B\'\nx\nA\ny\nB\n' caught 'opens more than one heredoc' 'two quoted heredocs on one line'
+hm hm_e $'x=$(cat <<B)\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc opened inside a $( ) that closes on its line'
+hm hm_f $'x=`cat <<B`\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc inside backticks'
+hm hm_g $'( cat <<B )\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc inside a ( ) group on one line'
+hm hm_h $'cat <<EOF\nb\nEOF\ncat <<\'EOF\'\nplain\nEOF\necho ok\n' ok - 'control: two heredocs on separate lines'
+hm hm_i $'cat <<EOF >/dev/null\nplain text\nEOF\necho ok\n' ok - 'control: one plain heredoc'
+hm hm_j $'f() (\n cat <<EOF\n a\nEOF\n)\necho ok\n' ok - 'control: a heredoc inside a multi-line function body ( ) is a normal heredoc'
+# seat A, PR 449 round 1: a heredoc inside a bash 5.3 ${ cmd; } / ${| cmd; } command substitution; a heredoc inside backticks has no body in bash, so it must not be queued (a waiver would hide the lines after it)
+hm hm_k $': <<\'A\' ${ cat <<B; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${ cmd; } substitution'
+hm hm_l $': <<\'A\' ${| cat <<B >/dev/null; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${| cmd; } substitution'
+hm hm_m $'x=`: <<\'EOF\' `\ny=\'\n#\' ; /tmp/evil\nEOF\n' caught 'opens a heredoc inside' 'a heredoc in backticks is not queued: the lines after it are read as code'
+hm hm_n $'(\ncat <<EOF)\ny\nEOF\necho ok\n' ok - 'control: a delimiter ending at ) when the group was opened on an earlier line'
+# seat A, PR 449 round 2: bash 5.3 ${ cmd; } / ${| cmd; } ends at a } in COMMAND position, not at the first }: default deny for the opener itself; and hm_m now also asserts the lines after a backtick heredoc are read as code
+hm hm_o $'x=`: <<\'EOF\' `\ny=\'\n#\' ; /tmp/evil\nEOF\n' caught 'absolute path' 'a heredoc in backticks is not queued: /tmp/evil is read as code'
+hm hm_p $': <<\'A\' ${ : # }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } inside a comment does not end a ${ cmd; }'
+hm hm_q $': <<\'A\' ${ echo }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } as an argument does not end it'
+hm hm_r $': <<\'A\' ${| : # }\ncat <<B >/dev/null\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'the ${| form'
+hm hm_s $': <<\'A\' ${ : ${x:-a} }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'an inner ${x:-a} closing before it'
+hm hm_t $'x=${y:-a}\necho "${y#a} ${#y}"\necho ${z%%b}\n' ok - 'control: ordinary parameter expansions are untouched'
+# seat B, PR 449 round 3: the ${ cmd; } refusal also applies to a line of an UNQUOTED heredoc body (bash runs it there too)
+hm hm_u $'cat <<B >/dev/null\n${ /tmp/evil; }\nB\n' caught 'a ${ command substitution' 'a funsub in an unquoted heredoc body'
+hm hm_v $'cat <<B >/dev/null\n${| /tmp/evil; }\nB\n' caught 'a ${ command substitution' 'the ${| form in an unquoted body'
+hm hm_w $'cat <<-B >/dev/null\n\t${ /tmp/evil; }\n\tB\n' caught 'a ${ command substitution' 'a tab-indented body of a <<- heredoc'
+hm hm_x $'cat <<B >/dev/null\n${ /tmp/evil; }\n${x}\nB\n' caught 'a ${ command substitution' 'followed by an ordinary expansion line'
+hm hm_y $'cat <<\'B\' >/dev/null\n${ /tmp/evil; }\nB\necho ok\n' ok - 'control: in a quoted-delimiter body it is data'
+hm hm_z $'cat <<B >/dev/null\n${x} ${y:-a} ${#z} ${w%%b}\nB\necho ok\n' ok - 'control: ordinary expansions in an unquoted body'
+# seat B, PR 449 round 4: a ${ cmd; } opener split by a backslash-newline on a code line
+hm hm_za $'echo $\\\n{ /tmp/evil; }\n' caught 'a ${ command substitution' 'the $ and the { split by a continuation'
+hm hm_zb $'echo ${\\\n /tmp/evil; }\n' caught 'a ${ command substitution' 'the ${ and its blank split by a continuation'
+hm hm_zc $'echo ${\\\n| /tmp/evil; }\n' caught 'a ${ command substitution' 'the ${ and the | split by a continuation'
+hm hm_zd $'echo "price: 5$"\necho $x\\\n+1\n' ok - 'control: a $ at the end of a string and an ordinary continuation'
+# seat A, PR 449 round 4: bash reads << inside an assignment subscript a[x<<y ]=1 as an arithmetic shift, not a heredoc; the judge queued a fake heredoc and read the next lines as its body
+hm hm_ze $'y() { :; }\na[x<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'has a << inside a [ ] subscript' 'a fake heredoc from a shift in an assignment subscript'
+hm hm_zf $'a[x<<y ]+=1\nz=1\n' caught 'has a << inside a [ ] subscript' 'the += form'
+hm hm_zg $'z=1 a[x<<y ]=1\nz=1\n' caught 'has a << inside a [ ] subscript' 'after another assignment'
+hm hm_zh $'cat <<EOF\n[ not a subscript\nEOF\necho "$((1<<2))"\n' caught 'a << inside' 'control-ish: a $(( )) shift is already refused'
+hm hm_zi $'[ a = b ] && cat <<EOF\nx\nEOF\necho ok\n' ok - 'control: a closed [ ] test before a heredoc'
+# seat A, PR 449 round 5: an assignment subscript spans physical lines (a newline or a backslash-newline inside a[ ... ]), and a # inside it is no comment: default deny for a NAME[ subscript left open at the end of a line, for a # inside one, and for a line that starts with # while one is open
+hm hm_zj $'y() { :; }\na[x\\\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a backslash-newline'
+hm hm_zk $'y() { :; }\na[x\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a newline'
+hm hm_zl $'b=2 a[x\n<<y ]=1\nz=1\n' caught 'assignment subscript' 'after another assignment'
+hm hm_zm $'declare -A a\na[k #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a # inside an assignment subscript is no comment'
+hm hm_zn $'declare -A a\na[k #]=1 /tmp/evil\necho end\n' caught 'assignment subscript' 'the temp-env form'
+hm hm_zo $'declare -A a\na[k\n#]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a line starting with # inside an open subscript'
+hm hm_zp $'a[1]=1\nb[$i]+=2\nx=${a[1]}\n[ a = b ] && echo ok\necho "a[ b ]"\n# a [ comment\n' ok - 'control: balanced subscripts, a test, a quoted [ and a comment with [ are untouched'
+# seat A, PR 449 round 6: a ] inside a $( ) or backticks inside an assignment subscript does not end the subscript
+hm hm_zq $'declare -A a\na[$(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a #'
+hm hm_zr $'declare -A a\ny() { :; }\na[$(echo ])\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a << on the next line'
+hm hm_zs $'declare -A a\ny() { :; }\na[`echo ]`\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'the same with backticks'
+hm hm_zt $'declare -A a\na[(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'the same with a ( ) group'
+hm hm_zu $'a[$(echo x)]=1\nb[`echo y`]=2\nc[1]=3\necho ok\n' ok - 'control: substitutions inside a closed subscript'
+# seat B, PR 449 round 6: NAME[ is an assignment subscript also right after a ) (a case pattern) or any other character
+hm hm_zv $'case x in x)a[k #]=1 /tmp/evil\n;;esac\n' caught 'assignment subscript' 'a subscript right after the ) of a case pattern'
+hm hm_zw $'if true;then a[k #]=1 /tmp/evil;fi\n' caught 'assignment subscript' 'after then;'
+hm hm_zx $'{ a[k #]=1 /tmp/evil; }\n' caught 'assignment subscript' 'in a { } group'
+# seat A, PR 449 round 7: a continuation between the name and the [ of an assignment subscript (a\<nl>[x #]=1)
+hm hm_zy $'declare -A a\na\\\n[x #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a name, a continuation, then the [ at the start of the next line'
+hm hm_zz $'declare -A a\na\\\n[x\n#]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'the multi-line form'
+hm hm_zza $'declare -A a\na\\\n[$(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'with a nested ] after the continuation'
+hm hm_zzb $'declare -A a\nb=1 a\\\n[k #]=1 /tmp/evil\necho end\n' caught 'assignment subscript' 'after another assignment'
+hm hm_zzc $'echo x \\\n[ ok ]\necho y\n' ok - 'control: an ordinary continuation before a [ that follows no name'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
 dl cl_w1 'x="\na"' '[D("a\"")]' ok -
 dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
@@ -3792,7 +3859,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1525
+EXPECT=1580
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

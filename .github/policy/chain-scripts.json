@@ -859,13 +859,6 @@
           "rule": "script-name",
           "text": "bash /tmp/smoke-assert",
           "why": "the documented smoke commands that the previous step extracted from docs/kubernetes.md (REQ-DEPLOY-003-AC1)"
-        },
-        {
-          "rule": "deny",
-          "line": "'",
-          "line_sha256": "265fda17a34611b1533d8a281ff680dc5791b0ce0a11c25b35e11c8e75685509",
-          "count": 1,
-          "why": "closes the multi-line sh -c program run in the runner pod (the authenticated round trip) (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
         }
       ]
     },
