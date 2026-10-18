@@ -3492,7 +3492,7 @@ sb sb_i $'printf -v a[\\$\\(/tmp/evil\\)] x\n' caught 'holds a substitution' 'es
 sb sb_j $'a[`/tmp/evil`]=1\n' caught 'holds a substitution' 'backticks in a bare assignment subscript'
 sb sb_k $'echo "${pids[${#pids[@]}-1]}"\n' caught 'holds a substitution' 'a ${ inside a subscript'
 sb sb_l $'# a comment mentioning a[$(x)] is scanned raw like the rest of a listed script\n' caught 'holds a substitution' 'a NAME[ in a COMMENT line is refused (pinned: the listed text is scanned raw)'
-sb sb_m $'[ "$(echo a)" = a ] && echo ok\n[[ -n "$(echo b)" ]] && echo ok\nx=(1 2); echo "${x[1]} ${x[@]}"\na[$i]=1\na[1]=$(echo c)\necho ok\n' ok - 'control: tests with substitutions, ordinary subscripts, a substitution outside the subscript'
+sb sb_m $'[ "$(echo a)" = a ] && echo ok\n[[ -n "$(echo b)" ]] && echo ok\nx=(1 2); echo "${x[1]} ${x[@]}"\na[$i]=1\na[1]=$(echo c)\necho ok\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): tests with substitutions, ordinary subscripts, a substitution outside the subscript'
 sb sb_n $'a[1]=1\nb[$((1+1))]=2\necho "${a[1]}"\necho ok\n' ok - 'control: arithmetic in a subscript is not refused here'
 # seat B, PR 452 round 1: the opener built from quotes or escapes, and a subscript that starts with a substitution without a NAME before the [
 sb sb_o $'let \'a[$\'\'(/usr/bin/touch mk)]\'\n' caught 'builds a substitution opener' 'the opener split by adjacent single quotes ($'"''"'()'
@@ -3504,7 +3504,7 @@ sb sb_t $'let a[$\'\\x24\\x28/usr/bin/touch mk)\']\n' caught 'builds a substitut
 sb sb_u $'x=$\'\\044(/usr/bin/touch mk)\'; let "a[$x]"\n' caught 'builds a substitution opener' 'an ANSI-C octal escape'
 sb sb_v $'let \'a\'[\\$\\(/usr/bin/touch\\ mk\\)]\n' caught 'holds a substitution' 'a quote between the name and [ with an escaped opener'
 sb sb_x $'n=a; x="$n"\'[$(/usr/bin/touch mk)]\'; let "$x"\n' caught 'holds a substitution' 'a name built by an expansion, the subscript text starts with the opener'
-sb sb_y $'if [ ${#arr[@]} -gt 0 ]; then echo "${#arr[@]}"; fi\n[[ ${X:-} =~ ^[0-9]+$ ]] && echo ok\n[ "$(echo a)" = a ]\necho ok\n' ok - 'control: a length expansion in a test, [[ ${X} ]], a quoted substitution in a test'
+sb sb_y $'if [ ${#arr[@]} -gt 0 ]; then echo "${#arr[@]}"; fi\n[[ ${X:-} =~ ^[0-9]+$ ]] && echo ok\n[ "$(echo a)" = a ]\necho ok\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a length expansion in a test, [[ ${X} ]], a quoted substitution in a test'
 sb sb_z $'echo $\'plain\\n text\' $"msg" \'\' ""\necho ok\n' ok - 'control: ANSI-C with plain escapes, $"..." and empty strings are untouched'
 # seat A, PR 452 round 1: a nested subscript's ] before the opener; a quote, backslash or } before the [; a continuation between NAME and [ or between [ and the opener
 sb sb_aa $'let \'a[b[0]+$(/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'a nested subscript closes before the opener'
@@ -3517,13 +3517,13 @@ sb sb_ag $'printf -v a\\[\\$\\(/usr/bin/touch\\ mk\\)\\] x\n' caught 'holds a su
 sb sb_ah $'n=a; printf -v "${n}[\\$(/usr/bin/touch mk)]" x\n' caught 'holds a substitution' 'a name from a parameter expansion, then [ and an escaped opener'
 sb sb_ai $'printf -v a\\\n[\\$\\(/usr/bin/touch\\ mk\\)] x\n' caught 'holds a substitution' 'a continuation between the name and the ['
 sb sb_aj $'printf -v \'a[\'\\\n\'$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'a continuation between the [ and the quoted opener'
-sb sb_ak $'[ "${#a[@]}" -gt 0 ] && echo ok\necho "done"\n' ok - 'control: a length expansion in a test'
+sb sb_ak $'[ "${#a[@]}" -gt 0 ] && echo ok\necho "done"\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a length expansion in a test'
 # seat B, PR 452 round 2: a quoted or split name with a non-opener character between the [ and the opener
 sb sb_al $'let "a"\'[x$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a quoted name, a character before the opener'
 sb sb_am $'let a\'[0$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a digit before the opener'
 sb sb_an $'let \'a\'"[x"\'$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'the [ in a different quoted part than the opener'
 sb sb_ao $'printf -v "a"\'[ x$(/usr/bin/touch mk)]\' %s 1\n' caught 'holds a substitution' 'a blank after the [ and a character before the opener'
-sb sb_ap $'echo [ok]; [ -n "$(echo b)" ] && echo ok; if [ "$(echo c)" = c ]; then echo ok; fi; [[ -n "$(echo d)" ]]\n' ok - 'control: test commands with substitutions (the [ is at a command position and followed by a blank)'
+sb sb_ap $'echo [ok]; [ -n "$(echo b)" ] && echo ok; if [ "$(echo c)" = c ]; then echo ok; fi; [[ -n "$(echo d)" ]]\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): test commands with substitutions (the [ is at a command position and followed by a blank)'
 # seat A, PR 452 round 2: a quote, escape or brace between the name and the [ (static quoting and brace expansion build the name), with a non-opener prefix or a quote switch after the [
 sb sb_aq $'let a"["\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a"[" then a single-quoted opener'
 sb sb_ar $'let a\'[\'"\\$(/usr/bin/touch MARK)]"\n' caught 'holds a substitution' "a'[' then a double-quoted escaped opener"
@@ -3541,14 +3541,14 @@ sb sb_bb $'let a{[[,}\'$(/usr/bin/touch MARK)]]\'\n' caught 'holds a substitutio
 sb sb_bc $'printf -v a{[[,}\'$(/usr/bin/touch MARK)]]\' %s 1\n' caught 'holds a substitution' 'the same through printf -v'
 sb sb_bd $'read a{[[,}\'$(/usr/bin/touch MARK)]]\' <<< 1 || true\n' caught 'holds a substitution' 'the same through read'
 sb sb_be $'let a{[[,}0+\'$(/usr/bin/touch MARK)]]\'\n' caught 'holds a substitution' 'with a prefix before the opener'
-sb sb_bf $'{ [ -n "$(echo a)" ]; }\nif [[ "$(echo b)" = b ]]; then echo ok; fi\n(( 1 )) && [[ -n "$(echo c)" ]] && echo ok\n' ok - 'control: a group before a test, [[ ]] after if, [[ ]] after &&'
+sb sb_bf $'{ [ -n "$(echo a)" ]; }\nif [[ "$(echo b)" = b ]]; then echo ok; fi\n(( 1 )) && [[ -n "$(echo c)" ]] && echo ok\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a group before a test, [[ ]] after if, [[ ]] after &&'
 # seat A, PR 452 round 4: $! expands to nothing or a PID, so the ! before [ is no command position when a $ precedes it
 sb sb_bg $'let "a$![ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' '$![ : the ! ends $!'
 sb sb_bh $'let "a$![ "\'`/usr/bin/touch MARK` ]\'\n' caught 'holds a substitution' 'the same with backticks'
 sb sb_bi $'sleep 0 & let "a$![ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' 'with a background job'
 sb sb_bj $'declare -n r="a$![ "\'$(/usr/bin/touch MARK) ]\'; : "$r"\n' caught 'holds a substitution' 'through a nameref'
 sb sb_bk $'let "a$$[ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' 'the PID of the shell before the ['
-sb sb_bl $'if ! [ -n "$(echo a)" ]; then echo ok; fi\nx=$([ -n y ] && echo z)\n' ok - 'control: a real negated test, and a test inside $( ) without a substitution in it'
+sb sb_bl $'if ! [ -n "$(echo a)" ]; then echo ok; fi\nx=$([ -n y ] && echo z)\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a real negated test, and a test inside $( ) without a substitution in it'
 # seat B, PR 452 round 5: [ ... ]= inside a compound assignment a=( [ '...' ]=1 ) is a subscript after a blank or (; a bracket expression whose closing ] is directly followed by = is never a test
 sb sb_bm $'a=( [ \'$(/usr/bin/touch M1)\' ]=1 )\n' caught 'holds a substitution' 'a compound assignment element after a blank'
 sb sb_bn $'a=([ \'$(/usr/bin/touch M1)\' ]=1)\n' caught 'holds a substitution' 'right after the ('
@@ -3569,12 +3569,13 @@ sb sb_by $'if [ -n x ]; then\n  echo ok\nfi\n[[ -n y ]] &&\n  echo ok\n' ok - 'c
 sb sb_bz $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//]/}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} on the first line, ]= on the next'
 sb sb_ca $'a=( [ \'$(/usr/bin/touch MARK)\' "${x//]/}"\n]=1 )\n' caught 'holds a substitution' 'the same inside double quotes'
 sb sb_cb $'a=( [ \'$(/usr/bin/touch MARK)\' ${x%]}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
-sb sb_cc $'[ -n "$(echo a)" ] && echo ok\n[ -n "$(echo b)" ];\n[ -n "$(echo c)" ]|| echo ok\n( [ -n "$(echo d)" ] )\n' ok - 'control: tests whose matching ] is followed by a blank, ; | or )'
+sb sb_cc $'[ -n "$(echo a)" ] && echo ok\n[ -n "$(echo b)" ];\n[ -n "$(echo c)" ]|| echo ok\n( [ -n "$(echo d)" ] )\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): tests whose matching ] is followed by a blank, ; | or )'
 # seat B, PR 452 round 9 (the cap): the exemption's escape-aware bracket count can be fooled by a ] followed by a blank inside ${x//] /}: advisor ruling: DROP the test-command exemption entirely (fail closed): every [ is scanned, a real test that holds a substitution needs a reviewed waiver
 sb sb_cd $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//] /}\n]=1 )\n' caught 'holds a substitution' 'a ] followed by a blank inside ${x//] /} then ]= on the next line'
 sb sb_ce $'[ "$(echo a)" = a ] && echo ok\n' caught 'holds a substitution' 'a real test that holds a substitution is refused (needs a waiver): no exemption'
 sb sb_cf $'[[ -n "$(echo b)" ]] && echo ok\n' caught 'holds a substitution' 'the same for [[ ]]'
-sb sb_cg $'if [ "${#a[@]}" -gt 0 ]; then echo ok; fi\n' ok - 'a length expansion ${#a[@]} holds no substitution opener that runs code (not refused)'
+sb sb_cg $'if [ "${#a[@]}" -gt 0 ]; then echo ok; fi\n' caught 'holds a substitution' 'a ${#a[@]} in a test is refused too (no exemption, a reviewed waiver)'
+sb sb_ch $'[ -n x ] && echo ok\n[[ a == b ]] || echo ok\nif [ -f /etc/hosts ]; then echo "$((1+1))"; fi\nx=(1 2); echo "${x[0]}"\n' ok - 'control: tests, arithmetic and a plain array element with no substitution in any bracket are untouched'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3744,7 +3745,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1666
+EXPECT=1667
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

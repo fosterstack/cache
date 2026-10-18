@@ -81,33 +81,13 @@ SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\((?!\()|\$\{(?!#[
 SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
 
 def subscript_holds_opener(l):
-    """Does a [ ... ] of this (logical) line that could be an array subscript hold a substitution opener before its matching ]? EVERY [ is scanned, balanced, except a test command's: a
-    [ that follows a blank, the start of the line, ; & | ( { ! or [ and is itself followed by a blank (or [) is `[ ... ]` the command and not a subscript. A quote, an escape or a brace
-    between a name and its [ (a quoted [, an escaped [, a brace-built [) therefore changes nothing, and neither does a prefix before the opener (0+$( )."""
+    """Does a [ ... ] of this (logical) line hold a substitution opener before its matching ]? EVERY [ is scanned, balanced, with NO exemption for a test command (advisor ruling
+    after nine rounds: the exemption was the source of every finding, a test is told from a subscript by guessing where bash ends the bracket): a test that holds a substitution, a
+    parameter expansion with a nested ${ or prose brackets around a $( ) is refused like a subscript and needs a reviewed line-bound waiver. The second [ of [[ is judged with the
+    first (a duplicate finding adds nothing)."""
     for i, ch in enumerate(l):
         if ch != "[": continue
-        prev = l[i - 1] if i > 0 else " "
-        nxt = l[i + 1] if i + 1 < len(l) else " "
-        TESTPOS = ";&|(!"                                  # a test command follows a blank, the start of the line or one of these (NOT { : a brace expansion removes it)
-        def cmdpos(k):                                     # index k holds a command position: a blank or the start, or a TESTPOS character NOT preceded by $ ($! is the PID of a background job, $$ and $( are expansions)
-            ch_ = l[k] if 0 <= k < len(l) else " "
-            return ch_.isspace() or (ch_ in TESTPOS and not (k > 0 and l[k - 1] == "$"))
-        blank = lambda ch_: ch_.isspace()                  # a blank (the end of the line counts as one: nxt and the char after default to " ")
-        after2 = l[i + 2] if i + 2 < len(l) else " "
-        is_test = ((cmdpos(i - 1) and blank(nxt))                                                  # [ ... ]
-                   or (cmdpos(i - 1) and nxt == "[" and blank(after2))                             # the first [ of [[ ... ]]
-                   or (prev == "[" and cmdpos(i - 2) and blank(nxt)))                              # the second [ of [[ ... ]]
-        if is_test:                                        # DEFAULT DENY: a [ with no matching ] on its logical line is never a test (a test does not span lines; a compound-assignment subscript does)
-            anchor = i - 1 if prev == "[" else i                # the second [ of [[ is judged with the pair: its match is the first [ 's match
-            j3, d3 = anchor + 1, 1
-            while j3 < len(l) and d3 > 0:
-                if l[j3] == "\\": j3 += 2; continue
-                if l[j3] == "[": d3 += 1
-                elif l[j3] == "]": d3 -= 1
-                j3 += 1
-            if d3 > 0 or not (j3 >= len(l) or l[j3].isspace() or l[j3] in ";&|)"): is_test = False    # ... and its matching ] is followed by a blank, ; & | ) or the end (a ] counted inside ${x//]/} or a quote is followed by something else)
-        if is_test and re.search(r"\]\+?=", l[(i - 1 if prev == "[" else i):]): is_test = False   # DEFAULT DENY: any ]= or ]+= later on the line makes this [ a candidate subscript (scanned), never a test: the closing ] is not found by counting brackets (a ] inside ${x//]/} , a quote, a substitution), a real test's ] is followed by a blank, ; & | ) or the end
-        if is_test: continue
+        if i > 0 and l[i - 1] == "[": continue
         j, depth = i + 1, 1
         while j < len(l) and depth > 0:
             c = l[j]
