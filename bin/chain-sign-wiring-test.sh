@@ -3369,6 +3369,35 @@ d=$(crr ml_zzn "${H}a[ \"\$("$'\n:\n)" ]=1 /tmp/evil\n'); expm caught "$d" 'insi
 d=$(crr ml_zzo "${H}a[ \`"$'\n:\n` ]=1 /tmp/evil\n'); expm caught "$d" 'inside an assignment subscript' "the same with backticks"
 d=$(crr ml_zzp "${H}a[ \${i:-"$'\n} ]=1 /tmp/evil\n'); expm caught "$d" 'inside an assignment subscript' "the same with \${ }"
 d=$(crr ml_zzq "${H}export y=\$("$'\n:\n) /tmp/out\n'); expm ok "$d" - "control: after a real command word the carried word is an argument and so is what follows"
+# DEFAULT DENY (advisor Oct 17, after eight rounds on the carried-context reading): a line that closes a quote or substitution carried from an earlier line is refused
+# under the `deny` rule (waivable only by a reviewed line-bound exception); no bash grammar is emulated for it. Every form below was a hidden command in a round.
+cl() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "closing line: $5"; }
+cl cl_a $'x="\na"\n' caught 'closes a multi-line' 'a double quote closed on a later line'
+cl cl_b $'x=\'a\nb\'\n' caught 'closes a multi-line' 'a single quote'
+cl cl_c $'x=$\'a\nb\'\n' caught 'closes a multi-line' 'an ANSI-C quote'
+cl cl_d $'x=$(\n:\n)\n' caught 'closes a multi-line' 'a substitution'
+cl cl_e $'x=`\n:\n`\n' caught 'closes a multi-line' 'backticks'
+cl cl_f $'x=${y:-\n}\n' caught 'closes a multi-line' 'a ${ } '
+cl cl_g $'y="$(echo "\na")" ; /tmp/evil ; z="x"\n' caught 'closes a multi-line' 'a quote in a substitution in a quote (round 3)'
+cl cl_h $'x="\n\'" ; /tmp/evil ; echo "\'"\n' caught 'closes a multi-line' 'the first multi-line quote hole (round 2)'
+cl cl_i $'y=$(\n:\n) /tmp/evil\n' caught 'closes a multi-line' 'a command after the closing ) (round 4)'
+cl cl_j $'> f > $(\necho g\n) /tmp/evil\n' caught 'closes a multi-line' 'a redirection target before the opener (round 8)'
+cl cl_k $'f() { a="\ng" /tmp/evil; }\n' caught 'closes a multi-line' 'a function body assignment (round 8)'
+cl cl_l $'a="$( ( : \n: );/tmp/evil )"\n' caught 'closes a multi-line' 'a group with a newline in a quoted substitution (round 8)'
+cl cl_m $'echo ` z=$( : `\n/tmp/evil ` ) \\\n: /tmp/evil ` : `\n' caught 'closes a multi-line' 'backtick pairing (round 8)'
+cl cl_n $'x=\\\ny="a\nb" /tmp/evil\n' caught 'closes a multi-line' 'a continuation then a multi-line quote'
+cl cl_o $'a[ $(\n:\n) ]=1 /tmp/evil\n' caught 'closes a multi-line' 'a subscript with a blank (round 7)'
+cl cl_p $'echo "a\nb" ; echo ok\necho \'c\nd\'\n' caught 'closes a multi-line' 'ordinary multi-line strings are refused too: they need their reviewed waiver'
+cl cl_q $'x="a b"\ny=$(echo c)\necho \'d\'\n' ok - 'control: single-line quotes and substitutions are untouched'
+cl cl_r $'x=\'a\nb\nc\'\n' caught 'closes a multi-line' 'a quote across three lines is refused once, at the line that closes it'
+cl cl_s $'f() (\n echo a\n)\necho ok\n' ok - 'control: a ( ) function body is not a quote or a substitution'
+cl cl_t $'case a in\n a) echo 1 ;;\nesac\n' ok - 'control: a case block spanning lines'
+cl cl_u $'cat <<EOF\nit\'s\nEOF\necho ok\n' ok - 'control: a heredoc body is data'
+# the waiver: the existing line-bound deny exception mechanism, nothing new
+dl cl_w1 'x="\na"' '[D("a\"")]' ok -
+dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
+dl cl_w3 'x="\na"\ny=1' '[D("y=1")]' caught 'closes a multi-line'
+dl cl_w4 'x="\na"' '[D("a\"", 2)]' caught 'count'
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
