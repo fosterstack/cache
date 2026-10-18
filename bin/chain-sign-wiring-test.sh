@@ -2941,7 +2941,7 @@ ko a9_ok1 'echo "it'"'"'s fine"; cp x y'
 ko a9_ok2 "echo 'a \"b\" c'; cp x y"
 ko a9_ok3 'echo "$(echo ")")"'
 ko a9_ok4 'echo ${X:-"}"}'
-ko a9_ok5 'echo "multi\nline"; cp x y'
+kc a9_ok5 'echo "multi\nline"; cp x y' 'closes a multi-line'     # default deny: a multi-line quote's closing line is refused unless waived (it was admitted before)
 
 
 # ---- PR 1b round 3
@@ -3230,7 +3230,8 @@ d=$(crr sl_x "${H}echo \"\$(: ')\""$'\n#\')" ; /tmp/evil\n'); expm caught "$d" '
 d=$(crr sl_y "${H}x=\$[1<<y]"$'\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$[ ] is refused"
 d=$(crr sl_z "${H}echo \"\${x:-'}\""$'\n#\'}" ; /tmp/evil\n'); expm caught "$d" 'single quote inside' "strip_line: a single quote inside \${ } inside double quotes is refused"
 d=$(crr sl_za "${H}cat <<EOF"$'\nx\n'); expm caught "$d" 'heredoc is still open' "strip_line: a heredoc still open at the end of the script is refused"
-d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit\'s\nEOF\n)\n# c\necho "$(echo "a" # c\n)" # d\n(cd x; ls) # e\ncase x in a) y;; esac\n'); expm ok "$d" - "strip_line: control: a heredoc in \$( ), nested double quotes in \$( ), a subshell and a case arm"
+d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit\'s\nEOF\n)\n'); expm caught "$d" 'closes a multi-line' "strip_line: a heredoc in a multi-line \$( ) closes on its own line: default deny"
+d=$(crr sl_zb2 "${H}"$'echo "$(echo "a")" # d\n(cd x; ls) # e\ncase x in a) y;; esac\n'); expm ok "$d" - "strip_line: control: nested double quotes in \\$( ), a subshell and a case arm on single lines"
 d=$(crr sl_zc "${H}cat <<EOF#x"$'\nEOF\nit\'s\nEOF#x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by # (bash reads the whole word EOF#x) is refused (seat B, PR 436 round 2)"
 d=$(crr sl_zd "${H}cat <<EOF.x"$'\nEOF\nit\'s\nEOF.x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by a dot is refused"
 d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit\'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n(cat <<EOF)\ny\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, |, > or ) is read whole"
@@ -3243,7 +3244,7 @@ d=$(crr sl_zk "${H}cat <<EOF >/dev/null"$'\nx # `/tmp/evil`\nEOF\n'); expm caugh
 d=$(crr sl_zl "${H}cat <<'EOF' >/dev/null"$'\n# $(/tmp/evil)\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data, \$( ) in it runs nothing"
 d=$(crr sl_zm "${H}cat <<EOF"$'\nE\\\nOF\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line that ends in a backslash is refused (bash joins it, so the delimiter may be another line; seat A, PR 436 round 3)"
 d=$(crr sl_zn "${H}cat <<EOF"$'\nx $(echo \'\n#\' ; /tmp/evil)\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line whose \$( ) runs on to the next line is refused"
-d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm ok "$d" - "strip_line: control: an unquoted heredoc body with quotes and closed substitutions on one line"
+d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm caught "$d" 'holds a substitution and a quote' "strip_line: an unquoted heredoc body with quotes and substitutions on one line is refused (default deny)"
 d=$(crr sl_zp "${H}"$'x=`echo a # c` ; /tmp/evil x\ny=`echo b # c`\n'); expm caught "$d" 'absolute path' "strip_line: a # inside backticks does not cut the line (bash ends the comment at the closing backtick; seat B, PR 436 round 4)"
 d=$(crr sl_zq "${H}"$'x=`date` # a comment after the pair\necho ok\n'); expm ok "$d" - "strip_line: control: a # after a closed backtick pair is a comment"
 d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
@@ -3256,6 +3257,164 @@ d=$(crr sl_zu "${H}: x # a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: 
 d=$(crr sl_zv "${H}: \"\$(case"$'\ta in a) echo "x # c" ;; esac)" ; /tmp/evil'$'\n'); expm caught "$d" 'absolute path' "strip_line: case followed by a tab is a case (seat B, PR 436 round 5)"
 d=$(crr sl_zw "${H}x=\"\$(case\\ y)\""$'\ny=" #$(env echo MARK >&2)"\n: esac;#)"\n'); expm caught "$d" 'case followed by a backslash' "strip_line: case followed by a backslash is refused, not read as a case (seat A, PR 436 round 5 verification)"
 d=$(crr sl_zx "${H}x=\$(case\\"$'\n a) echo 1 ;;\nesac)\n'); expm caught "$d" 'case followed by a backslash' "strip_line: case followed by a backslash-newline is refused"
+# a case inside a $( ) inside double quotes: the command-position lexer closes the $( ) at the case arm's ), so what follows is never read (REQ-CHAIN-001-AC1; advisor Oct 17, found by seat B of PR 436)
+d=$(crr dq_a "${H}x=\"\$(case a in a) echo hi ; /tmp/evil ;; esac)\""$'\n'); expm caught "$d" 'inside double quotes' "case in quoted \$( ): the reproducer is refused"
+d=$(crr dq_b "${H}x=\"\$(case"$'\ta in a) echo hi ; /tmp/evil ;; esac)"'$'\n'); expm caught "$d" 'inside double quotes' "case in quoted \$( ): a tab after case"
+d=$(crr dq_c "${H}x=\"\$(echo \$(case a in a) /tmp/evil ;; esac))\""$'\n'); expm caught "$d" 'inside double quotes' "case in quoted \$( ): nested in a second \$( )"
+d=$(crr dq_d "${H}x=\"\`case a in a) /tmp/evil ;; esac\`\""$'\n'); expm caught "$d" 'inside double quotes' "case in quoted backticks"
+d=$(crr dq_e "${H}x=\"\$(echo \"\$(case a in a) /tmp/evil ;; esac)\")\""$'\n'); expm caught "$d" 'inside double quotes' "case in a \$( ) quoted inside another quoted \$( )"
+d=$(crr dq_f "${H}x=\$(case a in a) echo hi ;; esac)"$'\necho ok\n'); expm caught "$d" 'not resolved' "a case in \$( ) is refused whatever surrounds it (round 6: it is an argument or a command depending on its word, and the reader cannot tell)"
+d=$(crr dq_g "${H}case a in a) echo hi ;; esac"$'\necho ok\n'); expm ok "$d" - "control: a top-level case"
+d=$(crr dq_h "${H}(case a in a) echo hi ;; esac)"$'\necho ok\n'); expm ok "$d" - "control: a case in a subshell"
+d=$(crr dq_i "${H}x=\"\$(echo hi)\""$'\necho ok\n'); expm ok "$d" - "control: a quoted \$( ) without a case"
+d=$(crr dq_j "${H}x=\"case a in a) \$(echo hi) ;; esac\""$'\necho ok\n'); expm ok "$d" - "control: the word case inside plain double quotes, no substitution around it"
+# seat B, PR 439 round 1: the same hole without a case: the quoted $( ) was closed at a ) that is a group, an array or a function paren, and the rest was never read
+d=$(crr dq_k "${H}x=\"\$(declare -a y=(a b); /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): an array assignment's ) does not close it"
+d=$(crr dq_l "${H}x=\"\$(y=(a b); /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): a plain array"
+d=$(crr dq_m "${H}x=\"\$(f() { :; }; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): a function definition"
+d=$(crr dq_n "${H}x=\"\$( ((1)) ; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): an arithmetic command"
+d=$(crr dq_o "${H}x=\"\$(echo \$((1+1)) ; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): an arithmetic expansion"
+d=$(crr dq_p "${H}echo \"\$(f() { :; }; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ) as an argument: a function definition"
+d=$(crr dq_q "${H}x=\"\$(echo ok)\" ; y=\$(a=(1 2); echo \$a)"$'\n'); expm ok "$d" - "control: balanced groups in substitutions raise nothing"
+# seat A, PR 439 round 1: the same close-at-the-first-) hole through ${ } (no double quotes needed), a launcher in `tools`, and a subshell group
+d=$(crr dq_r "${H}x=\${y:-\$( (true) ; /tmp/evil )}"$'\n'); expm caught "$d" 'absolute path' "\${ } with a \$( ) holding a subshell"
+d=$(crr dq_s "${H}x=\${y:-\$(case a in a) echo hi ;; esac ; /tmp/evil)}"$'\n'); expm caught "$d" 'inside double quotes' "\${ } with a \$( ) holding a case (no double quotes)"
+d=$(crr dq_t "${H}x=\"\$( (true) ; /tmp/evil )\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): a subshell group"
+d=$(crr dq_u "${H}x=\"\$([[ a == @(a|b) ]] ; /tmp/evil)\""$'\n'); expm caught "$d" 'absolute path' "quoted \$( ): an extglob pattern"
+d=$(crr dq_v "${H}x=\"\${y:-\$( (true) ; /tmp/evil )}\""$'\n'); expm caught "$d" 'absolute path' "quoted \${ } with a \$( ) holding a subshell"
+# seat A, PR 439 round 2: a ) inside a bracket subscript or $[ ] also closes the substitution early in the command reader
+d=$(crr dq_w "${H}x=\"\$(declare -A a; a[)]=1 ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in an array subscript"
+d=$(crr dq_x "${H}x=\"\${y:-\$(declare -A a; a[)]=1 ; /tmp/evil)}\""$'\n'); expm caught "$d" 'bracket' "quoted \${ }: a ) in an array subscript in a \$( )"
+d=$(crr dq_y "${H}x=\${y:-\$(declare -A a; a[)]=1 ; /tmp/evil)}"$'\n'); expm caught "$d" 'bracket' "\${ } without quotes: a ) in an array subscript in a \$( )"
+d=$(crr dq_z "${H}x=\"\$(declare -A a; (( a[)]=1 )) ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in a subscript inside (( ))"
+d=$(crr dq_za "${H}x=\"\$(declare -A a=([)]=1) ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in a compound array assignment"
+d=$(crr dq_zb "${H}x=\"\$(declare -A a; echo \$[ a[)] ] ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in \$[ ]"
+d=$(crr dq_zc "${H}x=\"\$(declare -A a; a[k]=1 ; [[ -n \$x ]] && echo \${a[k]})\""$'\n'); expm ok "$d" - "control: balanced subscripts and [[ ]] in a quoted \$( )"
+# seat B, PR 439 round 2: a quote that spans lines: the command reader read every line alone, so a line that begins inside a double quote and holds a lone ' hid what followed
+d=$(crr ml_a "${H}x=\""$'\n\'" ; /tmp/evil ; echo "\'"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a line that starts inside the quote is not read as plain shell"
+d=$(crr ml_b "${H}x='a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'closes a multi-line' "multi-line single quote: the line that closes it holds a command"
+d=$(crr ml_c "${H}x=\$'a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'closes a multi-line' "multi-line ANSI-C quote: the same"
+d=$(crr ml_d "${H}echo \"first line"$'\nsecond line"; echo ok\necho \'one\ntwo (still data)\nthree\'\n'); expm caught "$d" 'closes a multi-line' "control: ordinary multi-line double-quoted and single-quoted strings"
+# seat B, PR 439 round 3: a substitution inside the quoted prefix of the line that closes a multi-line double quote runs in bash and must stay visible
+d=$(crr ml_e "${H}x=\""$'\n$(/tmp/evil)"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a \$( ) on the closing line runs"
+d=$(crr ml_f "${H}x=\""$'\n`/tmp/evil`"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: backticks on the closing line run"
+d=$(crr ml_g "${H}x=\""$'\n${y:-$(/tmp/evil)}"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a \${ :- \$( ) } on the closing line runs"
+d=$(crr ml_h "${H}x=\"a"$'\n$(/tmp/evil)" ; echo\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a \$( ) before the closing quote, code after it"
+d=$(crr ml_i "${H}x=\"\$(echo \""$'\n$(/tmp/evil)" )"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote nested in a \$( )"
+d=$(crr ml_j "${H}echo \""$'\nfoo $(/tmp/evil) bar"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: text then a \$( ) then the closing quote"
+d=$(crr ml_k "${H}x=\$'"$'\n$(/tmp/evil)\'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside an ANSI-C quote is data (bash runs nothing)"
+d=$(crr ml_l "${H}x='"$'\n$(/tmp/evil)\'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside a single quote is data"
+# seat A, PR 439 round 3: a line that begins inside SEVERAL contexts (a quote in a $( ) in a quote) and closes them: the command reader must start inside all of them
+d=$(crr ml_m "${H}y=\"\$(echo \""$'\na")" ; /tmp/evil ; z="x"\n'); expm caught "$d" 'closes a multi-line' "line closes a quote, a \$( ) and the outer quote, code follows"
+d=$(crr ml_n "${H}y=\"\$(echo \""$'\na")" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same, with a quote left open after the code"
+d=$(crr ml_o "${H}y=\"\${v:-\$(echo \""$'\na")}" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same through \${ }"
+d=$(crr ml_p "${H}y=\"\$(echo a"$'\nb)" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "a line that begins inside a \$( ) inside a quote and closes both"
+d=$(crr ml_q "${H}y=\"\$(echo '"$'\na\')" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same with a single quote inside the \$( )"
+d=$(crr ml_r "${H}y=\"\$(echo a"$'\nb)" ; echo ok\n'); expm caught "$d" 'closes a multi-line' "control: the same without a command after it"
+# seat B, PR 439 round 4: after a carried assignment context closes, the next word is the COMMAND (y=$(...) EVIL runs EVIL); after a carried argument context it is an operand
+d=$(crr ml_s "${H}y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a multi-line \$( ): the word after the closing ) is the command"
+d=$(crr ml_t "${H}z=\`"$'\n:\n` /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with multi-line backticks: the word after them is the command"
+d=$(crr ml_u "${H}x=\$(cat <<F"$'\nbody\nF\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a heredoc in a multi-line \$( )"
+d=$(crr ml_v "${H}x=\$("$'\n# c\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a comment line inside a multi-line \$( )"
+d=$(crr ml_w "${H}y=\"\$("$'\n:\n)" /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a quoted multi-line \$( ): the word after the closing quote is the command"
+d=$(crr ml_x "${H}echo \$("$'\n:\n) /tmp/out.txt\n'); expm caught "$d" 'closes a multi-line' "control: the word after a multi-line \$( ) that is an ARGUMENT is an operand, not a command"
+d=$(crr ml_y "${H}echo 'a"$'\nb\' "/tmp/out.txt" > /tmp/o\n'); expm caught "$d" 'closes a multi-line' "control: the word after a multi-line quote that is an argument is an operand"
+# seat A, PR 439 round 4: a line that closes a carried ( ) group or case begins at a command position: the stand-in word must not stick to its first word
+d=$(crr ml_z "${H}( true"$'\n/tmp/evil )\n'); expm caught "$d" 'absolute path' "a line closing a multi-line ( ) group starts a command"
+d=$(crr ml_za "${H}case a in a) true"$'\n/tmp/evil ;; esac\n'); expm caught "$d" 'absolute path' "a line inside a multi-line case arm starts a command"
+d=$(crr ml_zb "${H}{ ( true"$'\n/tmp/evil ) ; }\n'); expm caught "$d" 'absolute path' "a line closing a group inside { }"
+d=$(crr ml_zc "${H}if ( true"$'\n/tmp/evil ) ; then :; fi\n'); expm caught "$d" 'absolute path' "a line closing a group in an if condition"
+d=$(crr ml_zd "${H}( true"$'\nenv /tmp/x )\n'); expm caught "$d" 'launches another program' "a launcher on a line that closes a multi-line group"
+# seat B, PR 439 round 5: the word that opened a carried context began as an assignment in forms the word-start guess missed
+d=$(crr ml_ze "${H}y=\\"$'\n$(\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a continuation before the opener: y=\\<nl>\$( is y=\$("
+d=$(crr ml_zf "${H}a[\$(:)]=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "an assignment subscript that holds a \$( )"
+d=$(crr ml_zg "${H}a[ 1 ]=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "an assignment subscript with spaces"
+d=$(crr ml_zh "${H}X=1 y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "an assignment after another assignment"
+d=$(crr ml_zi "${H}echo a=b \$("$'\n:\n) /tmp/out\n'); expm caught "$d" 'closes a multi-line' "control: an argument that merely contains an = is not an assignment"
+# seat A, PR 439 round 5: the assignment word's start must follow quotes, escapes, ${ } and continuations; and a nested context takes its word from inside the enclosing substitution
+d=$(crr ml_zj "${H}y=\"a b\"\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment word with a quoted space before the opener"
+d=$(crr ml_zk "${H}y='a;b'\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment word with a single-quoted ; before the opener"
+d=$(crr ml_zl "${H}y=\${v:-a b}\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment word with \${ } holding a space before the opener"
+d=$(crr ml_zm "${H}y=a\\ b\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment word with an escaped space before the opener"
+d=$(crr ml_zn "${H}y=a\\"$'\nb$(\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment word continued across a backslash-newline"
+d=$(crr ml_zo "${H}y=\"(\"\""$'\n" /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment word of two quoted parts, the second multi-line"
+d=$(crr ml_zp "${H}echo \$("$'\ny="\n" /tmp/evil\n)\n'); expm caught "$d" 'closes a multi-line' "an assignment opened inside a substitution that is itself an argument"
+d=$(crr ml_zq "${H}echo \"\$("$'\ny="\n" /tmp/evil\n)"\n'); expm caught "$d" 'closes a multi-line' "the same inside a double-quoted substitution"
+# seat B, PR 439 round 6: a carried stand-in on a line that is itself a continuation; a case arm body inside $( ) that is an argument of the enclosing command
+d=$(crr ml_zr "${H}z=\$( echo \\"$'\n echo a ) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a continuation line inside a \$( ) that is closed on it: no stand-in is added to a joined line"
+d=$(crr ml_zs "${H}z=\$(echo a \\"$'\n) \\\n/tmp/evil\n'); expm caught "$d" 'closes a multi-line' "two continuations around the closing )"
+d=$(crr ml_zt "${H}echo \$( case a in a) /tmp/evil ;; esac )"$'\n'); expm caught "$d" 'not resolved' "a case inside a \$( ) that is an argument is refused"
+d=$(crr ml_zu "${H}echo a\$( case a in a) /tmp/evil ;; esac )"$'\n'); expm caught "$d" 'not resolved' "a case inside a \$( ) glued to a word is refused"
+d=$(crr ml_zv "${H}x=\`case a in a) /tmp/evil ;; esac\`"$'\n'); expm caught "$d" 'not resolved' "a case inside backticks is refused"
+d=$(crr ml_zw "${H}case a in a) /tmp/evil ;; esac"$'\n'); expm caught "$d" 'absolute path' "control: a top-level case is read as before"
+# seat A, PR 439 round 6 (tests written with the simplification that removed the { } and [ resets, not before: the old head fails them, the new passes)
+d=$(crr ml_zx "${H}y={\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a { in an assignment word does not end the word"
+d=$(crr ml_zy "${H}y=a}\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a } in an assignment word does not end the word"
+d=$(crr ml_zz "${H}echo a[ ; y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a [ in an earlier word does not stop the word reset"
+d=$(crr ml_zza "${H}true a[ && y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a [ before && does not stop the word reset"
+d=$(crr ml_zzb "${H}a[ \$i]=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a subscript with a space before \$i: the = in the word keeps it an assignment"
+d=$(crr ml_zzc "${H}(y=\$("$'\n:\n) /tmp/evil )\n'); expm caught "$d" 'closes a multi-line' "an assignment at the start of a subshell"
+# seat B, PR 439 round 7: a redirect word is not an operand: the word after the closing ) of a carried opener inside it is the COMMAND
+d=$(crr ml_zzd "${H}>\$( echo f"$'\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a redirect target holding a multi-line \$( ): the next word is the command"
+d=$(crr ml_zze "${H}<\$( echo /dev/null"$'\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "an input redirect target holding a multi-line \$( )"
+d=$(crr ml_zzf "${H}>\"\$( echo f"$'\n)" /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a quoted redirect target holding a multi-line \$( )"
+d=$(crr ml_zzg "${H}x=1 >\$( echo f"$'\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a redirect after an assignment"
+# seat A, PR 439 round 7: the word before the carried opener is the COMMAND position unless an earlier real command word came first; a subscript with blanks stays one word
+d=$(crr ml_zzh "${H}\$y\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a word that expands to nothing before the opener: the next word is the command"
+d=$(crr ml_zzi "${H}.\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a . command word"
+d=$(crr ml_zzj "${H}\$*\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a \$* word"
+d=$(crr ml_zzk "${H}( \$y\$("$'\n:\n) /tmp/evil )\n'); expm caught "$d" 'closes a multi-line' "the same inside a subshell"
+d=$(crr ml_zzl "${H}true; \$y\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "the same after a ;"
+d=$(crr ml_zzm "${H}a[ \$("$'\n:\n) ]=1 /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "a blank inside an assignment subscript before a carried \$( )"
+d=$(crr ml_zzn "${H}a[ \"\$("$'\n:\n)" ]=1 /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "the same with a quoted \$( )"
+d=$(crr ml_zzo "${H}a[ \`"$'\n:\n` ]=1 /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "the same with backticks"
+d=$(crr ml_zzp "${H}a[ \${i:-"$'\n} ]=1 /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "the same with \${ }"
+d=$(crr ml_zzq "${H}export y=\$("$'\n:\n) /tmp/out\n'); expm caught "$d" 'closes a multi-line' "control: after a real command word the carried word is an argument and so is what follows"
+# DEFAULT DENY (advisor Oct 17, after eight rounds on the carried-context reading): a line that closes a quote or substitution carried from an earlier line is refused
+# under the `deny` rule (waivable only by a reviewed line-bound exception); no bash grammar is emulated for it. Every form below was a hidden command in a round.
+cl() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "closing line: $5"; }
+cl cl_a $'x="\na"\n' caught 'closes a multi-line' 'a double quote closed on a later line'
+cl cl_b $'x=\'a\nb\'\n' caught 'closes a multi-line' 'a single quote'
+cl cl_c $'x=$\'a\nb\'\n' caught 'closes a multi-line' 'an ANSI-C quote'
+cl cl_d $'x=$(\n:\n)\n' caught 'closes a multi-line' 'a substitution'
+cl cl_e $'x=`\n:\n`\n' caught 'closes a multi-line' 'backticks'
+cl cl_f $'x=${y:-\n}\n' caught 'closes a multi-line' 'a ${ } '
+cl cl_g $'y="$(echo "\na")" ; /tmp/evil ; z="x"\n' caught 'closes a multi-line' 'a quote in a substitution in a quote (round 3)'
+cl cl_h $'x="\n\'" ; /tmp/evil ; echo "\'"\n' caught 'closes a multi-line' 'the first multi-line quote hole (round 2)'
+cl cl_i $'y=$(\n:\n) /tmp/evil\n' caught 'closes a multi-line' 'a command after the closing ) (round 4)'
+cl cl_j $'> f > $(\necho g\n) /tmp/evil\n' caught 'closes a multi-line' 'a redirection target before the opener (round 8)'
+cl cl_k $'f() { a="\ng" /tmp/evil; }\n' caught 'closes a multi-line' 'a function body assignment (round 8)'
+cl cl_l $'a="$( ( : \n: );/tmp/evil )"\n' caught 'closes a multi-line' 'a group with a newline in a quoted substitution (round 8)'
+cl cl_m $'echo ` z=$( : `\n/tmp/evil ` ) \\\n: /tmp/evil ` : `\n' caught 'closes a multi-line' 'backtick pairing (round 8)'
+cl cl_n $'x=\\\ny="a\nb" /tmp/evil\n' caught 'closes a multi-line' 'a continuation then a multi-line quote'
+cl cl_o $'a[ $(\n:\n) ]=1 /tmp/evil\n' caught 'closes a multi-line' 'a subscript with a blank (round 7)'
+cl cl_p $'echo "a\nb" ; echo ok\necho \'c\nd\'\n' caught 'closes a multi-line' 'ordinary multi-line strings are refused too: they need their reviewed waiver'
+cl cl_q $'x="a b"\ny=$(echo c)\necho \'d\'\n' ok - 'control: single-line quotes and substitutions are untouched'
+cl cl_r $'x=\'a\nb\nc\'\n' caught 'closes a multi-line' 'a quote across three lines is refused once, at the line that closes it'
+cl cl_s $'f() (\n echo a\n)\necho ok\n' ok - 'control: a ( ) function body is not a quote or a substitution'
+cl cl_t $'case a in\n a) echo 1 ;;\nesac\n' ok - 'control: a case block spanning lines'
+cl cl_u $'cat <<EOF\nit\'s\nEOF\necho ok\n' ok - 'control: a heredoc body is data'
+# seat A, PR 439 round 9: in an UNQUOTED heredoc body bash runs $( ) and backticks and reads ' " $' as plain characters; the command reader must not read them as quotes
+hd() { local d; d=$(crr "$1" "${H}$2"); expm caught "$d" 'unquoted heredoc body line that holds a substitution and a quote' "unquoted heredoc body: $3"; }
+hd hd_a $'cat <<EOF >/dev/null\n\'$(/tmp/evil)\'\nEOF\n' "a \$( ) between single quotes"
+hd hd_b $'cat <<EOF >/dev/null\n\'`/tmp/evil`\'\nEOF\n' "backticks between single quotes"
+hd hd_c $'cat <<EOF >/dev/null\n$\'$(/tmp/evil)\'\nEOF\n' "an ANSI-C looking quote around a \$( )"
+hd hd_d $'cat <<EOF >/dev/null\n\'${y:-$(/tmp/evil)}\'\nEOF\n' "a \${ :- \$( ) } between single quotes"
+hd hd_e $'cat <<-X >/dev/null\n\t\'$(/tmp/evil)\'\n\tX\n' "a <<- body, tab indented"
+hd hd_f $': <<EOF\n"$(/tmp/evil)"\nEOF\n' "double quotes around a \$( ) with : as the command"
+hd hd_g $'cat <<EOF >/dev/null\nit\'s $(/tmp/evil) done\nEOF\n' "an apostrophe in prose before a \$( )"
+cl hd_h $'cat <<\'EOF\' >/dev/null\n\'$(/tmp/evil)\'\nEOF\necho ok\n' ok - 'control: a quoted-delimiter body is data, nothing runs'
+# seat A, PR 439 fix check: inside a $( ) or backticks of an unquoted body bash reads quotes as quotes again: replacing them must not hide a quoted command word
+hd hd_i $'cat <<EOF >/dev/null\nx $("/tmp/evil")\nEOF\n' "a double-quoted command word in a \$( )"
+hd hd_j $'cat <<EOF >/dev/null\nx $(\'/tmp/evil\')\nEOF\n' "a single-quoted command word in a \$( )"
+hd hd_k $'cat <<EOF >/dev/null\nx `"/tmp/evil"`\nEOF\n' "a quoted command word in backticks"
+hd hd_l $'cat <<EOF >/dev/null\nx $(: ; "/tmp/evil")\nEOF\n' "a quoted command word after a separator in a \$( )"
+hd hd_m $'cat <<EOF >/dev/null\nx $(""/tmp/evil)\nEOF\n' "an empty quoted string before the path in a \$( )"
+# the waiver: the existing line-bound deny exception mechanism, nothing new
+dl cl_w1 'x="\na"' '[D("a\"")]' ok -
+dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
+dl cl_w3 'x="\na"\ny=1' '[D("y=1")]' caught 'closes a multi-line'
+dl cl_w4 'x="\na"' '[D("a\"", 2)]' caught 'count'
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3418,7 +3577,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1388
+EXPECT=1525
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
