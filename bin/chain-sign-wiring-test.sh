@@ -3471,6 +3471,12 @@ hm hm_zu $'a[$(echo x)]=1\nb[`echo y`]=2\nc[1]=3\necho ok\n' ok - 'control: subs
 hm hm_zv $'case x in x)a[k #]=1 /tmp/evil\n;;esac\n' caught 'assignment subscript' 'a subscript right after the ) of a case pattern'
 hm hm_zw $'if true;then a[k #]=1 /tmp/evil;fi\n' caught 'assignment subscript' 'after then;'
 hm hm_zx $'{ a[k #]=1 /tmp/evil; }\n' caught 'assignment subscript' 'in a { } group'
+# seat A, PR 449 round 7: a continuation between the name and the [ of an assignment subscript (a\<nl>[x #]=1)
+hm hm_zy $'declare -A a\na\\\n[x #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a name, a continuation, then the [ at the start of the next line'
+hm hm_zz $'declare -A a\na\\\n[x\n#]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'the multi-line form'
+hm hm_zza $'declare -A a\na\\\n[$(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'with a nested ] after the continuation'
+hm hm_zzb $'declare -A a\nb=1 a\\\n[k #]=1 /tmp/evil\necho end\n' caught 'assignment subscript' 'after another assignment'
+hm hm_zzc $'echo x \\\n[ ok ]\necho y\n' ok - 'control: an ordinary continuation before a [ that follows no name'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
 dl cl_w1 'x="\na"' '[D("a\"")]' ok -
 dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
@@ -3638,7 +3644,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1575
+EXPECT=1580
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
