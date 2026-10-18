@@ -684,6 +684,13 @@
           "line_sha256": "5abe16194e30dad577e5f9b52c6f059893e483c595dc5d5440ceddf663058223",
           "count": 1,
           "why": "a test command ([[ ... =~ regex ]]) on this line holds a quoted parameter expansion and a regex with a backslash: it is a test, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, the line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "      elif [ $((now - bt)) -gt \"$MAX_AGE\" ]; then",
+          "line_sha256": "99605e4749c17588361408279d11f42de45e6a04308f759148ab4efc15f19005",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) or an assignment on this line holds arithmetic $(( ... )) next to a bracket: it is arithmetic, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, every waived line is real arithmetic)"
         }
       ]
     },
@@ -1412,6 +1419,13 @@
           "line_sha256": "e2f105ada3c2d65ddd1bc5ba5833b75cc1bf1fb26441e76a662c5068c3c4d302",
           "count": 1,
           "why": "prose in the failure message of the test helper: out=[${out}] err=[$(cat ...)] are literal brackets around plain expansions in an echo string, never a subscript (REQ-CHAIN-001-AC1: a subscript whose text starts with a substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "  if [ \"$ok\" = 1 ]; then pass=$((pass+1)); else",
+          "line_sha256": "f73d14d5999f4a9890f3543a859b09ff2e60af3d6207b40fb7ec80f5b88777f9",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) or an assignment on this line holds arithmetic $(( ... )) next to a bracket: it is arithmetic, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, every waived line is real arithmetic)"
         }
       ]
     },
