@@ -88,7 +88,7 @@ def strip_lines(lines, base=None, closers=None):
     out, errs = [], []
     st, hd = ([base] if base else []), None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented, quoted)] still to be read inside a heredoc body
     DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
-    asub = 0                                           # open [ of an ASSIGNMENT subscript NAME[ ... ]=: bash reads it across newlines and starts no comment in it
+    asub = []                                          # context depth (len(st)) of each open [ of an ASSIGNMENT subscript; open [ of an ASSIGNMENT subscript NAME[ ... ]=: bash reads it across newlines and starts no comment in it
     cont = base == "hb"                                       # the previous line ends in a backslash: bash joins this line to it
     for n, l in enumerate(lines):
         if hd is not None:
@@ -104,7 +104,7 @@ def strip_lines(lines, base=None, closers=None):
         if cont: pass                                  # a joined line: a # at its start is inside a word, and the line is kept whole
         elif st and st[-1] in DATA + ("bt",) and l.lstrip().startswith("#"):
             errs.append("line %d: a # line inside a quote or ${ } that is still open from an earlier line (bash reads it as part of the word, not as a comment)" % (n + 1))
-        elif asub > 0 and l.lstrip().startswith("#"):
+        elif asub and l.lstrip().startswith("#"):
             if closers is not None: closers.append(("asub", n))                  # a # line inside an open assignment subscript is no comment (kept as code, refused)
         elif not (st and st[-1] in DATA + ("bt",)) and l.lstrip().startswith("#"):
             out.append(""); continue
@@ -121,8 +121,8 @@ def strip_lines(lines, base=None, closers=None):
                     and any(c in ("cmd", "bt", "paren") for c in st[max(k for k, c in enumerate(st) if c in ("dq", "brace")):]):
                 errs.append("line %d: a paren inside a bracket subscript or $[ ] inside a substitution inside double quotes or ${ } is not resolved (the command reader closes the substitution at it)" % (n + 1))
             if top in (None, "cmd", "paren", "bt", "case"):
-                if ch == "[" and (asub > 0 or re.search(r"(?:^|[\s;&|({])[A-Za-z_][A-Za-z0-9_]*$", l[:i])): asub += 1
-                elif ch == "]" and asub > 0: asub -= 1
+                if ch == "[" and (asub or re.search(r"[A-Za-z_][A-Za-z0-9_]*$", l[:i])): asub.append(len(st))     # NAME[ whatever precedes NAME (fail closed); any [ inside an open one
+                elif ch == "]" and asub and asub[-1] == len(st): asub.pop()                                   # only a ] at the depth of its [ ends it: a ] inside a $( ) or backticks opened in the subscript does not
             if ch in "[]" and top in (None, "cmd", "paren", "bt", "case", "arith"): bd[len(st)] = max(0, bd.get(len(st), 0) + (1 if ch == "[" else -1))
             if ch == "c" and l[i:i + 5] == "case\\" and top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{"):
                 errs.append("line %d: case followed by a backslash is not resolved (bash reads case\\ + one character as an ordinary word, or joins the next line)" % (n + 1))
@@ -165,7 +165,7 @@ def strip_lines(lines, base=None, closers=None):
             elif ch == "(" and nxt == "(" and top not in ("arith", "brk", "brace"): st.append("arith"); skip = i + 1
             elif ch == "(" and top not in ("arith", "brk", "brace"): st.append("paren")
             elif ch == "<" and nxt == "<" and l[i - 1:i] != "<" and l[i + 2:i + 3] != "<":
-                in_sub_ = (bd.get(len(st), 0) > 0 or asub > 0) and top in (None, "cmd", "paren", "bt", "case")       # an open [ : in an assignment subscript bash reads << as an arithmetic shift
+                in_sub_ = (bd.get(len(st), 0) > 0 or bool(asub)) and top in (None, "cmd", "paren", "bt", "case")       # an open [ : in an assignment subscript bash reads << as an arithmetic shift
                 if in_sub_ and closers is not None: closers.append(("hdsubscript", n))
                 if closers is not None and (any(c_ in ("cmd", "bt") for c_ in st) or "paren" in st[minlen:] or top == "brace") and top not in ("arith", "brk"):
                     closers.append(("hdsub", n))        # DEFAULT DENY: bash reads a heredoc inside a substitution, a ${ cmd; } or a ( ) group opened on this line before the heredocs of the enclosing line
@@ -177,14 +177,14 @@ def strip_lines(lines, base=None, closers=None):
                     if m: pend.append((m.group(1) or m.group(2) or m.group(3) or m.group(4), tab, m.group(4) is None))
                     else: errs.append("line %d: a << whose delimiter is not a plain word is not resolved" % (n + 1))
                 skip = i + 1
-            elif ch == "#" and i > 0 and prev_ws and asub > 0 and top in (None, "cmd", "paren", "bt", "case"):
+            elif ch == "#" and i > 0 and prev_ws and asub and top in (None, "cmd", "paren", "bt", "case"):
                 if closers is not None: closers.append(("asub", n))               # a # inside an assignment subscript starts no comment in bash: kept as code, refused
             elif ch == "#" and i > 0 and prev_ws and top not in DATA and top != "bt":      # inside backticks bash ends the comment at the closing backtick: the line is kept whole
                 cut = i; break
             prev_ws = ch.isspace()
             minlen = min(minlen, len(st))
         cont = esc and cut is None
-        if asub > 0 and closers is not None: closers.append(("asub", n))          # an assignment subscript is still open at the end of the line
+        if asub and closers is not None: closers.append(("asub", n))          # an assignment subscript is still open at the end of the line
         if cont and l.endswith("$\\") and closers is not None: closers.append(("funsub", n))    # $ at the end of a continued line: the next line may start with { and a blank (bash 5.3 ${ cmd; })
         if minlen < len(start_st) and any(c in OPENER for c in start_st[minlen:]) and closers is not None: closers.append(("ctx", n))    # this line closes a quote or substitution carried from an earlier line
         out.append(l if cut is None else l[:cut])
