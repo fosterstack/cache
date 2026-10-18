@@ -121,7 +121,7 @@ def strip_lines(lines, base=None, closers=None):
                     and any(c in ("cmd", "bt", "paren") for c in st[max(k for k, c in enumerate(st) if c in ("dq", "brace")):]):
                 errs.append("line %d: a paren inside a bracket subscript or $[ ] inside a substitution inside double quotes or ${ } is not resolved (the command reader closes the substitution at it)" % (n + 1))
             if top in (None, "cmd", "paren", "bt", "case"):
-                if ch == "[" and (asub or re.search(r"[A-Za-z_][A-Za-z0-9_]*$", l[:i])): asub.append(len(st))     # NAME[ whatever precedes NAME (fail closed); any [ inside an open one
+                if ch == "[" and (asub or re.search(r"[A-Za-z_][A-Za-z0-9_]*$", l[:i]) or (i == 0 and cont)): asub.append(len(st))     # NAME[ whatever precedes NAME (fail closed), a [ that starts a continuation line (the name may end the previous one); any [ inside an open one
                 elif ch == "]" and asub and asub[-1] == len(st): asub.pop()                                   # only a ] at the depth of its [ ends it: a ] inside a $( ) or backticks opened in the subscript does not
             if ch in "[]" and top in (None, "cmd", "paren", "bt", "case", "arith"): bd[len(st)] = max(0, bd.get(len(st), 0) + (1 if ch == "[" else -1))
             if ch == "c" and l[i:i + 5] == "case\\" and top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{"):
