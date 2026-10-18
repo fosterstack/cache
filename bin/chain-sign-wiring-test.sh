@@ -3358,6 +3358,17 @@ d=$(crr ml_zzd "${H}>\$( echo f"$'\n) /tmp/evil\n'); expm caught "$d" 'absolute 
 d=$(crr ml_zze "${H}<\$( echo /dev/null"$'\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "an input redirect target holding a multi-line \$( )"
 d=$(crr ml_zzf "${H}>\"\$( echo f"$'\n)" /tmp/evil\n'); expm caught "$d" 'absolute path' "a quoted redirect target holding a multi-line \$( )"
 d=$(crr ml_zzg "${H}x=1 >\$( echo f"$'\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a redirect after an assignment"
+# seat A, PR 439 round 7: the word before the carried opener is the COMMAND position unless an earlier real command word came first; a subscript with blanks stays one word
+d=$(crr ml_zzh "${H}\$y\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a word that expands to nothing before the opener: the next word is the command"
+d=$(crr ml_zzi "${H}.\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a . command word"
+d=$(crr ml_zzj "${H}\$*\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a \$* word"
+d=$(crr ml_zzk "${H}( \$y\$("$'\n:\n) /tmp/evil )\n'); expm caught "$d" 'absolute path' "the same inside a subshell"
+d=$(crr ml_zzl "${H}true; \$y\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "the same after a ;"
+d=$(crr ml_zzm "${H}a[ \$("$'\n:\n) ]=1 /tmp/evil\n'); expm caught "$d" 'absolute path' "a blank inside an assignment subscript before a carried \$( )"
+d=$(crr ml_zzn "${H}a[ \"\$("$'\n:\n)" ]=1 /tmp/evil\n'); expm caught "$d" 'absolute path' "the same with a quoted \$( )"
+d=$(crr ml_zzo "${H}a[ \`"$'\n:\n` ]=1 /tmp/evil\n'); expm caught "$d" 'absolute path' "the same with backticks"
+d=$(crr ml_zzp "${H}a[ \${i:-"$'\n} ]=1 /tmp/evil\n'); expm caught "$d" 'absolute path' "the same with \${ }"
+d=$(crr ml_zzq "${H}export y=\$("$'\n:\n) /tmp/out\n'); expm ok "$d" - "control: after a real command word the carried word is an argument and so is what follows"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3520,7 +3531,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1476
+EXPECT=1486
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
