@@ -3494,6 +3494,18 @@ sb sb_k $'echo "${pids[${#pids[@]}-1]}"\n' caught 'holds a substitution' 'a ${ i
 sb sb_l $'# a comment mentioning a[$(x)] is scanned raw like the rest of a listed script\n' caught 'holds a substitution' 'a NAME[ in a COMMENT line is refused (pinned: the listed text is scanned raw)'
 sb sb_m $'[ "$(echo a)" = a ] && echo ok\n[[ -n "$(echo b)" ]] && echo ok\nx=(1 2); echo "${x[1]} ${x[@]}"\na[$i]=1\na[1]=$(echo c)\necho ok\n' ok - 'control: tests with substitutions, ordinary subscripts, a substitution outside the subscript'
 sb sb_n $'a[1]=1\nb[$((1+1))]=2\necho "${a[1]}"\necho ok\n' ok - 'control: arithmetic in a subscript is not refused here'
+# seat B, PR 452 round 1: the opener built from quotes or escapes, and a subscript that starts with a substitution without a NAME before the [
+sb sb_o $'let \'a[$\'\'(/usr/bin/touch mk)]\'\n' caught 'builds a substitution opener' 'the opener split by adjacent single quotes ($'"''"'()'
+sb sb_p $'printf -v \'a[$\'\'(/bin/sh -c /usr/bin/touch\\ mk)]\' x\n' caught 'builds a substitution opener' 'printf -v with a split opener running /bin/sh -c'
+sb sb_q $'let "a[$""(/usr/bin/touch mk)]"\n' caught 'builds a substitution opener' 'the opener split by adjacent double quotes'
+sb sb_r $'let $\'a[\\x24(/usr/bin/touch mk)]\'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the $'
+sb sb_s $'let $\'a[\\x60/usr/bin/touch mk\\x60]\'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the backtick'
+sb sb_t $'let a[$\'\\x24\\x28/usr/bin/touch mk)\']\n' caught 'builds a substitution opener' 'an ANSI-C string builds the whole opener'
+sb sb_u $'x=$\'\\044(/usr/bin/touch mk)\'; let "a[$x]"\n' caught 'builds a substitution opener' 'an ANSI-C octal escape'
+sb sb_v $'let \'a\'[\\$\\(/usr/bin/touch\\ mk\\)]\n' caught 'holds a substitution' 'a quote between the name and [ with an escaped opener'
+sb sb_x $'n=a; x="$n"\'[$(/usr/bin/touch mk)]\'; let "$x"\n' caught 'holds a substitution' 'a name built by an expansion, the subscript text starts with the opener'
+sb sb_y $'if [ ${#arr[@]} -gt 0 ]; then echo "${#arr[@]}"; fi\n[[ ${X:-} =~ ^[0-9]+$ ]] && echo ok\n[ "$(echo a)" = a ]\necho ok\n' ok - 'control: a length expansion in a test, [[ ${X} ]], a quoted substitution in a test'
+sb sb_z $'echo $\'plain\\n text\' $"msg" \'\' ""\necho ok\n' ok - 'control: ANSI-C with plain escapes, $"..." and empty strings are untouched'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3663,7 +3675,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1596
+EXPECT=1607
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
