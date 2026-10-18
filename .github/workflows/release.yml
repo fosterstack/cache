@@ -435,6 +435,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tools"
           bash bin/install-scanner.sh grype "$RUNNER_TEMP/tools"
           echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: install docker-scout (pinned by checksum)
+        run: |
+          set -euo pipefail
+          bash bin/install-scanner.sh docker-scout "$RUNNER_TEMP"
+          mkdir -p "$HOME/.docker/cli-plugins" && install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"
       - name: AWS, as the live-test role (federated; the test ECR repository and live-test Inspector filters only)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -455,12 +460,20 @@ jobs:
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_DIR: ${{ github.workspace }}/candidate
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
+          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
         run: bash bin/vex-live-run.sh run
       - name: cleanup, delete every image, live-test filter and VEX note the run created
         if: always()
         env:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
         run: bash bin/vex-live-run.sh cleanup
 
   # The same live test, right after the final release is published, with every command block of the page as written (including the download, digest and verify blocks).
@@ -488,6 +501,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/tools"
           bash bin/install-scanner.sh grype "$RUNNER_TEMP/tools"
           echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: install docker-scout (pinned by checksum)
+        run: |
+          set -euo pipefail
+          bash bin/install-scanner.sh docker-scout "$RUNNER_TEMP"
+          mkdir -p "$HOME/.docker/cli-plugins" && install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"
       - name: AWS, as the live-test role (federated; the test ECR repository and live-test Inspector filters only)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -507,12 +525,20 @@ jobs:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
           GH_TOKEN: ${{ github.token }}
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
+          DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
         run: bash bin/vex-live-run.sh run
       - name: cleanup, delete every image, live-test filter and VEX note the run created
         if: always()
         env:
           ECR: ${{ vars.LIVE_TEST_ECR_REPOSITORY }}
           GAR: ${{ vars.LIVE_TEST_GAR_REPOSITORY }}
+          DH_REPO: ${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}
+          DOCKERHUB_TEST_USERNAME: ${{ secrets.DOCKERHUB_TEST_USERNAME }}
+          DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
         run: bash bin/vex-live-run.sh cleanup
 
   # The dry run's judges (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL

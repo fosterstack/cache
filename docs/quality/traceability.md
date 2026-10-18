@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 97 |
-| Acceptance criteria | 457 |
+| Acceptance criteria | 458 |
 | Release-blocking ACs | 126 |
-| ACs with mapped evidence | 446 |
+| ACs with mapped evidence | 447 |
 | Release-blocking ACs with mapped evidence | 126 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
@@ -937,11 +937,12 @@ Our VEX files and the customer guide shall be tested against the real services, 
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-012-AC1 | Given a live test; when it runs; then it touches only the dedicated test repositories (one ECR, one Google Artifact Registry), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; no keys, nothing from the Mac | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-012-AC1 | Given a live test; when it runs; then it touches only the dedicated test repositories (one ECR, one Google Artifact Registry and, for the Docker Scout leg only, one Docker Hub repository), only from CI, through federated identities scoped to them and to test-prefixed Inspector suppression rules; the Docker Hub repository, which has no federation, through one push token (an organization access token scoped to that repository only) with its user name, kept as secrets of the live-test environment, and the read-only Docker Scout token already held there (it only reads) with its user name, none ever printed; no other keys, nothing from the Mac | ci-workflow |  | approved | 1 item(s) |
 | REQ-SCAN-012-AC2 | Given the live test's images; when they are pushed; then they are our release images copied by digest plus one deliberately vulnerable fixture image; nothing is pushed anywhere public | ci-workflow |  | approved | 1 item(s) |
-| REQ-SCAN-012-AC3 | Given a live test run; when it ends; then it deletes what it created (images, suppression rules, uploaded VEX); the test repositories expire images after one day | ci-workflow |  | approved | 2 item(s) |
+| REQ-SCAN-012-AC3 | Given a live test run; when it ends; then it deletes what it created (images, suppression rules, uploaded VEX, the tags of the Docker Hub repository); the test repositories expire images after one day | ci-workflow |  | approved | 2 item(s) |
 | REQ-SCAN-012-AC4 | Given the live test; when it is triggered; then it runs on each release candidate and on any change to the guide or the VEX files, never on a schedule, with at most 50 pushes per run | ci-workflow |  | approved | 1 item(s) |
 | REQ-SCAN-012-AC5 | Given a live test; when it passes; then the finding showed before the suppression, was gone after, and every guide command worked exactly as written | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-012-AC6 | Given a live test run; when its Docker Scout leg runs (the OpenVEX attached to the image index as attestation children, REQ-REL-010); then it fails closed unless the Docker Hub test repository, the user and both tokens are present; the fixture carrying our attestation shows its finding when Scout is given Docker's authors only, the finding is gone and every other finding kept when Scout is given ours, and the same holds for the finding of one of our statements that Scout reports on our production image (a production image on which Scout reports none of them is a warning that REQ-REL-010-AC6 is not shown, never a pass of it); after a publication the published index is scanned the same way by tag and by exact digest; a scan of Build's layout directory is information only | ci-workflow |  | approved | 1 item(s) |
 
 ### REQ-SCAN-013 — Debate scoring
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-012-AC1, REQ-SCAN-012-AC2, REQ-SCAN-012-AC3, REQ-SCAN-012-AC4, REQ-SCAN-012-AC5
+# proves: REQ-SCAN-012-AC1, REQ-SCAN-012-AC2, REQ-SCAN-012-AC3, REQ-SCAN-012-AC4, REQ-SCAN-012-AC5, REQ-SCAN-012-AC6
 # Scanner-panel rule 12 (owner RATIFIED Oct 2; read-back approved, advisor 0098), offline: the live test's plan runs the
 # guide's command blocks byte for byte (only its settings blocks take test values); the test copy of the Inspector file
 # differs from the generator's output only in the live-test tag and the test name prefix (plus exactly the fixture's
@@ -110,7 +110,8 @@ check("SEC-387 an HTML comment that opens and closes on one line (the pinned mar
 cr = json.load(open(os.path.join(root, "docs/using-our-vex.cannot-run.json")))
 rc_blocks = L.guide_blocks(guide, skip=cr["blocks"])
 check("the rc plan is the page's plan minus exactly the listed blocks, in order", [b["text"] for b in rc_blocks] == [b["text"] for b in blocks if b["text"] not in cr["blocks"]])
-check("the rc plan has no digest, download, verify or published-image Grype block", not {"digest", "download", "verify", "grype"} & {b["section"] for b in rc_blocks})
+check("the rc plan has no digest, download, verify or published-image Grype or Scout block", not {"digest", "download", "verify", "grype", "scout"} & {b["section"] for b in rc_blocks})
+check("the full plan has the Scout block, after the Google blocks' section order of the page", "scout" in {b["section"] for b in blocks})
 check("the rc plan keeps the Inspector and Google blocks and the removal", {"inspector", "google", "inspector-remove"} <= {b["section"] for b in rc_blocks})
 try:
     L.guide_blocks(guide, skip=cr["blocks"] + ["not a block of the page\n"]); got = "accepted"
@@ -121,7 +122,7 @@ try:
     L.guide_blocks(guide, skip=[b["text"] for b in blocks if b["section"] == "inspector"]); got = "accepted"
 except ValueError:
     got = "refused"
-check("a cannot-run list that skips an Inspector or Google block is refused (only digest, download, verify and the published-image Grype scan may be skipped)", got == "refused", got)
+check("a cannot-run list that skips an Inspector or Google block is refused (only digest, download, verify and the published-image Grype and Scout scans may be skipped)", got == "refused", got)
 
 # --- the test copy of the Inspector file (advisor 0098): tag + prefix, and exactly the fixture's own filters
 images = {v: {"index": "sha256:" + c * 64, "children": {"linux/amd64": "sha256:" + d * 64, "linux/arm64": "sha256:" + e * 64}}
@@ -181,7 +182,7 @@ for why, fn in [("a widened criterion", lambda c: c["filters"][0]["filterCriteri
     check("check_copy refuses %s" % why, mut(fn) != [], "accepted")
 check("the shipped file never carries the tag", all("tags" not in f for f in shipped["filters"]))
 
-# --- Codex #387 r1 (P1): the test CSAF keeps the SHIPPED product tree and adds a separately identified fixture product and statement (the production load must still find
+# --- Codex #387 r1 (P1): the test CSAF keeps the SHIPPED product tree and adds a separately identified fixture product and statement (the production loading must still find
 #     its own products)
 vexc = copy.deepcopy(vex)
 csaf = L.csaf_test_copy(V, vexc, images, FIX, "CVE-2023-9999", "v0.3.0-rc1")
@@ -351,7 +352,7 @@ for why, after in [("an unrelated finding on one package lost", {"matches": [gm(
                    ("the target ignored on another package only", {"matches": [gm("CVE-U", "lib-a"), gm("CVE-U", "lib-b")], "ignoredMatches": [gm("CVE-T", "other")]})]:
     check("SEC-387 grype identity refuses %s" % why, L.judge_grype(GB2, after, "CVE-T") is not None)
 
-# SEC-169-06: Google's assessment must be NEW and come from a note this run's load created
+# SEC-169-06: Google's assessment must be NEW and come from a note this run's loading created
 occ = lambda state, note=None: {"noteName": "projects/goog-vulnz/notes/CVE-T", "vulnerability": dict(
     {"vexAssessment": {"state": state, "noteName": note}} if state else {})}
 RUN_NOTES = {"projects/p/notes/ours"}
@@ -784,6 +785,445 @@ with tempfile.TemporaryDirectory() as _t:
 # the runner does this check on the real image, before any push (static: the order of the lines)
 i_chk, i_push = run_text.find("fixture-check"), run_text.find('push_copy "$FIXTURE_SRC"')
 check("the runner exports the fixture and runs fixture-check on its package list before it pushes the fixture", 0 < i_chk < i_push and "--image-tar" in run_text, (i_chk, i_push))
+# --- PR-C: the Docker Scout leg (scanner-panel rule 12; REQ-REL-010-AC6; advisor, Oct 16). Part A, the python helpers.
+real_vex = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))
+DHREPO = "docker.io/fosterstack-live/cache-live-test"
+sv = L.scout_vex(real_vex, images, FIX, "CVE-2023-9999", DHREPO)
+sadded = [s for s in sv["statements"] if s not in real_vex["statements"]]
+check("scout-vex: the shipped statements unchanged plus one not_affected statement for the fixture in the Docker Hub test repository",
+      sv["statements"][:len(real_vex["statements"])] == real_vex["statements"] and len(sadded) == 1 and sadded[0]["status"] == "not_affected"
+      and sadded[0]["vulnerability"]["name"] == "CVE-2023-9999"
+      and sadded[0]["products"] == [{"@id": "pkg:oci/cache@%s?repository_url=%s" % (FIX, DHREPO)}], sadded)
+check("scout-vex: the document keeps our author (Scout applies only statements of an author the scan names)", sv["author"] == real_vex["author"])
+check("scout author pattern: the anchored, escaped author of the shipped file (the same as bin/scout-vex-scan.sh)", L.scout_author_pattern(real_vex) == "^FosterStack LLC$", L.scout_author_pattern(real_vex))
+check("scout author pattern: regex characters of the author are escaped",
+      L.scout_author_pattern({"author": "A.B (x) [y]*"}) == r"^A\.B \(x\) \[y\]\*$", L.scout_author_pattern({"author": "A.B (x) [y]*"}))
+for why, doc in (("no author", {}), ("a blank author", {"author": "  "}), ("a non-string author", {"author": 5})):
+    try:
+        L.scout_author_pattern(doc); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("scout author pattern refuses %s" % why, got == "refused", got)
+sh_author = subprocess.run(["bash", "-c", 'author=$(jq -er .author "$0/.vex/fosterstack-cache.openvex.json"); printf "^%s\\$" "$(printf %s "$author" | sed \'s/[][\\.*^$+?(){}|/]/\\\\&/g\')"', root],
+                           capture_output=True, text=True).stdout
+check("scout author pattern equals the shell script's computation", L.scout_author_pattern(real_vex) == sh_author, sh_author)
+
+# wrap-index: a single-platform image pulled as an OCI layout becomes the one-child index the attestation tool needs (the pinned fixture is a single image)
+import hashlib as _h
+def _dg(b): return "sha256:" + _h.sha256(b).hexdigest()
+def single_layout(d, arch="amd64"):
+    cfg = json.dumps({"architecture": arch, "os": "linux", "rootfs": {"type": "layers", "diff_ids": []}}).encode()
+    layer = b"layer-bytes"
+    man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                      "config": {"mediaType": "application/vnd.docker.container.image.v1+json", "digest": _dg(cfg), "size": len(cfg)},
+                      "layers": [{"mediaType": "application/vnd.docker.image.rootfs.diff.tar.gzip", "digest": _dg(layer), "size": len(layer)}]}).encode()
+    os.makedirs(os.path.join(d, "blobs", "sha256"))
+    for b in (cfg, layer, man):
+        open(os.path.join(d, "blobs", "sha256", _dg(b)[7:]), "wb").write(b)
+    open(os.path.join(d, "oci-layout"), "w").write('{"imageLayoutVersion":"1.0.0"}')
+    open(os.path.join(d, "index.json"), "w").write(json.dumps({"schemaVersion": 2, "manifests": [{
+        "mediaType": "application/vnd.docker.distribution.manifest.v2+json", "digest": _dg(man), "size": len(man)}]}))
+    return _dg(man)
+with tempfile.TemporaryDirectory() as t:
+    t = os.path.realpath(t)      # the attestation tool refuses a path through a symlink (macOS /var is one)
+    lay = os.path.join(t, "layout"); os.makedirs(lay); os.chmod(lay, 0o755)
+    man_dg = single_layout(lay)
+    dg_index = L.wrap_index(lay)
+    top = json.load(open(os.path.join(lay, "index.json")))
+    d_bytes = open(os.path.join(lay, "blobs", "sha256", dg_index[7:]), "rb").read()
+    d_doc = json.loads(d_bytes)
+    check("wrap-index: the layout's one descriptor is an OCI image index whose blob is present and hashes to its name",
+          len(top["manifests"]) == 1 and top["manifests"][0]["mediaType"] == "application/vnd.oci.image.index.v1+json"
+          and top["manifests"][0]["digest"] == dg_index == _dg(d_bytes) and top["manifests"][0]["size"] == len(d_bytes), top)
+    check("wrap-index: the index holds the image as its one child, with the platform read from the image's own config",
+          d_doc["schemaVersion"] == 2 and d_doc["mediaType"] == "application/vnd.oci.image.index.v1+json" and len(d_doc["manifests"]) == 1
+          and d_doc["manifests"][0]["digest"] == man_dg and d_doc["manifests"][0]["platform"] == {"architecture": "amd64", "os": "linux"}, d_doc)
+    vpath = os.path.join(t, "vex.json"); json.dump(sv, open(vpath, "w")); os.chmod(vpath, 0o644)      # the Scout leg's own document (the shipped statements plus the fixture's)
+    vi_run = subprocess.run([sys.executable, os.path.join(root, "bin/vex-index.py"), "layout", "--layout", lay, "--vex", vpath], capture_output=True, text=True)
+    check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", vi_run.returncode == 0, vi_run.stderr[-300:])
+    check("scout-vex: the attached document passes the attestation tool's own OpenVEX check (the tool is run, never loaded into this process)", vi_run.returncode == 0, vi_run.stderr[-300:])
+def _already_index(lay):
+    open(os.path.join(lay, "index.json"), "w").write(json.dumps({"schemaVersion": 2, "manifests": [
+        {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + "a" * 64, "size": 5}]}))
+def _two_descriptors(lay):
+    open(os.path.join(lay, "index.json"), "w").write(json.dumps({"schemaVersion": 2, "manifests": [
+        {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + "a" * 64, "size": 5}] * 2}))
+for why, mutate in (("a layout that already holds an index", _already_index), ("a layout with two descriptors", _two_descriptors)):
+    with tempfile.TemporaryDirectory() as t:
+        lay = os.path.join(t, "layout"); os.makedirs(lay); single_layout(lay); mutate(lay)
+        before = open(os.path.join(lay, "index.json")).read()
+        try:
+            L.wrap_index(lay); got = "accepted"
+        except ValueError:
+            got = "refused"
+        check("wrap-index refuses %s and leaves the layout alone" % why, got == "refused" and open(os.path.join(lay, "index.json")).read() == before, got)
+
+# the Docker Hub test repository is swept through the Hub API: fixed host, bearer token from the login, no redirect, every tag deleted and proven gone
+# --- the Docker Hub test repository is swept through the REGISTRY API (advisor, Oct 17: the push token is an organization access token, which the Hub's own API refuses;
+#     its "Image Delete" scope is the registry endpoints'): the token service at auth.docker.io, tags/list and DELETE manifests/<digest> at registry-1.docker.io; the user and
+#     the token travel only as the token service's Basic credentials
+import base64, hashlib, urllib.parse
+REPO_ = "fosterstack-live/cache-live-test"
+REGB = "https://registry-1.docker.io/v2/" + REPO_
+def dig(name): return "sha256:" + hashlib.sha256(name.encode()).hexdigest()
+class RegResp(FakeResp):
+    def __init__(self, body=b"", headers=None, status=200):
+        super().__init__(body); self.headers, self.status = headers or {}, status
+    def getcode(self): return self.status
+class RegFake:
+    def __init__(self, tags, same=(), fail_auth=False, refuse_delete=False, fail_delete=(), keep=(), page=2, listing=None, link=None, digest_header="ok", name=REPO_, delete_status=202):
+        self.tags = {t: dig(same[0] if t in same else t) for t in tags}     # tags named in `same` share one digest
+        self.calls, self.fail_auth, self.refuse_delete, self.fail_delete, self.keep, self.page = [], fail_auth, refuse_delete, set(fail_delete), set(keep), page
+        self.listing, self.link, self.digest_header, self.name, self.delete_status = listing, link, digest_header, name, delete_status
+    def __call__(self, req, timeout=None):
+        m, u, a = req.get_method(), req.full_url, req.get_header("Authorization")
+        self.calls.append((m, u, a, req.get_header("Accept")))
+        if u.startswith("https://auth.docker.io/token?"):
+            q = urllib.parse.parse_qs(urllib.parse.urlsplit(u).query)
+            assert m == "GET" and q == {"service": ["registry.docker.io"], "scope": ["repository:%s:pull,push,delete" % REPO_]}, (m, u)
+            if self.fail_auth or a != "Basic " + base64.b64encode(b"test-user:push-tok").decode(): raise urllib.error.HTTPError(u, 401, "no", {}, io.BytesIO(b""))
+            return RegResp(b'{"token": "reg-1", "access_token": "reg-1"}')
+        if a != "Bearer reg-1": raise urllib.error.HTTPError(u, 401, "no bearer", {}, io.BytesIO(b""))
+        path = urllib.parse.urlsplit(u).path
+        if m == "GET" and path == "/v2/%s/tags/list" % REPO_:
+            if self.listing is not None:
+                return RegResp(json.dumps(self.listing).encode(), {"Link": self.link} if self.link else {})
+            names = sorted(self.tags)
+            last = urllib.parse.parse_qs(urllib.parse.urlsplit(u).query).get("last", [""])[0]
+            rest = [n for n in names if n > last]
+            chunk, more = rest[:self.page], len(rest) > self.page
+            hdr = {"Link": '</v2/%s/tags/list?n=%d&last=%s>; rel="next"' % (REPO_, self.page, chunk[-1])} if more else {}
+            return RegResp(json.dumps({"name": self.name, "tags": chunk or None}).encode(), hdr)
+        if m == "HEAD" and path.startswith("/v2/%s/manifests/" % REPO_):
+            t = path.rsplit("/", 1)[1]
+            if t not in self.tags: raise urllib.error.HTTPError(u, 404, "no", {}, io.BytesIO(b""))
+            d = {"ok": self.tags[t], "short": "sha256:abc", "path": "sha256:" + "0" * 63 + "/../x", "none": None}[self.digest_header]
+            return RegResp(b"", {"Docker-Content-Digest": d} if d else {})
+        if m == "DELETE" and path.startswith("/v2/%s/manifests/" % REPO_):
+            d = path.rsplit("/", 1)[1]
+            if self.refuse_delete: raise urllib.error.HTTPError(u, 403, "denied", {}, io.BytesIO(b""))
+            if d in self.fail_delete: raise urllib.error.HTTPError(u, 500, "boom", {}, io.BytesIO(b""))
+            self.tags = {t: x for t, x in self.tags.items() if x != d or t in self.keep}
+            return RegResp(b"", {}, self.delete_status)
+        raise urllib.error.HTTPError(u, 404, "unexpected %s %s" % (m, u), {}, io.BytesIO(b""))
+def sweep_with(h): return L.hub_sweep(REPO_, "test-user", "push-tok", h)
+reg = RegFake(["a", "b", "c", "d", "e"], same=("a", "b"))
+sweep_with(reg)
+dels = [c[1] for c in reg.calls if c[0] == "DELETE"]
+check("registry sweep: one token request, the tag list read page by page, one DELETE of each distinct digest, the list read again and found empty",
+      sum(1 for c in reg.calls if c[1].startswith("https://auth.docker.io/")) == 1 and sorted(dels) == sorted(REGB + "/manifests/" + d for d in {dig("a"), dig("c"), dig("d"), dig("e")})
+      and reg.tags == {} and sum(1 for c in reg.calls if c[0] == "GET" and "/tags/list" in c[1]) >= 4, [(c[0], c[1][-40:]) for c in reg.calls])
+check("registry sweep: only the token service and the registry are called, every call after the token request carries the bearer token and the manifest requests name the manifest types",
+      all(urllib.parse.urlsplit(c[1]).hostname in ("auth.docker.io", "registry-1.docker.io") for c in reg.calls)
+      and all(c[2] == "Bearer reg-1" for c in reg.calls if not c[1].startswith("https://auth.docker.io/"))
+      and all("image.index" in (c[3] or "") and "manifest.v2" in (c[3] or "") for c in reg.calls if c[0] == "HEAD"), [(c[0], c[1][-40:]) for c in reg.calls][:6])
+for why, h, needle in (("a refused token request", RegFake(["a"], fail_auth=True), "token"), ("a refused delete", RegFake(["a"], refuse_delete=True), "refused the registry delete"),
+                       ("a failed delete", RegFake(["a", "b"], fail_delete=[dig("a")]), "delete"), ("a delete answered 200 instead of 202", RegFake(["a"], delete_status=200), "not 202"), ("a tag that is still there", RegFake(["a"], keep=["a"]), "left")):
+    try:
+        sweep_with(h); got, msg = "returned", ""
+    except (urllib.error.HTTPError, RuntimeError, ValueError) as e:
+        got, msg = "raised", str(e)
+    check("registry sweep fails on %s, with a message that names it and holds neither token" % why, got == "raised" and needle in msg and "push-tok" not in msg and "reg-1" not in msg, (got, msg))
+h2 = RegFake(["a", "b", "c"], fail_delete=[dig("a")])
+try: sweep_with(h2)
+except Exception: pass
+check("registry sweep: the other tags were deleted although one delete failed", sorted(h2.tags) == ["a"], h2.tags)
+for why, repo, user, tok in (("another registry path", "a/b/c", "u", "t"), ("a dot-dot", "../x", "u", "t"), ("an upper-case name", "Foo/bar", "u", "t"), ("no slash", "cache", "u", "t"),
+                             ("a docker.io prefix", "docker.io/ns/name", "u", "t"), ("no user", "ns/name", "", "t"), ("no token", "ns/name", "u", ""), ("a user with a space", "ns/name", "u v", "t")):
+    try:
+        L.hub_sweep(repo, user, tok, RegFake([])); got = "accepted"
+    except ValueError:
+        got = "refused"
+    check("registry sweep refuses %s" % why, got == "refused", got)
+
+# scout-delta: the informational probe of the Build layout (never a verdict)
+def gl(*ids): return {"vulnerabilities": [{"identifiers": [{"value": i}], "location": {"dependency": {"package": {"name": "p"}, "version": "1"}}} for i in ids]}
+with tempfile.TemporaryDirectory() as t:
+    bp, ap = os.path.join(t, "b.json"), os.path.join(t, "a.json")
+    json.dump(gl("CVE-1", "CVE-2", "CVE-3"), open(bp, "w")); json.dump(gl("CVE-2", "CVE-3"), open(ap, "w"))
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-delta", "--before", bp, "--after", ap], capture_output=True, text=True)
+    check("scout-delta: the notice says how many findings each scan reported and which our statements dropped",
+          r.returncode == 0 and "3" in r.stdout and "2" in r.stdout and "CVE-1" in r.stdout and "::notice::" in r.stdout, (r.returncode, r.stdout, r.stderr))
+    json.dump(gl("CVE-1"), open(ap, "w"))
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-delta", "--before", bp, "--after", os.path.join(t, "missing.json")], capture_output=True, text=True)
+    check("scout-delta: an unreadable report is a notice, never a failure (information only)", r.returncode == 0 and "::notice::" in r.stdout, (r.returncode, r.stdout, r.stderr))
+
+# scout-pick: which of OUR statements' CVEs does Scout report on the production image (the AC6 target); none is an answer, not an error
+with tempfile.TemporaryDirectory() as t:
+    bp, vp = os.path.join(t, "b.json"), os.path.join(t, "v.json")
+    json.dump(gl("CVE-1", "CVE-2", "CVE-3"), open(bp, "w"))
+    json.dump({"statements": [{"vulnerability": {"name": n}} for n in ("CVE-9", "CVE-3", "CVE-2")]}, open(vp, "w"))
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-pick", "--before", bp, "--openvex", vp], capture_output=True, text=True)
+    check("scout-pick: the first CVE (in order) that Scout reports and one of our statements covers", r.returncode == 0 and r.stdout.strip() == "CVE-2", (r.returncode, r.stdout, r.stderr))
+    json.dump({"statements": [{"vulnerability": {"name": "CVE-9"}}]}, open(vp, "w"))
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-pick", "--before", bp, "--openvex", vp], capture_output=True, text=True)
+    check("scout-pick: none of ours reported is an empty answer", r.returncode == 0 and r.stdout.strip() == "", (r.returncode, r.stdout, r.stderr))
+    open(bp, "w").write("not json")
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-pick", "--before", bp, "--openvex", vp], capture_output=True, text=True)
+    check("scout-pick: an unreadable report is an error, never 'none'", r.returncode != 0, (r.returncode, r.stdout))
+
+# --- PR-C part D: the Scout leg's wiring. The Docker Hub test repository is a variable, its user and tokens are secrets of the live-test environment, handed to the steps that need
+#     them as environment variables only; the leg's tool (Docker Scout CLI) is installed pinned by checksum like the rescan's
+SCOUT_RUN_ENV = {"DH_REPO": "${{ vars.LIVE_TEST_DOCKERHUB_REPOSITORY }}", "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}",
+                 "DOCKERHUB_TEST_USERNAME": "${{ secrets.DOCKERHUB_TEST_USERNAME }}", "DOCKERHUB_TEST_PUSH_TOKEN": "${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}", "DOCKERHUB_SCOUT_TOKEN": "${{ secrets.DOCKERHUB_SCOUT_TOKEN }}"}
+SCOUT_CLEAN_ENV = {k: SCOUT_RUN_ENV[k] for k in ("DH_REPO", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN")}
+for name, job in (("release.yml rc job", RJ), ("release.yml post-publish job", PJ), ("ci.yml", cj)):
+    steps = job.get("steps") or []
+    run_step = [s for s in steps if "bin/vex-live-run.sh run" in (s.get("run") or "")]
+    clean_step = [s for s in steps if "bin/vex-live-run.sh cleanup" in (s.get("run") or "")]
+    check("%s: the live-test step carries the Docker Hub repository and the three Docker Hub secrets as environment variables" % name,
+          len(run_step) == 1 and all((run_step[0].get("env") or {}).get(k) == v for k, v in SCOUT_RUN_ENV.items()), run_step and run_step[0].get("env"))
+    check("%s: the cleanup step carries the repository, the test user and the push token (not the Scout read token or the Scout user)" % name,
+          len(clean_step) == 1 and all((clean_step[0].get("env") or {}).get(k) == v for k, v in SCOUT_CLEAN_ENV.items())
+          and not {"DOCKERHUB_SCOUT_TOKEN", "DOCKERHUB_USERNAME"} & set(clean_step[0].get("env") or {}), clean_step and clean_step[0].get("env"))
+    users = [s.get("name") for s in steps if re.search(r"secrets\.DOCKERHUB", json.dumps(s))]
+    check("%s: the Docker Hub secrets appear in those two steps only, never in a command line" % name,
+          sorted(users) == sorted(s.get("name") for s in run_step + clean_step) and not any("secrets." in (s.get("run") or "") for s in steps), users)
+    inst = [s for s in steps if "docker-scout" in (s.get("run") or "") and "install-scanner" in (s.get("run") or "")]
+    check("%s: Docker Scout is installed pinned by checksum, before the live-test step" % name,
+          len(inst) == 1 and 'install -m 0755 "$RUNNER_TEMP/docker-scout" "$HOME/.docker/cli-plugins/docker-scout"' in inst[0]["run"]
+          and steps.index(inst[0]) < steps.index(run_step[0]), [s.get("name") for s in inst])
+    check("%s: no secrets: inherit and no secret outside the live-test steps" % name, "inherit" not in json.dumps(job) and "secrets." not in json.dumps([s for s in steps if s not in run_step + clean_step]))
+
+# --- Codex #416 r1: the page's blocks run without the Docker Hub secrets; Docker Hub auth goes in private config files, never on a command line; strict reports; the Hub
+#     path boundary and schema
+SECRETS_ENV = dict(DOCKERHUB_USERNAME="hubuser-secret", DOCKERHUB_TEST_USERNAME="hubtest-user", DOCKERHUB_TEST_PUSH_TOKEN="push-tok", DOCKERHUB_SCOUT_TOKEN="scout-tok", DH_REPO="ns/name")
+for section in ("verify", "scout"):
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, "plan"))
+        open(os.path.join(t, "plan", "00-%s.sh" % section), "w").write('env | grep -E "^(DOCKERHUB|DH_REPO)" | sort || echo NONE\n')
+        open(os.path.join(t, "plan.txt"), "w").write("00-%s.sh\n" % section)
+        open(os.path.join(t, "state.env"), "w").write("VER='0.3.0'\nIMAGE='x/y/cache'\n")
+        r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "guide", "--plan", "plan.txt", "--state", "state.env", section], cwd=t,
+                           env=dict(os.environ, **SECRETS_ENV), capture_output=True, text=True)
+        seen = [l for l in r.stdout.split("\n") if re.match(r"(DOCKERHUB|DH_REPO)", l)]
+        check("guide child (%s): none of the Docker Hub secrets or the test repository reach the page's commands" % section, r.returncode == 0 and seen == [], (r.returncode, seen, r.stderr[-200:]))
+
+# the Hub path boundary and schema (Codex #416 r1)
+LST = lambda tags, name=REPO_: {"name": name, "tags": tags}
+for why, kw in (("a Link to another host", {"listing": LST(["a"]), "link": '<https://evil.example/v2/%s/tags/list?n=1&last=a>; rel="next"' % REPO_}),
+                ("a Link that climbs out of the repository with dot-dot", {"listing": LST(["a"]), "link": '</v2/%s/tags/../../other/tags/list?n=1&last=a>; rel="next"' % REPO_}),
+                ("a Link to another repository's tags", {"listing": LST(["a"]), "link": '</v2/other/repo/tags/list?n=1&last=a>; rel="next"'}),
+                ("a Link with a query key of its own", {"listing": LST(["a"]), "link": '</v2/%s/tags/list?n=1&last=a&x=1>; rel="next"' % REPO_}),
+                ("a Link with a fragment", {"listing": LST(["a"]), "link": '</v2/%s/tags/list?n=1&last=a#x>; rel="next"' % REPO_}),
+                ("a Link with a user part", {"listing": LST(["a"]), "link": '<https://registry-1.docker.io@evil.example/v2/%s/tags/list?n=1&last=a>; rel="next"' % REPO_}),
+                ("a Link that points back at the same page", {"listing": LST(["a"]), "link": '</v2/%s/tags/list?n=100>; rel="next"' % REPO_}),
+                ("a tag name with a slash", {"listing": LST(["../../other/tags/victim"])}), ("a tag name that is dot-dot", {"listing": LST([".."])}),
+                ("a tag name with a question mark", {"listing": LST(["a?b"])}), ("a tag list that is an object", {"listing": LST({})}),
+                ("a tag that is not a string", {"listing": LST([5])}), ("the list of another repository", {"listing": LST(["a"], "other/repo")}),
+                ("a manifest answer without a digest", {"digest_header": "none"}), ("a short digest", {"digest_header": "short"}), ("a digest that is a path", {"digest_header": "path"})):
+    h = RegFake(["a"], **kw)
+    try:
+        sweep_with(h); got = "returned"
+    except (ValueError, RuntimeError, KeyError, TypeError):
+        got = "refused"
+    sent = [c[1] for c in h.calls]
+    check("registry sweep refuses %s and sends no request outside the repository's own registry paths" % why,
+          got == "refused" and all(urllib.parse.urlsplit(u).hostname in ("auth.docker.io", "registry-1.docker.io") and ".." not in u and "evil" not in u
+                                   and (u.startswith("https://auth.docker.io/") or urllib.parse.urlsplit(u).path.startswith("/v2/%s/" % REPO_)) for u in sent)
+          and not any(c[0] == "DELETE" and not re.fullmatch(r"sha256:[0-9a-f]{64}", c[1].rsplit("/", 1)[1]) for c in h.calls), (got, sent[-3:]))
+hp = RegFake(["a", "b", "c", "d", "e"], page=2)
+sweep_with(hp)
+check("registry sweep still follows the repository's own next page (relative Link)", hp.tags == {} and any("last=" in c[1] for c in hp.calls), [c[1][-40:] for c in hp.calls])
+
+# strict reports: an unreadable or malformed Scout report is an error everywhere it is read
+with tempfile.TemporaryDirectory() as t:
+    vp = os.path.join(t, "v.json"); json.dump({"statements": [{"vulnerability": {"name": "CVE-2"}}]}, open(vp, "w"))
+    for why, body in (("a vulnerabilities object", '{"vulnerabilities": {}}'), ("a vulnerabilities string", '{"vulnerabilities": ""}'), ("a finding without an identifier", '{"vulnerabilities": [{"identifiers": []}]}'),
+                      ("a finding without a package", '{"vulnerabilities": [{"identifiers": [{"value": "CVE-2"}]}]}')):
+        bp = os.path.join(t, "b.json"); open(bp, "w").write(body)
+        r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-pick", "--before", bp, "--openvex", vp], capture_output=True, text=True)
+        r2 = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-valid", "--report", bp], capture_output=True, text=True)
+        check("scout-pick and scout-valid refuse %s" % why, r.returncode != 0 and r2.returncode != 0, (r.returncode, r2.returncode))
+    r = subprocess.run([sys.executable, os.path.join(root, "bin/vex-live-test.py"), "scout-valid", "--report", os.path.join(t, "missing.json")], capture_output=True, text=True)
+    check("scout-valid refuses a missing report", r.returncode != 0, r.returncode)
+
+# --- PR-C part B: the shell leg, with stubs (fail closed without its repository and tokens; the fixture and the production image scanned with Docker's authors
+#     only and with ours; the verdict from bin/scout-selfcheck.py; pushes journaled and counted; the Docker Hub repository swept)
+ENV_OK = {"DH_REPO": "fosterstack-live/cache-live-test", "DOCKERHUB_USERNAME": "hubuser-secret", "DOCKERHUB_TEST_USERNAME": "hubtest-user", "DOCKERHUB_TEST_PUSH_TOKEN": "push-tok", "DOCKERHUB_SCOUT_TOKEN": "scout-tok"}
+for missing in ENV_OK:
+    env = {k: v for k, v in ENV_OK.items() if k != missing}
+    rc, out = sh("for v in DH_REPO DOCKERHUB_USERNAME DOCKERHUB_TEST_USERNAME DOCKERHUB_TEST_PUSH_TOKEN DOCKERHUB_SCOUT_TOKEN; do eval \"[ -n \\\"\\${$v-}\\\" ]\" || unset $v; done; scout_preflight",
+                 {"crane": "echo CALLED >> calls; exit 0", "docker": "echo CALLED >> calls; exit 0"}, dict(env, **{missing: ""}))
+    check("scout preflight fails closed without %s, naming it" % missing, rc != 0 and missing in out, (rc, out[-200:]))
+rc, out = sh("scout_preflight", {}, ENV_OK)
+check("scout preflight passes with the repository, the user and both tokens", rc == 0, (rc, out[-200:]))
+for bad in ("fosterstack-live", "a/b/c", "Foo/bar", "docker.io/ns/name", "../x"):
+    rc, out = sh("scout_preflight", {}, dict(ENV_OK, DH_REPO=bad))
+    check("scout preflight refuses the repository name %r" % bad, rc != 0, (rc, out[-200:]))
+
+DOCKER_LOG = r'''printf '%s\n' "$*" >> "$RUNNER_TEMP/docker.log"
+case "$*" in
+  "login "*) cat >/dev/null; exit 0 ;;
+  *"scout cves"*) if [[ "$*" == *--vex-author* ]]; then cat "$RUNNER_TEMP/scout-after.json"; else cat "$RUNNER_TEMP/scout-before.json"; fi ;;
+  *) exit 0 ;; esac'''
+def gl_report(*ids):
+    return json.dumps({"vulnerabilities": [{"identifiers": [{"type": "cve", "value": i}], "location": {"dependency": {"package": {"name": "libc6"}, "version": "2.36"}}} for i in ids]})
+rc, out = sh('printf %s \'' + gl_report("CVE-1", "CVE-2") + '\' > "$RUNNER_TEMP/scout-before.json"; scout_scan registry://docker.io/ns/n@sha256:%s "$RUNNER_TEMP/o.json"; cat "$RUNNER_TEMP/docker.log"; cat "$RUNNER_TEMP/o.json"' % ("a" * 64),
+             {"docker": DOCKER_LOG})
+check("scout_scan: Docker's own authors by default (no --vex-author), the GitLab format, the registry reference, the report in the file",
+      rc == 0 and "scout cves --format gitlab registry://docker.io/ns/n@sha256:%s" % ("a" * 64) in out and "--vex-author" not in out.split("\n")[0] and "CVE-1" in out, (rc, out[-300:]))
+rc, out = sh('printf %s \'' + gl_report("CVE-2") + '\' > "$RUNNER_TEMP/scout-after.json"; scout_scan registry://docker.io/ns/n@sha256:%s "$RUNNER_TEMP/o.json" \'^FosterStack LLC$\'; cat "$RUNNER_TEMP/docker.log"' % ("a" * 64),
+             {"docker": DOCKER_LOG})
+check("scout_scan: with our author, the anchored pattern as ONE argument", rc == 0 and "--vex-author ^FosterStack LLC$ registry://docker.io/ns/n@sha256:" in out, (rc, out[-300:]))
+for ref in ("local://x", "image://x", "ghcr.io/fosterstack/cache:1", "registry://x; touch pwned", ""):
+    rc, out = sh('scout_scan "$1" "$RUNNER_TEMP/o.json" 2>&1; ls "$RUNNER_TEMP/docker.log" 2>&1 | grep -c docker.log || true', {"docker": DOCKER_LOG}) if False else sh('scout_scan %s "$RUNNER_TEMP/o.json"; echo rc=$?; test ! -e "$RUNNER_TEMP/docker.log"' % json.dumps(ref), {"docker": DOCKER_LOG})
+    check("scout_scan refuses the reference %r before running anything" % ref, "rc=0" not in out or rc != 0, (rc, out[-200:]))
+rc, out = sh('scout_scan registry://x/y@sha256:%s "$RUNNER_TEMP/o.json"' % ("a" * 64), {"docker": "exit 3"})
+check("scout_scan fails when docker scout fails", rc != 0, (rc, out[-200:]))
+
+# the informational probe of the Build layout: never fails, says what Scout did
+rc, out = sh('printf %s \'' + gl_report("CVE-1", "CVE-2") + '\' > "$RUNNER_TEMP/scout-before.json"; printf %s \'' + gl_report("CVE-2") + '\' > "$RUNNER_TEMP/scout-after.json"; '
+             'scout_probe "$RUNNER_TEMP/layout" \'^FosterStack LLC$\'', {"docker": DOCKER_LOG})
+check("scout_probe: scans the Build layout (oci-dir://) with Docker's authors and with ours, and prints the delta", rc == 0 and "::notice::" in out and "CVE-1" in out
+      and "oci-dir://" in open(os.path.join(root, "bin/vex-live-run.sh")).read(), (rc, out[-300:]))
+rc, out = sh('scout_probe "$RUNNER_TEMP/layout" \'^FosterStack LLC$\'; echo rc=$?', {"docker": "exit 9"})
+check("scout_probe: a failing Scout is information, never a failure of the run", rc == 0 and "rc=0" in out, (rc, out[-300:]))
+
+# the sweep of the Docker Hub repository joins the sweep only when the repository is configured
+rc, out = sh("hub_sweep() { echo HUB-SWEPT; }; sweep_dockerhub", {}, {})
+check("sweep_dockerhub: without a configured repository it does nothing", rc == 0 and "HUB-SWEPT" not in out, (rc, out[-200:]))
+rc, out = sh("hub_sweep() { echo HUB-SWEPT; }; sweep_dockerhub", {}, ENV_OK)
+check("sweep_dockerhub: with the repository it sweeps it", rc == 0 and "HUB-SWEPT" in out, (rc, out[-200:]))
+rc, out = sh("hub_sweep() { return 7; }; sweep_dockerhub", {}, ENV_OK)
+check("sweep_dockerhub: a failing sweep fails", rc != 0, (rc, out[-200:]))
+rc, out = sh("hub_sweep() { return 7; }; sweep_ecr() { :; }; sweep_gar() { :; }; sweep_filters() { :; }; sweep_notes() { :; }; sweep", {}, ENV_OK)
+check("sweep: a failing Docker Hub sweep fails the sweep (the other families still ran)", rc != 0, (rc, out[-200:]))
+rc, out = sh("hub_sweep() { echo HUB-SWEPT; }; sweep_ecr() { :; }; sweep_gar() { :; }; sweep_filters() { :; }; sweep_notes() { :; }; sweep", {}, ENV_OK)
+check("sweep: the Docker Hub sweep is part of the sweep when configured", rc == 0 and "HUB-SWEPT" in out, (rc, out[-200:]))
+check("hub_sweep calls the helper with the repository only (the user and the token travel in the environment, never on a command line)",
+      'vex-live-test.py" hub-sweep --repository "$DH_REPO"' in open(os.path.join(root, "bin/vex-live-run.sh")).read())
+# Codex-free round 1 (Opus seat A, Sonnet seat B): the CLI itself pairs the TEST user with the push token, whatever the Scout user is in the same environment
+_swept, _real = [], L.hub_sweep
+L.hub_sweep = lambda repo, user, tok, opener=None: _swept.append((repo, user, tok))
+_saved = {k: os.environ.get(k) for k in ("DOCKERHUB_USERNAME", "DOCKERHUB_TEST_USERNAME", "DOCKERHUB_TEST_PUSH_TOKEN", "DOCKERHUB_SCOUT_TOKEN")}
+os.environ.update(DOCKERHUB_USERNAME="scout-user-sentinel", DOCKERHUB_TEST_USERNAME="test-user-sentinel", DOCKERHUB_TEST_PUSH_TOKEN="push-sentinel", DOCKERHUB_SCOUT_TOKEN="scout-sentinel")
+try:
+    _rc = L.main(["hub-sweep", "--repository", "ns/name"])
+finally:
+    L.hub_sweep = _real
+    for k, v in _saved.items():
+        os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+check("hub-sweep (the command): logs in as DOCKERHUB_TEST_USERNAME with DOCKERHUB_TEST_PUSH_TOKEN, never the Scout user or token", _rc == 0 and _swept == [("ns/name", "test-user-sentinel", "push-sentinel")], (_rc, _swept))
+
+# --- PR-C part C: the whole leg against stubs. A real attestation tool runs on a fixture layout the stub crane "pulls"; Scout is a stub that answers from canned reports in call
+#     order (fixture before/after, production before/after, then the published tag and digest in the post-publish modes)
+import shutil
+FX_DIGEST_STALE = "6" * 64
+LEG_CVE, OURS_CVE = "CVE-2023-9999", sorted(s["vulnerability"]["name"] for s in real_vex["statements"])[0]
+with tempfile.TemporaryDirectory() as lt:
+    lt = os.path.realpath(lt)
+    fx_src, cand = os.path.join(lt, "fixture-src"), os.path.join(lt, "cand", "images", "production")
+    os.makedirs(fx_src); fx_man = single_layout(fx_src)
+    os.makedirs(cand); prod_man = single_layout(cand, "arm64")
+    for d_ in (fx_src, cand):
+        for base_, dirs_, files_ in os.walk(d_):
+            os.chmod(base_, 0o755)
+            for f_ in files_: os.chmod(os.path.join(base_, f_), 0o644)
+    CRANE = r'''echo "$*" >> "$RUNNER_TEMP/crane.log"; echo "crane $*" >> "$RUNNER_TEMP/events.log"
+case "$1" in
+  auth) case "$2" in login) [ "$(cat)" = push-tok ] && echo "PUSH-LOGIN-OK" >> "$RUNNER_TEMP/events.log" || echo "BAD-PUSH-LOGIN" >> "$RUNNER_TEMP/events.log" ;; logout) echo "PUSH-LOGOUT" >> "$RUNNER_TEMP/events.log" ;; esac ;;
+  pull) dir="${@: -1}"; cp -R "$FIXTURE_LAYOUT_SRC" "$dir"; chmod -R go-w "$dir" ;;
+  push) d=$(jq -r '.manifests[0].digest' "$2/index.json"); echo "$3 $d" >> "$RUNNER_TEMP/pushed.map" ;;
+  copy) echo "$3 ${2##*@}" >> "$RUNNER_TEMP/pushed.map" ;;
+  digest) if [ -n "${CRANE_DIGEST_OVERRIDE:-}" ]; then echo "$CRANE_DIGEST_OVERRIDE"; else grep "^$2 " "$RUNNER_TEMP/pushed.map" | tail -1 | cut -d' ' -f2; fi ;;
+esac'''
+    SCOUT = r'''printf '%s\n' "$*" >> "$RUNNER_TEMP/docker.log"; echo "docker $*" >> "$RUNNER_TEMP/events.log"
+case "$*" in
+  "login "*) [ "$(cat)" = scout-tok ] && echo "SCOUT-LOGIN-OK" >> "$RUNNER_TEMP/events.log" || echo "BAD-SCOUT-LOGIN" >> "$RUNNER_TEMP/events.log"; exit 0 ;;
+  "logout "*) echo "SCOUT-LOGOUT" >> "$RUNNER_TEMP/events.log" ;;
+  *"scout cves"*) echo "SCAN-ENV push-env=${DOCKERHUB_TEST_PUSH_TOKEN:+set}" >> "$RUNNER_TEMP/events.log"; n=$(grep -c "scout cves" "$RUNNER_TEMP/docker.log"); cat "$RUNNER_TEMP/scout-$n.json" ;;
+  *) exit 0 ;; esac'''
+    def leg(reports, env=None, mode="rc", extra=""):
+        files = "".join("printf %%s '%s' > \"$RUNNER_TEMP/scout-%d.json\"; " % (r, i + 1) for i, r in enumerate(reports))
+        body = (files + 'export PUSHED_LOG="$RUNNER_TEMP/p"; : > "$PUSHED_LOG"; MODE=%s; tag=v0.3.0-rc1; ' % mode
+                + 'FIXTURE_SRC=docker.io/library/debian@%s; FIX=%s; RUN=live-1-1; CVE=%s; ' % (fx_man, fx_man, LEG_CVE)
+                + "echo '{\"production\": {\"index\": \"%s\", \"children\": {\"linux/amd64\": \"sha256:%s\", \"linux/arm64\": \"sha256:%s\"}}}' > images.json; " % (prod_man, "2" * 64, "3" * 64)
+                + extra + "scout_leg && echo leg-rc=0 || echo leg-rc=$?; echo \"push-tok-after=${DOCKERHUB_TEST_PUSH_TOKEN-UNSET} scout-tok-after=${DOCKERHUB_SCOUT_TOKEN-UNSET}\"; cat \"$RUNNER_TEMP/crane.log\" \"$RUNNER_TEMP/docker.log\" \"$PUSHED_LOG\" \"$RUNNER_TEMP/guide.log\" 2>/dev/null || true; echo =EVENTS=; cat \"$RUNNER_TEMP/events.log\"")
+        e = dict(ENV_OK, FIXTURE_LAYOUT_SRC=fx_src, CANDIDATE_DIR=os.path.join(lt, "cand"))
+        e.update(env or {})
+        return sh(body, {"crane": CRANE, "docker": SCOUT}, e)
+    OK_FIX = [gl_report(LEG_CVE, "CVE-A", OURS_CVE), gl_report("CVE-A", OURS_CVE)]
+    OK_PROD = [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")]
+    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)    # the first two answers belong to the informational probe of the Build layout (an unreadable report there is information)
+    sc = [l for l in out.split("\n") if l.startswith("scout cves")]
+    check("scout leg (rc): passes when the fixture's finding shows with Docker's authors only and is gone with ours, and the same for our production image", "leg-rc=0" in out, (rc, out[-500:]))
+    check("scout leg (rc): the Build layout is probed first (oci-dir://, information), then the Docker Hub test repository by digest",
+          sc and sc[0].startswith("scout cves --format gitlab oci-dir://") and any("registry://docker.io/fosterstack-live/cache-live-test@sha256:" in l for l in sc[2:]), sc)
+    check("scout leg (rc): each registry image is scanned twice, first with Docker's authors, then naming ours as one argument",
+          [("--vex-author ^FosterStack LLC$ " in l) for l in sc[2:]] == [False, True, False, True], sc)
+    ev = out.split("=EVENTS=\n", 1)[1].split("\n") if "=EVENTS=" in out else []
+    def cat_of(l):
+        if "PUSH-LOGIN-OK" in l: return 1
+        if l.startswith("crane push") or l.startswith("crane copy"): return 2
+        if "PUSH-LOGOUT" in l: return 3
+        if "SCOUT-LOGIN-OK" in l: return 4
+        if l.startswith("docker scout cves"): return 5
+        if "SCOUT-LOGOUT" in l: return 6
+        return 0
+    cats = [c for c in map(cat_of, ev) if c]
+    check("scout leg (rc): the push token is on the machine only for the pushes (login, pushes, logout), then the Scout token only for the scans (login, scans, logout); neither is ever on a command line",
+          cats == sorted(cats) and {1, 2, 3, 4, 5, 6} <= set(cats) and "BAD-" not in out and "push-tok" not in "\n".join(ev) and "scout-tok" not in "\n".join(ev), (cats, out[-500:]))
+    check("scout leg (rc): the user names are the only secret-backed values on a command line (public Docker Hub account names): the push login uses the test user, the Scout login the Scout user",
+          all("hubtest-user" in l and "hubuser-secret" not in l for l in ev if "auth login" in l)
+          and all("hubuser-secret" in l and "hubtest-user" not in l for l in ev if l.startswith("docker login"))
+          and not any("hubuser-secret" in l or "hubtest-user" in l for l in ev if "scout cves" in l or " push " in l or " copy " in l))
+    check("scout leg (rc): the push token is gone from the environment once it is logged out (a Scout scan or the page's Scout block never sees it)",
+          "SCAN-ENV push-env=\n" in out and "SCAN-ENV push-env=set" not in out, out[-300:])
+    for why, call in (("copy_candidate", 'copy_candidate "$RUNNER_TEMP/layout" dst/cache:x sha256:%s' % ("a" * 64)), ("push_copy", "push_copy a b")):
+        rc, out2 = sh('export PUSHED_LOG=/dev/null/not-a-directory; { %s && echo rc=0; } || echo rc=1; echo crane-calls=$(cat "$RUNNER_TEMP/crane.log" 2>/dev/null | wc -l)' % call,
+                      {"crane": 'echo "$*" >> "$RUNNER_TEMP/crane.log"; case "$1" in digest) echo sha256:%s ;; esac' % ("a" * 64)})
+        check("%s: a journal that cannot be written stops the push before crane runs (a push nobody journaled would escape the sweep's record)" % why,
+              "rc=1" in out2 and "crane-calls=0" in out2.replace(" ", ""), (rc, out2[-200:]))
+    rc, out2 = leg(["{}", "{}"] + OK_FIX + OK_PROD, extra='export PUSHED_LOG=/dev/null/not-a-directory; ')
+    check("scout leg (rc): an unwritable journal fails the leg with no crane push or copy", "leg-rc=0" not in out2 and "crane push" not in out2 and "crane copy" not in out2, out2[-300:])
+    for why, reports, env in (("the fixture's finding still shown with our author", [OK_FIX[0], OK_FIX[0]] + OK_PROD, {}),
+                              ("the fixture's finding not shown without our author", [gl_report("CVE-A"), gl_report("CVE-A")] + OK_PROD, {}),
+                              ("another fixture finding lost with our author", [OK_FIX[0], gl_report(OURS_CVE)] + OK_PROD, {}),
+                              ("our production image keeping the finding our statement covers", OK_FIX + [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B", OURS_CVE)], {}),
+                              ("a candidate that comes out of the registry at another digest", OK_FIX + OK_PROD, {"CRANE_DIGEST_OVERRIDE": "sha256:" + "0" * 64}),
+                              ("an unreadable report for the fixture", ["{}", "{}", "not json", "not json"] + OK_PROD, {})):
+        rc, out = leg(["{}", "{}"] + reports, env)
+        check("scout leg (rc) fails on %s" % why, "leg-rc=0" not in out and "leg-rc=" in out, (rc, out[-300:]))
+    rc, out = leg(["{}", "{}"] + OK_FIX + [gl_report("CVE-B"), gl_report("CVE-B")])
+    check("scout leg (rc): none of our statements reported by Scout on the production image is a warning that AC6 is not shown, not a failure",
+          "leg-rc=0" in out and "::warning::" in out and "REQ-REL-010-AC6" in out, (rc, out[-400:]))
+    for why, reports in (("a malformed production 'before' report", OK_FIX + ['{"vulnerabilities": {}}', gl_report("CVE-B")]),
+                         ("a production 'before' report that is not JSON", OK_FIX + ["not json", gl_report("CVE-B")]),
+                         ("a malformed production 'after' report although no target of ours was found", OK_FIX + [gl_report("CVE-B"), '{"vulnerabilities": ""}']),
+                         ("a missing production 'after' report", OK_FIX + [gl_report("CVE-B"), ""])):
+        rc, out = leg(["{}", "{}"] + reports)
+        check("scout leg (rc) fails on %s, never the warning path" % why, "leg-rc=0" not in out and "Docker Scout leg passed" not in out, (rc, out[-300:]))
+    for missing in ENV_OK:
+        rc, out = leg(["{}"], {missing: ""})
+        check("scout leg fails closed without %s, before any crane or docker call" % missing, "leg-rc=0" not in out and "crane" not in out.replace("crane.log", "") and "auth login" not in out, (rc, out[-300:]))
+    rc, out = leg(["{}"] * 2 + OK_FIX + OK_PROD, extra='PUSHES=49; ')
+    check("scout leg: the leg's pushes count against the 50 of the run (a second push beyond 50 fails it)", "leg-rc=0" not in out and "more than 50 pushes" in out, (rc, out[-300:]))
+    check("scout leg: a push that fails after the push login still logs the push token out and unsets it (it never stays in the job's Docker config)",
+          "PUSH-LOGIN-OK" in out and "PUSH-LOGOUT" in out and "leg-rc=0" not in out and out.index("PUSH-LOGIN-OK") < out.index("PUSH-LOGOUT"), (rc, out[-400:]))
+    check("…and the push token is gone from the environment too", "push-tok-after=UNSET" in out, (rc, out[-400:]))
+    BAD_DIGEST = 'crane() { if [ "$1" = digest ] && [[ "$2" == *-production ]]; then echo sha256:' + "0" * 64 + '; else command crane "$@"; fi; }; '
+    for md in ("release", "main"):
+        rc, out = leg(["{}"] * 2 + OK_FIX + OK_PROD, mode=md, extra=BAD_DIGEST)
+        check("scout leg (%s): a production copy that does not keep its digest fails the leg, and the push token is logged out and unset first" % md,
+              "leg-rc=0" not in out and "does not keep its digest" in out and "PUSH-LOGOUT" in out and "push-tok-after=UNSET" in out, (rc, out[-400:]))
+    rc, out = leg(["{}", "{}"] + OK_FIX + ['{"vulnerabilities": {}}', gl_report("CVE-B")])
+    check("scout leg (rc): a failure after the Scout login logs the Scout token out and unsets it (it never stays in the job's Docker config)",
+          "SCOUT-LOGIN-OK" in out and "SCOUT-LOGOUT" in out and "leg-rc=0" not in out and "scout-tok-after=UNSET" in out, (rc, out[-400:]))
+    rc, out = leg(["{}", "{}"] + OK_FIX + OK_PROD)
+    check("scout leg (rc): on success both tokens are also gone from the environment, with one login and one logout of each (no extra cleanup call)",
+          "leg-rc=0" in out and "push-tok-after=UNSET scout-tok-after=UNSET" in out and out.count("PUSH-LOGOUT") == 1 and out.count("SCOUT-LOGOUT") == 1, (rc, out[-400:]))
+    rc, out = leg(OK_FIX + OK_PROD + OK_FIX[:0] + [gl_report("CVE-B", OURS_CVE), gl_report("CVE-B"), gl_report("CVE-B", OURS_CVE), gl_report("CVE-B")], mode="release",
+                  extra='tag=v0.3.0; python3 "$GITHUB_WORKSPACE/bin/vex-live-test.py" settings --state state.env "DIGEST=sha256:%s"; guide() { echo "guide $1: $(cat state.env)" >> "$RUNNER_TEMP/guide.log"; }; ' % FX_DIGEST_STALE)
+    check("scout leg (release): the page's own Scout block runs as written (section scout); a release candidate never runs it", "guide scout" in out, out[-300:])
+    check("scout leg (release): the page's Scout block gets OUR production digest (the Google leg leaves the fixture's in the state)", "guide scout: " in out and ("DIGEST='%s'" % prod_man) in out, out[-400:])
+    rc2, out2 = leg(["{}", "{}"] + OK_FIX + OK_PROD)
+    check("scout leg (rc): the page's Scout block is not run (nothing is published)", "guide scout" not in out2 and "leg-rc=0" in out2, out2[-300:])
+    sc = [l for l in out.split("\n") if l.startswith("scout cves")]
+    check("scout leg (release): the published index is also scanned by tag and by exact digest, with Docker's authors and with ours",
+          "leg-rc=0" in out and any("registry://ghcr.io/fosterstack/cache:0.3.0" in l for l in sc) and any("registry://ghcr.io/fosterstack/cache@" + prod_man in l for l in sc)
+          and not any(l.startswith("scout cves --format gitlab oci-dir://") for l in sc), (rc, sc, out[-300:]))
+
 print("vex-live-test: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

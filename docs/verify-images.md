@@ -65,7 +65,7 @@ Rekor entry `provenance.rekor.json`. The signer to pin is
 with the issuer `https://token.actions.githubusercontent.com`. The provenance
 names each image (`production` and `-fips`) by digest; compare those with the
 digest of the image you pulled. The step-by-step commands are in the
-v0.3.0 release guide, `docs/verify-release.md` (it lands with the v0.3 release branch; the commands in it are TO-VERIFY until a release candidate has run them). <!-- pinned: historical -->
+v0.3.0 release guide, [`docs/verify-release.md`](verify-release.md) (the commands in it are TO-VERIFY until a release candidate has run them). <!-- pinned: historical -->
 
 What neither step tells you, stated so nobody over-reads them: whether the
 artifact was scanned or tested. Those are separate statements, made by other
@@ -97,10 +97,10 @@ bundle is `release-policy.bundle`), `checksums.txt` and
 added (`vendor-evidence.json.bundle`, `production.sbom.json.bundle`), except
 the policy's, `release-policy.bundle`. Verify one the same way as
 `checksums.txt` in section 4: `cosign verify-blob --bundle NAME.bundle FILE`
-with the pinned identity. How to verify a Witness record itself (the `*-collection.json`
-files) is in the v0.3.0 release guide, `docs/verify-release.md` (it lands with the <!-- pinned: historical -->
-v0.3 release branch); the commands there are TO-VERIFY until a release
-candidate has run them.
+with the pinned identity. The Witness records themselves (the `*-collection.json`
+files) are extra evidence that anyone with Witness can check; the release guide,
+[`docs/verify-release.md`](verify-release.md), does not cover them, and
+[`RELEASING.md`](../RELEASING.md) describes the stages that make them.
 
 ### The release manifest
 
