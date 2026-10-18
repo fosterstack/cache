@@ -363,7 +363,7 @@ printf '{"scanners":["grype","osv-scanner"]}\n' > "$fx/.github/policy/scanners.j
 # ---- REQ-CHAIN-006-AC6: check-fips.sh -----------------------------------------------------------------------------------------
 cat > "$fake/docker" <<'EOF'
 #!/usr/bin/env bash
-echo "docker $*" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
+echo "docker $* ${DOCKER_DEFAULT_PLATFORM:+--platform $DOCKER_DEFAULT_PLATFORM}" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
 case "$1" in
   load) [ "$(tar -tf "${3:-x}" 2> /dev/null | grep -c 'index.json')" -ge 1 ] || { echo "docker: load: not an OCI layout archive" >&2; exit 1; }
         img=$(basename "${3:-x}" .tar); echo "Loaded image: fscache:$img";;
@@ -498,13 +498,13 @@ GOEOF
 cat > "$fake2/docker" <<'DKEOF'
 #!/usr/bin/env bash
 # fake docker for the artifact checks: load names fscache:VARIANT; `run -d` starts a real fake server; a shell probe fails unless FAKE_SHELL names VARIANT:PATH
-echo "docker $*" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
+echo "docker $* ${DOCKER_DEFAULT_PLATFORM:+--platform $DOCKER_DEFAULT_PLATFORM}" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
 case "$1" in
   load) [ "$(tar -tf "${3:-x}" 2> /dev/null | grep -c 'index.json')" -ge 1 ] || { echo "docker: load: not an OCI layout archive" >&2; exit 1; }
         echo "Loaded image: fscache:$(basename "${3:-x}" .tar)";;
   run)
     ep=""; img=""; detach=0; nm=""
-    for ((i=2; i<=$#; i++)); do a=${!i}; j=$((i+1)); case "$a" in --entrypoint) ep=${!j};; --name) nm=${!j};; -d) detach=1;; fscache:*) img=$a;; esac; done
+    for ((i=2; i<=$#; i++)); do a=${!i}; j=$((i+1)); case "$a" in --entrypoint) ep=${!j};; --name) nm=${!j};; -d) detach=1;; fscache:*) img=$a;; localhost/fscache-*-image) img=${a#localhost/fscache-}; img=fscache:${img%-image};; esac; done
     if [ -n "$ep" ]; then
       case " ${FAKE_SHELL:-} " in *" ${img#fscache:}:$ep "*) exit 0;; esac
       exit 1

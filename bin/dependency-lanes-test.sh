@@ -286,7 +286,7 @@ def case(files, view_rc=0, head=HEAD):
     os.chmod(t + "/bin/gh", 0o755)
     open(t + "/step.sh", "w").write(run)
     env = dict(os.environ, PATH=t + "/bin:" + os.environ["PATH"], LOGF=t + "/log", SNAP=t + "/snap.json", VIEW_RC=str(view_rc),
-               PR_URL="https://github.com/o/r/pull/7", GITHUB_STEP_SUMMARY=t + "/summary", GH_TOKEN="x")
+               GITHUB_STEP_SUMMARY=t + "/summary", GH_TOKEN="x", **{"PR_URL": "https://github.com/o/r/pull/7"})
     r = subprocess.run(["bash", t + "/step.sh"], env=env, capture_output=True, text=True)
     log = open(t + "/log").read().splitlines() if os.path.exists(t + "/log") else []
     return r.returncode, [l for l in log if l.startswith("gh pr merge")]
