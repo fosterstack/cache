@@ -94,6 +94,7 @@ def strip_lines(lines, base=None, closers=None):
             if hd[0][2]: out.append(strip_line(l))                           # a quoted delimiter: the body is data
             else:                                                            # an unquoted body still runs $( ) and backticks, # or no #: keep it whole, and refuse what runs on past the line
                 out.append(l)
+                if re.search(r"\$\{(?:[ \t|]|$)", l) and closers is not None: closers.append(("funsub", n))     # bash 5.3 ${ cmd; } runs in an unquoted body too
                 if re.search(r"\$\(|\$\{|`", l) and re.search(r"['\"]", l) and closers is not None: closers.append(("hd", n))   # DEFAULT DENY: in an unquoted body bash reads ' and " as plain text outside a substitution and as quotes inside it; the reader cannot tell which a line means
                 if strip_lines([l], "hb")[1] or re.search(r"(?<!\\)(?:\\\\)*\\$", l):
                     errs.append("line %d: an unquoted heredoc body line that opens a substitution it does not close, or ends in a backslash, is not resolved" % (n + 1))
