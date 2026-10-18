@@ -3536,6 +3536,12 @@ sb sb_ax $'let a{[,[}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution
 sb sb_ay $'let a{\\[,\\[}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a brace expansion of escaped ['
 sb sb_az $'printf -v a{\\[,}\'$(/usr/bin/touch MARK)]\' z z\n' caught 'holds a substitution' 'a brace expansion with an empty alternative'
 sb sb_ba $'let a{"[",x}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a quoted [ inside a brace expansion'
+# seat A, PR 452 round 3: a brace expansion builds a[[ and the test-command exemption skipped both brackets
+sb sb_bb $'let a{[[,}\'$(/usr/bin/touch MARK)]]\'\n' caught 'holds a substitution' 'a{[[,} builds a[[ ; the exemption must not skip it'
+sb sb_bc $'printf -v a{[[,}\'$(/usr/bin/touch MARK)]]\' %s 1\n' caught 'holds a substitution' 'the same through printf -v'
+sb sb_bd $'read a{[[,}\'$(/usr/bin/touch MARK)]]\' <<< 1 || true\n' caught 'holds a substitution' 'the same through read'
+sb sb_be $'let a{[[,}0+\'$(/usr/bin/touch MARK)]]\'\n' caught 'holds a substitution' 'with a prefix before the opener'
+sb sb_bf $'{ [ -n "$(echo a)" ]; }\nif [[ "$(echo b)" = b ]]; then echo ok; fi\n(( 1 )) && [[ -n "$(echo c)" ]] && echo ok\n' ok - 'control: a group before a test, [[ ]] after if, [[ ]] after &&'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3705,7 +3711,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1634
+EXPECT=1639
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
