@@ -81,19 +81,26 @@ SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\((?!\()|\$\{(?!#[
 SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
 
 def subscript_holds_opener(l):
-    """Does a NAME[ ... ] of this (logical) line hold a substitution opener before its matching ]? Brackets are balanced, so a nested [ ] does not end the scan early."""
-    for m in SUBSCRIPT_NAME.finditer(l):
-        i, depth = m.end(), 1
-        while i < len(l) and depth > 0:
-            c = l[i]
+    """Does a [ ... ] of this (logical) line that could be an array subscript hold a substitution opener before its matching ]? EVERY [ is scanned, balanced, except a test command's: a
+    [ that follows a blank, the start of the line, ; & | ( { ! or [ and is itself followed by a blank (or [) is `[ ... ]` the command and not a subscript. A quote, an escape or a brace
+    between a name and its [ (a quoted [, an escaped [, a brace-built [) therefore changes nothing, and neither does a prefix before the opener (0+$( )."""
+    for i, ch in enumerate(l):
+        if ch != "[": continue
+        prev = l[i - 1] if i > 0 else " "
+        nxt = l[i + 1] if i + 1 < len(l) else " "
+        if prev == "[": continue
+        if not ((not prev.isspace() and prev not in ";&|({!") or (not nxt.isspace() and nxt != "[")): continue
+        j, depth = i + 1, 1
+        while j < len(l) and depth > 0:
+            c = l[j]
             if c == "\\":
-                if l[i + 1:i + 2] in ("$", "`"): return True
-                i += 2; continue
+                if l[j + 1:j + 2] in ("$", "`"): return True
+                j += 2; continue
             if c == "`": return True
-            if c == "$" and ((l.startswith("$(", i) and not l.startswith("$((", i)) or l.startswith("${", i)): return True
+            if c == "$" and ((l.startswith("$(", j) and not l.startswith("$((", j)) or l.startswith("${", j)): return True
             if c == "[": depth += 1
             elif c == "]": depth -= 1
-            i += 1
+            j += 1
     return False
 OPENER_BUILT = re.compile(r"\$(?:\'\'|\"\")|\$'(?:[^'\\]|\\.)*\\(?:x[0-9A-Fa-f]|[0-7]|u[0-9A-Fa-f]|U[0-9A-Fa-f])")   # $'' / $"" or an ANSI-C string with a hex, octal or unicode escape: builds an opener the text scan cannot read
 
