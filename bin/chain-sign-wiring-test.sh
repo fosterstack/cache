@@ -3428,6 +3428,13 @@ hm hm_k $': <<\'A\' ${ cat <<B; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' ca
 hm hm_l $': <<\'A\' ${| cat <<B >/dev/null; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${| cmd; } substitution'
 hm hm_m $'x=`: <<\'EOF\' `\ny=\'\n#\' ; /tmp/evil\nEOF\n' caught 'opens a heredoc inside' 'a heredoc in backticks is not queued: the lines after it are read as code'
 hm hm_n $'(\ncat <<EOF)\ny\nEOF\necho ok\n' ok - 'control: a delimiter ending at ) when the group was opened on an earlier line'
+# seat A, PR 449 round 2: bash 5.3 ${ cmd; } / ${| cmd; } ends at a } in COMMAND position, not at the first }: default deny for the opener itself; and hm_m now also asserts the lines after a backtick heredoc are read as code
+hm hm_o $'x=`: <<\'EOF\' `\ny=\'\n#\' ; /tmp/evil\nEOF\n' caught 'absolute path' 'a heredoc in backticks is not queued: /tmp/evil is read as code'
+hm hm_p $': <<\'A\' ${ : # }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } inside a comment does not end a ${ cmd; }'
+hm hm_q $': <<\'A\' ${ echo }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } as an argument does not end it'
+hm hm_r $': <<\'A\' ${| : # }\ncat <<B >/dev/null\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'the ${| form'
+hm hm_s $': <<\'A\' ${ : ${x:-a} }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'an inner ${x:-a} closing before it'
+hm hm_t $'x=${y:-a}\necho "${y#a} ${#y}"\necho ${z%%b}\n' ok - 'control: ordinary parameter expansions are untouched'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
 dl cl_w1 'x="\na"' '[D("a\"")]' ok -
 dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
@@ -3595,7 +3602,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1539
+EXPECT=1545
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
