@@ -326,8 +326,18 @@ def judge_prereqs(name, job, steps, bad):
     if not (os.path.isdir(os.path.join(root, "docs")) and os.path.isfile(os.path.join(root, "README.md"))):
         bad.append(f"{name}: the repository has no docs/ and README.md for the personas to read")
 
+# an environment variable that changes how bash or the tools the steps run behave (BASH_ENV is expanded and sourced by a non-interactive bash before the script): none may be set at any
+# scope (workflow, job, step) of the persona jobs
+SHELL_ENV = re.compile(r"(?i)^(BASH_ENV|ENV|PATH|SHELLOPTS|BASHOPTS|IFS|HOME|PS4|PROMPT_COMMAND|CDPATH|GLOBIGNORE|LD_\w+|DYLD_\w+|\w*_PROXY|NO_PROXY|SSL_CERT_\w+|CURL_\w+|GIT_\w+|PYTHON\w*|NODE_\w+|GH_(?!REPO$|TOKEN$)\w+|GITHUB_\w+)$")
+
+def judge_shell_env(env, where, bad):
+    for k in (env or {}):
+        if SHELL_ENV.match(str(k)):
+            bad.append(f"{where} sets {k}, which changes how the shell or the tools run (every step would inherit it; BASH_ENV is even run before the script)")
+
 def judge_workflow_env(doc, label, bad):
     """workflow-level `env` is inherited by every job and step: no credential, owner variable, model name or alias of one may be declared there"""
+    judge_shell_env(doc.get("env"), f"{label} workflow-level env", bad)
     for k, v in (doc.get("env") or {}).items():
         if k in CREDS or k in VARS or k.startswith(("ANTHROPIC_", "AWS_", "ACTIONS_")) or CRED_REF.search(str(v)) or MODEL.search(str(v)) or MODEL.search(str(k)):
             bad.append(f"{label} declares {k} in a workflow-level env: it would be inherited by every step, not only the driver's")
@@ -426,6 +436,7 @@ def common(name, job, bad):
             for k in s.get("env", {}):
                 if k in CREDS or k in VARS:
                     bad.append(f"{name}: {k} is set on a step other than the driver")
+    judge_shell_env(job.get("env"), f"{name}: the job-level env", bad)
     for k, v in (job.get("env") or {}).items():
         if CRED_REF.search(str(v)) or MODEL.search(str(v)):
             bad.append(f"{name}: the job-level env {k} carries a credential reference or a model name ({v!r}): every step would inherit it")
@@ -939,6 +950,8 @@ def judge_weekly(f, bad):
         r = res[0]; rrun = "\n".join(l for l in str(r.get("run", "")).splitlines() if not l.strip().startswith("#"))
         if not expr_is((r.get("env", {}) or {}).get("GH_REPO", ""), "github.repository") or not expr_is((r.get("env", {}) or {}).get("REGISTRY_OWNER", ""), "github.repository_owner"):
             bad.append("weekly persona-uat's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs after the root checkout and the crane install, before the docs checkout)")
+        if set((r.get("env", {}) or {})) != {"GH_REPO", "REGISTRY_OWNER", "GH_TOKEN"}:
+            bad.append(f"weekly persona-uat's resolver step's env must be exactly GH_REPO, REGISTRY_OWNER and GH_TOKEN (found {sorted(r.get('env', {}) or {})})")
         bad.extend(run_resolver(rrun))
         m = re.search(r"(\w+)=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)", rrun)
         if not m:
@@ -1491,6 +1504,10 @@ mutate("weekly resolver rewrites the owner with a parameter expansion", "is not 
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("${REGISTRY_OWNER}/cache:", "${REGISTRY_OWNER/#[!o]*/attacker}/cache:")), "fresh")
 mutate("weekly resolver reads a second digest with another crane line", "is not one of the five allowed shapes",
        lambda j: _resolver(j).update(run=re.sub(r'(?m)^(\w+)=\$\(crane digest ([^\n]*)\)$', lambda m: m.group(0) + "\nz=$(crane digest " + m.group(2) + ")", _resolver(j)["run"])), "fresh")
+mutate("weekly job-level env sets BASH_ENV", "changes how the shell or the tools run", lambda j: j.update(env={"BASH_ENV": "$(true)"}), "fresh")
+mutate("rc job-level env sets PATH", "changes how the shell or the tools run", lambda j: j.update(env={"PATH": "/tmp/x:/usr/bin"}))
+mutate("weekly resolver step env sets BASH_ENV", "resolver step's env must be exactly", lambda j: _resolver(j).setdefault("env", {}).update(BASH_ENV="$(true)"), "fresh")
+mutate("weekly resolver step env sets GH_HOST", "resolver step's env must be exactly", lambda j: _resolver(j).setdefault("env", {}).update(GH_HOST="evil.example"), "fresh")
 mutate("weekly resolver pipes the digest through another command", "no pipe or fallback",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" | head -n1)')), "fresh")
 mutate("rc job installs crane it has no use for", "a run step before the driver other than", lambda j: j["steps"].insert(1, {"run": "./bin/install-scanner.sh crane"}))
@@ -1591,6 +1608,9 @@ mutate("source: privileged=True", "starts a privileged container", lambda srcs: 
 # --- round 3: environment at EVERY scope (workflow, job, step) and the checkout/SDK prerequisites -----------------------------------------------------
 VEND = "cla" + "ude-fixture"        # a model name, assembled so no file names one
 for lab, w in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
+    mutate(f"{lab}: workflow-level env sets BASH_ENV", "changes how the shell or the tools run", lambda d: d.update(env={"BASH_ENV": "$(true)"}), w)
+    mutate(f"{lab}: workflow-level env sets PATH", "changes how the shell or the tools run", lambda d: d.update(env={"PATH": "/tmp/x:/usr/bin"}), w)
+    mutate(f"{lab}: workflow-level env sets a proxy", "changes how the shell or the tools run", lambda d: d.update(env={"HTTPS_PROXY": "http://x:1"}), w)
     mutate(f"{lab}: workflow-level env holds the model API key", "workflow-level env", lambda d: d.update(env={"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}), w)
     mutate(f"{lab}: workflow-level env holds a federation secret", "workflow-level env", lambda d: d.update(env={"ANTHROPIC_WORKSPACE_ID": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}"}), w)
     mutate(f"{lab}: workflow-level env aliases a secret under another name", "workflow-level env", lambda d: d.update(env={"HARMLESS": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}"}), w)
