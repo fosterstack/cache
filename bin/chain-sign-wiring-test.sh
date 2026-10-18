@@ -3589,6 +3589,13 @@ sb sb_cp $'let "a[\\\'] \\\'\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substi
 sb sb_cq $'printf -v "a[\\"]\\"\\$(/usr/bin/touch mk)]" z\n' caught 'holds a substitution' 'printf -v'
 sb sb_cr $'let "a[\\"]\\"`/usr/bin/touch mk`]=1"\n' caught 'holds a substitution' 'backticks'
 sb sb_cs $'echo "x=\\"a]b\\" y"; [ -n "a\\"b" ] && echo ok\n' ok - 'control: escaped quotes in plain strings with no opener in any bracket'
+# seat A, PR 452 narrow verification (the class, closed by default deny): ANY backslash inside a bracket makes the position of its closing ] unreliable (an outer double-quoted word turns \" into a quote and \\] into an escaped ]): an opener anywhere later on the line then refuses it
+sb sb_ct $'let "a[\\"]\\$(/usr/bin/touch mk)\\"]=1"\n' caught 'holds a substitution' 'a[\\"]\\$( ... \\"] inside an outer double-quoted word'
+sb sb_cu $'let "a[\\\\]\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substitution' 'an escaped backslash then ]'
+sb sb_cv $'printf -v "a[\\"]\\$(/usr/bin/touch mk)\\"]" z\n' caught 'holds a substitution' 'printf -v'
+sb sb_cw $'printf -v "a[\\\\]\\$(/usr/bin/touch mk)]" z\n' caught 'holds a substitution' 'printf -v with an escaped backslash'
+sb sb_cx $'let "a[\\"]\\`/usr/bin/touch mk\\`\\"]=1"\n' caught 'holds a substitution' 'backticks'
+sb sb_cy $'x=(1 2); echo "${x[0]}" "a\\]b" \\[ok\\]; [ -n "a" ] && echo ok\n' ok - 'control: a backslash near brackets with no opener anywhere after on the line'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3758,7 +3765,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1678
+EXPECT=1684
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
