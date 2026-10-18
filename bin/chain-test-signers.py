@@ -142,7 +142,9 @@ def strip_lines(lines, base=None, closers=None):
             elif ch == "$" and nxt == "'" and top not in ("dq", "hb"): st.append("ansi"); skip = i + 1
             elif ch == "$" and nxt == "(" and l[i + 2:i + 3] == "(": st.append("arith"); skip = i + 1
             elif ch == "$" and nxt == "(": st.append("cmd"); skip = i + 1
-            elif ch == "$" and nxt == "{": st.append("brace"); skip = i + 1
+            elif ch == "$" and nxt == "{":
+                st.append("brace"); skip = i + 1
+                if l[i + 2:i + 3] in ("", " ", "\t", "|") and closers is not None: closers.append(("funsub", n))     # bash 5.3 ${ cmd; } / ${| cmd; }: it ends at a } in command position, which the reader does not model
             elif ch == "$" and nxt == "[" and top not in ("dq", "hb"): st.append("brk"); skip = i + 1
             elif ch == "`":
                 if top == "bt": st.pop()
@@ -1316,6 +1318,7 @@ def scan_script(path, text, row, rows, base):
     for q in qerrs: add(None, "", "%s: %s" % (path, q))
     for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
         if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"
+        elif kind_ == "funsub": msg_ = "opens a ${ command substitution (bash 5.3 ${ cmd; } or ${| cmd; }, which ends at a } in command position)"
         elif kind_ == "hdsub": msg_ = "opens a heredoc inside a substitution or group (bash reads its body before the heredocs of the enclosing line)"
         elif kind_ == "hdmulti": msg_ = "opens more than one heredoc (the order in which bash reads the bodies is not modelled)"
         else: msg_ = "is an unquoted heredoc body line that holds a substitution and a quote (bash reads the quote as text outside the substitution and as a quote inside it)"
