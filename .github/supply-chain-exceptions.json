@@ -1727,6 +1727,13 @@
       "line": "f5e678332279f760051bbf0a3ddd394dc97d4b3f3c6074722b671b051ae93c9e",
       "ruling": "text, not a command: a comment in the script; nothing runs it",
       "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get.sh",
+      "form": "a download",
+      "key": "f0e3e2f9c65769916baa11aebb72b72e2e2ada67b0d68f27395238bd44798162",
+      "line": "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd",
+      "ruling": "loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): the helper's one curl line, pinned by hash; it reaches only the cache under test or the runner's own token endpoint, host and URL checked before curl starts, and fetches no software"
     }
   ]
 }
