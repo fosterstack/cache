@@ -2708,7 +2708,7 @@ run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
     d=$(cfix "$name" "$body" "$tools"); expm "$verdict" "$d" "$frag" "$label"
   done < "$1"
 }
-if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 - "$FX" "$0" <<'PY'
+cat > "$work/fx-guard.py" <<'PY'
 import re, sys
 fx, me = sys.argv[1:3]
 rows = open(fx).read().split("\n")
@@ -2724,12 +2724,21 @@ for n, r in enumerate(rows, 1):
     assert f[1] and f[4] and f[5], "line %d: an empty field" % n
 # the test names the file only to read it: the assignment, the redirect into run_fixtures' loop, the calls, and this check
 ok_line = re.compile(r'^(FX=|\s*done < "\$1"$|run_fixtures "\$FX"$|if \[ -f "\$FX" \]|.*# data file)')
+prev, end = "", None
 for n, l in enumerate(open(me), 1):
-    if "$FX" in l or "fixtures.txt" in l:
+    if end is None and l.startswith("cat > \"$work/fx-guard.py\""): end = "PY"      # this check's own heredoc (up to its PY line) and its mutation helper (up to its closing brace) are the places that spell the names it looks for
+    if end is None and l.startswith("fxmut() {"): end = "}"
+    if end is not None:
+        if l.rstrip("\n") == end: end = None
+        prev = l; continue
+    comment = l.startswith("# ") and not prev.endswith("\\\n")      # a whole-line comment not joined to a previous line by a backslash
+    if ("$FX" in l or "fixtures.txt" in l) and not comment:
         assert ok_line.match(l.rstrip("\n")), "line %d names the data file other than to read it: %s" % (n, l.strip())
+    prev = l
     assert not re.search(r'(?:^|[;&|(\s])(?:source|eval|exec)\s+["\']?\$FX|(?:^|\s)\.\s+["\']?\$FX|(?:bash|sh)\s+["\']?\$FX', l), "line %d runs the data file" % n
 PY
-then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 fixture texts are data: bin/chain-sign-wiring-fixtures.txt is six tab-separated fields per line, has no shebang and no execute bit, and the test only reads it"
+if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "$0"
+then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 fixture texts are data: the fixture data file is six tab-separated fields per line, has no shebang and no execute bit, and the test only reads it"
 else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the fixture data file is missing, executable, malformed, or the test runs it"
 fi
 # a record whose script text would do something if it were ever run is only ever judged: the sentinel is never created
@@ -2737,8 +2746,22 @@ printf 'rec_never_run\t$(touch "%s/ran")\\n`touch "%s/ran2"`\t[]\tcaught\t-\tnev
 run_fixtures "$work/fx-sentinel.txt"
 if [ ! -e "$work/ran" ] && [ ! -e "$work/ran2" ]; then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 a data record holding command substitutions is judged as text and never run"
 else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 a data record was run"; fi
-d=$(cfix fo_bare_curl 'curl archive/vi' '["curl"]'); expm caught "$d" 'by a path' "operand rule, bare: curl archive/vi (a deny-class path operand) is refused"
-d=$(cfix fo_fixed_curl '/usr/bin/curl archive/vi' '["curl"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/curl archive/vi is refused exactly like the bare form"
+run_fixtures "$FX"
+# the guard must bite: an executable file, a shebang, a short record, and a test that sources, evaluates or runs the file are each refused
+fxmut() { # fxmut LABEL FILE-SED TEST-APPEND : the guard against a mutated copy of the data file and of this test
+  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "$0" "$m/t.sh"; chmod 644 "$m/f.txt"
+  [ -z "$2" ] || sed -i.bak "$2" "$m/f.txt"; [ -z "$3" ] || printf '%s\n' "${3//@FX@/\$FX}" >> "$m/t.sh"
+  [ "$1" != x ] || chmod 755 "$m/f.txt"
+  if python3 "$work/fx-guard.py" "$m/f.txt" "$m/t.sh" > /dev/null 2>&1 && { [ ! -x "$m/f.txt" ]; }; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
+  else pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard refuses $4"; fi
+}
+fxmut x '' '' "an executable data file"
+TAB=$'\t'
+fxmut s '1s/^/#!\/bin\/sh\'$'\n''/' '' "a data file that starts with a shebang"
+fxmut f "1s/${TAB}[^${TAB}]*\$//" '' "a record with five fields"
+fxmut a '' 'source "@FX@"' "a test that sources the data file"
+fxmut b '' 'bash "@FX@"' "a test that runs the data file with bash"
+fxmut c '' 'eval "$(cat "@FX@")"' "a test that evaluates the data file"
 d=$(cfix fo_bare_sed 'sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, bare: sed -f archive/vi is refused"
 d=$(cfix fo_fixed_sed '/usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/sed -f archive/vi is refused"
 d=$(cfix fo_fixed_at '/usr/bin/at -f archive/vi now' '["at"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/at -f archive/vi is refused"
@@ -2748,38 +2771,15 @@ d=$(cfix fa_py_plain 'python3 bin/build-apk.sh archive/vi' '["python3"]' '["bin/
 d=$(cfix fa_py_flags 'python3 -I -B bin/build-apk.sh archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: the same after -I -B"
 d=$(cfix fa_py_fixed '/usr/bin/python3 -I -B bin/build-apk.sh archive/go' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: the same by the fixed path"
 d=$(cfix fa_py_bad 'python3 -I -B -c pass archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm caught "$d" 'handed' "script arguments: -c after the flags is still refused"
-d=$(cfix ff_def '/usr/bin/curl() { echo x; }\n/usr/bin/curl' '["curl"]'); expm caught "$d" 'function' "a function named by a path (/usr/bin/curl() {...}) could replace the fixed program: refused"
 d=$(cfix ff_def2 'function /bin/rm { :; }\n/bin/rm -rf x' '["rm"]'); expm caught "$d" 'function' "function /bin/rm { } is refused"
 d=$(cfix ff_def3 '/usr/local/bin/crane () { :; }' '["crane"]'); expm caught "$d" 'function' "a path-named function with a space before the parentheses is refused"
 # round 2 of the seats (433, seat B): a path-named function definition in ANY command position (after (, else, !, $(, case ...), until) is refused
-for k in 'ff_sub|( /usr/bin/curl() { :; }; /usr/bin/curl u )' 'ff_else|if false; then :; else /usr/bin/curl() { :; }; fi\n/usr/bin/curl u' 'ff_cs|x=$( /usr/bin/curl() { :; }; /usr/bin/curl u )' 'ff_case|case a in a) /usr/bin/curl() { :; };; esac\n/usr/bin/curl u' 'ff_until|until /usr/bin/curl() { :; }; do :; done' 'ff_bang|! /usr/bin/curl() { :; }' 'ff_paren|(/usr/bin/curl() { :; })' 'ff_nl|/usr/bin/curl()\n{ :; }' 'ff_fn2|function /usr/bin/curl () { :; }' 'ff_if|if /usr/bin/curl() { :; }; then :; fi' 'ff_while|while /bin/rm() { :; }; do :; done' 'ff_arith|x=1; /usr/bin/curl() ( : )'; do
-  d=$(cfix "${k%%|*}" "${k#*|}" '["curl","rm"]'); expm caught "$d" 'function' "path-named function definition, position ${k%%|*}: refused"
-done
-d=$(cfix ff_elif 'if false; then :; elif /usr/bin/curl() { :; }; then :; fi' '["curl"]'); expm caught "$d" 'function' "path-named function definition after elif: refused"
-d=$(cfix ff_bt 'x=`/usr/bin/curl() { :; }; /usr/bin/curl u`' '["curl"]'); expm caught "$d" 'function' "path-named function definition in backticks: refused"
 # ANSI-C / locale quoting decodes differently in bash than in the judge's lexer: a fixed-path command written that way is refused
-d=$(cfix aq_1 "\$'/usr/bin/cur\\\\l' x" '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$'...' (a different program after bash decodes it): refused"
-d=$(cfix aq_2 "\$'/usr/bin/curl' x" '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$'...': refused even when the decoding agrees"
-d=$(cfix aq_3 '$"/usr/bin/curl" x' '["curl"]'); expm caught "$d" 'ANSI-C' "fixed-path command word written with \$\"...\": refused"
 # round 3 of the seats (433, seat B): ANY body after /NAME () is a definition (select, a newline before the body, a body keyword nobody listed): refused fail-closed
-d=$(cfix ff_select '/usr/bin/curl() select x in a; do echo H; break; done' '["curl"]'); expm caught "$d" 'function' "path-named function with a select body: refused"
 d=$(cfix ff_select_nl '/usr/bin/tar()\nselect x in a; do :; done' '["tar"]'); expm caught "$d" 'function' "path-named function with a newline before a select body: refused"
-d=$(cfix ff_fn_select 'function /usr/bin/curl select x in a; do :; done' '["curl"]'); expm caught "$d" 'function' "function /usr/bin/curl followed by a select body: refused"
 # round 3 of the seats (433, seat A): the check must not depend on comment stripping, which can diverge from bash (a '#' line inside a quote that spans lines; an ANSI-C escaped quote)
-d=$(cfix ff_multiq "x='\n# '; /usr/bin/curl() { echo H; }\n/usr/bin/curl u" '["curl"]'); expm caught "$d" 'function' "path-named function hidden behind a line that starts with # inside a quote spanning lines: refused"
-d=$(cfix ff_ansiq "echo \$'\\\\''' # x'; /usr/bin/curl() { echo H; }\n/usr/bin/curl u" '["curl"]'); expm caught "$d" 'function' "path-named function hidden after an ANSI-C escaped quote: refused"
-d=$(cfix ff_comment_def '# /usr/bin/curl() { :; }' '["curl"]'); expm caught "$d" 'function' "a path-named definition inside a comment is refused too (fail-closed: the check does not strip comments)"
 # round 4 of the seats (433, seat B): bash accepts comments and blank lines between "()" and the body of a function; a path-named definition written that way is refused too
-d=$(cfix fc_1 '/usr/bin/curl() # x\n{ echo H; }\n/usr/bin/curl u' '["curl"]'); expm caught "$d" 'function' "path-named function with a comment between () and the body: refused"
-d=$(cfix fc_2 '/usr/bin/curl()\t#\n{ echo H; }' '["curl"]'); expm caught "$d" 'function' "path-named function with a tab and an empty comment between () and the body: refused"
-d=$(cfix fc_3 '/usr/bin/curl() # x\nif true; then echo H; fi' '["curl"]'); expm caught "$d" 'function' "path-named function with a comment before an if body: refused"
-d=$(cfix fc_4 '/usr/bin/curl()\n\n# one\n  # two\n\n{ echo H; }' '["curl"]'); expm caught "$d" 'function' "path-named function with blank lines and several comment lines before the body: refused"
-d=$(cfix fc_5 'function /usr/bin/curl # x\n{ echo H; }' '["curl"]'); expm caught "$d" 'function' "function /usr/bin/curl with a comment before the body: refused"
-d=$(cfix fc_hd 'cat >/dev/null <<E; /usr/bin/curl()\nx\nE\n{ echo H; }\n/usr/bin/curl u' '["curl"]'); expm caught "$d" 'function' "path-named function whose body follows a pending here-document: refused (seat A round 4)"
-d=$(cfix fc_eol '/usr/bin/curl()' '["curl"]'); expm caught "$d" 'function' "a path word followed by () at the end of the line is a definition whatever comes next: refused"
-d=$(cfix fc_word 'echo see /usr/bin/curl() here' '["curl"]'); expm ok "$d" - "a path word with () followed by an ordinary word is no definition bash accepts"
 # round 5 of the seats (433, seat A): an alias can give a function the name of a fixed-path program; aliases are refused in a listed script (none uses one)
-d=$(cfix al_1 'shopt -s expand_aliases\nalias x=$'"'"'\\x2fusr\\x2fbin\\x2fcurl'"'"'\nx() { echo H; }\n/usr/bin/curl u' '["curl"]'); expm caught "$d" 'alias' "a path-named function defined through an alias written with escapes: refused"
 d=$(cfix al_2 'BASH_ALIASES[x]=y' '[]'); expm caught "$d" 'alias' "an assignment to BASH_ALIASES: refused"
 d=$(cfix al_3 'echo ok\nalias fn="function "' '[]'); expm caught "$d" 'alias' "the alias builtin at the start of a line: refused"
 d=$(cfix al_4 'unalias -a' '[]'); expm caught "$d" 'alias' "unalias: refused"
@@ -2812,7 +2812,6 @@ d=$(cfix al_29 'x+=1 set -o posix\n>| f set -o posix\n<<< x set -o posix' '[]');
 d=$(cfix al_30 'x="a b" set -o posix' '[]'); expm caught "$d" 'set -o' "a quoted assignment value with a blank before set -o posix: refused"
 d=$(cfix al_31 'm=pos; m+=ix\n> /dev/null set -o "$m"' '[]'); expm caught "$d" 'set -o' "set -o handed a run-time option behind a spaced redirection: refused"
 d=$(cfix al_32 '# Only set -eo pipefail is set here' '[]'); expm caught "$d" 'set -o' "prose that says set -eo pipefail is refused too (fail-closed: reword the comment)"
-d=$(cfix al_33 '> /dev/null /usr/bin/curl() { :; }' '["curl"]'); expm caught "$d" 'function' "a path-named function definition behind a spaced redirection: refused (the function check has no prefix gate)"
 d=$(cfix al_34 '> /dev/null unalias -a\nBASH_ALIASES=()' '[]'); expm caught "$d" 'alias' "unalias and BASH_ALIASES behind a prefix: refused (whole-word search, no prefix gate)"
 # round 10 of the seats (433, both seats): `set -e -o posix` (a plain flag before a separate -o) behind an unparsed prefix hid from the count; the count is now every whole-word set followed by an option word, no option-shape to guess
 d=$(cfix al_35 '> /dev/null set -e -o posix' '[]'); expm caught "$d" 'set' "a plain flag before a separate -o posix behind a spaced redirection: refused"
@@ -2833,14 +2832,7 @@ d=$(cfix st_9 'set -o posix' '[]'); expm caught "$d" 'set -o posix' "round 9: th
 d=$(cfix st_10 'set -e -o posix' '[]'); expm caught "$d" 'set -e -o posix' "round 10: a plain flag before a separate -o posix: refused"
 d=$(cfix st_11 'set -e   # keep going\nset +e -uo pipefail' '[]'); expm ok "$d" - "a trailing comment after the closed arguments is accepted"
 # round 12 (seat B), defence in depth: bash rejects a quoted or backslashed function name, but the judge also reads the quote-resolved view so the refusal does not depend on that
-d=$(cfix qf_1 '"/usr/bin/curl"() { :; }\n/usr/bin/curl -s https://example.invalid' '["curl"]'); expm caught "$d" 'function' "a double-quoted path-named function definition: refused"
-d=$(cfix qf_2 '\\/usr/bin/curl() { :; }\n/usr/bin/curl u' '["curl"]'); expm caught "$d" 'function' "a backslashed path-named function definition: refused"
-d=$(cfix qf_3 '/usr/bin/"curl"() { :; }' '["curl"]'); expm caught "$d" 'function' "a quote-split path-named function definition: refused"
-d=$(cfix qf_5 "'/usr/bin/curl'() { :; }" '["curl"]'); expm caught "$d" 'function' "a single-quoted path-named function definition: refused"
-d=$(cfix qf_6 'function "/usr/bin/curl" { :; }' '["curl"]'); expm caught "$d" 'function' "function keyword with a quoted path name: refused"
-d=$(cfix qf_4 'f() { /usr/bin/curl -s "$1"; }\necho "usage: /usr/bin/curl url"' '["curl"]'); expm ok "$d" - "control: a call and a string mentioning the path, no definition, is accepted"
 d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
-d=$(cfix fc_ok '/usr/bin/curl() { :; } # trailing words' '["curl"]'); expm caught "$d" 'function' "the plain definition stays refused"
 d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
 d=$(cfix ff_text_str 'echo "see /sendto() here"' '[]'); expm ok "$d" - "a string holding an absolute-path word and () but no function body is no definition (bash would not accept it as one)"
 d=$(cfix ff_call 'f() { /usr/bin/mktemp -d x; }\n( f )' '["mktemp"]'); expm ok "$d" - "a call of a fixed-path tool inside a subshell is accepted"
@@ -3767,7 +3759,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1669
+EXPECT=1678
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
