@@ -93,6 +93,12 @@ def subscript_holds_opener(l):
             c = l[j]
             if c == "\\":
                 if l[j + 1:j + 2] in ("$", "`"): return True
+                if l[j + 1:j + 2] in ("\"", "'"):                 # an escaped quote becomes a real quote for the builtin that parses the subscript: a span up to the next matching escaped quote (or the end of the line)
+                    q = l[j + 1]
+                    k = l.find("\\" + q, j + 2)
+                    k = len(l) if k < 0 else k
+                    if re.search(r"\$\((?!\()|\$\{|`|\\[$`]", l[j + 2:k]): return True
+                    j = k + 2; continue
                 j += 2; continue
             if c == "`": return True
             if c == "$" and ((l.startswith("$(", j) and not l.startswith("$((", j)) or l.startswith("${", j)): return True
