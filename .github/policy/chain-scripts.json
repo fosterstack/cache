@@ -635,6 +635,13 @@
           "line_sha256": "c59ec850b6fa25740d5fff1fca3fcd3afe7615e5ebb791dc647868751b321713",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "      sum=\"\"; [[ \"$from\" =~ [?\\&]checksum=sha256(%3A|%3a|:)([0-9a-f]{64})($|\\&) ]] && sum=\"sha256:${BASH_REMATCH[2]}\"",
+          "line_sha256": "5abe16194e30dad577e5f9b52c6f059893e483c595dc5d5440ceddf663058223",
+          "count": 1,
+          "why": "a test command ([[ ... =~ regex ]]) on this line holds a quoted parameter expansion and a regex with a backslash: it is a test, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, the line is a real test)"
         }
       ]
     },

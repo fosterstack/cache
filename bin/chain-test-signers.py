@@ -88,8 +88,8 @@ def subscript_holds_opener(l):
     for i, ch in enumerate(l):
         if ch != "[": continue
         if i > 0 and l[i - 1] == "[": continue
-        j, depth = i + 1, 1
-        while j < len(l) and depth > 0:
+        j, depth, unreliable = i + 1, 1, False
+        while j < len(l) and (depth > 0 or unreliable):
             c = l[j]
             if c == "\\":
                 if l[j + 1:j + 2] in ("$", "`"): return True
@@ -99,6 +99,7 @@ def subscript_holds_opener(l):
                     k = len(l) if k < 0 else k
                     if re.search(r"\$\((?!\()|\$\{|`|\\[$`]", l[j + 2:k]): return True
                     j = k + 2; continue
+                unreliable = True                                   # ANY other backslash inside a bracket makes the place of its closing ] unreliable (an outer double-quoted word turns \" into a quote and \\] into an escaped ]): scan to the end of the line for an opener
                 j += 2; continue
             if c == "`": return True
             if c == "$" and ((l.startswith("$(", j) and not l.startswith("$((", j)) or l.startswith("${", j)): return True
