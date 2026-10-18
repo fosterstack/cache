@@ -3353,6 +3353,11 @@ d=$(crr ml_zz "${H}echo a[ ; y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'abs
 d=$(crr ml_zza "${H}true a[ && y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a [ before && does not stop the word reset"
 d=$(crr ml_zzb "${H}a[ \$i]=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a subscript with a space before \$i: the = in the word keeps it an assignment"
 d=$(crr ml_zzc "${H}(y=\$("$'\n:\n) /tmp/evil )\n'); expm caught "$d" 'absolute path' "an assignment at the start of a subshell"
+# seat B, PR 439 round 7: a redirect word is not an operand: the word after the closing ) of a carried opener inside it is the COMMAND
+d=$(crr ml_zzd "${H}>\$( echo f"$'\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a redirect target holding a multi-line \$( ): the next word is the command"
+d=$(crr ml_zze "${H}<\$( echo /dev/null"$'\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "an input redirect target holding a multi-line \$( )"
+d=$(crr ml_zzf "${H}>\"\$( echo f"$'\n)" /tmp/evil\n'); expm caught "$d" 'absolute path' "a quoted redirect target holding a multi-line \$( )"
+d=$(crr ml_zzg "${H}x=1 >\$( echo f"$'\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a redirect after an assignment"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3515,7 +3520,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1472
+EXPECT=1476
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
