@@ -156,10 +156,10 @@ def strip_lines(lines, base=None, closers=None):
             elif ch == "(" and nxt == "(" and top not in ("arith", "brk", "brace"): st.append("arith"); skip = i + 1
             elif ch == "(" and top not in ("arith", "brk", "brace"): st.append("paren")
             elif ch == "<" and nxt == "<" and l[i - 1:i] != "<" and l[i + 2:i + 3] != "<":
+                if closers is not None and (any(c_ in ("cmd", "bt") for c_ in st) or "paren" in st[minlen:]) and top not in ("arith", "brk", "brace"):
+                    closers.append(("hdsub", n))        # DEFAULT DENY: bash reads a heredoc inside a substitution (or a ( ) group opened on this line) before the heredocs of the enclosing line
                 if top in ("arith", "brk"):
                     errs.append("line %d: a << inside $(( )) or $[ ] is a shift or a heredoc and is not resolved" % (n + 1))
-                elif top == "bt":
-                    errs.append("line %d: a << inside backticks is not resolved (bash reads the backtick text on its own)" % (n + 1))
                 elif top != "brace":
                     tab = l[i + 2:i + 3] == "-"
                     m = HEREDOC_WORD.match(l, i + 2 + tab)
@@ -173,6 +173,7 @@ def strip_lines(lines, base=None, closers=None):
         cont = esc and cut is None
         if minlen < len(start_st) and any(c in OPENER for c in start_st[minlen:]) and closers is not None: closers.append(("ctx", n))    # this line closes a quote or substitution carried from an earlier line
         out.append(l if cut is None else l[:cut])
+        if len(pend) > 1 and closers is not None: closers.append(("hdmulti", n))      # DEFAULT DENY: the order in which bash reads several bodies is not modelled
         if pend:
             if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
             if st and st[-1] in ("sq", "dq", "ansi"): errs.append("line %d: a heredoc is started on a line that leaves a quote open and is not resolved" % (n + 1))
@@ -1315,6 +1316,8 @@ def scan_script(path, text, row, rows, base):
     for q in qerrs: add(None, "", "%s: %s" % (path, q))
     for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
         if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"
+        elif kind_ == "hdsub": msg_ = "opens a heredoc inside a substitution or group (bash reads its body before the heredocs of the enclosing line)"
+        elif kind_ == "hdmulti": msg_ = "opens more than one heredoc (the order in which bash reads the bodies is not modelled)"
         else: msg_ = "is an unquoted heredoc body line that holds a substitution and a quote (bash reads the quote as text outside the substitution and as a quote inside it)"
         add("deny", body.splitlines()[c_], "%s: line %d %s: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + c_ + 1, msg_), None if exotic else off + c_)
     while i_ < len(pcode):

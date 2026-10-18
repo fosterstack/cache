@@ -3234,7 +3234,7 @@ d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit\'s\nEOF\n)\n'); expm caught "$d" 'closes
 d=$(crr sl_zb2 "${H}"$'echo "$(echo "a")" # d\n(cd x; ls) # e\ncase x in a) y;; esac\n'); expm ok "$d" - "strip_line: control: nested double quotes in \\$( ), a subshell and a case arm on single lines"
 d=$(crr sl_zc "${H}cat <<EOF#x"$'\nEOF\nit\'s\nEOF#x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by # (bash reads the whole word EOF#x) is refused (seat B, PR 436 round 2)"
 d=$(crr sl_zd "${H}cat <<EOF.x"$'\nEOF\nit\'s\nEOF.x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by a dot is refused"
-d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit\'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n(cat <<EOF)\ny\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, |, > or ) is read whole"
+d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit\'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, | or > is read whole"
 d=$(crr sl_zf "${H}(( z = 1<<true ))"$'\nx=\'\n#\' ; echo MARK; /tmp/evil\ntrue\n'); expm caught "$d" 'not resolved' "strip_line: a << inside a bare (( )) is refused (seat A, PR 436 round 2)"
 d=$(crr sl_zg "${H}x=\"\$(case a in a) echo '"$'\n\'"\n# x" ;; esac)" ; echo MARK; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a case arm's ) inside \$( ) does not end the substitution (seat A, PR 436 round 2)"
 d=$(crr sl_zh "${H}echo a\\"$'\n#; echo MARK; /tmp/evil\n'); expm caught "$d" 'absolute path' "strip_line: a # line after a backslash-newline is part of the joined word, never a comment"
@@ -3248,7 +3248,7 @@ d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\n
 d=$(crr sl_zp "${H}"$'x=`echo a # c` ; /tmp/evil x\ny=`echo b # c`\n'); expm caught "$d" 'absolute path' "strip_line: a # inside backticks does not cut the line (bash ends the comment at the closing backtick; seat B, PR 436 round 4)"
 d=$(crr sl_zq "${H}"$'x=`date` # a comment after the pair\necho ok\n'); expm ok "$d" - "strip_line: control: a # after a closed backtick pair is a comment"
 d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
-d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'inside backticks' "strip_line: a << inside backticks is refused (bash gives it no body)"
+d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'opens a heredoc inside' "strip_line: a << inside backticks is refused (bash gives it no body)"
 d=$(crr sl_zt "${H}"$'x=`echo a\n#` ; /tmp/evil\ny=`echo b\n#`\n'); expm caught "$d" 'still open' "strip_line: a # line inside backticks open from an earlier line is refused (bash ends the pair at the first backtick; seat A, PR 436 round 5)"
 for sep in $'\x0c' $'\x0b' $'\x1c' $'\xc2\x85' $'\xe2\x80\xa8'; do
   d=$(crr "sl_sep_$RANDOM" "${H}: ${sep}#; /tmp/evil"$'\n'); expm caught "$d" 'line separator' "strip_line: a line separator bash does not read as one is refused (seat A, PR 436 round 5)"
