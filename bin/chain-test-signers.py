@@ -93,7 +93,8 @@ def strip_lines(lines, base=None, closers=None):
         if hd is not None:
             if hd[0][2]: out.append(strip_line(l))                           # a quoted delimiter: the body is data
             else:                                                            # an unquoted body still runs $( ) and backticks, # or no #: keep it whole, and refuse what runs on past the line
-                out.append(l.replace("'", "_").replace('"', "_"))        # bash reads ' and " in an unquoted body as plain characters: the command reader must not read them as quotes
+                out.append(l)
+                if re.search(r"\$\(|\$\{|`", l) and re.search(r"['\"]", l) and closers is not None: closers.append(("hd", n))   # DEFAULT DENY: in an unquoted body bash reads ' and " as plain text outside a substitution and as quotes inside it; the reader cannot tell which a line means
                 if strip_lines([l], "hb")[1] or re.search(r"(?<!\\)(?:\\\\)*\\$", l):
                     errs.append("line %d: an unquoted heredoc body line that opens a substitution it does not close, or ends in a backslash, is not resolved" % (n + 1))
             if (l.lstrip("\t") if hd[0][1] else l) == hd[0][0]: hd = hd[1:] or None
@@ -170,7 +171,7 @@ def strip_lines(lines, base=None, closers=None):
             prev_ws = ch.isspace()
             minlen = min(minlen, len(st))
         cont = esc and cut is None
-        if minlen < len(start_st) and any(c in OPENER for c in start_st[minlen:]) and closers is not None: closers.append(n)    # this line closes a quote or substitution carried from an earlier line
+        if minlen < len(start_st) and any(c in OPENER for c in start_st[minlen:]) and closers is not None: closers.append(("ctx", n))    # this line closes a quote or substitution carried from an earlier line
         out.append(l if cut is None else l[:cut])
         if pend:
             if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
@@ -1312,8 +1313,10 @@ def scan_script(path, text, row, rows, base):
     closers = []                                   # body lines that close a quote or substitution carried from an earlier line
     pcode, qerrs = ([strip_line(l_) for l_ in body.splitlines()], []) if py else strip_lines(body.splitlines(), closers=closers)   # a Python file has docstrings and prose quotes: the shell quote model is for shell only
     for q in qerrs: add(None, "", "%s: %s" % (path, q))
-    for c_ in closers:                             # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
-        add("deny", body.splitlines()[c_], "%s: line %d closes a multi-line quote or substitution carried from an earlier line: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + c_ + 1), None if exotic else off + c_)
+    for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
+        if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"
+        else: msg_ = "is an unquoted heredoc body line that holds a substitution and a quote (bash reads the quote as text outside the substitution and as a quote inside it)"
+        add("deny", body.splitlines()[c_], "%s: line %d %s: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + c_ + 1, msg_), None if exotic else off + c_)
     while i_ < len(pcode):
         starts.append(i_)
         while i_ + 1 < len(pcode) and len(pcode[i_]) - len(pcode[i_].rstrip("\\")) in range(1, len(pcode[i_]) + 1) and (len(pcode[i_]) - len(pcode[i_].rstrip("\\"))) % 2 == 1:

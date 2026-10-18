@@ -3244,7 +3244,7 @@ d=$(crr sl_zk "${H}cat <<EOF >/dev/null"$'\nx # `/tmp/evil`\nEOF\n'); expm caugh
 d=$(crr sl_zl "${H}cat <<'EOF' >/dev/null"$'\n# $(/tmp/evil)\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data, \$( ) in it runs nothing"
 d=$(crr sl_zm "${H}cat <<EOF"$'\nE\\\nOF\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line that ends in a backslash is refused (bash joins it, so the delimiter may be another line; seat A, PR 436 round 3)"
 d=$(crr sl_zn "${H}cat <<EOF"$'\nx $(echo \'\n#\' ; /tmp/evil)\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line whose \$( ) runs on to the next line is refused"
-d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm ok "$d" - "strip_line: control: an unquoted heredoc body with quotes and closed substitutions on one line"
+d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm caught "$d" 'holds a substitution and a quote' "strip_line: an unquoted heredoc body with quotes and substitutions on one line is refused (default deny)"
 d=$(crr sl_zp "${H}"$'x=`echo a # c` ; /tmp/evil x\ny=`echo b # c`\n'); expm caught "$d" 'absolute path' "strip_line: a # inside backticks does not cut the line (bash ends the comment at the closing backtick; seat B, PR 436 round 4)"
 d=$(crr sl_zq "${H}"$'x=`date` # a comment after the pair\necho ok\n'); expm ok "$d" - "strip_line: control: a # after a closed backtick pair is a comment"
 d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
@@ -3395,7 +3395,7 @@ cl cl_s $'f() (\n echo a\n)\necho ok\n' ok - 'control: a ( ) function body is no
 cl cl_t $'case a in\n a) echo 1 ;;\nesac\n' ok - 'control: a case block spanning lines'
 cl cl_u $'cat <<EOF\nit\'s\nEOF\necho ok\n' ok - 'control: a heredoc body is data'
 # seat A, PR 439 round 9: in an UNQUOTED heredoc body bash runs $( ) and backticks and reads ' " $' as plain characters; the command reader must not read them as quotes
-hd() { local d; d=$(crr "$1" "${H}$2"); expm caught "$d" 'absolute path' "unquoted heredoc body: $3"; }
+hd() { local d; d=$(crr "$1" "${H}$2"); expm caught "$d" 'unquoted heredoc body line that holds a substitution and a quote' "unquoted heredoc body: $3"; }
 hd hd_a $'cat <<EOF >/dev/null\n\'$(/tmp/evil)\'\nEOF\n' "a \$( ) between single quotes"
 hd hd_b $'cat <<EOF >/dev/null\n\'`/tmp/evil`\'\nEOF\n' "backticks between single quotes"
 hd hd_c $'cat <<EOF >/dev/null\n$\'$(/tmp/evil)\'\nEOF\n' "an ANSI-C looking quote around a \$( )"

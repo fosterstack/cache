@@ -1006,6 +1006,13 @@
           "line_sha256": "e7665a6a05e69090841ff7c64f56dce7d6f2c8e9c59702c268855fa23061e25a",
           "count": 1,
           "why": "a fixture line of a syscall trace inside a heredoc: the comment marks are trace text, not a command (REQ-PRIV-001-AC1)"
+        },
+        {
+          "rule": "deny",
+          "line": "connect(3, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr(\"${OWN}\")}, 16) = 0",
+          "line_sha256": "e99e518bdf9b4095382076dbcae483c87e7a4cf6d24ac87d16dd128618e7b282",
+          "count": 1,
+          "why": "a line of an strace fixture in an UNQUOTED heredoc: ${OWN} is the only expansion in it and the quotes are text of the fixture (REQ-CHAIN-001-AC1: an unquoted heredoc body line holding a substitution and a quote is refused unless waived here)"
         }
       ]
     },
