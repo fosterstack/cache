@@ -3583,6 +3583,12 @@ sb sb_ck $'read \'a["]"$(/usr/bin/touch mk)]\' <<<1\n' caught 'holds a substitut
 sb sb_cl $'let \'a["]"`/usr/bin/touch mk`]=1\'\n' caught 'holds a substitution' 'backticks'
 sb sb_cm $'let a[\']\'$(/usr/bin/touch mk)]=1\n' caught 'holds a substitution' 'a single-quoted ]'
 sb sb_cn $'x=(1 2); echo "${x[0]}" "a]b"; [ "a]b" = c ] || echo ok\n' ok - 'control: a quoted ] with no opener anywhere in the brackets'
+# seat B, PR 452 narrow verification: an ESCAPED quote inside a double-quoted word becomes a real quote for the builtin that parses the subscript: \"]\" hides the ]
+sb sb_co $'let "a[\\"]\\"\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substitution' 'an escaped double-quoted ] before the opener'
+sb sb_cp $'let "a[\\\'] \\\'\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substitution' 'an escaped single-quoted ] before the opener'
+sb sb_cq $'printf -v "a[\\"]\\"\\$(/usr/bin/touch mk)]" z\n' caught 'holds a substitution' 'printf -v'
+sb sb_cr $'let "a[\\"]\\"`/usr/bin/touch mk`]=1"\n' caught 'holds a substitution' 'backticks'
+sb sb_cs $'echo "x=\\"a]b\\" y"; [ -n "a\\"b" ] && echo ok\n' ok - 'control: escaped quotes in plain strings with no opener in any bracket'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3752,7 +3758,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1673
+EXPECT=1678
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
