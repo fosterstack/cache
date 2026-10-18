@@ -96,6 +96,13 @@ def subscript_holds_opener(l):
                 j += 2; continue
             if c == "`": return True
             if c == "$" and ((l.startswith("$(", j) and not l.startswith("$((", j)) or l.startswith("${", j)): return True
+            if c in "\"'":                                   # a quoted span: its ] does not close the bracket (bash's subscript parser skips it); an opener inside it still counts
+                k = j + 1
+                while k < len(l) and l[k] != c:
+                    if c == '"' and l[k] == "\\": k += 1
+                    k += 1
+                if re.search(r"\$\((?!\()|\$\{|`|\\[$`]", l[j + 1:k]): return True
+                j = k + 1; continue
             if c == "[": depth += 1
             elif c == "]": depth -= 1
             j += 1
