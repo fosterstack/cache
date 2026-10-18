@@ -77,8 +77,8 @@ def prev_ok(l, i, ch):
 
 def operand_word(w):
     """Is the word so far certainly an ARGUMENT, never an assignment? (After a carried context in it closes, the next word is then an operand; otherwise it is
-    read as a command, which only over-reports.) It is, when it begins with a quote, $, a backtick, -, /, <, >, ~ or . (after any leading ( or {) and holds no =."""
-    return w.lstrip("({")[:1] in tuple("'\"$`-/<>~.") and "=" not in w and w.lstrip("({") != ""
+    read as a command, which only over-reports.) It is, when it begins with a quote, $, a backtick, -, /, ~ or . (after any leading ( or {) and holds no =, < or > (a redirect target hides the command position)."""
+    return w.lstrip("({")[:1] in tuple("'\"$`-/~.") and "=" not in w and "<" not in w and ">" not in w and w.lstrip("({") != ""
 OPENER = {"sq": "'", "dq": '"', "ansi": "$'", "cmd": "$(", "brace": "${", "bt": "`", "arith": "$((", "brk": "$["}
 
 def strip_lines(lines, base=None):
