@@ -75,10 +75,16 @@ def prev_ok(l, i, ch):
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
-def operand_word(w):
-    """Is the word so far certainly an ARGUMENT, never an assignment? (After a carried context in it closes, the next word is then an operand; otherwise it is
-    read as a command, which only over-reports.) It is, when it begins with a quote, $, a backtick, -, /, ~ or . (after any leading ( or {) and holds no =, < or > (a redirect target hides the command position)."""
-    return w.lstrip("({")[:1] in tuple("'\"$`-/~.") and "=" not in w and "<" not in w and ">" not in w and w.lstrip("({") != ""
+SHELL_KEYWORDS = {"if", "then", "elif", "else", "fi", "while", "until", "do", "done", "for", "select", "in", "case", "esac", "function", "time", "coproc", "!", "{", "}", "[[", "]]"}
+ASSIGN_PREFIX = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=")
+REDIR_WORD = re.compile(r"[0-9&]*[<>]")
+SUB_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+def is_cmd_word(w):
+    """Is this finished word (outside any quote) the COMMAND word of its simple command? Not a keyword, an assignment (NAME=, NAME[..]=, NAME+=) or a redirection:
+    after a command word the next words are its arguments, before it the next word may be the command."""
+    return not (w in SHELL_KEYWORDS or ASSIGN_PREFIX.match(w) or REDIR_WORD.match(w))
+
 OPENER = {"sq": "'", "dq": '"', "ansi": "$'", "cmd": "$(", "brace": "${", "bt": "`", "arith": "$((", "brk": "$["}
 
 def strip_lines(lines, base=None):
@@ -91,7 +97,7 @@ def strip_lines(lines, base=None):
     whose delimiter is not plain, a heredoc started on a line that leaves a quote open, a single quote inside a ${ } that is inside double quotes."""
     out, errs = [], []
     af = []                                            # per open context: did the word that opened it begin as an assignment (NAME=...)?
-    wsv, wbuf = [], ""                        # per open context: the text of the word before it opened; the current word so far; open [ in it
+    wsv, wbuf, seen, sub, wbk = [], "", False, False, 0     # per open context: the word state before it opened; the current word so far; has this simple command had its command word; inside a NAME[ subscript at command position (and its [ depth)
     CMDLEVEL = (None, "cmd", "bt", "paren", "case")      # contexts in which a new word begins a command or an argument of it
     st, hd = ([base] if base else []), None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented, quoted)] still to be read inside a heredoc body
     DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
@@ -120,8 +126,19 @@ def strip_lines(lines, base=None):
             if skip == i: skip = None; prev_ws = False; continue            # the second character of a two-character opener
             if esc: esc = False; prev_ws = False; wbuf += ch; continue
             top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
-            if top in CMDLEVEL and ch in " \t;&|": wbuf = ""      # a real word separator at command level (not inside a quote, ${ } or an escape)
-            else: wbuf += ch
+            if top in CMDLEVEL and not sub and ch in " \t;&|":       # a real word separator at command level (not inside a quote, ${ } or an escape, nor a NAME[ subscript)
+                if wbuf and is_cmd_word(wbuf): seen = True
+                wbuf = ""
+                if ch in ";&|": seen = False
+            else:
+                if top in CMDLEVEL:
+                    if sub:
+                        if ch == "[": wbk += 1
+                        elif ch == "]":
+                            wbk -= 1
+                            if wbk <= 0: sub = False
+                    elif ch == "[" and not seen and SUB_NAME.fullmatch(wbuf): sub, wbk = True, 1
+                wbuf += ch
             if ch in "()" and top in ("cmd", "paren", "bt", "case", "brk", "arith") and (bd.get(len(st), 0) > 0 or top == "brk") and any(c in ("dq", "brace") for c in st) \
                     and any(c in ("cmd", "bt", "paren") for c in st[max(k for k, c in enumerate(st) if c in ("dq", "brace")):]):
                 errs.append("line %d: a paren inside a bracket subscript or $[ ] inside a substitution inside double quotes or ${ } is not resolved (the command reader closes the substitution at it)" % (n + 1))
@@ -181,13 +198,15 @@ def strip_lines(lines, base=None):
             minlen = min(minlen, len(st))
             if len(af) > len(st):
                 del af[len(st):]
-                while len(wsv) > len(st): wbuf = wsv.pop()                  # a context closed: the word it was part of continues
+                while len(wsv) > len(st): wbuf, seen, sub, wbk = wsv.pop()  # a context closed: the word (and command) it was part of continues
             while len(af) < len(st):                   # a context was opened at i: did its word begin as an assignment?
-                af.append(not operand_word(wbuf)); wsv.append(wbuf)
-                if st[len(af) - 1] in ("cmd", "bt", "paren", "case"): wbuf = ""      # inside it a new word starts
+                af.append(not seen); wsv.append((wbuf, seen, sub, wbk))     # af: no command word yet, so what follows the closing is read as the command ("x=")
+                if st[len(af) - 1] in ("cmd", "bt", "paren", "case"): wbuf, seen, sub, wbk = "", False, False, 0      # inside it a new command starts
         cont = esc and cut is None
+        if any(w[2] for w in wsv):                      # a context opened inside an assignment subscript NAME[ ... ] stays open past the line: its word cannot be rebuilt
+            errs.append("line %d: a substitution or quote opened inside an assignment subscript is open at the end of the line and is not resolved" % (n + 1))
         if cont: wbuf = wbuf[:-1]                       # a continuation: the backslash is not part of the word
-        elif (st[-1] if st else None) in CMDLEVEL: wbuf = ""
+        elif (st[-1] if st else None) in CMDLEVEL and not sub: wbuf, seen = "", False       # the line ends a command
         else: wbuf += "\n"
         # A line that closes a context carried from an earlier line is read from inside ALL the carried contexts (so what bash runs inside a quote or a
         # substitution stays visible, and the quote that closes is not read as an opener); a line that closes nothing keeps the plain reading (over-reports).

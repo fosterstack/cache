@@ -3364,10 +3364,10 @@ d=$(crr ml_zzi "${H}.\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path
 d=$(crr ml_zzj "${H}\$*\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a \$* word"
 d=$(crr ml_zzk "${H}( \$y\$("$'\n:\n) /tmp/evil )\n'); expm caught "$d" 'absolute path' "the same inside a subshell"
 d=$(crr ml_zzl "${H}true; \$y\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "the same after a ;"
-d=$(crr ml_zzm "${H}a[ \$("$'\n:\n) ]=1 /tmp/evil\n'); expm caught "$d" 'absolute path' "a blank inside an assignment subscript before a carried \$( )"
-d=$(crr ml_zzn "${H}a[ \"\$("$'\n:\n)" ]=1 /tmp/evil\n'); expm caught "$d" 'absolute path' "the same with a quoted \$( )"
-d=$(crr ml_zzo "${H}a[ \`"$'\n:\n` ]=1 /tmp/evil\n'); expm caught "$d" 'absolute path' "the same with backticks"
-d=$(crr ml_zzp "${H}a[ \${i:-"$'\n} ]=1 /tmp/evil\n'); expm caught "$d" 'absolute path' "the same with \${ }"
+d=$(crr ml_zzm "${H}a[ \$("$'\n:\n) ]=1 /tmp/evil\n'); expm caught "$d" 'inside an assignment subscript' "a blank inside an assignment subscript before a carried \$( )"
+d=$(crr ml_zzn "${H}a[ \"\$("$'\n:\n)" ]=1 /tmp/evil\n'); expm caught "$d" 'inside an assignment subscript' "the same with a quoted \$( )"
+d=$(crr ml_zzo "${H}a[ \`"$'\n:\n` ]=1 /tmp/evil\n'); expm caught "$d" 'inside an assignment subscript' "the same with backticks"
+d=$(crr ml_zzp "${H}a[ \${i:-"$'\n} ]=1 /tmp/evil\n'); expm caught "$d" 'inside an assignment subscript' "the same with \${ }"
 d=$(crr ml_zzq "${H}export y=\$("$'\n:\n) /tmp/out\n'); expm ok "$d" - "control: after a real command word the carried word is an argument and so is what follows"
 
 
