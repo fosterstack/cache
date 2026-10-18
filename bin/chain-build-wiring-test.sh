@@ -876,6 +876,19 @@ lj s7  "REQ-SCAN-012 live-test with the context spelled in capitals (contexts ar
 lj d1  "REQ-SCAN-012 two definitions of live-test (the first in the release environment with a write) are refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    environment: release\n    permissions:\n      contents: write\n    steps:\n      - run: echo first\n  live-test:\n    needs: [check]" caught "duplicate"
 lj d2  "REQ-SCAN-012 a key given twice inside a job is refused" "  live-test:\n    needs: [check]" "  live-test:\n    needs: [check]\n    needs: [check]" caught "duplicate"
 lj ok2 "REQ-UAT-001-AC1 the persona-uat job (after Build only, environment persona-uat, id-token write, the model secrets) passes with the live-test jobs" "" "" ok ""
+# REQ-SCAN-012-AC1 (amended, advisor reading Oct 17): the live-test environment holds the Docker Hub test user, its push token and the read-only Scout token with its user; those four
+# names, in the dotted form, are the only secrets the two live-test jobs may use (the same four in each job), nothing else and no other spelling
+for sec in DOCKERHUB_USERNAME DOCKERHUB_TEST_USERNAME DOCKERHUB_TEST_PUSH_TOKEN DOCKERHUB_SCOUT_TOKEN; do
+  lj "da-$sec" "REQ-SCAN-012-AC1 live-test may use secrets.$sec (a Docker Hub test credential of the live-test environment)" "      - run: echo rc" "      - run: echo rc\n        env:\n          X: \${{ secrets.$sec }}" ok ""
+  lj "db-$sec" "REQ-SCAN-012-AC1 live-test-release may use secrets.$sec" "      - run: echo final" "      - run: echo final\n        env:\n          X: \${{ secrets.$sec }}" ok ""
+done
+for sec in DOCKERHUB_TOKEN DOCKERHUB_TEST_TOKEN DOCKERHUB_USERNAME2 DOCKERHUB_SCOUT_TOKEN_X APK_RELEASE_SIGNING_KEY GH_TOKEN AUDITOR_APP_PRIVATE_KEY; do
+  lj "dc-$sec" "REQ-SCAN-012-AC1 live-test may not use secrets.$sec (the publish credentials and every other name stay refused)" "      - run: echo rc" "      - run: echo rc\n        env:\n          X: \${{ secrets.$sec }}" caught "may not use secrets"
+  lj "dd-$sec" "REQ-SCAN-012-AC1 live-test-release may not use secrets.$sec" "      - run: echo final" "      - run: echo final\n        env:\n          X: \${{ secrets.$sec }}" caught "may not use secrets"
+done
+lj de "REQ-SCAN-012-AC1 live-test using an allowed secret and, beside it, the whole secrets context (toJSON)" "      - run: echo rc" "      - run: echo \${{ secrets.DOCKERHUB_USERNAME }} \${{ toJSON(secrets) }}" caught "may not use secrets"
+lj df "REQ-SCAN-012-AC1 live-test reading an allowed name by index (secrets['DOCKERHUB_USERNAME']) is the bracket form: refused" "      - run: echo rc" "      - run: echo \${{ secrets['DOCKERHUB_USERNAME'] }}" caught "may not use secrets"
+lj dg "REQ-SCAN-012-AC1 persona-uat may not use a Docker Hub secret (its list is the model secrets only)" "          PERSONA_UAT_MODEL: \${{ secrets.PERSONA_UAT_MODEL }}\n" "          PERSONA_UAT_MODEL: \${{ secrets.PERSONA_UAT_MODEL }}\n          X: \${{ secrets.DOCKERHUB_USERNAME }}\n" caught "may not use secrets"
 lj pu1 "REQ-UAT-001-AC1 persona-uat that also needs check (it would wait for the scanners)" "  persona-uat:\n    needs: [build]" "  persona-uat:\n    needs: [build, check]" caught "persona-uat must need exactly"
 lj pu2 "REQ-UAT-001-AC1 persona-uat that needs release (it would run after publishing)" "  persona-uat:\n    needs: [build]" "  persona-uat:\n    needs: [release]" caught "persona-uat must need exactly"
 lj pu3 "REQ-UAT-001-AC1 persona-uat that needs nothing" "  persona-uat:\n    needs: [build]\n" "  persona-uat:\n" caught "persona-uat must need exactly"
@@ -2193,19 +2206,76 @@ expect ok "AC2 no real stage file or stage script names witness run" "" directwi
        "$root/.github/workflows/stage-reproducibility.yml" "$root"/bin/build-stage-*.sh
 expect ok "AC3 the five real scripts are rows of .github/policy/chain-scripts.json with their sha256" "" listed \
        "$root/.github/policy/chain-scripts.json" "$root"
-if python3 - "$root" <<'PY'
+# The scope of the vex-index tool (REQ-REL-010-AC4/AC5), shared by the real tree and the mutation cases below. Advisor reading Oct 17 (cache#416 follow-up): the live test's Scout
+# leg (REQ-SCAN-012-AC6) attaches our OpenVEX to its own FIXTURE layout in the Docker Hub test repository, so the two live-test files may name vex-index in exactly two
+# places: bin/vex-live-run.sh's one fixture call, and bin/vex-live-test-test.sh's run of the tool on a scratch layout (the tool is never loaded into the test's process). Every
+# other mention in them, every other file in the whole tree (the prose directories docs/, requirements/ and test-evidence/ at its top excepted) and every link to the tool is
+# refused; a comment is no exemption (a #-led line can be live code to bash).
+cat > "$work/vi-named.py" <<'PY'
+import glob, os, re
+BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
+        "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
+        "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
+RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
+RUN_CALL = 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1'
+VI_RESULT_LINES = ('check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", vi_run.returncode == 0, vi_run.stderr[-300:])',
+                   'check("scout-vex: the attached document passes the attestation tool\'s own OpenVEX check (the tool is run, never loaded into this process)", vi_run.returncode == 0, vi_run.stderr[-300:])')
+TEST_LINES = ('vi_run = subprocess.run([sys.executable, os.path.join(root, "bin/vex-index.py"), "layout", "--layout", lay, "--vex", vpath], capture_output=True, text=True)',)
+TEST_LOADERS = ("import copy, importlib.util, json, os, re, shutil, subprocess, sys, tempfile, yaml", "def load(name, path):",
+                "spec = importlib.util.spec_from_file_location(name, os.path.join(root, path))",
+                "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m",
+                'L = load("lt", "bin/vex-live-test.py")', 'V = load("vf", "bin/vex-forms.py")')      # the test's own helper and its two modules; the index tool is never loaded
+def stray(root):
+    named, bad = set(), []
+    for d, dirs, files in os.walk(root):      # the whole tree, any extension or none (prose under docs/, requirements/ and test-evidence/ runs nothing)
+        top = os.path.abspath(d) == os.path.abspath(root)      # the prose directories are skipped at the top of the tree only: a docs/ or requirements/ below it is code like any other
+        dirs[:] = [x for x in dirs if x not in (".git", "__pycache__") and not (top and x in ("docs", "requirements", "test-evidence"))]
+        for f in files:
+            path = os.path.join(d, f)
+            if os.path.islink(path):
+                continue
+            if not os.path.isfile(path):
+                continue
+            if "vex-index" in open(path, errors="replace").read():
+                named.add(os.path.relpath(path, root))
+    for d, dirs, files in os.walk(root):      # a link to the tool is the tool: looked for in every folder, the skipped prose ones too
+        dirs[:] = [x for x in dirs if x not in (".git", "__pycache__")]
+        for f in files + dirs:
+            path = os.path.join(d, f)
+            if os.path.islink(path) and os.path.basename(os.path.realpath(path)) == "vex-index.py":
+                bad.append(os.path.relpath(path, root) + " (a link to the tool)")
+    page = os.path.join(root, "docs", "using-our-vex.md")      # the one prose file that runs: the live test executes its shell blocks, so it is code like any other
+    if os.path.isfile(page) and "vex-index" in open(page, errors="replace").read():      # read through a link too: the plan's open() follows it
+        named.add("docs/using-our-vex.md")
+    bad += sorted(named - BASE - {RUN, TEST})
+    for path, exact in ((RUN, (RUN_CALL,)), (TEST, TEST_LINES)):
+        if path not in named and path != RUN:
+            continue
+        code = []
+        for line in open(os.path.join(root, path), errors="replace"):
+            body = line.strip()
+            # no comment exemption: a line that starts with # is not always a comment to bash (a backslash-joined line, a heredoc body, a line inside a quoted string), so every
+            # line that names the tool is judged whole and the run script may name it on its one call line only
+            if "vex-index" in body:
+                code.append(body)
+            if path == TEST and (re.search(r"\bVI\b|(?<![\w.])load(?!\w)|importlib|spec_from_file_location|exec_module|runpy|__import__|\.args\b|\b(?:exec|eval|compile)\(", body) and body not in TEST_LOADERS):
+                code.append(body)
+            if path == TEST and re.search(r"\bvi_run\b", body) and body not in TEST_LINES + VI_RESULT_LINES:
+                code.append(body)      # the allowed call's result is read on its two check lines only (no alias, no .args)      # the test file never loads the tool into its own process (a loaded module's globals are reachable by reflection): it only runs it
+        bad += ["%s: %s" % (path, c[:90]) for c in code if c not in exact]
+        bad += ["%s: %s (must appear exactly once)" % (path, e[:60]) for e in exact if code.count(e) != 1]
+        if path == TEST:
+            body_all = [l.strip() for l in open(os.path.join(root, path), errors="replace")]
+            bad += ["%s: %s (must appear exactly once)" % (path, e[:60]) for e in VI_RESULT_LINES if body_all.count(e) != 1]
+    return bad
+PY
+if python3 - "$root" "$work" <<'PY'
 import glob, json, os, sys
-root = sys.argv[1]
-allowed = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
-           "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
-           "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
-named = set()
-for pattern in (".github/workflows/*.yml", ".github/policy/*.json", "bin/*.sh", "bin/*.py"):
-    for path in glob.glob(os.path.join(root, pattern)):
-        if "vex-index" in open(path, errors="replace").read():
-            named.add(os.path.relpath(path, root))
-stray = sorted(named - allowed)
-assert not stray, "named outside Build's and Rebuild's assemble scripts: %s" % stray       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
+root, work = sys.argv[1], sys.argv[2]
+exec(open(os.path.join(work, "vi-named.py")).read())
+allowed = BASE
+stray_files = stray(root)
+assert not stray_files, "named outside Build's and Rebuild's assemble scripts: %s" % stray_files       # AC4: nothing after Sign attaches, adds or changes an attestation; AC5: no path re-attaches to a published version
 ci = [row.strip() for row in open(root + "/.github/workflows/ci.yml") if "vex-index" in row]
 assert all(row.startswith("run: bash bin/vex-index-test.sh") or row.startswith("- name:") for row in ci), ci      # CI runs the tool's TEST and nothing else of it
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
@@ -2215,6 +2285,65 @@ PY
 then ok "REQ-REL-010-AC4/AC5 only Build's and Rebuild's four assemble scripts run bin/vex-index.py: no Sign, Release, maintenance or patch-release file names it, so nothing attaches after Sign and no published version is touched"
 else bad "REQ-REL-010-AC4/AC5 a file outside Build's and Rebuild's assemble scripts names or runs bin/vex-index.py"
 fi
+# the narrow exemption must keep biting: each mutation of a copy of the two live-test files (or a third file) is refused by the same scope function
+vim() { # vim NAME LABEL FILE OLD NEW   (FILE new: OLD empty, NEW is the whole content)
+  local d="$work/vim-$1"; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/workflows" "$d/.github/policy"
+  cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$d/bin/"
+  if python3 - "$d/$3" "$4" "$5" <<'PY'
+import os, sys
+path, old, new = sys.argv[1:4]
+os.makedirs(os.path.dirname(path), exist_ok=True)
+try: text = open(path).read()
+except FileNotFoundError: text = ""
+if old:
+    assert text.count(old) == 1, "pattern not found once: " + old
+    text = text.replace(old, new, 1)
+else:
+    text = text + new
+open(path, "w").write(text)
+PY
+  then
+    if python3 -c 'import sys; exec(open(sys.argv[1]).read()); sys.exit(0 if stray(sys.argv[2]) else 1)' "$work/vi-named.py" "$d"; then ok "$2"; else bad "$2"; fi
+  else bad "mutation did not apply (vim-$1)"; fi
+}
+vim m1 "REQ-REL-010-AC4 the live-test run script attaching to Build's layout instead of the fixture is refused" bin/vex-live-run.sh '--layout scout-fixture --vex' '--layout "$CANDIDATE_DIR/images/production" --vex'
+vim m2 "REQ-REL-010-AC4 a second vex-index call in the live-test run script is refused" bin/vex-live-run.sh '' $'\npython3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1\n'
+vim m3 "REQ-REL-010-AC5 a vex-index call on a published reference in the live-test run script is refused" bin/vex-live-run.sh '' $'\npython3 bin/vex-index.py attach ghcr.io/fosterstack/cache@sha256:0000000000000000000000000000000000000000000000000000000000000000\n'
+vim m4 "REQ-REL-010-AC4 a third file naming vex-index is refused" bin/vex-live-extra.sh '' $'python3 bin/vex-index.py layout --layout x\n'
+vim m5 "REQ-REL-010-AC4 another vex-index run in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nos.system("python3 bin/vex-index.py layout --layout images")\n'
+vim h1 "REQ-REL-010-AC4 a # inside a word hiding a vex-index call on Build's layout (bash still runs it) is refused" bin/vex-live-run.sh '' $'\n: x#; python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout "$CANDIDATE_DIR/images/production" --vex scout-fixture.vex.json >/dev/null || return 1\n'
+vim h2 "REQ-REL-010-AC4 a # inside a quoted string hiding a vex-index call is refused" bin/vex-live-run.sh '' $'\nm="#"; python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
+vim h3 "REQ-REL-010-AC4 a \${var#...} expansion hiding a vex-index call is refused" bin/vex-live-run.sh '' $'\nr=${CANDIDATE_DIR#/}; python3 bin/vex-index.py layout --layout "/$r/images/production" --vex v.json\n'
+vim h5 "REQ-REL-010-AC4 another use of the loaded vex-index module in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nVI.main(["layout", "--layout", os.environ.get("CANDIDATE_DIR", "x"), "--vex", "v.json"])\n'
+vim j2 "REQ-REL-010-AC4 a #-led line that bash joins to the previous line (backslash) and runs is refused" bin/vex-live-run.sh '' $'\necho a\\\n#; python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
+vim j4 "REQ-REL-010-AC4 a #-led heredoc body line that read splits and runs is refused" bin/vex-live-run.sh '' $'\nwhile read -r _ c; do $c; done <<\'EOT\'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\nEOT\n'
+vim j5 "REQ-REL-010-AC4 a #-led line inside a multi-line quoted string that is later run is refused" bin/vex-live-run.sh '' $'\nx=\'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\'\nread -r _ c <<<"${x#?}"; $c\n'
+vim j6 "REQ-REL-010-AC4 reaching the loaded module through VI.check_vex.__globals__ in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nVI.check_vex.__globals__["main"](["layout"])\n'
+vim k1 "REQ-REL-010-AC4 a file with another extension or none, in another directory, naming the tool is refused (bin/lib/x.sh)" bin/lib/x.sh '' $'python3 bin/vex-index.py layout --layout x\n'
+vim k2 "REQ-REL-010-AC4 a workflow with the .yaml extension naming the tool is refused" .github/workflows/x.yaml '' $'run: python3 bin/vex-index.py layout --layout x\n'
+vim k3 "REQ-REL-010-AC4 loading the tool into the live-test test file's own process under another name is refused" bin/vex-live-test-test.sh '' $'\nM = load("m", "bin/vex-index.py")\n'
+vim k4 "REQ-REL-010-AC4 a Go file under tools/requirements (a skipped name below the top level) running the tool is refused" tools/requirements/vexattach.go '' $'exec.Command("python3", "bin/vex-index.py", "layout")\n'
+vim k5 "REQ-REL-010-AC4 a script under bin/docs (a skipped name below the top level) running the tool is refused" bin/docs/attach.sh '' $'python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
+vim k6 "REQ-REL-010-AC4 loading the tool in the live-test test file from the path the allowed subprocess line holds (r.args[1]) is refused" bin/vex-live-test-test.sh '' $'\nM = load("m", r.args[1])\n'
+vim k7 "REQ-REL-010-AC4 an importlib spec on a path variable in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nsp = importlib.util.spec_from_file_location("z", os.path.join(root, "bin", NAME))\n'
+# a link to the tool is the tool: refused wherever it sits
+ld="$work/vim-link"; rm -rf "$ld"; mkdir -p "$ld/bin" "$ld/.github/workflows" "$ld/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld/bin/"
+printf 'x\n' > "$ld/bin/vex-index.py"; ln -s vex-index.py "$ld/bin/attach.py"
+if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); sys.exit(0 if any("attach.py" in x for x in b) else 1)' "$work/vi-named.py" "$ld"; then ok "REQ-REL-010-AC4 a link to the tool under another name is refused"; else bad "REQ-REL-010-AC4 a link to the tool under another name is refused"; fi
+vim n2 "REQ-REL-010-AC4 re-running the tool from an alias of the allowed call's result (res.args[1]) is refused" bin/vex-live-test-test.sh '' $'\nres = vi_run; subprocess.run([sys.executable, res.args[1], "layout", "--layout", "/x"])\n'
+vim n3 "REQ-REL-010-AC4 loading the tool in-process through an alias of the loader and of the call's result is refused" bin/vex-live-test-test.sh '' $'\nres = vi_run; f = load; M = f("m", res.args[1])\n'
+vim n4 "REQ-REL-010-AC4 exec of the tool's source read from the allowed call's path is refused" bin/vex-live-test-test.sh '' $'\nres = vi_run; exec(compile(open(res.args[1]).read(), "t", "exec"), {"__name__": "t"})\n'
+vim n12 "REQ-REL-010-AC4 any other use of the allowed call's result variable is refused" bin/vex-live-test-test.sh '' $'\nx = vi_run\n'
+# a link to the tool under a prose directory at the top of the tree (docs/, test-evidence/) is the tool too
+ld2="$work/vim-link2"; rm -rf "$ld2"; mkdir -p "$ld2/bin" "$ld2/docs" "$ld2/.github/workflows" "$ld2/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld2/bin/"
+printf 'x\n' > "$ld2/bin/vex-index.py"; ln -s ../bin/vex-index.py "$ld2/docs/attach.md"
+if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); sys.exit(0 if any("attach.md" in x for x in b) else 1)' "$work/vi-named.py" "$ld2"; then ok "REQ-REL-010-AC4 a link to the tool under the top-level docs/ is refused"; else bad "REQ-REL-010-AC4 a link to the tool under the top-level docs/ is refused"; fi
+vim q1 "REQ-REL-010-AC4 the customer page, whose shell blocks the live test runs, is code like any other: a command naming the tool in it is refused" docs/using-our-vex.md '' $'\n```sh\n"$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout "$GITHUB_WORKSPACE/other-layout" --vex v.json\n```\n'
+# the customer page as a link to another docs file that names the tool: the plan's open() follows the link, so the link is read through
+ld3="$work/vim-link3"; rm -rf "$ld3"; mkdir -p "$ld3/bin" "$ld3/docs" "$ld3/.github/workflows" "$ld3/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld3/bin/"
+printf '```sh\n"$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout x\n```\n' > "$ld3/docs/vex-guide-body.md"; ln -s vex-guide-body.md "$ld3/docs/using-our-vex.md"
+if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); sys.exit(0 if "docs/using-our-vex.md" in b else 1)' "$work/vi-named.py" "$ld3"; then ok "REQ-REL-010-AC4 the customer page as a link to a file naming the tool is refused"; else bad "REQ-REL-010-AC4 the customer page as a link to a file naming the tool is refused"; fi
+vim m6 "REQ-REL-010-AC4 the live-test run script without its one fixture call is refused (the exemption is not a blanket)" bin/vex-live-run.sh 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1' 'true'
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
 expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
 expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/main-candidate-rescan.yml"
@@ -2236,7 +2365,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=760
+EXPECT=814
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
