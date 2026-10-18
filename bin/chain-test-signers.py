@@ -81,10 +81,8 @@ SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\((?!\()|\$\{(?!#[
 SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
 
 def subscript_holds_opener(l):
-    """Does a [ ... ] of this (logical) line hold a substitution opener before its matching ]? EVERY [ is scanned, balanced, with NO exemption for a test command (advisor ruling
-    after nine rounds: the exemption was the source of every finding, a test is told from a subscript by guessing where bash ends the bracket): a test that holds a substitution, a
-    parameter expansion with a nested ${ or prose brackets around a $( ) is refused like a subscript and needs a reviewed line-bound waiver. The second [ of [[ is judged with the
-    first (a duplicate finding adds nothing)."""
+    # default deny: once a bracket holds a backslash or a quote, the place of its closing ] is not readable
+    # from the text (quote removal re-pairs quotes), so any opener later on the logical line refuses it
     for i, ch in enumerate(l):
         if ch != "[": continue
         if i > 0 and l[i - 1] == "[": continue
@@ -93,23 +91,13 @@ def subscript_holds_opener(l):
             c = l[j]
             if c == "\\":
                 if l[j + 1:j + 2] in ("$", "`"): return True
-                if l[j + 1:j + 2] in ("\"", "'"):                 # an escaped quote becomes a real quote for the builtin that parses the subscript: a span up to the next matching escaped quote (or the end of the line)
-                    q = l[j + 1]
-                    k = l.find("\\" + q, j + 2)
-                    k = len(l) if k < 0 else k
-                    if re.search(r"\$\((?!\()|\$\{|`|\\[$`]", l[j + 2:k]): return True
-                    j = k + 2; continue
-                unreliable = True                                   # ANY other backslash inside a bracket makes the place of its closing ] unreliable (an outer double-quoted word turns \" into a quote and \\] into an escaped ]): scan to the end of the line for an opener
+                unreliable = True
                 j += 2; continue
             if c == "`": return True
             if c == "$" and ((l.startswith("$(", j) and not l.startswith("$((", j)) or l.startswith("${", j)): return True
-            if c in "\"'":                                   # a quoted span: its ] does not close the bracket (bash's subscript parser skips it); an opener inside it still counts
-                k = j + 1
-                while k < len(l) and l[k] != c:
-                    if c == '"' and l[k] == "\\": k += 1
-                    k += 1
-                if re.search(r"\$\((?!\()|\$\{|`|\\[$`]", l[j + 1:k]): return True
-                j = k + 1; continue
+            if c in "\"'":
+                unreliable = True
+                j += 1; continue
             if c == "[": depth += 1
             elif c == "]": depth -= 1
             j += 1
