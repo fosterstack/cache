@@ -839,6 +839,13 @@
           "line_sha256": "66dd54413664c73775e8b7af843b58db19f5ab3c8a76e4414140d58345df2cde",
           "count": 1,
           "why": "closes the multi-line awk program that filters the raw trace (its operands are the raw and ext files) (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "  echo \"${label}: allowed_exact={127.0.0.1, ::1, ${OWN_IP} (self)${OWN_IP6:+, ${OWN_IP6} (self6)}} packet[dns=${dns} non_allowed_outbound=${ext}] syscall[dns=${sdns} non_allowed_attempts=${sext}]\"",
+          "line_sha256": "07784197713d47812f8d31147ab55cbdc8b4af2e4ad494d9e076e8d2872dd876",
+          "count": 1,
+          "why": "prose inside an echo string: packet[dns=${dns} ...] and syscall[...] are literal text with plain parameter expansions, never evaluated as a subscript (REQ-CHAIN-001-AC1: a subscript NAME[ ... holding a substitution is refused unless waived here)"
         }
       ]
     },
@@ -1255,7 +1262,16 @@
         "bin/loopback-get.sh"
       ],
       "signs": false,
-      "reason": "Check's artifact checks: the amd64 binaries execute, the FIPS postures, no shell in the production and -fips images, platform entries and serving (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, AC2, REQ-FIPS-002-AC1)"
+      "reason": "Check's artifact checks: the amd64 binaries execute, the FIPS postures, no shell in the production and -fips images, platform entries and serving (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, AC2, REQ-FIPS-002-AC1)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "stop_last() { kill \"${pids[${#pids[@]}-1]}\" > /dev/null 2>&1 || true; }",
+          "line_sha256": "0d964a14c5ea1af0f5292642809f0f8f615d89eb2394e012d043d5a2ff4b6677",
+          "count": 1,
+          "why": "a plain parameter expansion of an array element: ${pids[${#pids[@]}-1]} is the last element of pids, the nested ${#pids[@]} is a length (REQ-CHAIN-001-AC1: a subscript NAME[ ... holding a substitution is refused unless waived here)"
+        }
+      ]
     },
     {
       "path": "bin/check-image-platforms.py",
