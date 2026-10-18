@@ -97,6 +97,14 @@ def subscript_holds_opener(l):
         is_test = ((cmdpos(i - 1) and blank(nxt))                                                  # [ ... ]
                    or (cmdpos(i - 1) and nxt == "[" and blank(after2))                             # the first [ of [[ ... ]]
                    or (prev == "[" and cmdpos(i - 2) and blank(nxt)))                              # the second [ of [[ ... ]]
+        if is_test:                                        # DEFAULT DENY: a [ with no matching ] on its logical line is never a test (a test does not span lines; a compound-assignment subscript does)
+            j3, d3 = i + 1, 1
+            while j3 < len(l) and d3 > 0:
+                if l[j3] == "\\": j3 += 2; continue
+                if l[j3] == "[": d3 += 1
+                elif l[j3] == "]": d3 -= 1
+                j3 += 1
+            if d3 > 0: is_test = False
         if is_test and re.search(r"\]\+?=", l[i:]): is_test = False   # DEFAULT DENY: any ]= or ]+= later on the line makes this [ a candidate subscript (scanned), never a test: the closing ] is not found by counting brackets (a ] inside ${x//]/} , a quote, a substitution), a real test's ] is followed by a blank, ; & | ) or the end
         if is_test: continue
         j, depth = i + 1, 1
