@@ -1639,6 +1639,94 @@
       "ruling": "text, not a command: a string constant or comment in a Python program run from a quoted heredoc (checker context pystring, ast-strings-only); that program also runs subprocesses or writes files, so the claim that it only reads this text rests on review",
       "context": "pystring",
       "proof": "ast-strings-only; program runs subprocess or writes files; read-only use attested by review"
+    },
+    {
+      "file": "bin/chain-install-crane-test.sh",
+      "form": "a download",
+      "key": "7cb89249603159977160c1363ccd409a78a79bf22fe6fb388853434e4b7b3dc7",
+      "line": "7cb89249603159977160c1363ccd409a78a79bf22fe6fb388853434e4b7b3dc7",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/chain-install-crane-test.sh",
+      "form": "a download",
+      "key": "9482c072c9f21b14f55e3c67f4c4d18c4b5e564111037efb8ba922d0afe70b3f",
+      "line": "9482c072c9f21b14f55e3c67f4c4d18c4b5e564111037efb8ba922d0afe70b3f",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/chain-install-witness-test.sh",
+      "form": "a download",
+      "key": "9482c072c9f21b14f55e3c67f4c4d18c4b5e564111037efb8ba922d0afe70b3f",
+      "line": "9482c072c9f21b14f55e3c67f4c4d18c4b5e564111037efb8ba922d0afe70b3f",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/chain-install-witness-test.sh",
+      "form": "a download",
+      "key": "9e1af07f505797af60428ffec85122dfdf1aa7f30ee064b9eb9bca1de036baac",
+      "line": "df68b8cde5dc3f789540d4cb7e0858f395f5c588eb4623bd175ec6747e8cb49a",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "3302e4d5832444de5760f72a1d85a9a4e3a8f1b5a000edf748de33fb080946a3",
+      "line": "659dc68d9000455ee439546337aebf54a82276f80cfcac0274f427ddd5c15d40",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "5ab5f46b653cada0287a938f20d95a121d6c55b627e761556c8e6b786e277ac2",
+      "line": "659dc68d9000455ee439546337aebf54a82276f80cfcac0274f427ddd5c15d40",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "850a8eb481f553b43d0d573eaf65e77d5a18b1e945e560872ffb55910c6d3444",
+      "line": "850a8eb481f553b43d0d573eaf65e77d5a18b1e945e560872ffb55910c6d3444",
+      "ruling": "text, not a command: the value of a plain assignment (a description or data string); nothing runs it",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "163abde8a9ad2a52f3ab36525af0f142ba876c80573bb056d2901870c76ba35f",
+      "line": "163abde8a9ad2a52f3ab36525af0f142ba876c80573bb056d2901870c76ba35f",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get-test.sh",
+      "form": "a download",
+      "key": "f6d35a300931a453d22bd3add16a95a5b8ce949e37dc2abb8e9969fe3e2171f8",
+      "line": "f6d35a300931a453d22bd3add16a95a5b8ce949e37dc2abb8e9969fe3e2171f8",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get.sh",
+      "form": "a download",
+      "key": "8588268379fe8c098b1cac023e1913a0180db9c593c20f1d4f364188e18d6493",
+      "line": "68281990c075542da3583a41de174b2fc717e7caf460eccc45771a581d7b28f7",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
+    },
+    {
+      "file": "bin/loopback-get.sh",
+      "form": "a download",
+      "key": "f5e678332279f760051bbf0a3ddd394dc97d4b3f3c6074722b671b051ae93c9e",
+      "line": "f5e678332279f760051bbf0a3ddd394dc97d4b3f3c6074722b671b051ae93c9e",
+      "ruling": "text, not a command: a comment in the script; nothing runs it",
+      "context": "comment"
     }
   ]
 }
