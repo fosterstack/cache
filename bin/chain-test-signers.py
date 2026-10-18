@@ -89,13 +89,14 @@ def subscript_holds_opener(l):
         prev = l[i - 1] if i > 0 else " "
         nxt = l[i + 1] if i + 1 < len(l) else " "
         TESTPOS = ";&|(!"                                  # a test command follows a blank, the start of the line or one of these (NOT { : a brace expansion removes it)
-        cmdpos = lambda ch_: ch_.isspace() or ch_ in TESTPOS
+        def cmdpos(k):                                     # index k holds a command position: a blank or the start, or a TESTPOS character NOT preceded by $ ($! is the PID of a background job, $$ and $( are expansions)
+            ch_ = l[k] if 0 <= k < len(l) else " "
+            return ch_.isspace() or (ch_ in TESTPOS and not (k > 0 and l[k - 1] == "$"))
         blank = lambda ch_: ch_.isspace()                  # a blank (the end of the line counts as one: nxt and the char after default to " ")
         after2 = l[i + 2] if i + 2 < len(l) else " "
-        before2 = l[i - 2] if i > 1 else " "
-        is_test = ((cmdpos(prev) and blank(nxt))                                                   # [ ... ]
-                   or (cmdpos(prev) and nxt == "[" and blank(after2))                              # the first [ of [[ ... ]]
-                   or (prev == "[" and cmdpos(before2) and blank(nxt)))                            # the second [ of [[ ... ]]
+        is_test = ((cmdpos(i - 1) and blank(nxt))                                                  # [ ... ]
+                   or (cmdpos(i - 1) and nxt == "[" and blank(after2))                             # the first [ of [[ ... ]]
+                   or (prev == "[" and cmdpos(i - 2) and blank(nxt)))                              # the second [ of [[ ... ]]
         if is_test: continue
         j, depth = i + 1, 1
         while j < len(l) and depth > 0:
