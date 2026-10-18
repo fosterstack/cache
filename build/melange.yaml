@@ -59,7 +59,7 @@ environment:
       - libnghttp2-14=1.70.0-r5
       - libpcre2-8-0=10.49-r1
       - libpsl=0.23.3-r2
-      - libunistring=1.4.2-r4
+      - libunistring=1.5-r0
       - libverto=0.3.2-r9
       - libxcrypt=4.5.2-r6
       - ncurses-terminfo-base=6.6.20261010-r0
