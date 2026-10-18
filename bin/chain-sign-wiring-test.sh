@@ -3461,6 +3461,16 @@ hm hm_zm $'declare -A a\na[k #]=1; /tmp/evil\necho end\n' caught 'assignment sub
 hm hm_zn $'declare -A a\na[k #]=1 /tmp/evil\necho end\n' caught 'assignment subscript' 'the temp-env form'
 hm hm_zo $'declare -A a\na[k\n#]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a line starting with # inside an open subscript'
 hm hm_zp $'a[1]=1\nb[$i]+=2\nx=${a[1]}\n[ a = b ] && echo ok\necho "a[ b ]"\n# a [ comment\n' ok - 'control: balanced subscripts, a test, a quoted [ and a comment with [ are untouched'
+# seat A, PR 449 round 6: a ] inside a $( ) or backticks inside an assignment subscript does not end the subscript
+hm hm_zq $'declare -A a\na[$(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a #'
+hm hm_zr $'declare -A a\ny() { :; }\na[$(echo ])\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a << on the next line'
+hm hm_zs $'declare -A a\ny() { :; }\na[`echo ]`\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'the same with backticks'
+hm hm_zt $'declare -A a\na[(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'the same with a ( ) group'
+hm hm_zu $'a[$(echo x)]=1\nb[`echo y`]=2\nc[1]=3\necho ok\n' ok - 'control: substitutions inside a closed subscript'
+# seat B, PR 449 round 6: NAME[ is an assignment subscript also right after a ) (a case pattern) or any other character
+hm hm_zv $'case x in x)a[k #]=1 /tmp/evil\n;;esac\n' caught 'assignment subscript' 'a subscript right after the ) of a case pattern'
+hm hm_zw $'if true;then a[k #]=1 /tmp/evil;fi\n' caught 'assignment subscript' 'after then;'
+hm hm_zx $'{ a[k #]=1 /tmp/evil; }\n' caught 'assignment subscript' 'in a { } group'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
 dl cl_w1 'x="\na"' '[D("a\"")]' ok -
 dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
@@ -3628,7 +3638,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1567
+EXPECT=1575
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
