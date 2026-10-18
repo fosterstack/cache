@@ -3600,6 +3600,12 @@ sb sb_cz $'let a[\\"\\\\"]\\$(/usr/bin/touch mk)"]\n' caught 'holds a substituti
 sb sb_da $'let a[\\"x\\\\"]\\$(/usr/bin/touch mk)"]\n' caught 'holds a substitution' 'same with text before the double backslash'
 sb sb_db $'let a[\\"\\\\"]\\`/usr/bin/touch mk\\`"]\n' caught 'holds a substitution' 'backtick form'
 sb sb_dc $'let a[\\"\\\\"]"\\$(/usr/bin/touch mk)"]\n' caught 'holds a substitution' 'opener inside the later quote'
+sb sb_dd $'let \'a[$((/usr/bin/touch mk) )]=1\'\n' caught 'holds a substitution' '$(( that does not close as arithmetic is a command substitution'
+sb sb_de $'printf -v \'a[$((/usr/bin/touch mk);id)]\' z\n' caught 'holds a substitution' 'printf -v, $(( then ;'
+sb sb_df $'read \'a[$((/usr/bin/touch mk) )]\' <<< x\n' caught 'holds a substitution' 'read'
+sb sb_dg $'[[ -v \'a[$((/usr/bin/touch mk)|(id))]\' ]]\n' caught 'holds a substitution' '[[ -v, closes with ))'
+sb sb_dh $'let a[$((i+1))]=2\n' caught 'holds a substitution' 'even real arithmetic in a subscript is refused (default deny; waive by line)'
+sb sb_di $'i=1; x=$((i+1)); echo "$x"; [ -n "$x" ] && echo ok\n' ok - 'control: arithmetic outside any bracket'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3769,7 +3775,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1688
+EXPECT=1694
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
