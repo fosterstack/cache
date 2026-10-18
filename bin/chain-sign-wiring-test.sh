@@ -3518,6 +3518,24 @@ sb sb_ah $'n=a; printf -v "${n}[\\$(/usr/bin/touch mk)]" x\n' caught 'holds a su
 sb sb_ai $'printf -v a\\\n[\\$\\(/usr/bin/touch\\ mk\\)] x\n' caught 'holds a substitution' 'a continuation between the name and the ['
 sb sb_aj $'printf -v \'a[\'\\\n\'$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'a continuation between the [ and the quoted opener'
 sb sb_ak $'[ "${#a[@]}" -gt 0 ] && echo ok\necho "done"\n' ok - 'control: a length expansion in a test'
+# seat B, PR 452 round 2: a quoted or split name with a non-opener character between the [ and the opener
+sb sb_al $'let "a"\'[x$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a quoted name, a character before the opener'
+sb sb_am $'let a\'[0$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a digit before the opener'
+sb sb_an $'let \'a\'"[x"\'$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'the [ in a different quoted part than the opener'
+sb sb_ao $'printf -v "a"\'[ x$(/usr/bin/touch mk)]\' %s 1\n' caught 'holds a substitution' 'a blank after the [ and a character before the opener'
+sb sb_ap $'echo [ok]; [ -n "$(echo b)" ] && echo ok; if [ "$(echo c)" = c ]; then echo ok; fi; [[ -n "$(echo d)" ]]\n' ok - 'control: test commands with substitutions (the [ is at a command position and followed by a blank)'
+# seat A, PR 452 round 2: a quote, escape or brace between the name and the [ (static quoting and brace expansion build the name), with a non-opener prefix or a quote switch after the [
+sb sb_aq $'let a"["\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a"[" then a single-quoted opener'
+sb sb_ar $'let a\'[\'"\\$(/usr/bin/touch MARK)]"\n' caught 'holds a substitution' "a'[' then a double-quoted escaped opener"
+sb sb_as $'let a\\[\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a backslash-escaped [ then a quoted opener'
+sb sb_at $'let a\\[0+\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'an escaped [ and a prefix before the opener'
+sb sb_au $'let \'a\'[0+\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a quoted name, [ and a prefix'
+sb sb_av $'let "a"[0+\\$\\(/usr/bin/touch\\ MARK\\)]\n' caught 'holds a substitution' 'a quoted name, [ , a prefix and an escaped opener'
+sb sb_aw $'printf -v "a"[0+\'`/usr/bin/touch MARK`]\' z\n' caught 'holds a substitution' 'backticks after a prefix'
+sb sb_ax $'let a{[,[}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a brace expansion builds the [ '
+sb sb_ay $'let a{\\[,\\[}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a brace expansion of escaped ['
+sb sb_az $'printf -v a{\\[,}\'$(/usr/bin/touch MARK)]\' z z\n' caught 'holds a substitution' 'a brace expansion with an empty alternative'
+sb sb_ba $'let a{"[",x}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a quoted [ inside a brace expansion'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3687,7 +3705,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1618
+EXPECT=1634
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
