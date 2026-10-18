@@ -97,6 +97,14 @@ def subscript_holds_opener(l):
         is_test = ((cmdpos(i - 1) and blank(nxt))                                                  # [ ... ]
                    or (cmdpos(i - 1) and nxt == "[" and blank(after2))                             # the first [ of [[ ... ]]
                    or (prev == "[" and cmdpos(i - 2) and blank(nxt)))                              # the second [ of [[ ... ]]
+        if is_test:                                        # a bracket expression whose closing ] is directly followed by = or += is a subscript assignment a=( [ x ]=1 ), never a test
+            j2, d2 = i + 1, 1
+            while j2 < len(l) and d2 > 0:
+                if l[j2] == "\\": j2 += 2; continue
+                if l[j2] == "[": d2 += 1
+                elif l[j2] == "]": d2 -= 1
+                j2 += 1
+            if d2 == 0 and (l.startswith("=", j2) or l.startswith("+=", j2)): is_test = False
         if is_test: continue
         j, depth = i + 1, 1
         while j < len(l) and depth > 0:
