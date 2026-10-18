@@ -3453,6 +3453,14 @@ hm hm_zf $'a[x<<y ]+=1\nz=1\n' caught 'has a << inside a [ ] subscript' 'the += 
 hm hm_zg $'z=1 a[x<<y ]=1\nz=1\n' caught 'has a << inside a [ ] subscript' 'after another assignment'
 hm hm_zh $'cat <<EOF\n[ not a subscript\nEOF\necho "$((1<<2))"\n' caught 'a << inside' 'control-ish: a $(( )) shift is already refused'
 hm hm_zi $'[ a = b ] && cat <<EOF\nx\nEOF\necho ok\n' ok - 'control: a closed [ ] test before a heredoc'
+# seat A, PR 449 round 5: an assignment subscript spans physical lines (a newline or a backslash-newline inside a[ ... ]), and a # inside it is no comment: default deny for a NAME[ subscript left open at the end of a line, for a # inside one, and for a line that starts with # while one is open
+hm hm_zj $'y() { :; }\na[x\\\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a backslash-newline'
+hm hm_zk $'y() { :; }\na[x\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a newline'
+hm hm_zl $'b=2 a[x\n<<y ]=1\nz=1\n' caught 'assignment subscript' 'after another assignment'
+hm hm_zm $'declare -A a\na[k #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a # inside an assignment subscript is no comment'
+hm hm_zn $'declare -A a\na[k #]=1 /tmp/evil\necho end\n' caught 'assignment subscript' 'the temp-env form'
+hm hm_zo $'declare -A a\na[k\n#]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a line starting with # inside an open subscript'
+hm hm_zp $'a[1]=1\nb[$i]+=2\nx=${a[1]}\n[ a = b ] && echo ok\necho "a[ b ]"\n# a [ comment\n' ok - 'control: balanced subscripts, a test, a quoted [ and a comment with [ are untouched'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
 dl cl_w1 'x="\na"' '[D("a\"")]' ok -
 dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
@@ -3620,7 +3628,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1560
+EXPECT=1567
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
