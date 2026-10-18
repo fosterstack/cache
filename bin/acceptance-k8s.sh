@@ -6,8 +6,7 @@
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
-# The job env of stage-acceptance-k8s.yml, unchanged: the pinned client image for the runner pod.
-export CLIENT_IMAGE=curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+# The job env of stage-acceptance-k8s.yml, unchanged except that the pinned client image (by digest) is written out in step 6, where it is pulled.
 export CLIENT_LOCAL=fscache-client:accept
 
 # NEW (REQ-CHAIN-006-AC14, in place of the old stage's cluster action): the cluster, the node image by digest (kind v0.33.0 release notes).
@@ -43,8 +42,7 @@ python3 bin/acceptance-k8s-smoke.py
 # stage-acceptance-k8s.yml, job k8s, step 6: load a pinned client image for the runner client pod
 step_06() (
 set -euo pipefail
-docker pull -q "$CLIENT_IMAGE"
-docker tag "$CLIENT_IMAGE" "$CLIENT_LOCAL"
+docker pull -q curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 && docker tag curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 "$CLIENT_LOCAL"
 kind load docker-image "$CLIENT_LOCAL" --name fscache-accept
 )
 

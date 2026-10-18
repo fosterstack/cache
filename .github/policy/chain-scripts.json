@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "7249adc2203c65b5baa9d3cf25368692f6c475dbb9abc8fe0ee2b53748c84cbc",
+      "sha256": "809dc6ee2359b7447284fbc8e7a2f3e64b35bb7060d5706e5b971f0bcee725a3",
       "tools": [
         "at",
         "curl",
@@ -48,15 +48,17 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "35d5ea6f3ceb69ab76e373d382fba50c65658346634a2818d9d36b677129e7f8",
+      "sha256": "af35a2e03e4a7ec7d1e82761b5b748700b9d7d42de5ca58b1d305a4771c5c9e3",
       "tools": [
-        "curl",
-        "bash",
         "at",
-        "sed"
+        "bash",
+        "curl",
+        "sed",
+        "sh"
       ],
       "runs": [
-        "bin/install-scanner.sh"
+        "bin/install-scanner.sh",
+        "bin/loopback-get.sh"
       ],
       "signs": "other",
       "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)",
@@ -141,19 +143,22 @@
     {
       "path": "bin/witnessed.sh",
       "tools": [
-        "script",
-        "command",
-        "timeout",
         "at",
-        "git",
+        "bash",
+        "command",
         "curl",
         "exec",
-        "bash"
+        "git",
+        "script",
+        "sh",
+        "timeout"
       ],
-      "runs": [],
+      "runs": [
+        "bin/loopback-get.sh"
+      ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "bfd75d3ee399b92efd0e3fa0843977f22b6550fd4ef945ece7da03ba52b5a154",
+      "sha256": "4d7ecb9b7a2ed64e2323b507450f056fdd388aceac8f51fd6f9b3861e6a9d0be",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -545,7 +550,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "d3973cbdad968298b26fc49638f5fd7375baa03de5d9068aa3fcbb2a64b3db61",
+      "sha256": "c0734a5e15604218fafded054a0f5c4c07b9cb0a87ad72b3db2a3a64a99b305d",
       "tools": [
         "curl",
         "docker",
@@ -773,7 +778,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "067c9e535c41910ce1f0f82cde46f41d620677f4a65f0e42d493fddb5b42270e",
+      "sha256": "f08e8620d1164d556b2710c66a15d7ddfa8437cc7779e1f47632317b55078583",
       "tools": [
         "at",
         "awk",
@@ -807,15 +812,15 @@
         },
         {
           "rule": "deny",
-          "line": "  if ! docker run --rm -v \"$TRACE_BIN\":/trace:ro --entrypoint /trace/strace \"$DISTROLESS\" -V > /tmp/strace.ver 2>&1; then",
-          "line_sha256": "bcd2a19d1f7e3332ebf52f4cd3096a802eaf418a95ae129d046952bcfcbb417a",
+          "line": "  if ! docker run --rm -v \"$TRACE_BIN\":/trace:ro --entrypoint /trace/strace gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab -V > /tmp/strace.ver 2>&1; then",
+          "line_sha256": "ebcef252a247fc58426992acb4fe8598d542c430a59ad9e2e9b4a1faed4bccdd",
           "count": 1,
           "why": "docker runs the static strace as the entrypoint of the candidate or of a libc-less proof image (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
         },
         {
           "rule": "deny",
-          "line": "  docker run -d --name \"fscache-cand-${label}\" --net \"container:fscache-net-${label}\" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v \"$TRACE_BIN\":/trace:ro -v \"$TRACE_OUT\":/out --entrypoint /trace/strace \"$REF\" -f -e trace=network -yy -qq -o \"/out/${label}.strace\" \"$CANDIDATE_ENTRYPOINT\" >/dev/null",
-          "line_sha256": "772cea4f885d36e00c57847b4a38b117665ffe55472ee5db3f5379547b302fae",
+          "line": "  docker run --pull=never -d --name \"fscache-cand-${label}\" --net \"container:fscache-net-${label}\" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v \"$TRACE_BIN\":/trace:ro -v \"$TRACE_OUT\":/out --entrypoint /trace/strace localhost/fscache-egress-candidate -f -e trace=network -yy -qq -o \"/out/${label}.strace\" \"$CANDIDATE_ENTRYPOINT\" >/dev/null",
+          "line_sha256": "8ab796f760809dc18a766e4c3548d732c889f42ce427f4510fc74009c3d6807e",
           "count": 1,
           "why": "docker runs the static strace as the entrypoint of the candidate or of a libc-less proof image (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
         },
@@ -844,7 +849,7 @@
     },
     {
       "path": "bin/acceptance-k8s.sh",
-      "sha256": "533bd44cbbf53e666367ce82488bd2e4a1faa3243d306fc8439a773e7d18be58",
+      "sha256": "c83fc833e77e65be7f701ec0dc160ae13ae201e38f499fa9222d8872466657cf",
       "tools": [
         "at",
         "bash",
@@ -884,7 +889,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "2cd54a346a211a9ae5588709d2eb3f92aee31792c24b1140758c6bef9b2c1155",
+      "sha256": "874bf009c4c559954a246821fb944ea83469b48572c13f9732d61da3c8d8ad8a",
       "tools": [
         "curl",
         "docker",
@@ -1236,7 +1241,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "72f76c959bf3f459d9a4344ad86e7a8f79306d79d707bca2cb75ac4d43785485",
+      "sha256": "17b9bf66d3e04bb0dfd38ac21310f20ef37b6c34b8aa5b6f2993889e44b64d0d",
       "tools": [
         "at",
         "curl",
