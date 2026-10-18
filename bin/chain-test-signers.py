@@ -88,8 +88,15 @@ def subscript_holds_opener(l):
         if ch != "[": continue
         prev = l[i - 1] if i > 0 else " "
         nxt = l[i + 1] if i + 1 < len(l) else " "
-        if prev == "[": continue
-        if not ((not prev.isspace() and prev not in ";&|({!") or (not nxt.isspace() and nxt != "[")): continue
+        TESTPOS = ";&|(!"                                  # a test command follows a blank, the start of the line or one of these (NOT { : a brace expansion removes it)
+        cmdpos = lambda ch_: ch_.isspace() or ch_ in TESTPOS
+        blank = lambda ch_: ch_.isspace()                  # a blank (the end of the line counts as one: nxt and the char after default to " ")
+        after2 = l[i + 2] if i + 2 < len(l) else " "
+        before2 = l[i - 2] if i > 1 else " "
+        is_test = ((cmdpos(prev) and blank(nxt))                                                   # [ ... ]
+                   or (cmdpos(prev) and nxt == "[" and blank(after2))                              # the first [ of [[ ... ]]
+                   or (prev == "[" and cmdpos(before2) and blank(nxt)))                            # the second [ of [[ ... ]]
+        if is_test: continue
         j, depth = i + 1, 1
         while j < len(l) and depth > 0:
             c = l[j]
