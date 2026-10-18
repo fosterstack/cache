@@ -3565,6 +3565,11 @@ sb sb_bv $'a=( [ \'$(/usr/bin/touch MARK)\'\n]=1 )\n' caught 'holds a substituti
 sb sb_bw $'a=(\n[ \'$(/usr/bin/touch MARK)\'\n]=1\n)\n' caught 'holds a substitution' 'every element on its own line'
 sb sb_bx $'a=( [ "`/usr/bin/touch MARK`"\n]+=1 )\n' caught 'holds a substitution' 'backticks and +='
 sb sb_by $'if [ -n x ]; then\n  echo ok\nfi\n[[ -n y ]] &&\n  echo ok\n' ok - 'control: tests closed on their own line, with the && continuing on the next'
+# seat B, PR 452 round 8: a ] inside ${x//]/} (or a quoted span) counted as the matching bracket while the real ]= sits on the next physical line: the exemption needs the matching ] to be followed by a blank, ; & | ) or the end of the line
+sb sb_bz $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//]/}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} on the first line, ]= on the next'
+sb sb_ca $'a=( [ \'$(/usr/bin/touch MARK)\' "${x//]/}"\n]=1 )\n' caught 'holds a substitution' 'the same inside double quotes'
+sb sb_cb $'a=( [ \'$(/usr/bin/touch MARK)\' ${x%]}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
+sb sb_cc $'[ -n "$(echo a)" ] && echo ok\n[ -n "$(echo b)" ];\n[ -n "$(echo c)" ]|| echo ok\n( [ -n "$(echo d)" ] )\n' ok - 'control: tests whose matching ] is followed by a blank, ; | or )'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3734,7 +3739,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1658
+EXPECT=1662
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
