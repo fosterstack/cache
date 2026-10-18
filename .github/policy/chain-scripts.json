@@ -736,16 +736,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "  | awk '/^fscache_http_requests_total\\{method=\"PUT\",status=\"201\"\\}/ {print $2}')",
-          "line_sha256": "f0fcb28faa75f71b31dc4fa3965c8680b034e1bd8f232e573f107bfe992221a4",
-          "count": 2,
-          "why": "closes the multi-line command substitution that reads the PUT counter: curl piped into a single awk program (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
-        }
-      ]
+      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
     },
     {
       "path": "bin/acceptance-maven-capped.sh",
@@ -758,23 +749,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "  -I \"http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar\")",
-          "line_sha256": "3ffc3b617c8b70ffa265f7a03429db49afd26e0e558abcc81bba0a1d86286602",
-          "count": 1,
-          "why": "closes the multi-line curl command substitution that reads a response header of the app jar (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
-        },
-        {
-          "rule": "deny",
-          "line": "  --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)",
-          "line_sha256": "7d1cb3e324b12c8b9b18ffec5de18928ac107f109b4687bce495e9a8e8e43783",
-          "count": 1,
-          "why": "closes the multi-line curl command substitution of the oversized probe (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
-        }
-      ]
+      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
     },
     {
       "path": "bin/acceptance-egress.sh",
