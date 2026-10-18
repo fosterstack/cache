@@ -3542,6 +3542,13 @@ sb sb_bc $'printf -v a{[[,}\'$(/usr/bin/touch MARK)]]\' %s 1\n' caught 'holds a 
 sb sb_bd $'read a{[[,}\'$(/usr/bin/touch MARK)]]\' <<< 1 || true\n' caught 'holds a substitution' 'the same through read'
 sb sb_be $'let a{[[,}0+\'$(/usr/bin/touch MARK)]]\'\n' caught 'holds a substitution' 'with a prefix before the opener'
 sb sb_bf $'{ [ -n "$(echo a)" ]; }\nif [[ "$(echo b)" = b ]]; then echo ok; fi\n(( 1 )) && [[ -n "$(echo c)" ]] && echo ok\n' ok - 'control: a group before a test, [[ ]] after if, [[ ]] after &&'
+# seat A, PR 452 round 4: $! expands to nothing or a PID, so the ! before [ is no command position when a $ precedes it
+sb sb_bg $'let "a$![ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' '$![ : the ! ends $!'
+sb sb_bh $'let "a$![ "\'`/usr/bin/touch MARK` ]\'\n' caught 'holds a substitution' 'the same with backticks'
+sb sb_bi $'sleep 0 & let "a$![ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' 'with a background job'
+sb sb_bj $'declare -n r="a$![ "\'$(/usr/bin/touch MARK) ]\'; : "$r"\n' caught 'holds a substitution' 'through a nameref'
+sb sb_bk $'let "a$$[ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' 'the PID of the shell before the ['
+sb sb_bl $'if ! [ -n "$(echo a)" ]; then echo ok; fi\nx=$([ -n y ] && echo z)\n' ok - 'control: a real negated test, and a test inside $( ) without a substitution in it'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3711,7 +3718,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1639
+EXPECT=1645
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
