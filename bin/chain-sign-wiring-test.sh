@@ -3560,6 +3560,11 @@ sb sb_br $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//]/} ]=1 )\n' caught 'holds a su
 sb sb_bs $'a=( [ \'$(/usr/bin/touch MARK)\'${x%]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
 sb sb_bt $'a=( [ \'$(/usr/bin/touch MARK)\' ${x#]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x#]}'
 sb sb_bu $'[ -n x ] && [ y = y ]\nif [ a = b ]; then echo ok; fi\nb[1]=2; [ -n "$b" ] && echo ok\n' ok - 'control: tests, and a later ]= on another line or after a test that holds no substitution'
+# seat A, PR 452 round 7: a [ left unclosed at the end of its logical line is never a test (a test does not span lines): in a compound assignment bash reads the subscript across the newline
+sb sb_bv $'a=( [ \'$(/usr/bin/touch MARK)\'\n]=1 )\n' caught 'holds a substitution' 'the ]= on the next physical line'
+sb sb_bw $'a=(\n[ \'$(/usr/bin/touch MARK)\'\n]=1\n)\n' caught 'holds a substitution' 'every element on its own line'
+sb sb_bx $'a=( [ "`/usr/bin/touch MARK`"\n]+=1 )\n' caught 'holds a substitution' 'backticks and +='
+sb sb_by $'if [ -n x ]; then\n  echo ok\nfi\n[[ -n y ]] &&\n  echo ok\n' ok - 'control: tests closed on their own line, with the && continuing on the next'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3729,7 +3734,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1654
+EXPECT=1658
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
