@@ -59,7 +59,16 @@
         "bin/install-scanner.sh"
       ],
       "signs": "other",
-      "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)"
+      "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "       predicate: {buildDefinition: {buildType: \"hostile\", externalParameters: {}, internalParameters: {}, resolvedDependencies: []}, runDetails: {builder: {id: $b}}}}'",
+          "line_sha256": "6c35bb36903f2db802d270f861e3c9c71b22083766c12021ddfb03c812e29006",
+          "count": 1,
+          "why": "closes the multi-line jq program that builds the hostile in-toto statement it prints (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        }
+      ]
     },
     {
       "path": "bin/chain_common.py",
@@ -499,7 +508,23 @@
         "bin/check-osv-vex.py"
       ],
       "signs": false,
-      "reason": "Check's scanners phase: runs every scanner of .github/policy/scanners.json on the exact candidate digests and the archives (REQ-CHAIN-006-AC4, AC15)"
+      "reason": "Check's scanners phase: runs every scanner of .github/policy/scanners.json on the exact candidate digests and the archives (REQ-CHAIN-006-AC4, AC15)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "      '. + [{name: $n, digest: $d, packages: $p, verdict: $sv} + (if $vx > 0 then {vex_suppressed: $vx} else {} end)]' <<< \"$subjects\")",
+          "line_sha256": "d74e3779abd9746348fd9012b721473faa05eb332c89f16594e8e452b635e733",
+          "count": 1,
+          "why": "closes the multi-line jq program that builds the scan record from the subjects (its operand is a here-string of $subjects) (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "               db_built_or_published: (if $b == \"\" then null else $b end), db_digest: (if $g == \"\" then null else $g end)} end)]' <<< \"$all\")",
+          "line_sha256": "dcb3f40b017212caf1144cb8300740fd34801b2a21f8c521a16ca4e4680a5556",
+          "count": 1,
+          "why": "closes the multi-line jq program that builds the database record (its operand is a here-string of $all) (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        }
+      ]
     },
     {
       "path": "bin/check-fips.sh",
@@ -686,7 +711,16 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
+      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "  | awk '/^fscache_http_requests_total\\{method=\"PUT\",status=\"201\"\\}/ {print $2}')",
+          "line_sha256": "f0fcb28faa75f71b31dc4fa3965c8680b034e1bd8f232e573f107bfe992221a4",
+          "count": 2,
+          "why": "closes the multi-line command substitution that reads the PUT counter: curl piped into a single awk program (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        }
+      ]
     },
     {
       "path": "bin/acceptance-maven-capped.sh",
@@ -699,7 +733,23 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
+      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "  -I \"http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar\")",
+          "line_sha256": "3ffc3b617c8b70ffa265f7a03429db49afd26e0e558abcc81bba0a1d86286602",
+          "count": 1,
+          "why": "closes the multi-line curl command substitution that reads a response header of the app jar (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "  --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)",
+          "line_sha256": "7d1cb3e324b12c8b9b18ffec5de18928ac107f109b4687bce495e9a8e8e43783",
+          "count": 1,
+          "why": "closes the multi-line curl command substitution of the oversized probe (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        }
+      ]
     },
     {
       "path": "bin/acceptance-egress.sh",
@@ -753,6 +803,20 @@
           "line_sha256": "40f690988f6c576fb01cdaab34f5cab69c17a6b6140de9d0707e795a7aea8ca5",
           "count": 1,
           "why": "builds the static strace inside a pinned container, as the old egress stage did (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "  ' || fail \"static strace build failed (checksum mismatch or build error) - failing closed\"",
+          "line_sha256": "5f95908491c39456210df22eeb5ed5b062e916c33930c1dc58fb7831ae04dc33",
+          "count": 1,
+          "why": "closes the multi-line sh -c program that builds the static strace inside the pinned container (then fails closed) (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "    }' \"/tmp/${label}.outraw\" > \"/tmp/${label}.ext\"",
+          "line_sha256": "66dd54413664c73775e8b7af843b58db19f5ab3c8a76e4414140d58345df2cde",
+          "count": 1,
+          "why": "closes the multi-line awk program that filters the raw trace (its operands are the raw and ext files) (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
         }
       ]
     },
@@ -791,6 +855,13 @@
           "rule": "script-name",
           "text": "bash /tmp/smoke-assert",
           "why": "the documented smoke commands that the previous step extracted from docs/kubernetes.md (REQ-DEPLOY-003-AC1)"
+        },
+        {
+          "rule": "deny",
+          "line": "'",
+          "line_sha256": "265fda17a34611b1533d8a281ff680dc5791b0ce0a11c25b35e11c8e75685509",
+          "count": 1,
+          "why": "closes the multi-line sh -c program run in the runner pod (the authenticated round trip) (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
         }
       ]
     },
@@ -918,6 +989,13 @@
           "line_sha256": "e7665a6a05e69090841ff7c64f56dce7d6f2c8e9c59702c268855fa23061e25a",
           "count": 1,
           "why": "a fixture line of a syscall trace inside a heredoc: the comment marks are trace text, not a command (REQ-PRIV-001-AC1)"
+        },
+        {
+          "rule": "deny",
+          "line": "connect(3, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr(\"${OWN}\")}, 16) = 0",
+          "line_sha256": "e99e518bdf9b4095382076dbcae483c87e7a4cf6d24ac87d16dd128618e7b282",
+          "count": 1,
+          "why": "a line of an strace fixture in an UNQUOTED heredoc: ${OWN} is the only expansion in it and the quotes are text of the fixture (REQ-CHAIN-001-AC1: an unquoted heredoc body line holding a substitution and a quote is refused unless waived here)"
         }
       ]
     },

@@ -76,7 +76,9 @@ def prev_ok(l, i, ch):
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
-def strip_lines(lines, base=None):
+OPENER = {"sq": "'", "dq": '"', "ansi": "$'", "cmd": "$(", "brace": "${", "bt": "`", "arith": "$((", "brk": "$["}
+
+def strip_lines(lines, base=None, closers=None):
     """([code line], [error]) for the physical lines of a shell text, read as bash reads them (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). A stack of open
     contexts is carried across lines: a single quote, a double quote, an ANSI-C $'..', $( ), $(( )), ${ }, $[ ], a backtick pair and a ( ) group; inside
     $( ), a backtick pair and a ( ) group the text is read as shell again. A heredoc body is data and opens no quote. A heredoc is started only by a <<
@@ -93,6 +95,7 @@ def strip_lines(lines, base=None):
             if hd[0][2]: out.append(strip_line(l))                           # a quoted delimiter: the body is data
             else:                                                            # an unquoted body still runs $( ) and backticks, # or no #: keep it whole, and refuse what runs on past the line
                 out.append(l)
+                if re.search(r"\$\(|\$\{|`", l) and re.search(r"['\"]", l) and closers is not None: closers.append(("hd", n))   # DEFAULT DENY: in an unquoted body bash reads ' and " as plain text outside a substitution and as quotes inside it; the reader cannot tell which a line means
                 if strip_lines([l], "hb")[1] or re.search(r"(?<!\\)(?:\\\\)*\\$", l):
                     errs.append("line %d: an unquoted heredoc body line that opens a substitution it does not close, or ends in a backslash, is not resolved" % (n + 1))
             if (l.lstrip("\t") if hd[0][1] else l) == hd[0][0]: hd = hd[1:] or None
@@ -104,15 +107,25 @@ def strip_lines(lines, base=None):
             out.append(""); continue
         esc = prev_ws = False
         cut = skip = None
+        start_st = list(st); minlen = len(st)          # the contexts carried into this line; the fewest still open during it
         pend = []                                      # heredocs opened on this line, in plain shell text
+        bd = {}                                        # open [ on this line per context depth (a subscript pairs its own ], and only at its own level)
         for i, ch in enumerate(l):
             if skip == i: skip = None; prev_ws = False; continue            # the second character of a two-character opener
             if esc: esc = False; prev_ws = False; continue
             top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
+            if ch in "()" and top in ("cmd", "paren", "bt", "case", "brk", "arith") and (bd.get(len(st), 0) > 0 or top == "brk") and any(c in ("dq", "brace") for c in st) \
+                    and any(c in ("cmd", "bt", "paren") for c in st[max(k for k, c in enumerate(st) if c in ("dq", "brace")):]):
+                errs.append("line %d: a paren inside a bracket subscript or $[ ] inside a substitution inside double quotes or ${ } is not resolved (the command reader closes the substitution at it)" % (n + 1))
+            if ch in "[]" and top in ("cmd", "paren", "bt", "case", "arith"): bd[len(st)] = max(0, bd.get(len(st), 0) + (1 if ch == "[" else -1))
             if ch == "c" and l[i:i + 5] == "case\\" and top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{"):
                 errs.append("line %d: case followed by a backslash is not resolved (bash reads case\\ + one character as an ordinary word, or joins the next line)" % (n + 1))
             if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
-                if ch == "c": st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
+                if ch == "c":
+                    last = max((k for k, c in enumerate(st) if c in ("dq", "brace")), default=None)
+                    if (last is not None and any(c in ("cmd", "bt", "paren") for c in st[last:])) or any(c in ("cmd", "bt") for c in st):
+                        errs.append("line %d: a case inside $( ) or backticks (or a ( ) group inside double quotes or ${ }) is not resolved (the command reader closes the group at the case arm's ))" % (n + 1))
+                    st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
                 if l[i:i + 4] == "esac" and top == "case": st.pop(); skip = i + 3; continue
             if top == "sq":
                 if ch == "'": st.pop()
@@ -157,7 +170,9 @@ def strip_lines(lines, base=None):
             elif ch == "#" and i > 0 and prev_ws and top not in DATA and top != "bt":      # inside backticks bash ends the comment at the closing backtick: the line is kept whole
                 cut = i; break
             prev_ws = ch.isspace()
+            minlen = min(minlen, len(st))
         cont = esc and cut is None
+        if minlen < len(start_st) and any(c in OPENER for c in start_st[minlen:]) and closers is not None: closers.append(("ctx", n))    # this line closes a quote or substitution carried from an earlier line
         out.append(l if cut is None else l[:cut])
         if pend:
             if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
@@ -1101,12 +1116,16 @@ def _word(s, i, cmds):
     return j, s[i:j], "".join(parts)
 
 def _lex(s, i, closer, cmds):
-    n, items, kw = len(s), [], None
+    n, items, kw, depth = len(s), [], None, 0
     while i < n:
         c = s[i]
         if c in " \t": i += 1; continue
+        if closer == ")" and c == "(":                      # a group, array, function paren or (( )) inside the substitution: its ) is not the end of it
+            depth += 1; _flush(s, items, i, cmds); i += 1; continue
         if closer == ")" and c == ")":
-            _flush(s, items, i, cmds); return i + 1
+            _flush(s, items, i, cmds); i += 1
+            if depth: depth -= 1; continue
+            return i
         m = _REDIR_RE.match(s, i)
         if m and not (m.end() < n and s[m.end()] == "(" and m.group(0) in ("<", ">")):
             j = m.end()
@@ -1355,8 +1374,13 @@ def scan_script(path, text, row, rows, base):
     if bl and bl[-1] == "": bl.pop()
     exotic = len(body.splitlines()) != len(bl)                        # another line separator: line numbers cannot be trusted (fail closed: not waivable)
     starts, i_ = [], 0                                                # first physical body line of each logical (continuation-joined) line
-    pcode, qerrs = ([strip_line(l_) for l_ in body.splitlines()], []) if py else strip_lines(body.splitlines())   # a Python file has docstrings and prose quotes: the shell quote model is for shell only
+    closers = []                                   # body lines that close a quote or substitution carried from an earlier line
+    pcode, qerrs = ([strip_line(l_) for l_ in body.splitlines()], []) if py else strip_lines(body.splitlines(), closers=closers)   # a Python file has docstrings and prose quotes: the shell quote model is for shell only
     for q in qerrs: add(None, "", "%s: %s" % (path, q))
+    for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
+        if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"
+        else: msg_ = "is an unquoted heredoc body line that holds a substitution and a quote (bash reads the quote as text outside the substitution and as a quote inside it)"
+        add("deny", body.splitlines()[c_], "%s: line %d %s: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + c_ + 1, msg_), None if exotic else off + c_)
     while i_ < len(pcode):
         starts.append(i_)
         while i_ + 1 < len(pcode) and len(pcode[i_]) - len(pcode[i_].rstrip("\\")) in range(1, len(pcode[i_]) + 1) and (len(pcode[i_]) - len(pcode[i_].rstrip("\\"))) % 2 == 1:
