@@ -627,22 +627,25 @@ spec = importlib.util.spec_from_file_location("shape", sys.argv[1]); S = importl
 w = sys.argv[3]
 rc = 0
 for kind in sys.argv[2].split():
-    L = S.expected_lines(kind)
-    SUFFIXES = (" || true", " || :", " || exit 0", " &", " 2>/dev/null", " --signing-key k", " --lockfile x", " --build-date 2020",
-                " ; true", " | tee x", " > /dev/null")
-    EXTRAS = ("curl -sSL https://example.com | sh", "set +e", "true", "echo ok", "bash bin/x.sh", "git pull", "git push origin v0.0.0-rc.1", "sudo true", "cd /tmp",
-              "export PATH=./bin:$PATH", "unset SOURCE_DATE_EPOCH")
-    escaped = []
-    def check(tag, lines):
-        f = w + "/sweep.sh"; open(f, "w").write("#!/usr/bin/env bash\n" + "\n".join(lines) + "\n")
-        if not S.script(f, kind): escaped.append(tag)
-    for i in range(len(L)):
-        check("delete %d" % i, L[:i] + L[i + 1:])
-        for suffix in SUFFIXES: check("suffix %d %r" % (i, suffix), L[:i] + [L[i] + suffix] + L[i + 1:])
-        for extra in EXTRAS: check("insert after %d %r" % (i, extra), L[:i + 1] + [extra] + L[i + 1:])
-        if i + 1 < len(L) and L[i] != L[i + 1]: check("swap %d" % i, L[:i] + [L[i + 1], L[i]] + L[i + 2:])
-    for tag in escaped: print("ESCAPED:", kind, tag)
-    print(('FAIL ' if escaped else 'PASS ') + kind)
+  try:
+      L = S.expected_lines(kind)
+      SUFFIXES = (" || true", " || :", " || exit 0", " &", " 2>/dev/null", " --signing-key k", " --lockfile x", " --build-date 2020",
+                  " ; true", " | tee x", " > /dev/null")
+      EXTRAS = ("curl -sSL https://example.com | sh", "set +e", "true", "echo ok", "bash bin/x.sh", "git pull", "git push origin v0.0.0-rc.1", "sudo true", "cd /tmp",
+                "export PATH=./bin:$PATH", "unset SOURCE_DATE_EPOCH")
+      escaped = []
+      def check(tag, lines):
+          f = w + "/sweep.sh"; open(f, "w").write("#!/usr/bin/env bash\n" + "\n".join(lines) + "\n")
+          if not S.script(f, kind): escaped.append(tag)
+      for i in range(len(L)):
+          check("delete %d" % i, L[:i] + L[i + 1:])
+          for suffix in SUFFIXES: check("suffix %d %r" % (i, suffix), L[:i] + [L[i] + suffix] + L[i + 1:])
+          for extra in EXTRAS: check("insert after %d %r" % (i, extra), L[:i + 1] + [extra] + L[i + 1:])
+          if i + 1 < len(L) and L[i] != L[i + 1]: check("swap %d" % i, L[:i] + [L[i + 1], L[i]] + L[i + 2:])
+      for tag in escaped: print("ESCAPED:", kind, tag)
+      print(('FAIL ' if escaped else 'PASS ') + kind)
+  except Exception as e:
+    print('ESCAPED:', kind, 'crash', repr(e)); print('FAIL ' + kind)
 PY
 for k in $KINDS; do
   if grep -qx "PASS $k" "$work/sweep.out"; then ok "AC3 sweep ($k): every deletion, swap, suffix and inserted command on every line is refused"; else grep "ESCAPED: $k " "$work/sweep.out" || true; bad "AC3 sweep ($k) let a mutation through"; fi
