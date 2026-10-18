@@ -156,11 +156,11 @@ def strip_lines(lines, base=None, closers=None):
             elif ch == "(" and nxt == "(" and top not in ("arith", "brk", "brace"): st.append("arith"); skip = i + 1
             elif ch == "(" and top not in ("arith", "brk", "brace"): st.append("paren")
             elif ch == "<" and nxt == "<" and l[i - 1:i] != "<" and l[i + 2:i + 3] != "<":
-                if closers is not None and (any(c_ in ("cmd", "bt") for c_ in st) or "paren" in st[minlen:]) and top not in ("arith", "brk", "brace"):
-                    closers.append(("hdsub", n))        # DEFAULT DENY: bash reads a heredoc inside a substitution (or a ( ) group opened on this line) before the heredocs of the enclosing line
+                if closers is not None and (any(c_ in ("cmd", "bt") for c_ in st) or "paren" in st[minlen:] or top == "brace") and top not in ("arith", "brk"):
+                    closers.append(("hdsub", n))        # DEFAULT DENY: bash reads a heredoc inside a substitution, a ${ cmd; } or a ( ) group opened on this line before the heredocs of the enclosing line
                 if top in ("arith", "brk"):
                     errs.append("line %d: a << inside $(( )) or $[ ] is a shift or a heredoc and is not resolved" % (n + 1))
-                elif top != "brace":
+                elif top != "brace" and "bt" not in st:          # a heredoc in backticks has no body in bash: not queued, so the lines after it are read as code (a waiver cannot hide them)
                     tab = l[i + 2:i + 3] == "-"
                     m = HEREDOC_WORD.match(l, i + 2 + tab)
                     if m: pend.append((m.group(1) or m.group(2) or m.group(3) or m.group(4), tab, m.group(4) is None))
