@@ -3423,6 +3423,11 @@ hm hm_g $'( cat <<B )\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc inside
 hm hm_h $'cat <<EOF\nb\nEOF\ncat <<\'EOF\'\nplain\nEOF\necho ok\n' ok - 'control: two heredocs on separate lines'
 hm hm_i $'cat <<EOF >/dev/null\nplain text\nEOF\necho ok\n' ok - 'control: one plain heredoc'
 hm hm_j $'f() (\n cat <<EOF\n a\nEOF\n)\necho ok\n' ok - 'control: a heredoc inside a multi-line function body ( ) is a normal heredoc'
+# seat A, PR 449 round 1: a heredoc inside a bash 5.3 ${ cmd; } / ${| cmd; } command substitution; a heredoc inside backticks has no body in bash, so it must not be queued (a waiver would hide the lines after it)
+hm hm_k $': <<\'A\' ${ cat <<B; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${ cmd; } substitution'
+hm hm_l $': <<\'A\' ${| cat <<B >/dev/null; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${| cmd; } substitution'
+hm hm_m $'x=`: <<\'EOF\' `\ny=\'\n#\' ; /tmp/evil\nEOF\n' caught 'opens a heredoc inside' 'a heredoc in backticks is not queued: the lines after it are read as code'
+hm hm_n $'(\ncat <<EOF)\ny\nEOF\necho ok\n' ok - 'control: a delimiter ending at ) when the group was opened on an earlier line'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
 dl cl_w1 'x="\na"' '[D("a\"")]' ok -
 dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
@@ -3590,7 +3595,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1535
+EXPECT=1539
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
