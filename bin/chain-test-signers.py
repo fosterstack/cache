@@ -93,7 +93,7 @@ def strip_lines(lines, base=None, closers=None):
         if hd is not None:
             if hd[0][2]: out.append(strip_line(l))                           # a quoted delimiter: the body is data
             else:                                                            # an unquoted body still runs $( ) and backticks, # or no #: keep it whole, and refuse what runs on past the line
-                out.append(l)
+                out.append(l.replace("'", "_").replace('"', "_"))        # bash reads ' and " in an unquoted body as plain characters: the command reader must not read them as quotes
                 if strip_lines([l], "hb")[1] or re.search(r"(?<!\\)(?:\\\\)*\\$", l):
                     errs.append("line %d: an unquoted heredoc body line that opens a substitution it does not close, or ends in a backslash, is not resolved" % (n + 1))
             if (l.lstrip("\t") if hd[0][1] else l) == hd[0][0]: hd = hd[1:] or None
