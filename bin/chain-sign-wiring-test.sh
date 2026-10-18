@@ -3404,6 +3404,12 @@ hd hd_e $'cat <<-X >/dev/null\n\t\'$(/tmp/evil)\'\n\tX\n' "a <<- body, tab inden
 hd hd_f $': <<EOF\n"$(/tmp/evil)"\nEOF\n' "double quotes around a \$( ) with : as the command"
 hd hd_g $'cat <<EOF >/dev/null\nit\'s $(/tmp/evil) done\nEOF\n' "an apostrophe in prose before a \$( )"
 cl hd_h $'cat <<\'EOF\' >/dev/null\n\'$(/tmp/evil)\'\nEOF\necho ok\n' ok - 'control: a quoted-delimiter body is data, nothing runs'
+# seat A, PR 439 fix check: inside a $( ) or backticks of an unquoted body bash reads quotes as quotes again: replacing them must not hide a quoted command word
+hd hd_i $'cat <<EOF >/dev/null\nx $("/tmp/evil")\nEOF\n' "a double-quoted command word in a \$( )"
+hd hd_j $'cat <<EOF >/dev/null\nx $(\'/tmp/evil\')\nEOF\n' "a single-quoted command word in a \$( )"
+hd hd_k $'cat <<EOF >/dev/null\nx `"/tmp/evil"`\nEOF\n' "a quoted command word in backticks"
+hd hd_l $'cat <<EOF >/dev/null\nx $(: ; "/tmp/evil")\nEOF\n' "a quoted command word after a separator in a \$( )"
+hd hd_m $'cat <<EOF >/dev/null\nx $(""/tmp/evil)\nEOF\n' "an empty quoted string before the path in a \$( )"
 # the waiver: the existing line-bound deny exception mechanism, nothing new
 dl cl_w1 'x="\na"' '[D("a\"")]' ok -
 dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
@@ -3571,7 +3577,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1520
+EXPECT=1525
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
