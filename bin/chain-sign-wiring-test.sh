@@ -2699,6 +2699,44 @@ d=$(cfix fp_env '/usr/bin/env x' '["env"]'); expm caught "$d" 'env' "fixed path:
 d=$(cfix fp_bashc '/bin/bash -c true' '["bash"]'); expm caught "$d" 'handed' "fixed path: /bin/bash -c stays refused even with bash in tools"
 d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bin/awk with awk NOT in tools stays refused"
 # round 1 of the seats (433): a fixed-path command keeps every operand rule of the bare name; isolation flags do not change how the script's own arguments are judged; a function named by a path cannot replace the fixed program
+# Fixture texts that name a download tool are DATA in bin/chain-sign-wiring-fixtures.txt (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
+# The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
+FX="$root/bin/chain-sign-wiring-fixtures.txt"
+run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
+  local name body tools verdict frag label d
+  while IFS=$'\t' read -r name body tools verdict frag label; do
+    d=$(cfix "$name" "$body" "$tools"); expm "$verdict" "$d" "$frag" "$label"
+  done < "$1"
+}
+if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 - "$FX" "$0" <<'PY'
+import re, sys
+fx, me = sys.argv[1:3]
+rows = open(fx).read().split("\n")
+assert rows[-1] == "", "the data file ends with a newline"
+rows = rows[:-1]
+assert rows and not rows[0].startswith("#!"), "no shebang: the file is not a script"
+names = set()
+for n, r in enumerate(rows, 1):
+    f = r.split("\t")
+    assert len(f) == 6, "line %d: %d fields, not 6" % (n, len(f))
+    assert re.fullmatch(r"[a-z][a-z0-9_]*", f[0]) and f[0] not in names, "line %d: name %r" % (n, f[0]); names.add(f[0])
+    assert f[3] in ("ok", "caught"), "line %d: verdict %r" % (n, f[3])
+    assert f[1] and f[4] and f[5], "line %d: an empty field" % n
+# the test names the file only to read it: the assignment, the redirect into run_fixtures' loop, the calls, and this check
+ok_line = re.compile(r'^(FX=|\s*done < "\$1"$|run_fixtures "\$FX"$|if \[ -f "\$FX" \]|.*# data file)')
+for n, l in enumerate(open(me), 1):
+    if "$FX" in l or "fixtures.txt" in l:
+        assert ok_line.match(l.rstrip("\n")), "line %d names the data file other than to read it: %s" % (n, l.strip())
+    assert not re.search(r'(?:^|[;&|(\s])(?:source|eval|exec)\s+["\']?\$FX|(?:^|\s)\.\s+["\']?\$FX|(?:bash|sh)\s+["\']?\$FX', l), "line %d runs the data file" % n
+PY
+then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 fixture texts are data: bin/chain-sign-wiring-fixtures.txt is six tab-separated fields per line, has no shebang and no execute bit, and the test only reads it"
+else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the fixture data file is missing, executable, malformed, or the test runs it"
+fi
+# a record whose script text would do something if it were ever run is only ever judged: the sentinel is never created
+printf 'rec_never_run\t$(touch "%s/ran")\\n`touch "%s/ran2"`\t[]\tcaught\t-\tnever run\n' "$work" "$work" > "$work/fx-sentinel.txt"
+run_fixtures "$work/fx-sentinel.txt"
+if [ ! -e "$work/ran" ] && [ ! -e "$work/ran2" ]; then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 a data record holding command substitutions is judged as text and never run"
+else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 a data record was run"; fi
 d=$(cfix fo_bare_curl 'curl archive/vi' '["curl"]'); expm caught "$d" 'by a path' "operand rule, bare: curl archive/vi (a deny-class path operand) is refused"
 d=$(cfix fo_fixed_curl '/usr/bin/curl archive/vi' '["curl"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/curl archive/vi is refused exactly like the bare form"
 d=$(cfix fo_bare_sed 'sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, bare: sed -f archive/vi is refused"
