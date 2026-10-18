@@ -3576,6 +3576,13 @@ sb sb_ce $'[ "$(echo a)" = a ] && echo ok\n' caught 'holds a substitution' 'a re
 sb sb_cf $'[[ -n "$(echo b)" ]] && echo ok\n' caught 'holds a substitution' 'the same for [[ ]]'
 sb sb_cg $'if [ "${#a[@]}" -gt 0 ]; then echo ok; fi\n' caught 'holds a substitution' 'a ${#a[@]} in a test is refused too (no exemption, a reviewed waiver)'
 sb sb_ch $'[ -n x ] && echo ok\n[[ a == b ]] || echo ok\nif [ -f /etc/hosts ]; then echo "$((1+1))"; fi\nx=(1 2); echo "${x[0]}"\n' ok - 'control: tests, arithmetic and a plain array element with no substitution in any bracket are untouched'
+# seat B, PR 452 fix check: a ] inside a QUOTED span closes the raw bracket count early while bash's subscript parser skips quoted text and keeps reading
+sb sb_ci $'let \'a["]"$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a double-quoted ] before the opener'
+sb sb_cj $'printf -v \'a["]"$(/usr/bin/touch mk)]\' z\n' caught 'holds a substitution' 'printf -v'
+sb sb_ck $'read \'a["]"$(/usr/bin/touch mk)]\' <<<1\n' caught 'holds a substitution' 'read'
+sb sb_cl $'let \'a["]"`/usr/bin/touch mk`]=1\'\n' caught 'holds a substitution' 'backticks'
+sb sb_cm $'let a[\']\'$(/usr/bin/touch mk)]=1\n' caught 'holds a substitution' 'a single-quoted ]'
+sb sb_cn $'x=(1 2); echo "${x[0]}" "a]b"; [ "a]b" = c ] || echo ok\n' ok - 'control: a quoted ] with no opener anywhere in the brackets'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3745,7 +3752,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1667
+EXPECT=1673
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
