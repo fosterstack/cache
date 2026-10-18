@@ -3410,6 +3410,19 @@ hd hd_j $'cat <<EOF >/dev/null\nx $(\'/tmp/evil\')\nEOF\n' "a single-quoted comm
 hd hd_k $'cat <<EOF >/dev/null\nx `"/tmp/evil"`\nEOF\n' "a quoted command word in backticks"
 hd hd_l $'cat <<EOF >/dev/null\nx $(: ; "/tmp/evil")\nEOF\n' "a quoted command word after a separator in a \$( )"
 hd hd_m $'cat <<EOF >/dev/null\nx $(""/tmp/evil)\nEOF\n' "an empty quoted string before the path in a \$( )"
+# seat A, PR 439 second fix check (a known pre-existing form, follow-up PR): a line that opens MORE THAN ONE heredoc, or a heredoc inside a $( ) / backticks that closes on the same line,
+# is refused (bash reads the substitution's heredoc body first and runs its $( ); the reader queues the bodies in written order). Default deny, waivable by a reviewed line-bound exception.
+hm() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "heredoc order: $5"; }
+hm hm_a $': <<\'A\' $(cat <<B)\n\'$(/tmp/evil)\'\nB\nx\nA\n: <<\'Z\'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'two heredocs, one inside a $( ) on the same line (the reproducer)'
+hm hm_b $': <<\'A\'; x=$(cat <<B)\n\'$(/tmp/evil)\'\nB\nx\nA\n: <<\'Z\'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'the same after a ;'
+hm hm_c $'cat <<A <<B\na\nA\nb\nB\n' caught 'opens more than one heredoc' 'two heredocs on one line'
+hm hm_d $': <<\'A\' <<\'B\'\nx\nA\ny\nB\n' caught 'opens more than one heredoc' 'two quoted heredocs on one line'
+hm hm_e $'x=$(cat <<B)\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc opened inside a $( ) that closes on its line'
+hm hm_f $'x=`cat <<B`\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc inside backticks'
+hm hm_g $'( cat <<B )\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc inside a ( ) group on one line'
+hm hm_h $'cat <<EOF\nb\nEOF\ncat <<\'EOF\'\nplain\nEOF\necho ok\n' ok - 'control: two heredocs on separate lines'
+hm hm_i $'cat <<EOF >/dev/null\nplain text\nEOF\necho ok\n' ok - 'control: one plain heredoc'
+hm hm_j $'f() (\n cat <<EOF\n a\nEOF\n)\necho ok\n' ok - 'control: a heredoc inside a multi-line function body ( ) is a normal heredoc'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
 dl cl_w1 'x="\na"' '[D("a\"")]' ok -
 dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
@@ -3577,7 +3590,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1525
+EXPECT=1535
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
