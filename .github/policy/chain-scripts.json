@@ -545,17 +545,20 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "0f4e8a99308eacb828efb6be188ce31f6f9b23eab7ca7654001dd3eaeb903484",
+      "sha256": "d3973cbdad968298b26fc49638f5fd7375baa03de5d9068aa3fcbb2a64b3db61",
       "tools": [
         "curl",
         "docker",
         "python3",
+        "realpath",
         "sed",
+        "sh",
         "tar",
         "trap"
       ],
       "runs": [
-        "bin/check-bind.py"
+        "bin/check-bind.py",
+        "bin/loopback-get.sh"
       ],
       "signs": false,
       "reason": "Check's FIPS check: starts each candidate and reads /statusz (REQ-CHAIN-006-AC6)"
@@ -770,7 +773,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "0038d29fbe3429cade41e9a264a718f8e1598fda37bc8a4fb556ef5507b6770f",
+      "sha256": "067c9e535c41910ce1f0f82cde46f41d620677f4a65f0e42d493fddb5b42270e",
       "tools": [
         "at",
         "awk",
@@ -783,14 +786,16 @@
         "make",
         "nc",
         "python3",
+        "realpath",
         "sed",
         "sh",
         "source",
         "tar"
       ],
       "runs": [
+        "bin/analyze-egress-trace-test.sh",
         "bin/analyze-egress-trace.py",
-        "bin/analyze-egress-trace-test.sh"
+        "bin/loopback-get.sh"
       ],
       "signs": false,
       "reason": "the no-phone-home (egress) acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
@@ -839,7 +844,7 @@
     },
     {
       "path": "bin/acceptance-k8s.sh",
-      "sha256": "34e6aeb3d97af29732a7148ba9f610d15595d52e10975efcc98ae77f621571aa",
+      "sha256": "533bd44cbbf53e666367ce82488bd2e4a1faa3243d306fc8439a773e7d18be58",
       "tools": [
         "at",
         "bash",
@@ -852,13 +857,15 @@
         "kubectl",
         "node",
         "python3",
+        "realpath",
         "sh",
         "trap"
       ],
       "runs": [
-        "bin/install-kind.sh",
         "bin/acceptance-k8s-manifests.py",
-        "bin/acceptance-k8s-smoke.py"
+        "bin/acceptance-k8s-smoke.py",
+        "bin/install-kind.sh",
+        "bin/loopback-get.sh"
       ],
       "signs": false,
       "reason": "the Kubernetes acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5, AC14)",
@@ -884,13 +891,17 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "0faec59065857571611a7a57c1e0edf44c6924572f8f5558415b31ad3053b3e0",
+      "sha256": "2cd54a346a211a9ae5588709d2eb3f92aee31792c24b1140758c6bef9b2c1155",
       "tools": [
         "curl",
         "docker",
-        "env"
+        "env",
+        "realpath",
+        "sh"
       ],
-      "runs": [],
+      "runs": [
+        "bin/loopback-get.sh"
+      ],
       "signs": false,
       "reason": "starts the candidate as acceptance.yml's release-chain mode does (REQ-CHAIN-006-AC5)"
     },
@@ -946,17 +957,19 @@
     },
     {
       "path": "bin/acceptance-k8s-smoke.py",
-      "sha256": "eaa5fbaf1da334c58a43ddd5df30b17232377e1b61ab80a39fa9d65b8a08b81f",
+      "sha256": "65e853b5760f96117b757cfe05a71aaf459cc1e3809319021ceff33cc0c48011",
       "tools": [
         "at",
         "bash",
         "command",
         "curl",
         "env",
-        "eval"
+        "eval",
+        "sh"
       ],
       "runs": [
-        "bin/acceptance-k8s.sh"
+        "bin/acceptance-k8s.sh",
+        "bin/loopback-get.sh"
       ],
       "signs": false,
       "reason": "step 5 of the Kubernetes suite: extracts the documented runner env block and smoke commands (REQ-CHAIN-006-AC5)",
@@ -1230,21 +1243,23 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "7d77aefc27702bef4313eee641a499eded4e7f1f99506d0ec1264707c003f0fe",
+      "sha256": "72f76c959bf3f459d9a4344ad86e7a8f79306d79d707bca2cb75ac4d43785485",
       "tools": [
         "at",
         "curl",
         "docker",
         "go",
         "python3",
+        "realpath",
         "sed",
         "sh",
         "tar",
         "trap"
       ],
       "runs": [
+        "bin/check-bind.py",
         "bin/check-image-platforms.py",
-        "bin/check-bind.py"
+        "bin/loopback-get.sh"
       ],
       "signs": false,
       "reason": "Check's artifact checks: the amd64 binaries execute, the FIPS postures, no shell in the production and -fips images, platform entries and serving (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, AC2, REQ-FIPS-002-AC1)"
@@ -1615,6 +1630,19 @@
           "why": "a comment naming Go's own cmd/go (where the pseudo-version pattern comes from); prose, never a command run here"
         }
       ]
+    },
+    {
+      "path": "bin/loopback-get.sh",
+      "sha256": "2561cb23762601bdd0540a8f861fe595df946d4988de6694e419b89bd92c7857",
+      "tools": [
+        "curl",
+        "exec",
+        "printf",
+        "tr",
+        "wc"
+      ],
+      "signs": false,
+      "reason": "the only way a script reaches a loopback or in-cluster address: a closed URL and option list over curl (REQ-SUP-001-AC24)"
     }
   ],
   "ambient_env": [

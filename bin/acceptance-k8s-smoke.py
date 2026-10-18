@@ -62,6 +62,7 @@ raw = re.sub(r"\\\n\s*", " ", curl_block)   # join line continuations
 cmds = [l.rstrip() for l in raw.splitlines()
         if l.strip() and not l.strip().startswith("#")]
 lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
+lines.append('curl() { sh bin/loopback-get.sh "$@"; }   # the documented commands run through the loopback helper (REQ-SUP-001-AC24); the step runs at the repository root')
 lines.append('assert_out() { got=$(eval "$1" 2>/dev/null) || true; [ "$got" = "$2" ] || { echo "::error::documented smoke command failed: [$1] got [$got] want [$2]" >&2; exit 1; }; }')
 lines.append('assert_ok() { eval "$1" >/dev/null 2>&1 || { echo "::error::documented smoke command failed: [$1]" >&2; exit 1; }; }')
 for c in cmds:
