@@ -77,6 +77,9 @@ def prev_ok(l, i, ch):
 
 SUBSCRIPT_SUBST = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^\]\n]*(?:\$\((?!\()|\$\{|`|\\\$|\\`)")      # NAME[ ... $( | ${ | ` | \$ | \` ... : builtins (printf -v, let, read, [[ -v, typeset -n, ${!x}, $(( ))) evaluate such a string as a subscript and run it
 
+SUBSCRIPT_START = re.compile(r"(?<![\[\\])\[\s*(?:\$\((?!\()|\$\{(?!#[A-Za-z_][A-Za-z0-9_]*\[[@*]\])|`|\\\$|\\`)")   # a [ whose text starts with a substitution opener, whatever precedes it (a quoted or built name); ${#name[@]} is a length and not refused
+OPENER_BUILT = re.compile(r"\$(?:\'\'|\"\")|\$'(?:[^'\\]|\\.)*\\(?:x[0-9A-Fa-f]|[0-7]|u[0-9A-Fa-f]|U[0-9A-Fa-f])")   # $'' / $"" or an ANSI-C string with a hex, octal or unicode escape: builds an opener the text scan cannot read
+
 OPENER = {"sq": "'", "dq": '"', "ansi": "$'", "cmd": "$(", "brace": "${", "bt": "`", "arith": "$((", "brk": "$["}
 
 def strip_lines(lines, base=None, closers=None):
@@ -1333,7 +1336,9 @@ def scan_script(path, text, row, rows, base):
     for q in qerrs: add(None, "", "%s: %s" % (path, q))
     if not py:                                     # DEFAULT DENY: a subscript that holds a substitution, wherever it sits in the raw text (code, quotes, a comment), waivable by a reviewed line-bound exception
         for k_, l_ in enumerate(body.splitlines()):
-            if SUBSCRIPT_SUBST.search(l_):
+            if OPENER_BUILT.search(l_):
+                add("deny", l_, "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + k_ + 1), None if exotic else off + k_)
+            if SUBSCRIPT_SUBST.search(l_) or SUBSCRIPT_START.search(l_):
                 add("deny", l_, "%s: line %d has an array subscript NAME[ ... ] that holds a substitution ($( , ${ , a backtick): builtins evaluate such a string as a subscript at run time and run it: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + k_ + 1), None if exotic else off + k_)
     for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
         if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"

@@ -1026,6 +1026,13 @@
           "line_sha256": "e99e518bdf9b4095382076dbcae483c87e7a4cf6d24ac87d16dd128618e7b282",
           "count": 1,
           "why": "a line of an strace fixture in an UNQUOTED heredoc: ${OWN} is the only expansion in it and the quotes are text of the fixture (REQ-CHAIN-001-AC1: an unquoted heredoc body line holding a substitution and a quote is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "    fail=$((fail+1)); echo \"FAIL: ${desc} (exit ${got}, want ${want}) out=[${out}] err=[$(cat \"$TMP/err\")]\"",
+          "line_sha256": "e2f105ada3c2d65ddd1bc5ba5833b75cc1bf1fb26441e76a662c5068c3c4d302",
+          "count": 1,
+          "why": "prose in the failure message of the test helper: out=[${out}] err=[$(cat ...)] are literal brackets around plain expansions in an echo string, never a subscript (REQ-CHAIN-001-AC1: a subscript whose text starts with a substitution is refused unless waived here)"
         }
       ]
     },
