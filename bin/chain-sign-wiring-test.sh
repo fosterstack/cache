@@ -3477,6 +3477,25 @@ hm hm_zz $'declare -A a\na\\\n[x\n#]=1; /tmp/evil\necho end\n' caught 'assignmen
 hm hm_zza $'declare -A a\na\\\n[$(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'with a nested ] after the continuation'
 hm hm_zzb $'declare -A a\nb=1 a\\\n[k #]=1 /tmp/evil\necho end\n' caught 'assignment subscript' 'after another assignment'
 hm hm_zzc $'echo x \\\n[ ok ]\necho y\n' ok - 'control: an ordinary continuation before a [ that follows no name'
+# DEFAULT DENY (advisor Oct 18, closing the builtin-evaluated-subscript class): a NAME[ whose subscript text holds a substitution ($( , ${ , a backtick, \$ or a backslash-backtick) is refused in a LISTED shell script
+# wherever it sits (code, quotes, a string assignment, a comment: the listed text is scanned raw), waivable by a reviewed line-bound `deny` exception. Builtins evaluate such a string as an arithmetic subscript at run time.
+sb() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "subscript: $5"; }
+sb sb_a $'printf -v \'a[$(/tmp/evil)]\' x\n' caught 'holds a substitution' "printf -v with a single-quoted subscript"
+sb sb_b $'let \'a[$(/tmp/evil)]\'\n' caught 'holds a substitution' 'let'
+sb sb_c $'read \'a[$(/tmp/evil)]\' <<< x\n' caught 'holds a substitution' 'read'
+sb sb_d $'[[ -v \'a[$(/tmp/evil)]\' ]]\n' caught 'holds a substitution' '[[ -v ]]'
+sb sb_e $'typeset -n r=\'a[$(/tmp/evil)]\'\n' caught 'holds a substitution' 'typeset -n'
+sb sb_f $'x=\'a[$(/tmp/evil)]\'; echo ${!x}\n' caught 'holds a substitution' 'a string assignment used through ${!x}'
+sb sb_g $'echo $(( \'a[$(/tmp/evil)]\' ))\n' caught 'holds a substitution' 'inside $(( ))'
+sb sb_h $'printf -v "a[\\$(/tmp/evil)]" x\n' caught 'holds a substitution' 'escaped in double quotes'
+sb sb_i $'printf -v a[\\$\\(/tmp/evil\\)] x\n' caught 'holds a substitution' 'escaped bare'
+sb sb_j $'a[`/tmp/evil`]=1\n' caught 'holds a substitution' 'backticks in a bare assignment subscript'
+sb sb_k $'echo "${pids[${#pids[@]}-1]}"\n' caught 'holds a substitution' 'a ${ inside a subscript'
+sb sb_l $'# a comment mentioning a[$(x)] is scanned raw like the rest of a listed script\n' caught 'holds a substitution' 'a NAME[ in a COMMENT line is refused (pinned: the listed text is scanned raw)'
+sb sb_m $'[ "$(echo a)" = a ] && echo ok\n[[ -n "$(echo b)" ]] && echo ok\nx=(1 2); echo "${x[1]} ${x[@]}"\na[$i]=1\na[1]=$(echo c)\necho ok\n' ok - 'control: tests with substitutions, ordinary subscripts, a substitution outside the subscript'
+sb sb_n $'a[1]=1\nb[$((1+1))]=2\necho "${a[1]}"\necho ok\n' ok - 'control: arithmetic in a subscript is not refused here'
+dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
+dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
 dl cl_w1 'x="\na"' '[D("a\"")]' ok -
 dl cl_w2 'x="\na"' '[]' caught 'closes a multi-line'
@@ -3644,7 +3663,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1580
+EXPECT=1596
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
