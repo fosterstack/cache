@@ -3262,7 +3262,7 @@ d=$(crr dq_b "${H}x=\"\$(case"$'\ta in a) echo hi ; /tmp/evil ;; esac)"'$'\n'); 
 d=$(crr dq_c "${H}x=\"\$(echo \$(case a in a) /tmp/evil ;; esac))\""$'\n'); expm caught "$d" 'inside double quotes' "case in quoted \$( ): nested in a second \$( )"
 d=$(crr dq_d "${H}x=\"\`case a in a) /tmp/evil ;; esac\`\""$'\n'); expm caught "$d" 'inside double quotes' "case in quoted backticks"
 d=$(crr dq_e "${H}x=\"\$(echo \"\$(case a in a) /tmp/evil ;; esac)\")\""$'\n'); expm caught "$d" 'inside double quotes' "case in a \$( ) quoted inside another quoted \$( )"
-d=$(crr dq_f "${H}x=\$(case a in a) echo hi ;; esac)"$'\necho ok\n'); expm ok "$d" - "control: an unquoted case in \$( ) is read as before"
+d=$(crr dq_f "${H}x=\$(case a in a) echo hi ;; esac)"$'\necho ok\n'); expm caught "$d" 'not resolved' "a case in \$( ) is refused whatever surrounds it (round 6: it is an argument or a command depending on its word, and the reader cannot tell)"
 d=$(crr dq_g "${H}case a in a) echo hi ;; esac"$'\necho ok\n'); expm ok "$d" - "control: a top-level case"
 d=$(crr dq_h "${H}(case a in a) echo hi ;; esac)"$'\necho ok\n'); expm ok "$d" - "control: a case in a subshell"
 d=$(crr dq_i "${H}x=\"\$(echo hi)\""$'\necho ok\n'); expm ok "$d" - "control: a quoted \$( ) without a case"
@@ -3339,6 +3339,20 @@ d=$(crr ml_zn "${H}y=a\\"$'\nb$(\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute
 d=$(crr ml_zo "${H}y=\"(\"\""$'\n" /tmp/evil\n'); expm caught "$d" 'absolute path' "assignment word of two quoted parts, the second multi-line"
 d=$(crr ml_zp "${H}echo \$("$'\ny="\n" /tmp/evil\n)\n'); expm caught "$d" 'absolute path' "an assignment opened inside a substitution that is itself an argument"
 d=$(crr ml_zq "${H}echo \"\$("$'\ny="\n" /tmp/evil\n)"\n'); expm caught "$d" 'absolute path' "the same inside a double-quoted substitution"
+# seat B, PR 439 round 6: a carried stand-in on a line that is itself a continuation; a case arm body inside $( ) that is an argument of the enclosing command
+d=$(crr ml_zr "${H}z=\$( echo \\"$'\n echo a ) /tmp/evil\n'); expm caught "$d" 'absolute path' "a continuation line inside a \$( ) that is closed on it: no stand-in is added to a joined line"
+d=$(crr ml_zs "${H}z=\$(echo a \\"$'\n) \\\n/tmp/evil\n'); expm caught "$d" 'absolute path' "two continuations around the closing )"
+d=$(crr ml_zt "${H}echo \$( case a in a) /tmp/evil ;; esac )"$'\n'); expm caught "$d" 'not resolved' "a case inside a \$( ) that is an argument is refused"
+d=$(crr ml_zu "${H}echo a\$( case a in a) /tmp/evil ;; esac )"$'\n'); expm caught "$d" 'not resolved' "a case inside a \$( ) glued to a word is refused"
+d=$(crr ml_zv "${H}x=\`case a in a) /tmp/evil ;; esac\`"$'\n'); expm caught "$d" 'not resolved' "a case inside backticks is refused"
+d=$(crr ml_zw "${H}case a in a) /tmp/evil ;; esac"$'\n'); expm caught "$d" 'absolute path' "control: a top-level case is read as before"
+# seat A, PR 439 round 6 (tests written with the simplification that removed the { } and [ resets, not before: the old head fails them, the new passes)
+d=$(crr ml_zx "${H}y={\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a { in an assignment word does not end the word"
+d=$(crr ml_zy "${H}y=a}\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a } in an assignment word does not end the word"
+d=$(crr ml_zz "${H}echo a[ ; y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a [ in an earlier word does not stop the word reset"
+d=$(crr ml_zza "${H}true a[ && y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a [ before && does not stop the word reset"
+d=$(crr ml_zzb "${H}a[ \$i]=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'absolute path' "a subscript with a space before \$i: the = in the word keeps it an assignment"
+d=$(crr ml_zzc "${H}(y=\$("$'\n:\n) /tmp/evil )\n'); expm caught "$d" 'absolute path' "an assignment at the start of a subshell"
 
 
 # ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
@@ -3501,7 +3515,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1460
+EXPECT=1472
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
