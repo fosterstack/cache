@@ -3506,6 +3506,18 @@ sb sb_v $'let \'a\'[\\$\\(/usr/bin/touch\\ mk\\)]\n' caught 'holds a substitutio
 sb sb_x $'n=a; x="$n"\'[$(/usr/bin/touch mk)]\'; let "$x"\n' caught 'holds a substitution' 'a name built by an expansion, the subscript text starts with the opener'
 sb sb_y $'if [ ${#arr[@]} -gt 0 ]; then echo "${#arr[@]}"; fi\n[[ ${X:-} =~ ^[0-9]+$ ]] && echo ok\n[ "$(echo a)" = a ]\necho ok\n' ok - 'control: a length expansion in a test, [[ ${X} ]], a quoted substitution in a test'
 sb sb_z $'echo $\'plain\\n text\' $"msg" \'\' ""\necho ok\n' ok - 'control: ANSI-C with plain escapes, $"..." and empty strings are untouched'
+# seat A, PR 452 round 1: a nested subscript's ] before the opener; a quote, backslash or } before the [; a continuation between NAME and [ or between [ and the opener
+sb sb_aa $'let \'a[b[0]+$(/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'a nested subscript closes before the opener'
+sb sb_ab $'printf -v \'a[b[1]$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'the opener right after a nested ]'
+sb sb_ac $'x=\'a[c[0]*0+`/usr/bin/touch mk`]\'; echo ${!x}\n' caught 'holds a substitution' 'backticks after a nested subscript, through ${!x}'
+sb sb_ad $'printf -v "a""[\\$(/usr/bin/touch mk)]" x\n' caught 'holds a substitution' 'a name quote-split from the [ with an escaped opener'
+sb sb_ae $'printf -v \'a\'\'[$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'adjacent single-quoted parts, the subscript starts with the opener'
+sb sb_af $'let "a"\'[$(/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'a double-quoted name then a single-quoted subscript'
+sb sb_ag $'printf -v a\\[\\$\\(/usr/bin/touch\\ mk\\)\\] x\n' caught 'holds a substitution' 'every character backslash-escaped'
+sb sb_ah $'n=a; printf -v "${n}[\\$(/usr/bin/touch mk)]" x\n' caught 'holds a substitution' 'a name from a parameter expansion, then [ and an escaped opener'
+sb sb_ai $'printf -v a\\\n[\\$\\(/usr/bin/touch\\ mk\\)] x\n' caught 'holds a substitution' 'a continuation between the name and the ['
+sb sb_aj $'printf -v \'a[\'\\\n\'$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'a continuation between the [ and the quoted opener'
+sb sb_ak $'[ "${#a[@]}" -gt 0 ] && echo ok\necho "done"\n' ok - 'control: a length expansion in a test'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3675,7 +3687,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1607
+EXPECT=1618
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
