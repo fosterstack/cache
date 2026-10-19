@@ -78,6 +78,7 @@ def prev_ok(l, i, ch):
 SUBSCRIPT_SUBST = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^\]\n]*(?:\$\((?!\()|\$\{|`|\\\$|\\`)")      # NAME[ ... $( | ${ | ` | \$ | \` ... : builtins (printf -v, let, read, [[ -v, typeset -n, ${!x}, $(( ))) evaluate such a string as a subscript and run it
 
 SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\(|\$\{(?!#[A-Za-z_][A-Za-z0-9_]*\[[@*]\])|`|\\\$|\\`)")   # a [ whose text starts (after blanks or empty quote pairs) with a substitution opener, whatever precedes it (a quoted, escaped or built name); ${#name[@]} is a length and not refused
+DECLARE_COMPOUND = re.compile(r"\b(?:declare|local|typeset|readonly|export)\b.*=[\"'\\]*\(.*(?:\$\(|\$\{|`|\\\$)")   # declare/local/typeset/readonly/export ... =( ... then an opener later on the logical line: a QUOTED compound assignment ('a=(x $(cmd))') is evaluated by the builtin and runs the substitution; default deny, quotes between = and ( included
 SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
 
 def subscript_holds_opener(l):
@@ -1367,6 +1368,8 @@ def scan_script(path, text, row, rows, base):
             k_ += 1
             if OPENER_BUILT.search(cur_):
                 add("deny", phys_[start_], "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
+            if DECLARE_COMPOUND.search(cur_):
+                add("deny", phys_[start_], "%s: line %d has a compound assignment to declare, local, typeset, readonly or export (NAME=( ... )) with a substitution opener after the ( : the builtin evaluates a quoted compound assignment and runs the substitution: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
             if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_):
                 add("deny", phys_[start_], "%s: line %d has an array subscript NAME[ ... ] that holds a substitution ($( , ${ , a backtick): builtins evaluate such a string as a subscript at run time and run it: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
     for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
