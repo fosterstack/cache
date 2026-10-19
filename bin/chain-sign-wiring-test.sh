@@ -3617,6 +3617,18 @@ dc dc_g $'declare -a "a="\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assign
 dc dc_h $'declare -a a+=\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'append form +='
 dc dc_i $'declare -a arr=(1 2 3)\nlocal -a files=("$@")\nexport XX=1\nlocal n=$(date +%s)\necho ok\n' ok - 'control: unquoted compound assignments with no opener after the (, and an opener on its own line'
 dc dc_j $'x=$(date +%s); declare -a a=(1 2)\necho "$x"\n' ok - 'control: an opener BEFORE the =( on the line'
+dc dc_k $'declare -a \'a=(x $\'"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split across a quote boundary ($ in one segment, ( in the next)'
+dc dc_l $'declare -a \'a=(x \'"$"\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'opener split: a double-quoted $ between single-quoted parts'
+dc dc_m $'declare -a \'a=(x \'$"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split with a $"..." segment'
+dc dc_n $'declare -a "a=${e}(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'an expansion between = and ('
+dc dc_o $'declare -a a=$e\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a bare $e between = and ('
+dc dc_p $'declare -a a=$\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' "$'...' value"
+dc dc_q $'declare -a a=$(:)\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a substitution between = and ('
+dc dc_r $'declare -a \'a=(x <(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'process substitution <( as the opener'
+dc dc_s $'declare -a \'a=(x >(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'process substitution >( as the opener'
+dc dc_t $'de\'\'clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by an empty quote pair'
+dc dc_u $'de\\clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by a backslash'
+dc dc_v $'loc\\al -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'local split by a backslash'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3786,7 +3798,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1704
+EXPECT=1716
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
