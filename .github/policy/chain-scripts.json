@@ -94,13 +94,6 @@
           "line_sha256": "6fbea121da71ce10baf7ea5af490c354573202f0755c705b1d56917e7a6b7657",
           "count": 1,
           "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
-        },
-        {
-          "rule": "deny",
-          "line": "echo \"installed ${TOOL} (pinned, checksum-verified) to ${DEST}\"",
-          "line_sha256": "e95ffffe178cbf45cad7873e278fa96654cc5f84f1b2cde348c52a3e7a320491",
-          "count": 1,
-          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
         }
       ]
     },
@@ -804,6 +797,13 @@
           "rule": "script-name",
           "text": "bash -o pipefail -c \"$run\" < /dev/null",
           "why": "runs one customer-guide command that the planner judged runnable (verify forms and jq only, local operands; REQ-CHAIN-006-AC7)"
+        },
+        {
+          "rule": "deny",
+          "line": "    outcome=fail; failed=1; echo \"check-guide: the guide command \\`$cmd\\` exited $rc against the candidate\" >&2",
+          "line_sha256": "d943e1ad4c2e339cf31e89bf49589f36115c3697cd02e90d829ced001ea2716b",
+          "count": 1,
+          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
         }
       ]
     },
@@ -2349,6 +2349,20 @@
           "line_sha256": "0d0aa5e2b4383c02065ae36c3e1ff8c0a456d914293fc5100d8d9758a2f5e3cc",
           "count": 1,
           "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
+        },
+        {
+          "rule": "deny",
+          "line": "absf() { echo \"$(cd \"$(dirname \"$1\")\" && pwd)/$(basename \"$1\")\"; }",
+          "line_sha256": "f5144a4063a0c46633e122e764e55a531430a1e1ed79a6b8738cb5066d148e43",
+          "count": 1,
+          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
+        },
+        {
+          "rule": "deny",
+          "line": "margs=(build \"$(basename \"$rendered\")\" --arch \"$arch\" --runner bubblewrap --signing-key \"$assembly_key\"",
+          "line_sha256": "15c3ae00acf6befcf023f19ef023d50948fc792321de98309406cfb4e3df4039",
+          "count": 1,
+          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
         }
       ],
       "env_mentions": [
@@ -2477,6 +2491,13 @@
           "line_sha256": "87c531f76add6e2f45056b512f7fe7d14144b2eb92863b3011047cc16adc1f06",
           "count": 1,
           "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
+        },
+        {
+          "rule": "deny",
+          "line": "absf() { (cd -P -- \"$(dirname -- \"$1\")\" 2>/dev/null && echo \"$PWD/$(basename -- \"$1\")\") || echo \"$1\"; }",
+          "line_sha256": "d36fd36b614222f9accbe1d516a44a5adebefacc40e6a587ac5636354f9343b2",
+          "count": 1,
+          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
         }
       ]
     },

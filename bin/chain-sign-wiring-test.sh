@@ -3403,7 +3403,7 @@ hd hd_d $'cat <<EOF >/dev/null\n\'${y:-$(/tmp/evil)}\'\nEOF\n' "a \${ :- \$( ) }
 hd hd_e $'cat <<-X >/dev/null\n\t\'$(/tmp/evil)\'\n\tX\n' "a <<- body, tab indented"
 hd hd_f $': <<EOF\n"$(/tmp/evil)"\nEOF\n' "double quotes around a \$( ) with : as the command"
 hd hd_g $'cat <<EOF >/dev/null\nit\'s $(/tmp/evil) done\nEOF\n' "an apostrophe in prose before a \$( )"
-cl hd_h $'cat <<\'EOF\' >/dev/null\n\'$(/tmp/evil)\'\nEOF\necho ok\n' ok - 'control: a quoted-delimiter body is data, nothing runs'
+cl hd_h $'cat <<\'EOF\' >/dev/null\n\'$(/tmp/evil)\'\nEOF\necho ok\n' caught 'compound assignment' 'a quoted opener is refused as data even in a quoted-delimiter heredoc body (default deny, nothing is resolved: fragments of a compound value can be joined at run time; a listed line needs a reviewed waiver)'
 # seat A, PR 439 fix check: inside a $( ) or backticks of an unquoted body bash reads quotes as quotes again: replacing them must not hide a quoted command word
 hd hd_i $'cat <<EOF >/dev/null\nx $("/tmp/evil")\nEOF\n' "a double-quoted command word in a \$( )"
 hd hd_j $'cat <<EOF >/dev/null\nx $(\'/tmp/evil\')\nEOF\n' "a single-quoted command word in a \$( )"
@@ -3683,7 +3683,7 @@ w \'a=\' \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the funct
 dc dc_zzc $'w() { declare -a "a=$1"; }
 w \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the = is inside the builtin string, the value arrives as a word'
 dc dc_zze $'echo "plain text (${x}) here"
-v=$(date +%s)\n' caught 'compound assignment' 'a quoted ( then ${ is refused in every script (default deny, over-refusal by design: a message line needs a reviewed waiver)'
+v=$(date +%s)\n' ok - 'control: a quoted ( then a simple ${x} is a message: a simple expansion can be empty and is not an opener'
 dc dc_zzf $'n=a=
 dec""lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by an empty quote pair, NAME= in a variable'
 dc dc_zzg $'n=a=
