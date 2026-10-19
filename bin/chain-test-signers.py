@@ -78,7 +78,17 @@ def prev_ok(l, i, ch):
 SUBSCRIPT_SUBST = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^\]\n]*(?:\$\((?!\()|\$\{|`|\\\$|\\`)")      # NAME[ ... $( | ${ | ` | \$ | \` ... : builtins (printf -v, let, read, [[ -v, typeset -n, ${!x}, $(( ))) evaluate such a string as a subscript and run it
 
 SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\(|\$\{(?!#[A-Za-z_][A-Za-z0-9_]*\[[@*]\])|`|\\\$|\\`)")   # a [ whose text starts (after blanks or empty quote pairs) with a substitution opener, whatever precedes it (a quoted, escaped or built name); ${#name[@]} is a length and not refused
-DECLARE_COMPOUND = re.compile(r"\b(?:declare|local|typeset|readonly|export)\b.*=.*\(.*(?:\$\(|\$\{|`|\\\$|[<>]\()")   # run on the logical line with quotes removed and a backslash before a letter removed (bash joins adjacent quoted pieces and the escape before a letter vanishes): declare/local/typeset/readonly/export ... = ... ( ... then an opener ($( ${ ` \$ <( >( ): a QUOTED compound assignment ('a=(x $(cmd))') is evaluated by the builtin and runs the substitution; default deny, whatever sits between the = and the (
+COMPOUND_OPENER = r"(?:[$<>][^\sA-Za-z0-9_]*[({]|`)"   # an opener on the NORMALISED line: $ < > then any punctuation run (an empty $@ is already gone) then ( or {, or a backtick
+COMPOUND_WORD = re.compile(r"\b(?:declare|local|typeset|readonly|export)\b.*=.*\(.*" + COMPOUND_OPENER)   # run on the NORMALISED logical line (every quote, every backslash and an empty $@ / $* removed: bash joins adjacent quoted pieces and removes escapes): declare/local/typeset/readonly/export ... = ... ( ... opener. A QUOTED compound assignment ('a=(x $(cmd))') is evaluated by the builtin and runs the substitution; default deny, whatever sits between the = and the (
+COMPOUND_QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")   # a quoted span; its text holding =( then an opener is refused wherever the builtin is (a loop, a function wrapper, an alias)
+COMPOUND_ESCAPED = re.compile(r"=\\\(")            # =\( : an escaped compound value (the builtin may be reached by an alias)
+COMPOUND_AFTER = re.compile(r"=\(.*" + COMPOUND_OPENER)
+def declare_compound(raw):
+    n = re.sub(r"\$[@*]|[\"'\\]", "", raw)
+    if COMPOUND_WORD.search(n): return True
+    for m in COMPOUND_QUOTED.finditer(raw):
+        if COMPOUND_AFTER.search(re.sub(r"\$[@*]|\\", "", m.group(1) if m.group(1) is not None else m.group(2))): return True
+    return bool(COMPOUND_ESCAPED.search(raw) and re.search(COMPOUND_OPENER, n))
 SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
 
 def subscript_holds_opener(l):
@@ -1368,9 +1378,9 @@ def scan_script(path, text, row, rows, base):
             k_ += 1
             if OPENER_BUILT.search(cur_):
                 add("deny", phys_[start_], "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
-            if DECLARE_COMPOUND.search(re.sub(r"[\"']|\\(?=[A-Za-z])", "", cur_)):
+            if declare_compound(cur_):
                 add("deny", phys_[start_], "%s: line %d has a compound assignment to declare, local, typeset, readonly or export (NAME=( ... )) with a substitution opener after the ( : the builtin evaluates a quoted compound assignment and runs the substitution: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
-            if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_):
+            if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_) or subscript_holds_opener(re.sub(r"\$[@*]|[\"'\\]", "", cur_)):   # also on the line with quotes, backslashes and an empty $@ / $* removed: bash joins what they split
                 add("deny", phys_[start_], "%s: line %d has an array subscript NAME[ ... ] that holds a substitution ($( , ${ , a backtick): builtins evaluate such a string as a subscript at run time and run it: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
     for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
         if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"
