@@ -3644,6 +3644,20 @@ d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an alias: b
 dc dc_zf $'d -a a=\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'escaped compound value with no builtin word on the line'
 dc dc_zg $'for v in \'a=(1 2)\' \'b=(3)\'; do declare -a "$v"; done
 alias ll=\'ls -l\'\n' ok - 'control: quoted compound values with no opener, an alias with no compound value'
+dc dc_zh $'for v in "a=("\'$(/usr/bin/touch mk)\'")"; do declare -a "$v"; done\n' caught 'compound assignment' 'the opener split across two quote segments, the builtin after the value'
+dc dc_zi $'f(){ declare -a "$1"; }
+f "a=("\'$(/usr/bin/touch mk)\'")"\n' caught 'compound assignment' 'split segments, function wrapper'
+dc dc_zj $'alias d=declare
+d -a "a=("\'$(/usr/bin/touch mk)\'")"\n' caught 'compound assignment' 'split segments, alias'
+dc dc_zk $'alias d=declare
+d -a a=\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' '= outside the quote and ( inside it, alias'
+dc dc_zl $'x=\\\'; for v in \'a=(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an escaped quote earlier on the line misaligns the quote pairing, loop'
+dc dc_zm $'w() { declare -a "$1"; }
+x=\\\'; w \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'escaped quote earlier, function wrapper'
+dc dc_zn $'alias d=declare
+d -a a="(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'double-quoted value after = with an escaped $, alias'
+dc dc_zo $'arr=(a "b c")\nv=$(date +%s)
+x=\\\'; echo "$x"\n' ok - 'control: a plain unquoted-name array assignment, a substitution on its own line and an escaped quote on another line'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -3815,7 +3829,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1729
+EXPECT=1737
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
