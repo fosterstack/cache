@@ -962,6 +962,28 @@ for r in revs:
 got = pa.history_items(root, "HEAD", now)
 assert set(got) == set(ref) and len(ref) > 0, (sorted(got), sorted(ref))
 PY
+r="$work/r-histrevert"; mkrepo "$r" "100:$CLEANSHA"
+for spec in "40:v3.0.0" "20:v4.1.0"; do   # same pin, a label that changes and then reverts: the same key at two trees, a different label in between
+  sed -i.bak "s|^\(      - uses: actions/checkout@[0-9a-f]*\) # .*|\1 # ${spec#*:}|" "$r/.github/workflows/ci.yml"; rm -f "$r/.github/workflows/ci.yml.bak"; git -C "$r" add -A
+  GIT_AUTHOR_DATE="$(dago "${spec%%:*}")" GIT_COMMITTER_DATE="$(dago "${spec%%:*}")" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "label ${spec#*:}"
+done
+CASE="history memo: the VALUES match one inventory per commit, not only the keys (a label that reverts: the oldest occurrence still wins, as before; seat A of cache#456)"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+root, now = sys.argv[2], dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
+since = (now - dt.timedelta(days=pa.LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+revs = subprocess.run(["git", "-C", root, "log", f"--since={since}", "--format=%H", "--all"], capture_output=True, text=True).stdout.split()
+before = subprocess.run(["git", "-C", root, "rev-list", "-1", f"--before={since}", "HEAD"], capture_output=True, text=True).stdout.strip()
+revs += [before] if before else []
+ref = {}
+for r in revs:
+    ref.update(pa.inv.load_at(root, r))
+got = pa.history_items(root, "HEAD", now)
+f = lambda d: {k: (i.label, i.src, i.step, i.raw, i.version, i.path) for k, i in d.items()}
+assert f(got) == f(ref), (f(got), f(ref))
+assert any(i.label == "v4.1.0" for k, i in ref.items() if "checkout" in k), "the probe did not exercise a revert"
+PY
 CASE="history memo: commits that changed nothing the inventory reads cost no inventory (calls < commits) and the timing line is printed"
 check python3 - "$aud" "$r" <<'PY'
 import datetime as dt, importlib.util, sys, time
