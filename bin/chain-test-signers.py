@@ -75,6 +75,35 @@ def prev_ok(l, i, ch):
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
+SUBSCRIPT_SUBST = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^\]\n]*(?:\$\((?!\()|\$\{|`|\\\$|\\`)")      # NAME[ ... $( | ${ | ` | \$ | \` ... : builtins (printf -v, let, read, [[ -v, typeset -n, ${!x}, $(( ))) evaluate such a string as a subscript and run it
+
+SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\(|\$\{(?!#[A-Za-z_][A-Za-z0-9_]*\[[@*]\])|`|\\\$|\\`)")   # a [ whose text starts (after blanks or empty quote pairs) with a substitution opener, whatever precedes it (a quoted, escaped or built name); ${#name[@]} is a length and not refused
+SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
+
+def subscript_holds_opener(l):
+    # default deny: once a bracket holds a backslash or a quote, the place of its closing ] is not readable
+    # from the text (quote removal re-pairs quotes), so any opener later on the logical line refuses it
+    for i, ch in enumerate(l):
+        if ch != "[": continue
+        if i > 0 and l[i - 1] == "[": continue
+        j, depth, unreliable = i + 1, 1, False
+        while j < len(l) and (depth > 0 or unreliable):
+            c = l[j]
+            if c == "\\":
+                if l[j + 1:j + 2] in ("$", "`"): return True
+                unreliable = True
+                j += 2; continue
+            if c == "`": return True
+            if c == "$" and (l.startswith("$(", j) or l.startswith("${", j)): return True   # $(( too: bash reads it as a command substitution when it does not close as arithmetic
+            if c in "\"'":
+                unreliable = True
+                j += 1; continue
+            if c == "[": depth += 1
+            elif c == "]": depth -= 1
+            j += 1
+    return False
+OPENER_BUILT = re.compile(r"\$(?:\'\'|\"\")|\$'(?:[^'\\]|\\.)*\\(?:x[0-9A-Fa-f]|[0-7]|u[0-9A-Fa-f]|U[0-9A-Fa-f])")   # $'' / $"" or an ANSI-C string with a hex, octal or unicode escape: builds an opener the text scan cannot read
+
 OPENER = {"sq": "'", "dq": '"', "ansi": "$'", "cmd": "$(", "brace": "${", "bt": "`", "arith": "$((", "brk": "$["}
 
 def strip_lines(lines, base=None, closers=None):
@@ -1329,6 +1358,17 @@ def scan_script(path, text, row, rows, base):
     closers = []                                   # body lines that close a quote or substitution carried from an earlier line
     pcode, qerrs = ([strip_line(l_) for l_ in body.splitlines()], []) if py else strip_lines(body.splitlines(), closers=closers)   # a Python file has docstrings and prose quotes: the shell quote model is for shell only
     for q in qerrs: add(None, "", "%s: %s" % (path, q))
+    if not py:                                     # DEFAULT DENY: a subscript that holds a substitution, or an opener built from quotes or escapes, in the raw text (code, quotes, a comment) of every LOGICAL line (continuations joined); waivable by a reviewed line-bound exception on the first physical line
+        phys_, k_ = body.splitlines(), 0
+        while k_ < len(phys_):
+            start_, cur_ = k_, phys_[k_]
+            while k_ + 1 < len(phys_) and (len(cur_) - len(cur_.rstrip("\\"))) % 2 == 1:
+                cur_ = cur_[:-1] + phys_[k_ + 1]; k_ += 1
+            k_ += 1
+            if OPENER_BUILT.search(cur_):
+                add("deny", phys_[start_], "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
+            if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_):
+                add("deny", phys_[start_], "%s: line %d has an array subscript NAME[ ... ] that holds a substitution ($( , ${ , a backtick): builtins evaluate such a string as a subscript at run time and run it: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
     for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
         if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"
         elif kind_ == "funsub": msg_ = "opens a ${ command substitution (bash 5.3 ${ cmd; } or ${| cmd; }, which ends at a } in command position)"
