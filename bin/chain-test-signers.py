@@ -83,26 +83,29 @@ COMPOUND_WORD = re.compile(r"\b(?:declare|local|typeset|readonly|export)\b.*=.*\
 COMPOUND_PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(")   # a word that starts as a plain, unquoted NAME=( : a visible array assignment, not a hidden compound string
 COMPOUND_ESCAPED = re.compile(r"=\\\(")            # =\( : an escaped compound value (the builtin may be reached by an alias)
 COMPOUND_AFTER = re.compile(r"=.*(?<!\$)\(.*" + COMPOUND_OPENER)   # = then ANYTHING then ( then an opener: bash removes or builds the text between (an expansion, a brace expansion, an empty ${@})
+COMPOUND_PAREN = re.compile(r"(?<!\$)\(.*" + COMPOUND_OPENER)   # a ( not opening a $( , then an opener
+COMPOUND_ANYWORD = re.compile(r"\b(?:declare|local|typeset|readonly|export)\b")   # the builtin words, anywhere in a script
 def shell_words(raw):
     """Split a logical line into blank-separated words, honouring quotes and backslash escapes (an unbalanced quote makes the rest one word: fail closed)."""
-    words, cur, q, i = [], [], None, 0
+    words, cur, q, i, ansi = [], [], None, 0, False
     while i < len(raw):
         c = raw[i]
         if q is None and c in " \t":
             if cur: words.append("".join(cur)); cur = []
             i += 1; continue
         cur.append(c)
-        if c == "\\" and q != "'" and i + 1 < len(raw): cur.append(raw[i + 1]); i += 2; continue
-        if q is None and c in "\"'": q = c
-        elif q == c: q = None
+        if c == "\\" and (q != "'" or ansi) and i + 1 < len(raw): cur.append(raw[i + 1]); i += 2; continue
+        if q is None and c in "\"'": q = c; ansi = (c == "'" and i > 0 and raw[i - 1] == "$")
+        elif q == c: q = None; ansi = False
         i += 1
     if cur: words.append("".join(cur))
     return words
-def declare_compound(raw):
+def declare_compound(raw, any_decl=False):
     n = re.sub(r"\$[@*]|[\"'\\]", "", raw)
     if COMPOUND_WORD.search(n): return True
     for w in shell_words(raw):   # a word that mixes quotes or escapes with =( and an opener, and is not a plain NAME=( word: the builtin (an alias, a loop, a function) may evaluate it
         if re.search(r"[\"'\\]", w) and not COMPOUND_PLAIN.match(w) and COMPOUND_AFTER.search(re.sub(r"\$[@*]|[\"'\\]", "", w)): return True
+        if any_decl and re.search(r"[\"'\\]", w) and not COMPOUND_PLAIN.match(w) and COMPOUND_PAREN.search(re.sub(r"\$[@*]|[\"'\\]", "", w)): return True   # a declare-family word ANYWHERE in the script: the NAME= part may reach the builtin through a variable, a wrapper or an alias, so the = is not required
     return False
 SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
 
@@ -1393,7 +1396,7 @@ def scan_script(path, text, row, rows, base):
             k_ += 1
             if OPENER_BUILT.search(cur_):
                 add("deny", phys_[start_], "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
-            if declare_compound(cur_):
+            if declare_compound(cur_, bool(COMPOUND_ANYWORD.search(body))):
                 add("deny", phys_[start_], "%s: line %d has a compound assignment to declare, local, typeset, readonly or export (NAME=( ... )) with a substitution opener after the ( : the builtin evaluates a quoted compound assignment and runs the substitution: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
             if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_) or subscript_holds_opener(re.sub(r"\$[@*]|[\"'\\]", "", cur_)):   # also on the line with quotes, backslashes and an empty $@ / $* removed: bash joins what they split
                 add("deny", phys_[start_], "%s: line %d has an array subscript NAME[ ... ] that holds a substitution ($( , ${ , a backtick): builtins evaluate such a string as a subscript at run time and run it: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)

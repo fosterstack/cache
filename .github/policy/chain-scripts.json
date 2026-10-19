@@ -87,6 +87,20 @@
           "line_sha256": "83dd54d8aac5c9cb81466223c5feaba8cda23eca2159b1a1d9d33dbe128e5954",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "# `go` installs the Go toolchain of the working directory's go.mod (its `toolchain` line, else its `go` line) into <dest-dir>/fscache-go, only when that",
+          "line_sha256": "6fbea121da71ce10baf7ea5af490c354573202f0755c705b1d56917e7a6b7657",
+          "count": 1,
+          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
+        },
+        {
+          "rule": "deny",
+          "line": "echo \"installed ${TOOL} (pinned, checksum-verified) to ${DEST}\"",
+          "line_sha256": "e95ffffe178cbf45cad7873e278fa96654cc5f84f1b2cde348c52a3e7a320491",
+          "count": 1,
+          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
         }
       ]
     },
@@ -2307,6 +2321,13 @@
           "line_sha256": "1799c368e5b9c477815386e822e4ae22b73ea7c84eada82e0bf8d2d7a8da5f7e",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  die \"'go version -m' failed on the packaged binary (exit $gorc: $(head -c 120 \"$tmp/go.err\")); the build information cannot be checked, refusing\" 1",
+          "line_sha256": "0d0aa5e2b4383c02065ae36c3e1ff8c0a456d914293fc5100d8d9758a2f5e3cc",
+          "count": 1,
+          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
         }
       ],
       "env_mentions": [
@@ -2428,6 +2449,13 @@
           "line_sha256": "779670e5e44ae8b34f41f66ced484aae2da92aea2c8fe239d4294464008d4ea2",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    die \"$workdir/$l already exists ($( [ -L \"$workdir/$l\" ] && echo 'a symlink, left by another run or a crashed one' || echo 'not a symlink'))); refusing to replace it: remove it by hand if no other assembly is running\"",
+          "line_sha256": "87c531f76add6e2f45056b512f7fe7d14144b2eb92863b3011047cc16adc1f06",
+          "count": 1,
+          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
         }
       ]
     },
