@@ -873,6 +873,13 @@
           "line_sha256": "c5101468905622092a74d832f9058f8d0621f3ccebc110eac94659bbae35d512",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test); the message text had an em dash, replaced by a hyphen because a waived line must be printable ASCII"
+        },
+        {
+          "rule": "deny",
+          "line": "echo \"warm: hits=${hits:-0} (>= ${expected} required); PUTs cold=${cold_puts:-0} warm-cumulative=${warm_puts:-0} (must be equal)\"",
+          "line_sha256": "f0a691242ee5497321adcb42c2fb2aac1bad702f59560887c2a3d3a3ce032e87",
+          "count": 1,
+          "why": "an echo, die message or fixture line holding = ... ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is message or fixture text)"
         }
       ]
     },
