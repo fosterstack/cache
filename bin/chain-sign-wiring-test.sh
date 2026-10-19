@@ -3684,6 +3684,28 @@ dc dc_zzc $'w() { declare -a "a=$1"; }
 w \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the = is inside the builtin string, the value arrives as a word'
 dc dc_zze $'echo "plain text (${x}) here"
 v=$(date +%s)\n' ok - 'control: no declare-family word anywhere in the script, a message with ( then ${'
+dc dc_zzf $'n=a=
+dec""lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by an empty quote pair, NAME= in a variable'
+dc dc_zzg $'n=a=
+de\\clare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by a backslash'
+dc dc_zzh $'n=a=
+f() { dec\'\'lare -ga "$@"; }
+f "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a hidden builtin word in a wrapper'
+dc dc_zzi $'n=a=
+d=dec; ${d}lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a builtin name built from a variable, the opener literal'
+dc dc_zzj $'n=a=
+a=("$n"\'(x$(/usr/bin/touch mk))\')
+declare -a "${a[0]}"\n' caught 'compound assignment' 'a plain NAME=( word that carries a quoted element reaching the builtin'
+dc dc_zzk $'n=a=
+a=(\\$\'z\\\' "$n"\'(x $(/usr/bin/touch mk))\')
+declare -a "${a[1]}"\n' caught 'compound assignment' 'an escaped $ before a quote is not an ANSI-C quote'
+dc dc_zzl $'n=a=
+declare -a "$n"$\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an ANSI-C prefix leaves a $ before the ('
+dc dc_zzm $'n=a=
+declare -a "$n"$"(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'a locale $" prefix leaves a $ before the ('
+dc dc_zzn $'a=("one two" \'three (4)\')
+x=$\'\\n\'
+echo "${a[@]}" $x\n' ok - 'control: plain array with quoted elements, an ANSI-C newline, a quoted ( with no opener'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -3855,7 +3877,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1752
+EXPECT=1761
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
