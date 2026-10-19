@@ -3723,6 +3723,24 @@ declare -a \'a=(x $\'$e\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 
 dc dc_zzu $'x=\'plain data\'
 y=\'cost: 5 (approx)\'
 echo "$x $y"\n' ok - 'control: single-quoted data with no opener'
+dc dc_zzv $'w() { declare -a "a=$1$2"; }
+w \'(\' \'$\'"(printf audit))"\n' caught 'compound assignment' 'round 9: an opener built across quote segments, $ in single quotes'
+dc dc_zzw $'w() { declare -a "a=$1$2"; }
+w \'(\' \\$\\(printf\\ audit\\)\\)\n' caught 'compound assignment' 'round 9: an escaped opener as an argument word'
+dc dc_zzx $'w() { declare -a "a=$1$2"; }
+w \'(\' "<(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted <( is data'
+dc dc_zzy $'w() { declare -a "a=$1$2"; }
+w \'(\' ">(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted >( is data'
+dc dc_zzz $'w() { declare -a "a=$1$2"; }
+w \'(\' \'<\'"(printf audit))"\n' caught 'compound assignment' 'round 9: <( split across quote segments'
+dc dc_zzza $'w() { declare -a "a=$1$2"; }
+w \'(\' \'$\'"{y})"\n' caught 'compound assignment' 'round 9: ${ split across quote segments'
+dc dc_zzzb $'set --
+declare -a \'a=(x $\'$1\'(printf audit))\'\n' caught 'compound assignment' 'round 9: a possibly-empty positional between $ and ('
+dc dc_zzzc $'w() { declare -a "a=$1$2"; }
+x="$(printf \'"\')"; w \'$(printf marker)\'\n' caught 'compound assignment' 'round 9: a nested-quote line leaves the splitter uncertain, quoted data still refused'
+dc dc_zzzd $'echo "$(date)" "${x:-y}" "a$(b)c" "$1" "${name}" \'plain\'
+v="$(dirname "$0")"\n' ok - 'control: live substitutions in double quotes and unquoted, simple expansions, plain single-quoted data'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -3894,7 +3912,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1768
+EXPECT=1777
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
