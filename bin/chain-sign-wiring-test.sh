@@ -3658,6 +3658,23 @@ dc dc_zn $'alias d=declare
 d -a a="(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'double-quoted value after = with an escaped $, alias'
 dc dc_zo $'arr=(a "b c")\nv=$(date +%s)
 x=\\\'; echo "$x"\n' ok - 'control: a plain unquoted-name array assignment, a substitution on its own line and an escaped quote on another line'
+dc dc_zp $'alias d=declare
+d -a a=$e\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'alias: an expansion between = and a quoted ('
+dc dc_zq $'w() { declare -a "$1"; }
+w a=${e}\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'function wrapper: ${e} between = and a quoted ('
+dc dc_zr $'alias d=declare
+d -a a=${e}\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'alias: ${e} then an escaped compound value'
+dc dc_zs $'alias d=declare
+d -a a=$(true)\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'alias: a substitution between = and ('
+dc dc_zt $'for v in \'a\'{=,}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion builds the ='
+dc dc_zu $'f(){ declare -a "$1"; }
+f \'a\'{=,}\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'brace expansion, function wrapper'
+dc dc_zv $'for v in a{=,}\\(x\\ \\$\\(/usr/bin/touch\\ mk\\)\\); do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion, escaped value'
+dc dc_zw $'for v in \'a=\'${@}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an empty ${@} between = and ('
+dc dc_zx $'for v in \'a=\'${HOME:0:0}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an always-empty ${HOME:0:0} between = and ('
+dc dc_zy $'alias d=declare
+d -a a=$e
+x=${e}\'plain\'\n' ok - 'control: an expansion after =, no ( and no opener'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -3829,7 +3846,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1737
+EXPECT=1747
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
