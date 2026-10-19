@@ -3675,6 +3675,15 @@ dc dc_zx $'for v in \'a=\'${HOME:0:0}\'(x $(/usr/bin/touch mk))\'; do declare -a
 dc dc_zy $'alias d=declare
 d -a a=$e
 x=${e}\'plain\'\n' ok - 'control: an expansion after =, no ( and no opener'
+dc dc_zz $'for v in a=; do declare -a "$v"\'(x $(/usr/bin/touch mk))\'; done\n' caught 'compound assignment' 'the NAME= part in a variable, the quoted value literal on the same line'
+dc dc_zza $'n=a=
+declare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the NAME= part in a variable on an earlier line'
+dc dc_zzb $'w() { declare -a "$1$2"; }
+w \'a=\' \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the function wrapper joins two literal words'
+dc dc_zzc $'w() { declare -a "a=$1"; }
+w \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the = is inside the builtin string, the value arrives as a word'
+dc dc_zze $'echo "plain text (${x}) here"
+v=$(date +%s)\n' ok - 'control: no declare-family word anywhere in the script, a message with ( then ${'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -3846,7 +3855,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1747
+EXPECT=1752
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
