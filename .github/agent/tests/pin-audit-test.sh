@@ -962,13 +962,13 @@ for r in revs:
 got = pa.history_items(root, "HEAD", now)
 assert set(got) == set(ref) and len(ref) > 0, (sorted(got), sorted(ref))
 PY
-r="$work/r-histrevert"; mkrepo "$r" "100:$CLEANSHA"
+rr="$work/r-histrevert"; mkrepo "$rr" "100:$CLEANSHA"
 for spec in "40:v3.0.0" "20:v4.1.0"; do   # same pin, a label that changes and then reverts: the same key at two trees, a different label in between
-  sed -i.bak "s|^\(      - uses: actions/checkout@[0-9a-f]*\) # .*|\1 # ${spec#*:}|" "$r/.github/workflows/ci.yml"; rm -f "$r/.github/workflows/ci.yml.bak"; git -C "$r" add -A
-  GIT_AUTHOR_DATE="$(dago "${spec%%:*}")" GIT_COMMITTER_DATE="$(dago "${spec%%:*}")" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "label ${spec#*:}"
+  sed -i.bak "s|^\(      - uses: actions/checkout@[0-9a-f]*\) # .*|\1 # ${spec#*:}|" "$rr/.github/workflows/ci.yml"; rm -f "$rr/.github/workflows/ci.yml.bak"; git -C "$rr" add -A
+  GIT_AUTHOR_DATE="$(dago "${spec%%:*}")" GIT_COMMITTER_DATE="$(dago "${spec%%:*}")" git -C "$rr" -c user.name=t -c user.email=t@x commit -q -m "label ${spec#*:}"
 done
 CASE="history memo: the VALUES match one inventory per commit, not only the keys (a label that reverts: the oldest occurrence still wins, as before; seat A of cache#456)"
-check python3 - "$aud" "$r" <<'PY'
+check python3 - "$aud" "$rr" <<'PY'
 import datetime as dt, importlib.util, subprocess, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 root, now = sys.argv[2], dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
