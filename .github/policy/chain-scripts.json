@@ -705,6 +705,20 @@
           "line_sha256": "99605e4749c17588361408279d11f42de45e6a04308f759148ab4efc15f19005",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) or an assignment on this line holds arithmetic $(( ... )) next to a bracket: it is arithmetic, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, every waived line is real arithmetic)"
+        },
+        {
+          "rule": "deny",
+          "line": "  case \"${f,,}\" in *darwin*|*windows*) fail \"a darwin or windows file exists in $archives ($(basename \"$f\")): REQ-PLAT-001 ships Linux only\" ;; esac",
+          "line_sha256": "c48e01c93cc8d1767c5710b51b6a5db9ac6ce9a1befb18a655904b162574154a",
+          "count": 1,
+          "why": "a comment, echo or case line holding ( ... ${ } as plain text: it is a message or a pattern, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment, message or case-pattern text)"
+        },
+        {
+          "rule": "deny",
+          "line": "# The clock is the runner's (round 1 F4): the age of a database is judged against `date +%s` and nothing the environment says. A CHECK_SCAN_NOW in the",
+          "line_sha256": "c2c68d7511b568f281169eee90b4d3f3dac9d632cdbf6a1e654a7e5aa649fc39",
+          "count": 1,
+          "why": "a comment, echo or case line holding ( ... ${ } as plain text: it is a message or a pattern, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment, message or case-pattern text)"
         }
       ]
     },
@@ -1007,6 +1021,13 @@
           "line_sha256": "589135d0238723b23ca8b4372ee422098dc0d8d6043e1d322d0d4214005e66e2",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "echo \"capped server (after cold build): 201s=${put201:-0} 413s=${put413:-0}\"",
+          "line_sha256": "1423219fd96a5e807a7d7568bf133e744326e535bf98ff8e1f080f10e5299229",
+          "count": 1,
+          "why": "a comment, echo or case line holding ( ... ${ } as plain text: it is a message or a pattern, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment, message or case-pattern text)"
         }
       ]
     },

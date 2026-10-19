@@ -3683,7 +3683,7 @@ w \'a=\' \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the funct
 dc dc_zzc $'w() { declare -a "a=$1"; }
 w \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the = is inside the builtin string, the value arrives as a word'
 dc dc_zze $'echo "plain text (${x}) here"
-v=$(date +%s)\n' ok - 'control: no declare-family word anywhere in the script, a message with ( then ${'
+v=$(date +%s)\n' caught 'compound assignment' 'a quoted ( then ${ is refused in every script (default deny, over-refusal by design: a message line needs a reviewed waiver)'
 dc dc_zzf $'n=a=
 dec""lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by an empty quote pair, NAME= in a variable'
 dc dc_zzg $'n=a=
