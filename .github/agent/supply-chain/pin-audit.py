@@ -1107,13 +1107,12 @@ def history_items(root, start, now):
     if before:
         revs.append(before)
     items = {}
-    seen = set()   # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read adds nothing
+    memo = {}   # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read reuses that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
     for r in revs:
         key = inv.tree_key(root, r)
-        if key in seen:
-            continue
-        seen.add(key)
-        items.update(inv.load_at(root, r))
+        if key not in memo:
+            memo[key] = inv.load_at(root, r)
+        items.update(memo[key])
     return items
 
 
