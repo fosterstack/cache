@@ -2699,7 +2699,7 @@ d=$(cfix fp_env '/usr/bin/env x' '["env"]'); expm caught "$d" 'env' "fixed path:
 d=$(cfix fp_bashc '/bin/bash -c true' '["bash"]'); expm caught "$d" 'handed' "fixed path: /bin/bash -c stays refused even with bash in tools"
 d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bin/awk with awk NOT in tools stays refused"
 # round 1 of the seats (433): a fixed-path command keeps every operand rule of the bare name; isolation flags do not change how the script's own arguments are judged; a function named by a path cannot replace the fixed program
-# Fixture texts that name a download tool are DATA in bin/chain-sign-wiring-fixtures.txt (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
+# Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
@@ -2721,21 +2721,37 @@ for n, r in enumerate(rows, 1):
     assert len(f) == 6, "line %d: %d fields, not 6" % (n, len(f))
     assert re.fullmatch(r"[a-z][a-z0-9_]*", f[0]) and f[0] not in names, "line %d: name %r" % (n, f[0]); names.add(f[0])
     assert f[3] in ("ok", "caught"), "line %d: verdict %r" % (n, f[3])
-    assert f[1] and f[4] and f[5], "line %d: an empty field" % n
-# the test names the file only to read it: the assignment, the redirect into run_fixtures' loop, the calls, and this check
-ok_line = re.compile(r'^(FX=|\s*done < "\$1"$|run_fixtures "\$FX"$|if \[ -f "\$FX" \]|.*# data file)')
-prev, end = "", None
-for n, l in enumerate(open(me), 1):
-    if end is None and l.startswith("cat > \"$work/fx-guard.py\""): end = "PY"      # this check's own heredoc (up to its PY line) and its mutation helper (up to its closing brace) are the places that spell the names it looks for
-    if end is None and l.startswith("fxmut() {"): end = "}"
+    assert f[1] and f[2] and f[4] and f[5], "line %d: an empty field" % n
+# DEFAULT DENY: a line of this test that names the data file (the variable FX or its file name), anywhere but inside this heredoc, must be one of the exact whole lines below, and
+# run_fixtures must be exactly the function below; a comment, a trailing comment, a second command or a different redirect is not on the list, so it fails
+WORD = re.compile(r'(?<![A-Za-z0-9_])FX(?![A-Za-z0-9_])|fixtures\.txt')
+ALLOWED = {
+    'FX="$root/bin/chain-sign-wiring-fixtures.txt"',
+    'if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "$0"',
+    'run_fixtures "$FX"',
+    '  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "$0" "$m/t.sh"; chmod 644 "$m/f.txt"',
+    "  [ -z \"$2\" ] || sed -i.bak \"$2\" \"$m/f.txt\"; [ -z \"$3\" ] || printf '%s\\n' \"${3//@FX@/\\$FX}\" >> \"$m/t.sh\"",
+}
+CALL = re.compile(r"^fxmut [a-z] '[^']*' '[^']*' \"[^\"$`\\]*\"$")      # a mutation call: the placeholder @FX@ only, never the variable
+RUN_FIXTURES = (
+    'run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case\n'
+    '  local name body tools verdict frag label d\n'
+    "  while IFS=$'\\t' read -r name body tools verdict frag label; do\n"
+    '    d=$(cfix "$name" "$body" "$tools"); expm "$verdict" "$d" "$frag" "$label"\n'
+    '  done < "$1"\n'
+    '}\n')
+text = open(me).read()
+assert RUN_FIXTURES in text and sum(1 for l in text.split("\n") if l.startswith("run_fixtures() {")) == 1, "run_fixtures is not exactly the reviewed function"
+end = None
+for n, l in enumerate(text.split("\n"), 1):
+    if end is None and l == 'cat > "$work/fx-guard.py" <<\'PY\'': end = "PY"      # this heredoc is the one place that spells the names it looks for
     if end is not None:
-        if l.rstrip("\n") == end: end = None
-        prev = l; continue
-    comment = l.startswith("# ") and not prev.endswith("\\\n")      # a whole-line comment not joined to a previous line by a backslash
-    if ("$FX" in l or "fixtures.txt" in l) and not comment:
-        assert ok_line.match(l.rstrip("\n")), "line %d names the data file other than to read it: %s" % (n, l.strip())
-    prev = l
-    assert not re.search(r'(?:^|[;&|(\s])(?:source|eval|exec)\s+["\']?\$FX|(?:^|\s)\.\s+["\']?\$FX|(?:bash|sh)\s+["\']?\$FX', l), "line %d runs the data file" % n
+        if l == end: end = None
+        continue
+    if WORD.search(l) and l not in ALLOWED and not CALL.match(l) and l not in RUN_FIXTURES.split("\n"):
+        assert False, "line %d names the data file in a form that is not on the list: %s" % (n, l.strip())
+    if CALL.match(l):
+        assert "$FX" not in l, "line %d" % n
 PY
 if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "$0"
 then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 fixture texts are data: the fixture data file is six tab-separated fields per line, has no shebang and no execute bit, and the test only reads it"
@@ -2770,6 +2786,8 @@ fxmut i '' 'FX="@FX@"; bash < "@FX@"' "an assignment line with a second command 
 fxmut j '' 'if [ -f "@FX@" ]; then bash < "@FX@"; fi' "a test line that starts like the guard call and runs the file"
 fxmut k '' 'run_fixtures "@FX@"; bash < "@FX@"' "a run_fixtures call with a second command"
 fxmut l '3s/\t[^\t]*\t/\t\t/' '' "a record with an empty tools field"
+fxmut m '' '# the file @FX@ is only ever read' "a comment that names the data file (a comment is not on the list)"
+fxmut n '' 'run_fixtures() { eval "$1"; }' "a second definition of run_fixtures"
 d=$(cfix fo_bare_sed 'sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, bare: sed -f archive/vi is refused"
 d=$(cfix fo_fixed_sed '/usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/sed -f archive/vi is refused"
 d=$(cfix fo_fixed_at '/usr/bin/at -f archive/vi now' '["at"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/at -f archive/vi is refused"
@@ -3965,7 +3983,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1847
+EXPECT=1857
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
