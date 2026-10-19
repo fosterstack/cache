@@ -1107,7 +1107,12 @@ def history_items(root, start, now):
     if before:
         revs.append(before)
     items = {}
+    seen = set()   # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read adds nothing
     for r in revs:
+        key = inv.tree_key(root, r)
+        if key in seen:
+            continue
+        seen.add(key)
         items.update(inv.load_at(root, r))
     return items
 
