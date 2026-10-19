@@ -940,6 +940,43 @@ PY
 else
   ok "$CASE (skipped as root: file modes do not bind)"
 fi
+# --- cache#455 follow-up (handoff 0496 step 2): the 90-day history reads one inventory per DISTINCT set of files the inventory reads, not one per commit ---
+r="$work/r-histmemo"; mkrepo "$r" "100:$CLEANSHA" "40:$SHA1" "30:$SHA2"
+mkdir -p "$r/.github/agent/tests" "$r/docs"
+for n in 1 2 3 4 5 6; do   # commits that touch .github but nothing the inventory reads (.github/agent/ and docs are outside tree_files)
+  printf 'x%s\n' "$n" >"$r/.github/agent/tests/noise.txt"; git -C "$r" add -A
+  GIT_AUTHOR_DATE="$(dago $((20 - n)))" GIT_COMMITTER_DATE="$(dago $((20 - n)))" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "noise $n"
+done
+CASE="history memo: the same items as one inventory per commit (the verdicts do not change)"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+root, now = sys.argv[2], dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
+since = (now - dt.timedelta(days=pa.LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+revs = subprocess.run(["git", "-C", root, "log", f"--since={since}", "--format=%H", "--all"], capture_output=True, text=True).stdout.split()
+before = subprocess.run(["git", "-C", root, "rev-list", "-1", f"--before={since}", "HEAD"], capture_output=True, text=True).stdout.strip()
+revs += [before] if before else []
+ref = {}
+for r in revs:
+    ref.update(pa.inv.load_at(root, r))
+got = pa.history_items(root, "HEAD", now)
+assert set(got) == set(ref) and len(ref) > 0, (sorted(got), sorted(ref))
+PY
+CASE="history memo: commits that changed nothing the inventory reads cost no inventory (calls < commits) and the timing line is printed"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+calls = [0]; real = pa.inv.inventory
+def counting(files):
+    calls[0] += 1
+    return real(files)
+pa.inv.inventory = counting
+t = time.time()
+pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+print(f"history scan: {calls[0]} inventories in {time.time() - t:.2f}s")
+assert calls[0] <= 4, calls[0]    # 9 commits in the lookback (3 pin commits + 6 noise), at most 4 distinct trees the inventory reads
+PY
+
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
