@@ -3629,6 +3629,23 @@ dc dc_s $'declare -a \'a=(x >(/usr/bin/touch mk))\'\n' caught 'compound assignme
 dc dc_t $'de\'\'clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by an empty quote pair'
 dc dc_u $'de\\clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by a backslash'
 dc dc_v $'loc\\al -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'local split by a backslash'
+dc dc_w $'declare -a a=\\(x\\ $\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'pure-escape form: $\\( and \\( split by backslashes'
+dc dc_x $'declare -a \'a=(x $\'\\(\'/usr/bin/touch mk))\'\n' caught 'compound assignment' 'quoted, the opener split by \\( '
+dc dc_y $'declare -a a=\\(x\\ $\\{y:-z\\}\\)\n' caught 'compound assignment' '${ split by a backslash'
+dc dc_z $'declare -a \'a=(x <\'\\(\'/usr/bin/touch mk))\'\n' caught 'compound assignment' '<( split by a backslash'
+dc dc_za $'declare -a \'a=(x $\'$@\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an empty $@ between $ and ('
+dc dc_zb $'de$*clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an empty $* inside the builtin name'
+dc dc_zc $'for v in \'a=(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'the value before the builtin on the line (loop)'
+dc dc_zd $'w() { declare -a "$1"; }
+w \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a function wrapper: builtin and value on different lines'
+dc dc_ze $'shopt -s expand_aliases
+alias d=declare
+d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an alias: builtin and value on different lines'
+dc dc_zf $'d -a a=\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'escaped compound value with no builtin word on the line'
+dc dc_zg $'for v in \'a=(1 2)\' \'b=(3)\'; do declare -a "$v"; done
+alias ll=\'ls -l\'\n' ok - 'control: quoted compound values with no opener, an alias with no compound value'
+sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
+sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3798,7 +3815,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1716
+EXPECT=1729
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
