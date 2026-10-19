@@ -87,30 +87,43 @@ def compound_norm(t):
     t = re.sub(r"\$[@*]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}", "", t)
     t = re.sub(r"\$(?=[\"'])", "\x01", t)
     return re.sub(r"[\"'\\]", "", t)
-COMPOUND_DATA_OPENER = re.compile(r"\$\(|\$\{|`|<\(|>\(")   # an opener held as quoted text
-COMPOUND_DQ_ESCAPED = re.compile(r"\\\$[({]|\\`")            # inside double quotes: an escaped opener, which is text
+COMPOUND_SEQ_OPENER = re.compile(r"\$\(|\$\{|`|<\(|>\(")   # an opener in a word after quote removal, possibly-empty expansions gone
+COMPOUND_NAIVE_DATA = re.compile(r"'[^']*(?:\$\(|\$\{|`|<\(|>\()[^']*'|\\[$`]|\"[^\"]*[<>]\([^\"]*\"")   # the pairing is uncertain: any opener in naive single quotes, any escaped $ or backtick, any <( >( in naive double quotes
 def shell_scan(raw):
-    """Split a logical line into blank-separated words, honouring quotes and backslash escapes (an unbalanced quote makes the rest one word: fail closed). Also returns True when an opener sits as quoted DATA (inside single quotes, ANSI-C quotes, or escaped inside double quotes), and True when a substitution is nested inside double quotes (the quote pairing is then not certain)."""
+    """Split a logical line into blank-separated words, honouring quotes and backslash escapes (an unbalanced quote makes the rest one word: fail closed). Also returns (data, nested): `data` is True when a word, after quote removal and with every possibly-empty expansion ($1..$9, $@, $*, $name, ${name}) dropped, holds an opener ($( ${ ` <( >() that is not a plain live one: any character of it quoted in single or ANSI-C quotes or escaped, a $ before a quote, a <( or >( inside double quotes, or its characters coming from different quote segments (an opener assembled at run time from literal pieces). `nested` is True when a substitution sits inside double quotes (the quote pairing is then not certain)."""
     words, cur, q, i, ansi, dollar = [], [], None, 0, False, -2
+    seq, seg = [], 0          # per word: (char, literal, segment)
     data = nested = False
-    start = 0
+    def flush():
+        nonlocal seq, data
+        txt = "".join(c for c, _, _ in seq)
+        for m in COMPOUND_SEQ_OPENER.finditer(txt):
+            part = seq[m.start():m.end()]
+            if any(lit for _, lit, _ in part) or len({sg for _, _, sg in part}) > 1: data = True
+        seq = []
     while i < len(raw):
         c = raw[i]
         if q is None and c in " \t":
-            if cur: words.append("".join(cur)); cur = []
+            if cur: words.append("".join(cur)); cur = []; flush()
             i += 1; continue
         cur.append(c)
         if c == "\\" and (q != "'" or ansi) and i + 1 < len(raw):
-            if q == '"' and COMPOUND_DQ_ESCAPED.match(raw, i): data = True
-            cur.append(raw[i + 1]); i += 2; continue
+            cur.append(raw[i + 1]); seq.append((raw[i + 1], True, seg)); i += 2; continue
+        if q != "'" and c == "$":                      # a possibly-empty expansion is dropped from the sequence
+            m = re.match(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})", raw[i:])
+            if m:
+                cur.append(raw[i + 1:i + m.end()]); i += m.end(); seg += 1; continue
         if c == "$": dollar = i
         if q == '"' and (raw.startswith("$(", i) or c == "`"): nested = True
-        if q is None and c in "\"'": q = c; ansi = (c == "'" and dollar == i - 1); start = i + 1
+        if q is None and c in "\"'":
+            if seq and seq[-1][0] == "$" and dollar == i - 1: seq[-1] = ("$", True, seq[-1][2])   # $'...' / $"...": the $ is a marker, literal
+            q = c; ansi = (c == "'" and dollar == i - 1); seg += 1
         elif q == c:
-            if c == "'" and COMPOUND_DATA_OPENER.search(raw[start:i]): data = True
-            q = None; ansi = False
+            q = None; ansi = False; seg += 1
+        else:
+            seq.append((c, q == "'" or (q == '"' and c in "<>"), seg))
         i += 1
-    if cur: words.append("".join(cur))
+    if cur: words.append("".join(cur)); flush()
     return words, data, nested
 def shell_words(raw):
     return shell_scan(raw)[0]
@@ -118,7 +131,7 @@ def declare_compound(raw):
     if COMPOUND_WORD.search(compound_norm(raw)): return True
     words, data, nested = shell_scan(raw)
     if data: return True   # an opener held as quoted data: fragments of a compound value can be joined at run time, so the data itself is refused
-    if nested and re.search(r"[\"'\\]", raw) and COMPOUND_PAREN.search(compound_norm(raw)): return True   # the quote pairing is not certain: judge the whole line
+    if nested and re.search(r"[\"'\\]", raw) and (COMPOUND_PAREN.search(compound_norm(raw)) or COMPOUND_NAIVE_DATA.search(raw)): return True   # the quote pairing is not certain: judge the whole line, and any naive quoted opener is data
     for w in words:   # any word that mixes quotes or escapes with a bare ( then an opener, wherever the builtin is and however it is named; a plain NAME=( prefix is exempt, the rest of the word is not
         m = COMPOUND_PLAIN.match(w)
         rest = w[m.end():] if m else w
