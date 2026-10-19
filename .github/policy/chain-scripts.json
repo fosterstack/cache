@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "a5625f6cb2da0d5a0ba6223d3e9455738c0b357a1a984d47a90f571b308b8429",
+      "sha256": "62b9953170c07ff3c4c2288408a128aac338255dcbb8fb0f49b68dd97656f815",
       "tools": [
         "at",
         "curl",
@@ -44,19 +44,65 @@
       ],
       "runs": [],
       "signs": "other",
-      "reason": "installs one pinned tool by checksum (curl downloads it, trap cleans the temp dir); it names gitsign as a tool it can install and signs nothing; the other listed words appear in its comments"
+      "reason": "installs one pinned tool by checksum (curl downloads it, trap cleans the temp dir); it names gitsign as a tool it can install and signs nothing; the other listed words appear in its comments",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "    gobin=\"$tmp/x/go/bin\"; [ -x \"${gobin}/go\" ] || pipeline_fail \"the toolchain archive holds no go program\"",
+          "line_sha256": "861382714c2d091f630accf5da427364756e90b36dcbb3f1aee0a75b6ffa0f59",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$got\" = \"$SUM\" ] || pipeline_fail \"${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner\"",
+          "line_sha256": "9f7919497d8fd256779d60755071eb60aebbee18846b7523a220c2d4aa169370",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    [ \"$TOOL\" = docker-scout ] || SCOUT_VER=\"${TOOL#docker-scout-}\"",
+          "line_sha256": "8836e172326e4cd0efaa0f586ca851977c876876c95f642b8e9120ec577a589f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    [ \"$want\" = \"$GO_VER\" ] || pipeline_fail \"go.mod names go '${want}' but the pinned toolchain is ${GO_VER} (go.mod and GO_VER in bin/install-scanner.sh must agree)\"",
+          "line_sha256": "d0946e29ecb35e468308e50b7f56a22cfba38cb597b61a5f51a8919b69d59f6e",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    [ -x \"$gobin\" ] || pipeline_fail \"no pinned Go toolchain at ${DEST}/fscache-go (run install-scanner.sh go first): govulncheck is built with it\"",
+          "line_sha256": "bbea88864f51c70682d329b8ffaadbda62e204b364ba614fbed58c2b13693aa4",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "      [ \"$key\" != require ] || { key=$val; val=${rest%% *}; }",
+          "line_sha256": "83dd54d8aac5c9cb81466223c5feaba8cda23eca2159b1a1d9d33dbe128e5954",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
+      ]
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "35d5ea6f3ceb69ab76e373d382fba50c65658346634a2818d9d36b677129e7f8",
+      "sha256": "af35a2e03e4a7ec7d1e82761b5b748700b9d7d42de5ca58b1d305a4771c5c9e3",
       "tools": [
-        "curl",
-        "bash",
         "at",
-        "sed"
+        "bash",
+        "curl",
+        "sed",
+        "sh"
       ],
       "runs": [
-        "bin/install-scanner.sh"
+        "bin/install-scanner.sh",
+        "bin/loopback-get.sh"
       ],
       "signs": "other",
       "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)",
@@ -67,6 +113,20 @@
           "line_sha256": "6c35bb36903f2db802d270f861e3c9c71b22083766c12021ddfb03c812e29006",
           "count": 1,
           "why": "closes the multi-line jq program that builds the hostile in-toto statement it prints (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -n \"${ACTIONS_ID_TOKEN_REQUEST_URL:-}\" ] || return 1",
+          "line_sha256": "750731dbd3a45a13f236dc3a2f77ca2ea89d6df8656bd7a3d208971e4ab84717",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${#roots[@]}\" -gt 0 ] || roots=(\"${HOME:-/nonexistent}\" \"${RUNNER_TEMP:-/nonexistent}\" /tmp /dev/shm)",
+          "line_sha256": "209618ccf96aa307aaace1fb2b3f39632eaf8b7f95ff38cb63073ca8f91bc73f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -122,6 +182,13 @@
           "rule": "script-name",
           "text": "$(uname -m) in",
           "why": "the operand of `case $(uname -m) in`: a pattern match on this machine's architecture name (x86_64 or aarch64), never run as a command"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$(uname -s)\" = Linux ] || die \"unsupported operating system $(uname -s): the build tools are installed on Linux only\"",
+          "line_sha256": "77fa5a6ad359b300bda5faf55026f5aa2b9dbc9a58fcb1ab846c937282b4336d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ],
       "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
@@ -141,19 +208,22 @@
     {
       "path": "bin/witnessed.sh",
       "tools": [
-        "script",
-        "command",
-        "timeout",
         "at",
-        "git",
+        "bash",
+        "command",
         "curl",
         "exec",
-        "bash"
+        "git",
+        "script",
+        "sh",
+        "timeout"
       ],
-      "runs": [],
+      "runs": [
+        "bin/loopback-get.sh"
+      ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "bfd75d3ee399b92efd0e3fa0843977f22b6550fd4ef945ece7da03ba52b5a154",
+      "sha256": "4d7ecb9b7a2ed64e2323b507450f056fdd388aceac8f51fd6f9b3861e6a9d0be",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -195,6 +265,13 @@
           "rule": "script-name",
           "text": "bin/chain-test-shape.py",
           "why": "a comment naming the helper that judges this file's exact text; it is never run from here"
+        },
+        {
+          "rule": "deny",
+          "line": "if [ \"$step\" = release-sign ]; then sig=$(sh bin/loopback-get.sh -sSf -H \"Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN\" \"${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore\" | jq -r .value); [ -n \"$sig\" ] && [ \"$sig\" != null ] || { echo \"witnessed: no identity token for release-sign\" >&2; exit 1; }; echo \"::add-mask::$sig\"; export SIGSTORE_ID_TOKEN=\"$sig\"; fi",
+          "line_sha256": "3354f0851eada9aac8c6906ec43f0852375173efb379d52453d0f685475c9cbf",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -378,7 +455,16 @@
       ],
       "signs": false,
       "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
-      "sha256": "dd63810714b7e024842018b7353c1ca9953943d78c62f5f12ab514aa25aa6f6a"
+      "sha256": "dd63810714b7e024842018b7353c1ca9953943d78c62f5f12ab514aa25aa6f6a",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[ \"${GITHUB_ACTIONS:-}\" = true ] || { echo \"refusing to delete tags outside GitHub Actions (run in a throwaway clone)\" >&2; exit 2; }",
+          "line_sha256": "1ed2b83b3887b47aacc9fb8883ed15f01199b91a1bb010273e29cb4065618d1f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
+      ]
     },
     {
       "path": "bin/build-stage-snapshot-assemble.sh",
@@ -411,7 +497,16 @@
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rapk: the same tag discipline, rebuild the apks",
-      "sha256": "1dfce5c4c3e1ce3840c94ac8053e5c605244786043e0a547b1619767e624e3df"
+      "sha256": "1dfce5c4c3e1ce3840c94ac8053e5c605244786043e0a547b1619767e624e3df",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[ \"${GITHUB_ACTIONS:-}\" = true ] || { echo \"refusing to delete tags outside GitHub Actions (run in a throwaway clone)\" >&2; exit 2; }",
+          "line_sha256": "1ed2b83b3887b47aacc9fb8883ed15f01199b91a1bb010273e29cb4065618d1f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
+      ]
     },
     {
       "path": "bin/build-stage-snapshot-rebuild-assemble.sh",
@@ -523,12 +618,68 @@
           "line_sha256": "dcb3f40b017212caf1144cb8300740fd34801b2a21f8c521a16ca4e4680a5556",
           "count": 1,
           "why": "closes the multi-line jq program that builds the database record (its operand is a here-string of $all) (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${#scanners[@]}\" -gt 0 ] || fail \"no scanner is listed in $list (a vacuous pass is not a pass)\"",
+          "line_sha256": "950ddd62d0333a8d27c234c468f8759ca08828734921de519b1412011d42ef4a",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -n \"$ver\" ] && [ \"$got\" = \"$(sed \"s/VER/$ver/\" <<< \"$want\" | sort)\" ] \\",
+          "line_sha256": "1a348019a0c22b103b5c8a0678a1875564bdb3bc083a3592b5728293a294989d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -z \"${CHECK_SCAN_NOW+x}\" ] || fail \"CHECK_SCAN_NOW is defined in the environment: the database age is judged by the runner's clock, which no variable can change\"",
+          "line_sha256": "2ae0c195e21d2471ef18a310f97cc1229add47c0aeda6b64cad761bdda07bc7b",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    if [ -n \"${OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY:-}\" ]; then",
+          "line_sha256": "1a4a1219de6345a09bc7fe13eb2fcb5e4605a3f28fcb61aa972aa020e6951407",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "      if [ -n \"$(find \"$osvcache\" -mindepth 1 -print -quit)\" ]; then",
+          "line_sha256": "4a3a47eac2c5b5eb85d6b5aef7ca16519682386af3cd44bbc37240b197cbe2b3",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "if [ \"$ran\" != \"${#scanners[@]}\" ]; then",
+          "line_sha256": "c59ec850b6fa25740d5fff1fca3fcd3afe7615e5ebb791dc647868751b321713",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "      sum=\"\"; [[ \"$from\" =~ [?\\&]checksum=sha256(%3A|%3a|:)([0-9a-f]{64})($|\\&) ]] && sum=\"sha256:${BASH_REMATCH[2]}\"",
+          "line_sha256": "5abe16194e30dad577e5f9b52c6f059893e483c595dc5d5440ceddf663058223",
+          "count": 1,
+          "why": "a test command ([[ ... =~ regex ]]) on this line holds a quoted parameter expansion and a regex with a backslash: it is a test, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, the line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "      elif [ $((now - bt)) -gt \"$MAX_AGE\" ]; then",
+          "line_sha256": "99605e4749c17588361408279d11f42de45e6a04308f759148ab4efc15f19005",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) or an assignment on this line holds arithmetic $(( ... )) next to a bracket: it is arithmetic, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, every waived line is real arithmetic)"
         }
       ]
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "d3973cbdad968298b26fc49638f5fd7375baa03de5d9068aa3fcbb2a64b3db61",
+      "sha256": "c0734a5e15604218fafded054a0f5c4c07b9cb0a87ad72b3db2a3a64a99b305d",
       "tools": [
         "curl",
         "docker",
@@ -576,6 +727,13 @@
           "rule": "script-name",
           "text": "bin/acceptance-$suite.sh",
           "why": "the existence test of the suite script the wrapper is about to run (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -z \"${JAVA_HOME_21_X64:-}\" ] || export JAVA_HOME=\"$JAVA_HOME_21_X64\"",
+          "line_sha256": "984ab6b8d42a4a90c322aa48c48c73ed230c187f2a645d4595a865b33c5a716e",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -606,7 +764,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "202210fa9630bbb49e322fe597a98c0320bf467c6fae399000347a59a3857db7",
+      "sha256": "6b4b3e150a8f562715f8b882a2e7fe67f4c06b4d846e2f5ca8fb0a0363961290",
       "tools": [
         "at",
         "awk",
@@ -663,6 +821,41 @@
           "line_sha256": "302d6b11318b44b4a374dba72862f4761a74a564a607675890c232bc522f4fc2",
           "count": 1,
           "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "  if [ -z \"${key}\" ]; then",
+          "line_sha256": "336714fff3a70420e34c1ac7197747fdbc25eac4b25d1d2aa71b6971e7228938",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${code}\" = \"200\" ] || { echo \"::error::entry for ${task} (key ${key}) not on the server (HEAD=${code})\" >&2; exit 1; }",
+          "line_sha256": "271bb4710c8858625e6413fbc5ab28f248b60348ea28041375e41319146528c6",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${hits:-0}\" -eq 0 ] || { echo \"::error::cold build had ${hits} hits against an empty cache\" >&2; exit 1; }",
+          "line_sha256": "fbdcd4909e463f46cdeeea77f2421d228860075c40a654a00bbe9378dd6cbdda",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${hits:-0}\" -ge \"${expected}\" ] || { echo \"::error::server saw ${hits:-0} hits, expected at least ${expected}\" >&2; exit 1; }",
+          "line_sha256": "344cabaaf2dfeb9aa66ed1df2220428ca12a136edf898a57b8d60dc2ed2e662c",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${warm_puts:-0}\" -eq \"${cold_puts:-0}\" ] || { echo \"::error::the warm build uploaded new entries - restored outputs must not re-upload\" >&2; exit 1; }",
+          "line_sha256": "c5101468905622092a74d832f9058f8d0621f3ccebc110eac94659bbae35d512",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test); the message text had an em dash, replaced by a hyphen because a waived line must be printable ASCII"
         }
       ]
     },
@@ -699,6 +892,83 @@
           "line_sha256": "d9c076c8f7bde09da5672e4d89aca5aca209102a9080f56f84089a68e089053a",
           "count": 1,
           "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -n \"${core_key}\" ] || { echo \"::error::no cache key logged for :core:compileJava in the cold build\" >&2; exit 1; }",
+          "line_sha256": "0b3090cc1c953f837b3e28e42fec8903315890f19ca00b95cb29badf68fce185",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${code}\" = \"200\" ] || { echo \"::error:::core:compileJava (key ${core_key}), uploaded before the 413, must be on the server: HEAD=${code}\" >&2; exit 1; }",
+          "line_sha256": "9e00335b663f25ac6f6623637784c619b4776d5b4785beb5999c3b18cf6fa3df",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -n \"${a_key}\" ] || { echo \"::error::no cache key logged for the oversized task :module-a:compileJava\" >&2; exit 1; }",
+          "line_sha256": "875a012965f3de7eec34e39755eba18033d11d4afc42dbcb0100eea199d7a611",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${rej_key}\" = \"${a_key}\" ] || { echo \"::error::the 413'd entry (${rej_key:-none}) is not :module-a:compileJava's key (${a_key})\" >&2; exit 1; }",
+          "line_sha256": "d1b28ba2e91e255868466b27b98dbb1ec24bb7993fec75e096b336c56440d715",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${code}\" = \"404\" ] || { echo \"::error::the oversized :module-a:compileJava key ${a_key} must be absent (rejected, not stored): HEAD=${code}\" >&2; exit 1; }",
+          "line_sha256": "945ecb86a54269430d93697fa15cfc0308a7c6fb6dbf4388dd558baa23cd634b",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -n \"${k}\" ] || continue",
+          "line_sha256": "87c00aafe6f9b6a4ac378b02930b38625d7b5ccece9ad13f1b28569bc971113f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${code}\" = \"404\" ] || { echo \"::error::${t} (key ${k}) ran after the 413 but is on the server (HEAD=${code}) - remote caching should have been disabled\" >&2; exit 1; }",
+          "line_sha256": "134ac9249a362737e6802de4f061f7ca093cc404cb738de56956d4025ed0b1e1",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${post_found}\" -eq 1 ] || { echo \"::error::no post-413 cacheable task key found in the cold log to verify\" >&2; exit 1; }",
+          "line_sha256": "0d0a5be0b545c3badb2af6690a0c3fc7872cb8eb70a2fe7ff7eee6dd9c4dfbc8",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${put413:-0}\" -ge 1 ] || { echo \"::error::no PUT was rejected 413 - the oversized output did not exercise the cap\" >&2; exit 1; }",
+          "line_sha256": "5e33b16e5172721b9df574e50a79fe58239d6c4f44725ad197f5d8d95efb13ef",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${put201:-0}\" -ge 1 ] || { echo \"::error::no PUT was stored - a small output before the 413 must still cache\" >&2; exit 1; }",
+          "line_sha256": "0e1a273a6a2a3685e73cad64eea9c3f23dcd36e124248aa7516da3937306a7e5",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$code\" = \"404\" ] || { echo \"::error::rejected entry is retrievable (${code}) - it was stored\" >&2; exit 1; }",
+          "line_sha256": "589135d0238723b23ca8b4372ee422098dc0d8d6043e1d322d0d4214005e66e2",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -722,6 +992,41 @@
           "line_sha256": "f0fcb28faa75f71b31dc4fa3965c8680b034e1bd8f232e573f107bfe992221a4",
           "count": 2,
           "why": "closes the multi-line command substitution that reads the PUT counter: curl piped into a single awk program (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${puts:-0}\" -eq \"$COLD_UPLOADS\" ] || { echo \"::error::cold uploads ${puts:-0}, expected $COLD_UPLOADS\" >&2; exit 1; }",
+          "line_sha256": "44dd04552af742d6bbcc29c14dc5639dc48e00f696c7127ba3baa17d36836aff",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${gets404:-0}\" -eq \"$COLD_LOOKUPS\" ] || { echo \"::error::cold lookups ${gets404:-0}, expected $COLD_LOOKUPS\" >&2; exit 1; }",
+          "line_sha256": "d92bb12f28aa9608e295228ff6fb200d52a40620333cff7603536283ae215319",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${restored}\" -eq \"$MODULES\" ] || { echo \"::error::${restored} modules restored, expected $MODULES\" >&2; exit 1; }",
+          "line_sha256": "92fc57117f1467ac5102f1ac34972671846f2bade9cf83e15cda328e0f66384d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${hits:-0}\" -ge \"$MODULES\" ] || { echo \"::error::server saw ${hits:-0} hits; the restore did not come from the remote\" >&2; exit 1; }",
+          "line_sha256": "58609ec6e0175d5da421d0c1fe2d985efbb47bf87e5d2609314857d38584c7a3",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${after_puts}\" -eq \"${before_puts}\" ] \\",
+          "line_sha256": "a528cf832d34cf784018a64edaada31e99ad4fd605f03b0ae2eff86cd53006a9",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -751,12 +1056,33 @@
           "line_sha256": "7d1cb3e324b12c8b9b18ffec5de18928ac107f109b4687bce495e9a8e8e43783",
           "count": 1,
           "why": "closes the multi-line curl command substitution of the oversized probe (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$app_key_a\" = \"$app_key_b\" ] \\",
+          "line_sha256": "bc7db97612f4e5adc4b3f2a1b29f531d4bac194fedaefb32d294c2839495fdd5",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$app_code\" = \"404\" ] \\",
+          "line_sha256": "c67b142474d9c5069066855aa1707340c2190fbc23b06bdad40984737e46a8f7",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$code\" = \"404\" ] || { echo \"::error::rejected entry is retrievable (${code}) - it was stored\" >&2; exit 1; }",
+          "line_sha256": "589135d0238723b23ca8b4372ee422098dc0d8d6043e1d322d0d4214005e66e2",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "4e2218ed1a0f0f47e7d2ceb0118f2fb7a3899615c49e9068d87e2a2cb4b7cf2d",
+      "sha256": "b5a90d42a2ec4e4f57574e2fa2b4aa6b784d0db59f1d47d674e0077fe7452a54",
       "tools": [
         "at",
         "awk",
@@ -790,15 +1116,15 @@
         },
         {
           "rule": "deny",
-          "line": "  if ! docker run --rm -v \"$TRACE_BIN\":/trace:ro --entrypoint /trace/strace \"$DISTROLESS\" -V > /tmp/strace.ver 2>&1; then",
-          "line_sha256": "bcd2a19d1f7e3332ebf52f4cd3096a802eaf418a95ae129d046952bcfcbb417a",
+          "line": "  if ! docker run --rm -v \"$TRACE_BIN\":/trace:ro --entrypoint /trace/strace gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab -V > /tmp/strace.ver 2>&1; then",
+          "line_sha256": "ebcef252a247fc58426992acb4fe8598d542c430a59ad9e2e9b4a1faed4bccdd",
           "count": 1,
           "why": "docker runs the static strace as the entrypoint of the candidate or of a libc-less proof image (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
         },
         {
           "rule": "deny",
-          "line": "  docker run -d --name \"fscache-cand-${label}\" --net \"container:fscache-net-${label}\" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v \"$TRACE_BIN\":/trace:ro -v \"$TRACE_OUT\":/out --entrypoint /trace/strace \"$REF\" -f -e trace=network -yy -qq -o \"/out/${label}.strace\" \"$CANDIDATE_ENTRYPOINT\" >/dev/null",
-          "line_sha256": "772cea4f885d36e00c57847b4a38b117665ffe55472ee5db3f5379547b302fae",
+          "line": "  docker run --pull=never -d --name \"fscache-cand-${label}\" --net \"container:fscache-net-${label}\" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v \"$TRACE_BIN\":/trace:ro -v \"$TRACE_OUT\":/out --entrypoint /trace/strace localhost/fscache-egress-candidate -f -e trace=network -yy -qq -o \"/out/${label}.strace\" \"$CANDIDATE_ENTRYPOINT\" >/dev/null",
+          "line_sha256": "8ab796f760809dc18a766e4c3548d732c889f42ce427f4510fc74009c3d6807e",
           "count": 1,
           "why": "docker runs the static strace as the entrypoint of the candidate or of a libc-less proof image (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
         },
@@ -822,12 +1148,61 @@
           "line_sha256": "66dd54413664c73775e8b7af843b58db19f5ab3c8a76e4414140d58345df2cde",
           "count": 1,
           "why": "closes the multi-line awk program that filters the raw trace (its operands are the raw and ext files) (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "  echo \"${label}: allowed_exact={127.0.0.1, ::1, ${OWN_IP} (self)${OWN_IP6:+, ${OWN_IP6} (self6)}} packet[dns=${dns} non_allowed_outbound=${ext}] syscall[dns=${sdns} non_allowed_attempts=${sext}]\"",
+          "line_sha256": "07784197713d47812f8d31147ab55cbdc8b4af2e4ad494d9e076e8d2872dd876",
+          "count": 1,
+          "why": "prose inside an echo string: packet[dns=${dns} ...] and syscall[...] are literal text with plain parameter expansions, never evaluated as a subscript (REQ-CHAIN-001-AC1: a subscript NAME[ ... holding a substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "  if [ \"$rc\" -ne 0 ] && [ \"$(cat \"/tmp/${label}.sys.dnscount\")\" = \"0\" ] && [ \"$(cat \"/tmp/${label}.sys.extcount\")\" = \"0\" ]; then",
+          "line_sha256": "b63bc38c04bb0883d2844f91aee3420795669314ab0fa1e0e52bc02404151c2b",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  if [ \"$(cat \"/tmp/${label}.sys.usable\")\" != \"ok\" ]; then",
+          "line_sha256": "9b0d1644a89dabb59b23a32d9f4952ec13060844b500c5b9c6ed681ab92c238f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -n \"$STRACE_SHA256\" ] || fail \"STRACE_SHA256 is not pinned; refusing to build the syscall tracer from unverified source (fail closed). Pin the published checksum of strace-${STRACE_VER}.tar.xz.\"",
+          "line_sha256": "12ad183f8ffcf9247ec9d4f2e1730746f086f8452f88098c7012e1d0005d4ffb",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -n \"$own6\" ] && allowed=\"${allowed} ${own6}\"",
+          "line_sha256": "b919e2618a02fa8aa1c9ce7e8869797e51a83f2d2d6d00926a691c49de506cf9",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -s \"$pcap\" ] || { echo \"::error::${label}: capture ${pcap} missing or empty (monitor failure)\" >&2; return 1; }",
+          "line_sha256": "79b7b9114f704adde37ed27e29e6ae67625625fd2fa624affe232934a2ccffa7",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$total\" -gt 0 ] || { echo \"::error::${label}: capture contained zero packets (monitor blind)\" >&2; return 1; }",
+          "line_sha256": "a944589ff39491c9958ff81e5828c6fd9c6266fbe35587058c99f36625c994a4",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
     {
       "path": "bin/acceptance-k8s.sh",
-      "sha256": "5309a7c0dd6491d093cf5dd5d684ddfef484626cd102eeb94f2b3af29c31990b",
+      "sha256": "559d11a534978607c3176b899c64239e20127dc9e0a7a4a1da114b5fe19087a9",
       "tools": [
         "at",
         "bash",
@@ -867,7 +1242,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "092bccd574d09084d1f75b00b3985099d5216f58680a3544d7021650ef9a2946",
+      "sha256": "26f711ac440240a0baa0057bb5fa0c6b4b4602f20ebd0c5b110a5f2b8dc5acc7",
       "tools": [
         "curl",
         "docker",
@@ -879,7 +1254,16 @@
         "bin/loopback-get.sh"
       ],
       "signs": false,
-      "reason": "starts the candidate as acceptance.yml's release-chain mode does (REQ-CHAIN-006-AC5)"
+      "reason": "starts the candidate as acceptance.yml's release-chain mode does (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[ -n \"${IMAGE_REF:-}\" ] || { echo \"acceptance-serve: IMAGE_REF is unset\" >&2; exit 2; }",
+          "line_sha256": "a7202d42c28be3cd7fd93c0abe990931ff36274c6312ee55b9706a6fc04ade30",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
+      ]
     },
     {
       "path": "bin/install-kind.sh",
@@ -892,7 +1276,16 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "installs kind and kubectl at exact versions against committed sha256 (REQ-CHAIN-006-AC14)"
+      "reason": "installs kind and kubectl at exact versions against committed sha256 (REQ-CHAIN-006-AC14)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[ \"$(uname -s)-$(uname -m)\" = Linux-x86_64 ] || { echo \"install-kind: only linux amd64 is pinned (the Check runner is ubuntu-24.04)\" >&2; exit 1; }",
+          "line_sha256": "af6d30eba1ea58ca8a9c0c6e505928a618923927c3bb79e95e4e1e695719e779",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
+      ]
     },
     {
       "path": "bin/check-guide-plan.py",
@@ -1002,6 +1395,20 @@
           "line_sha256": "e99e518bdf9b4095382076dbcae483c87e7a4cf6d24ac87d16dd128618e7b282",
           "count": 1,
           "why": "a line of an strace fixture in an UNQUOTED heredoc: ${OWN} is the only expansion in it and the quotes are text of the fixture (REQ-CHAIN-001-AC1: an unquoted heredoc body line holding a substitution and a quote is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "    fail=$((fail+1)); echo \"FAIL: ${desc} (exit ${got}, want ${want}) out=[${out}] err=[$(cat \"$TMP/err\")]\"",
+          "line_sha256": "e2f105ada3c2d65ddd1bc5ba5833b75cc1bf1fb26441e76a662c5068c3c4d302",
+          "count": 1,
+          "why": "prose in the failure message of the test helper: out=[${out}] err=[$(cat ...)] are literal brackets around plain expansions in an echo string, never a subscript (REQ-CHAIN-001-AC1: a subscript whose text starts with a substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "  if [ \"$ok\" = 1 ]; then pass=$((pass+1)); else",
+          "line_sha256": "f73d14d5999f4a9890f3543a859b09ff2e60af3d6207b40fb7ec80f5b88777f9",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) or an assignment on this line holds arithmetic $(( ... )) next to a bracket: it is arithmetic, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, every waived line is real arithmetic)"
         }
       ]
     },
@@ -1050,6 +1457,50 @@
       "sha256": "c9492711e09669c9d8c7ffce59ce35a7350363b3facb99034458da911e332de8",
       "reads_env": [
         "APK_RELEASE_SIGNING_KEY"
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "if [ -z \"${APK_RELEASE_SIGNING_KEY:-}\" ]; then echo \"release-apks: APK_RELEASE_SIGNING_KEY is unset\" >&2; exit 2; fi",
+          "line_sha256": "b2768dc581254bd195b47373c7599227b761f888db2b03a64d8e9294f56ffdbb",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-apks: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never signs)\" >&2; exit 1; }",
+          "line_sha256": "53332d23d89044b0a2accd7fe78feab1abb4e543ce0e895965189632ddd4f030",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    if [ \"${#files[@]}\" = 0 ]; then echo \"release-apks: no apk found for $variant $arch\" >&2; exit 1; fi",
+          "line_sha256": "4f1c32be17321330902fd0ca158f0d8d673a983c8e9368a6137a1383a5fb372a",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    if [ \"${#files[@]}\" != 1 ]; then echo \"release-apks: ${#files[@]} $variant apks for $arch, Build attested exactly one\" >&2; exit 1; fi",
+          "line_sha256": "7e447fc2ffedebd3910013af470837b5f3b221faa25fa63ec74a9ec943f02d89",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    if [ -f \"rapks/$runner/$arch/${files[0]##*/}\" ]; then cp \"rapks/$runner/$arch/${files[0]##*/}\" \"release-apks-rebuild/$arch/\"; fi",
+          "line_sha256": "7f819748eccb840f4f976789d0b350bb796e16e5fc87822e579b8c4c8deae3b7",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    if [ \"$got\" != \"$want\" ]; then echo \"release-apks: ${files[0]} differs from the digest Build attested for $key ($got, attested $want)\" >&2; exit 1; fi",
+          "line_sha256": "4c6b10f482d126354e5a4a5fdd9db588158e1e0f7d2f68bbae8bb143e10d8545",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
       ]
     },
     {
@@ -1070,6 +1521,43 @@
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
         "GH_TOKEN"
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "  if [ -z \"${!name:-}\" ]; then echo \"release-publish: $name is unset\" >&2; exit 2; fi",
+          "line_sha256": "b33467e870161493005cadacb59e992f3b4a6183524ad1f20c4dc26daa2d1edb",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-publish: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)\" >&2; exit 1; }",
+          "line_sha256": "6ddd77257e073559d10a1e5a84f7e1623200005d31ef9a290d27bac758853c1c",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  if [ \"$own\" != \"${pair#*:}\" ]; then echo \"release-publish: images/${pair%%:*} is $own, Build attested ${pair#*:}: refusing to publish it\" >&2; exit 1; fi",
+          "line_sha256": "4852304a8ac7bb8ae91dc2abc4a5918498ed0c1579cf2eca4c76849d4de7eb25",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    want=\"$prod\"; [ \"${entry%%:*}\" = fips ] && want=\"$fips\"",
+          "line_sha256": "1ef923e0855bd10ef7f6ad6275a077edae3c38f8a0fe88aabd831c065b0a679e",
+          "count": 2,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  if [ \"$highest\" = \"$ver\" ]; then plan+=(\"production:${ver%%.*}\" \"production:latest\"); fi",
+          "line_sha256": "28601330ec12bb7daf5fe62e79a6cf8390227cc8b80121dfdf862ca888e98398",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
       ]
     },
     {
@@ -1093,6 +1581,22 @@
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
         "GH_TOKEN"
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "  if [ -z \"${!name:-}\" ]; then echo \"release-sign: $name is unset\" >&2; exit 2; fi",
+          "line_sha256": "18a76e77de3fce5659a5630e6611566cc5cacf27b1006c19ab052614449aeb00",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-sign: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)\" >&2; exit 1; }",
+          "line_sha256": "6fb5bc63ef42405f8c8e6942e3b50560a86793a9964a29430e1bbdaa9639847b",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
       ]
     },
     {
@@ -1110,6 +1614,78 @@
       "sha256": "b46bbe571ce4a4146cb3ae2a846e44230f05cf875e88546d4f918e9bbf6c579f",
       "reads_env": [
         "GH_TOKEN"
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "if [ -z \"${GH_TOKEN:-}\" ]; then echo \"release-assets: GH_TOKEN is unset\" >&2; exit 2; fi",
+          "line_sha256": "e5778de5c31451c3398b89c86cab491aa376118285c29c9c3415f7ecf4eca244",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || { echo \"release-assets: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)\" >&2; exit 1; }",
+          "line_sha256": "c9c53c71c1636a42c620cc2a666e2542dc3adf726b7430f7862cbaf2f8b7d884",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${#std[@]}\" = 1 ] || { echo \"release-assets: release-apks/$arch must hold exactly one standard apk (fscache-VERSION.apk), it holds ${#std[@]}: the list is incomplete\" >&2; exit 1; }",
+          "line_sha256": "cd894eeae368b0dd48df4e1074dc53fe2072a448e9f602fad3c33b34deb42251",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${#fips[@]}\" = 1 ] || { echo \"release-assets: release-apks/$arch must hold exactly one -fips apk (fscache-fips-VERSION.apk), it holds ${#fips[@]}: the list is incomplete\" >&2; exit 1; }",
+          "line_sha256": "083c44a013067df226d8aac79f76358eee31f009a0411e329aa2be1109e7857f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${#all[@]}\" = 2 ] || { echo \"release-assets: release-apks/$arch holds ${#all[@]} apks, exactly the two Build attested are attached\" >&2; exit 1; }",
+          "line_sha256": "26784fe3fe704e2fc17275f8ff73019efc8ed689cc1e8abfc0b642ed0f469c91",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    ok=0; for n in \"$@\"; do [ \"${f##*/}\" = \"$n\" ] && ok=1; done",
+          "line_sha256": "5f26c662fe0f0760e6f99d7d01b266a91d038c9539993e5455389cfe59a51b20",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    if [ -f \"${kind#*:}\" ]; then stage \"${kind#*:}\" \"${kind%%:*}\"; fi",
+          "line_sha256": "98ad9e8e4c6ff8d27086410624c0463f39f71403a5c1f47215a88129e969e141",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "for f in dist/*.txt; do [ \"${f##*/}\" = checksums.txt ] || { echo \"release-assets: $f is not in the inventory of dist (the four archives and checksums.txt)\" >&2; exit 1; }; done",
+          "line_sha256": "1aaceda5b1224333b2c979a4c90bd467dd4409f185bc773dc70d8abc0d5caa72",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "if [ \"${#files[@]}\" = 0 ]; then echo \"release-assets: nothing to attach\" >&2; exit 1; fi",
+          "line_sha256": "f6e82ba4a511d2fa5f5b0ddb9fae3d8c944096446d7970809a69ae4ca108387d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "elif [ \"${notes[0]}\" = --notes-file ]; then",
+          "line_sha256": "303fb7eecc84abb7eb64ffed1e0c3f9aed9b638549c377ce213b4fc60794549e",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
       ]
     },
     {
@@ -1125,6 +1701,15 @@
       "sha256": "2b706582f3d46ec1f22e0ebda52f0878376c75e77ccf36212054f58b41e84f9b",
       "reads_env": [
         "GH_TOKEN"
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[ -n \"${GH_TOKEN:-}\" ] || { echo \"release-postverify: GH_TOKEN is unset\" >&2; exit 2; }",
+          "line_sha256": "69ef7a2b92d28fd0326c990cc64034e02be75883511cce8a2b83552418ea8c9a",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
       ]
     },
     {
@@ -1219,7 +1804,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "72f76c959bf3f459d9a4344ad86e7a8f79306d79d707bca2cb75ac4d43785485",
+      "sha256": "17b9bf66d3e04bb0dfd38ac21310f20ef37b6c34b8aa5b6f2993889e44b64d0d",
       "tools": [
         "at",
         "curl",
@@ -1238,7 +1823,30 @@
         "bin/loopback-get.sh"
       ],
       "signs": false,
-      "reason": "Check's artifact checks: the amd64 binaries execute, the FIPS postures, no shell in the production and -fips images, platform entries and serving (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, AC2, REQ-FIPS-002-AC1)"
+      "reason": "Check's artifact checks: the amd64 binaries execute, the FIPS postures, no shell in the production and -fips images, platform entries and serving (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, AC2, REQ-FIPS-002-AC1)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "stop_last() { kill \"${pids[${#pids[@]}-1]}\" > /dev/null 2>&1 || true; }",
+          "line_sha256": "0d964a14c5ea1af0f5292642809f0f8f615d89eb2394e012d043d5a2ff4b6677",
+          "count": 1,
+          "why": "a plain parameter expansion of an array element: ${pids[${#pids[@]}-1]} is the last element of pids, the nested ${#pids[@]} is a length (REQ-CHAIN-001-AC1: a subscript NAME[ ... holding a substitution is refused unless waived here)"
+        },
+        {
+          "rule": "deny",
+          "line": "roundtrip() { lg -sf ${3:+-u \"$3\"} -X PUT --data-binary \"$2\" \"http://127.0.0.1:$1/acckey\" > /dev/null && [ \"$(lg -sf ${3:+-u \"$3\"} \"http://127.0.0.1:$1/acckey\")\" = \"$2\" ]; }",
+          "line_sha256": "68441c2c86a64fda99911aeb674d1c322c2d2e17a7f943b1e0e107ebdca53c5b",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    [ \"${#found[@]}\" = 1 ] || fail \"the Linux $a archive of $n is missing or not unique in $archives\"",
+          "line_sha256": "ffa64d6fb077b354e7d898758f1af225085aad344350cb7f0b06c5bb577a28d7",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        }
+      ]
     },
     {
       "path": "bin/check-image-platforms.py",
@@ -1442,6 +2050,62 @@
           "rule": "script-name",
           "text": "build-apk.sh",
           "why": "a comment naming the sibling script whose way of naming its helpers this file follows (repo-relative literal paths); prose, never run from here"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$(basename \"$keyfile\")\" = release.rsa ] || die \"--key must be a file named release.rsa: melange names the signature after the key file, and the committed public key is build/keys/release.rsa.pub\"",
+          "line_sha256": "778607070774d4ea884498a62ba3d2b4a3e2d4a7298f6e90cf309f3a7409557a",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ ${#apks[@]} -gt 0 ] || die \"no apk in $orig_a\"",
+          "line_sha256": "0c465c41778098158f8fc325dcca5187f8b3bc1bc494e1d9580370a5f2a40eb1",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$(\"$PY3\" -I -B bin/apk-tool.py signer \"$orig_a/$rel\")\" = release.rsa.pub ] || die \"after replacing, ${rel#./} in $orig_a is not signed by release.rsa.pub; discard the directory\" 1",
+          "line_sha256": "d17bc0110e83028ab9a33ed16e1a69e6952ccefe1bed960dfc50d36ff778fb5e",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -z \"$ctl\" ] || die \"a file name under $d holds a control character (newline or other): ${ctl#\"$d\"/}; refusing (a name is never split into two)\"",
+          "line_sha256": "c5cb77bf9ce3302712e5cbd2e35204d6da817856f598354be4a49a90e534284d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -f \"$cb/$rel\" ] || die \"the Rebuild directory has no counterpart for ${rel#./}; Build and Rebuild must produce the same apks\"",
+          "line_sha256": "413acd6c889bad5d8beab92de4dc84acbf65f847c1aad7898b1c466692bcfc66",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -f \"$ca/$rel\" ] || die \"the Rebuild directory has an extra apk ${rel#./} that Build did not make (no counterpart in Build); refusing\"",
+          "line_sha256": "ddf5f81bc647146e9eaaef3788cddb134ccf9f2c661d67894efa36c75f1e4a37",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    [ \"$sg\" = assembly.rsa.pub ] || die \"${rel#./} is signed by '$sg', not assembly.rsa.pub: Build and Rebuild must both carry the assembly key's signature\"",
+          "line_sha256": "bf0cd9ceafc7df2de5a537908c294a5970db5f86453045fd41e130d3f5fa7ccb",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$signer\" = release.rsa.pub ] || die \"${rel#./} is signed by '$signer', not release.rsa.pub; nothing in $orig_a was changed\" 1",
+          "line_sha256": "cdafaca2bb8feae6f3ade2acaf46d44da378429425627d9e632f9dea6f5ffa44",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ],
       "env_mentions": [
@@ -1488,6 +2152,125 @@
           "rule": "script-name",
           "text": "bin/install-scanner.sh",
           "why": "a comment naming the installer that puts the pinned Go toolchain at the fixed path; never run from here"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$(uname -s)\" = Linux ] || die \"refusing to run on $(uname -s): this script uses sudo, unshare and the sealed build tools, which run on Linux only (inside a Linux container or on a GitHub runner), never on the Mac itself\" 2",
+          "line_sha256": "0a280da80a7768b3bda26d8fabd161bd2d1574264badca47bf498b718341107f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$(uname -s)\" = Linux ] || die \"build-apk.sh runs on Linux only (melange's bubblewrap runner and unshare -n)\"",
+          "line_sha256": "8841ce12df65f5ba7ce664ede2d542811ec9d9ca3a5bf34c2eaaceac6d2ad5ad",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die \"SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)\"",
+          "line_sha256": "d099f153dfd42d4acd2d76778e4257f1d14edb8c9033f0307519ed2177a39dca",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -z \"${APK_RELEASE_SIGNING_KEY:-}\" ] || die \"the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is defined)\"",
+          "line_sha256": "e8fa78059630046cb4d0e37829740b1c55654a3fdec02b584f7dcdeb6c1d864a",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "if [ -n \"${GOPROXY+x}\" ] && [ \"${GOPROXY}\" != off ]; then die \"GOPROXY must be off or unset (its value is not printed: it can carry a credential)\"; fi",
+          "line_sha256": "ccb0455d9a822fef3da545ca50e7238361b6194174a1174757be3cdcf14a5874",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -z \"${!p:-}\" ] || die \"a proxy is defined in the environment ($p); the sealed build has no network\"",
+          "line_sha256": "3010551bff2afc13195cfa7787a0e03b4c07374fa2589c0e2899022c61f09aff",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"${#sealed[@]}\" -ge 4 ] || die \"the sealed environment could not be made (build/sealed-env.json, SOURCE_DATE_EPOCH)\" 1",
+          "line_sha256": "1ffd6766a294c38635ce256e644bfc634e6b17a2bfcd4126c0b9a5acf741924d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$(printf '%s\\n' \"$gov\" | head -n 1 | sed 's/^[^:]*: //')\" = \"$(head -n 1 \"$tmp/buildinfo.txt\" | sed 's/^[^:]*: //')\" ] || die \"the Go toolchain in buildinfo.txt ($(head -n 1 \"$tmp/buildinfo.txt\" | sed 's/^[^:]*: //')) differs from the one go version -m reports for the packaged binary ($(printf '%s\\n' \"$gov\" | head -n 1 | sed 's/^[^:]*: //'))\" 1",
+          "line_sha256": "5db052994b9eaff2437969b89164e0caf25872d15e6363a6f31e2d69b43a8d67",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$(printf '%s\\n' \"$gov\" | tail -n +2)\" = \"$(tail -n +2 \"$tmp/buildinfo.txt\")\" ] || die \"buildinfo.txt in the apk differs from 'go version -m' of the packaged binary: the recorded build information is not the binary's own\" 1",
+          "line_sha256": "42d7e238643a1f0228fbfbd062c0125a37a16021f9ecc31f59f820df393219eb",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "elif [ $gorc -eq 127 ] && [ -n \"${GITHUB_ACTIONS:-}\" ]; then",
+          "line_sha256": "674a9668f6365f808668a33e5cdc789eaf30be7b96e0abbd6b76a0e491cdcb7e",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "mkdir -p \"$out\"; out=$(absd \"$out\"); [ -z \"$apkcache\" ] || apkcache=$(absd \"$apkcache\")",
+          "line_sha256": "ac97c64dcfe21df2bc8e37a9e996ffb4da175d9c4d1fd999c50f2c5a99ef2864",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "if [ -n \"$render\" ]; then mkdir -p \"$render\"; render=$(absd \"$render\"); fi",
+          "line_sha256": "1a68f76e08c2d9b3c00654494cb2322401f54af2eddc040a38830c45ea9425a5",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -z \"$extra\" ] || die \"the melange lock $mlock has lines the recipe does not pin ($(printf '%s' \"$extra\" | head -n 3 | tr '\\n' ' ')): the recipe and the lock must agree both ways\"",
+          "line_sha256": "6ae77a0d74ad143ee38688cab7f9ae65336ac221cdda0763d01d0a8addc1798d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$mainver\" = \"v$version\" ] || die \"the binary's main module version is '${mainver:-none}', not v$version: the build is not stamped with the version being built (a tag at the source HEAD is needed)\" 1",
+          "line_sha256": "f00ea3209bec257b542bab6d6c50c4c9d3a11f21aac23a36204028cc1d998abb",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -n \"$binrev\" ] && [ \"$binrev\" = \"$headrev\" ] || die \"the binary's vcs.revision is '${binrev:-none}', not the source HEAD $headrev: the binary is not tied to this source\" 1",
+          "line_sha256": "d3e8d333023a21ad73b34e40274f6a0aac26c497b278c6af369ee72bd8868dc1",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$fipsvals\" = \"GOFIPS140=v1.0.0-c2097c7c\" ] || die \"the fips binary must record exactly one GOFIPS140=v1.0.0-c2097c7c and nothing else (found: ${fipsvals:-none})\" 1",
+          "line_sha256": "d702c5f2fa63ec57010d630e165a2576ab4b77be29cbaf20885a78a771b5c05b",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "if [ -x \"$GO_TOOL\" ]; then gov=$(\"$ENVBIN\" GOTOOLCHAIN=local GOFLAGS= GOENV=off \"$GO_TOOL\" version -m \"$tmp/fscache.bin\" 2>\"$tmp/go.err\") || gorc=$?; else gorc=127; fi",
+          "line_sha256": "1799c368e5b9c477815386e822e4ae22b73ea7c84eada82e0bf8d2d7a8da5f7e",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ],
       "env_mentions": [
@@ -1525,6 +2308,90 @@
           "rule": "script-name",
           "text": "bin/assemble-image-test.sh",
           "why": "a comment or message naming the script; prose, never run from here"
+        },
+        {
+          "rule": "deny",
+          "line": "here_=${BASH_SOURCE[0]%/*}; [ \"$here_\" != \"${BASH_SOURCE[0]}\" ] || here_=.   # the script's own directory without running dirname",
+          "line_sha256": "3f446b1de94d1338ffd698dedd21f769dd6139c3c2531d8199df5a407f5ea3d8",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ \"$(pwd -P)\" = \"$root\" ] || die \"assemble-image.sh runs from the repository root ($root), not from $(pwd -P): the helpers are named by repo-root-relative paths\" 2",
+          "line_sha256": "974533b073caea6c41d3005603b5a1be32e48b649415b8e939699acaa7bf8c39",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$(printf '%s' \"${pair#*:}\" | LC_ALL=C tr -d '\\040-\\176'; printf x)\" = x ] || die \"${pair%%:*} holds a control character or a byte outside printable ASCII (a newline, a C1 control or any byte >= 0x80); refusing, the path arguments are plain ASCII text\"",
+          "line_sha256": "c2a79ca86200af4823d8d2d6f16ef55931a8bdbd93bb693c8b75d1da639c6111",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"${pair%%:*}\" = --render-dir ] && [ -z \"${pair#*:}\" ] && continue   # no render directory given: a private temporary one is used",
+          "line_sha256": "677de528b720d26129cc9657f11ccc6994062a7d67a69ab776ada32506b4201b",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ -n \"${pair#*:}\" ] || die \"${pair%%:*} is empty; refusing (an empty value would silently mean the current directory)\"",
+          "line_sha256": "0e409447933b9a32c7a5907b2245fdcb48e07bfac5a4c7ef3249a56a3a8ff33f",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  p_=${pair#*:}; while [ \"${p_%/}\" != \"$p_\" ] && [ \"$p_\" != / ]; do p_=${p_%/}; done   # a trailing slash would hide the symlink from -L",
+          "line_sha256": "fbe2cbc8db0d5c8304474a8d0da040aefb15085ca320d67c60f78e40882d12ab",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die \"SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)\"",
+          "line_sha256": "d099f153dfd42d4acd2d76778e4257f1d14edb8c9033f0307519ed2177a39dca",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    [ ${#madelinks[@]} -eq 0 ] || \"$SUDO\" rm -f \"${madelinks[@]}\" >/dev/null 2>&1",
+          "line_sha256": "16b8679e51b61dd3f86f34c4b22c515d78fa9a9e9041d8e9717f68d97ba7d5a4",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "if [ \"${#sbomfiles[@]}\" = 1 ]; then sbomsrc=${sbomfiles[0]}; elif [ -f \"$tmp/sbom/sbom-index.spdx.json\" ]; then sbomsrc=$tmp/sbom/sbom-index.spdx.json; else sbomsrc=; fi",
+          "line_sha256": "2bc6302f476445bec6b5635d439c8ac39e3b1722aefbb4bed038ef63cc904ba3",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ ! -L \"$p_\" ] || die \"${pair%%:*} ${pair#*:} is a symlink; refusing (a root of the inputs or the result must be a real directory)\"",
+          "line_sha256": "cc82363b395bfa2914aee30dc51de386c2062678da9defbe6ff2bf927c1ba7e2",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -z \"$render\" ] || render=$(absf \"$render\")",
+          "line_sha256": "6c9350212ebfc4cfcad09fc659e3bf40a8a0ece73b0e7958963c648ff028220d",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "[ -n \"$sbomsrc\" ] && [ -f \"$sbomsrc\" ] || die \"apko wrote ${#sbomfiles[@]} SBOM files and none is the image index SBOM (sbom-index.spdx.json); cannot choose the one image SBOM\" 1",
+          "line_sha256": "779670e5e44ae8b34f41f66ced484aae2da92aea2c8fe239d4294464008d4ea2",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },

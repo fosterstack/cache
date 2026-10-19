@@ -76,6 +76,35 @@ def prev_ok(l, i, ch):
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
+SUBSCRIPT_SUBST = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^\]\n]*(?:\$\((?!\()|\$\{|`|\\\$|\\`)")      # NAME[ ... $( | ${ | ` | \$ | \` ... : builtins (printf -v, let, read, [[ -v, typeset -n, ${!x}, $(( ))) evaluate such a string as a subscript and run it
+
+SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\(|\$\{(?!#[A-Za-z_][A-Za-z0-9_]*\[[@*]\])|`|\\\$|\\`)")   # a [ whose text starts (after blanks or empty quote pairs) with a substitution opener, whatever precedes it (a quoted, escaped or built name); ${#name[@]} is a length and not refused
+SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
+
+def subscript_holds_opener(l):
+    # default deny: once a bracket holds a backslash or a quote, the place of its closing ] is not readable
+    # from the text (quote removal re-pairs quotes), so any opener later on the logical line refuses it
+    for i, ch in enumerate(l):
+        if ch != "[": continue
+        if i > 0 and l[i - 1] == "[": continue
+        j, depth, unreliable = i + 1, 1, False
+        while j < len(l) and (depth > 0 or unreliable):
+            c = l[j]
+            if c == "\\":
+                if l[j + 1:j + 2] in ("$", "`"): return True
+                unreliable = True
+                j += 2; continue
+            if c == "`": return True
+            if c == "$" and (l.startswith("$(", j) or l.startswith("${", j)): return True   # $(( too: bash reads it as a command substitution when it does not close as arithmetic
+            if c in "\"'":
+                unreliable = True
+                j += 1; continue
+            if c == "[": depth += 1
+            elif c == "]": depth -= 1
+            j += 1
+    return False
+OPENER_BUILT = re.compile(r"\$(?:\'\'|\"\")|\$'(?:[^'\\]|\\.)*\\(?:x[0-9A-Fa-f]|[0-7]|u[0-9A-Fa-f]|U[0-9A-Fa-f])")   # $'' / $"" or an ANSI-C string with a hex, octal or unicode escape: builds an opener the text scan cannot read
+
 OPENER = {"sq": "'", "dq": '"', "ansi": "$'", "cmd": "$(", "brace": "${", "bt": "`", "arith": "$((", "brk": "$["}
 
 def strip_lines(lines, base=None, closers=None):
@@ -89,12 +118,14 @@ def strip_lines(lines, base=None, closers=None):
     out, errs = [], []
     st, hd = ([base] if base else []), None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented, quoted)] still to be read inside a heredoc body
     DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
+    asub = []                                          # context depth (len(st)) of each open [ of an ASSIGNMENT subscript; open [ of an ASSIGNMENT subscript NAME[ ... ]=: bash reads it across newlines and starts no comment in it
     cont = base == "hb"                                       # the previous line ends in a backslash: bash joins this line to it
     for n, l in enumerate(lines):
         if hd is not None:
             if hd[0][2]: out.append(strip_line(l))                           # a quoted delimiter: the body is data
             else:                                                            # an unquoted body still runs $( ) and backticks, # or no #: keep it whole, and refuse what runs on past the line
                 out.append(l)
+                if re.search(r"\$\{(?:[ \t|]|$)", l) and closers is not None: closers.append(("funsub", n))     # bash 5.3 ${ cmd; } runs in an unquoted body too
                 if re.search(r"\$\(|\$\{|`", l) and re.search(r"['\"]", l) and closers is not None: closers.append(("hd", n))   # DEFAULT DENY: in an unquoted body bash reads ' and " as plain text outside a substitution and as quotes inside it; the reader cannot tell which a line means
                 if strip_lines([l], "hb")[1] or re.search(r"(?<!\\)(?:\\\\)*\\$", l):
                     errs.append("line %d: an unquoted heredoc body line that opens a substitution it does not close, or ends in a backslash, is not resolved" % (n + 1))
@@ -103,6 +134,8 @@ def strip_lines(lines, base=None, closers=None):
         if cont: pass                                  # a joined line: a # at its start is inside a word, and the line is kept whole
         elif st and st[-1] in DATA + ("bt",) and l.lstrip().startswith("#"):
             errs.append("line %d: a # line inside a quote or ${ } that is still open from an earlier line (bash reads it as part of the word, not as a comment)" % (n + 1))
+        elif asub and l.lstrip().startswith("#"):
+            if closers is not None: closers.append(("asub", n))                  # a # line inside an open assignment subscript is no comment (kept as code, refused)
         elif not (st and st[-1] in DATA + ("bt",)) and l.lstrip().startswith("#"):
             out.append(""); continue
         esc = prev_ws = False
@@ -117,7 +150,10 @@ def strip_lines(lines, base=None, closers=None):
             if ch in "()" and top in ("cmd", "paren", "bt", "case", "brk", "arith") and (bd.get(len(st), 0) > 0 or top == "brk") and any(c in ("dq", "brace") for c in st) \
                     and any(c in ("cmd", "bt", "paren") for c in st[max(k for k, c in enumerate(st) if c in ("dq", "brace")):]):
                 errs.append("line %d: a paren inside a bracket subscript or $[ ] inside a substitution inside double quotes or ${ } is not resolved (the command reader closes the substitution at it)" % (n + 1))
-            if ch in "[]" and top in ("cmd", "paren", "bt", "case", "arith"): bd[len(st)] = max(0, bd.get(len(st), 0) + (1 if ch == "[" else -1))
+            if top in (None, "cmd", "paren", "bt", "case"):
+                if ch == "[" and (asub or re.search(r"[A-Za-z_][A-Za-z0-9_]*$", l[:i]) or (i == 0 and cont)): asub.append(len(st))     # NAME[ whatever precedes NAME (fail closed), a [ that starts a continuation line (the name may end the previous one); any [ inside an open one
+                elif ch == "]" and asub and asub[-1] == len(st): asub.pop()                                   # only a ] at the depth of its [ ends it: a ] inside a $( ) or backticks opened in the subscript does not
+            if ch in "[]" and top in (None, "cmd", "paren", "bt", "case", "arith"): bd[len(st)] = max(0, bd.get(len(st), 0) + (1 if ch == "[" else -1))
             if ch == "c" and l[i:i + 5] == "case\\" and top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{"):
                 errs.append("line %d: case followed by a backslash is not resolved (bash reads case\\ + one character as an ordinary word, or joins the next line)" % (n + 1))
             if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
@@ -143,7 +179,9 @@ def strip_lines(lines, base=None, closers=None):
             elif ch == "$" and nxt == "'" and top not in ("dq", "hb"): st.append("ansi"); skip = i + 1
             elif ch == "$" and nxt == "(" and l[i + 2:i + 3] == "(": st.append("arith"); skip = i + 1
             elif ch == "$" and nxt == "(": st.append("cmd"); skip = i + 1
-            elif ch == "$" and nxt == "{": st.append("brace"); skip = i + 1
+            elif ch == "$" and nxt == "{":
+                st.append("brace"); skip = i + 1
+                if (l[i + 2:i + 3] in ("", " ", "\t", "|") or (l[i + 2:] == "\\")) and closers is not None: closers.append(("funsub", n))     # bash 5.3 ${ cmd; } / ${| cmd; }: it ends at a } in command position, which the reader does not model
             elif ch == "$" and nxt == "[" and top not in ("dq", "hb"): st.append("brk"); skip = i + 1
             elif ch == "`":
                 if top == "bt": st.pop()
@@ -157,23 +195,30 @@ def strip_lines(lines, base=None, closers=None):
             elif ch == "(" and nxt == "(" and top not in ("arith", "brk", "brace"): st.append("arith"); skip = i + 1
             elif ch == "(" and top not in ("arith", "brk", "brace"): st.append("paren")
             elif ch == "<" and nxt == "<" and l[i - 1:i] != "<" and l[i + 2:i + 3] != "<":
+                in_sub_ = (bd.get(len(st), 0) > 0 or bool(asub)) and top in (None, "cmd", "paren", "bt", "case")       # an open [ : in an assignment subscript bash reads << as an arithmetic shift
+                if in_sub_ and closers is not None: closers.append(("hdsubscript", n))
+                if closers is not None and (any(c_ in ("cmd", "bt") for c_ in st) or "paren" in st[minlen:] or top == "brace") and top not in ("arith", "brk"):
+                    closers.append(("hdsub", n))        # DEFAULT DENY: bash reads a heredoc inside a substitution, a ${ cmd; } or a ( ) group opened on this line before the heredocs of the enclosing line
                 if top in ("arith", "brk"):
                     errs.append("line %d: a << inside $(( )) or $[ ] is a shift or a heredoc and is not resolved" % (n + 1))
-                elif top == "bt":
-                    errs.append("line %d: a << inside backticks is not resolved (bash reads the backtick text on its own)" % (n + 1))
-                elif top != "brace":
+                elif top != "brace" and "bt" not in st and not in_sub_:          # a heredoc in backticks has no body in bash: not queued, so the lines after it are read as code (a waiver cannot hide them)
                     tab = l[i + 2:i + 3] == "-"
                     m = HEREDOC_WORD.match(l, i + 2 + tab)
                     if m: pend.append((m.group(1) or m.group(2) or m.group(3) or m.group(4), tab, m.group(4) is None))
                     else: errs.append("line %d: a << whose delimiter is not a plain word is not resolved" % (n + 1))
                 skip = i + 1
+            elif ch == "#" and i > 0 and prev_ws and asub and top in (None, "cmd", "paren", "bt", "case"):
+                if closers is not None: closers.append(("asub", n))               # a # inside an assignment subscript starts no comment in bash: kept as code, refused
             elif ch == "#" and i > 0 and prev_ws and top not in DATA and top != "bt":      # inside backticks bash ends the comment at the closing backtick: the line is kept whole
                 cut = i; break
             prev_ws = ch.isspace()
             minlen = min(minlen, len(st))
         cont = esc and cut is None
+        if asub and closers is not None: closers.append(("asub", n))          # an assignment subscript is still open at the end of the line
+        if cont and l.endswith("$\\") and closers is not None: closers.append(("funsub", n))    # $ at the end of a continued line: the next line may start with { and a blank (bash 5.3 ${ cmd; })
         if minlen < len(start_st) and any(c in OPENER for c in start_st[minlen:]) and closers is not None: closers.append(("ctx", n))    # this line closes a quote or substitution carried from an earlier line
         out.append(l if cut is None else l[:cut])
+        if len(pend) > 1 and closers is not None: closers.append(("hdmulti", n))      # DEFAULT DENY: the order in which bash reads several bodies is not modelled
         if pend:
             if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
             if st and st[-1] in ("sq", "dq", "ansi"): errs.append("line %d: a heredoc is started on a line that leaves a quote open and is not resolved" % (n + 1))
@@ -1377,8 +1422,24 @@ def scan_script(path, text, row, rows, base):
     closers = []                                   # body lines that close a quote or substitution carried from an earlier line
     pcode, qerrs = ([strip_line(l_) for l_ in body.splitlines()], []) if py else strip_lines(body.splitlines(), closers=closers)   # a Python file has docstrings and prose quotes: the shell quote model is for shell only
     for q in qerrs: add(None, "", "%s: %s" % (path, q))
+    if not py:                                     # DEFAULT DENY: a subscript that holds a substitution, or an opener built from quotes or escapes, in the raw text (code, quotes, a comment) of every LOGICAL line (continuations joined); waivable by a reviewed line-bound exception on the first physical line
+        phys_, k_ = body.splitlines(), 0
+        while k_ < len(phys_):
+            start_, cur_ = k_, phys_[k_]
+            while k_ + 1 < len(phys_) and (len(cur_) - len(cur_.rstrip("\\"))) % 2 == 1:
+                cur_ = cur_[:-1] + phys_[k_ + 1]; k_ += 1
+            k_ += 1
+            if OPENER_BUILT.search(cur_):
+                add("deny", phys_[start_], "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
+            if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_):
+                add("deny", phys_[start_], "%s: line %d has an array subscript NAME[ ... ] that holds a substitution ($( , ${ , a backtick): builtins evaluate such a string as a subscript at run time and run it: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
     for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
         if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"
+        elif kind_ == "funsub": msg_ = "opens a ${ command substitution (bash 5.3 ${ cmd; } or ${| cmd; }, which ends at a } in command position)"
+        elif kind_ == "asub": msg_ = "has an assignment subscript NAME[ ... ] that is open at the end of the line or holds a # (bash reads the subscript across lines and starts no comment in it)"
+        elif kind_ == "hdsubscript": msg_ = "has a << inside a [ ] subscript (bash reads it as an arithmetic shift in an assignment subscript and as a heredoc elsewhere)"
+        elif kind_ == "hdsub": msg_ = "opens a heredoc inside a substitution or group (bash reads its body before the heredocs of the enclosing line)"
+        elif kind_ == "hdmulti": msg_ = "opens more than one heredoc (the order in which bash reads the bodies is not modelled)"
         else: msg_ = "is an unquoted heredoc body line that holds a substitution and a quote (bash reads the quote as text outside the substitution and as a quote inside it)"
         add("deny", body.splitlines()[c_], "%s: line %d %s: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + c_ + 1, msg_), None if exotic else off + c_)
     while i_ < len(pcode):

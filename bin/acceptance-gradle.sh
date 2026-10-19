@@ -97,7 +97,7 @@ hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/metrics-warm.txt)
 warm_puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-warm.txt)
 echo "warm: hits=${hits:-0} (>= ${expected} required); PUTs cold=${cold_puts:-0} warm-cumulative=${warm_puts:-0} (must be equal)"
 [ "${hits:-0}" -ge "${expected}" ] || { echo "::error::server saw ${hits:-0} hits, expected at least ${expected}" >&2; exit 1; }
-[ "${warm_puts:-0}" -eq "${cold_puts:-0}" ] || { echo "::error::the warm build uploaded new entries — restored outputs must not re-upload" >&2; exit 1; }
+[ "${warm_puts:-0}" -eq "${cold_puts:-0}" ] || { echo "::error::the warm build uploaded new entries - restored outputs must not re-upload" >&2; exit 1; }
 )
 
 # acceptance.yml, job acceptance-gradle, step 13: assert restored outputs are byte-identical (working-directory bench/gradle-sample)
