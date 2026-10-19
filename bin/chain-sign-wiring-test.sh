@@ -3606,6 +3606,17 @@ sb sb_df $'read \'a[$((/usr/bin/touch mk) )]\' <<< x\n' caught 'holds a substitu
 sb sb_dg $'[[ -v \'a[$((/usr/bin/touch mk)|(id))]\' ]]\n' caught 'holds a substitution' '[[ -v, closes with ))'
 sb sb_dh $'let a[$((i+1))]=2\n' caught 'holds a substitution' 'even real arithmetic in a subscript is refused (default deny; waive by line)'
 sb sb_di $'i=1; x=$((i+1)); echo "$x"; [ -n "$x" ] && echo ok\n' ok - 'control: arithmetic outside any bracket'
+dc() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "declare-family compound assignment: $5"; }
+dc dc_a $'declare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'declare -a, single-quoted, $( )'
+dc dc_b $'local -a \'a=(x `/usr/bin/touch mk`)\'\n' caught 'compound assignment' 'local, backticks'
+dc dc_c $'typeset -a "a=(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'typeset, escaped $ in double quotes'
+dc dc_d $'readonly -a \'a=(x ${y:-z})\'\n' caught 'compound assignment' 'readonly, ${ }'
+dc dc_e $'export -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'export'
+dc dc_f $'declare -A \'m=([k]=$(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'declare -A, an associative element'
+dc dc_g $'declare -a "a="\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'quotes between = and ('
+dc dc_h $'declare -a a+=\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'append form +='
+dc dc_i $'declare -a arr=(1 2 3)\nlocal -a files=("$@")\nexport XX=1\nlocal n=$(date +%s)\necho ok\n' ok - 'control: unquoted compound assignments with no opener after the (, and an opener on its own line'
+dc dc_j $'x=$(date +%s); declare -a a=(1 2)\necho "$x"\n' ok - 'control: an opener BEFORE the =( on the line'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -3775,7 +3786,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1694
+EXPECT=1704
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
