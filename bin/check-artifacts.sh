@@ -11,6 +11,8 @@
 # --arch arm64 (REQ-CHAIN-006-AC17) runs the same checks on the linux/arm64 binaries and images; the check-arm64 job runs it on an arm64 runner. The default
 # is amd64, run by the check job. Writes OUT/artifacts-result.json (arm64: artifacts-result-arm64.json, with the arch) naming both candidate digests and every AC asserted. The certificate number is never written.
 set -euo pipefail
+LGROOT=$PWD
+lg() { (cd "$LGROOT" && sh bin/loopback-get.sh "$@"); }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 # an OCI layout directory (PR 2's interface, PROPOSED): oci-layout and an index.json; a docker-save tarball or any other directory is refused
 is_layout() { [ -d "$1" ] && [ -f "$1/oci-layout" ] && [ -f "$1/index.json" ]; }
 usage() { echo "usage: check-artifacts.sh [--arch amd64|arm64] --digests FILE --images DIR --archives DIR --out DIR" >&2; exit 2; }
@@ -47,10 +49,10 @@ trap cleanup EXIT
 
 checks="[]"
 passed() { checks=$(jq -c --arg ac "$1" --arg s "$2" '. + [{ac: $ac, subject: $s, result: "pass"}]' <<< "$checks"); }
-healthy() { for _ in $(seq 20); do curl -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0; sleep 0.5; done; return 1; }
-roundtrip() { curl -sf ${3:+-u "$3"} -X PUT --data-binary "$2" "http://127.0.0.1:$1/acckey" > /dev/null && [ "$(curl -sf ${3:+-u "$3"} "http://127.0.0.1:$1/acckey")" = "$2" ]; }
+healthy() { for _ in $(seq 20); do lg -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0; sleep 0.5; done; return 1; }
+roundtrip() { lg -sf ${3:+-u "$3"} -X PUT --data-binary "$2" "http://127.0.0.1:$1/acckey" > /dev/null && [ "$(lg -sf ${3:+-u "$3"} "http://127.0.0.1:$1/acckey")" = "$2" ]; }
 # the posture as one string, boolean first: it is compared whole, so the boolean and the note are checked together (round 1 F5)
-posture() { curl -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type == "object" and (.fips140 | type) == "boolean" and (.fips140_note | type) == "string" then "\(.fips140)|\(.fips140_note)|end" else "unreadable" end'; }
+posture() { lg -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type == "object" and (.fips140 | type) == "boolean" and (.fips140_note | type) == "string" then "\(.fips140)|\(.fips140_note)|end" else "unreadable" end'; }
 stop_last() { kill "${pids[${#pids[@]}-1]}" > /dev/null 2>&1 || true; }
 
 # the binaries of this architecture out of the archives (REQ-PLAT-001-AC1: each of the four archives must exist; this architecture's are executed)

@@ -4,7 +4,9 @@
 # loaded from Build's tarball). The old stage's evidence upload is not carried: Check uploads check-results/ only.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
-# step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
+# step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+LGROOT=$PWD
+lgin() { (cd "$LGROOT" && "$@" < bin/loopback-get.sh); }   # the loopback helper, fed on stdin to the client inside the shared network namespace (REQ-SUP-001-AC24)
 set -eo pipefail
 
 # stage-acceptance-egress.yml, job egress, step 2: capture from before startup, prove the monitor, run both policies
@@ -134,7 +136,7 @@ analyze_strace() {
 # UDP/SYN/DNS to any other address, private or public, is flagged.
 #
 # ANY tool/parse failure (unreadable pcap, tshark error, zero packets)
-# returns non-zero and, under errexit, fails the job. A broken
+# returns non-zero and, under `set -e`, fails the job. A broken
 # capture never passes silently.
 # ------------------------------------------------------------------
 analyze_pcap() {
@@ -254,7 +256,7 @@ run_scenario() {
   # read-write TRACE_OUT mount; the read-only TRACE_BIN mount carries
   # the tracer. strace then execs the real entrypoint. SYS_PTRACE and
   # an unconfined seccomp/apparmor profile are required for ptrace.
-  # FSCACHE_* env is inherited unchanged (none is defined here), so the
+  # FSCACHE_* env is inherited unchanged (none is set here), so the
   # cache runs identically to a bare `docker run "$REF"`.
   docker run -d --name "fscache-cand-${label}" --net "container:fscache-net-${label}" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v "$TRACE_BIN":/trace:ro -v "$TRACE_OUT":/out --entrypoint /trace/strace "$REF" -f -e trace=network -yy -qq -o "/out/${label}.strace" "$CANDIDATE_ENTRYPOINT" >/dev/null
   # ---- startup interval (capture already running) ----
@@ -263,7 +265,7 @@ run_scenario() {
   # ordinary and the --internal networks.
   local ok=0 t
   for ((t = 1; t <= 30; t++)); do
-    if docker exec "$owner" curl -sf "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then ok=1; break; fi
+    if lgin docker exec -i "$owner" sh -s -- -sf "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then ok=1; break; fi
     sleep 1
   done
   if [ "$ok" != 1 ]; then
@@ -278,13 +280,13 @@ run_scenario() {
   for ((i = 1; i <= 20; i++)); do
     key="k${i}"
     payload="fostercache-payload-${i}-abcdefgh"
-    put=$(docker exec "$owner" curl -s -o /dev/null -w '%{http_code}' -X PUT --data-binary "$payload" "http://127.0.0.1:8080/${key}")
+    put=$(lgin docker exec -i "$owner" sh -s -- -s -o /dev/null -w '%{http_code}' -X PUT --data-binary "$payload" "http://127.0.0.1:8080/${key}")
     case "$put" in
       200|201) ;;
       *) echo "::error::${label}: PUT ${key} returned status ${put} (expected 200/201)" >&2
          freeze_capture "$label"; teardown "$label"; return 1;;
     esac
-    resp=$(docker exec "$owner" curl -s -w $'\n%{http_code}' "http://127.0.0.1:8080/${key}")
+    resp=$(lgin docker exec -i "$owner" sh -s -- -s -w $'\n%{http_code}' "http://127.0.0.1:8080/${key}")
     get=${resp##*$'\n'}
     body=${resp%$'\n'*}
     if [ "$get" != 200 ]; then
