@@ -3706,6 +3706,23 @@ declare -a "$n"$"(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'a 
 dc dc_zzn $'a=("one two" \'three (4)\')
 x=$\'\\n\'
 echo "${a[@]}" $x\n' ok - 'control: plain array with quoted elements, an ANSI-C newline, a quoted ( with no opener'
+dc dc_zzo $'shopt -s expand_aliases
+alias d=declare
+x="$(printf \'"\')"; d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a quote inside a nested substitution upsets the word splitter'
+dc dc_zzp $'w() { declare -a "a=$1$2"; }
+w \'(x \' \'$(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'fragments of one compound value in separate words: the opener fragment is quoted data'
+dc dc_zzq $'w() { declare -a "a=$1$2"; }
+w \'(\' \'`/usr/bin/touch mk`)\'\n' caught 'compound assignment' 'fragments, a backtick opener in single quotes'
+dc dc_zzr $'w() { declare -a "a=$1$2"; }
+w \'(\' \'<(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'fragments, a process-substitution opener in single quotes'
+dc dc_zzs $'a=\'a=(\'
+b=\'$(/usr/bin/touch mk))\'
+declare -a "$a$b"\n' caught 'compound assignment' 'fragments held in two variables, the opener fragment in single quotes'
+dc dc_zzt $'e=
+declare -a \'a=(x $\'$e\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an expansion that can be empty between the literal $ and ('
+dc dc_zzu $'x=\'plain data\'
+y=\'cost: 5 (approx)\'
+echo "$x $y"\n' ok - 'control: single-quoted data with no opener'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -3877,7 +3894,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1761
+EXPECT=1768
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
