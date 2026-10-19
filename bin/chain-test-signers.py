@@ -80,14 +80,29 @@ SUBSCRIPT_SUBST = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^\]\n]*(?:\$\((?!\()|\$\
 SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\(|\$\{(?!#[A-Za-z_][A-Za-z0-9_]*\[[@*]\])|`|\\\$|\\`)")   # a [ whose text starts (after blanks or empty quote pairs) with a substitution opener, whatever precedes it (a quoted, escaped or built name); ${#name[@]} is a length and not refused
 COMPOUND_OPENER = r"(?:[$<>][^\sA-Za-z0-9_]*[({]|`)"   # an opener on the NORMALISED line: $ < > then any punctuation run (an empty $@ is already gone) then ( or {, or a backtick
 COMPOUND_WORD = re.compile(r"\b(?:declare|local|typeset|readonly|export)\b.*=.*\(.*" + COMPOUND_OPENER)   # run on the NORMALISED logical line (every quote, every backslash and an empty $@ / $* removed: bash joins adjacent quoted pieces and removes escapes): declare/local/typeset/readonly/export ... = ... ( ... opener. A QUOTED compound assignment ('a=(x $(cmd))') is evaluated by the builtin and runs the substitution; default deny, whatever sits between the = and the (
-COMPOUND_QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")   # a quoted span; its text holding =( then an opener is refused wherever the builtin is (a loop, a function wrapper, an alias)
+COMPOUND_PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(")   # a word that starts as a plain, unquoted NAME=( : a visible array assignment, not a hidden compound string
 COMPOUND_ESCAPED = re.compile(r"=\\\(")            # =\( : an escaped compound value (the builtin may be reached by an alias)
 COMPOUND_AFTER = re.compile(r"=\(.*" + COMPOUND_OPENER)
+def shell_words(raw):
+    """Split a logical line into blank-separated words, honouring quotes and backslash escapes (an unbalanced quote makes the rest one word: fail closed)."""
+    words, cur, q, i = [], [], None, 0
+    while i < len(raw):
+        c = raw[i]
+        if q is None and c in " \t":
+            if cur: words.append("".join(cur)); cur = []
+            i += 1; continue
+        cur.append(c)
+        if c == "\\" and q != "'" and i + 1 < len(raw): cur.append(raw[i + 1]); i += 2; continue
+        if q is None and c in "\"'": q = c
+        elif q == c: q = None
+        i += 1
+    if cur: words.append("".join(cur))
+    return words
 def declare_compound(raw):
     n = re.sub(r"\$[@*]|[\"'\\]", "", raw)
     if COMPOUND_WORD.search(n): return True
-    for m in COMPOUND_QUOTED.finditer(raw):
-        if COMPOUND_AFTER.search(re.sub(r"\$[@*]|\\", "", m.group(1) if m.group(1) is not None else m.group(2))): return True
+    for w in shell_words(raw):   # a word that mixes quotes or escapes with =( and an opener, and is not a plain NAME=( word: the builtin (an alias, a loop, a function) may evaluate it
+        if re.search(r"[\"'\\]", w) and not COMPOUND_PLAIN.match(w) and COMPOUND_AFTER.search(re.sub(r"\$[@*]|[\"'\\]", "", w)): return True
     return bool(COMPOUND_ESCAPED.search(raw) and re.search(COMPOUND_OPENER, n))
 SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
 
