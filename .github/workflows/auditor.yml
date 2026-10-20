@@ -140,7 +140,7 @@ jobs:
             || echo "::warning::could not install syft; the package inventory falls back to matched packages"
           export PATH="${RUNNER_TEMP}/gobin:${PATH}"
           # No scanner runs here: the manifest takes the four panel scanners' results from the rescan's verdict.json
-          # (--panel-dir), and a scanner that did not run is recorded 'did not run', never clean.
+          # (the panel directory option), and a scanner that did not run is recorded 'did not run', never clean.
           python3 .github/agent/bin/auditor-manifest.py \
             --rescan-dir "${RUNNER_TEMP}/rescan" \
             --panel-dir "${RUNNER_TEMP}/panel" \
