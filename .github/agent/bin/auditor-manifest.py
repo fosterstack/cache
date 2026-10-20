@@ -123,7 +123,7 @@ def panel_inventory(verdict_path):
     WITH a package count above zero; an image where it is listed as did-not-run, not listed at all, or has no count
     makes it 'did not run', named with the image: never clean. The report is the verdict path for a scanner that ran,
     null for one that did not. The quorum (three scanners per image) is the panel's own decision, not recomputed."""
-    d = P.validate_panel_verdict(json.load(open(verdict_path)))
+    d = P.validate_panel_verdict(P.load_panel_verdict(verdict_path))
     imgs = d["images"]
     reports, status = {}, {}
     for s in PANEL_SCANNERS:

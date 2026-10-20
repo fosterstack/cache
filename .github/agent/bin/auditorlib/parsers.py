@@ -86,13 +86,39 @@ def panel_expected(scanner, image):
     return image in _panel_module().EXPECTED.get(scanner, [])
 
 
+def _no_dup_pairs(pairs):
+    out = {}
+    for k, v in pairs:
+        if k in out:
+            raise ParseError("panel verdict: the JSON key %r appears twice (the last would silently win)" % k)
+        out[k] = v
+    return out
+
+
+def _refuse_constant(name):
+    raise ParseError("panel verdict: %s is not valid JSON" % name)
+
+
+def load_panel_verdict(path):
+    """The one loader for verdict.json: strict JSON (a repeated key at any level, NaN and Infinity are refused), so no
+    reader can see a different document from the one a stricter reader refuses. OSError for a missing file."""
+    with open(path) as fh:
+        try:
+            return json.load(fh, object_pairs_hook=_no_dup_pairs, parse_constant=_refuse_constant)
+        except RecursionError as e:
+            raise ParseError("panel verdict: nested too deeply (%s)" % e)
+
+
 _TOP_KEYS = frozenset(("images", "not_counted", "scanner_failures", "findings", "unique", "vex_covered", "issue", "exit"))
 _IMAGE_KEYS = frozenset(("counts", "did_not_run", "ran", "counts_for_day"))
 _FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of", "unique", "status", "purls"))
 _VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
 _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")            # no control characters, no backtick (the issue text quotes with it)
 _ID = re.compile(r"[A-Za-z0-9?][A-Za-z0-9._:+-]*")          # CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result
-_PURL = re.compile(r"pkg:[a-z][a-z0-9.+-]*/[^\s]+")
+_NOCTL = r"[^\s\x00-\x1f\x7f"
+_PURL = re.compile(r"pkg:[a-z][a-z0-9.+-]*/" + _NOCTL + r"?#@]+(@" + _NOCTL + r"?#]*)?"                       # type/namespace/name @ version
+                   r"(\?[A-Za-z][A-Za-z0-9._-]*=" + _NOCTL + r"&#]*(&[A-Za-z][A-Za-z0-9._-]*=" + _NOCTL + r"&#]*)*)?"   # ?key=value&key=value
+                   r"(#" + _NOCTL + r"]*)?")                                                                           # #subpath
 
 
 def _closed(obj, keys, what):
@@ -179,7 +205,9 @@ def _validate_panel_verdict(d):
     if len(set(keys)) != len(keys):
         raise ParseError("panel verdict: two findings share one identity (image, CVE, package, version)")
     reported = [f for f in d["findings"] if f["status"] == "report"]
-    if (d.get("unique") != [f for f in d["findings"] if f["unique"]] or not isinstance(d.get("vex_covered"), list)
+    canon = lambda xs: [json.dumps(x, sort_keys=True) for x in xs]     # type-strict: True is not 1, 4 is not 4.0
+    if (not isinstance(d.get("unique"), list) or canon(d["unique"]) != canon([f for f in d["findings"] if f["unique"]])
+            or not isinstance(d.get("vex_covered"), list)
             or not isinstance(d.get("issue"), str)):
         raise ParseError("panel verdict: the unique list, vex_covered or issue disagrees with the findings")
     if d["issue"] != pm.render_issue(reported):
@@ -191,6 +219,8 @@ def _validate_panel_verdict(d):
                 and isinstance(c.get("version"), str) and c["image"] in st_all and c["scanner"] in pm.FILTER_HERE
                 and c["scanner"] in st_all[c["image"]]["ran"]):
             raise ParseError("panel verdict: a vex_covered entry is incomplete, names an unknown image or a scanner the tally does not filter, or one that did not run there")
+        if not _ID.fullmatch(c["id"]) or not _TEXT.fullmatch(c["package"]) or not _TEXT.fullmatch(c["version"]):
+            raise ParseError("panel verdict: a vex_covered id, package or version holds a character outside the allowed set")
     code = 2 if (d["not_counted"] or d["scanner_failures"]) else (1 if reported else 0)
     if not _is_int(d.get("exit")) or d.get("exit") != code:
         raise ParseError("panel verdict: exit status disagrees with the images and findings")
@@ -201,7 +231,12 @@ def parse_panel(path, scanner):
     """One panel scanner's findings from the rescan's verdict.json (bin/panel.py tally): the findings whose
     seen_by names `scanner`, one record per (CVE id, package identity); the images that carry it are kept, each with
     its own 'seen by N of M' and uniqueness (extra.by_image). A malformed verdict is a ParseError."""
-    d = validate_panel_verdict(_load(path))
+    try:
+        d = validate_panel_verdict(load_panel_verdict(path))
+    except OSError as e:
+        raise ParseError("cannot load %s: %s" % (path, e))
+    except ValueError as e:
+        raise e if isinstance(e, ParseError) else ParseError("cannot load %s: %s" % (path, e))
     seen = {}
     for f in d["findings"]:
         if scanner not in f["seen_by"]:

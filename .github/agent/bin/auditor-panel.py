@@ -970,7 +970,7 @@ def rescan_binding(path, oci_dir):
 
 def cmd_judge(a, seats=None, bundles=None, advisory=None):
     try:
-        verdict = _load_json(a.verdict)
+        verdict = parsers.load_panel_verdict(a.verdict)       # strict JSON: a repeated key is refused, not silently overridden
         parsers.validate_panel_verdict(verdict)       # the one strict shape every reader shares (cache#466): fail closed
     except (parsers.ParseError, ValueError, OSError) as e:
         sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s: %s); nothing was judged\n" % (a.verdict, e))

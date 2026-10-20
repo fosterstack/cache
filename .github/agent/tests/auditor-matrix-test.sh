@@ -3861,7 +3861,7 @@ for name, fn in M1.items():
 print(" ".join(out))
 PYEOF
 )"
-exp="$(for n in nofind noimg trunc extraimg null incomplete ghost of uniq status img dup overlap unknown unlisted zero nocount bool cfd uniqlist dupa dupb exit vexempty vexghost vexnoimg vexarm purl offloat issueempty issuestale nested topextra imgextra findextra vexextra purlsyntax issuewrong idspace vexid vexpkg vexver purlq purlctl uniqtype dupkey dupkey2; do printf '%s=refused/all-down ' "$n"; done)"
+exp="$(for n in nofind noimg trunc extraimg null incomplete ghost of uniq status img dup overlap unknown unlisted zero nocount bool cfd uniqlist dupa dupb exit vexempty vexghost vexnoimg vexarm purl offloat issueempty issuestale nested topextra imgextra findextra vexextra purlsyntax issuewrong vexid vexpkg vexver purlq purlctl uniqtype dupkey dupkey2 idspace; do printf '%s=refused/all-down ' "$n"; done)"
 { eq "$r" "${exp% }"; } && ok || no "every malformed, truncated or inconsistent verdict is refused by parse_panel and records all four scanners 'did not run' in panel_block" "[$r]"
 
 begin "panel-5-corroboration-is-kept-per-image" "round 1 of cache#466 (seat B): the same CVE on two images keeps its own 'seen by N of M' and its own uniqueness per image; one image's numbers are never attached to another image"
