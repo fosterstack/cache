@@ -4007,6 +4007,22 @@ o="$WORK/pm-multi-run"
 { row="$(grep '^- CVE-2099-6666 ' "$o/report.md" | head -1)"; printf '%s' "$row" | grep -q 'production-amd64 3 of 4' && printf '%s' "$row" | grep -q 'production-arm64 2 of 3'; } \
   && ok || no "row for CVE-2099-6666 shows production-amd64 3 of 4 and production-arm64 2 of 3" "$(grep 'CVE-2099-6666' "$o/report.md" | head -3 | cut -c1-300)"
 
+begin "panel-15-completion-comes-from-the-verdict-not-from-the-manifests-copies" "a manifest whose panel summary says 'nothing uncounted, no failures' but whose verdict is missing, or whose verdict says an image is uncounted, is still AUDIT INCOMPLETE: the run derives completion from the validated verdict itself"
+"$PY" - "$WORK" <<'PYEOF'
+import json, sys, os, shutil
+w = sys.argv[1]
+src = os.path.join(w, "pm-ok", "manifest.json")
+m = json.load(open(src)); m["panel"] = dict(m["panel"], verdict=None, not_counted=[], scanner_failures=[])     # contradictory: no verdict, but a clean-looking summary
+os.makedirs(os.path.join(w, "pm-contra1"), exist_ok=True); json.dump(m, open(os.path.join(w, "pm-contra1", "manifest.json"), "w"))
+m2 = json.load(open(os.path.join(w, "pm-uncounted", "manifest.json"))); m2["panel"] = dict(m2["panel"], not_counted=[], scanner_failures=[])   # the verdict says debug-amd64 is uncounted
+os.makedirs(os.path.join(w, "pm-contra2"), exist_ok=True); json.dump(m2, open(os.path.join(w, "pm-contra2", "manifest.json"), "w"))
+PYEOF
+o="$WORK/pm-contra1-run"; rm -rf "$o"; : > "$LEDGER"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra1/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; i1="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
+o="$WORK/pm-contra2-run"; rm -rf "$o"; : > "$LEDGER"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra2/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; i2="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; n2="$(grep -qi 'debug-amd64' "$o/report.md" && echo yes || echo no)"
+{ eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes"; } && ok || no "contradictory manifests: no verdict -> incomplete; verdict with an uncounted image -> incomplete naming it" "null-verdict=$i1 uncounted=$i2 names_image=$n2"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
