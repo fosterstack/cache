@@ -106,6 +106,38 @@ def key_of(image, vid, package, version):
     return (image, (vid or "").upper(), (package or "").lower(), v)
 
 
+SEVERITIES = ("negligible", "low", "medium", "high", "critical")
+_SEV_WORDS = {"critical": "critical", "high": "high", "medium": "medium", "moderate": "medium", "low": "low",
+              "negligible": "negligible", "minimal": "negligible", "info": "negligible", "informational": "negligible"}
+
+
+def norm_severity(x):
+    """A scanner's severity word as one of SEVERITIES; an unknown, unspecified or non-text value is None (absent, never guessed)."""
+    return _SEV_WORDS.get(x.strip().lower()) if isinstance(x, str) else None
+
+
+def _top(sevs):
+    """The highest of several normalised severities, or None."""
+    got = [s for s in sevs if s in SEVERITIES]
+    return max(got, key=SEVERITIES.index) if got else None
+
+
+def _extra(severity=None, fixed=None, aliases=(), vid=None):
+    """One scanner's own facts about a finding; a key is present only when the scanner reported it."""
+    out = {}
+    if severity:
+        out["severity"] = severity
+    if isinstance(fixed, str) and fixed:
+        out["fixed_version"] = fixed
+    al = []
+    for a in aliases:
+        if isinstance(a, str) and a and a != vid and a not in al:
+            al.append(a)
+    if al:
+        out["aliases"] = al
+    return out
+
+
 def _cdx_findings(doc, comps):
     by_ref = {c.get("bom-ref"): c for c in comps + [c for c in doc.get("components") or [] if isinstance(c, dict)]
               if c.get("bom-ref")}
@@ -116,7 +148,10 @@ def _cdx_findings(doc, comps):
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
-            out.append((v.get("id") or "?", name, ver, c.get("purl")))
+            sev = _top(norm_severity(r.get("severity")) for r in v.get("ratings") or [] if isinstance(r, dict))
+            fixed = next((x.get("version") for x in a.get("versions") or [] if isinstance(x, dict) and x.get("status") == "unaffected"), None)
+            al = [r.get("id") for r in v.get("references") or [] if isinstance(r, dict)]
+            out.append((v.get("id") or "?", name, ver, c.get("purl"), _extra(sev, fixed, al, v.get("id"))))
     return out
 
 
@@ -139,7 +174,7 @@ def read_scout(d):
         dep = (v.get("location") or {}).get("dependency") or {}
         name, ver = (dep.get("package") or {}).get("name") or "?", dep.get("version") or ""
         purl = next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
-        out.append((ids[0] if ids else "?", name, ver, purl))
+        out.append((ids[0] if ids else "?", name, ver, purl, _extra(norm_severity(v.get("severity")), None, ids[1:], ids[0] if ids else None)))
     return len(arts), out
 
 
@@ -166,7 +201,8 @@ def read_google(d):
         x = v.get("vulnerability") or {}
         vid = x.get("shortDescription") or (v.get("noteName") or "?").rsplit("/", 1)[-1]
         for p in x.get("packageIssue") or [{}]:
-            out.append((vid, p.get("affectedPackage") or "?", (p.get("affectedVersion") or {}).get("fullName") or "", None))
+            out.append((vid, p.get("affectedPackage") or "?", (p.get("affectedVersion") or {}).get("fullName") or "", None,
+                        _extra(norm_severity(x.get("severity")), (p.get("fixedVersion") or {}).get("fullName"), (), vid)))
     return len(pkgs), out
 
 
@@ -215,15 +251,18 @@ def tally(root, vexidx):
                 continue
             st["counts"][s] = n
             st["ran"].append(s)
-            for vid, name, ver, purl in found:
+            for vid, name, ver, purl, extra in found:
                 if s in FILTER_HERE and _gate.covered(vexidx[img], vid, (name.lower(), ver)):
                     covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver})
                     continue
                 key = key_of(img, vid, name, ver)
                 f = findings.setdefault(key, {"image": img, "id": vid, "package": name, "version": ver, "seen_by": [],
-                                              "purls": []})
+                                              "purls": [], "details": {}})
                 if s not in f["seen_by"]:
                     f["seen_by"].append(s)
+                have = f["details"].setdefault(s, {})        # this scanner's own record (a repeated entry only fills what is still absent)
+                for k_, v_ in extra.items():
+                    have.setdefault(k_, v_)
                 if purl and purl not in f["purls"]:
                     f["purls"].append(purl)   # the exact package identity, for a VEX statement scoped to it
     for img, st in images.items():
