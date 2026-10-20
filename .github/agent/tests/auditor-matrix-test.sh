@@ -4025,7 +4025,7 @@ w = sys.argv[1]
 src = os.path.join(w, "pm-ok", "manifest.json")
 m = json.load(open(src)); m["panel"] = dict(m["panel"], verdict=None, not_counted=[], scanner_failures=[])     # contradictory: no verdict, but a clean-looking summary
 os.makedirs(os.path.join(w, "pm-contra1"), exist_ok=True); json.dump(m, open(os.path.join(w, "pm-contra1", "manifest.json"), "w"))
-m2 = json.load(open(os.path.join(w, "pm-uncounted", "manifest.json"))); m2["panel"] = dict(m2["panel"], not_counted=[], scanner_failures=[])   # the verdict says debug-amd64 is uncounted
+m2 = json.load(open(os.path.join(w, "pm-uncounted", "manifest.json"))); m2["panel"] = dict(m2["panel"], not_counted=[], scanner_failures=[])   # the verdict says the second variant's amd64 image is uncounted
 os.makedirs(os.path.join(w, "pm-contra2"), exist_ok=True); json.dump(m2, open(os.path.join(w, "pm-contra2", "manifest.json"), "w"))
 m3 = json.load(open(src)); bad = os.path.join(w, "pm-contra3-verdict.json"); open(bad, "w").write("{not json")      # a verdict path that does not parse
 m3["panel"] = dict(m3["panel"], verdict=bad, not_counted=[], scanner_failures=[])
