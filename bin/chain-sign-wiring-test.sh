@@ -2702,7 +2702,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='cb2b37c043f31eb78a8ac2d6873093d172c1b4fd2fb7eb1d3d4032d48bd8d4a0'
+FX_PIN='b7c90d90bb18fff473213ec6808858693e214c24a0523fad3f7ac1e2a901b87b'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -3636,7 +3636,7 @@ hd hd_d $'cat <<EOF >/dev/null\n\'${y:-$(/tmp/evil)}\'\nEOF\n' "a \${ :- \$( ) }
 hd hd_e $'cat <<-X >/dev/null\n\t\'$(/tmp/evil)\'\n\tX\n' "a <<- body, tab indented"
 hd hd_f $': <<EOF\n"$(/tmp/evil)"\nEOF\n' "double quotes around a \$( ) with : as the command"
 hd hd_g $'cat <<EOF >/dev/null\nit\'s $(/tmp/evil) done\nEOF\n' "an apostrophe in prose before a \$( )"
-cl hd_h $'cat <<\'EOF\' >/dev/null\n\'$(/tmp/evil)\'\nEOF\necho ok\n' ok - 'control: a quoted-delimiter body is data, nothing runs'
+cl hd_h $'cat <<\'EOF\' >/dev/null\n\'$(/tmp/evil)\'\nEOF\necho ok\n' caught 'compound assignment' 'a quoted opener is refused as data even in a quoted-delimiter heredoc body (default deny, nothing is resolved: fragments of a compound value can be joined at run time; a listed line needs a reviewed waiver)'
 # seat A, PR 439 fix check: inside a $( ) or backticks of an unquoted body bash reads quotes as quotes again: replacing them must not hide a quoted command word
 hd hd_i $'cat <<EOF >/dev/null\nx $("/tmp/evil")\nEOF\n' "a double-quoted command word in a \$( )"
 hd hd_j $'cat <<EOF >/dev/null\nx $(\'/tmp/evil\')\nEOF\n' "a single-quoted command word in a \$( )"
@@ -3839,6 +3839,143 @@ sb sb_df $'read \'a[$((/usr/bin/touch mk) )]\' <<< x\n' caught 'holds a substitu
 sb sb_dg $'[[ -v \'a[$((/usr/bin/touch mk)|(id))]\' ]]\n' caught 'holds a substitution' '[[ -v, closes with ))'
 sb sb_dh $'let a[$((i+1))]=2\n' caught 'holds a substitution' 'even real arithmetic in a subscript is refused (default deny; waive by line)'
 sb sb_di $'i=1; x=$((i+1)); echo "$x"; [ -n "$x" ] && echo ok\n' ok - 'control: arithmetic outside any bracket'
+dc() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "declare-family compound assignment: $5"; }
+dc dc_a $'declare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'declare -a, single-quoted, $( )'
+dc dc_b $'local -a \'a=(x `/usr/bin/touch mk`)\'\n' caught 'compound assignment' 'local, backticks'
+dc dc_c $'typeset -a "a=(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'typeset, escaped $ in double quotes'
+dc dc_d $'readonly -a \'a=(x ${y:-z})\'\n' caught 'compound assignment' 'readonly, ${ }'
+dc dc_e $'export -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'export'
+dc dc_f $'declare -A \'m=([k]=$(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'declare -A, an associative element'
+dc dc_g $'declare -a "a="\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'quotes between = and ('
+dc dc_h $'declare -a a+=\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'append form +='
+dc dc_i $'declare -a arr=(1 2 3)\nlocal -a files=("$@")\nexport XX=1\nlocal n=$(date +%s)\necho ok\n' ok - 'control: unquoted compound assignments with no opener after the (, and an opener on its own line'
+dc dc_j $'x=$(date +%s); declare -a a=(1 2)\necho "$x"\n' ok - 'control: an opener BEFORE the =( on the line'
+dc dc_k $'declare -a \'a=(x $\'"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split across a quote boundary ($ in one segment, ( in the next)'
+dc dc_l $'declare -a \'a=(x \'"$"\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'opener split: a double-quoted $ between single-quoted parts'
+dc dc_m $'declare -a \'a=(x \'$"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split with a $"..." segment'
+dc dc_n $'declare -a "a=${e}(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'an expansion between = and ('
+dc dc_o $'declare -a a=$e\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a bare $e between = and ('
+dc dc_p $'declare -a a=$\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' "$'...' value"
+dc dc_q $'declare -a a=$(:)\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a substitution between = and ('
+dc dc_r $'declare -a \'a=(x <(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'process substitution <( as the opener'
+dc dc_s $'declare -a \'a=(x >(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'process substitution >( as the opener'
+dc dc_t $'de\'\'clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by an empty quote pair'
+dc dc_u $'de\\clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by a backslash'
+dc dc_v $'loc\\al -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'local split by a backslash'
+dc dc_w $'declare -a a=\\(x\\ $\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'pure-escape form: $\\( and \\( split by backslashes'
+dc dc_x $'declare -a \'a=(x $\'\\(\'/usr/bin/touch mk))\'\n' caught 'compound assignment' 'quoted, the opener split by \\( '
+dc dc_y $'declare -a a=\\(x\\ $\\{y:-z\\}\\)\n' caught 'compound assignment' '${ split by a backslash'
+dc dc_z $'declare -a \'a=(x <\'\\(\'/usr/bin/touch mk))\'\n' caught 'compound assignment' '<( split by a backslash'
+dc dc_za $'declare -a \'a=(x $\'$@\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an empty $@ between $ and ('
+dc dc_zb $'de$*clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an empty $* inside the builtin name'
+dc dc_zc $'for v in \'a=(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'the value before the builtin on the line (loop)'
+dc dc_zd $'w() { declare -a "$1"; }
+w \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a function wrapper: builtin and value on different lines'
+dc dc_ze $'shopt -s expand_aliases
+alias d=declare
+d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an alias: builtin and value on different lines'
+dc dc_zf $'d -a a=\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'escaped compound value with no builtin word on the line'
+dc dc_zg $'for v in \'a=(1 2)\' \'b=(3)\'; do declare -a "$v"; done
+ll=\'ls -l\'\n' ok - 'control: quoted compound values with no opener, a plain assignment with no compound value (was an alias; aliases are refused here, cache#433)'
+dc dc_zh $'for v in "a=("\'$(/usr/bin/touch mk)\'")"; do declare -a "$v"; done\n' caught 'compound assignment' 'the opener split across two quote segments, the builtin after the value'
+dc dc_zi $'f(){ declare -a "$1"; }
+f "a=("\'$(/usr/bin/touch mk)\'")"\n' caught 'compound assignment' 'split segments, function wrapper'
+dc dc_zj $'alias d=declare
+d -a "a=("\'$(/usr/bin/touch mk)\'")"\n' caught 'compound assignment' 'split segments, alias'
+dc dc_zk $'alias d=declare
+d -a a=\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' '= outside the quote and ( inside it, alias'
+dc dc_zl $'x=\\\'; for v in \'a=(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an escaped quote earlier on the line misaligns the quote pairing, loop'
+dc dc_zm $'w() { declare -a "$1"; }
+x=\\\'; w \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'escaped quote earlier, function wrapper'
+dc dc_zn $'alias d=declare
+d -a a="(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'double-quoted value after = with an escaped $, alias'
+dc dc_zo $'arr=(a "b c")\nv=$(date +%s)
+x=\\\'; echo "$x"\n' ok - 'control: a plain unquoted-name array assignment, a substitution on its own line and an escaped quote on another line'
+dc dc_zp $'alias d=declare
+d -a a=$e\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'alias: an expansion between = and a quoted ('
+dc dc_zq $'w() { declare -a "$1"; }
+w a=${e}\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'function wrapper: ${e} between = and a quoted ('
+dc dc_zr $'alias d=declare
+d -a a=${e}\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'alias: ${e} then an escaped compound value'
+dc dc_zs $'alias d=declare
+d -a a=$(true)\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'alias: a substitution between = and ('
+dc dc_zt $'for v in \'a\'{=,}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion builds the ='
+dc dc_zu $'f(){ declare -a "$1"; }
+f \'a\'{=,}\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'brace expansion, function wrapper'
+dc dc_zv $'for v in a{=,}\\(x\\ \\$\\(/usr/bin/touch\\ mk\\)\\); do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion, escaped value'
+dc dc_zw $'for v in \'a=\'${@}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an empty ${@} between = and ('
+dc dc_zx $'for v in \'a=\'${HOME:0:0}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an always-empty ${HOME:0:0} between = and ('
+dc dc_zy $'alias d=declare
+d -a a=$e
+x=${e}\'plain\'\n' caught 'shell aliases' 'an expansion after =, no ( and no opener: refused for the alias that sets it up (aliases are refused here, cache#433)'
+dc dc_zz $'for v in a=; do declare -a "$v"\'(x $(/usr/bin/touch mk))\'; done\n' caught 'compound assignment' 'the NAME= part in a variable, the quoted value literal on the same line'
+dc dc_zza $'n=a=
+declare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the NAME= part in a variable on an earlier line'
+dc dc_zzb $'w() { declare -a "$1$2"; }
+w \'a=\' \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the function wrapper joins two literal words'
+dc dc_zzc $'w() { declare -a "a=$1"; }
+w \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the = is inside the builtin string, the value arrives as a word'
+dc dc_zze $'echo "plain text (${x}) here"
+v=$(date +%s)\n' ok - 'control: a quoted ( then a simple ${x} is a message: a simple expansion can be empty and is not an opener'
+dc dc_zzf $'n=a=
+dec""lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by an empty quote pair, NAME= in a variable'
+dc dc_zzg $'n=a=
+de\\clare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by a backslash'
+dc dc_zzh $'n=a=
+f() { dec\'\'lare -ga "$@"; }
+f "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a hidden builtin word in a wrapper'
+dc dc_zzi $'n=a=
+d=dec; ${d}lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a builtin name built from a variable, the opener literal'
+dc dc_zzj $'n=a=
+a=("$n"\'(x$(/usr/bin/touch mk))\')
+declare -a "${a[0]}"\n' caught 'compound assignment' 'a plain NAME=( word that carries a quoted element reaching the builtin'
+dc dc_zzk $'n=a=
+a=(\\$\'z\\\' "$n"\'(x $(/usr/bin/touch mk))\')
+declare -a "${a[1]}"\n' caught 'compound assignment' 'an escaped $ before a quote is not an ANSI-C quote'
+dc dc_zzl $'n=a=
+declare -a "$n"$\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an ANSI-C prefix leaves a $ before the ('
+dc dc_zzm $'n=a=
+declare -a "$n"$"(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'a locale $" prefix leaves a $ before the ('
+dc dc_zzn $'a=("one two" \'three (4)\')
+x=$\'\\n\'
+echo "${a[@]}" $x\n' ok - 'control: plain array with quoted elements, an ANSI-C newline, a quoted ( with no opener'
+dc dc_zzo $'shopt -s expand_aliases
+alias d=declare
+x="$(printf \'"\')"; d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a quote inside a nested substitution upsets the word splitter'
+dc dc_zzp $'w() { declare -a "a=$1$2"; }
+w \'(x \' \'$(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'fragments of one compound value in separate words: the opener fragment is quoted data'
+dc dc_zzq $'w() { declare -a "a=$1$2"; }
+w \'(\' \'`/usr/bin/touch mk`)\'\n' caught 'compound assignment' 'fragments, a backtick opener in single quotes'
+dc dc_zzr $'w() { declare -a "a=$1$2"; }
+w \'(\' \'<(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'fragments, a process-substitution opener in single quotes'
+dc dc_zzs $'a=\'a=(\'
+b=\'$(/usr/bin/touch mk))\'
+declare -a "$a$b"\n' caught 'compound assignment' 'fragments held in two variables, the opener fragment in single quotes'
+dc dc_zzt $'e=
+declare -a \'a=(x $\'$e\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an expansion that can be empty between the literal $ and ('
+dc dc_zzu $'x=\'plain data\'
+y=\'cost: 5 (approx)\'
+echo "$x $y"\n' ok - 'control: single-quoted data with no opener'
+dc dc_zzv $'w() { declare -a "a=$1$2"; }
+w \'(\' \'$\'"(printf audit))"\n' caught 'compound assignment' 'round 9: an opener built across quote segments, $ in single quotes'
+dc dc_zzw $'w() { declare -a "a=$1$2"; }
+w \'(\' \\$\\(printf\\ audit\\)\\)\n' caught 'compound assignment' 'round 9: an escaped opener as an argument word'
+dc dc_zzx $'w() { declare -a "a=$1$2"; }
+w \'(\' "<(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted <( is data'
+dc dc_zzy $'w() { declare -a "a=$1$2"; }
+w \'(\' ">(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted >( is data'
+dc dc_zzz $'w() { declare -a "a=$1$2"; }
+w \'(\' \'<\'"(printf audit))"\n' caught 'compound assignment' 'round 9: <( split across quote segments'
+dc dc_zzza $'w() { declare -a "a=$1$2"; }
+w \'(\' \'$\'"{y})"\n' caught 'compound assignment' 'round 9: ${ split across quote segments'
+dc dc_zzzb $'set --
+declare -a \'a=(x $\'$1\'(printf audit))\'\n' caught 'compound assignment' 'round 9: a possibly-empty positional between $ and ('
+dc dc_zzzc $'w() { declare -a "a=$1$2"; }
+x="$(printf \'"\')"; w \'$(printf marker)\'\n' caught 'compound assignment' 'round 9: a nested-quote line leaves the splitter uncertain, quoted data still refused'
+dc dc_zzzd $'echo "$(date)" "${x:-y}" "a$(b)c" "$1" "${name}" \'plain\'
+v="$(dirname "$0")"\n' ok - 'control: live substitutions in double quotes and unquoted, simple expansions, plain single-quoted data'
+sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
+sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -4008,7 +4145,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1864
+EXPECT=1947
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
