@@ -150,15 +150,20 @@ def _cdx_findings(doc, comps, inspector=False):
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
-            sev = _top(norm_severity(r.get("severity")) for r in v.get("ratings") or [] if isinstance(r, dict))
+            # Grype writes its CISA KEV listing as a rating (method other, justification 'Listed in CISA KEV'): that is the known-exploited
+            # marker, not a severity; its 'Negligible' is CycloneDX 'none'
+            rts = [r for r in v.get("ratings") or [] if isinstance(r, dict)]
+            is_kev = lambda r: r.get("method") == "other" and "listed in cisa kev" in str(r.get("justification") or "").lower()
+            sev = _top((norm_severity(r.get("severity")) or ("negligible" if str(r.get("severity")).lower() == "none" else None))
+                       for r in rts if not is_kev(r))
             # CycloneDX 'unaffected' versions say which versions are not affected, not that one contains the fix: no fixed version from them.
             # Inspector documents its own properties: the fixed version per affected component and the CISA KEV date.
-            fixed, kev = None, False
+            fixed, kev = None, any(is_kev(r) for r in rts)
             if inspector:
                 pre = "amazon:inspector:sbom_scanner:"
                 props = {p_.get("name"): p_.get("value") for p_ in v.get("properties") or [] if isinstance(p_, dict)}
                 fixed = props.get(pre + "fixed_version:" + str(a.get("ref")))
-                kev = bool(props.get(pre + "cisa_kev_date_added"))
+                kev = kev or bool(props.get(pre + "cisa_kev_date_added"))
             al = [r.get("id") for r in v.get("references") or [] if isinstance(r, dict)]
             out.append((v.get("id") or "?", name, ver, c.get("purl"), _extra(sev, fixed, al, v.get("id"), kev)))
     return out

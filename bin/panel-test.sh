@@ -184,6 +184,15 @@ idir = os.path.join(tempfile.mkdtemp(), "i")
 put(idir, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
 put(idir, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
                                  "vulnerabilities": [rich, bare]}})
+kevv = {"id": "CVE-2099-0108", "ratings": [{"severity": "high"}, {"source": {"name": "CISA"}, "score": 1, "severity": "critical", "method": "other", "justification": "Listed in CISA KEV"}], "affects": [{"ref": "r0"}]}
+negv = {"id": "CVE-2099-0109", "ratings": [{"severity": "none"}], "affects": [{"ref": "r0"}]}
+nokev = {"id": "CVE-2099-0110", "ratings": [{"severity": "low"}, {"source": {"name": "CISA"}, "method": "other", "justification": "something else"}], "affects": [{"ref": "r0"}]}
+put(gd, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                            "vulnerabilities": [rich, bare, kevv, negv, nokev]})
+ex = {t[0]: t[4] for t in P.read_grype(gd)[1]}
+check("Grype: its CISA KEV rating (method other, 'Listed in CISA KEV') is known-exploited; a different CISA justification is not; CycloneDX 'none' is negligible",
+      ex["CVE-2099-0108"] == {"severity": "high", "known_exploited": True} and ex["CVE-2099-0109"] == {"severity": "negligible"}
+      and ex["CVE-2099-0110"] == {"severity": "low"}, (ex["CVE-2099-0108"], ex["CVE-2099-0109"], ex["CVE-2099-0110"]))
 inspv = {"id": "CVE-2099-0106", "ratings": [{"severity": "high"}], "affects": [{"ref": "r0"}],
          "properties": [{"name": "amazon:inspector:sbom_scanner:fixed_version:r0", "value": "2026d"},
                         {"name": "amazon:inspector:sbom_scanner:fixed_version:other", "value": "9.9"},
