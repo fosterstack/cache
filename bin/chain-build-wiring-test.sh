@@ -325,8 +325,8 @@ st s_bw_noup   "004-AC3 the install line without the exact flags (a different ap
 st s_bw_curl   "004-AC3 bubblewrap fetched by hand instead of the package manager" "bubblewrap" "$BWRUN" 'run: curl -fsSL https://example.org/bwrap -o /usr/local/bin/bwrap'
 st s_bw_env    "004-AC3 an env on the bubblewrap step (a token or secret could reach it before admission)" "bubblewrap" "$BWINST" '      - name: install bubblewrap (the sandbox of the sealed build, from the runner'"'"'s signed Ubuntu repository)\n        env:\n          K: ${{ secrets.X }}\n        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends bubblewrap\n'
 st s_bw_if     "004-AC3 an if on the bubblewrap step (a skipped install is a build with no sandbox)" "bubblewrap" 'run: bash bin/install-bubblewrap.sh' 'if: always()\n        run: bash bin/install-bubblewrap.sh'
-# The installer itself (bin/install-bubblewrap.sh), run as a COPY in which exactly the three fixed-location lines are replaced by stubs (the file has no test hook):
-# it must call apt-get update, then apt-get install of bubblewrap and nothing else, check that bwrap runs, and fail when any of those fails
+# The installer itself (bin/install-bubblewrap.sh), run as the REAL file with stub sudo, apt-get and bwrap first on the search path (it names them bare, each
+# sudo line under a reviewed line-bound exception): it must call apt-get update, then apt-get install of bubblewrap alone, check that bwrap runs, and fail when any fails
 BWSRC="$root/bin/install-bubblewrap.sh"
 bwrun() { # bwrun NAME APT_RC BWRAP_RC   -> $work/NAME.calls (the stub calls) and $work/NAME.rc
   mkdir -p "$work/$1.d"
@@ -334,11 +334,10 @@ bwrun() { # bwrun NAME APT_RC BWRAP_RC   -> $work/NAME.calls (the stub calls) an
   printf '#!/bin/sh\necho "apt-get $*" >>"%s/%s.calls"\nif [ "$1" = install ]; then exit %s; fi\nexit 0\n' "$work" "$1" "$2" >"$work/$1.d/apt-get"
   printf '#!/bin/sh\necho "bwrap $*" >>"%s/%s.calls"\nexit %s\n' "$work" "$1" "$3" >"$work/$1.d/bwrap"
   chmod +x "$work/$1.d/sudo" "$work/$1.d/apt-get" "$work/$1.d/bwrap"; : >"$work/$1.calls"
-  sed -e "s#^SUDO=.*#SUDO=$work/$1.d/sudo#" -e "s#^APT=.*#APT=$work/$1.d/apt-get#" -e "s#^BWRAP=.*#BWRAP=$work/$1.d/bwrap#" "$BWSRC" >"$work/$1.sh"
-  bwrc=0; bash "$work/$1.sh" >/dev/null 2>&1 || bwrc=$?; echo "$bwrc" >"$work/$1.rc"
+  bwrc=0; PATH="$work/$1.d:$PATH" bash "$BWSRC" >/dev/null 2>&1 || bwrc=$?; echo "$bwrc" >"$work/$1.rc"
 }
 bwrun bw_good 0 0
-if [ "$(cat "$work/bw_good.rc")" = 0 ] && [ "$(cat "$work/bw_good.calls")" = "$(printf 'sudo %s/bw_good.d/apt-get update -qq\napt-get update -qq\nsudo %s/bw_good.d/apt-get install -y -qq --no-install-recommends bubblewrap\napt-get install -y -qq --no-install-recommends bubblewrap\nbwrap --version' "$work" "$work")" ]; then
+if [ "$(cat "$work/bw_good.rc")" = 0 ] && [ "$(cat "$work/bw_good.calls")" = "$(printf 'sudo apt-get update -qq\napt-get update -qq\nsudo apt-get install -y -qq --no-install-recommends bubblewrap\napt-get install -y -qq --no-install-recommends bubblewrap\nbwrap --version')" ]; then
   ok "004-AC3 bin/install-bubblewrap.sh runs apt-get update, then the install of bubblewrap alone (no recommends), then checks that bwrap runs, each through sudo"
 else bad "004-AC3 bin/install-bubblewrap.sh did not make exactly those calls: $(tr '\n' '|' <"$work/bw_good.calls")"; fi
 bwrun bw_aptfail 100 0

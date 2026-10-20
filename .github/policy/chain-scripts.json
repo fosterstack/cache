@@ -272,7 +272,7 @@
     },
     {
       "path": "bin/install-bubblewrap.sh",
-      "sha256": "45451e4a91cbbe5587ff674519df471e9b0643283f44754abca60e45557cf3a8",
+      "sha256": "e6dd52f2217fcd74a3f70b6752ea0b1b768b1d36e1a1c52088848360477e5d6d",
       "tools": [
         "apt-get",
         "bwrap",
@@ -280,7 +280,18 @@
       ],
       "runs": [],
       "signs": "other",
-      "exceptions": [],
+      "exceptions": [
+        {
+          "rule": "launcher",
+          "text": "sudo apt-get update -qq",
+          "why": "runner-side install of bubblewrap under R7; sudo launcher form required by the runner; neither judge's rule changes"
+        },
+        {
+          "rule": "launcher",
+          "text": "sudo apt-get install -y -qq --no-install-recommends bubblewrap",
+          "why": "runner-side install of bubblewrap under R7; sudo launcher form required by the runner; neither judge's rule changes"
+        }
+      ],
       "reason": "installs the one distribution package bubblewrap on the hosted runner from its signed Ubuntu repository (apt-get update, then install without recommends), then checks that bwrap runs: the sandbox melange's bubblewrap runner needs and the images do not ship; never an input of the built bytes (Rebuild compares digests); the same limit as the skopeo installs (REQ-CHAIN-004-AC3, rule 38a; advisor read-back approval Oct 20)"
     },
     {
