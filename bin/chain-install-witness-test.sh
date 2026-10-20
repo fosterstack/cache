@@ -54,6 +54,8 @@ else
   echo "not the real witness tarball either" > "$work/rel/v${VER:-0.12.0}/witness_${VER:-0.12.0}_linux_arm64.tar.gz"
   for tool_ in COSIGN WITNESS CRANE; do   # the release URL of each tool names the pinned version literally: the two must agree
     pinned_=$(sed -n "s/^${tool_}_VER=\([0-9.]*\).*/\1/p" "$sut" | head -1)
+    # crane has no version variable (main's REQ-SUP-001-AC26: the pin-age scan measures the literal release URLs): its pinned version is the one its first release URL names, and every URL must name that same version
+    if [ "$tool_" = CRANE ] && [ -z "$pinned_" ]; then pinned_=$(grep -i 'crane' "$sut" | grep -o 'releases/download/v[0-9.]*/' | head -1 | sed 's|releases/download/v||; s|/||'); fi
     lines_=$(grep -i "${tool_}\|$(printf '%s' "$tool_" | tr 'A-Z' 'a-z')" "$sut" | grep 'releases/download/'); total_=$(grep -c . <<< "$lines_"); good_=$(grep -c "releases/download/v${pinned_}/" <<< "$lines_")
     if [ -n "$pinned_" ] && [ "$total_" -ge 2 ] && [ "$total_" = "$good_" ]; then ok "$tool_: every release URL ($total_, one per architecture) names the pinned version $pinned_"; else bad "$tool_: $good_ of $total_ release URLs name the pinned version '${pinned_}'"; fi
   done
