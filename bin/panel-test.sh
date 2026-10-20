@@ -159,6 +159,22 @@ got = P.google_packages(log)
 check("Google's package count is read from the AnalyzePackages request it was sent", [p["package"] for p in got] == ["tzdata", "stdlib"], got)
 check("a log with no request body gives no packages (did not run)", P.google_packages("==== request start ====\nnothing") == [], "")
 
+# --- the auditor reads this verdict through one strict, closed validator (auditorlib/parsers.py, cache#466): it must accept every
+# shape the tally really writes, or a real day would turn red; the opposite direction (refusals) is tested in auditor-matrix-test.sh
+sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[1]), "..", ".github", "agent", "bin"))
+from auditorlib import parsers as PL
+SCEN = {"clean": tree(), "two scanners report one finding": tree({("grype", "production-amd64"): [("CVE-2099-1", "tzdata", "2026c")],
+                                                                   ("scout", "production-amd64"): [("CVE-2099-1", "tzdata", "2026c")]}),
+        "one scanner only (unique)": tree({("inspector", "fips-arm64"): [("CVE-2099-2", "busybox", "1.37.0")]}),
+        "google did not run": tree(skip=("google",)), "an image short of its quorum": tree(skip=("grype", "scout"))}
+for name, root in SCEN.items():
+    try:
+        PL.validate_panel_verdict(json.loads(json.dumps(judge(root))))
+        bad = ""
+    except PL.ParseError as e:
+        bad = str(e)
+    check("the auditor's strict verdict validator accepts the tally's real output: %s" % name, bad == "", bad)
+
 print("panel: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

@@ -187,6 +187,19 @@ READ = {"grype": read_grype, "scout": read_scout, "inspector": read_inspector, "
 FILTER_HERE = ("inspector", "google")   # rule 4: their scan calls cannot read the VEX
 
 
+def render_issue(reported):
+    """The tracking issue's text for the findings seen by two or more scanners (rule 5); empty when there are none.
+    One renderer: the tally writes it and the auditor's verdict validator compares against it."""
+    if not reported:
+        return ""
+    lines = ["The daily scanner panel found %d finding(s) on main's candidate that the published VEX does not "
+             "cover, each seen by two or more scanners." % len(reported), ""]
+    for f in reported:
+        lines.append("- `%s` in `%s %s` on %s — seen by %d of %d (%s)" % (
+            f["id"], f["package"], f["version"], f["image"], len(f["seen_by"]), f["of"], ", ".join(f["seen_by"])))
+    return "\n".join(lines) + "\n"
+
+
 def tally(root, vexidx):
     images, findings, covered_log = {}, {}, []
     for s, imgs in EXPECTED.items():
@@ -229,14 +242,7 @@ def tally(root, vexidx):
         f["status"] = "unique" if f["unique"] else "report"
         out.append(f)
     reported = [f for f in out if f["status"] == "report"]
-    issue = ""
-    if reported:
-        lines = ["The daily scanner panel found %d finding(s) on main's candidate that the published VEX does not "
-                 "cover, each seen by two or more scanners." % len(reported), ""]
-        for f in reported:
-            lines.append("- `%s` in `%s %s` on %s — seen by %d of %d (%s)" % (
-                f["id"], f["package"], f["version"], f["image"], len(f["seen_by"]), f["of"], ", ".join(f["seen_by"])))
-        issue = "\n".join(lines) + "\n"
+    issue = render_issue(reported)
     # rule 3: a scanner that did not run is a pipeline failure even when the image still has its quorum
     code = 2 if (not_counted or scanner_failures) else (1 if reported else 0)
     return {"images": images, "not_counted": not_counted, "scanner_failures": scanner_failures, "findings": out,
