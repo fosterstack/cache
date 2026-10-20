@@ -392,6 +392,16 @@ class Judge(Tmp):
         self.assertIn("nothing was judged", err.getvalue())
         self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")))
 
+    def test_a_verdict_that_is_not_json_is_refused_with_the_same_diagnostic(self):
+        # cache#466 round 4: empty or truncated JSON returns 2 'nothing was judged', not a traceback
+        for text in ("", "{not json", "[1, 2"):
+            bad = os.path.join(self.d, "bad-verdict.json")
+            open(bad, "w").write(text)
+            with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_judge(self.a(verdict=bad), bundles=lambda f: BUNDLE)
+            self.assertEqual(rc, 2, text)
+            self.assertIn("nothing was judged", err.getvalue())
+
     def test_the_judgment_names_the_scanned_run_head_and_digests(self):
         _, summary, day = self.judged()
         self.assertIn("rescan run 123 of main at %s (conclusion success)" % HEAD, summary)
