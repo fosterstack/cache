@@ -1875,10 +1875,10 @@ rcg() { # rcg ok|caught LABEL [sed-expr]
   out=$(python3 "$work/rcgate.py" "$f") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC12/rc $2${out:+ ($out)}"; else bad "AC12/rc $2 -> $out"; fi; }
 rcg ok "the real release.yml has no rc-refusal job and its release job runs on an rc tag (verify-and-stop)"
-rcg caught "a release job that excludes an rc tag is caught" "/^  release:/,/^  [a-z]/ s/ && !inputs.dry-run }}/ && !inputs.dry-run && !contains(github.ref_name, '-rc') }}/"
-rcg caught "a release job without the dry-run conjunct is caught" '/^  release:/,/^  [a-z]/ s/ && !inputs.dry-run//'
-rcg caught "a release job that runs always() (it would run after a failed Check) is caught" '/^  release:/,/^  [a-z]/ s/ if: ${{ startsWith(github.ref, .refs\/tags\/v.) && !inputs.dry-run }}/ if: ${{ always() }}/'
-rcg caught "a release job that spells the rc exclusion another way is caught" "/^  release:/,/^  [a-z]/ s/ && !inputs.dry-run }}/ && !inputs.dry-run && !endsWith(github.ref_name, 'rc1') && !contains(github.ref_name, 'rc') }}/"
+rcg caught "a release job that excludes an rc tag is caught" "/^  release:/,/^  [a-z]/ s/ \&\& !inputs.dry-run }}/ \&\& !inputs.dry-run \&\& !contains(github.ref_name, '-rc') }}/"
+rcg caught "a release job without the dry-run conjunct is caught" '/^  release:/,/^  [a-z]/ s/ \&\& !inputs.dry-run//'
+rcg caught "a release job that runs always() (it would run after a failed Check) is caught" '/^  release:/,/^  [a-z]/ s/ if: ${{ startsWith(github.ref, .refs\/tags\/v.) \&\& !inputs.dry-run }}/ if: ${{ always() }}/'
+rcg caught "a release job that spells the rc exclusion another way is caught" "/^  release:/,/^  [a-z]/ s/ \&\& !inputs.dry-run }}/ \&\& !inputs.dry-run \&\& !endsWith(github.ref_name, 'rc1') \&\& !contains(github.ref_name, 'rc') }}/"
 rcg caught "a restored rc-refusal job is caught" 's/^  patch-failed:/  rc-refusal:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: exit 1\n  patch-failed:/'
 # ---- the known-red list (advisor, #299): test-evidence/known-red.json and bin/chain-known-red.py -------------------------------------------------------
 # The two chain suites whose red cases are expected (this one and bin/chain-sign-wiring-test.sh) judge their own output against the list: the CI step
