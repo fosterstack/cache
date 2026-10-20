@@ -56,6 +56,29 @@ def parse_grype(path):
     return out
 
 
+def parse_panel(path, scanner):
+    """One panel scanner's findings from the rescan's verdict.json (bin/panel.py tally): the findings whose
+    seen_by names `scanner`, one record per (CVE id, package identity) with the images that carry it kept in
+    extra. A verdict with no images object or no findings array is a ParseError, never an empty list."""
+    d = _load(path)
+    if not isinstance(d, dict) or not isinstance(d.get("images"), dict) or not isinstance(d.get("findings"), list):
+        raise ParseError("panel verdict: no images object or findings array")
+    seen = {}
+    for f in d["findings"]:
+        if not isinstance(f, dict) or scanner not in (f.get("seen_by") or []):
+            continue
+        purl = (f.get("purls") or [None])[0] or "pkg:generic/%s@%s" % (f.get("package"), f.get("version"))
+        key = (f.get("id"), purl)
+        rec = seen.get(key)
+        if rec is None:
+            rec = seen[key] = _finding(scanner, f.get("id"), purl, (), f.get("package"), None, None,
+                                       {"images": [], "version": f.get("version"), "seen_by": sorted(f.get("seen_by") or []),
+                                        "of": f.get("of"), "unique": bool(f.get("unique"))})
+        if f.get("image") and f["image"] not in rec["extra"]["images"]:
+            rec["extra"]["images"].append(f["image"])
+    return list(seen.values())
+
+
 def parse_trivy(path):
     d = _load(path)
     if "Results" not in d:

@@ -110,6 +110,32 @@ def _inv_osv(path):
     return total, osp, None, findings
 
 
+# The scanner panel (scanner-panel rule 1): the four scanners of the daily rescan. The auditor reads their
+# verdict.json (the rescan's own tally, in the panel-evidence artifact) instead of running scanners itself.
+PANEL_SCANNERS = ("grype", "scout", "inspector", "google")
+
+
+def panel_inventory(verdict_path):
+    """(scanner_reports, scanner_status) for the four panel scanners, from the verdict. A scanner RAN only if it ran
+    on every image it was expected on (the images that list it as ran or did-not-run); one image where it did not run
+    makes it 'did not run', named with the image: never clean. The report is the verdict path for a scanner that ran,
+    null for one that did not. The quorum (three scanners per image) is the panel's own decision and is not recomputed."""
+    d = json.load(open(verdict_path))
+    imgs = d.get("images") or {}
+    reports, status = {}, {}
+    for s in PANEL_SCANNERS:
+        ran_on = sorted(i for i, st in imgs.items() if s in (st.get("ran") or []))
+        missed = sorted(i for i, st in imgs.items() if s in (st.get("did_not_run") or []))
+        expected = len(ran_on) + len(missed)
+        ok = expected > 0 and not missed
+        reason = "ok" if ok else ("did not run on: %s" % ", ".join(missed) if missed else "no image reported this scanner")
+        status[s] = {"ran": ok, "scan_ok": ok, "quorum_ok": ok, "version": None, "reason": reason,
+                     "images_ran": len(ran_on), "images_expected": expected,
+                     "package_count": sum(int((imgs[i].get("counts") or {}).get(s, 0)) for i in ran_on)}
+        reports[s] = verdict_path if ok else None
+    return reports, status
+
+
 def _base_os(path):
     """The base OS release from syft's `distro` block (e.g. 'debian 12.0') — REQ-AUD-14 AC7 needs
     the PINNED release, not a hardcoded 'debian', so the endoflife.date lookup matches the right
