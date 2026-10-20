@@ -2702,7 +2702,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='40b0b07554a64bd2ef2d802beb250f4dbf7be9640a3e6b9666c1ed6441332232'
+FX_PIN='709740770a52ea15b78169cf61e46b9595cba01ff9fccc65247d0d2508a3f848'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -2777,6 +2777,7 @@ fxmut() { # fxmut LABEL FILE-SED TEST-APPEND : the guard against a mutated copy 
   local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "$0" "$m/t.sh"; chmod 644 "$m/f.txt"
   [ -z "$2" ] || sed -i.bak "$2" "$m/f.txt"; [ -z "$3" ] || printf '%s\n' "${3//@FX@/\$FX}" >> "$m/t.sh"
   [ "$1" != x ] || chmod 755 "$m/f.txt"
+  [ "$1" != pf ] || sed -i.bak $'s/^run_fixtures "[$][F]X"$/&\r/' "$m/t.sh"   # pf: only a carriage return added to the call line
   local np=nopin; case "$1" in p*) np= ;; esac   # the p cases test the pin (the lexical scan alone would not see them); the others test the lexical scan with the pin skipped
   if python3 "$work/fx-guard.py" "$m/f.txt" "$m/t.sh" $np > /dev/null 2>&1 && { [ ! -x "$m/f.txt" ]; }; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
   else pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard refuses $4"; fi
@@ -2803,6 +2804,15 @@ fxmut pb '' 'bash "$root/bin/chain-sign-wiring-fixtures"".txt"' "the pin: a line
 fxmut pc '' 'function run_fixtures { bash "$1"; }' "the pin: a second definition of run_fixtures in the function keyword form (round 14)"
 fxmut pd '' '  run_fixtures () { bash "$1"; }' "the pin: an indented definition with a space before the parentheses (round 14)"
 fxmut pe '' '# a comment' "the pin: any edit of this test, even a comment, until the pin is updated"
+fxmut pf '' '' "the pin: a carriage return added to the run_fixtures call line (the bytes change, the text-mode lines do not; round 15)"
+# round 15: the guard and the mutation copies name the running file by BASH_SOURCE[0], which a changed $0 (BASH_ARGV0, a wrapper that sources this test) cannot move
+printf 'echo "$0|${BASH_SOURCE[0]}"\n' > "$work/srcmode.sh"
+if [ "$(bash -c 'source "$1"' wrapper "$work/srcmode.sh")" = "wrapper|$work/srcmode.sh" ] \
+  && [ "$(grep -cE 'fx-guard\.py" "[$][F]X" "[$]\{BASH_SOURCE\[0\]\}"' "${BASH_SOURCE[0]}")" = 2 ] \
+  && [ "$(grep -cE 'cp "[$]\{BASH_SOURCE\[0\]\}" "[$]m/t\.sh"' "${BASH_SOURCE[0]}")" = 2 ] \
+  && [ "$(grep -cE 'cp "[$]0" "[$]m/t\.sh"' "${BASH_SOURCE[0]}")" = 0 ]
+then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the guard call and the mutation copies take the running file from BASH_SOURCE[0], not from \$0 (a sourcing wrapper changes \$0 and not BASH_SOURCE)"
+else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the guard call or a mutation copy takes the running file from \$0"; fi
 d=$(cfix fo_bare_sed 'sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, bare: sed -f archive/vi is refused"
 d=$(cfix fo_fixed_sed '/usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/sed -f archive/vi is refused"
 d=$(cfix fo_fixed_at '/usr/bin/at -f archive/vi now' '["at"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/at -f archive/vi is refused"
@@ -3998,7 +4008,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1862
+EXPECT=1864
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
