@@ -176,13 +176,23 @@ put(gd, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref":
                             "vulnerabilities": [rich, bare]})
 n_, found_ = P.read_grype(gd)
 ex = {t[0]: t[4] for t in found_}
-check("Grype's CycloneDX: highest rating, reference ids other than its own, the unaffected version; a bare vulnerability has no details",
-      ex["CVE-2099-0100"] == {"severity": "high", "aliases": ["GHSA-aaaa-bbbb-cccc"], "fixed_version": "2026d"} and ex["CVE-2099-0101"] == {}, ex)
+check("Grype's CycloneDX: highest rating and reference ids other than its own; a bare vulnerability has no details",
+      ex["CVE-2099-0100"] == {"severity": "high", "aliases": ["GHSA-aaaa-bbbb-cccc"]} and ex["CVE-2099-0101"] == {}, ex)
+check("Grype: a CycloneDX 'unaffected' version says which versions are not affected, not that it is the fix, so no fixed version is recorded",
+      "fixed_version" not in ex["CVE-2099-0100"], ex)
 idir = os.path.join(tempfile.mkdtemp(), "i")
 put(idir, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
 put(idir, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
                                  "vulnerabilities": [rich, bare]}})
+inspv = {"id": "CVE-2099-0106", "ratings": [{"severity": "high"}], "affects": [{"ref": "r0"}],
+         "properties": [{"name": "amazon:inspector:sbom_scanner:fixed_version:r0", "value": "2026d"},
+                        {"name": "amazon:inspector:sbom_scanner:fixed_version:other", "value": "9.9"},
+                        {"name": "amazon:inspector:sbom_scanner:cisa_kev_date_added", "value": "2026-01-01"}]}
+put(idir, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                                 "vulnerabilities": [rich, bare, inspv]}})
 ex = {t[0]: t[4] for t in P.read_inspector(idir)[1]}
+check("Inspector's documented properties: the fixed version scoped to the affected component (another component's is ignored) and the CISA KEV flag",
+      ex["CVE-2099-0106"] == {"severity": "high", "fixed_version": "2026d", "known_exploited": True}, ex["CVE-2099-0106"])
 check("Inspector's ScanSbom (CycloneDX) is read the same way", ex["CVE-2099-0100"]["severity"] == "high" and ex["CVE-2099-0101"] == {}, ex)
 sd = os.path.join(tempfile.mkdtemp(), "s")
 put(sd, "sbom.json", {"artifacts": [{"name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
@@ -200,7 +210,15 @@ put(gd2, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0104", 
     "packageIssue": [{"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}, "fixedVersion": {"fullName": "2026d"}, "fixAvailable": True}]}},
     {"noteName": "projects/goog-vulnz/notes/CVE-2099-0105", "vulnerability": {"shortDescription": "CVE-2099-0105",
     "packageIssue": [{"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}}]}}])
+put(gd2, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0104", "vulnerability": {"shortDescription": "CVE-2099-0104", "severity": "CRITICAL",
+    "packageIssue": [{"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}, "fixedVersion": {"fullName": "2026d"}, "fixAvailable": True}]}},
+    {"noteName": "projects/goog-vulnz/notes/CVE-2099-0105", "vulnerability": {"shortDescription": "CVE-2099-0105",
+    "packageIssue": [{"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}}]}},
+    {"noteName": "projects/goog-vulnz/notes/CVE-2099-0107", "vulnerability": {"shortDescription": "CVE-2099-0107", "severity": "CRITICAL", "risk": {"cisaKev": {}},
+    "packageIssue": [{"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}, "effectiveSeverity": "LOW"}]}}])
 ex = {t[0]: t[4] for t in P.read_google(gd2)[1]}
+check("Google: the package issue's effectiveSeverity wins over the occurrence severity (LOW, not CRITICAL), and risk.cisaKev is known-exploited",
+      ex["CVE-2099-0107"] == {"severity": "low", "known_exploited": True}, ex["CVE-2099-0107"])
 check("Google's PackageIssue: severity and the fixed version; no severity and no fix is absent",
       ex["CVE-2099-0104"] == {"severity": "critical", "fixed_version": "2026d"} and ex["CVE-2099-0105"] == {}, ex)
 # the tally keeps each reporting scanner's own record; the same finding keeps both (the auditor takes the highest and the report shows each)
@@ -214,6 +232,15 @@ v = judge(r)
 f = [x for x in v["findings"] if x["id"] == "CVE-2099-0200"][0]
 check("the verdict finding carries a details record per reporting scanner (Grype high, Google critical + fix), nothing for a scanner that did not report it",
       f["details"] == {"grype": {"severity": "high"}, "google": {"severity": "critical", "fixed_version": "2026d"}}, f.get("details"))
+def rep(order):
+    rr = tree({("grype", "production-amd64"): [("CVE-2099-0300", "tzdata", "2026c")]})
+    comps = [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}] + [{"bom-ref": "p%d" % i, "name": "p%d" % i, "version": "1", "purl": "pkg:generic/p%d@1" % i} for i in range(3)]
+    vs = [{"id": "CVE-2099-0300", "ratings": [{"severity": sv}], "references": [{"id": al}], "affects": [{"ref": "r0"}]} for sv, al in order]
+    W(os.path.join(rr, "grype", "production-amd64"), "result.cdx.json", {"bomFormat": "CycloneDX", "components": comps, "vulnerabilities": vs})
+    return [x for x in judge(rr)["findings"] if x["id"] == "CVE-2099-0300"][0]["details"]["grype"]
+a_ = rep([("low", "GHSA-1111-2222-3333"), ("critical", "GHSA-4444-5555-6666")]); b_ = rep([("critical", "GHSA-4444-5555-6666"), ("low", "GHSA-1111-2222-3333")])
+check("a scanner that reports the same finding twice keeps the HIGHEST severity in either order and the union of its aliases",
+      a_["severity"] == b_["severity"] == "critical" and a_["aliases"] == b_["aliases"] == ["GHSA-1111-2222-3333", "GHSA-4444-5555-6666"] or sorted(a_["aliases"]) == sorted(b_["aliases"]) == ["GHSA-1111-2222-3333", "GHSA-4444-5555-6666"] and a_["severity"] == b_["severity"] == "critical", (a_, b_))
 check("every verdict finding has details for exactly its seen_by scanners", all(sorted(x["details"]) == sorted(x["seen_by"]) for x in v["findings"]), "")
 
 # --- the auditor reads this verdict through one strict, closed validator (auditorlib/parsers.py, cache#466): it must accept every
