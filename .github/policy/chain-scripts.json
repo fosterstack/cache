@@ -869,6 +869,13 @@
           "line_sha256": "d943e1ad4c2e339cf31e89bf49589f36115c3697cd02e90d829ced001ea2716b",
           "count": 1,
           "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
+        },
+        {
+          "rule": "deny",
+          "line": "# The guide's format (cache-3f's): every command is a line of a ```sh fenced block (a line ending in a backslash joins the next; lines",
+          "line_sha256": "5a9bc69c36b12cea707eaf938548c0257d3bd5f80a623e8db85ce6f2a5bfbf4a",
+          "count": 1,
+          "why": "a comment line that quotes a markdown fence (three backticks) in prose: it is text that never runs, not a $ at a quote-segment boundary (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 459, the raw-line scan reads comments by design)"
         }
       ]
     },

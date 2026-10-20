@@ -147,8 +147,16 @@ def boundary_scan(raw):
         if c == "\\" and (q != "'" or ansi) and i + 1 < len(raw):
             if raw[i + 1] in "({" and tail_gap(): gap = True
             cur_seq().append((raw[i + 1], seg)); i += 2; continue
+        if q != "'" and c == "`":                  # a backtick substitution is ONE gap; its inside is scanned on its own
+            j = i + 1
+            while j < len(raw) and raw[j] != "`":
+                j += 2 if raw[j] == "\\" else 1
+            if j >= len(raw): gap = True; i += 1; continue
+            if boundary_scan(raw[i + 1:j]): gap = True
+            cur_seq().append(("\x02", seg)); seg += 1; i = j + 1; continue
         if q != "'" and c == "$":
             two = raw[i:i + 2]
+            if two == "$$" and raw[i + 2:i + 3] in ("(", "{", "["): gap = True   # a $$ then an opener character: refused
             if two in ("${", "$(", "$["):
                 stack.append(({"${": "}", "$(": ")", "$[": "]"}[two], q, ansi)); seqs.append([]); q = None; ansi = False; i += 2; continue
             m = re.match(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*)", raw[i:])
@@ -162,8 +170,12 @@ def boundary_scan(raw):
             if top == ")" and c == "(":
                 if tail_gap(): gap = True
                 stack.append((")", q, ansi)); seqs.append([]); i += 1; continue
-            if top == ")" and c == "#" and (i == 0 or raw[i - 1] in " \t" or raw[i - 1:i + 1] == "(#"):
-                gap = True      # a comment inside $( ): where it ends is not certain
+            if top == ")" and c == "#":
+                gap = True      # a # inside $( ) may start a comment (after a space, ; | & or a newline): where the substitution ends is not certain
+            if top == ")" and raw.startswith("case", i) and (i == 0 or not (raw[i - 1].isalnum() or raw[i - 1] == "_")) and raw[i + 4:i + 5] in (" ", "\t"):
+                gap = True      # a case arm ) inside $( ) is not its closer: uncertain
+            if top == "]" and c == "[":
+                stack.append(("]", q, ansi)); seqs.append([]); i += 1; continue
         if c == "$": dollar = i
         if q is None and c in "\"'":
             q = c; ansi = (c == "'" and dollar == i - 1); seg += 1
@@ -176,7 +188,7 @@ def boundary_scan(raw):
     if stack: gap = True              # an unterminated expansion
     if COMPOUND_GAP.search("".join(ch for ch, _ in seq)): gap = True
     return gap
-DOLLAR_BOUNDARY = re.compile(r"[$<>](?:[\"'\\]|\$\{[^}]*\}|\$\([^)]*\)|\$\[[^\]]*\]|\$[A-Za-z_0-9@*#?!$-]+)+[({]")   # a $ (or < >) then one or more quote or escape characters or ANY expansion, then ( or { : an opener whose characters bash joins from separate quote segments or around an expansion that may be empty; the raw logical line, comments and heredoc bodies included
+DOLLAR_BOUNDARY = re.compile(r"[$<>](?:[\"'\\]|\$\{[^}]*\}|\$\([^)]*\)|\$\[(?:[^\]\[]|\[[^\]]*\])*\]|`[^`]*`|\$[A-Za-z_0-9@*#?!$-]+)+[({]|\$\$[({\[]")   # a $ (or < >) then one or more quote or escape characters or ANY expansion, then ( or { : an opener whose characters bash joins from separate quote segments or around an expansion that may be empty; the raw logical line, comments and heredoc bodies included
 def shell_words(raw):
     return shell_scan(raw)[0]
 def dollar_boundary(raw):
