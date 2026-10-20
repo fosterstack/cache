@@ -4,7 +4,7 @@
 # bin/install-kind.sh, the node image by digest) and load the candidate. CANDIDATE_LOCAL is the candidate's local tag.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
-# step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+# step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
 # The job env of stage-acceptance-k8s.yml, unchanged except that the pinned client image (by digest) is written out in step 6, where it is pulled.
 export CLIENT_LOCAL=fscache-client:accept
@@ -57,7 +57,7 @@ kubectl wait --for=condition=Ready pod/fscache-runner --timeout=90s \
 # stage-acceptance-k8s.yml, job k8s, step 8: the runner env block populates the expected variable names (values never printed)
 step_08() (
 set -euo pipefail
-# Assert the NAMES the settings.gradle.kts reads are set and
+# Assert the NAMES the settings.gradle.kts reads are defined and
 # non-empty inside the pod; never echo the values. A regressed
 # mapping (wrong names, or an envFrom shortcut) leaves these unset.
 # shellcheck disable=SC2016
