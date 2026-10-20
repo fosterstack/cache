@@ -1968,7 +1968,7 @@ requirements:
       - id: REQ-REL-009-AC13
         given: "a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses)"
         when: "decide considers cutting it, and source admission admits it"
-        then: "it uses the latest owner-approved ACs baseline of its own X.Y line; baseline refreshes for patch releases go ahead automatically unless they add or change a release-blocking rule; only those come to the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline"
+        then: "it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC14
