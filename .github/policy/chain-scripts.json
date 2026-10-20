@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "809dc6ee2359b7447284fbc8e7a2f3e64b35bb7060d5706e5b971f0bcee725a3",
+      "sha256": "62b9953170c07ff3c4c2288408a128aac338255dcbb8fb0f49b68dd97656f815",
       "tools": [
         "at",
         "curl",
@@ -497,7 +497,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
-      "sha256": "7b72a29cda313ec846a94f95ea638fc26dcdc6cf78bcd1921b905ba1b849d81a",
+      "sha256": "dd63810714b7e024842018b7353c1ca9953943d78c62f5f12ab514aa25aa6f6a",
       "exceptions": [
         {
           "rule": "deny",
@@ -630,24 +630,7 @@
         "bin/check-artifacts.sh"
       ],
       "signs": false,
-      "reason": "Check's fixed dispatcher: makes the release policy for the tag, verifies Build and Sign, then runs the phase's check scripts (REQ-CHAIN-006-AC3)",
-      "exceptions": [
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out check-results",
-          "why": "Check runs its Go scan isolated (python3 -I -B), as the verifier lines above; the one Python-run script of the scanners phase, pinned by the script judge of the Check wiring test (ruling G, REQ-CHAIN-006-AC4)"
-        }
-      ]
+      "reason": "Check's fixed dispatcher: makes the release policy for the tag, verifies Build and Sign, then runs the phase's check scripts (REQ-CHAIN-006-AC3)"
     },
     {
       "path": "bin/check-govulncheck.py",
@@ -669,7 +652,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "13c15f9217f460863c81595b81ac2bf0cc5513ef09d6b572849bc84659a31b97",
+      "sha256": "ff28939bc293f498968880832fdef0715594340f9d3c09e6f8a9f2cb9da4bf5c",
       "tools": [
         "find",
         "python3",
@@ -717,8 +700,8 @@
         },
         {
           "rule": "deny",
-          "line": "[ -z \"${CHECK_SCAN_NOW+x}\" ] || fail \"CHECK_SCAN_NOW is set in the environment: the database age is judged by the runner's clock, which no variable can set\"",
-          "line_sha256": "983cf2d10303fe486dbdf02210b3166d78e163c5d48e2b9d775e9de6b92543b0",
+          "line": "[ -z \"${CHECK_SCAN_NOW+x}\" ] || fail \"CHECK_SCAN_NOW is defined in the environment: the database age is judged by the runner's clock, which no variable can change\"",
+          "line_sha256": "2ae0c195e21d2471ef18a310f97cc1229add47c0aeda6b64cad761bdda07bc7b",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -888,7 +871,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "ac8e2476de9242d2495d64c7e9d8921b8d287512f77674e172cd2f5f297e9739",
+      "sha256": "6b4b3e150a8f562715f8b882a2e7fe67f4c06b4d846e2f5ca8fb0a0363961290",
       "tools": [
         "at",
         "awk",
@@ -992,7 +975,7 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "841f9506d4006d6587439726b1d85bcaaa2202dd6dcf72eb9cb3e570fef8af51",
+      "sha256": "aab318ef556e89bc9b4871be6cf4458fc5eb81c562f0af56b0425e8d4c71d1ee",
       "tools": [
         "awk",
         "bash",
@@ -1119,7 +1102,7 @@
     },
     {
       "path": "bin/acceptance-maven.sh",
-      "sha256": "ea589e342cab0cbae1322566797005b62bf758392e64ce4c946df3829351d5ae",
+      "sha256": "92c39c7c22f4c04c7910a0b0f110e0da7acaa7f97961757d9765d161c0505324",
       "tools": [
         "awk",
         "bash",
@@ -1177,7 +1160,7 @@
     },
     {
       "path": "bin/acceptance-maven-capped.sh",
-      "sha256": "fa74e14adbc8c0f49a6422bd02746b5b816b1deb523c01906e947ad07bb57bde",
+      "sha256": "9d5136ab1a7a16188e4e66553fe53fef7ec927560086aac83d0698722ca4266e",
       "tools": [
         "awk",
         "bash",
@@ -1227,7 +1210,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "f08e8620d1164d556b2710c66a15d7ddfa8437cc7779e1f47632317b55078583",
+      "sha256": "b5a90d42a2ec4e4f57574e2fa2b4aa6b784d0db59f1d47d674e0077fe7452a54",
       "tools": [
         "at",
         "awk",
@@ -1347,7 +1330,7 @@
     },
     {
       "path": "bin/acceptance-k8s.sh",
-      "sha256": "c83fc833e77e65be7f701ec0dc160ae13ae201e38f499fa9222d8872466657cf",
+      "sha256": "559d11a534978607c3176b899c64239e20127dc9e0a7a4a1da114b5fe19087a9",
       "tools": [
         "at",
         "bash",
@@ -1387,7 +1370,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "874bf009c4c559954a246821fb944ea83469b48572c13f9732d61da3c8d8ad8a",
+      "sha256": "26f711ac440240a0baa0057bb5fa0c6b4b4602f20ebd0c5b110a5f2b8dc5acc7",
       "tools": [
         "curl",
         "docker",
@@ -1403,8 +1386,8 @@
       "exceptions": [
         {
           "rule": "deny",
-          "line": "[ -n \"${IMAGE_REF:-}\" ] || { echo \"acceptance-serve: IMAGE_REF is not set\" >&2; exit 2; }",
-          "line_sha256": "beafcb00df0f70c2ae1aee331aa81089fb3cca439ad9d38808d61b2dbd64e502",
+          "line": "[ -n \"${IMAGE_REF:-}\" ] || { echo \"acceptance-serve: IMAGE_REF is unset\" >&2; exit 2; }",
+          "line_sha256": "a7202d42c28be3cd7fd93c0abe990931ff36274c6312ee55b9706a6fc04ade30",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
@@ -1599,15 +1582,15 @@
       ],
       "signs": "other",
       "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (Build/Rebuild comparison and melange sign) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
-      "sha256": "9acc2f0bd89d3651cd4aee5b96d91df170e5efea003a7eecd670c25709b0d480",
+      "sha256": "c9492711e09669c9d8c7ffce59ce35a7350363b3facb99034458da911e332de8",
       "reads_env": [
         "APK_RELEASE_SIGNING_KEY"
       ],
       "exceptions": [
         {
           "rule": "deny",
-          "line": "if [ -z \"${APK_RELEASE_SIGNING_KEY:-}\" ]; then echo \"release-apks: APK_RELEASE_SIGNING_KEY is not set\" >&2; exit 2; fi",
-          "line_sha256": "07e2fc8734bab48ab01d52e20651da5240b86145454143b70a8604728f6c04bc",
+          "line": "if [ -z \"${APK_RELEASE_SIGNING_KEY:-}\" ]; then echo \"release-apks: APK_RELEASE_SIGNING_KEY is unset\" >&2; exit 2; fi",
+          "line_sha256": "b2768dc581254bd195b47373c7599227b761f888db2b03a64d8e9294f56ffdbb",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1661,7 +1644,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "308369a11710cfc0c81550bbee596aa4fa45ba9a6490043d1a1228346169b264",
+      "sha256": "7562be1b5cbcd9d57a051d309ba07dfad02ccee935e817bb6e645052b29fb8b3",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1670,8 +1653,8 @@
       "exceptions": [
         {
           "rule": "deny",
-          "line": "  if [ -z \"${!name:-}\" ]; then echo \"release-publish: $name is not set\" >&2; exit 2; fi",
-          "line_sha256": "dc4b5b32f4f884a8111cd7200bebde9d12e4698236f6e1ecc21bd04c8e02b0d6",
+          "line": "  if [ -z \"${!name:-}\" ]; then echo \"release-publish: $name is unset\" >&2; exit 2; fi",
+          "line_sha256": "b33467e870161493005cadacb59e992f3b4a6183524ad1f20c4dc26daa2d1edb",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1721,7 +1704,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "1a9b567cda4d859dfd73a36f842b6bc2e58dbf98f0165a0db12b0fb77ae46fb4",
+      "sha256": "04eadba6c1483964a1a766da09226e69ac9500e7fd7a6af9c36657ba640bd293",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1730,8 +1713,8 @@
       "exceptions": [
         {
           "rule": "deny",
-          "line": "  if [ -z \"${!name:-}\" ]; then echo \"release-sign: $name is not set\" >&2; exit 2; fi",
-          "line_sha256": "8784c400374a726679b5d8e8af891f3cc179099d9fc1dccf45dc3658f962cce6",
+          "line": "  if [ -z \"${!name:-}\" ]; then echo \"release-sign: $name is unset\" >&2; exit 2; fi",
+          "line_sha256": "18a76e77de3fce5659a5630e6611566cc5cacf27b1006c19ab052614449aeb00",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1756,15 +1739,15 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "e9c4402127e0beaab440d4d0f7d6b7d22ca21182d0324bdb6ba2df81152ccff3",
+      "sha256": "b46bbe571ce4a4146cb3ae2a846e44230f05cf875e88546d4f918e9bbf6c579f",
       "reads_env": [
         "GH_TOKEN"
       ],
       "exceptions": [
         {
           "rule": "deny",
-          "line": "if [ -z \"${GH_TOKEN:-}\" ]; then echo \"release-assets: GH_TOKEN is not set\" >&2; exit 2; fi",
-          "line_sha256": "aeb9367ed614fa310e883ec61aa40f708a317dcc38fb65087030145f0742fee0",
+          "line": "if [ -z \"${GH_TOKEN:-}\" ]; then echo \"release-assets: GH_TOKEN is unset\" >&2; exit 2; fi",
+          "line_sha256": "e5778de5c31451c3398b89c86cab491aa376118285c29c9c3415f7ecf4eca244",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1777,15 +1760,15 @@
         },
         {
           "rule": "deny",
-          "line": "  [ \"${#std[@]}\" = 1 ] || { echo \"release-assets: release-apks/$arch must hold exactly one standard apk (fscache-VERSION.apk), it holds ${#std[@]}: the set is incomplete\" >&2; exit 1; }",
-          "line_sha256": "f62a301b852b5b2b02983234ceab874e064232fd6fc712b4891b2c91189c60fc",
+          "line": "  [ \"${#std[@]}\" = 1 ] || { echo \"release-assets: release-apks/$arch must hold exactly one standard apk (fscache-VERSION.apk), it holds ${#std[@]}: the list is incomplete\" >&2; exit 1; }",
+          "line_sha256": "cd894eeae368b0dd48df4e1074dc53fe2072a448e9f602fad3c33b34deb42251",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "  [ \"${#fips[@]}\" = 1 ] || { echo \"release-assets: release-apks/$arch must hold exactly one -fips apk (fscache-fips-VERSION.apk), it holds ${#fips[@]}: the set is incomplete\" >&2; exit 1; }",
-          "line_sha256": "8dcfd8efdc251c7841e0af55f5cee341c0aa5a4ef4f9b0cafbbb373702e3099a",
+          "line": "  [ \"${#fips[@]}\" = 1 ] || { echo \"release-assets: release-apks/$arch must hold exactly one -fips apk (fscache-fips-VERSION.apk), it holds ${#fips[@]}: the list is incomplete\" >&2; exit 1; }",
+          "line_sha256": "083c44a013067df226d8aac79f76358eee31f009a0411e329aa2be1109e7857f",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1843,15 +1826,15 @@
       ],
       "signs": false,
       "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
-      "sha256": "ab5a70151cbc2f3170d36a1b869e676683af50f57fd423720694b0c0885a0808",
+      "sha256": "2b706582f3d46ec1f22e0ebda52f0878376c75e77ccf36212054f58b41e84f9b",
       "reads_env": [
         "GH_TOKEN"
       ],
       "exceptions": [
         {
           "rule": "deny",
-          "line": "[ -n \"${GH_TOKEN:-}\" ] || { echo \"release-postverify: GH_TOKEN is not set\" >&2; exit 2; }",
-          "line_sha256": "a597a7d7ea3f860c454eb1e311a83cd8df6b6ab0d9ee92b40296b05ce6ee084d",
+          "line": "[ -n \"${GH_TOKEN:-}\" ] || { echo \"release-postverify: GH_TOKEN is unset\" >&2; exit 2; }",
+          "line_sha256": "69ef7a2b92d28fd0326c990cc64034e02be75883511cce8a2b83552418ea8c9a",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
@@ -2016,19 +1999,7 @@
         "bin/check-artifacts.sh"
       ],
       "signs": false,
-      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)",
-      "exceptions": [
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        }
-      ]
+      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)"
     },
     {
       "path": "bin/check-bind.py",
@@ -2298,7 +2269,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "74c79c0513d7b630d9f6c1fb3835a3113aec47223f299ed79bf8c1653440eb3d",
+      "sha256": "5136b1ef162888a4637e4f766eeff9a79762d72bf11e7b1f7ad5008a5c68e6d7",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2326,15 +2297,15 @@
         },
         {
           "rule": "deny",
-          "line": "[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die \"SOURCE_DATE_EPOCH must be set to digits (the commit time, at most 12 digits)\"",
-          "line_sha256": "219c82837b237396b3fe99cc435d1ddc9d8b9c4fbf235b248259584c78734ec6",
+          "line": "[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die \"SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)\"",
+          "line_sha256": "d099f153dfd42d4acd2d76778e4257f1d14edb8c9033f0307519ed2177a39dca",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
         {
           "rule": "deny",
-          "line": "[ -z \"${APK_RELEASE_SIGNING_KEY:-}\" ] || die \"the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is set)\"",
-          "line_sha256": "7f939298f87647e3e37a4195a5efdabc517399958728e6850db426bfb2f121d0",
+          "line": "[ -z \"${APK_RELEASE_SIGNING_KEY:-}\" ] || die \"the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is defined)\"",
+          "line_sha256": "e8fa78059630046cb4d0e37829740b1c55654a3fdec02b584f7dcdeb6c1d864a",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -2347,8 +2318,8 @@
         },
         {
           "rule": "deny",
-          "line": "  [ -z \"${!p:-}\" ] || die \"a proxy is set in the environment ($p); the sealed build has no network\"",
-          "line_sha256": "dd71a7935c1308497aede17d958d4411123f3f750f48a7a5051228044d4f969e",
+          "line": "  [ -z \"${!p:-}\" ] || die \"a proxy is defined in the environment ($p); the sealed build has no network\"",
+          "line_sha256": "3010551bff2afc13195cfa7787a0e03b4c07374fa2589c0e2899022c61f09aff",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -2480,7 +2451,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "35b917e02c4d377e97e5a6cc57cb4339e7abc1b2daf380fb17ab2b29ee13ed18",
+      "sha256": "069016ac6b8cab75977bf8bc4f3f4137bf5a1caeb8ccef0e3bbd66335b519800",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2531,8 +2502,8 @@
         },
         {
           "rule": "deny",
-          "line": "[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die \"SOURCE_DATE_EPOCH must be set to digits (the commit time, at most 12 digits)\"",
-          "line_sha256": "219c82837b237396b3fe99cc435d1ddc9d8b9c4fbf235b248259584c78734ec6",
+          "line": "[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die \"SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)\"",
+          "line_sha256": "d099f153dfd42d4acd2d76778e4257f1d14edb8c9033f0307519ed2177a39dca",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },

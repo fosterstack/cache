@@ -31,7 +31,8 @@ Two small things, and nothing else:
      * other workflows (ci.yml, scan.yml ...), composite actions and release.yml's non-stage jobs are NOT stage files: they keep only
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
-import bisect, fnmatch, hashlib, json, os, re
+import bisect, codecs
+import fnmatch, hashlib, json, os, re
 
 def jload(path):
     """json.load that REFUSES a repeated object key at any depth (round 1 (6)): a plain reader keeps only the last of two equal keys, so the
@@ -1466,16 +1467,78 @@ def runs_a_program(operands):
     return False
 TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 
-def pathlike_deny(cmds, rows, runs):
+# cache#361 (REQ-CHAIN-001-AC1; REQ-ARCHIVE-001-AC9 / REQ-REFRESH-001-AC23): two closed forms that are STRICTER than the bare name. (1) A command word that is exactly /usr/bin/NAME, /bin/NAME
+# or /usr/local/bin/NAME (NAME a plain word: no slash, no .., no $, backquote, glob or quote) is judged as the bare NAME, and only when NAME is in the row's `tools`: a fixed path cannot be
+# redirected through PATH. (2) A python interpreter may be handed the isolation flags -I and -B (each at most once, separate words) before the script it runs; any other option, a
+# combined flag, -c, -m, stdin or an unlisted script stays refused.
+FIXED_DIRS = ("/usr/bin/", "/bin/", "/usr/local/bin/")
+FUNC_BY_PATH = re.compile(r"(?<![^\s;&|{}()!`])(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=\"'$`]*)[ \t]*\([ \t]*\)(?=[ \t]*(?:\n|\Z|#|\{|\(|if\b|while\b|until\b|for\b|select\b|case\b|\[\[)))")
+ALIAS_USE = re.compile(r"expand_aliases|BASH_ALIASES|(?<![^\s;&|{}()!`])unalias(?=[\s;&|)]|$)|(?<![^\s;&|{}()!`])alias(?=[\s;&|)]|$)")   # cache#361 (seat A, round 5): an alias can name the function (alias x=$'\x2fusr\x2fbin\x2fcurl'; x() {...}); no listed script uses aliases
+ANSIC = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+ANSIC_ESC = re.compile(r"\\(?:x([0-9A-Fa-f]{1,2})|([0-7]{1,3})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|(.))", re.S)
+def ansic_decode(m):
+    """bash's $'..' decoding: hex (1-2 digits), octal, \\u (1-4 hex digits), \\U (1-8) and the one-letter escapes (an unknown escape keeps its letter)."""
+    def one(e):
+        try:
+            if e.group(1): return chr(int(e.group(1), 16))
+            if e.group(2): return chr(int(e.group(2), 8) & 255)
+            if e.group(3): return chr(int(e.group(3), 16))
+            if e.group(4): return chr(int(e.group(4), 16))
+        except ValueError: return ""
+        return {"n": "\n", "t": "\t", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "r": "\r", "v": "\v"}.get(e.group(5), e.group(5))
+    return ANSIC_ESC.sub(one, m.group(1))
+SUBST = re.compile(r"\$\{[^}]*\}|\$\([^()]*\)|`[^`]*`|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?!$-]")
+def alias_views(text):
+    """The text as bash reads a word before it runs it, in two views: A keeps substitutions, B deletes them (a substitution can be empty: expand_al$()iases). $'..' is decoded, $".." is a plain string, every quote mark and backslash is dropped."""
+    a = re.sub(r"[\\'\"]", "", re.sub(r"\$\"", "\"", ANSIC.sub(ansic_decode, text)))
+    return (a, SUBST.sub("", a))
+ALIAS_USE = re.compile(r"expand_alias|ALIASES|unalias|(?<![A-Za-z0-9_-])alias(?![A-Za-z0-9_-])|POSIXLY_CORRECT|SHELLOPTS|BASHOPTS")   # cache#361 (rounds 5-7): an alias can name a function like a fixed-path program (alias x=$'\x2fusr\x2fbin\x2fcurl'; x() {...}); no listed script uses one. Alias expansion is switched on by shopt expand_aliases or by POSIX mode (set -o posix, POSIXLY_CORRECT, SHELLOPTS)
+SHOPT_W = re.compile(r"(?<![A-Za-z0-9_-])shopt(?![A-Za-z0-9_-])")
+SET_W = re.compile(r"(?<![A-Za-z0-9_-])set(?![A-Za-z0-9_-])")
+SET_ARG = r"[ \t]+(?:[-+][ceuxfCvEnT]*o[ \t]+(?:pipefail|errexit|nounset|noglob|noclobber|xtrace|errtrace)|[-+][ceuxfCvEnT]+|--(?:[ \t]+[^;&|)<>\n]*)?)"
+SET_AFTER = re.compile("(?:" + SET_ARG + r")*[ \t]*(?:[;&|)}\n]|#|\Z)")
+SET_BEFORE = re.compile(r"(?:\A|[\n;&|{(]|(?<![A-Za-z0-9_-])(?:then|do|else))[ \t]*\Z")
+def set_uses(v):
+    """Every whole word `set` in the text that is NOT a plain command of the closed form: right after a command delimiter (line start, ; & | { ( then do else), only closed arguments (-e -u -x ... letters, -o NAME of a short list, or -- and plain words), then a terminator. An anchored whitelist: a prefix, a redirection, an assignment, prose or a string holding the word is refused, never guessed at."""
+    bad = []
+    for m in SET_W.finditer(v):
+        if SET_BEFORE.search(v[:m.start()]) and SET_AFTER.match(v, m.end()): continue
+        a = v.rfind("\n", 0, m.start()) + 1; b = v.find("\n", m.end()); b = len(v) if b < 0 else b
+        bad.append(v[a:b].strip()[:80])
+    return bad
+
+ENABLER = re.compile(r"(?:^|[;&|{}()!])[ \t]*(?:(?:then|do|else|elif|if|while|until|time|-p|[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*|[0-9]*[<>]+&?[^\s;&|]*)[ \t]+)*(?P<cmd>shopt)(?=[\s;&|)<>(]|$)(?P<rest>[^\n;&|)]*)", re.M)   # where a command can start; a word inside a comment sentence is not one
+ENABLER_OK = {"shopt": re.compile(r"\s+-[su]\s+(?:nullglob|extglob|globstar|lastpipe|inherit_errexit|nocaseglob|nocasematch)\s*")}
+FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
+PY_ISOLATION = ("-I", "-B")
+def fixed_tool(w, tools):
+    """NAME when `w` is exactly a fixed-directory path of a tool that the row lists in `tools`, else None."""
+    for d in FIXED_DIRS:
+        if w.startswith(d):
+            n = w[len(d):]
+            return n if FIXED_NAME.fullmatch(n) and n in tools else None
+    return None
+def python_operands(name, operands):
+    """The operands of a python interpreter command after its leading isolation flags (-I, -B, each at most once); other interpreters are returned unchanged."""
+    if not re.fullmatch(r"python[0-9.]*", name): return list(operands)
+    ops, seen = list(operands), set()
+    while ops and ops[0] in PY_ISOLATION and ops[0] not in seen:
+        seen.add(ops[0]); ops.pop(0)
+    return ops
+
+def pathlike_deny(cmds, rows, runs, tools=()):
     """The path-like words (see above) of the commands that are neither the command word of their command (judged by the command-word rule)
-    nor an admitted operand."""
+    nor an admitted operand. A fixed-path command (cache#361) is judged as its bare name: it keeps every operand rule of that name."""
     out = []
     for c in cmds:
         if c.cw is None: continue
-        cw = c.cw[2:] if c.cw.startswith("./") else c.cw
-        admitted = (cw in rows or (cw in SHELL_INTERP and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs)
-                    or family_kind(cw) == "interp" and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs
-                    or (c.cw in DATA_ONLY and not runs_a_program(c.operands)))
+        ecw = fixed_tool(c.cw, tools) or c.cw
+        cw = ecw[2:] if ecw.startswith("./") else ecw
+        ops = python_operands(cw, c.operands)                          # python: -I and -B do not change which operand is the script
+        first = (ops[0][2:] if ops[0].startswith("./") else ops[0]) if ops else ""
+        admitted = (cw in rows or (cw in SHELL_INTERP and bool(ops) and first in runs)
+                    or family_kind(cw) == "interp" and bool(ops) and first in runs
+                    or (ecw in DATA_ONLY and not runs_a_program(c.operands)))
         if admitted: continue
         for o in c.operands:
             for t in TOKEN.findall(o):
@@ -1515,6 +1578,7 @@ def protected_env_mentions(path, text, row):
 
 def scan_script(path, text, row, rows, base):
     """Errors for one LISTED script. Not a shell parser: a conservative TEXT scan over the raw file whatever its extension or shebang
+    LIMIT (cache#433, advisor ruling Oct 17): a command WORD built from an expansion ($x, ${x}, $(...)) is not judged, and spellings beyond what the alias/function/shopt/set checks resolve (quote and backslash removal, $'..' and $".." decoding, empty or deleted substitutions) are not read; ~40 listed scripts legitimately start a command with a variable ($PY3, $SUDO), so refusing the form would refuse them. Such a finding needs deliberately disguised shell: it is information, not a blocker.
     (it over-reports by design): (a) a command from the finite DENY list (interpreters, source/eval/exec, make/xargs/find, curl/wget/ssh,
     gh/git/docker ...) anywhere in the text unless the row lists it in `tools`; (b) any token naming another script (a path ending
     in a script extension, or a file in the tree with a shebang, or a listed path) that is not the file itself and not in its `runs`;
@@ -1617,11 +1681,13 @@ def scan_script(path, text, row, rows, base):
             if cw_budget.get(t, 0) > 0: cw_budget[t] -= 1; continue
             add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
     if not py:
-        for t, cline in pathlike_deny(cmds, rows, runs):
+        for t, cline in pathlike_deny(cmds, rows, runs, tools):
             add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)" % (path, t), phys(cline))
         for c in cmds:
             if c.cw is None: continue
-            w = c.cw
+            w = fixed_tool(c.cw, tools) or c.cw                                   # cache#361: /usr/bin|/bin|/usr/local/bin/NAME with NAME in `tools` is judged as the bare NAME
+            if fixed_tool(c.cw, tools) is not None and ("$'" in c.text or '$"' in c.text):
+                add(None, "", "%s: %r is written with ANSI-C or locale quoting ($'..' or $\"..\"), which bash decodes differently from this judge: write the fixed path plainly" % (path, c.cw))
             n = w[2:] if w.startswith("./") else w
             name = n.rsplit("/", 1)[-1]
             span = c.text                          # the whole simple command, from its first assignment or redirection, as written
@@ -1641,7 +1707,8 @@ def scan_script(path, text, row, rows, base):
                 if name not in tools: add("evaluator", span, "%s: %r at command position is an evaluator not in this script's `tools` list" % (path, w))
                 continue
             if name in SHELL_INTERP or kind == "interp":
-                first = c.operands[0] if c.operands else ""
+                pops = python_operands(name, c.operands)                          # python: -I and -B (each once) may precede the listed script
+                first = pops[0] if pops else ""
                 fn = first[2:] if first.startswith("./") else first
                 if any(op.startswith("<") for op, _t in c.redirs) or not first or first.startswith("-") or fn not in runs:
                     add("script-name", span, "%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
@@ -1649,6 +1716,23 @@ def scan_script(path, text, row, rows, base):
             in_tree = ("/" in w or w.startswith("./")) and repo_file(n)
             if (w.startswith("./") or in_tree or script_like(w)) and n != path and n not in runs and n != selfbase:
                 add("script-name", span, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
+    if not py:
+        for m in (x for v in (logical(text),) + alias_views(logical(text))[:1] for x in FUNC_BY_PATH.finditer(v)):   # also the quote- and backslash-resolved view: bash rejects a quoted function name, the judge does not rely on that                       # the RAW logical text, comments included: stripping a "comment" can diverge from bash (a # line inside a quote spanning lines, an ANSI-C escaped quote)                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
+            add(None, "", "%s: defines a function named by a path (%s): it could run in place of the fixed-path program it names" % (path, m.group("name") or m.group("name2")))
+    if not py:
+        for v in alias_views(logical(text)):
+            for m in ALIAS_USE.finditer(v):                                  # "alias" counts only as a whole word (product-and-alias-scoped in a comment is not it)
+                add(None, "", "%s: uses shell aliases or POSIX mode (%s): an alias can give a function the name of a fixed-path program" % (path, m.group(0)))
+            okshopt = 0
+            for m in ENABLER.finditer(v):
+                if not ENABLER_OK[m.group("cmd")].fullmatch(m.group("rest")):
+                    add(None, "", "%s: `%s%s` is not one of the listed harmless uses (it could turn on alias expansion)" % (path, m.group("cmd"), m.group("rest").rstrip()))
+                else: okshopt += 1
+            # the backstop, by count: every whole-word shopt must be one of the matches above (a prefix the ENABLER pattern does not parse, a group, a trap string or prose is refused, not guessed at)
+            if len(SHOPT_W.findall(v)) != okshopt:
+                add(None, "", "%s: the word shopt appears somewhere other than as a plain `shopt -s|-u OPTION` command of the closed list" % path)
+            for line in set_uses(v):
+                add(None, "", "%s: the word `set` appears other than as a plain `set` command of the closed form (set -o posix turns on alias expansion; a prefix, a redirection, prose or a string is refused): %s" % (path, line))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for x in protected_env_mentions(path, text, row): add(None, "", x)

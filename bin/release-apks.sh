@@ -7,7 +7,7 @@
 # release.rsa itself. The key is written to a private file named release.rsa (cache's signer refuses any other name) that is removed on every exit; it is never put on an argument list, in the output or in a log.
 set -euo pipefail
 shopt -s nullglob
-if [ -z "${APK_RELEASE_SIGNING_KEY:-}" ]; then echo "release-apks: APK_RELEASE_SIGNING_KEY is not set" >&2; exit 2; fi
+if [ -z "${APK_RELEASE_SIGNING_KEY:-}" ]; then echo "release-apks: APK_RELEASE_SIGNING_KEY is unset" >&2; exit 2; fi
 [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-apks: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never signs)" >&2; exit 1; }
 runners="ubuntu-24.04:x86_64:amd64 ubuntu-24.04-arm:aarch64:arm64"
 variants="standard fips"
