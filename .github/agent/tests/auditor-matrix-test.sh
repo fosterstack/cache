@@ -3707,6 +3707,18 @@ PYEOF
 )"
 { eq "$r" "ran=grype,inspector null=scout,google ginfo=3/3 greason=True pkgs=30"; } && ok || no "panel_inventory: grype and inspector ran everywhere, scout and google missed debug-amd64 (null report, reason names the image)" "[$r]"
 
+begin "panel-3-panel-block-never-hides-a-missing-verdict" "the manifest carries a 'panel' block: null when no panel directory was given (older runs), the four scanners' status and reports when verdict.json is there, and when the directory has no verdict.json every panel scanner is recorded 'did not run' with the reason (the panel's audits cannot run, never a clean pass)"
+pd="$WORK/panel-dir"; rm -rf "$pd" "$WORK/panel-empty"; mkdir -p "$pd" "$WORK/panel-empty"; cp "$pv" "$pd/verdict.json"
+r="$(PD="$pd" PE="$WORK/panel-empty" "$PY" - <<'PYEOF'
+import importlib.util, os
+spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+a = M.panel_block(None); b = M.panel_block(os.environ["PD"]); c = M.panel_block(os.environ["PE"])
+print("none=%s ok=%s,%s empty=%s,%s" % (a is None, b["verdict"].endswith("verdict.json"), ",".join(s for s in M.PANEL_SCANNERS if b["scanner_status"][s]["ran"]),
+  all(c["scanner_reports"][s] is None for s in M.PANEL_SCANNERS), all("verdict.json" in c["scanner_status"][s]["reason"] for s in M.PANEL_SCANNERS)))
+PYEOF
+)"
+{ eq "$r" "none=True ok=True,grype,inspector empty=True,True"; } && ok || no "panel_block: None without a directory; four statuses with a verdict; all four did-not-run (reason names verdict.json) without one" "[$r]"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
