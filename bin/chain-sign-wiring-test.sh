@@ -3736,7 +3736,7 @@ w \'(\' \'<\'"(printf audit))"\n' caught 'compound assignment' 'round 9: <( spli
 dc dc_zzza $'w() { declare -a "a=$1$2"; }
 w \'(\' \'$\'"{y})"\n' caught 'compound assignment' 'round 9: ${ split across quote segments'
 dc dc_zzzb $'set --
-declare -a \'a=(x $\'$1\'(printf audit))\'\n' caught 'compound assignment' 'round 9: a possibly-empty positional between $ and ('
+declare -a \'a=(x $\'$1\'(printf audit))\'\n' caught 'quote-segment boundary' 'round 9: a possibly-empty positional between $ and ('
 dc dc_zzzc $'w() { declare -a "a=$1$2"; }
 x="$(printf \'"\')"; w \'$(printf marker)\'\n' caught 'compound assignment' 'round 9: a nested-quote line leaves the splitter uncertain, quoted data still refused'
 dc dc_zzzd $'echo "$(date)" "${x:-y}" "a$(b)c" "$1" "${name}" \'plain\'
