@@ -3878,6 +3878,18 @@ bd bd_zzj $'cat <<\'EOF\' >/dev/null
 \'<\'$(case x in x) :;; esac)\'(x)\'
 EOF
 echo ok\n' caught 'quote-segment boundary' 'a case-arm ) inside a command substitution in a heredoc body'
+bd bd_zzk $'echo \'<$[a[b[0]]](x)\'\n' caught 'quote-segment boundary' 'deeply nested brackets inside single quotes'
+bd bd_zzl $'echo \'<$[1+$[1+$[0]]](x)\'\n' caught 'quote-segment boundary' 'nested $[ ] three deep inside single quotes'
+bd bd_zzm $'echo \'<$["]"](x)\'\n' caught 'quote-segment boundary' 'a quoted ] inside $[ ] is uncertain'
+bd bd_zzn $'# \'<$[a[b[0]]](x)\'
+echo ok\n' caught 'quote-segment boundary' 'deep brackets in a comment'
+bd bd_zzo $'cat <<\'EOF\' >/dev/null
+\'<$[a[b[0]]](x)\'
+EOF
+echo ok\n' caught 'quote-segment boundary' 'deep brackets in a heredoc body'
+bd bd_zzp $'echo \'<$[1+$[1+$[0]]](\'\n' caught 'quote-segment boundary' 'unbalanced-looking nested $[ ] then ('
+bd bd_zzq $'echo "<$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a>"
+echo ok\n' ok - 'control: 28 adjacent simple expansions must scan in linear time and are not a boundary'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -4049,7 +4061,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1839
+EXPECT=1846
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
