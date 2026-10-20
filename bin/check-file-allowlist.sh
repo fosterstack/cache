@@ -102,6 +102,7 @@ ALLOW_PATTERNS=(
   '^bin/scout-vex-scan\.sh$'
   '^bin/scout-selfcheck\.py$'
   '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
+  '^bin/scout-older-versions(\.sh|-test\.sh)$'
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
   '^bin/release-patch-wiring-test\.sh$'
