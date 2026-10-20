@@ -2702,7 +2702,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='709740770a52ea15b78169cf61e46b9595cba01ff9fccc65247d0d2508a3f848'
+FX_PIN='cb2b37c043f31eb78a8ac2d6873093d172c1b4fd2fb7eb1d3d4032d48bd8d4a0'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -2726,19 +2726,19 @@ for n, r in enumerate(rows, 1):
 # THE PIN (first line of defence, round 14): this whole test, less its one pin line, must hash to the pin. Any edit of the file (a new line, a second definition, an indirect or joined spelling of the
 # data-file name) fails here until the pin is updated in a reviewed PR; the scan below is only the second line, for the fx mutation cases that skip the pin ("nopin").
 if "nopin" not in sys.argv[3:]:
-    tl = open(me).read().split("\n")
-    pins = [l for l in tl if re.fullmatch(r"FX_PIN='[0-9a-f]{64}'", l)]
+    tl = open(me, "rb").read().split(b"\n")      # bytes: a carriage return or any other byte change moves the hash
+    pins = [l for l in tl if re.fullmatch(rb"FX_PIN='[0-9a-f]{64}'", l)]
     assert len(pins) == 1, "the test has %d pin lines, not 1" % len(pins)
-    got = hashlib.sha256("\n".join(l for l in tl if l != pins[0]).encode()).hexdigest()
-    assert got == pins[0][8:-1], "this test differs from its pin; if the edit is reviewed, set FX_PIN='%s'" % got
+    got = hashlib.sha256(b"\n".join(l for l in tl if l != pins[0])).hexdigest()
+    assert got == pins[0][8:-1].decode(), "this test differs from its pin; if the edit is reviewed, set FX_PIN='%s'" % got
 # DEFAULT DENY: a line of this test that names the data file (the variable FX or its file name), anywhere but inside this heredoc, must be one of the exact whole lines below, and
 # run_fixtures must be exactly the function below; a comment, a trailing comment, a second command or a different redirect is not on the list, so it fails
 WORD = re.compile(r'(?<![A-Za-z0-9_])FX(?![A-Za-z0-9_])|fixtures\.txt')
 ALLOWED = {
     'FX="$root/bin/chain-sign-wiring-fixtures.txt"',
-    'if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "$0"',
+    'if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "${BASH_SOURCE[0]}"',
     'run_fixtures "$FX"',
-    '  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "$0" "$m/t.sh"; chmod 644 "$m/f.txt"',
+    '  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "${BASH_SOURCE[0]}" "$m/t.sh"; chmod 644 "$m/f.txt"',
     "  [ -z \"$2\" ] || sed -i.bak \"$2\" \"$m/f.txt\"; [ -z \"$3\" ] || printf '%s\\n' \"${3//@FX@/\\$FX}\" >> \"$m/t.sh\"",
 }
 CALL = re.compile(r"^fxmut [a-z][a-z0-9]* '[^']*' '[^']*' \"[^\"$`\\]*\"$")      # a mutation call: the placeholder @FX@ only, never the variable
@@ -2749,7 +2749,7 @@ RUN_FIXTURES = (
     '    d=$(cfix "$name" "$body" "$tools"); expm "$verdict" "$d" "$frag" "$label"\n'
     '  done < "$1"\n'
     '}\n')
-text = open(me).read()
+text = open(me, newline="").read()
 assert RUN_FIXTURES in text and sum(1 for l in text.split("\n") if l.startswith("run_fixtures() {")) == 1, "run_fixtures is not exactly the reviewed function"
 end = None
 for n, l in enumerate(text.split("\n"), 1):
@@ -2762,7 +2762,7 @@ for n, l in enumerate(text.split("\n"), 1):
     if CALL.match(l):
         assert "$FX" not in l, "line %d" % n
 PY
-if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "$0"
+if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "${BASH_SOURCE[0]}"
 then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 fixture texts are data: the fixture data file is six tab-separated fields per line, has no shebang and no execute bit, and the test only reads it"
 else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the fixture data file is missing, executable, malformed, or the test runs it"
 fi
@@ -2774,7 +2774,7 @@ else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 a data record was run"; 
 run_fixtures "$FX"
 # the guard must bite: an executable file, a shebang, a short record, and a test that sources, evaluates or runs the file are each refused
 fxmut() { # fxmut LABEL FILE-SED TEST-APPEND : the guard against a mutated copy of the data file and of this test
-  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "$0" "$m/t.sh"; chmod 644 "$m/f.txt"
+  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "${BASH_SOURCE[0]}" "$m/t.sh"; chmod 644 "$m/f.txt"
   [ -z "$2" ] || sed -i.bak "$2" "$m/f.txt"; [ -z "$3" ] || printf '%s\n' "${3//@FX@/\$FX}" >> "$m/t.sh"
   [ "$1" != x ] || chmod 755 "$m/f.txt"
   [ "$1" != pf ] || sed -i.bak $'s/^run_fixtures "[$][F]X"$/&\r/' "$m/t.sh"   # pf: only a carriage return added to the call line
