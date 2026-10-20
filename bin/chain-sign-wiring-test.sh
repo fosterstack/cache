@@ -3838,6 +3838,21 @@ echo ok\n' caught 'quote-segment boundary' 'a special parameter in single quotes
 bd bd_zq $'w() { declare -a "a=($1)"; }
 w \'$\'${e:-${f
 echo ok\n' caught 'quote-segment boundary' 'an unterminated expansion is refused (fail closed)'
+bd bd_zr $'echo \'<$[0](\'\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes'
+bd bd_zs $'# \'<$[0](\'
+echo ok\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes in a comment'
+bd bd_zt $'cat <<\'EOF\' >/dev/null
+\'<$[0](\'
+EOF
+echo ok\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes in a heredoc body'
+bd bd_zu $'# $(echo \'$\'${e:-${f:-}}(true))
+echo ok\n' caught 'quote-segment boundary' 'a boundary before a bare ( inside a command substitution'
+bd bd_zv $'echo "$(printf \'"\')"${e}\n' caught 'compound assignment' 'an earlier refusal is kept: a uncertain quote pattern next to an expansion'
+bd bd_zw $'# $(printf \\$(x))
+echo ok\n' caught 'compound assignment' 'an earlier refusal is kept: an escaped opener behind a bare ('
+bd bd_zx $'w() { declare -a "a=($1)"; }
+w \'$\'$(# )
+:)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment inside a command substitution makes its closer uncertain'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -4009,7 +4024,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1820
+EXPECT=1827
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
