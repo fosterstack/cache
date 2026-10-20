@@ -414,7 +414,7 @@ The startup log line shall announce version, listen address, data directory, siz
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-004-AC1 | Given a starting server; when the first log line is emitted; then it contains version, addr, data_dir, max_bytes, auth, and fips140 fields | component |  | approved | none mapped |
+| REQ-OBS-004-AC1 | Given a starting server; when the startup log record is emitted; then it contains version, addr, data_dir, max_bytes, auth, and fips140 fields | component |  | approved | none mapped |
 
 ### REQ-OBS-005 — No mutable admin surface
 
@@ -763,7 +763,7 @@ Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at o
 | REQ-REL-009-AC10 | Given a stage of a patch release; when it fails; then one issue is opened, that attempt is abandoned with no retry, the next daily run tries again once the cause is fixed, and the owner is told as information | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-009-AC11 | Given a CI patch release; when it is published; then it moves :X.Y to itself every time and moves :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC12 | Given a PR the lane labels patch-fix; when the label is applied; then both reviewers' step-8 records for that PR say no behavior change; otherwise only the owner applies it, or the change waits for a minor release | ci-workflow |  | approved | none mapped |
-| REQ-REL-009-AC13 | Given a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses); when decide considers cutting it, and source admission admits it; then it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline | unit |  | approved | 2 item(s) |
+| REQ-REL-009-AC13 | Given a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses); when decide considers cutting it, and source admission admits it; then it uses the latest owner-approved ACs baseline of its own X.Y line, baseline refreshes for patch releases go ahead automatically unless they add or change a release-blocking rule; only those come to the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline | unit |  | approved | 2 item(s) |
 | REQ-REL-009-AC14 | Given the notes sources of a patch release: the fix records the release scans and go.mod give, the entries of docs/next-release-notes.md, and the changelog inputs (the notes file the changelog step is handed and the existing docs/quality/releases/CHANGELOG.md); when the notes are generated (patch-decide notes) or the changelog is written (patch-decide changelog); then a source is refused outright, never decoded, escaped or rewritten, when any line of it holds (1) a '<' followed by a letter, '/', '!' or '?'; (2) the shape of a Markdown link reference definition: up to three spaces, '[', a label, ']' and ':'; (3) a character reference: '&#' digits ';', '&#x' or '&#X' hex digits ';', or '&' a letter, letters or digits and ';'; or (4) the text '-----BEGIN '; and (5) two entries whose published lines are the same line are refused before any entry is dropped as already published or cleared from docs/next-release-notes.md; the refusal message names the file and line of each offending source line (both, for a collision); on a refusal the command exits 2 and writes nothing, so no patch tag is cut (notes) or no changelog PR is opened (changelog) | unit |  | approved | 1 item(s) |
 
 ## SCAN
@@ -1063,7 +1063,7 @@ The repository shall remove its own stale branches with no human step and never 
 
 ### REQ-AUD-018 — The auditor layout and coverage gate; its second review is enforced outside the repository
 
-The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same 100% coverage gate as the Go, and let no change to the auditor merge without the independent second review, which the private review tooling enforces before merge; this repository judges no review record.
+The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same 100% coverage gate as the Go (except the listed exclusions), and let no change to the auditor merge without the independent second review, which the private review tooling enforces before merge; this repository judges no review record.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: auditor directory bin/auditor-layout-check.py; auditor directory tests/coverage-gate.sh; .github/workflows/agent-review-gate.yml; .github/workflows/ci.yml*
 
@@ -1072,7 +1072,7 @@ The auditor shall keep everything auditor-related in the auditor directory, hold
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-AUD-018-AC1 | Given any tracked file in the repository; when the layout check (auditor-layout-check.py, run by the allowlist job in ci.yml) reads the file list; then All auditor code, prompts, fixtures and tests live under the auditor directory and nowhere else; the only auditor-related files outside it are the workflow files (.github/workflows/), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml, which name test paths as metadata; and (amendment, owner Oct 3) the patch-release classifier bin/patch-decide.py and its test bin/patch-decide-test.sh, which name the auditor directory as data and hold no auditor code. | ci-workflow |  | approved | 2 item(s) |
-| REQ-AUD-018-AC2 | Given the Python in the auditor directory; when the required coverage job runs the auditor coverage gate (coverage-gate.sh); then The Python under the auditor directory is held to the 100% coverage gate in CI, the same as the Go. | ci-workflow |  | approved | 3 item(s) |
+| REQ-AUD-018-AC2 | Given the Python in the auditor directory; when the required coverage job runs the auditor coverage gate (coverage-gate.sh); then The Python under the auditor directory is held to the 100% coverage gate in CI, except the listed exclusions, the same as the Go. | ci-workflow |  | approved | 3 item(s) |
 | REQ-AUD-018-AC3 | Given a pull request that changes anything under the auditor directory; when the pull request is merged; then Every change under the auditor directory clears the independent second review's stop rule before merge. | inspection |  | approved | 2 item(s) |
 
 ### REQ-AUD-019 — The auditor unit tests touch no real system path
