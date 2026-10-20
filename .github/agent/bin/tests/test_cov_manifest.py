@@ -270,12 +270,14 @@ class MainHappy(Harness):
 
     def test_panel_mode_with_a_scanner_that_missed_an_image_records_it_never_clean(self):
         self.rules([r for r in GOOD_RULES if r["tool"] in ("skopeo", "syft", "govulncheck")])
-        pd = self.panel_dir(dnr={"debug-amd64": ["scout", "google"]})
+        from auditorlib import parsers as PL
+        dbg = sorted(i for i in PL.panel_images() if i.endswith("-amd64") and not i.startswith("production"))[0]    # main ships debug, chain-v030 drops it
+        pd = self.panel_dir(dnr={dbg: ["scout", "google"]})
         self.run_main(self.base_args("--panel-dir", pd))
         m = _rj(self.out)
         self.assertEqual(m["scanner_reports"]["scout"], None); self.assertEqual(m["scanner_reports"]["google"], None)
-        self.assertIn("debug-amd64", m["scanner_status"]["scout"]["reason"])
-        self.assertEqual(m["panel"]["not_counted"], ["debug-amd64"])             # two scanners on an image is under the quorum of three
+        self.assertIn(dbg, m["scanner_status"]["scout"]["reason"])
+        self.assertEqual(m["panel"]["not_counted"], [dbg])             # two scanners on an image is under the quorum of three
 
     def test_panel_mode_without_a_verdict_is_all_four_did_not_run(self):
         self.rules([r for r in GOOD_RULES if r["tool"] in ("skopeo", "syft", "govulncheck")])
