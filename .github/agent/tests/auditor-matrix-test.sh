@@ -3947,6 +3947,30 @@ run "$PY" "$BIN/auditor-classify.py" --manifest "$WORK/pm-ok/manifest.json" --ad
   { eq "$st" "not_affected" && printf '%s' "$s5" | grep -q 'CVE-2016-2781' && eq "$igdirs" "0"; } \
     && ok || no "panel manifest classified: FP not_affected (log key on the panel purl) in section 5, no ignores/<scanner> dirs" "status=$st sec5=[$s5] ignoredirs=$igdirs"; }
 
+begin "panel-7-run-takes-its-quorum-from-the-panel" "auditor-run on a panel manifest: the day is AUDIT COMPLETE only when no image is uncounted by the panel (rule 3: three scanners per image); the report names the four panel scanners, shows each scanner's severity for a finding and the highest is the one policy uses, and no old scanner (trivy, osv-scanner, snyk) is mentioned"
+o="$WORK/pm-ok-run"; rm -rf "$o"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-ok/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
+  complete="$(grep -qi 'AUDIT COMPLETE' "$o/report.md" && echo yes || echo no)"
+  names="$(for n in grype scout inspector google; do grep -qi "$n" "$o/report.md" && printf 'y' || printf 'n'; done)"
+  old="$(grep -ciE 'trivy|osv-scanner|snyk' "$o/report.md")"
+  { eq "$complete" "yes" && eq "$names" "yyyy" && eq "$old" "0"; } \
+    && ok || no "panel-ok run: complete, four panel scanners named, none of the old three" "complete=$complete names=$names old_mentions=$old"; }
+
+begin "panel-8-an-uncounted-image-or-a-missing-verdict-is-never-complete" "an image the panel did not count (fewer than three scanners ran on it), or a missing/invalid verdict, makes the day AUDIT INCOMPLETE and the report names why (the uncounted image / the missing verdict); a scanner that did not run is listed as did not run"
+o="$WORK/pm-unc-run"; rm -rf "$o"; : > "$LEDGER"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-uncounted/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; {
+  inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; why="$(grep -qi 'debug-amd64' "$o/report.md" && echo yes || echo no)"
+  { eq "$inc" "yes" && eq "$why" "yes"; } && ok || no "uncounted image: incomplete and named" "incomplete=$inc names_image=$why"; }
+o="$WORK/pm-nop-run"; rm -rf "$o"; : > "$LEDGER"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-nopanel/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; {
+  inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; why="$(grep -qi 'verdict' "$o/report.md" && echo yes || echo no)"
+  { eq "$inc" "yes" && eq "$why" "yes"; } && ok || no "no verdict: incomplete and says so" "incomplete=$inc mentions_verdict=$why"; }
+
+begin "panel-9-report-shows-each-scanners-severity" "for a finding the panel's scanners rate differently, the report row shows each scanner's severity (grype high, inspector critical) and policy uses the highest (critical)"
+o="$WORK/pm-ok-run"
+{ grep 'CVE-2011-3374' "$o/report.md" | grep -qi 'critical' && grep 'CVE-2011-3374' "$o/report.md" | grep -qi 'grype.*high\|high.*grype'; } \
+  && ok || no "row for CVE-2011-3374 shows critical (highest) and grype's high" "$(grep 'CVE-2011-3374' "$o/report.md" | head -3 | cut -c1-300)"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
