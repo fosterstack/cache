@@ -2022,6 +2022,8 @@ CASE="the committed pinned-fetch rows are EXACTLY the scanner's occurrences of t
 check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); sys.modules["ac"] = ac; spec.loader.exec_module(ac)
+# the oracle is not taken from the checker alone: the lines per file are the ones REQ-SUP-001-AC26 names (1 release download, 1 client image, 14 loopback requests in four acceptance scripts, 3 Go fetches)
+assert {f: len(l) for f, l in ac.PINNED_FETCH.items()} == {"bin/release-assets.sh": 1, "bin/acceptance-k8s.sh": 1, "bin/acceptance-gradle.sh": 3, "bin/acceptance-gradle-capped.sh": 4, "bin/acceptance-maven.sh": 4, "bin/acceptance-maven-capped.sh": 3, "bin/install-scanner.sh": 1, "bin/go-bump-open-pr.sh": 2}, {f: len(l) for f, l in ac.PINNED_FETCH.items()}
 want = set()
 for f, lines in ac.PINNED_FETCH.items():
     for l in lines:
