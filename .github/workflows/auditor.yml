@@ -152,6 +152,7 @@ jobs:
           python3 .github/agent/bin/auditor-manifest.py \
             --rescan-dir "${RUNNER_TEMP}/rescan" \
             --rescan-reports "${RUNNER_TEMP}/rescan-reports" \
+            --panel-dir "${RUNNER_TEMP}/panel" \
             --source-dir "${GITHUB_WORKSPACE}" \
             --reports "${RUNNER_TEMP}/reports" \
             --test-image "${TEST_IMAGE}" \

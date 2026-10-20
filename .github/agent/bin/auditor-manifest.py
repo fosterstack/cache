@@ -21,6 +21,8 @@ archive once to a docker-save tar with skopeo (no daemon) and point all three sc
 import json, os, re, subprocess, sys, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
+from auditorlib import parsers as P
+from auditorlib.parsers import PANEL_SCANNERS as PARSERS_PANEL_SCANNERS
 
 TAG = "ghcr.io/fosterstack/cache:cand-production"
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
@@ -108,6 +110,54 @@ def _inv_osv(path):
                 osp += 1
             findings += len(p.get("vulnerabilities") or [])
     return total, osp, None, findings
+
+
+# The scanner panel (scanner-panel rule 1): the four scanners of the daily rescan. The auditor reads their
+# verdict.json (the rescan's own tally, in the panel-evidence artifact) instead of running scanners itself.
+PANEL_SCANNERS = PARSERS_PANEL_SCANNERS
+
+
+def panel_inventory(verdict_path):
+    """(scanner_reports, scanner_status) for the four panel scanners, from a STRICTLY validated verdict (ParseError
+    otherwise). A scanner RAN only if, on every image the rule expects it on (Google: amd64 only), it is listed as ran
+    WITH a package count above zero; an image where it is listed as did-not-run, not listed at all, or has no count
+    makes it 'did not run', named with the image: never clean. The report is the verdict path for a scanner that ran,
+    null for one that did not. The quorum (three scanners per image) is the panel's own decision, not recomputed."""
+    d = P.validate_panel_verdict(P.load_panel_verdict(verdict_path))
+    imgs = d["images"]
+    reports, status = {}, {}
+    for s in PANEL_SCANNERS:
+        want = sorted(i for i in imgs if P.panel_expected(s, i))
+        good = [i for i in want if s in imgs[i]["ran"]]          # the validator guarantees a positive integer count for each
+        missed = [i for i in want if i not in good]
+        ok = bool(want) and not missed
+        reason = "ok" if ok else ("did not run on: %s" % ", ".join(missed) if missed else "no image reported this scanner")
+        status[s] = {"ran": ok, "scan_ok": ok, "quorum_ok": ok, "version": None, "reason": reason,
+                     "images_ran": len(good), "images_expected": len(want),
+                     "package_count": sum(imgs[i]["counts"][s] for i in good)}
+        reports[s] = verdict_path if ok else None
+    return reports, status
+
+
+def panel_block(panel_dir):
+    """The manifest's 'panel' block. None when no panel directory was given (an older run). A directory without
+    verdict.json records all four panel scanners 'did not run' with that reason: the panel's audits cannot run,
+    and nothing is reported clean because a file is missing."""
+    if not panel_dir:
+        return None
+    vp = os.path.join(panel_dir, "verdict.json")
+    if os.path.exists(vp) and os.path.getsize(vp) > 0:
+        try:
+            reports, status = panel_inventory(vp)
+            return {"verdict": vp, "scanner_reports": reports, "scanner_status": status}
+        except (ValueError, OSError, AttributeError, TypeError, KeyError) as e:
+            why = "panel-evidence verdict.json is unreadable: %s" % e
+    else:
+        why = "panel-evidence has no verdict.json"
+    return {"verdict": None,
+            "scanner_reports": {s: None for s in PANEL_SCANNERS},
+            "scanner_status": {s: {"ran": False, "scan_ok": False, "quorum_ok": False, "version": None, "reason": why,
+                                   "images_ran": 0, "images_expected": 0, "package_count": 0} for s in PANEL_SCANNERS}}
 
 
 def _base_os(path):
@@ -507,6 +557,7 @@ def main():
         # endoflife.date maintenance flags (carriers/base on LTS/EOL lines) and the base pin-lag
         # block. `eol`/`base` are best-effort (empty when endoflife.date is unreachable).
         "carriers": carriers, "eol": _eol_list, "base": _base_block,
+        "panel": panel_block(cli.opt("--panel-dir")),     # the scanner panel's four, from the rescan's verdict.json
         "provenance": {"source": ("test-image" if test_image else "own-scan"), "candidate": src,
                        "scanned": "docker-archive"},
     }
