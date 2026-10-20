@@ -2732,7 +2732,7 @@ ALLOWED = {
     '  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "$0" "$m/t.sh"; chmod 644 "$m/f.txt"',
     "  [ -z \"$2\" ] || sed -i.bak \"$2\" \"$m/f.txt\"; [ -z \"$3\" ] || printf '%s\\n' \"${3//@FX@/\\$FX}\" >> \"$m/t.sh\"",
 }
-CALL = re.compile(r"^fxmut [a-z] '[^']*' '[^']*' \"[^\"$`\\]*\"$")      # a mutation call: the placeholder @FX@ only, never the variable
+CALL = re.compile(r"^fxmut [a-z][a-z0-9]* '[^']*' '[^']*' \"[^\"$`\\]*\"$")      # a mutation call: the placeholder @FX@ only, never the variable
 RUN_FIXTURES = (
     'run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case\n'
     '  local name body tools verdict frag label d\n'
@@ -2768,7 +2768,8 @@ fxmut() { # fxmut LABEL FILE-SED TEST-APPEND : the guard against a mutated copy 
   local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "$0" "$m/t.sh"; chmod 644 "$m/f.txt"
   [ -z "$2" ] || sed -i.bak "$2" "$m/f.txt"; [ -z "$3" ] || printf '%s\n' "${3//@FX@/\$FX}" >> "$m/t.sh"
   [ "$1" != x ] || chmod 755 "$m/f.txt"
-  if python3 "$work/fx-guard.py" "$m/f.txt" "$m/t.sh" > /dev/null 2>&1 && { [ ! -x "$m/f.txt" ]; }; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
+  local np=nopin; case "$1" in p*) np= ;; esac   # the p cases test the pin (the lexical scan alone would not see them); the others test the lexical scan with the pin skipped
+  if python3 "$work/fx-guard.py" "$m/f.txt" "$m/t.sh" $np > /dev/null 2>&1 && { [ ! -x "$m/f.txt" ]; }; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
   else pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard refuses $4"; fi
 }
 fxmut x '' '' "an executable data file"
@@ -2788,6 +2789,11 @@ fxmut k '' 'run_fixtures "@FX@"; bash < "@FX@"' "a run_fixtures call with a seco
 fxmut l '3s/\t[^\t]*\t/\t\t/' '' "a record with an empty tools field"
 fxmut m '' '# the file @FX@ is only ever read' "a comment that names the data file (a comment is not on the list)"
 fxmut n '' 'run_fixtures() { eval "$1"; }' "a second definition of run_fixtures"
+fxmut pa '' 'F='"'"'F'"'"'X; bash < "${!F}"' "the pin: a line that builds the file name by indirect expansion (round 14)"
+fxmut pb '' 'bash "$root/bin/chain-sign-wiring-fixtures"".txt"' "the pin: a line that joins the file name from adjacent quoted words (round 14)"
+fxmut pc '' 'function run_fixtures { bash "$1"; }' "the pin: a second definition of run_fixtures in the function keyword form (round 14)"
+fxmut pd '' '  run_fixtures () { bash "$1"; }' "the pin: an indented definition with a space before the parentheses (round 14)"
+fxmut pe '' '# a comment' "the pin: any edit of this test, even a comment, until the pin is updated"
 d=$(cfix fo_bare_sed 'sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, bare: sed -f archive/vi is refused"
 d=$(cfix fo_fixed_sed '/usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/sed -f archive/vi is refused"
 d=$(cfix fo_fixed_at '/usr/bin/at -f archive/vi now' '["at"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/at -f archive/vi is refused"
