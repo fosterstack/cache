@@ -2018,6 +2018,21 @@ assert len(rows) <= 20, len(rows)
 for r in rows:
     assert r["line"] in ac._PINNED_FETCH_SHA.get(r["file"], {}) and r["form"] in ("a download", "a gh release or extension download") and "count" not in r and "context" not in r, r
 PY
+CASE="the committed pinned-fetch rows are EXACTLY the scanner's occurrences of the nineteen pinned lines: each row's file, form, key and whole-line hash is one the scan produces for its line, none is missing, none is extra (twenty rows)"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); sys.modules["ac"] = ac; spec.loader.exec_module(ac)
+want = set()
+for f, lines in ac.PINNED_FETCH.items():
+    for l in lines:
+        for k, flat, bashlike in ac.inv.unmeasured_occurrences({f: l + "\n"}):
+            assert bashlike, l
+            want.add((k[0], k[1], k[2].split(":", 1)[0], ac._line_hash(flat)))   # the row key is the hash of the download segment (the part of the scan key before the colon)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith(ac.PINNED_FETCH_RULING)]
+have = [(r["file"], r["form"], r["key"], r["line"]) for r in rows]
+assert len(have) == len(set(have)) == len(want) == 20, (len(have), len(set(have)), len(want))
+assert set(have) == want, sorted(set(have) ^ want)
+PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
 newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"
