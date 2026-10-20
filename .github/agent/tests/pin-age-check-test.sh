@@ -1924,7 +1924,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b": "printf -v CURL %s /usr/bin/curl # TEST-SUBST",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 (", "loopback fetch, advisor reading Oct 17 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 (", "loopback fetch, advisor reading Oct 17 (", "pinned fetch, advisor reading Oct 17 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -2013,7 +2013,8 @@ check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); sys.modules["ac"] = ac; spec.loader.exec_module(ac)
 rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith(ac.PINNED_FETCH_RULING)]
-assert len(rows) <= 19, len(rows)
+assert len({(r["file"], r["line"]) for r in rows}) <= 19, len(rows)   # one row per command segment of a line: a line with two segments (acceptance-k8s.sh) has two rows
+assert len(rows) <= 20, len(rows)
 for r in rows:
     assert r["line"] in ac._PINNED_FETCH_SHA.get(r["file"], {}) and r["form"] in ("a download", "a gh release or extension download") and "count" not in r and "context" not in r, r
 PY
