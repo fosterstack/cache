@@ -969,10 +969,10 @@ def rescan_binding(path, oci_dir):
 
 
 def cmd_judge(a, seats=None, bundles=None, advisory=None):
-    verdict = _load_json(a.verdict)
     try:
+        verdict = _load_json(a.verdict)
         parsers.validate_panel_verdict(verdict)       # the one strict shape every reader shares (cache#466): fail closed
-    except parsers.ParseError as e:
+    except (parsers.ParseError, ValueError, OSError) as e:
         sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s: %s); nothing was judged\n" % (a.verdict, e))
         return 2
     state = _load_json(a.state) or new_state()

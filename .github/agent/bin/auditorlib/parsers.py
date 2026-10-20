@@ -86,11 +86,25 @@ def panel_expected(scanner, image):
     return image in _panel_module().EXPECTED.get(scanner, [])
 
 
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
 def _is_count(v):
-    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+    return _is_int(v) and v > 0
 
 
 def validate_panel_verdict(d):
+    """See _validate_panel_verdict; any type error in a malformed document is a ParseError, never a traceback."""
+    try:
+        return _validate_panel_verdict(d)
+    except (TypeError, AttributeError, KeyError, ValueError) as e:
+        if isinstance(e, ParseError):
+            raise
+        raise ParseError("panel verdict: malformed (%s: %s)" % (type(e).__name__, e))
+
+
+def _validate_panel_verdict(d):
     """The strict shape of bin/panel.py's verdict.json, shared by every reader; fail closed. Anything structurally
     wrong, truncated or internally inconsistent raises ParseError, so a malformed verdict is never read as 'no findings'
     or as a scanner having run. The image set is exactly the panel's; per image, ran and did_not_run are duplicate-free,
@@ -108,6 +122,8 @@ def validate_panel_verdict(d):
         ran, dnr, counts = st.get("ran"), st.get("did_not_run"), st.get("counts")
         if not (isinstance(ran, list) and isinstance(dnr, list) and isinstance(counts, dict)):
             raise ParseError("panel verdict: image %r has no ran/did_not_run/counts" % img)
+        if any(not isinstance(x, str) for x in ran + dnr):
+            raise ParseError("panel verdict: image %r lists a scanner that is not a name" % img)
         if len(set(ran)) != len(ran) or len(set(dnr)) != len(dnr) or set(ran) & set(dnr):
             raise ParseError("panel verdict: image %r lists a scanner twice or as both ran and did not run" % img)
         want = {s for s in PANEL_SCANNERS if panel_expected(s, img)}
@@ -129,17 +145,30 @@ def validate_panel_verdict(d):
             raise ParseError("panel verdict: an incomplete finding or one on an unknown image")
         sb, ran = f.get("seen_by"), st_all[f["image"]]["ran"]
         if (not isinstance(sb, list) or not sb or len(set(sb)) != len(sb) or any(x not in ran for x in sb)
-                or f.get("of") != len(ran) or f.get("unique") is not (len(sb) == 1)
+                or not _is_int(f.get("of")) or f.get("of") != len(ran) or f.get("unique") is not (len(sb) == 1)
                 or f.get("status") != ("unique" if len(sb) == 1 else "report")):
             raise ParseError("panel verdict: finding %s on %s has inconsistent seen_by/of/unique/status" % (f["id"], f["image"]))
+    for f in d["findings"]:                      # a package URL must name the package and version the finding names
+        for purl in f["purls"]:
+            name, ver = pm._purl_name_version(purl)
+            if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"], f["package"], f["version"])[2:]:
+                raise ParseError("panel verdict: finding %s on %s has a package URL for a different package or version" % (f["id"], f["image"]))
     keys = [pm.key_of(f["image"], f["id"], f["package"], f["version"]) for f in d["findings"]]
     if len(set(keys)) != len(keys):
         raise ParseError("panel verdict: two findings share one identity (image, CVE, package, version)")
+    reported = [f for f in d["findings"] if f["status"] == "report"]
     if (d.get("unique") != [f for f in d["findings"] if f["unique"]] or not isinstance(d.get("vex_covered"), list)
             or not isinstance(d.get("issue"), str)):
         raise ParseError("panel verdict: the unique list, vex_covered or issue disagrees with the findings")
-    code = 2 if (d["not_counted"] or d["scanner_failures"]) else (1 if any(f["status"] == "report" for f in d["findings"]) else 0)
-    if d.get("exit") != code:
+    if bool(d["issue"]) != bool(reported) or any("`%s`" % f["id"] not in d["issue"] for f in reported):
+        raise ParseError("panel verdict: the issue text does not agree with the reported findings")
+    for c in d["vex_covered"]:                   # what the tally recorded as hidden by our statement (its Inspector and Google results)
+        if not (isinstance(c, dict) and all(isinstance(c.get(k), str) and c.get(k) for k in ("image", "scanner", "id", "package"))
+                and isinstance(c.get("version"), str) and c["image"] in st_all and c["scanner"] in pm.FILTER_HERE
+                and c["scanner"] in st_all[c["image"]]["ran"]):
+            raise ParseError("panel verdict: a vex_covered entry is incomplete, names an unknown image or a scanner the tally does not filter, or one that did not run there")
+    code = 2 if (d["not_counted"] or d["scanner_failures"]) else (1 if reported else 0)
+    if not _is_int(d.get("exit")) or d.get("exit") != code:
         raise ParseError("panel verdict: exit status disagrees with the images and findings")
     return d
 
