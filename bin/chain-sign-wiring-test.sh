@@ -3741,6 +3741,42 @@ dc dc_zzzc $'w() { declare -a "a=$1$2"; }
 x="$(printf \'"\')"; w \'$(printf marker)\'\n' caught 'compound assignment' 'round 9: a nested-quote line leaves the splitter uncertain, quoted data still refused'
 dc dc_zzzd $'echo "$(date)" "${x:-y}" "a$(b)c" "$1" "${name}" \'plain\'
 v="$(dirname "$0")"\n' ok - 'control: live substitutions in double quotes and unquoted, simple expansions, plain single-quoted data'
+bd() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "dollar at a quote-segment boundary: $5"; }
+bd bd_a $'w() { declare -a "a=$1$2"; }
+w \'(\' \'$\'"(printf x))"\n' caught 'quote-segment boundary' '$ closes a single-quoted segment, ( opens a double-quoted one'
+bd bd_b $'e=
+w() { declare -a "a=$1$2"; }
+w \'$\'${e:-}\'(printf x)\'\n' caught 'quote-segment boundary' 'an empty-producing ${e:-} between the literal $ and ('
+bd bd_c $'set --
+w() { declare -a "a=$1$2"; }
+w \'$\'${1}\'(printf x)\'\n' caught 'quote-segment boundary' 'a ${1} between the literal $ and ('
+bd bd_d $'w() { declare -a "a=$1$2"; }
+w \'$\'$(true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a $(true) between the literal $ and ('
+bd bd_e $'w() { declare -a "a=$1$2"; }
+w \'$\'$e\'(printf x)\'\n' caught 'quote-segment boundary' 'a $e between the literal $ and ('
+bd bd_f $'w() { declare -a "a=$1$2"; }
+w \'<\'${e:-}\'(printf x)\'\n' caught 'quote-segment boundary' 'a process-substitution fragment, < then an expansion then ('
+bd bd_g $'w() { declare -a "a=$1$2"; }
+x="$(printf \'"\')"; w \'$\'"(printf x)"\n' caught 'quote-segment boundary' 'a nested-quote line: the raw line is still scanned'
+bd bd_h $'w() { declare -a "a=$1$2"; }
+w \'$\'"{y}"\n' caught 'quote-segment boundary' '$ then a quote boundary then {'
+bd bd_i $'w() { declare -a "a=$1$2"; }
+w $"(printf x)"\n' caught 'quote-segment boundary' 'a locale-quote $" before ('
+bd bd_j $'echo "$(date)" "${x}" "$1" "${x:-y}"
+printf \'%s\\n\' \'{print $1}\' \'a $5 b\'
+v=$(cmd)\n' ok - 'control: live substitutions, simple expansions, $1 and $5 in single-quoted text, no quote-segment boundary'
+bd bd_k $'# the $(cmd) form and ${x} and "$(y)" are fine in a comment
+echo ok\n' ok - 'control: a comment line with ordinary substitution text'
+bd bd_l $'cat <<\'EOF\' >/dev/null
+price $5, ${x}, "$(y)" and a $1}
+EOF
+echo ok\n' ok - 'control: a quoted-heredoc body with ordinary text that never runs'
+bd bd_m $'# note: \'$\'"(printf x)" is what to avoid
+echo ok\n' caught 'quote-segment boundary' 'by design a comment line holding the boundary form is refused, like every raw-line rule (a line-bound waiver clears it)'
+bd bd_n $'cat <<\'EOF\' >/dev/null
+\'$\'"(printf x)"
+EOF
+echo ok\n' caught 'quote-segment boundary' 'by design a heredoc body holding the boundary form is refused (a line-bound waiver clears it)'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -3912,7 +3948,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1777
+EXPECT=1791
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
