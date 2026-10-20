@@ -56,26 +56,54 @@ def parse_grype(path):
     return out
 
 
+PANEL_SCANNERS = ("grype", "scout", "inspector", "google")
+
+
+def panel_expected(scanner, image):
+    """Scanner-panel rule 1: Grype, Scout and Inspector scan every image; Google only the linux/amd64 ones."""
+    return scanner != "google" or image.endswith("-amd64")
+
+
+def validate_panel_verdict(d):
+    """The strict shape of bin/panel.py's verdict.json, shared by every reader. Anything structurally wrong or
+    internally inconsistent raises ParseError: a malformed verdict is never read as 'no findings'. Corroboration is
+    checked against the image it names: seen_by only lists scanners that ran on that image, 'of' is the number that
+    ran, and 'unique' is exactly 'seen by one'."""
+    if not isinstance(d, dict) or not isinstance(d.get("images"), dict) or not d["images"] or not isinstance(d.get("findings"), list):
+        raise ParseError("panel verdict: no images, or no findings array")
+    for img, st in d["images"].items():
+        if not (isinstance(st, dict) and isinstance(st.get("ran"), list) and isinstance(st.get("did_not_run"), list)
+                and isinstance(st.get("counts"), dict)):
+            raise ParseError("panel verdict: image %r has no ran/did_not_run/counts" % img)
+    for f in d["findings"]:
+        if not isinstance(f, dict) or not f.get("id") or f.get("image") not in d["images"]:
+            raise ParseError("panel verdict: a finding with no id or an unknown image")
+        sb, ran = f.get("seen_by"), d["images"][f["image"]]["ran"]
+        if (not isinstance(sb, list) or not sb or len(set(sb)) != len(sb) or any(x not in ran for x in sb)
+                or f.get("of") != len(ran) or f.get("unique") is not (len(sb) == 1)):
+            raise ParseError("panel verdict: finding %s on %s has inconsistent seen_by/of/unique" % (f.get("id"), f.get("image")))
+    return d
+
+
 def parse_panel(path, scanner):
     """One panel scanner's findings from the rescan's verdict.json (bin/panel.py tally): the findings whose
-    seen_by names `scanner`, one record per (CVE id, package identity) with the images that carry it kept in
-    extra. A verdict with no images object or no findings array is a ParseError, never an empty list."""
-    d = _load(path)
-    if not isinstance(d, dict) or not isinstance(d.get("images"), dict) or not isinstance(d.get("findings"), list):
-        raise ParseError("panel verdict: no images object or findings array")
+    seen_by names `scanner`, one record per (CVE id, package identity); the images that carry it are kept, each with
+    its own 'seen by N of M' and uniqueness (extra.by_image). A malformed verdict is a ParseError."""
+    d = validate_panel_verdict(_load(path))
     seen = {}
     for f in d["findings"]:
-        if not isinstance(f, dict) or scanner not in (f.get("seen_by") or []):
+        if scanner not in f["seen_by"]:
             continue
         purl = (f.get("purls") or [None])[0] or "pkg:generic/%s@%s" % (f.get("package"), f.get("version"))
-        key = (f.get("id"), purl)
+        key = (f["id"], purl)
         rec = seen.get(key)
         if rec is None:
-            rec = seen[key] = _finding(scanner, f.get("id"), purl, (), f.get("package"), None, None,
-                                       {"images": [], "version": f.get("version"), "seen_by": sorted(f.get("seen_by") or []),
-                                        "of": f.get("of"), "unique": bool(f.get("unique"))})
-        if f.get("image") and f["image"] not in rec["extra"]["images"]:
-            rec["extra"]["images"].append(f["image"])
+            rec = seen[key] = _finding(scanner, f["id"], purl, (), f.get("package"), None, None,
+                                       {"images": [], "version": f.get("version"), "by_image": {}})
+        rec["extra"]["images"].append(f["image"])
+        rec["extra"]["by_image"][f["image"]] = {"seen_by": sorted(f["seen_by"]), "of": f["of"], "unique": f["unique"]}
+    for rec in seen.values():
+        rec["extra"]["images"].sort()
     return list(seen.values())
 
 
