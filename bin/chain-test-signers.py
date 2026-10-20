@@ -187,36 +187,38 @@ def boundary_scan(raw):
     return gap
 DOLLAR_PID = re.compile(r"\$\$[({\[]")        # $$ (the pid) then an opener character: refused
 RAW_SIMPLE = re.compile(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*)")   # one simple expansion token, unambiguous
-def raw_skip(raw, j):
-    """raw[j] is a $ followed by { ( [ : the index just past its balanced end, or None when it is unterminated or holds a quote inside $[ ] (uncertain: refuse). Inside ${ } only a nested ${ nests; inside $( ) a bare ( and a nested $( nest, quoted spans are skipped; inside $[ ] a [ nests and a quote is uncertain."""
-    n, kind = len(raw), raw[j + 1]
-    close = {"{": "}", "(": ")", "[": "]"}[kind]
-    depth, k = 1, j + 2
+def raw_ends(raw):
+    """One pass over the line: for every ${ $( $[ opener the index just past its balanced end, or None when it is unterminated or uncertain (a quote inside $[ ]). Iterative (no recursion), so deep nesting is linear. Any opener nests in any context; inside ${ } only } closes, inside $( ) a bare ( nests and ) closes, inside $[ ] a bare [ nests and ] closes; quoted spans inside an expansion are skipped (a quote inside $[ ] makes it uncertain); a backslash skips the next character."""
+    n, ends, stack, k = len(raw), {}, [], 0      # stack entries: [kind, start, depth, uncertain]
     while k < n:
         c = raw[k]
         if c == "\\": k += 2; continue
-        if c in "'\"":
-            if kind == "[": return None
-            e = k + 1
-            while e < n and raw[e] != c:
-                e += 2 if (c == '"' and raw[e] == "\\") else 1
-            if e >= n: return None
-            k = e + 1; continue
-        if kind == "{" and raw.startswith("${", k): depth += 1; k += 2; continue
-        if kind == "(" and raw.startswith("$(", k): depth += 1; k += 2; continue
-        if kind == "[" and raw.startswith("$[", k): depth += 1; k += 2; continue
-        if kind == "(" and c == "(": depth += 1; k += 1; continue
-        if kind == "[" and c == "[": depth += 1; k += 1; continue
-        if c == close:
-            depth -= 1; k += 1
-            if depth == 0: return k
-            continue
+        if c == "$" and k + 1 < n and raw[k + 1] in "{([":
+            stack.append([raw[k + 1], k, 1, False]); k += 2; continue
+        if stack:
+            top = stack[-1]
+            if c in "'\"":
+                if top[0] == "[": top[3] = True; k += 1; continue
+                e = k + 1
+                while e < n and raw[e] != c: e += 2 if (c == '"' and raw[e] == "\\") else 1
+                if e >= n:
+                    for ent in stack: ends[ent[1]] = None
+                    return ends
+                k = e + 1; continue
+            kind = top[0]
+            if (kind == "(" and c == "(") or (kind == "[" and c == "["): top[2] += 1
+            elif (kind == "{" and c == "}") or (kind == "(" and c == ")") or (kind == "[" and c == "]"):
+                top[2] -= 1
+                if top[2] == 0:
+                    stack.pop(); ends[top[1]] = None if top[3] else k + 1
         k += 1
-    return None
+    for ent in stack: ends[ent[1]] = None
+    return ends
 def raw_boundary(raw):
     """Linear scan of the raw logical line (comments and heredoc bodies included): a $ < > then one or more quote or escape characters or expansions of any form, then ( or { . EVERY $ < > in the line is a start (also inside an expansion or a quoted span); the end of a run walked from a position is memoised, so the scan stays linear; an unterminated or uncertain expansion refuses."""
     if DOLLAR_PID.search(raw): return True
     n = len(raw)
+    ends = raw_ends(raw)           # the balanced end of every expansion, computed once
     memo = {}                      # position at the start of a gap item -> end of the run walked from there
     for i in range(n):
         if raw[i] not in "$<>": continue
@@ -232,7 +234,7 @@ def raw_boundary(raw):
                 seen.append(j); j = e + 1; continue
             if c == "$":
                 if j + 1 < n and raw[j + 1] in "{([":
-                    e = raw_skip(raw, j)
+                    e = ends.get(j)
                     if e is None: return True
                     seen.append(j); j = e; continue
                 m = RAW_SIMPLE.match(raw, j)
