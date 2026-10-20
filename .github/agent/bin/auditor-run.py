@@ -1094,10 +1094,14 @@ def _sev_by_scanner(findings):
     out = {}
     for f in findings:
         sv = (f.get("severity") or "")
-        if sv and f.get("scanner"):
-            cur = out.get(f["scanner"])
-            if cur is None or (sv.lower() in SEV_ORDER and (cur.lower() not in SEV_ORDER or SEV_ORDER.index(sv.lower()) > SEV_ORDER.index(cur.lower()))):
-                out[f["scanner"]] = sv
+        if not f.get("scanner"):
+            continue
+        if not sv:
+            out.setdefault(f["scanner"], "not rated")       # it reported the finding but gave no severity: shown, never guessed or dropped
+            continue
+        cur = out.get(f["scanner"])
+        if cur is None or cur == "not rated" or (sv.lower() in SEV_ORDER and (cur.lower() not in SEV_ORDER or SEV_ORDER.index(sv.lower()) > SEV_ORDER.index(cur.lower()))):
+            out[f["scanner"]] = sv
     return out
 
 
