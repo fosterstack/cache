@@ -153,8 +153,10 @@ def _cdx_findings(doc, comps, inspector=False):
             # Grype writes its CISA KEV listing as a rating (method other, justification 'Listed in CISA KEV'): that is the known-exploited
             # marker, not a severity; its 'Negligible' is CycloneDX 'none'
             rts = [r for r in v.get("ratings") or [] if isinstance(r, dict)]
-            is_kev = lambda r: r.get("method") == "other" and "listed in cisa kev" in str(r.get("justification") or "").lower()
-            sev = _top((norm_severity(r.get("severity")) or ("negligible" if str(r.get("severity")).lower() == "none" else None))
+            is_kev = lambda r: (r.get("method") == "other" and r.get("justification") == "Listed in CISA KEV"
+                                and isinstance(r.get("source"), dict) and r["source"].get("name") == "CISA")
+            word = lambda r: (r.get("severity").strip().lower() if isinstance(r.get("severity"), str) else None)
+            sev = _top((norm_severity(r.get("severity")) or ("negligible" if word(r) == "none" else None))
                        for r in rts if not is_kev(r))
             # CycloneDX 'unaffected' versions say which versions are not affected, not that one contains the fix: no fixed version from them.
             # Inspector documents its own properties: the fixed version per affected component and the CISA KEV date.
