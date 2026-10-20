@@ -3662,6 +3662,222 @@ LR
 )"; lr="$(printf '%s\n' "$lr" | tail -1)"
 eq "$lr" "OK" && ok || no "one PR per target, idempotent re-run, same PR updated" "$lr"
 
+begin "panel-1-parse-panel-reads-one-scanners-findings-from-the-verdict" "the auditor reads the scanner panel's verdict.json (the rescan's own tally): parse_panel(path, scanner) returns exactly the findings that scanner reported, one record per CVE+package even when several images carry it (the images are kept), and a verdict with no findings array is a parse error, never an empty list"
+pv="$WORK/panel-verdict.json"
+cat > "$WORK/mkpv.py" <<'PYEOF'
+import json, sys
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+imgs = P.panel_images()                     # the six images the panel fixes (bin/panel.py EXPECTED)
+CNT = {"grype": 10, "scout": 10, "inspector": 9, "google": 9}
+images = {}
+for im in sorted(imgs):
+    exp = [s for s in P.PANEL_SCANNERS if P.panel_expected(s, im)]
+    dnr = ["google", "scout"] if im == "debug-amd64" else []
+    dnr = [s for s in dnr if s in exp]
+    ran = sorted(s for s in exp if s not in dnr)
+    images[im] = {"counts": {s: CNT[s] for s in ran}, "did_not_run": sorted(dnr), "ran": ran, "counts_for_day": len(ran) >= 3}
+def f(im, vid, pkg, ver, seen, purls):
+    return {"image": im, "id": vid, "package": pkg, "version": ver, "seen_by": sorted(seen), "of": len(images[im]["ran"]),
+            "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report", "purls": purls}
+d = {"images": images,
+     "not_counted": sorted(i for i, st in images.items() if not st["counts_for_day"]),
+     "scanner_failures": sorted("%s on %s" % (s, i) for i, st in images.items() for s in st["did_not_run"]),
+     "findings": [f("production-amd64", "CVE-2099-0001", "openssl", "3.0.1", ["grype", "inspector", "scout"], ["pkg:apk/wolfi/openssl@3.0.1"]),
+                  f("production-arm64", "CVE-2099-0001", "openssl", "3.0.1", ["grype", "inspector"], ["pkg:apk/wolfi/openssl@3.0.1"]),
+                  f("production-amd64", "CVE-2099-0002", "zlib", "1.3", ["inspector"], []),
+                  f("production-amd64", "CVE-2099-0003", "curl", "8.0", ["inspector", "grype"], ["pkg:apk/wolfi/curl@8.0"]),
+                  f("production-arm64", "CVE-2099-0003", "curl", "8.0", ["inspector"], ["pkg:apk/wolfi/curl@8.0"])],
+     "vex_covered": [{"image": "production-amd64", "scanner": "inspector", "id": "CVE-2099-0009", "package": "busybox", "version": "1.36"}]}
+d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])   # the tally's own renderer
+d["unique"] = [x for x in d["findings"] if x["unique"]]
+d["exit"] = 2 if (d["not_counted"] or d["scanner_failures"]) else (1 if any(x["status"] == "report" for x in d["findings"]) else 0)
+json.dump(d, open(sys.argv[1], "w"), indent=1)
+PYEOF
+"$PY" "$WORK/mkpv.py" "$pv"
+r="$(MF="$pv" "$PY" - <<'PYEOF'
+import importlib.util, os, sys, json
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+g = P.parse_panel(os.environ["MF"], "grype"); i = P.parse_panel(os.environ["MF"], "inspector"); s = P.parse_panel(os.environ["MF"], "scout"); gg = P.parse_panel(os.environ["MF"], "google")
+bad = os.environ["MF"] + ".bad"; json.dump({"images": {}}, open(bad, "w"))
+try:
+    P.parse_panel(bad, "grype"); err = "none"
+except P.ParseError:
+    err = "ParseError"
+print("grype=%d inspector=%d scout=%d google=%d imgs=%s err=%s scanner=%s id=%s purl=%s" % (
+  len(g), len(i), len(s), len(gg), ",".join(sorted(g[0]["extra"]["images"])), err, g[0]["scanner"], g[0]["finding_id"], g[0]["purl"]))
+PYEOF
+)"
+{ eq "$r" "grype=2 inspector=3 scout=1 google=0 imgs=production-amd64,production-arm64 err=ParseError scanner=grype id=CVE-2099-0001 purl=pkg:apk/wolfi/openssl@3.0.1"; } && ok || no "parse_panel: grype 2 (0001 deduped over two images, 0003), inspector 3, scout 1, google 0; malformed verdict is a ParseError" "[$r]"
+
+begin "panel-2-panel-inventory-records-a-scanner-that-missed-an-image-as-did-not-run" "from the verdict, a scanner counts as ran only if it ran on EVERY image it was expected on; one image where it did not run makes it 'did not run' (never clean), named with the image; the report path is null for it and the verdict path for the rest; the quorum rule is not recomputed here (the panel owns it)"
+r="$(MF="$pv" "$PY" - <<'PYEOF'
+import importlib.util, os
+spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+rep, st = M.panel_inventory(os.environ["MF"])
+print("ran=%s null=%s ginfo=%s/%s greason=%s pkgs=%d" % (
+  ",".join(s for s in M.PANEL_SCANNERS if st[s]["ran"]),
+  ",".join(s for s in M.PANEL_SCANNERS if rep[s] is None),
+  st["grype"]["images_ran"], st["grype"]["images_expected"],
+  "debug-amd64" in (st["google"]["reason"] or "") and "google" in rep and rep["google"] is None,
+  st["grype"]["package_count"]))
+PYEOF
+)"
+{ eq "$r" "ran=grype,inspector null=scout,google ginfo=6/6 greason=True pkgs=60"; } && ok || no "panel_inventory: grype and inspector ran everywhere, scout and google missed debug-amd64 (null report, reason names the image)" "[$r]"
+
+begin "panel-3-panel-block-never-hides-a-missing-verdict" "the manifest carries a 'panel' block: null when no panel directory was given (older runs), the four scanners' status and reports when verdict.json is there, and when the directory has no verdict.json every panel scanner is recorded 'did not run' with the reason (the panel's audits cannot run, never a clean pass)"
+pd="$WORK/panel-dir"; rm -rf "$pd" "$WORK/panel-empty"; mkdir -p "$pd" "$WORK/panel-empty"; cp "$pv" "$pd/verdict.json"
+r="$(PD="$pd" PE="$WORK/panel-empty" "$PY" - <<'PYEOF'
+import importlib.util, os
+spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+a = M.panel_block(None); b = M.panel_block(os.environ["PD"]); c = M.panel_block(os.environ["PE"])
+print("none=%s ok=%s,%s empty=%s,%s" % (a is None, b["verdict"].endswith("verdict.json"), ",".join(s for s in M.PANEL_SCANNERS if b["scanner_status"][s]["ran"]),
+  all(c["scanner_reports"][s] is None for s in M.PANEL_SCANNERS), all("verdict.json" in c["scanner_status"][s]["reason"] for s in M.PANEL_SCANNERS)))
+PYEOF
+)"
+{ eq "$r" "none=True ok=True,grype,inspector empty=True,True"; } && ok || no "panel_block: None without a directory; four statuses with a verdict; all four did-not-run (reason names verdict.json) without one" "[$r]"
+
+begin "panel-4-malformed-or-inconsistent-verdicts-are-refused-everywhere" "rounds 1 and 2 of cache#466 (both Codex seats): a verdict that is structurally wrong, truncated or internally inconsistent never yields a clean inventory: parse_panel raises and panel_block records all four 'did not run'. Refused: no findings array, empty images, a missing image (truncated verdict), an extra unknown image, a non-object or incomplete finding, a seen_by scanner that did not run on that image, a wrong 'of' or 'unique' or 'status', a duplicate scanner in ran, a scanner in both ran and did_not_run, an unknown scanner name, a scanner listed in neither list where the rule expects it, a ran scanner with a zero, missing or boolean count, a wrong counts_for_day"
+r="$(MF="$pv" WK="$WORK" "$PY" - <<'PYEOF'
+import importlib.util, os, sys, json, copy
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+base = json.load(open(os.environ["MF"])); wk = os.environ["WK"]
+M1 = {}
+def case(name):
+    def deco(fn):
+        M1[name] = fn; return fn
+    return deco
+@case("nofind")
+def _(d): del d["findings"]
+@case("noimg")
+def _(d): d["images"] = {}
+@case("trunc")
+def _(d): del d["images"]["fips-arm64"]
+@case("extraimg")
+def _(d): d["images"]["weird-amd64"] = copy.deepcopy(d["images"]["production-amd64"])
+@case("null")
+def _(d): d["findings"].append(None)
+@case("incomplete")
+def _(d): del d["findings"][0]["package"]
+@case("ghost")
+def _(d): d["findings"][1]["seen_by"] = ["grype", "inspector", "google"]
+@case("of")
+def _(d): d["findings"][0]["of"] = 3
+@case("uniq")
+def _(d): d["findings"][2]["unique"] = False
+@case("status")
+def _(d): d["findings"][2]["status"] = "report"
+@case("img")
+def _(d): d["findings"][0]["image"] = "nowhere-amd64"
+@case("dup")
+def _(d): d["images"]["production-amd64"]["ran"].append("grype")
+@case("overlap")
+def _(d): d["images"]["production-amd64"]["did_not_run"].append("grype")
+@case("unknown")
+def _(d): d["images"]["production-amd64"]["ran"].append("trivy")
+@case("unlisted")
+def _(d):
+    st = d["images"]["production-arm64"]; st["ran"].remove("scout"); st["counts"].pop("scout")
+@case("zero")
+def _(d): d["images"]["production-amd64"]["counts"]["grype"] = 0
+@case("nocount")
+def _(d): d["images"]["production-amd64"]["counts"].pop("grype")
+@case("bool")
+def _(d): d["images"]["production-amd64"]["counts"]["grype"] = True
+@case("cfd")
+def _(d): d["images"]["debug-amd64"]["counts_for_day"] = True
+@case("uniqlist")
+def _(d): d["unique"] = []
+@case("dupa")
+def _(d): d["findings"].append(dict(d["findings"][0], seen_by=["grype"], unique=True, status="unique"))
+@case("dupb")
+def _(d): d["findings"].insert(0, dict(d["findings"][0], seen_by=["grype"], unique=True, status="unique"))
+@case("exit")
+def _(d): d["exit"] = 0
+@case("vexempty")
+def _(d): d["vex_covered"] = [{}]
+@case("vexghost")
+def _(d): d["vex_covered"][0]["scanner"] = "grype"
+@case("vexnoimg")
+def _(d): d["vex_covered"][0]["image"] = "nowhere-amd64"
+@case("vexarm")
+def _(d): d["vex_covered"][0].update(scanner="google", image="production-arm64")
+@case("purl")
+def _(d): d["findings"][0]["purls"] = ["pkg:apk/wolfi/other@3.0.1"]
+@case("offloat")
+def _(d): d["findings"][0]["of"] = 4.0
+@case("issueempty")
+def _(d): d["issue"] = ""
+@case("issuestale")
+def _(d): d["issue"] = "a stale issue text"
+@case("nested")
+def _(d): d["images"]["production-amd64"]["ran"].append({"x": 1})
+@case("topextra")
+def _(d): d["note"] = "x"
+@case("imgextra")
+def _(d): d["images"]["production-amd64"]["extra"] = 1
+@case("findextra")
+def _(d): d["findings"][0]["extra"] = 1
+@case("vexextra")
+def _(d): d["vex_covered"][0]["extra"] = 1
+@case("purlsyntax")
+def _(d): d["findings"][0]["purls"] = ["openssl@3.0.1"]
+@case("issuewrong")
+def _(d): d["issue"] = d["issue"].replace("openssl", "wrong-package")
+@case("vexid")
+def _(d): d["vex_covered"][0]["id"] = "CVE 1\nx"
+@case("vexpkg")
+def _(d): d["vex_covered"][0]["package"] = "a\x00b"
+@case("vexver")
+def _(d): d["vex_covered"][0]["version"] = "1\n2"
+@case("purlq")
+def _(d): d["findings"][0]["purls"] = ["pkg:apk/wolfi/openssl@3.0.1?broken"]
+@case("purlctl")
+def _(d): d["findings"][0]["purls"] = ["pkg:apk/wolfi/openssl@3.0.1?x=\x00"]
+@case("uniqtype")
+def _(d): d["unique"][0] = dict(d["unique"][0], unique=1, of=float(d["unique"][0]["of"]))
+RAW = {"dupkey": lambda t: t[:-1] + ', "findings": []}', "dupkey2": lambda t: t[:-1] + ', "images": {}}'}
+@case("dupkey")
+def _(d): pass
+@case("dupkey2")
+def _(d): pass
+@case("idspace")
+def _(d): d["findings"][2]["id"] = "CVE 2099 0002"; d["unique"] = [x for x in d["findings"] if x["unique"]]
+out = []
+for name, fn in M1.items():
+    d = copy.deepcopy(base); fn(d)
+    dd = os.path.join(wk, "pv-" + name); os.makedirs(dd, exist_ok=True); vp = os.path.join(dd, "verdict.json")
+    txt = json.dumps(d)
+    open(vp, "w").write(RAW[name](txt) if name in RAW else txt)
+    try:
+        P.parse_panel(vp, "grype"); pp = "accepted"
+    except P.ParseError:
+        pp = "refused"
+    pb = M.panel_block(dd)
+    out.append("%s=%s/%s" % (name, pp, "all-down" if all(not pb["scanner_status"][s]["ran"] for s in M.PANEL_SCANNERS) else "SOME-RAN"))
+print(" ".join(out))
+PYEOF
+)"
+exp="$(for n in nofind noimg trunc extraimg null incomplete ghost of uniq status img dup overlap unknown unlisted zero nocount bool cfd uniqlist dupa dupb exit vexempty vexghost vexnoimg vexarm purl offloat issueempty issuestale nested topextra imgextra findextra vexextra purlsyntax issuewrong vexid vexpkg vexver purlq purlctl uniqtype dupkey dupkey2 idspace; do printf '%s=refused/all-down ' "$n"; done)"
+{ eq "$r" "${exp% }"; } && ok || no "every malformed, truncated or inconsistent verdict is refused by parse_panel and records all four scanners 'did not run' in panel_block" "[$r]"
+
+begin "panel-5-corroboration-is-kept-per-image" "round 1 of cache#466 (seat B): the same CVE on two images keeps its own 'seen by N of M' and its own uniqueness per image; one image's numbers are never attached to another image"
+r="$(MF="$pv" "$PY" - <<'PYEOF'
+import os, sys
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+g = P.parse_panel(os.environ["MF"], "grype")[0]["extra"]["by_image"]
+i = P.parse_panel(os.environ["MF"], "inspector")
+z = [f for f in i if f["finding_id"] == "CVE-2099-0002"][0]["extra"]["by_image"]
+c = [f for f in i if f["finding_id"] == "CVE-2099-0003"][0]["extra"]["by_image"]
+print("amd64=%d/%d arm64=%d/%d unique_zlib=%s curl_amd64=%s curl_arm64=%s" % (len(g["production-amd64"]["seen_by"]), g["production-amd64"]["of"], len(g["production-arm64"]["seen_by"]), g["production-arm64"]["of"], z["production-amd64"]["unique"], c["production-amd64"]["unique"], c["production-arm64"]["unique"]))
+PYEOF
+)"
+{ eq "$r" "amd64=3/4 arm64=2/3 unique_zlib=True curl_amd64=False curl_arm64=True"; } && ok || no "grype's CVE-2099-0001: 3 of 4 on amd64, 2 of 3 on arm64; inspector's curl finding is not unique on amd64 and unique on arm64 (same deduplicated record)" "[$r]"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
