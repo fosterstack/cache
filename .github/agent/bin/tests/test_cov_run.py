@@ -223,7 +223,7 @@ class PureHelpers(Base):
     def test_an_unknown_scanner_set_is_a_manifest_error_not_the_legacy_mode(self):
         base = {"scanner_reports": {k: None for k in R.PARS.LEGACY_SCANNERS + ("osv-scanner-gomod",)},
                 "scanner_status": {k: {"reason": "x"} for k in R.PARS.LEGACY_SCANNERS + ("osv-scanner-gomod",)}}
-        for bad in ("Panel", "panels", "", 3, ["panel"]):
+        for bad in ("Panel", "panels", "", 3, ["panel"], None):           # an explicit null is not an absent key
             with self.assertRaisesRegex(ValueError, "scanner_set"):
                 R.C.validate_manifest(dict(base, scanner_set=bad))
         R.C.validate_manifest(dict(base)); R.C.validate_manifest(dict(base, scanner_set="legacy"))
