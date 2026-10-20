@@ -95,7 +95,7 @@ archive=$(absd "$archive"); melrepo=$(absd "$melrepo"); keydir=$(absd "$keydir")
 # 0.0.0-rc.1 (REQ-CHAIN-004-AC12); anything else is refused before any tool runs
 "$PY3" -I -B bin/oci-digest.py check-version "$version" || die "--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 (numbers without leading zeros; not '$version')"
 apkver=${version/-rc./_rc}; apkver=${apkver/-rc/_rc}   # the apk version syntax for a pre-release: 0.3.0-rc1 -> 0.3.0_rc1, 0.0.0-rc.1 -> 0.0.0_rc1; the image tag keeps the rc form
-[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must be set to digits (the commit time, at most 12 digits)"
+[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)"
 build_date=$("$PY3" -I -B bin/oci-digest.py render-date "$SOURCE_DATE_EPOCH" 2>/dev/null) || die "SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date"
 for d in "$archive" "$melrepo" "$keydir"; do
   case $d in *://*) die "the archive, the melange repository and the keyring dir must be local directories, not addresses ($d)";; esac

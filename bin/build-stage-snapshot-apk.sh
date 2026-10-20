@@ -3,7 +3,7 @@
 # as the step snapshot-apk. NO admission, no version check, no GitHub API call, no GH_TOKEN; the apks are signed with the assembly key only (no --signing-key).
 # Go stamps the HIGHEST semver tag at HEAD and cache's driver wants the stamp v0.0.0-rc.1, so the other LOCAL v* tags at HEAD are deleted first (job-local,
 # never pushed) and v0.0.0-rc.1 is made. Deleting tags destroys an unpushed local tag on a developer's clone, so the first line refuses to run outside
-# GitHub Actions (a local run belongs in a throwaway clone with GITHUB_ACTIONS=true set on purpose). The job fails naming any other tag that is left.
+# GitHub Actions (a local run belongs in a throwaway clone with GITHUB_ACTIONS=true on purpose). The job fails naming any other tag that is left.
 set -euo pipefail
 [ "${GITHUB_ACTIONS:-}" = true ] || { echo "refusing to delete tags outside GitHub Actions (run in a throwaway clone)" >&2; exit 2; }
 for t in $(git tag --list 'v*' --points-at HEAD); do [ "$t" = v0.0.0-rc.1 ] || git tag -d "$t" > /dev/null; done
