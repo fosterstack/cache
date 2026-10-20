@@ -225,6 +225,8 @@ rm -rf "${work:?}/o-t"; reset; run "$P_PULL" --pointer "$work/ptr.json" --out "$
 t AC4 "an artifact that is not in the registry: exit 1, nothing at the output path, no partial directory beside it" bash -c "test '$(rc)' = 1 && ! test -e '$work/o-t' && ! ls '$work'/o-t.partial.* >/dev/null 2>&1"
 reset; run "$P_PULL" --pointer "$work/ptr.json" --out "$work/o-tag" --digest "latest"
 t AC4 "--digest that is not sha256:<64 hex> (a tag) is refused (exit 2)" bash -c "test '$(rc)' = 2"
+rm -rf "${work:?}/o-empty"; reset; run "$P_PULL" --pointer "$work/ptr.json" --out "$work/o-empty" --digest ""
+t AC4 "an explicit empty --digest is refused (exit 2) before crane runs, nothing is written (a supplied value is never treated as omitted)" bash -c "test '$(rc)' = 2 && ! test -e '$work/o-empty' && ! test -s '$STUB_CALLS'"
 
 # ===== AC5: verify: no missing, extra or altered file ===============================================================================
 vrun() { run python3 -I -B "$1/archive-verify.py" verify --pointer "$work/ptr.json" --dir "$2"; }
