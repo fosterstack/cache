@@ -159,6 +159,63 @@ got = P.google_packages(log)
 check("Google's package count is read from the AnalyzePackages request it was sent", [p["package"] for p in got] == ["tzdata", "stdlib"], got)
 check("a log with no request body gives no packages (did not run)", P.google_packages("==== request start ====\nnothing") == [], "")
 
+# --- 0600 option A (PR 2a): each scanner's own severity, fixed version and aliases travel in the verdict, per scanner, and a field the
+# scanner does not report is ABSENT, never guessed. Shapes follow the vendors' documented schemas (CycloneDX 1.4+ ratings/references/
+# affects.versions; GitLab dependency-scanning for Scout; Container Analysis PackageIssue for Google); no retained run has a finding, so
+# the first real finding is the live proof of the key names.
+check("severity names are normalised and an unknown one is absent", [P.norm_severity(x) for x in ("HIGH", "Critical", "moderate", "MINIMAL", "Info", "unknown", "", None, 3)]
+      == ["high", "critical", "medium", "negligible", "negligible", None, None, None, None], "")
+def put(d, name, obj):
+    W(d, name, obj)
+rich = {"id": "CVE-2099-0100", "ratings": [{"severity": "medium"}, {"severity": "high"}, {"severity": "info"}],
+        "references": [{"id": "GHSA-aaaa-bbbb-cccc", "source": {"name": "GitHub"}}, {"id": "CVE-2099-0100"}],
+        "affects": [{"ref": "r0", "versions": [{"version": "2026c", "status": "affected"}, {"version": "2026d", "status": "unaffected"}]}]}
+bare = {"id": "CVE-2099-0101", "affects": [{"ref": "r0"}]}
+gd = os.path.join(tempfile.mkdtemp(), "g")
+put(gd, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                            "vulnerabilities": [rich, bare]})
+n_, found_ = P.read_grype(gd)
+ex = {t[0]: t[4] for t in found_}
+check("Grype's CycloneDX: highest rating, reference ids other than its own, the unaffected version; a bare vulnerability has no details",
+      ex["CVE-2099-0100"] == {"severity": "high", "aliases": ["GHSA-aaaa-bbbb-cccc"], "fixed_version": "2026d"} and ex["CVE-2099-0101"] == {}, ex)
+idir = os.path.join(tempfile.mkdtemp(), "i")
+put(idir, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+put(idir, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                                 "vulnerabilities": [rich, bare]}})
+ex = {t[0]: t[4] for t in P.read_inspector(idir)[1]}
+check("Inspector's ScanSbom (CycloneDX) is read the same way", ex["CVE-2099-0100"]["severity"] == "high" and ex["CVE-2099-0101"] == {}, ex)
+sd = os.path.join(tempfile.mkdtemp(), "s")
+put(sd, "sbom.json", {"artifacts": [{"name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+put(sd, "cves.json", {"vulnerabilities": [
+    {"severity": "Medium", "identifiers": [{"type": "cve", "value": "CVE-2099-0102"}, {"type": "ghsa", "value": "GHSA-dddd-eeee-ffff"}],
+     "location": {"dependency": {"package": {"name": "tzdata"}, "version": "2026c"}}},
+    {"severity": "Unknown", "identifiers": [{"type": "cve", "value": "CVE-2099-0103"}],
+     "location": {"dependency": {"package": {"name": "tzdata"}, "version": "2026c"}}}]})
+ex = {t[0]: t[4] for t in P.read_scout(sd)[1]}
+check("Scout's GitLab-format report: severity and the other identifiers as aliases; Unknown severity is absent",
+      ex["CVE-2099-0102"] == {"severity": "medium", "aliases": ["GHSA-dddd-eeee-ffff"]} and ex["CVE-2099-0103"] == {}, ex)
+gd2 = os.path.join(tempfile.mkdtemp(), "g2")
+put(gd2, "packages.json", [{"package": "tzdata", "version": "2026c", "packageType": "OS"}])
+put(gd2, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0104", "vulnerability": {"shortDescription": "CVE-2099-0104", "severity": "CRITICAL",
+    "packageIssue": [{"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}, "fixedVersion": {"fullName": "2026d"}, "fixAvailable": True}]}},
+    {"noteName": "projects/goog-vulnz/notes/CVE-2099-0105", "vulnerability": {"shortDescription": "CVE-2099-0105",
+    "packageIssue": [{"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}}]}}])
+ex = {t[0]: t[4] for t in P.read_google(gd2)[1]}
+check("Google's PackageIssue: severity and the fixed version; no severity and no fix is absent",
+      ex["CVE-2099-0104"] == {"severity": "critical", "fixed_version": "2026d"} and ex["CVE-2099-0105"] == {}, ex)
+# the tally keeps each reporting scanner's own record; the same finding keeps both (the auditor takes the highest and the report shows each)
+r = tree({("grype", "production-amd64"): [("CVE-2099-0200", "tzdata", "2026c")], ("google", "production-amd64"): [("CVE-2099-0200", "tzdata", "2026c")]})
+W(os.path.join(r, "grype", "production-amd64"), "result.cdx.json", {"bomFormat": "CycloneDX",
+  "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}] + [{"bom-ref": "p%d" % i, "name": "p%d" % i, "version": "1", "purl": "pkg:generic/p%d@1" % i} for i in range(3)],
+  "vulnerabilities": [{"id": "CVE-2099-0200", "ratings": [{"severity": "high"}], "affects": [{"ref": "r0"}]}]})
+W(os.path.join(r, "google", "production-amd64"), "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0200", "vulnerability": {"shortDescription": "CVE-2099-0200",
+  "severity": "CRITICAL", "packageIssue": [{"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}, "fixedVersion": {"fullName": "2026d"}}]}}])
+v = judge(r)
+f = [x for x in v["findings"] if x["id"] == "CVE-2099-0200"][0]
+check("the verdict finding carries a details record per reporting scanner (Grype high, Google critical + fix), nothing for a scanner that did not report it",
+      f["details"] == {"grype": {"severity": "high"}, "google": {"severity": "critical", "fixed_version": "2026d"}}, f.get("details"))
+check("every verdict finding has details for exactly its seen_by scanners", all(sorted(x["details"]) == sorted(x["seen_by"]) for x in v["findings"]), "")
+
 # --- the auditor reads this verdict through one strict, closed validator (auditorlib/parsers.py, cache#466): it must accept every
 # shape the tally really writes, or a real day would turn red; the opposite direction (refusals) is tested in auditor-matrix-test.sh
 sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[1]), "..", ".github", "agent", "bin"))
