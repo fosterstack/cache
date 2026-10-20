@@ -201,6 +201,22 @@ class PureHelpers(Base):
         self.assertEqual(toml.count("[[IgnoredVulns]]"), 1)
         self.assertIn('expires = "2026-10-01T00:00:00Z"', toml)
 
+    def test_ignore_files_listed_in_a_row_follow_the_scanner_set(self):
+        # 0600 option A: in panel mode the VEX is the only exception (scanner-panel rule 4), so a row lists no per-scanner ignore file
+        try:
+            R.PANEL_MODE = True
+            self.assertEqual(R._ign(["grype", "scout"], "stmt-x"), ["vex"])
+            R.PANEL_MODE = False
+            self.assertEqual(R._ign(["grype"], "stmt-x"), [os.path.join("ignores", "grype", "stmt-x.json"), ".snyk", "osv-scanner.toml"])
+        finally:
+            R.PANEL_MODE = False
+
+    def test_severity_by_scanner_keeps_each_scanners_highest_and_ignores_the_unrated(self):
+        got = R._sev_by_scanner([{"scanner": "grype", "severity": "low"}, {"scanner": "grype", "severity": "high"},
+                                 {"scanner": "grype", "severity": "medium"}, {"scanner": "scout"}, {"scanner": "inspector", "severity": "Critical"},
+                                 {"severity": "high"}, {"scanner": "google", "severity": "weird"}, {"scanner": "google", "severity": "low"}])
+        self.assertEqual(got, {"grype": "high", "inspector": "Critical", "google": "low"})
+
     def test_narrative_ok(self):
         secs = {n: [] for n in range(1, 8)}
         secs[3] = [{"id": "CVE-2099-3"}]; secs[5] = [{"id": "CVE-2099-5"}]

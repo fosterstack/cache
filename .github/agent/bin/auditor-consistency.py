@@ -12,9 +12,13 @@ from auditorlib import snykpolicy
 def live_cves(manifest):
     m = json.load(open(manifest)); r = m.get("scanner_reports") or {}
     cves = set()
-    for name, fn in (("grype", P.parse_grype), ("trivy", P.parse_trivy),
-                     ("osv-scanner", P.parse_osv), ("snyk", P.parse_snyk),
-                     ("osv-scanner-gomod", lambda p: P.parse_osv(p, "osv-scanner-gomod"))):
+    if m.get("scanner_set") == "panel":              # the panel's four, all read from the rescan's verdict.json
+        readers = tuple((sc, (lambda p, sc=sc: P.parse_panel(p, sc))) for sc in P.PANEL_SCANNERS)
+    else:
+        readers = (("grype", P.parse_grype), ("trivy", P.parse_trivy),
+                   ("osv-scanner", P.parse_osv), ("snyk", P.parse_snyk),
+                   ("osv-scanner-gomod", lambda p: P.parse_osv(p, "osv-scanner-gomod")))
+    for name, fn in readers:
         path = r.get(name)
         if not path:                                # a null scanner (did not run) is skipped
             continue

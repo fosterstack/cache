@@ -30,7 +30,13 @@ from auditorlib import knowledge as K
 
 _spec = importlib.util.spec_from_file_location("auditor_classify", os.path.join(HERE, "auditor-classify.py"))
 C = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(C)
-IMAGE_SCANNERS = ("grype", "trivy", "osv-scanner", "snyk")
+from auditorlib import parsers as PARS
+IMAGE_SCANNERS = ("grype", "trivy", "osv-scanner", "snyk")          # the legacy set, until 2b-2 deletes it
+
+
+def _scanners(m):
+    """The image scanners this manifest records: the panel's four (scanner_set 'panel') or the legacy four."""
+    return PARS.scanner_set(m)
 
 # Identifiers/tokens that must never reach the uploaded report. We surface the REAL adjudicator
 # error (class, HTTP status, message) so a failure is diagnosable, but with these values redacted.
@@ -1072,6 +1078,18 @@ def _nofix_reason(findings):
     return "no upstream fix"
 
 
+def _sev_by_scanner(findings):
+    """Each scanner's own severity for a finding group, so the report shows each (the policy uses the highest): {scanner: severity}."""
+    out = {}
+    for f in findings:
+        sv = (f.get("severity") or "")
+        if sv and f.get("scanner"):
+            cur = out.get(f["scanner"])
+            if cur is None or (sv.lower() in SEV_ORDER and (cur.lower() not in SEV_ORDER or SEV_ORDER.index(sv.lower()) > SEV_ORDER.index(cur.lower()))):
+                out[f["scanner"]] = sv
+    return out
+
+
 def _group_facts(c, grp):
     findings = grp["findings"]
     # Per-CVE EVIDENCE comes only from findings that name this CVE as their own identity;
@@ -1140,6 +1158,9 @@ def _row_line(r):
     line = ("%s — %s — %s — fix: %s — reachability: %s — %s — action: %s — %s"
             % (_ident(r["id"]), _ident("%s@%s" % (r["package"], r["installed"])), _text(r["severity"]),
                _ident(fix), _text(reach), _text(r["disposition"]), _text(r["action"]), _text(r["reason"])))
+    sbs = r.get("sev_by_scanner") or {}
+    if PANEL_MODE and len(set(v.lower() for v in sbs.values())) > 1:     # scanners disagree: show each (policy uses the highest)
+        line += " — severity by scanner: " + ", ".join("%s %s" % (_ident(sc), _text(sv)) for sc, sv in sorted(sbs.items()))
     if r["section"] in (2, 5) and r.get("vex_id"):
         line += " — vex: %s — ignores: %s" % (_ident(r["vex_id"]),
                                                ",".join(_ident(f) for f in r.get("ignore_files", [])) or "none")
@@ -1312,6 +1333,7 @@ def _dispose_split(c, findings, aliases, env, would, base=None):
         # counted (excluded from evidence by _group_facts) — a real finding backed by an advisory
         # is not mistaken for unique-lineage (R1 refactor round-4 #5).
         row, mi = _dispose(c, sub + lineage, aliases, env, would, name=nm)
+        row["sev_by_scanner"] = _sev_by_scanner(sub)
         out_rows.append(row); mc += mi
     return out_rows, mc
 
@@ -1476,7 +1498,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                       action="fix exists but is not pullable (%s); tracked; re-checked daily" % hold,
                       evidence=ev, target_date=this_exp2, lift_trigger=lift_trigger, vex_name=vn, subcomponents=subs)
             scanners = sorted({f["scanner"] for f in findings})
-            for sc in scanners:
+            for sc in ([] if PANEL_MODE else scanners):
                 cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
                            {"id": c, "vex": this_scope_id, "expiry": this_exp2, "scoped_purls": _purls,
                             "reason": "fix not pullable (%s); re-checked daily" % hold})
@@ -1501,7 +1523,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
             row.update(section=2, not_pullable=hold, disposition="carried (fix not pullable)",
                        action="POA&M: affected VEX + ignores + lift trigger, expiry %s" % this_exp2,
                        vex_id=this_scope_id, scope_purls=_purls, reason=case, fixed=comp_fixed,
-                       ignore_files=[os.path.join("ignores", sc, vn + ".json") for sc in scanners] + [".snyk", "osv-scanner.toml"],
+                       ignore_files=_ign(scanners, vn),
                        threshold=("at_or_above" if at else "below"), expiry=this_exp2,
                        carried=(_cstat == "affected"), lift_trigger=lift_trigger, is_os=not gf["is_go"],
                        reachability="n/a (OS package)")
@@ -1542,7 +1564,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                       evidence=ev, target_date=this_exp3, lift_trigger=deferred_trigger,
                       vex_name=vn, subcomponents=subs)
             _scn = sorted({f["scanner"] for f in findings})
-            for sc in _scn:
+            for sc in ([] if PANEL_MODE else _scn):
                 cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
                            {"id": c, "vex": this_scope_id, "expiry": this_exp3, "scoped_purls": _purls,
                             "reason": "fix not pullable (%s); recheck deferred; re-checked daily" % hold})
@@ -1560,7 +1582,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
                        action="POA&M: affected VEX + ignores retained, expiry %s; recheck deferred (%s)" % (this_exp3, cause),
                        vex_id=this_scope_id, scope_purls=_purls, fixed=gf["fixed"],
                        reason="fix exists but not pullable; recheck could not confirm a lift (%s)" % cause,
-                       ignore_files=[os.path.join("ignores", sc, vn + ".json") for sc in _scn] + [".snyk", "osv-scanner.toml"],
+                       ignore_files=_ign(_scn, vn),
                        threshold=("at_or_above" if _at else "below"), expiry=this_exp3, lift_trigger=deferred_trigger,
                        carried=(_cstat == "affected"), is_os=not gf["is_go"], reachability="n/a (OS package)")
             if _at:
@@ -1624,14 +1646,14 @@ def _dispose(c, findings, aliases, env, would, name=None):
               evidence={"check": "reachable-no-fix", "source_file": "manifest", "detail": gf["nofix_reason"]},
               target_date=this_exp, vex_name=vn, subcomponents=subs)
     _ig_scanners = sorted({f["scanner"] for f in findings})
-    for sc in _ig_scanners:
+    for sc in ([] if PANEL_MODE else _ig_scanners):
         cli.writej(os.path.join(out, "ignores", sc, vn + ".json"),
                    {"id": c, "vex": this_scope_id, "expiry": this_exp, "scoped_purls": _purls,
                     "reason": "accepted risk; re-checked daily"})
     action = "POA&M: affected VEX + ignores, expiry %s" % this_exp
     # name the ignore artifacts this acceptance actually writes so the row line is honest — a
     # §2 POA&M without ignore_files defaulted _row_line to "ignores: none" (Codex round-2 P2).
-    _ig_files = [os.path.join("ignores", sc, vn + ".json") for sc in _ig_scanners] + [".snyk", "osv-scanner.toml"]
+    _ig_files = _ign(_ig_scanners, vn)
     row.update(section=2, disposition="carried (POA&M)", action=action, vex_id=this_scope_id,
                scope_purls=_purls, reason="%s; %s" % (gf["nofix_reason"], reason), ignore_files=_ig_files,
                threshold=("at_or_above" if at else "below"), expiry=this_exp, carried=(_cstat == "affected"))
@@ -1647,8 +1669,21 @@ def _dispose(c, findings, aliases, env, would, name=None):
     return row, m_inc
 
 
+PANEL_MODE = False      # set per run from the manifest: the panel's four scanners, VEX the only exception (scanner-panel rule 4)
+
+
+def _ign(scanners, vn):
+    """The ignore files a row lists: none in panel mode (the VEX is the only exception), the per-scanner files plus .snyk and
+    osv-scanner.toml in the legacy mode."""
+    if PANEL_MODE:
+        return ["vex"]
+    return [os.path.join("ignores", sc, vn + ".json") for sc in scanners] + [".snyk", "osv-scanner.toml"]
+
+
 def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
+    global PANEL_MODE
     m, groups = C.manifest_findings(manifest_path)
+    PANEL_MODE = m.get("scanner_set") == "panel"
     # A test image is never shipped, so no statement on `main` applies and nothing is delivered:
     # a test image ALWAYS forces dry_run regardless of the dispatch input (REQ-AUD-15 AC9).
     if (m.get("provenance") or {}).get("source") == "test-image":
@@ -1774,7 +1809,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev, subcomponents=subs or None)
             igf = os.path.join("ignores", "grype", c + ".json")
             _fp_sid = policy.scope_id(c, policy.VEX_PRODUCT, subs or None)
-            cli.writej(os.path.join(out, igf), {"vex": _fp_sid, "id": c, "evidence": ev, "scoped_purls": subs})
+            if not PANEL_MODE:
+                cli.writej(os.path.join(out, igf), {"vex": _fp_sid, "id": c, "evidence": ev, "scoped_purls": subs})
             # carried: this exact scope's not_affected is already in force on main (unchanged
             # from a prior day) -> "in force (main)" with its published link; a fresh FP, or a
             # scope whose published statement is `affected`, is proposed (Codex round-2 residual #3).
@@ -1786,8 +1822,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                          "scope_purls": subs or [],
                          "disposition": "not_affected (false positive)", "action": "closed",
                          "reachability": "n/a (OS package)", "reason": "known-defect-log FP for %s" % (",".join(covpkgs)),
-                         "vex_id": _fp_sid, "ignore_files": [igf, ".snyk", "osv-scanner.toml", "vex"],
-                         "carried": _fp_carried, "is_os": True})
+                         "vex_id": _fp_sid, "ignore_files": (["vex"] if PANEL_MODE else [igf, ".snyk", "osv-scanner.toml", "vex"]),
+                         "carried": _fp_carried, "is_os": True, "sev_by_scanner": _sev_by_scanner(covered)})
             h_count += 1
             uncovered = [f for f in grp["findings"] if not _cov(f)]
             if uncovered:
@@ -1935,34 +1971,50 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # read this image (osv-scanner does not read a distroless dpkg status.d) is RECORDED as
     # 'did not run' but does not by itself fail the audit when three others agree.
     st = m.get("scanner_status") or {}
-    def _os(s):
-        return (st.get(s) or {}).get("os_package_count") or 0
-    def _inv(s):
-        # Inventoried the OS layer for the QUORUM: ran AND reported > 0 OS packages AND not an
-        # excluded outlier. A scanner reporting 0 OS packages did NOT inventory the OS layer for
-        # this image (osv-scanner on a distroless dpkg status.d; grype/osv on a Go-only image) —
-        # it ABSTAINS from the OS-package quorum, it is not a disagreeing vote (R-live fix 2).
-        info = st.get(s) or {}
-        return bool(info.get("ran")) and _os(s) > 0 and info.get("quorum_ok", True)
-    def _ran_os(s):
-        info = st.get(s) or {}
-        return bool(info.get("ran")) and _os(s) > 0
-    ran_image = [s for s in IMAGE_SCANNERS if _inv(s)]     # scanners that inventoried OS packages
-    excluded = [s for s in IMAGE_SCANNERS if _ran_os(s) and not (st.get(s) or {}).get("quorum_ok", True)]
-    not_ran = [s for s in IMAGE_SCANNERS if not _ran_os(s)]    # did not inventory the OS layer
-    oscounts = [_os(s) for s in ran_image]
-    agree = bool(oscounts) and max(oscounts) > 0 and (min(oscounts) >= 0.5 * max(oscounts))
-    quorum = len(ran_image) >= 3 and agree
-    # the honest quorum for the header uses THIS agreement decision, not per-scanner default
-    # flags (R1 refactor round-4 #8): when the inventorying scanners' OS counts do not agree
-    # numerically, none is labelled "agreed".
-    _mx = max(oscounts) if oscounts else 0
-    quorum_info = {"agreed": [s for s in ran_image if agree and _mx and _os(s) >= 0.5 * _mx],
-                   "disagreed": [s for s in ran_image if not (agree and _mx and _os(s) >= 0.5 * _mx)],
-                   "not_ran": not_ran, "excluded": excluded,
-                   # the exact per-scanner OS counts the quorum compared, so the status/header line
-                   # is credible: "3 of 4 inventoried" is shown against the real 0/53/0/53 (fix 2)
-                   "os_counts": {s: _os(s) for s in IMAGE_SCANNERS}}
+    panel_mode = m.get("scanner_set") == "panel"
+    SCN = _scanners(m)
+    if panel_mode:
+        # scanner-panel rule 3 (0600 option A): the panel decides whether an image counts (at least three scanners ran on it);
+        # the auditor takes that decision, it does not recompute OS-package agreement (Google scans amd64 only, so its counts differ).
+        # An unknown verdict (None) can never be a quorum.
+        pn = m.get("panel") or {}
+        unc = pn.get("not_counted")
+        ran_image = [s for s in SCN if (st.get(s) or {}).get("ran")]
+        not_ran = [s for s in SCN if s not in ran_image]
+        excluded = []
+        quorum = isinstance(unc, list) and not unc
+        quorum_info = {"agreed": ran_image, "disagreed": [], "not_ran": not_ran, "excluded": [], "panel": True,
+                       "uncounted": unc, "scanner_failures": pn.get("scanner_failures"),
+                       "os_counts": {s: (st.get(s) or {}).get("package_count") or 0 for s in SCN}}
+    else:
+        def _os(s):
+            return (st.get(s) or {}).get("os_package_count") or 0
+        def _inv(s):
+            # Inventoried the OS layer for the QUORUM: ran AND reported > 0 OS packages AND not an
+            # excluded outlier. A scanner reporting 0 OS packages did NOT inventory the OS layer for
+            # this image (osv-scanner on a distroless dpkg status.d; grype/osv on a Go-only image) —
+            # it ABSTAINS from the OS-package quorum, it is not a disagreeing vote (R-live fix 2).
+            info = st.get(s) or {}
+            return bool(info.get("ran")) and _os(s) > 0 and info.get("quorum_ok", True)
+        def _ran_os(s):
+            info = st.get(s) or {}
+            return bool(info.get("ran")) and _os(s) > 0
+        ran_image = [s for s in IMAGE_SCANNERS if _inv(s)]     # scanners that inventoried OS packages
+        excluded = [s for s in IMAGE_SCANNERS if _ran_os(s) and not (st.get(s) or {}).get("quorum_ok", True)]
+        not_ran = [s for s in IMAGE_SCANNERS if not _ran_os(s)]    # did not inventory the OS layer
+        oscounts = [_os(s) for s in ran_image]
+        agree = bool(oscounts) and max(oscounts) > 0 and (min(oscounts) >= 0.5 * max(oscounts))
+        quorum = len(ran_image) >= 3 and agree
+        # the honest quorum for the header uses THIS agreement decision, not per-scanner default
+        # flags (R1 refactor round-4 #8): when the inventorying scanners' OS counts do not agree
+        # numerically, none is labelled "agreed".
+        _mx = max(oscounts) if oscounts else 0
+        quorum_info = {"agreed": [s for s in ran_image if agree and _mx and _os(s) >= 0.5 * _mx],
+                       "disagreed": [s for s in ran_image if not (agree and _mx and _os(s) >= 0.5 * _mx)],
+                       "not_ran": not_ran, "excluded": excluded,
+                       # the exact per-scanner OS counts the quorum compared, so the status/header line
+                       # is credible: "3 of 4 inventoried" is shown against the real 0/53/0/53 (fix 2)
+                       "os_counts": {s: _os(s) for s in IMAGE_SCANNERS}}
     # consolidate every per-CVE VEX into the canonical suppression files, run the consistency
     # check over THAT layout, then DELIVER the suppressions as one draft PR via the App token
     # (R16). A push/PR failure is AUDIT INCOMPLETE with the git/gh stderr — never "opened".
@@ -2001,11 +2053,18 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
             # show the exact per-scanner OS counts the quorum compared, so "N of 4 inventoried"
             # is credible against the real numbers (fix 2). A 0 means that scanner did not
             # inventory the OS layer (it abstains; it is not a disagreeing vote).
-            counts = ", ".join("%s(%d)" % (s, quorum_info["os_counts"].get(s, 0)) for s in IMAGE_SCANNERS)
-            bits.append("OS-package quorum not met: %d of 4 inventoried the OS layer [OS counts: %s] "
-                        "(need 3 agreeing within 50%%); agreed: %s; did not inventory OS: %s; excluded: %s"
-                        % (len(ran_image), counts, ", ".join(quorum_info["agreed"]) or "none",
-                           ", ".join(not_ran) or "none", ", ".join(excluded) or "none"))
+            if quorum_info.get("panel"):
+                unc = quorum_info.get("uncounted")
+                bits.append("scanner panel quorum not met: " + (
+                    "the panel's verdict is missing or invalid, so no image counts" if unc is None else
+                    "image(s) not counted (fewer than three scanners ran on them): " + ", ".join(unc))
+                    + "; did not run: " + (", ".join(not_ran) or "none"))
+            else:
+                counts = ", ".join("%s(%d)" % (s, quorum_info["os_counts"].get(s, 0)) for s in IMAGE_SCANNERS)
+                bits.append("OS-package quorum not met: %d of 4 inventoried the OS layer [OS counts: %s] "
+                            "(need 3 agreeing within 50%%); agreed: %s; did not inventory OS: %s; excluded: %s"
+                            % (len(ran_image), counts, ", ".join(quorum_info["agreed"]) or "none",
+                               ", ".join(not_ran) or "none", ", ".join(excluded) or "none"))
         if pr_err:
             bits.append("suppression PR delivery failed: %s" % pr_err)
         if issue_failures:
@@ -2119,7 +2178,7 @@ def _conclusion(adjudicator, sections, m, state=None):
         return "conclusion withheld: token budget reached before the narrative."
     st = m.get("scanner_status") or {}
     structured = {"image": (m.get("candidate_digests") or {}).get("production"), "commit": m.get("commit"),
-                  "package_counts": {s: (st.get(s) or {}).get("package_count") for s in IMAGE_SCANNERS},
+                  "package_counts": {s: (st.get(s) or {}).get("package_count") for s in _scanners(m)},
                   "sections": {C.TITLES[n]: [r["id"] for r in sections[n]] for n in range(1, 8)}}
     try:
         ans = cli.ask_model(adjudicator, "CONCLUSION", attempt="narrative", model="primary",
@@ -2173,8 +2232,11 @@ def _scanner_tables(m, rows, out):
                 secs |= sec_by_id.get(rid, set())
         secs = {x for x in secs if x is not None}
         return ("§" + ",".join(str(x) for x in sorted(secs))) if secs else "-"
-    PARSERS = [("grype", P.parse_grype), ("trivy", P.parse_trivy),
-               ("osv-scanner", lambda p: P.parse_osv(p, "osv-scanner")), ("snyk", P.parse_snyk)]
+    if m.get("scanner_set") == "panel":
+        PARSERS = [(sc, (lambda p, sc=sc: P.parse_panel(p, sc))) for sc in P.PANEL_SCANNERS]
+    else:
+        PARSERS = [("grype", P.parse_grype), ("trivy", P.parse_trivy),
+                   ("osv-scanner", lambda p: P.parse_osv(p, "osv-scanner")), ("snyk", P.parse_snyk)]
     lines = []
     for name, fn in PARSERS:
         info = st.get(name) or {}
@@ -2326,15 +2388,18 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
         else ("candidate production %s commit %s" % (digest, m.get("commit")))
     ran_lines = []; notrun_lines = []; down_ac2 = []
     reports = m.get("scanner_reports") or {}
-    for s in IMAGE_SCANNERS + ("osv-scanner-gomod",):
+    for s in _scanners(m) + (() if m.get("scanner_set") == "panel" else ("osv-scanner-gomod",)):
         info = st.get(s) or {}
         pc = info.get("package_count"); fn = info.get("findings")
         ran = bool(info.get("ran")) and (info.get("package_count") or 0) > 0
         if reports.get(s) and ran:
             # a scanner that publishes no database date says so — never a bare dash
             db = info.get("db_date") or "no db date published"
-            ran_lines.append("%s %s db=%s packages=%s os_packages=%s findings=%s"
-                             % (s, info.get("version") or "-", db, pc, info.get("os_package_count"), fn))
+            if m.get("scanner_set") == "panel":
+                ran_lines.append("%s ran on %s of %s images, %s packages" % (s, info.get("images_ran"), info.get("images_expected"), pc))
+            else:
+                ran_lines.append("%s %s db=%s packages=%s os_packages=%s findings=%s"
+                                 % (s, info.get("version") or "-", db, pc, info.get("os_package_count"), fn))
         else:
             reason = info.get("reason", "no report")
             notrun_lines.append("%s — %s" % (s, reason))
@@ -2360,12 +2425,21 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     qi = quorum_info or {}
     agreed = qi.get("agreed") or []
     excl = list(dict.fromkeys((qi.get("disagreed") or []) + (qi.get("excluded") or [])))
-    noinv = qi.get("not_ran") or [s for s in IMAGE_SCANNERS if s not in agreed and s not in excl]
-    parts = ["agreed on OS packages: " + (", ".join("%s(%s)" % (s, _osc(s)) for s in agreed) or "none")]
-    if excl:
-        parts.append("did not agree / excluded: " + ", ".join("%s(%s)" % (s, _osc(s)) for s in excl))
+    noinv = qi.get("not_ran") or [s for s in _scanners(m) if s not in agreed and s not in excl]
+    if qi.get("panel"):
+        unc = qi.get("uncounted")
+        parts = ["scanner panel (rule 3: an image counts when at least three scanners ran on it): " + (
+                 "the verdict is missing or invalid, no image counts" if unc is None else
+                 ("every image counted" if not unc else "not counted: " + ", ".join(unc)))]
+        parts.append("ran everywhere: " + (", ".join(agreed) or "none"))
+    else:
+        parts = ["agreed on OS packages: " + (", ".join("%s(%s)" % (s, _osc(s)) for s in agreed) or "none")]
+        if excl:
+            parts.append("did not agree / excluded: " + ", ".join("%s(%s)" % (s, _osc(s)) for s in excl))
     if noinv:
-        parts.append("did not inventory: " + ", ".join("%s (%s)" % (s, (st.get(s) or {}).get("reason", "no report")) for s in noinv))
+        parts.append("did not run: " + ", ".join("%s (%s)" % (s, (st.get(s) or {}).get("reason", "no report")) for s in noinv)
+                     if qi.get("panel") else
+                     "did not inventory: " + ", ".join("%s (%s)" % (s, (st.get(s) or {}).get("reason", "no report")) for s in noinv))
     L.append("**Inventory quorum:** " + "; ".join(parts))
     g = m.get("govulncheck")
     L.append("**Reachability:** " + ("govulncheck symbol @ %s (complete=%s)" % (g.get("commit"), g.get("complete")) if isinstance(g, dict) else "not run"))
@@ -2403,8 +2477,8 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     L.append("")
     L.append("**%s**" % _text(status))
     L.append("")
-    ctx = {"n": 0, "p": max([(st.get(s) or {}).get("package_count") or 0 for s in IMAGE_SCANNERS] + [0]),
-           "k": sum(1 for s in ("grype", "trivy", "osv-scanner", "snyk") if (st.get(s) or {}).get("ran")),
+    ctx = {"n": 0, "p": max([(st.get(s) or {}).get("package_count") or 0 for s in _scanners(m)] + [0]),
+           "k": sum(1 for s in (_scanners(m) if m.get("scanner_set") == "panel" else ("grype", "trivy", "osv-scanner", "snyk")) if (st.get(s) or {}).get("ran")),
            "h": len(sections[5]), "m": len([r for r in sections[5]]), "consistency": "clean" if not probs else "%d problems" % len(probs),
            "down": ", ".join("%s (%s)" % (d["scanner"], d["reason"]) for d in C.scanners_down(m))}
 
