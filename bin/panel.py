@@ -122,11 +122,13 @@ def _top(sevs):
     return max(got, key=SEVERITIES.index) if got else None
 
 
-def _extra(severity=None, fixed=None, aliases=(), vid=None):
+def _extra(severity=None, fixed=None, aliases=(), vid=None, known_exploited=False):
     """One scanner's own facts about a finding; a key is present only when the scanner reported it."""
     out = {}
     if severity:
         out["severity"] = severity
+    if known_exploited:
+        out["known_exploited"] = True
     if isinstance(fixed, str) and fixed:
         out["fixed_version"] = fixed
     al = []
@@ -138,7 +140,7 @@ def _extra(severity=None, fixed=None, aliases=(), vid=None):
     return out
 
 
-def _cdx_findings(doc, comps):
+def _cdx_findings(doc, comps, inspector=False):
     by_ref = {c.get("bom-ref"): c for c in comps + [c for c in doc.get("components") or [] if isinstance(c, dict)]
               if c.get("bom-ref")}
     out = []
@@ -149,9 +151,16 @@ def _cdx_findings(doc, comps):
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
             sev = _top(norm_severity(r.get("severity")) for r in v.get("ratings") or [] if isinstance(r, dict))
-            fixed = next((x.get("version") for x in a.get("versions") or [] if isinstance(x, dict) and x.get("status") == "unaffected"), None)
+            # CycloneDX 'unaffected' versions say which versions are not affected, not that one contains the fix: no fixed version from them.
+            # Inspector documents its own properties: the fixed version per affected component and the CISA KEV date.
+            fixed, kev = None, False
+            if inspector:
+                pre = "amazon:inspector:sbom_scanner:"
+                props = {p_.get("name"): p_.get("value") for p_ in v.get("properties") or [] if isinstance(p_, dict)}
+                fixed = props.get(pre + "fixed_version:" + str(a.get("ref")))
+                kev = bool(props.get(pre + "cisa_kev_date_added"))
             al = [r.get("id") for r in v.get("references") or [] if isinstance(r, dict)]
-            out.append((v.get("id") or "?", name, ver, c.get("purl"), _extra(sev, fixed, al, v.get("id"))))
+            out.append((v.get("id") or "?", name, ver, c.get("purl"), _extra(sev, fixed, al, v.get("id"), kev)))
     return out
 
 
@@ -188,7 +197,7 @@ def read_inspector(d):
     if not isinstance(sbom, dict) or sbom.get("bomFormat") != "CycloneDX":
         raise ValueError("inspector-sbomgen's SBOM is not CycloneDX")
     comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
-    return len(_cdx_packages(sbom)), _cdx_findings(scan, comps)
+    return len(_cdx_packages(sbom)), _cdx_findings(scan, comps, inspector=True)
 
 
 def read_google(d):
@@ -202,7 +211,9 @@ def read_google(d):
         vid = x.get("shortDescription") or (v.get("noteName") or "?").rsplit("/", 1)[-1]
         for p in x.get("packageIssue") or [{}]:
             out.append((vid, p.get("affectedPackage") or "?", (p.get("affectedVersion") or {}).get("fullName") or "", None,
-                        _extra(norm_severity(x.get("severity")), (p.get("fixedVersion") or {}).get("fullName"), (), vid)))
+                        _extra(norm_severity(p.get("effectiveSeverity")) or norm_severity(x.get("severity")),      # the package-level severity wins
+                               (p.get("fixedVersion") or {}).get("fullName"), (), vid,
+                               isinstance(x.get("risk"), dict) and "cisaKev" in x["risk"])))
     return len(pkgs), out
 
 
@@ -260,9 +271,15 @@ def tally(root, vexidx):
                                               "purls": [], "details": {}})
                 if s not in f["seen_by"]:
                     f["seen_by"].append(s)
-                have = f["details"].setdefault(s, {})        # this scanner's own record (a repeated entry only fills what is still absent)
-                for k_, v_ in extra.items():
-                    have.setdefault(k_, v_)
+                have = f["details"].setdefault(s, {})        # this scanner's own record; a repeated entry is merged, never dropped
+                if extra.get("severity"):
+                    have["severity"] = _top([have.get("severity"), extra["severity"]])      # the highest, in either order
+                if extra.get("fixed_version"):
+                    have.setdefault("fixed_version", extra["fixed_version"])
+                if extra.get("aliases"):
+                    have["aliases"] = list(have.get("aliases", [])) + [a_ for a_ in extra["aliases"] if a_ not in have.get("aliases", [])]
+                if extra.get("known_exploited"):
+                    have["known_exploited"] = True
                 if purl and purl not in f["purls"]:
                     f["purls"].append(purl)   # the exact package identity, for a VEX statement scoped to it
     for img, st in images.items():
