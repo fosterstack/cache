@@ -184,9 +184,9 @@ idir = os.path.join(tempfile.mkdtemp(), "i")
 put(idir, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
 put(idir, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
                                  "vulnerabilities": [rich, bare]}})
-kevv = {"id": "CVE-2099-0108", "ratings": [{"severity": "high"}, {"source": {"name": "CISA"}, "score": 1, "severity": "critical", "method": "other", "justification": "Listed in CISA KEV"}], "affects": [{"ref": "r0"}]}
+kevv = {"id": "CVE-2099-0108", "ratings": [{"severity": "high"}, {"source": {"name": "CISA KEV Catalog", "url": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"}, "score": 1, "method": "other", "justification": "Listed in CISA KEV"}], "affects": [{"ref": "r0"}]}
 negv = {"id": "CVE-2099-0109", "ratings": [{"severity": "none"}], "affects": [{"ref": "r0"}]}
-nokev = {"id": "CVE-2099-0110", "ratings": [{"severity": "low"}, {"source": {"name": "CISA"}, "method": "other", "justification": "something else"}], "affects": [{"ref": "r0"}]}
+nokev = {"id": "CVE-2099-0110", "ratings": [{"severity": "low"}, {"source": {"name": "CISA KEV Catalog"}, "method": "other", "justification": "something else"}], "affects": [{"ref": "r0"}]}
 put(gd, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
                             "vulnerabilities": [rich, bare, kevv, negv, nokev]})
 ex = {t[0]: t[4] for t in P.read_grype(gd)[1]}
@@ -194,14 +194,14 @@ check("Grype: its CISA KEV rating (method other, 'Listed in CISA KEV') is known-
       ex["CVE-2099-0108"] == {"severity": "high", "known_exploited": True} and ex["CVE-2099-0109"] == {"severity": "negligible"}
       and ex["CVE-2099-0110"] == {"severity": "low"}, (ex["CVE-2099-0108"], ex["CVE-2099-0109"], ex["CVE-2099-0110"]))
 misv = {"id": "CVE-2099-0111", "ratings": [{}, {"severity": None}, {"severity": "unknown"}, {"method": "EPSS", "score": 0.2}], "affects": [{"ref": "r0"}]}
-negk = {"id": "CVE-2099-0112", "ratings": [{"severity": "low"}, {"source": {"name": "CISA"}, "method": "other", "severity": "critical", "justification": "Not listed in CISA KEV"}], "affects": [{"ref": "r0"}]}
+negk = {"id": "CVE-2099-0112", "ratings": [{"severity": "low"}, {"source": {"name": "CISA KEV Catalog"}, "method": "other", "severity": "critical", "justification": "Not listed in CISA KEV"}], "affects": [{"ref": "r0"}]}
 srck = {"id": "CVE-2099-0113", "ratings": [{"severity": "low"}, {"source": {"name": "someone"}, "method": "other", "severity": "critical", "justification": "Listed in CISA KEV"}], "affects": [{"ref": "r0"}]}
 put(gd, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
                             "vulnerabilities": [rich, bare, kevv, negv, nokev, misv, negk, srck]})
 ex = {t[0]: t[4] for t in P.read_grype(gd)[1]}
 check("Grype: a missing, null or unknown severity (and an EPSS rating without one) is ABSENT, not negligible",
       ex["CVE-2099-0111"] == {}, ex["CVE-2099-0111"])
-check("Grype: the KEV marker is exactly 'Listed in CISA KEV' from source CISA; 'Not listed in CISA KEV' or another source is not a marker (its rating then counts as a rating)",
+check("Grype: the KEV marker is exactly 'Listed in CISA KEV' from source 'CISA KEV Catalog' (Grype v0.118.0's emitter, read from its source); 'Not listed in CISA KEV' or another source is not a marker (its rating then counts as a rating)",
       ex["CVE-2099-0112"] == {"severity": "critical"} and ex["CVE-2099-0113"] == {"severity": "critical"}, (ex["CVE-2099-0112"], ex["CVE-2099-0113"]))
 inspv = {"id": "CVE-2099-0106", "ratings": [{"severity": "high"}], "affects": [{"ref": "r0"}],
          "properties": [{"name": "amazon:inspector:sbom_scanner:fixed_version:r0", "value": "2026d"},
