@@ -188,11 +188,64 @@ def boundary_scan(raw):
     if stack: gap = True              # an unterminated expansion
     if COMPOUND_GAP.search("".join(ch for ch, _ in seq)): gap = True
     return gap
-DOLLAR_BOUNDARY = re.compile(r"[$<>](?:[\"'\\]|\$\{[^}]*\}|\$\([^)]*\)|\$\[(?:[^\]\[]|\[[^\]]*\])*\]|`[^`]*`|\$[A-Za-z_0-9@*#?!$-]+)+[({]|\$\$[({\[]")   # a $ (or < >) then one or more quote or escape characters or ANY expansion, then ( or { : an opener whose characters bash joins from separate quote segments or around an expansion that may be empty; the raw logical line, comments and heredoc bodies included
+DOLLAR_PID = re.compile(r"\$\$[({\[]")        # $$ (the pid) then an opener character: refused
+RAW_SIMPLE = re.compile(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*)")   # one simple expansion token, unambiguous
+def raw_skip(raw, j):
+    """raw[j] is a $ followed by { ( [ : the index just past its balanced end, or None when it is unterminated or holds a quote inside $[ ] (uncertain: refuse). Inside ${ } only a nested ${ nests; inside $( ) a bare ( and a nested $( nest, quoted spans are skipped; inside $[ ] a [ nests and a quote is uncertain."""
+    n, kind = len(raw), raw[j + 1]
+    close = {"{": "}", "(": ")", "[": "]"}[kind]
+    depth, k = 1, j + 2
+    while k < n:
+        c = raw[k]
+        if c == "\\": k += 2; continue
+        if c in "'\"":
+            if kind == "[": return None
+            e = k + 1
+            while e < n and raw[e] != c:
+                e += 2 if (c == '"' and raw[e] == "\\") else 1
+            if e >= n: return None
+            k = e + 1; continue
+        if kind == "{" and raw.startswith("${", k): depth += 1; k += 2; continue
+        if kind == "(" and raw.startswith("$(", k): depth += 1; k += 2; continue
+        if kind == "[" and raw.startswith("$[", k): depth += 1; k += 2; continue
+        if kind == "(" and c == "(": depth += 1; k += 1; continue
+        if kind == "[" and c == "[": depth += 1; k += 1; continue
+        if c == close:
+            depth -= 1; k += 1
+            if depth == 0: return k
+            continue
+        k += 1
+    return None
+def raw_boundary(raw):
+    """Linear scan of the raw logical line (comments and heredoc bodies included): a $ < > then one or more quote or escape characters or expansions of any form, then ( or { . A run that fails is skipped whole, so the scan is linear; an unterminated or uncertain expansion refuses."""
+    if DOLLAR_PID.search(raw): return True
+    n, i = len(raw), 0
+    while i < n:
+        if raw[i] not in "$<>": i += 1; continue
+        j, moved = i + 1, False
+        while j < n:
+            c = raw[j]
+            if c in "\"'\\": j += 1; moved = True; continue
+            if c == "`":
+                e = j + 1
+                while e < n and raw[e] != "`": e += 2 if raw[e] == "\\" else 1
+                if e >= n: return True
+                j = e + 1; moved = True; continue
+            if c == "$":
+                if j + 1 < n and raw[j + 1] in "{([":
+                    e = raw_skip(raw, j)
+                    if e is None: return True
+                    j = e; moved = True; continue
+                m = RAW_SIMPLE.match(raw, j)
+                if m: j = m.end(); moved = True; continue
+            break
+        if moved and j < n and raw[j] in "({": return True
+        i = max(i + 1, j)
+    return False
 def shell_words(raw):
     return shell_scan(raw)[0]
 def dollar_boundary(raw):
-    if DOLLAR_BOUNDARY.search(raw): return True
+    if raw_boundary(raw): return True
     if boundary_scan(raw): return True
     nested = shell_scan(raw)[2]
     return bool(nested and COMPOUND_NESTED_CRUDE.search(raw))

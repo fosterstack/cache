@@ -876,6 +876,13 @@
           "line_sha256": "5a9bc69c36b12cea707eaf938548c0257d3bd5f80a623e8db85ce6f2a5bfbf4a",
           "count": 1,
           "why": "a comment line that quotes a markdown fence (three backticks) in prose: it is text that never runs, not a $ at a quote-segment boundary (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 459, the raw-line scan reads comments by design)"
+        },
+        {
+          "rule": "deny",
+          "line": "# ALL-CAPS in angle brackets, each defined once in a list line before the first fence, as  - `<NAME>`: what it is. Check knows",
+          "line_sha256": "9fa159d82b2d5e57e1e68f8a4ad9acdea99d19bd0a1a728701706695398295d9",
+          "count": 1,
+          "why": "a comment line that quotes a markdown list item with an angle-bracket name and a backtick pair in prose: text that never runs, not a $ at a quote-segment boundary (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 459, the raw-line scan reads comments by design)"
         }
       ]
     },
