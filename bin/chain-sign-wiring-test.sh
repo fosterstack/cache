@@ -3853,6 +3853,31 @@ echo ok\n' caught 'compound assignment' 'an earlier refusal is kept: an escaped 
 bd bd_zx $'w() { declare -a "a=($1)"; }
 w \'$\'$(# )
 :)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment inside a command substitution makes its closer uncertain'
+bd bd_zy $'w() { declare -a "a=($1)"; }
+w \'$\'$(true;# )
+true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after a ; inside a command substitution'
+bd bd_zz $'w() { declare -a "a=($1)"; }
+w \'$\'$(true|# )
+true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after a | inside a command substitution'
+bd bd_zza $'w() { declare -a "a=($1)"; }
+w \'$\'$(true&&# )
+true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after && inside a command substitution'
+bd bd_zzb $'echo \'<\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets inside $[ ]'
+bd bd_zzc $'echo \'<$[1+$[0]](\'\n' caught 'quote-segment boundary' 'a nested $[ ] in single quotes'
+bd bd_zzd $'echo \'$\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets, a $ prefix'
+bd bd_zze $'echo \'>\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets, a > prefix'
+bd bd_zzf $'w() { declare -a "a=($1)"; }
+w \'$\'`true`\'(printf x)\'\n' caught 'quote-segment boundary' 'a backtick substitution is a gap'
+bd bd_zzg $'# $$((0))(
+echo ok\n' caught 'quote-segment boundary' 'a $$ before an arithmetic expansion and ('
+bd bd_zzh $'# $${x:-${y:-}}(
+echo ok\n' caught 'quote-segment boundary' 'a $$ before a brace expansion and ('
+bd bd_zzi $'# \'<\'$(case x in x) :;; esac)\'(x)\'
+echo ok\n' caught 'quote-segment boundary' 'a case-arm ) inside a command substitution in a comment'
+bd bd_zzj $'cat <<\'EOF\' >/dev/null
+\'<\'$(case x in x) :;; esac)\'(x)\'
+EOF
+echo ok\n' caught 'quote-segment boundary' 'a case-arm ) inside a command substitution in a heredoc body'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -4024,7 +4049,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1827
+EXPECT=1839
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
