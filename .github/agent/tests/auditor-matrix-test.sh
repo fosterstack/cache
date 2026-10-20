@@ -3827,12 +3827,31 @@ def _(d): d["vex_covered"][0]["extra"] = 1
 def _(d): d["findings"][0]["purls"] = ["openssl@3.0.1"]
 @case("issuewrong")
 def _(d): d["issue"] = d["issue"].replace("openssl", "wrong-package")
+@case("vexid")
+def _(d): d["vex_covered"][0]["id"] = "CVE 1\nx"
+@case("vexpkg")
+def _(d): d["vex_covered"][0]["package"] = "a\x00b"
+@case("vexver")
+def _(d): d["vex_covered"][0]["version"] = "1\n2"
+@case("purlq")
+def _(d): d["findings"][0]["purls"] = ["pkg:apk/wolfi/openssl@3.0.1?broken"]
+@case("purlctl")
+def _(d): d["findings"][0]["purls"] = ["pkg:apk/wolfi/openssl@3.0.1?x=\x00"]
+@case("uniqtype")
+def _(d): d["unique"][0] = dict(d["unique"][0], unique=1, of=float(d["unique"][0]["of"]))
+RAW = {"dupkey": lambda t: t[:-1] + ', "findings": []}', "dupkey2": lambda t: t[:-1] + ', "images": {}}'}
+@case("dupkey")
+def _(d): pass
+@case("dupkey2")
+def _(d): pass
 @case("idspace")
 def _(d): d["findings"][2]["id"] = "CVE 2099 0002"; d["unique"] = [x for x in d["findings"] if x["unique"]]
 out = []
 for name, fn in M1.items():
     d = copy.deepcopy(base); fn(d)
-    dd = os.path.join(wk, "pv-" + name); os.makedirs(dd, exist_ok=True); vp = os.path.join(dd, "verdict.json"); json.dump(d, open(vp, "w"))
+    dd = os.path.join(wk, "pv-" + name); os.makedirs(dd, exist_ok=True); vp = os.path.join(dd, "verdict.json")
+    txt = json.dumps(d)
+    open(vp, "w").write(RAW[name](txt) if name in RAW else txt)
     try:
         P.parse_panel(vp, "grype"); pp = "accepted"
     except P.ParseError:
@@ -3842,7 +3861,7 @@ for name, fn in M1.items():
 print(" ".join(out))
 PYEOF
 )"
-exp="$(for n in nofind noimg trunc extraimg null incomplete ghost of uniq status img dup overlap unknown unlisted zero nocount bool cfd uniqlist dupa dupb exit vexempty vexghost vexnoimg vexarm purl offloat issueempty issuestale nested topextra imgextra findextra vexextra purlsyntax issuewrong idspace; do printf '%s=refused/all-down ' "$n"; done)"
+exp="$(for n in nofind noimg trunc extraimg null incomplete ghost of uniq status img dup overlap unknown unlisted zero nocount bool cfd uniqlist dupa dupb exit vexempty vexghost vexnoimg vexarm purl offloat issueempty issuestale nested topextra imgextra findextra vexextra purlsyntax issuewrong idspace vexid vexpkg vexver purlq purlctl uniqtype dupkey dupkey2; do printf '%s=refused/all-down ' "$n"; done)"
 { eq "$r" "${exp% }"; } && ok || no "every malformed, truncated or inconsistent verdict is refused by parse_panel and records all four scanners 'did not run' in panel_block" "[$r]"
 
 begin "panel-5-corroboration-is-kept-per-image" "round 1 of cache#466 (seat B): the same CVE on two images keeps its own 'seen by N of M' and its own uniqueness per image; one image's numbers are never attached to another image"
