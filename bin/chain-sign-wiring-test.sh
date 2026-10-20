@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
+# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC7, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
 # The Sign boundary (v0.3.0 rules 50, 50a, 52, 52a, 53a; owner RATIFIED Oct 9), static half. Three judges, each first proven
 # on a known-good fixture and on every mutated copy (a judge that cannot fail proves nothing), then applied to the real repo:
 #   judge_sign  stage-sign.yml is an ALLOWLIST: a reusable workflow of one job on a GitHub-hosted runner whose only input is
@@ -2323,7 +2323,7 @@ scriptcase s8_xargs caught "${S0}printf x | xargs bash\n" 'rows["bin/build-stage
 scriptcase s8_sudo caught "${S0}sudo bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'sudo launching another program'
 probe othersc "other/install-scanner.sh" "the real bin/chain-hostile-step.sh with bash other/install-scanner.sh appended and its sha256 updated (Codex #249 r7 B3a)" \
   "printf 'bash other/install-scanner.sh\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
-probe absbash  "/bin/bash" "the real bin/chain-hostile-step.sh with /bin/bash -c true appended and its sha256 updated (B3b)" \
+probe absbash  "is handed '-c'" "the real bin/chain-hostile-step.sh with /bin/bash -c true appended and its sha256 updated (B3b)" \
   "printf '/bin/bash -c true\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
 # (Codex #249 r8 B3 + Sonnet 1/2/3/6, the class closed) listed scripts: a launcher or evaluator word at ANY command position, and any word handed
 # to an interpreter or run as a path, must be an exact listed path or a word the row allows; a launcher is refused outright
@@ -2648,13 +2648,246 @@ d=$(cfix c_cp 'cp x archive/go'); expm ok "$d" - "argument: cp x archive/go is a
 d=$(cfix c_awkarg 'echo archive/awk'); expm ok "$d" - "argument: archive/awk as an argument is accepted"
 d=$(cfix c_sedarg 'ls dist/sed'); expm ok "$d" - "argument: dist/sed as an argument is accepted"
 d=$(cfix c_awk '/bin/awk x'); expm caught "$d" 'awk' "command position: /bin/awk x stays refused"
-d=$(cfix c_awk_t '/bin/awk x' '["awk"]'); expm caught "$d" 'by a path' "command position: /bin/awk x stays refused even when tools lists awk (the row governs the bare name only)"
+d=$(cfix c_awk_t '/bin/awk x' '["awk"]'); expm ok "$d" - "fixed path: /bin/awk x is judged as the bare awk when awk is in tools (REQ-CHAIN-001-AC1, cache#361: a literal /usr/bin|/bin|/usr/local/bin path is stricter than the bare name)"
 d=$(cfix c_relawk 'archive/awk x'); expm caught "$d" 'awk' "command position: archive/awk x stays refused"
 d=$(cfix c_env '/usr/bin/env x'); expm caught "$d" 'env' "command position: /usr/bin/env x stays refused"
-d=$(cfix c_bash '/bin/bash bin/build-apk.sh' '["bash"]' '["bin/build-apk.sh"]'); expm caught "$d" 'by a path' "command position: /bin/bash bin/build-apk.sh stays refused even with bash in tools and the script in runs"
+d=$(cfix c_bash '/bin/bash bin/build-apk.sh' '["bash"]' '["bin/build-apk.sh"]'); expm ok "$d" - "fixed path: /bin/bash bin/build-apk.sh is judged as the bare bash: bash in tools and the script in runs"
 d=$(cfix c_quoted '"/bin/sh" x'); expm caught "$d" 'sh' "command position: a quoted /bin/sh stays refused"
 d=$(cfix c_pipe 'echo a | /usr/bin/awk 1'); expm caught "$d" 'awk' "command position: a path-named command after a pipe stays refused"
 d=$(cfix c_go 'archive/go build' '["go"]'); expm caught "$d" 'by a path' "command position: archive/go build stays refused even with go in tools"
+# ---- fixed-path commands and python isolation flags (REQ-CHAIN-001-AC1; cache#361: bin/archive-pull.sh names every tool by a literal absolute path and runs python3 -I -B) ----------------------------
+# ACCEPTED: a literal /usr/bin/NAME, /bin/NAME or /usr/local/bin/NAME is judged exactly as the bare NAME when NAME is in the row's tools; python is handed only -I and -B (each at most once) before a listed script
+d=$(cfix fp_mktemp '/usr/bin/mktemp -d x' '["mktemp"]'); expm ok "$d" - "fixed path: /usr/bin/mktemp with mktemp in tools"
+d=$(cfix fp_rm '/bin/rm -rf x' '["rm"]'); expm ok "$d" - "fixed path: /bin/rm with rm in tools"
+d=$(cfix fp_crane '/usr/local/bin/crane pull a b' '["crane"]'); expm ok "$d" - "fixed path: /usr/local/bin/crane with crane in tools"
+d=$(cfix fp_subst 'x=$(/usr/bin/mktemp -d y)' '["mktemp"]'); expm ok "$d" - "fixed path inside a command substitution"
+d=$(cfix py_ib '/usr/bin/python3 -I -B bin/build-apk.sh a --b c' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "python3: -I -B before the listed script, the script's own arguments after it, by the fixed path"
+d=$(cfix py_bi 'python3 -B -I bin/build-apk.sh a' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "python3: -B -I (either order), bare name"
+d=$(cfix py_i 'python3 -I bin/build-apk.sh' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "python3: -I alone before the listed script"
+d=$(cfix py_none 'python3 bin/build-apk.sh' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "python3: no option (as before)"
+# REFUSED: python3 with any other option or a combined/repeated flag, an unlisted script, stdin
+pyx() { d=$(cfix "$1" "$2" '["python3"]' '["bin/build-apk.sh"]'); expm caught "$d" 'handed' "python3 refused: $3"; }
+pyx py_c 'python3 -I -B -c pass' "-c"
+pyx py_cfirst '/usr/bin/python3 -c pass' "-c, fixed path"
+pyx py_m 'python3 -I -B -m http.server' "-m"
+pyx py_s 'python3 -S bin/build-apk.sh' "-S"
+pyx py_e 'python3 -I -E bin/build-apk.sh' "-E"
+pyx py_ib_comb 'python3 -IB bin/build-apk.sh' "a combined -IB"
+pyx py_ii 'python3 -I -I bin/build-apk.sh' "-I twice"
+pyx py_bb 'python3 -B -B bin/build-apk.sh' "-B twice"
+pyx py_other_after_flags 'python3 -I -B -u bin/build-apk.sh' "-u after the two flags"
+pyx py_unlisted 'python3 -I -B bin/unlisted.py' "an unlisted script after -I -B"
+pyx py_stdin 'python3 -I -B < bin/build-apk.sh' "stdin"
+pyx py_nothing 'python3 -I -B' "no script"
+pyx py_dash 'python3 -I -B - bin/build-apk.sh' "- (stdin) before the script"
+pyx py_long '/usr/bin/python3 --version' "a long option"
+# REFUSED: the fixed-path form needs NAME in tools, exactly the three directories, a plain name
+d=$(cfix fp_notin '/usr/bin/mktemp -d x' '[]'); expm caught "$d" 'absolute path or built at run time' "fixed path: /usr/bin/mktemp with mktemp NOT in tools stays refused"
+d=$(cfix fp_notin2 '/usr/bin/python3 -I -B bin/build-apk.sh' '[]' '["bin/build-apk.sh"]'); expm caught "$d" 'python3' "fixed path: /usr/bin/python3 with python3 NOT in tools stays refused"
+d=$(cfix fp_otherdir '/opt/bin/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: /opt/bin outside the three directories"
+d=$(cfix fp_sbin '/usr/sbin/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: /usr/sbin is not one of the three directories"
+d=$(cfix fp_dots '/usr/bin/../bin/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: .. in the path"
+d=$(cfix fp_dslash '/usr//bin/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a doubled slash in the directory"
+d=$(cfix fp_dslash2 '/usr/bin//mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a doubled slash before the name"
+d=$(cfix fp_sub '/usr/bin/sub/mktemp -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a deeper directory"
+d=$(cfix fp_var '/usr/bin/$N -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a variable as the name"
+d=$(cfix fp_cs '/usr/bin/$(echo mktemp) -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a command substitution in the name"
+d=$(cfix fp_brace '/usr/bin/${N} -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a braced variable as the name"
+d=$(cfix fp_glob '/usr/bin/mk* -d x' '["mktemp"]'); expm caught "$d" 'absolute path or built at run time' "fixed path: a glob in the name"
+d=$(cfix fp_quoted '"/usr/bin/mktemp" -d x' '["mktemp"]'); expm ok "$d" - "fixed path: a quoted literal is the same word"
+d=$(cfix fp_env '/usr/bin/env x' '["env"]'); expm caught "$d" 'env' "fixed path: /usr/bin/env stays refused even with env in tools (a launcher)"
+d=$(cfix fp_bashc '/bin/bash -c true' '["bash"]'); expm caught "$d" 'handed' "fixed path: /bin/bash -c stays refused even with bash in tools"
+d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bin/awk with awk NOT in tools stays refused"
+# round 1 of the seats (433): a fixed-path command keeps every operand rule of the bare name; isolation flags do not change how the script's own arguments are judged; a function named by a path cannot replace the fixed program
+# Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
+# The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
+FX="$root/bin/chain-sign-wiring-fixtures.txt"
+FX_PIN='b7c90d90bb18fff473213ec6808858693e214c24a0523fad3f7ac1e2a901b87b'
+run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
+  local name body tools verdict frag label d
+  while IFS=$'\t' read -r name body tools verdict frag label; do
+    d=$(cfix "$name" "$body" "$tools"); expm "$verdict" "$d" "$frag" "$label"
+  done < "$1"
+}
+cat > "$work/fx-guard.py" <<'PY'
+import hashlib, re, sys
+fx, me = sys.argv[1:3]
+rows = open(fx).read().split("\n")
+assert rows[-1] == "", "the data file ends with a newline"
+rows = rows[:-1]
+assert rows and not rows[0].startswith("#!"), "no shebang: the file is not a script"
+names = set()
+for n, r in enumerate(rows, 1):
+    f = r.split("\t")
+    assert len(f) == 6, "line %d: %d fields, not 6" % (n, len(f))
+    assert re.fullmatch(r"[a-z][a-z0-9_]*", f[0]) and f[0] not in names, "line %d: name %r" % (n, f[0]); names.add(f[0])
+    assert f[3] in ("ok", "caught"), "line %d: verdict %r" % (n, f[3])
+    assert f[1] and f[2] and f[4] and f[5], "line %d: an empty field" % n
+# THE PIN (first line of defence, round 14): this whole test, less its one pin line, must hash to the pin. Any edit of the file (a new line, a second definition, an indirect or joined spelling of the
+# data-file name) fails here until the pin is updated in a reviewed PR; the scan below is only the second line, for the fx mutation cases that skip the pin ("nopin").
+if "nopin" not in sys.argv[3:]:
+    tl = open(me, "rb").read().split(b"\n")      # bytes: a carriage return or any other byte change moves the hash
+    pins = [l for l in tl if re.fullmatch(rb"FX_PIN='[0-9a-f]{64}'", l)]
+    assert len(pins) == 1, "the test has %d pin lines, not 1" % len(pins)
+    got = hashlib.sha256(b"\n".join(l for l in tl if l != pins[0])).hexdigest()
+    assert got == pins[0][8:-1].decode(), "this test differs from its pin; if the edit is reviewed, set FX_PIN='%s'" % got
+# DEFAULT DENY: a line of this test that names the data file (the variable FX or its file name), anywhere but inside this heredoc, must be one of the exact whole lines below, and
+# run_fixtures must be exactly the function below; a comment, a trailing comment, a second command or a different redirect is not on the list, so it fails
+WORD = re.compile(r'(?<![A-Za-z0-9_])FX(?![A-Za-z0-9_])|fixtures\.txt')
+ALLOWED = {
+    'FX="$root/bin/chain-sign-wiring-fixtures.txt"',
+    'if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "${BASH_SOURCE[0]}"',
+    'run_fixtures "$FX"',
+    '  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "${BASH_SOURCE[0]}" "$m/t.sh"; chmod 644 "$m/f.txt"',
+    "  [ -z \"$2\" ] || sed -i.bak \"$2\" \"$m/f.txt\"; [ -z \"$3\" ] || printf '%s\\n' \"${3//@FX@/\\$FX}\" >> \"$m/t.sh\"",
+}
+CALL = re.compile(r"^fxmut [a-z][a-z0-9]* '[^']*' '[^']*' \"[^\"$`\\]*\"$")      # a mutation call: the placeholder @FX@ only, never the variable
+RUN_FIXTURES = (
+    'run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case\n'
+    '  local name body tools verdict frag label d\n'
+    "  while IFS=$'\\t' read -r name body tools verdict frag label; do\n"
+    '    d=$(cfix "$name" "$body" "$tools"); expm "$verdict" "$d" "$frag" "$label"\n'
+    '  done < "$1"\n'
+    '}\n')
+text = open(me, newline="").read()
+assert RUN_FIXTURES in text and sum(1 for l in text.split("\n") if l.startswith("run_fixtures() {")) == 1, "run_fixtures is not exactly the reviewed function"
+end = None
+for n, l in enumerate(text.split("\n"), 1):
+    if end is None and l == 'cat > "$work/fx-guard.py" <<\'PY\'': end = "PY"      # this heredoc is the one place that spells the names it looks for
+    if end is not None:
+        if l == end: end = None
+        continue
+    if WORD.search(l) and l not in ALLOWED and not CALL.match(l) and l not in RUN_FIXTURES.split("\n"):
+        assert False, "line %d names the data file in a form that is not on the list: %s" % (n, l.strip())
+    if CALL.match(l):
+        assert "$FX" not in l, "line %d" % n
+PY
+if [ -f "$FX" ] && [ ! -x "$FX" ] && python3 "$work/fx-guard.py" "$FX" "${BASH_SOURCE[0]}"
+then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 fixture texts are data: the fixture data file is six tab-separated fields per line, has no shebang and no execute bit, and the test only reads it"
+else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the fixture data file is missing, executable, malformed, or the test runs it"
+fi
+# a record whose script text would do something if it were ever run is only ever judged: the sentinel is never created
+printf 'rec_never_run\t$(touch "%s/ran")\\n`touch "%s/ran2"`\t[]\tcaught\t-\tnever run\n' "$work" "$work" > "$work/fx-sentinel.txt"
+run_fixtures "$work/fx-sentinel.txt"
+if [ ! -e "$work/ran" ] && [ ! -e "$work/ran2" ]; then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 a data record holding command substitutions is judged as text and never run"
+else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 a data record was run"; fi
+run_fixtures "$FX"
+# the guard must bite: an executable file, a shebang, a short record, and a test that sources, evaluates or runs the file are each refused
+fxmut() { # fxmut LABEL FILE-SED TEST-APPEND : the guard against a mutated copy of the data file and of this test
+  local m="$work/fxm"; rm -rf "$m"; mkdir -p "$m"; cp "$FX" "$m/f.txt"; cp "${BASH_SOURCE[0]}" "$m/t.sh"; chmod 644 "$m/f.txt"
+  [ -z "$2" ] || sed -i.bak "$2" "$m/f.txt"; [ -z "$3" ] || printf '%s\n' "${3//@FX@/\$FX}" >> "$m/t.sh"
+  [ "$1" != x ] || chmod 755 "$m/f.txt"
+  [ "$1" != pf ] || sed -i.bak $'s/^run_fixtures "[$][F]X"$/&\r/' "$m/t.sh"   # pf: only a carriage return added to the call line
+  local np=nopin; case "$1" in p*) np= ;; esac   # the p cases test the pin (the lexical scan alone would not see them); the others test the lexical scan with the pin skipped
+  if python3 "$work/fx-guard.py" "$m/f.txt" "$m/t.sh" $np > /dev/null 2>&1 && { [ ! -x "$m/f.txt" ]; }; then failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the data-file guard accepted: $4"
+  else pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the data-file guard refuses $4"; fi
+}
+fxmut x '' '' "an executable data file"
+TAB=$'\t'
+fxmut s '1s/^/#!\/bin\/sh\'$'\n''/' '' "a data file that starts with a shebang"
+fxmut f "1s/${TAB}[^${TAB}]*\$//" '' "a record with five fields"
+fxmut a '' 'source "@FX@"' "a test that sources the data file"
+fxmut b '' 'bash "@FX@"' "a test that runs the data file with bash"
+fxmut c '' 'eval "$(cat "@FX@")"' "a test that evaluates the data file"
+fxmut d '' 'bash < "@FX@"' "a test that feeds the data file to bash on stdin"
+fxmut e '' 'bash < "@FX@" # data file' "the same with a trailing comment"
+fxmut g '' 'source <(cat "@FX@") # data file' "a test that sources a process substitution of the data file"
+fxmut h '' 'X=$(<"@FX@"); eval "$X" # data file' "a test that evaluates the data file's text"
+fxmut i '' 'FX="@FX@"; bash < "@FX@"' "an assignment line with a second command after it"
+fxmut j '' 'if [ -f "@FX@" ]; then bash < "@FX@"; fi' "a test line that starts like the guard call and runs the file"
+fxmut k '' 'run_fixtures "@FX@"; bash < "@FX@"' "a run_fixtures call with a second command"
+fxmut l '3s/\t[^\t]*\t/\t\t/' '' "a record with an empty tools field"
+fxmut m '' '# the file @FX@ is only ever read' "a comment that names the data file (a comment is not on the list)"
+fxmut n '' 'run_fixtures() { eval "$1"; }' "a second definition of run_fixtures"
+fxmut pa '' 'F='"'"'F'"'"'X; bash < "${!F}"' "the pin: a line that builds the file name by indirect expansion (round 14)"
+fxmut pb '' 'bash "$root/bin/chain-sign-wiring-fixtures"".txt"' "the pin: a line that joins the file name from adjacent quoted words (round 14)"
+fxmut pc '' 'function run_fixtures { bash "$1"; }' "the pin: a second definition of run_fixtures in the function keyword form (round 14)"
+fxmut pd '' '  run_fixtures () { bash "$1"; }' "the pin: an indented definition with a space before the parentheses (round 14)"
+fxmut pe '' '# a comment' "the pin: any edit of this test, even a comment, until the pin is updated"
+fxmut pf '' '' "the pin: a carriage return added to the run_fixtures call line (the bytes change, the text-mode lines do not; round 15)"
+# round 15: the guard and the mutation copies name the running file by BASH_SOURCE[0], which a changed $0 (BASH_ARGV0, a wrapper that sources this test) cannot move
+printf 'echo "$0|${BASH_SOURCE[0]}"\n' > "$work/srcmode.sh"
+if [ "$(bash -c 'source "$1"' wrapper "$work/srcmode.sh")" = "wrapper|$work/srcmode.sh" ] \
+  && [ "$(grep -cE 'fx-guard\.py" "[$][F]X" "[$]\{BASH_SOURCE\[0\]\}"' "${BASH_SOURCE[0]}")" = 2 ] \
+  && [ "$(grep -cE 'cp "[$]\{BASH_SOURCE\[0\]\}" "[$]m/t\.sh"' "${BASH_SOURCE[0]}")" = 2 ] \
+  && [ "$(grep -cE 'cp "[$]0" "[$]m/t\.sh"' "${BASH_SOURCE[0]}")" = 0 ]
+then pass=$((pass + 1)); echo "ok   REQ-CHAIN-001-AC1 the guard call and the mutation copies take the running file from BASH_SOURCE[0], not from \$0 (a sourcing wrapper changes \$0 and not BASH_SOURCE)"
+else failn=$((failn + 1)); echo "FAIL REQ-CHAIN-001-AC1 the guard call or a mutation copy takes the running file from \$0"; fi
+d=$(cfix fo_bare_sed 'sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, bare: sed -f archive/vi is refused"
+d=$(cfix fo_fixed_sed '/usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/sed -f archive/vi is refused"
+d=$(cfix fo_fixed_at '/usr/bin/at -f archive/vi now' '["at"]'); expm caught "$d" 'by a path' "operand rule, fixed path: /usr/bin/at -f archive/vi is refused"
+d=$(cfix fo_assign 'X=1 /usr/bin/sed -f archive/vi' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path after an assignment"
+d=$(cfix fo_subst 'x=$(/usr/bin/sed -f archive/vi)' '["sed"]'); expm caught "$d" 'by a path' "operand rule, fixed path in a command substitution"
+d=$(cfix fa_py_plain 'python3 bin/build-apk.sh archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: a deny-class path after the listed script is the script's own argument (no flags)"
+d=$(cfix fa_py_flags 'python3 -I -B bin/build-apk.sh archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: the same after -I -B"
+d=$(cfix fa_py_fixed '/usr/bin/python3 -I -B bin/build-apk.sh archive/go' '["python3"]' '["bin/build-apk.sh"]'); expm ok "$d" - "script arguments: the same by the fixed path"
+d=$(cfix fa_py_bad 'python3 -I -B -c pass archive/vi' '["python3"]' '["bin/build-apk.sh"]'); expm caught "$d" 'handed' "script arguments: -c after the flags is still refused"
+d=$(cfix ff_def2 'function /bin/rm { :; }\n/bin/rm -rf x' '["rm"]'); expm caught "$d" 'function' "function /bin/rm { } is refused"
+d=$(cfix ff_def3 '/usr/local/bin/crane () { :; }' '["crane"]'); expm caught "$d" 'function' "a path-named function with a space before the parentheses is refused"
+# round 2 of the seats (433, seat B): a path-named function definition in ANY command position (after (, else, !, $(, case ...), until) is refused
+# ANSI-C / locale quoting decodes differently in bash than in the judge's lexer: a fixed-path command written that way is refused
+# round 3 of the seats (433, seat B): ANY body after /NAME () is a definition (select, a newline before the body, a body keyword nobody listed): refused fail-closed
+d=$(cfix ff_select_nl '/usr/bin/tar()\nselect x in a; do :; done' '["tar"]'); expm caught "$d" 'function' "path-named function with a newline before a select body: refused"
+# round 3 of the seats (433, seat A): the check must not depend on comment stripping, which can diverge from bash (a '#' line inside a quote that spans lines; an ANSI-C escaped quote)
+# round 4 of the seats (433, seat B): bash accepts comments and blank lines between "()" and the body of a function; a path-named definition written that way is refused too
+# round 5 of the seats (433, seat A): an alias can give a function the name of a fixed-path program; aliases are refused in a listed script (none uses one)
+d=$(cfix al_2 'BASH_ALIASES[x]=y' '[]'); expm caught "$d" 'alias' "an assignment to BASH_ALIASES: refused"
+d=$(cfix al_3 'echo ok\nalias fn="function "' '[]'); expm caught "$d" 'alias' "the alias builtin at the start of a line: refused"
+d=$(cfix al_4 'unalias -a' '[]'); expm caught "$d" 'alias' "unalias: refused"
+d=$(cfix al_6 'shopt -s expand_"aliases"\n\\alias x=y' '[]'); expm caught "$d" 'alias' "a backslash before alias and a quoted expand_aliases: refused (seat B round 6)"
+d=$(cfix al_7 "shopt -s expand_\\\\aliases\n'alias' x=y" '[]'); expm caught "$d" 'alias' "an escaped expand_aliases and a single-quoted alias: refused"
+d=$(cfix al_8 '"alias" x=y' '[]'); expm caught "$d" 'alias' "a double-quoted alias command word: refused"
+d=$(cfix al_9 'al'"'"''"'"'ias x=y' '[]'); expm caught "$d" 'alias' "an alias word split by empty quotes: refused"
+d=$(cfix al_10 "\$'\\\\x61lias' x=y" '[]'); expm caught "$d" 'alias' "an ANSI-C quoted alias command word (hex escape): refused"
+d=$(cfix al_11 "shopt -s expand_al''iases\nx() { :; }" '[]'); expm caught "$d" 'alias' "expand_aliases split by empty quotes: refused (seat A round 6)"
+d=$(cfix al_12 "declare BASH_AL''IASES[x]=y" '[]'); expm caught "$d" 'alias' "BASH_ALIASES split by empty quotes: refused"
+d=$(cfix al_13 'o=expand_aliases\nshopt -s $o' '[]'); expm caught "$d" 'shopt' "shopt handed a variable (it could name expand_aliases): refused"
+d=$(cfix al_14 'shopt -s nullglob\nshopt -u nullglob' '[]'); expm ok "$d" - "shopt -s/-u nullglob stays accepted (real scripts use it)"
+d=$(cfix al_15 'shopt -s nullglob expand_aliases' '[]'); expm caught "$d" 'shopt' "shopt with a second option name: refused"
+# round 7 of the seats: the enablers (shopt, set -o posix, POSIXLY_CORRECT) are limited to a closed list and the text is read as bash reads it ($".." plain, $'\u61' 1-4 hex digits, substitutions that may be empty, a redirection ends a word)
+d=$(cfix al_16 'shopt>/dev/null -s expand_al$()iases\nalias>/dev/null x=y' '[]'); expm caught "$d" 'alias' "shopt and alias with a redirection right after the word and an empty substitution inside the option name: refused (seat B round 7)"
+d=$(cfix al_17 "\$'\\\\u61lias'>/dev/null x=y" '[]'); expm caught "$d" 'alias' "alias written with a short \\u escape: refused"
+d=$(cfix al_18 '$"shopt" -s expand_$"aliases"\n$"alias" x=y' '[]'); expm caught "$d" 'alias' "locale-quoted shopt and alias: refused (seat A round 7)"
+d=$(cfix al_19 'set -o posix\nx=1' '[]'); expm caught "$d" 'set -o posix' "set -o posix (POSIX mode expands aliases): refused"
+d=$(cfix al_20 'set -o "$m"' '[]'); expm caught "$d" 'set' "set -o with a variable: refused"
+d=$(cfix al_21 'POSIXLY_CORRECT=1 true' '[]'); expm caught "$d" 'POSIXLY_CORRECT' "POSIXLY_CORRECT: refused"
+d=$(cfix al_22 'set -euo pipefail\nset +e -uo pipefail\nset -eo pipefail\nset -- $a\nset +e; x=1; set -e' '[]'); expm ok "$d" - "the set forms real scripts use are accepted"
+d=$(cfix al_23 'o=expand_; o+=aliases\n>/dev/null shopt -s "$o"' '[]'); expm caught "$d" 'shopt' "a redirection before shopt, the option built at run time: refused (seat B round 8)"
+d=$(cfix al_24 '2>/dev/null set -o posix\nx=1 </dev/null shopt -s "$o"' '[]'); expm caught "$d" 'harmless' "a redirection or assignment before set/shopt: refused"
+d=$(cfix al_25 'time -p set -o posix' '[]'); expm caught "$d" 'set -o posix' "time -p before set -o posix: refused"
+d=$(cfix al_26 'echo x | { cat; } ; trap "shopt -s $o" DEBUG' '[]'); expm caught "$d" 'shopt' "shopt inside a trap string: refused (the word is not a plain command)"
+d=$(cfix al_27 '>/dev/null shopt -s nullglob\nshopt -s nullglob' '[]'); expm ok "$d" - "a redirection before an allowed shopt use is accepted"
+# round 9 of the seats (433, both seats): a blank after a redirection operator, >|, <<<, +=, a quoted assignment value before `set -o posix` hid it from the prefix pattern; the count backstop refuses every set -o / shopt that is not a plain closed-list command
+d=$(cfix al_28 '> /dev/null set -o posix' '[]'); expm caught "$d" 'set -o' "a blank after the redirection operator before set -o posix: refused (backstop by count)"
+d=$(cfix al_29 'x+=1 set -o posix\n>| f set -o posix\n<<< x set -o posix' '[]'); expm caught "$d" 'set -o' "+=, >| and <<< prefixes before set -o posix: refused"
+d=$(cfix al_30 'x="a b" set -o posix' '[]'); expm caught "$d" 'set -o' "a quoted assignment value with a blank before set -o posix: refused"
+d=$(cfix al_31 'm=pos; m+=ix\n> /dev/null set -o "$m"' '[]'); expm caught "$d" 'set -o' "set -o handed a run-time option behind a spaced redirection: refused"
+d=$(cfix al_32 '# Only set -eo pipefail is set here' '[]'); expm caught "$d" 'set -o' "prose that says set -eo pipefail is refused too (fail-closed: reword the comment)"
+d=$(cfix al_34 '> /dev/null unalias -a\nBASH_ALIASES=()' '[]'); expm caught "$d" 'alias' "unalias and BASH_ALIASES behind a prefix: refused (whole-word search, no prefix gate)"
+# round 10 of the seats (433, both seats): `set -e -o posix` (a plain flag before a separate -o) behind an unparsed prefix hid from the count; the count is now every whole-word set followed by an option word, no option-shape to guess
+d=$(cfix al_35 '> /dev/null set -e -o posix' '[]'); expm caught "$d" 'set' "a plain flag before a separate -o posix behind a spaced redirection: refused"
+d=$(cfix al_36 'x="a b" set -e -o posix\nx+=1 set +e -o posix\n2> /dev/null set -eu -o posix' '[]'); expm caught "$d" 'set' "a flag before -o behind a quoted assignment, +=, a spaced fd redirection: refused"
+d=$(cfix al_37 '>| f set -u -o posix\n<<< x set -e -o posix\n> /dev/null set -e +o posix' '[]'); expm caught "$d" 'set' ">|, <<< and +o forms behind a prefix: refused"
+d=$(cfix al_38 '> /dev/null set -oposix\n> /dev/null set -x' '[]'); expm caught "$d" 'set' "any set with an option word behind an unparsed prefix is refused whatever its shape"
+d=$(cfix al_39 '# under `set -e`, a failure' '[]'); expm caught "$d" 'set' "prose naming set -e is refused too (reword the comment)"
+# design 4 (advisor ruling Oct 17, after rounds 9-11): any whole word set anywhere in a listed script is refused unless it follows a command delimiter and only closed-list arguments come before a terminator (an anchored whitelist, no shape to guess)
+d=$(cfix st_1 '> /dev/null set 2>/dev/null -o posix' '[]'); expm caught "$d" 'set 2>/dev/null -o posix' "round 11: a redirection between set and its option word: refused"
+d=$(cfix st_2 'x+=1 set >&2 -o posix\n> /dev/null set {fd}>/dev/null -o posix\n<<< x set 2>&1 -o posix\n>| f set >|g -o posix' '[]'); expm caught "$d" 'set' "round 11: prefixes with a redirection after set: refused"
+d=$(cfix st_3 'x=1 set -e -o pipefail' '[]'); expm caught "$d" 'set -e -o pipefail' "an assignment before even a harmless set is refused (the anchored form allows nothing before set but a delimiter)"
+d=$(cfix st_4 'echo a; set -e -o pipefail; echo b\nif x; then set +e; fi\n{ set -u; }\n( set -e )' '[]'); expm ok "$d" - "set after ; then { ( at line start with closed arguments: accepted"
+d=$(cfix st_5 'echo "FOO is not set"' '[]'); expm caught "$d" 'set' "prose or a message with the word set is refused (reword it)"
+d=$(cfix st_6 'set' '[]'); expm ok "$d" - "a bare set command (prints variables) is accepted"
+d=$(cfix st_7 'set -e -- -o posix\nset -- $a $b' '[]'); expm ok "$d" - "set -- and what follows is positional arguments: accepted"
+d=$(cfix st_8 'set -- a >/dev/null' '[]'); expm caught "$d" 'set' "a redirection after set -- is not in the closed form: refused"
+d=$(cfix st_9 'set -o posix' '[]'); expm caught "$d" 'set -o posix' "round 9: the plain POSIX-mode form: refused"
+d=$(cfix st_10 'set -e -o posix' '[]'); expm caught "$d" 'set -e -o posix' "round 10: a plain flag before a separate -o posix: refused"
+d=$(cfix st_11 'set -e   # keep going\nset +e -uo pipefail' '[]'); expm ok "$d" - "a trailing comment after the closed arguments is accepted"
+# round 12 (seat B), defence in depth: bash rejects a quoted or backslashed function name, but the judge also reads the quote-resolved view so the refusal does not depend on that
+d=$(cfix al_5 '# the product-and-alias-scoped decision' '[]'); expm ok "$d" - "the word alias inside a hyphenated word (as in a comment) is no alias command (a bare word alias is refused even in prose: fail-closed)"
+d=$(cfix ff_text '# the (connect)/sendto()/sendmsg() calls are traced' '[]'); expm ok "$d" - "a COMMENT that merely looks like a path with parentheses is no function definition (comments are not code)"
+d=$(cfix ff_text_str 'echo "see /sendto() here"' '[]'); expm ok "$d" - "a string holding an absolute-path word and () but no function body is no definition (bash would not accept it as one)"
+d=$(cfix ff_call 'f() { /usr/bin/mktemp -d x; }\n( f )' '["mktemp"]'); expm ok "$d" - "a call of a fixed-path tool inside a subshell is accepted"
+d=$(cfix ff_def4 'f() { /usr/bin/mktemp -d x; }\nf' '["mktemp"]'); expm ok "$d" - "an ordinary function that calls a fixed-path tool is accepted"
 d=$(cfix c_unl 'bash bin/unlisted.sh' '["bash"]'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script (bash bin/unlisted.sh) stays refused"
 d=$(cfix c_src 'source bin/unlisted.sh'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script (source form) stays refused"
 d=$(cfix c_arg_ext 'echo bin/unlisted.sh'); expm caught "$d" 'unlisted.sh' "argument naming an unlisted script by extension stays refused"
@@ -3643,7 +3876,7 @@ alias d=declare
 d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an alias: builtin and value on different lines'
 dc dc_zf $'d -a a=\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'escaped compound value with no builtin word on the line'
 dc dc_zg $'for v in \'a=(1 2)\' \'b=(3)\'; do declare -a "$v"; done
-alias ll=\'ls -l\'\n' ok - 'control: quoted compound values with no opener, an alias with no compound value'
+ll=\'ls -l\'\n' ok - 'control: quoted compound values with no opener, a plain assignment with no compound value (was an alias; aliases are refused here, cache#433)'
 dc dc_zh $'for v in "a=("\'$(/usr/bin/touch mk)\'")"; do declare -a "$v"; done\n' caught 'compound assignment' 'the opener split across two quote segments, the builtin after the value'
 dc dc_zi $'f(){ declare -a "$1"; }
 f "a=("\'$(/usr/bin/touch mk)\'")"\n' caught 'compound assignment' 'split segments, function wrapper'
@@ -3674,7 +3907,7 @@ dc dc_zw $'for v in \'a=\'${@}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; 
 dc dc_zx $'for v in \'a=\'${HOME:0:0}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an always-empty ${HOME:0:0} between = and ('
 dc dc_zy $'alias d=declare
 d -a a=$e
-x=${e}\'plain\'\n' ok - 'control: an expansion after =, no ( and no opener'
+x=${e}\'plain\'\n' caught 'shell aliases' 'an expansion after =, no ( and no opener: refused for the alias that sets it up (aliases are refused here, cache#433)'
 dc dc_zz $'for v in a=; do declare -a "$v"\'(x $(/usr/bin/touch mk))\'; done\n' caught 'compound assignment' 'the NAME= part in a variable, the quoted value literal on the same line'
 dc dc_zza $'n=a=
 declare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the NAME= part in a variable on an earlier line'
@@ -3912,7 +4145,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1777
+EXPECT=1947
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

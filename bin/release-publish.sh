@@ -6,7 +6,7 @@
 # REQ-REL-009-AC11 (:X.Y every time, :X and :latest only when this is the highest released version).
 set -euo pipefail
 for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN; do
-  if [ -z "${!name:-}" ]; then echo "release-publish: $name is not set" >&2; exit 2; fi
+  if [ -z "${!name:-}" ]; then echo "release-publish: $name is unset" >&2; exit 2; fi
 done
 [[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "release-publish: tag refused: ${GITHUB_REF_NAME:-} is not vX.Y.Z (a release candidate never reaches this step)" >&2; exit 1; }
 ver="${GITHUB_REF_NAME#v}"

@@ -8,8 +8,8 @@
 # Run it from the repository root: it names its helpers (bin/apk-tool.py, bin/go-module-sbom.py, bin/net-probe.py,
 # bin/build-apk-helper.py) by literal repo-relative paths and refuses (exit 2) anywhere else.
 #
-# Environment: SOURCE_DATE_EPOCH (digits) is required. Refused: APK_RELEASE_SIGNING_KEY set (a build never holds the release
-# key), GOPROXY other than off, HTTP(S)_PROXY / ALL_PROXY set. There is no --signing-key: the apk is signed with the committed,
+# Environment: SOURCE_DATE_EPOCH (digits) is required. Refused: APK_RELEASE_SIGNING_KEY defined (a build never holds the release
+# key), GOPROXY other than off, HTTP(S)_PROXY / ALL_PROXY defined. There is no --signing-key: the apk is signed with the committed,
 # non-secret assembly key build/keys/assembly.rsa (rule 22) and nothing else.
 #
 # What it does, in this order (the tests fix the order):
@@ -94,12 +94,12 @@ case $um in x86_64|amd64) host=x86_64;; aarch64|arm64) host=aarch64;; *) host=$u
 [[ $version =~ ^(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-rc[1-9][0-9]*)?$ || $version == 0.0.0-rc.1 ]] || die "--version must be X.Y.Z, X.Y.Z-rcN or the snapshot version 0.0.0-rc.1 (numbers without leading zeros; not '$version')"
 apkver=${version/-rc./_rc}; apkver=${apkver/-rc/_rc}   # the apk version syntax for a pre-release: 0.3.0-rc1 -> 0.3.0_rc1, 0.0.0-rc.1 -> 0.0.0_rc1; the Go stamp says v$version
 
-[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must be set to digits (the commit time, at most 12 digits)"
+[[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must hold digits (the commit time, at most 12 digits)"
 build_date=$("$PY3" -I -B bin/build-apk-helper.py build-date "$SOURCE_DATE_EPOCH" 2>/dev/null) || die "SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date"
-[ -z "${APK_RELEASE_SIGNING_KEY:-}" ] || die "the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is set)"
+[ -z "${APK_RELEASE_SIGNING_KEY:-}" ] || die "the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is defined)"
 if [ -n "${GOPROXY+x}" ] && [ "${GOPROXY}" != off ]; then die "GOPROXY must be off or unset (its value is not printed: it can carry a credential)"; fi
 for p in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
-  [ -z "${!p:-}" ] || die "a proxy is set in the environment ($p); the sealed build has no network"
+  [ -z "${!p:-}" ] || die "a proxy is defined in the environment ($p); the sealed build has no network"
 done
 [ "$repo_set" = 1 ] || die "--repo DIR (the local package repository melange installs the build tools from) is required; a cache alone is not an input"
 case $repo in *://*) die "--repo must be a local directory, not an address ($repo)";; esac
