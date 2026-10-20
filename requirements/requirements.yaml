@@ -1591,6 +1591,12 @@ requirements:
         then: "when every label is ubuntu-24.04 or ubuntu-24.04-arm the check reports no finding for the runner and judges the job's steps under bash, the default shell of those runners, each step by its own rules (an unpinned action, container, service or image, a pwsh shell and a piped download each keep their own finding, and none of them is a runner finding); for every other form it reports one finding that names the runner and never picks a shell silently (when the labels are safely known to be those two, the steps are still judged under bash beside the runner finding; any other label keeps pwsh), except that a file holding any YAML anchor or alias is refused as a whole with that one finding; the refused forms are listed in the notes of this requirement"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-REL-005-AC3
+        given: "a workflow job (or composite action) with a step that runs a script committed in the repository, and a step of the same job that runs curl, wget or aria2c in any form (also inside sh -c, eval, a command substitution or behind a wrapper such as env, sudo or xargs)"
+        when: "the action-pin check reads the workflow"
+        then: "the check reports a finding that names the step and the command unless that command is demonstrably writing only to standard output or /dev/null: a closed list of read-only options (the destination of a download is never read from its options), no output redirection except to /dev/null, no bare variable where an option may stand, no word the parser cannot read, and for wget an output of - ; anything else, aria2c always, and any unreadable form is a finding; an exclusion is one exact workflow, job, step index and sha256 of the step's run text with its reason in the check, and a copy of an excluded step elsewhere or an edit of it is a finding again (advisor reading Oct 16, under the owner's fail-closed rule and his Oct 3 pin-checker scope; it only tightens the check)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
 
   - id: REQ-REL-006
     title: Frozen release baselines stay fixed
@@ -2577,7 +2583,7 @@ requirements:
       - id: REQ-SUP-001-AC16
         given: "a pull request that adds a line the pin-age check cannot measure (a download whose repository, version or file cannot be read), and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text whose file, form, command hash (key) and whole-line hash (line) equal the added item and whose ruling is non-empty"
         when: "pin-age runs"
-        then: "that item is reported as ruled text and does not fail the check when the head holds that line no more times than the row's count (1 unless the row says more, at most 100) (accepted by the advisor Oct 10 step 5); and an added item with no such row, a row whose hash does not match (the line was edited), an edited line (any change other than spaces or tabs, including one that keeps its download command), a line holding whitespace other than a space or a tab or joined from a backslash-newline continuation, more occurrences than the row's count, a row with an empty ruling, a malformed list, or a row brought by the pull request itself (not present on the base branch) fails as before"
+        then: "that item is reported as ruled text and does not fail the check when the head holds that line no more times than the row's count (1 unless the row says more, at most 100) (accepted by the advisor Oct 10 step 5); and an added item with no such row, a row whose hash does not match (the line was edited), an edited line (any change other than spaces or tabs, including one that keeps its download command), a line holding whitespace other than a space or a tab or joined from a backslash-newline continuation, more occurrences than the row's count, a row with an empty ruling, a malformed list, or a row brought by the pull request itself (not present on the base branch) fails as before; a ruling row may carry an optional context and proof, which the check proves from the head file; a row whose proof fails rules nothing (advisor ruling Oct 16, wording that only tightens)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC18
@@ -2602,6 +2608,70 @@ requirements:
         given: "a pull request that adds or changes a checksum or version record file (an item whose identity is the file's content) at a path that .github/policy/base-inputs.json, as the base branch holds it, lists in base_inputs"
         when: "the age check runs"
         then: "that file is no item and no finding (it is the repository's own base record: its content change is the release chain's base-input-changed signal, and the list is itself a reviewed file); a file at any other path, a path spelled differently from the list (a ./ prefix, a .. inside), and every item that is not a file item stay as before; a list the pull request brings never counts (the base branch's copy is read), a missing list exempts nothing and a malformed one stops the check (decided by the orchestrator Oct 14, the plainest closed form: no pattern on names or directories)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC22
+        given: "the committed .github/policy/base-inputs.json, and a pull request (the daily refresh pull request) that changes build/locks/archive-index.sha256, the record of the digests of the Wolfi-signed package index that every refresh run checks against the archived index"
+        when: "the age check runs"
+        then: "the list names build/locks/archive-index.sha256 exactly (rules 61 and 62: the archive records are base inputs) and, by AC21, that record is no item and no finding: it records Wolfi's own index and cannot be seven days old, and the owner's Oct 9 rule 48 allows no seven-day hold on Wolfi; the same name at any other path, a name with a suffix, and every installer checksum file stay items (advisor reading Oct 16 under the owner's Oct 13 latitude)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC23
+        given: "a pull request that adds a script line that is exactly one curl (with -q first, only fixed flags with plain values, and -g) whose single operand is https://go.dev/dl/ followed by one variable and nothing else, and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins \"pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): \""
+        when: "pin-age runs"
+        then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); a row for any file that is not a shell script outside .github/ (a workflow step, another file type) rules nothing; a line of another shape under that ruling (the spellings --disable and --globoff in place of -q and -g, a single-quoted operand, an output value with a default or command expansion, another host, a lookalike host, userinfo, a port, http, another path, a literal file name, two variables, a variable host, a second operand, a pipe, a proxy or resolve option, no -g, no leading -q) rules nothing; a Go-toolchain line under the Wolfi live-fetch ruling, and a Wolfi line under the Go-toolchain ruling, rule nothing; the Wolfi ruling's own shapes are unchanged (advisor reading Oct 16 under the owner's Oct 13 latitude: owner rule 12 keeps the Go toolchain in the archive, the refresh job verifies each tarball against the sha256 its committed recipe pins before storing it)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC25
+        given: "a pull request that adds the line of bin/loopback-get.sh that starts the fetch program for the loopback helper (REQ-SUP-001-AC24), exactly the line whose whole text hashes to the value the checker pins, and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins \"loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): \""
+        when: "pin-age runs"
+        then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line in the helper (one character), and that ruling prefix on any other line (of the helper or of another file) rules nothing, so the one line that fetches for a loopback or token request is the only line this ruling allows"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC26
+        given: "(advisor reading, Oct 17) a pull request that adds one of the nineteen script lines the checker pins by file and by the sha256 of the whole line: the line of bin/release-assets.sh that downloads the assets of our own release (verified against our signature, failing closed); the line of bin/acceptance-k8s.sh that pulls and tags the client image pinned by digest (the word curl is the image name, not a download); and the fourteen request lines to the cache under test on localhost in bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh and bin/acceptance-maven-capped.sh (they fetch no software); and the three fetches of the Go toolchain tarball or of go.dev's published checksum list in bin/install-scanner.sh and bin/go-bump-open-pr.sh (each in the shape the Go ruling of AC23 accepts, the tarball checked against its pinned sum or go.dev's list before use); and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins \"pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): \""
+        when: "pin-age runs"
+        then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line (one character, a tab for a space, a carriage return), a second copy of it that differs only in whitespace, a link named like the file, and that ruling prefix on any other line (of the same file or another) rules nothing, so the nineteen lines are the only lines this ruling allows. A new script that names the vendored folder is refused unless its exact path is listed in the checker; six paths that name it legitimately (the govulncheck vendor-mode tests and checks) are listed, and a seventh file still fails"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+  - id: REQ-UAT-001
+    title: Persona UAT
+    statement: >
+      Five agents, each playing a different customer and reading only our public documents, shall exercise every release candidate and the latest release every week, the way a real acceptance test would.
+    source: [bin/persona-uat.py, bin/persona-uat-agent.py, .github/workflows/release.yml, .github/workflows/go-freshness.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: persona UAT (owner, Oct 3 2026, ops/docs/ratify/2026-10-02-owner-load.md point 9; criteria ratified Oct 4 2026)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-UAT-001-AC1
+        given: a release candidate tag v*-rc.*
+        when: its release run promotes
+        then: "five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC2
+        given: the weekly maintenance run
+        when: it runs
+        then: "the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC3
+        given: a persona finding that is friction (not broken behavior or a failing doc step)
+        when: the run ends
+        then: "it is recorded in the persona's encrypted report as information and blocks nothing; no public issue is opened for a persona result"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC4
+        given: a persona run
+        when: it needs Jenkins, a GitLab runner or Kubernetes
+        then: "each runs as a digest-pinned container inside the job and nothing is provisioned in a cloud"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-UAT-001-AC5
+        given: a persona agent
+        when: it runs
+        then: "it is told to use only the public docs and the endpoint and its sandbox holds only the public docs; any other host its commands contact is flagged in its encrypted report and nothing blocks the network beyond the existing fences; its model and token budget come from environment variables the owner sets; its report and transcript are kept only as one encrypted artifact that only FosterStack can read (openssl CMS to a recipient certificate committed in the repository), never as plaintext"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
   - id: REQ-REPO-001
@@ -3343,6 +3413,24 @@ requirements:
         then: "it lists the refresh job as a consumer of the auditor App's credential, requires the jobs of go-freshness.yml to be exactly check, mutation and refresh, requires every action reference in the refresh job to be a commit digest with a tag comment, and fails on a copy that changes any of AC24 to AC30's properties"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-REFRESH-001-AC32
+        given: "an archive that holds nothing but keys/wolfi-signing.rsa.pub and a repository whose main has no build/archive.json (the first fill), and a package version that the committed production lock, the committed FIPS lock or the committed build/locks/melange.lock names and the live resolution no longer does"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it also fetches that version if Wolfi still serves it and archives it only after verifying it: a version named by a committed production or FIPS lock against that lock's checksums, exactly as any package; a version named only by the committed melange.lock (name=version, no checksums) against the checksum listed for the same name, version and architecture in the live package index, after that index's signature was verified against the archived key, and against the integrity floor of a whole package; a version that is not served, has no entry in the live index, or whose checksum differs stops the job (exit 1, naming the package) with nothing written; with an archive that holds anything else, or with a build/archive.json in the repository, no such version is ever fetched and a missing one stops the job as AC17 says (rules 27, 44; advisor reading Oct 16 under the owner's Oct 13 latitude: the only state in which the committed versions can never already be in the archive)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC33
+        given: "the Go tarballs that the committed recipes build/melange.yaml and build/melange-fips.yaml pin (a fetch step whose uri is https://go.dev/dl/<go file> with an expected-sha256), and the archive"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "a pinned tarball the archive lacks (under go/) is fetched from go.dev, and stored only after its sha256 equals the pin, and the pull request that moves build/archive.json is opened even when no other file changed; a tarball that is already archived must equal its pin (otherwise the job stops, exit 1, naming the file and saying to delete it) and is not fetched again; an older tarball that no recipe pins any more is kept untouched; a fetch that is not served, a sha256 that differs, a pin that is missing or not 64 lower-case hex, the two recipes pinning one file with two different sha256 values, a recipe fetch whose uri is not https://go.dev/dl/ followed by a Go file name, and a go entry of the archive that is a symlink or not a directory stop the job (exit 1 or 2) with nothing stored; while an earlier refresh pull request is open a missing tarball waits like a missing package; the stages never fetch from go.dev (owner rule 12: Go is kept in the archive; advisor reading Oct 16 under the owner's Oct 13 latitude, release review R1)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC34
+        given: "a refresh or FIPS-module pull request that bin/refresh-inputs.sh opens, and a main whose ruleset requires signed commits"
+        when: "the pull request is opened (open_pr, directly or from a plan)"
+        then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the changed files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token) with exactly the working tree's bytes for the planned paths, and the API is asked whether that commit is verified; only then is the pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; nothing is committed or pushed to main, and no git commit is made (rule: main requires signed commits; advisor reading Oct 17 after cache#404 and cache#422 were found unmergeable with an unsigned job commit)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-ARCHIVE-001
     title: The archive is pushed, pulled and checked by digest, with no way around the pointer
     statement: >
@@ -3494,44 +3582,4 @@ requirements:
         when: "it runs"
         then: "every tool it names (python3, sudo, unshare, apko, sha256sum, openssl, git) is called by a fixed absolute path held in a variable, every python3 call is python3 -I -B, it reads no caller variable beyond a closed list it names, and it has no test hook: the production file is the file the tests run (rule 1). STATED RESIDUAL: the starting environment and the coreutils search path are the invoking stage's (same text as REQ-BUILDAPK-001-AC3)"
         verification: { method: unit, release_blocking: false }
-        status: approved
-  - id: REQ-UAT-001
-    title: Persona UAT
-    statement: >
-      Five agents, each playing a different customer and reading only our public documents, shall exercise every release candidate and the latest release every week, the way a real acceptance test would.
-    source: [bin/persona-uat.py, bin/persona-uat-agent.py, .github/workflows/release.yml, .github/workflows/go-freshness.yml]
-    tier: community
-    introduced: v0.3.0
-    origin: persona UAT (owner, Oct 3 2026, ops/docs/ratify/2026-10-02-owner-load.md point 9; criteria ratified Oct 4 2026)
-    confidence: implementation-only
-    acceptance_criteria:
-      - id: REQ-UAT-001-AC1
-        given: a release candidate tag v*-rc.*
-        when: its release run promotes
-        then: "five persona agents (a Gradle platform engineer setting up for the first time, a Maven CI user on Jenkins, a compliance reviewer verifying signatures, SBOMs and VEX per our guide, an evaluator with only the README and ten minutes, and an on-call engineer upgrading, rolling back and reading logs during an incident) exercise the release candidate image by digest, each told to use only the public docs and the endpoint, each writes one UAT report, and any broken behavior or doc step that fails as written fails the release candidate run; the only public trace of a persona run is a pass or fail line per persona and overall"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-UAT-001-AC2
-        given: the weekly maintenance run
-        when: it runs
-        then: "the same five personas exercise the latest release, and a blocking finding fails the run (the only public trace is the pass or fail line; the finding itself is in the encrypted report)"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-UAT-001-AC3
-        given: a persona finding that is friction (not broken behavior or a failing doc step)
-        when: the run ends
-        then: "it is recorded in the persona's encrypted report as information and blocks nothing; no public issue is opened for a persona result"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-UAT-001-AC4
-        given: a persona run
-        when: it needs Jenkins, a GitLab runner or Kubernetes
-        then: "each runs as a digest-pinned container inside the job and nothing is provisioned in a cloud"
-        verification: { method: ci-workflow, release_blocking: false }
-        status: approved
-      - id: REQ-UAT-001-AC5
-        given: a persona agent
-        when: it runs
-        then: "it is told to use only the public docs and the endpoint and its sandbox holds only the public docs; any other host its commands contact is flagged in its encrypted report and nothing blocks the network beyond the existing fences; its model and token budget come from environment variables the owner sets; its report and transcript are kept only as one encrypted artifact that only FosterStack can read (openssl CMS to a recipient certificate committed in the repository), never as plaintext"
-        verification: { method: ci-workflow, release_blocking: false }
         status: approved
