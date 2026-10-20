@@ -4006,6 +4006,9 @@ begin "panel-14-seen-by-n-of-m-is-shown-per-image" "a finding seen by 3 of 4 sca
 o="$WORK/pm-multi-run"
 { row="$(grep '^- CVE-2099-6666 ' "$o/report.md" | head -1)"; printf '%s' "$row" | grep -q 'production-amd64 3 of 4' && printf '%s' "$row" | grep -q 'production-arm64 2 of 3'; } \
   && ok || no "row for CVE-2099-6666 shows production-amd64 3 of 4 and production-arm64 2 of 3" "$(grep 'CVE-2099-6666' "$o/report.md" | head -3 | cut -c1-300)"
+begin "panel-16-a-scanner-that-reported-without-a-severity-is-shown-as-not-rated" "scout saw CVE-2099-6666 but gave no severity: the row lists it as 'scout not rated' beside the severities the others gave (never dropped, never guessed)"
+{ row="$(grep '^- CVE-2099-6666 ' "$o/report.md" | head -1)"; printf '%s' "$row" | grep -q 'scout not rated'; } \
+  && ok || no "row for CVE-2099-6666 lists scout as not rated" "$(grep '^- CVE-2099-6666 ' "$o/report.md" | head -1 | cut -c1-300)"
 
 begin "panel-15-completion-comes-from-the-verdict-not-from-the-manifests-copies" "a manifest whose panel summary says 'nothing uncounted, no failures' but whose verdict is missing, or whose verdict says an image is uncounted, is still AUDIT INCOMPLETE: the run derives completion from the validated verdict itself"
 "$PY" - "$WORK" <<'PYEOF'

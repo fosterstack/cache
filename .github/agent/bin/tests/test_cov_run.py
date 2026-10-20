@@ -232,7 +232,8 @@ class PureHelpers(Base):
         got = R._sev_by_scanner([{"scanner": "grype", "severity": "low"}, {"scanner": "grype", "severity": "high"},
                                  {"scanner": "grype", "severity": "medium"}, {"scanner": "scout"}, {"scanner": "inspector", "severity": "Critical"},
                                  {"severity": "high"}, {"scanner": "google", "severity": "weird"}, {"scanner": "google", "severity": "low"}])
-        self.assertEqual(got, {"grype": "high", "inspector": "Critical", "google": "low"})
+        # a scanner that reported the finding without a severity is shown as not rated (never guessed, never dropped)
+        self.assertEqual(got, {"grype": "high", "inspector": "Critical", "google": "low", "scout": "not rated"})
 
     def test_narrative_ok(self):
         secs = {n: [] for n in range(1, 8)}
