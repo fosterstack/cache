@@ -87,6 +87,20 @@
           "line_sha256": "83dd54d8aac5c9cb81466223c5feaba8cda23eca2159b1a1d9d33dbe128e5954",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "# `go` installs the Go toolchain of the working directory's go.mod (its `toolchain` line, else its `go` line) into <dest-dir>/fscache-go, only when that",
+          "line_sha256": "6fbea121da71ce10baf7ea5af490c354573202f0755c705b1d56917e7a6b7657",
+          "count": 1,
+          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
+        },
+        {
+          "rule": "deny",
+          "line": "# v0.12.0, equal to the release's witness_0.12.0_checksums.txt; both tarballs were also checked on Oct 9 2026 with `cosign verify-blob --bundle` against",
+          "line_sha256": "c10e45dfac752d951570ad93fd299c5558cec40e4d38c12ea8de4977d8cc4eb7",
+          "count": 1,
+          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         }
       ]
     },
@@ -127,6 +141,34 @@
           "line_sha256": "209618ccf96aa307aaace1fb2b3f39632eaf8b7f95ff38cb63073ca8f91bc73f",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  printf '%s.%s.\\n' \"$(printf '%s' \"$tok\" | cut -d. -f1)\" \"$(printf '%s' \"$tok\" | cut -d. -f2)\"",
+          "line_sha256": "6ee73f3b6fd9db4457a9da71901f3eb90d290d8c49683f6e10c5a8692673798a",
+          "count": 1,
+          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
+        },
+        {
+          "rule": "deny",
+          "line": "  jq -n --arg pt \"$pt\" --arg payload \"$(base64 < \"$1\" | tr -d '\\n')\" --arg sig \"$(jq -r '.messageSignature.signature' hostile-work/forged.bundle.json)\" \\",
+          "line_sha256": "a56d256000295c1ddacdf51c37a83398f80b006007366ddc10c6ebae719bfe35",
+          "count": 1,
+          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
+        },
+        {
+          "rule": "deny",
+          "line": "    echo \"searched: $(grep -rIl '' \"${roots[@]}\" 2> /dev/null | wc -l | tr -d ' ') files\"",
+          "line_sha256": "d2cca5b3b4c50877d07c7fdbd80d8dcfdfdf576e222faa9ff4586af9fd7b49c7",
+          "count": 1,
+          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
+        },
+        {
+          "rule": "deny",
+          "line": "      printf 'pubkey-sha256: %s\\n' \"$(openssl pkey -in \"$f\" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)\"",
+          "line_sha256": "93d8816bf74e4d05ea714f5bcf2eda7b3c093f362d887f3d6839b1efe06da25b",
+          "count": 1,
+          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         }
       ]
     },
@@ -463,6 +505,13 @@
           "line_sha256": "1ed2b83b3887b47aacc9fb8883ed15f01199b91a1bb010273e29cb4065618d1f",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "if git tag --points-at HEAD | grep -qvx 'v0.0.0-rc.1'; then \\",
+          "line_sha256": "48f4815566ad32ae1564891a93e9c7c9a6b4962acf4e3363f5902b0dc3059c96",
+          "count": 1,
+          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         }
       ]
     },
@@ -505,6 +554,13 @@
           "line_sha256": "1ed2b83b3887b47aacc9fb8883ed15f01199b91a1bb010273e29cb4065618d1f",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "if git tag --points-at HEAD | grep -qvx 'v0.0.0-rc.1'; then \\",
+          "line_sha256": "48f4815566ad32ae1564891a93e9c7c9a6b4962acf4e3363f5902b0dc3059c96",
+          "count": 1,
+          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         }
       ]
     },
@@ -544,7 +600,16 @@
       "runs": [],
       "signs": false,
       "reason": "Build and Rebuild guard (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7): runs only when mode is neither release nor snapshot and refuses",
-      "sha256": "8c9b851b6b5819cb72d4182cd83c3596d6e50455ca0f13a3dc44c722b79fa0fe"
+      "sha256": "8c9b851b6b5819cb72d4182cd83c3596d6e50455ca0f13a3dc44c722b79fa0fe",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "# The guard of stage-build.yml and stage-reproducibility.yml (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7). The step passes the stage's `mode` input as the one",
+          "line_sha256": "10fcb1efb275cc05e239e082d224ff02eb6d7a8034c93ab95ef0438cc7af0a2e",
+          "count": 1,
+          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
+        }
+      ]
     },
     {
       "path": "bin/check-stage.sh",
@@ -691,6 +756,20 @@
           "line_sha256": "99605e4749c17588361408279d11f42de45e6a04308f759148ab4efc15f19005",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) or an assignment on this line holds arithmetic $(( ... )) next to a bracket: it is arithmetic, not a subscript (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 452, every waived line is real arithmetic)"
+        },
+        {
+          "rule": "deny",
+          "line": "  case \"${f,,}\" in *darwin*|*windows*) fail \"a darwin or windows file exists in $archives ($(basename \"$f\")): REQ-PLAT-001 ships Linux only\" ;; esac",
+          "line_sha256": "c48e01c93cc8d1767c5710b51b6a5db9ac6ce9a1befb18a655904b162574154a",
+          "count": 1,
+          "why": "a comment, echo or case line holding ( ... ${ } as plain text: it is a message or a pattern, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment, message or case-pattern text)"
+        },
+        {
+          "rule": "deny",
+          "line": "# The clock is the runner's (round 1 F4): the age of a database is judged against `date +%s` and nothing the environment says. A CHECK_SCAN_NOW in the",
+          "line_sha256": "c2c68d7511b568f281169eee90b4d3f3dac9d632cdbf6a1e654a7e5aa649fc39",
+          "count": 1,
+          "why": "a comment, echo or case line holding ( ... ${ } as plain text: it is a message or a pattern, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment, message or case-pattern text)"
         }
       ]
     },
@@ -776,6 +855,13 @@
           "rule": "script-name",
           "text": "bash -o pipefail -c \"$run\" < /dev/null",
           "why": "runs one customer-guide command that the planner judged runnable (verify forms and jq only, local operands; REQ-CHAIN-006-AC7)"
+        },
+        {
+          "rule": "deny",
+          "line": "    outcome=fail; failed=1; echo \"check-guide: the guide command \\`$cmd\\` exited $rc against the candidate\" >&2",
+          "line_sha256": "d943e1ad4c2e339cf31e89bf49589f36115c3697cd02e90d829ced001ea2716b",
+          "count": 1,
+          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
         }
       ]
     },
@@ -873,6 +959,13 @@
           "line_sha256": "c5101468905622092a74d832f9058f8d0621f3ccebc110eac94659bbae35d512",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test); the message text had an em dash, replaced by a hyphen because a waived line must be printable ASCII"
+        },
+        {
+          "rule": "deny",
+          "line": "echo \"warm: hits=${hits:-0} (>= ${expected} required); PUTs cold=${cold_puts:-0} warm-cumulative=${warm_puts:-0} (must be equal)\"",
+          "line_sha256": "f0a691242ee5497321adcb42c2fb2aac1bad702f59560887c2a3d3a3ce032e87",
+          "count": 1,
+          "why": "an echo, die message or fixture line holding = ... ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is message or fixture text)"
         }
       ]
     },
@@ -986,6 +1079,20 @@
           "line_sha256": "589135d0238723b23ca8b4372ee422098dc0d8d6043e1d322d0d4214005e66e2",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "echo \"capped server (after cold build): 201s=${put201:-0} 413s=${put413:-0}\"",
+          "line_sha256": "1423219fd96a5e807a7d7568bf133e744326e535bf98ff8e1f080f10e5299229",
+          "count": 1,
+          "why": "a comment, echo or case line holding ( ... ${ } as plain text: it is a message or a pattern, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment, message or case-pattern text)"
+        },
+        {
+          "rule": "deny",
+          "line": "      printf '  public static final String D%d = \"%s\";\\n' \"$i\" \\",
+          "line_sha256": "b21129bbb259ba45b7d6c912701aca2ac7d5aa604fb784b9710fc6775bc4cc0e",
+          "count": 1,
+          "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         }
       ]
     },
@@ -2301,6 +2408,27 @@
           "line_sha256": "1799c368e5b9c477815386e822e4ae22b73ea7c84eada82e0bf8d2d7a8da5f7e",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  die \"'go version -m' failed on the packaged binary (exit $gorc: $(head -c 120 \"$tmp/go.err\")); the build information cannot be checked, refusing\" 1",
+          "line_sha256": "0d0aa5e2b4383c02065ae36c3e1ff8c0a456d914293fc5100d8d9758a2f5e3cc",
+          "count": 1,
+          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
+        },
+        {
+          "rule": "deny",
+          "line": "absf() { echo \"$(cd \"$(dirname \"$1\")\" && pwd)/$(basename \"$1\")\"; }",
+          "line_sha256": "f5144a4063a0c46633e122e764e55a531430a1e1ed79a6b8738cb5066d148e43",
+          "count": 1,
+          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
+        },
+        {
+          "rule": "deny",
+          "line": "margs=(build \"$(basename \"$rendered\")\" --arch \"$arch\" --runner bubblewrap --signing-key \"$assembly_key\"",
+          "line_sha256": "15c3ae00acf6befcf023f19ef023d50948fc792321de98309406cfb4e3df4039",
+          "count": 1,
+          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
         }
       ],
       "env_mentions": [
@@ -2422,6 +2550,20 @@
           "line_sha256": "779670e5e44ae8b34f41f66ced484aae2da92aea2c8fe239d4294464008d4ea2",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "    die \"$workdir/$l already exists ($( [ -L \"$workdir/$l\" ] && echo 'a symlink, left by another run or a crashed one' || echo 'not a symlink'))); refusing to replace it: remove it by hand if no other assembly is running\"",
+          "line_sha256": "87c531f76add6e2f45056b512f7fe7d14144b2eb92863b3011047cc16adc1f06",
+          "count": 1,
+          "why": "a comment, echo or die message line holding ( ... ${ } as plain text: it is a message, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is comment or message text)"
+        },
+        {
+          "rule": "deny",
+          "line": "absf() { (cd -P -- \"$(dirname -- \"$1\")\" 2>/dev/null && echo \"$PWD/$(basename -- \"$1\")\") || echo \"$1\"; }",
+          "line_sha256": "d36fd36b614222f9accbe1d516a44a5adebefacc40e6a587ac5636354f9343b2",
+          "count": 1,
+          "why": "a line with a nested substitution and a subshell ( ... ) around another substitution, or a message: ordinary shell code, not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454, every waived line is nested-substitution code or message text)"
         }
       ]
     },
