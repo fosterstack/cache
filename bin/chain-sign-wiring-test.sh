@@ -2702,6 +2702,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
+FX_PIN='40b0b07554a64bd2ef2d802beb250f4dbf7be9640a3e6b9666c1ed6441332232'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -2709,7 +2710,7 @@ run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   done < "$1"
 }
 cat > "$work/fx-guard.py" <<'PY'
-import re, sys
+import hashlib, re, sys
 fx, me = sys.argv[1:3]
 rows = open(fx).read().split("\n")
 assert rows[-1] == "", "the data file ends with a newline"
@@ -2722,6 +2723,14 @@ for n, r in enumerate(rows, 1):
     assert re.fullmatch(r"[a-z][a-z0-9_]*", f[0]) and f[0] not in names, "line %d: name %r" % (n, f[0]); names.add(f[0])
     assert f[3] in ("ok", "caught"), "line %d: verdict %r" % (n, f[3])
     assert f[1] and f[2] and f[4] and f[5], "line %d: an empty field" % n
+# THE PIN (first line of defence, round 14): this whole test, less its one pin line, must hash to the pin. Any edit of the file (a new line, a second definition, an indirect or joined spelling of the
+# data-file name) fails here until the pin is updated in a reviewed PR; the scan below is only the second line, for the fx mutation cases that skip the pin ("nopin").
+if "nopin" not in sys.argv[3:]:
+    tl = open(me).read().split("\n")
+    pins = [l for l in tl if re.fullmatch(r"FX_PIN='[0-9a-f]{64}'", l)]
+    assert len(pins) == 1, "the test has %d pin lines, not 1" % len(pins)
+    got = hashlib.sha256("\n".join(l for l in tl if l != pins[0]).encode()).hexdigest()
+    assert got == pins[0][8:-1], "this test differs from its pin; if the edit is reviewed, set FX_PIN='%s'" % got
 # DEFAULT DENY: a line of this test that names the data file (the variable FX or its file name), anywhere but inside this heredoc, must be one of the exact whole lines below, and
 # run_fixtures must be exactly the function below; a comment, a trailing comment, a second command or a different redirect is not on the list, so it fails
 WORD = re.compile(r'(?<![A-Za-z0-9_])FX(?![A-Za-z0-9_])|fixtures\.txt')
@@ -3989,7 +3998,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1857
+EXPECT=1862
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
