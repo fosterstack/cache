@@ -6,7 +6,7 @@ No normalization, no string surgery: a DEBIAN-CVE id is matched to a CVE only
 through OSV's own aliases, never by editing the string. A malformed report raises
 ParseError rather than guessing. (Round-2 design rule: code does only what is exact.)
 """
-import json
+import json, re
 
 
 class ParseError(ValueError):
@@ -86,6 +86,20 @@ def panel_expected(scanner, image):
     return image in _panel_module().EXPECTED.get(scanner, [])
 
 
+_TOP_KEYS = frozenset(("images", "not_counted", "scanner_failures", "findings", "unique", "vex_covered", "issue", "exit"))
+_IMAGE_KEYS = frozenset(("counts", "did_not_run", "ran", "counts_for_day"))
+_FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of", "unique", "status", "purls"))
+_VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
+_TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")            # no control characters, no backtick (the issue text quotes with it)
+_ID = re.compile(r"[A-Za-z0-9?][A-Za-z0-9._:+-]*")          # CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result
+_PURL = re.compile(r"pkg:[a-z][a-z0-9.+-]*/[^\s]+")
+
+
+def _closed(obj, keys, what):
+    if not isinstance(obj, dict) or set(obj) != keys:
+        raise ParseError("panel verdict: %s has missing or unknown keys" % what)
+
+
 def _is_int(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
@@ -114,11 +128,13 @@ def _validate_panel_verdict(d):
     pm = _panel_module()
     if not isinstance(d, dict) or not isinstance(d.get("images"), dict) or not isinstance(d.get("findings"), list):
         raise ParseError("panel verdict: no images object or findings array")
+    _closed(d, _TOP_KEYS, "the verdict")            # default deny: every level lists its keys, an unknown one is refused
     if set(d["images"]) != panel_images():
         raise ParseError("panel verdict: the image set is not the panel's fixed set")
     for img, st in d["images"].items():
         if not isinstance(st, dict):
             raise ParseError("panel verdict: image %r is not an object" % img)
+        _closed(st, _IMAGE_KEYS, "image %s" % img)
         ran, dnr, counts = st.get("ran"), st.get("did_not_run"), st.get("counts")
         if not (isinstance(ran, list) and isinstance(dnr, list) and isinstance(counts, dict)):
             raise ParseError("panel verdict: image %r has no ran/did_not_run/counts" % img)
@@ -139,6 +155,10 @@ def _validate_panel_verdict(d):
     if d.get("scanner_failures") != sorted("%s on %s" % (s, i) for i, st in st_all.items() for s in st["did_not_run"]):
         raise ParseError("panel verdict: scanner_failures disagrees with the images")
     for f in d["findings"]:
+        if isinstance(f, dict):
+            _closed(f, _FINDING_KEYS, "a finding")
+            if not _ID.fullmatch(str(f.get("id"))) or not _TEXT.fullmatch(str(f.get("package"))) or not _TEXT.fullmatch(str(f.get("version"))):
+                raise ParseError("panel verdict: a finding id, package or version holds a character outside the allowed set")
         if not (isinstance(f, dict) and all(isinstance(f.get(k), str) and f.get(k) for k in ("id", "image", "package"))
                 and isinstance(f.get("version"), str) and isinstance(f.get("purls"), list)
                 and all(isinstance(x, str) for x in f["purls"]) and f["image"] in st_all):
@@ -150,6 +170,8 @@ def _validate_panel_verdict(d):
             raise ParseError("panel verdict: finding %s on %s has inconsistent seen_by/of/unique/status" % (f["id"], f["image"]))
     for f in d["findings"]:                      # a package URL must name the package and version the finding names
         for purl in f["purls"]:
+            if not _PURL.fullmatch(purl):
+                raise ParseError("panel verdict: finding %s on %s has a package URL that is not pkg:TYPE/..." % (f["id"], f["image"]))
             name, ver = pm._purl_name_version(purl)
             if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"], f["package"], f["version"])[2:]:
                 raise ParseError("panel verdict: finding %s on %s has a package URL for a different package or version" % (f["id"], f["image"]))
@@ -160,9 +182,11 @@ def _validate_panel_verdict(d):
     if (d.get("unique") != [f for f in d["findings"] if f["unique"]] or not isinstance(d.get("vex_covered"), list)
             or not isinstance(d.get("issue"), str)):
         raise ParseError("panel verdict: the unique list, vex_covered or issue disagrees with the findings")
-    if bool(d["issue"]) != bool(reported) or any("`%s`" % f["id"] not in d["issue"] for f in reported):
-        raise ParseError("panel verdict: the issue text does not agree with the reported findings")
-    for c in d["vex_covered"]:                   # what the tally recorded as hidden by our statement (its Inspector and Google results)
+    if d["issue"] != pm.render_issue(reported):
+        raise ParseError("panel verdict: the issue text is not the tally's rendering of the reported findings")
+    for c in d["vex_covered"]:
+        if isinstance(c, dict):
+            _closed(c, _VEX_KEYS, "a vex_covered entry")                   # what the tally recorded as hidden by our statement (its Inspector and Google results)
         if not (isinstance(c, dict) and all(isinstance(c.get(k), str) and c.get(k) for k in ("image", "scanner", "id", "package"))
                 and isinstance(c.get("version"), str) and c["image"] in st_all and c["scanner"] in pm.FILTER_HERE
                 and c["scanner"] in st_all[c["image"]]["ran"]):
