@@ -78,6 +78,65 @@ def prev_ok(l, i, ch):
 SUBSCRIPT_SUBST = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^\]\n]*(?:\$\((?!\()|\$\{|`|\\\$|\\`)")      # NAME[ ... $( | ${ | ` | \$ | \` ... : builtins (printf -v, let, read, [[ -v, typeset -n, ${!x}, $(( ))) evaluate such a string as a subscript and run it
 
 SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\(|\$\{(?!#[A-Za-z_][A-Za-z0-9_]*\[[@*]\])|`|\\\$|\\`)")   # a [ whose text starts (after blanks or empty quote pairs) with a substitution opener, whatever precedes it (a quoted, escaped or built name); ${#name[@]} is a length and not refused
+COMPOUND_OPENER = r"(?:[$<>\x01][^\sA-Za-z0-9_]*[({]|`)"   # an opener on the NORMALISED text: $ < > (or the marker for a $ that sat before a quote) then any punctuation run, then ( or {, or a backtick
+COMPOUND_WORD = re.compile(r"\b(?:declare|local|typeset|readonly|export)\b.*=.*\(.*" + COMPOUND_OPENER)   # on the NORMALISED logical line: a builtin word ... = ... ( ... opener. A QUOTED compound assignment ('a=(x $(cmd))') is evaluated by the builtin and runs the substitution; default deny, whatever sits between the = and the (
+COMPOUND_PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(")   # the start of a plain, unquoted NAME=( array assignment: only this PREFIX is exempt, never the rest of the word
+COMPOUND_PAREN = re.compile(r"(?<!\$)\(.*" + COMPOUND_OPENER)   # a ( that does not open a $( , then an opener
+def compound_norm(t):
+    """What the builtin sees: an empty $@ / $* and any expansion that can be empty ($name, ${name}) gone, a $ before a quote (ANSI-C or locale prefix) kept as a marker so the ( after it is not taken for a $( , then every quote and backslash removed."""
+    t = re.sub(r"\$[@*]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}", "", t)
+    t = re.sub(r"\$(?=[\"'])", "\x01", t)
+    return re.sub(r"[\"'\\]", "", t)
+COMPOUND_SEQ_OPENER = re.compile(r"\$\(|\$\{|`|<\(|>\(")   # an opener in a word after quote removal, possibly-empty expansions gone
+COMPOUND_NAIVE_DATA = re.compile(r"'[^']*(?:\$\(|\$\{|`|<\(|>\()[^']*'|\\[$`]|\"[^\"]*[<>]\([^\"]*\"")   # the pairing is uncertain: any opener in naive single quotes, any escaped $ or backtick, any <( >( in naive double quotes
+def shell_scan(raw):
+    """Split a logical line into blank-separated words, honouring quotes and backslash escapes (an unbalanced quote makes the rest one word: fail closed). Also returns (data, nested): `data` is True when a word, after quote removal and with every possibly-empty expansion ($1..$9, $@, $*, $name, ${name}) dropped, holds an opener ($( ${ ` <( >() that is not a plain live one: any character of it quoted in single or ANSI-C quotes or escaped, a $ before a quote, a <( or >( inside double quotes, or its characters coming from different quote segments (an opener assembled at run time from literal pieces). `nested` is True when a substitution sits inside double quotes (the quote pairing is then not certain)."""
+    words, cur, q, i, ansi, dollar = [], [], None, 0, False, -2
+    seq, seg = [], 0          # per word: (char, literal, segment)
+    data = nested = False
+    def flush():
+        nonlocal seq, data
+        txt = "".join(c for c, _, _ in seq)
+        for m in COMPOUND_SEQ_OPENER.finditer(txt):
+            part = seq[m.start():m.end()]
+            if any(lit for _, lit, _ in part) or len({sg for _, _, sg in part}) > 1: data = True
+        seq = []
+    while i < len(raw):
+        c = raw[i]
+        if q is None and c in " \t":
+            if cur: words.append("".join(cur)); cur = []; flush()
+            i += 1; continue
+        cur.append(c)
+        if c == "\\" and (q != "'" or ansi) and i + 1 < len(raw):
+            cur.append(raw[i + 1]); seq.append((raw[i + 1], True, seg)); i += 2; continue
+        if q != "'" and c == "$":                      # a possibly-empty expansion is dropped from the sequence
+            m = re.match(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})", raw[i:])
+            if m:
+                cur.append(raw[i + 1:i + m.end()]); i += m.end(); seg += 1; continue
+        if c == "$": dollar = i
+        if q == '"' and (raw.startswith("$(", i) or c == "`"): nested = True
+        if q is None and c in "\"'":
+            if seq and seq[-1][0] == "$" and dollar == i - 1: seq[-1] = ("$", True, seq[-1][2])   # $'...' / $"...": the $ is a marker, literal
+            q = c; ansi = (c == "'" and dollar == i - 1); seg += 1
+        elif q == c:
+            q = None; ansi = False; seg += 1
+        else:
+            seq.append((c, q == "'" or (q == '"' and c in "<>"), seg))
+        i += 1
+    if cur: words.append("".join(cur)); flush()
+    return words, data, nested
+def shell_words(raw):
+    return shell_scan(raw)[0]
+def declare_compound(raw):
+    if COMPOUND_WORD.search(compound_norm(raw)): return True
+    words, data, nested = shell_scan(raw)
+    if data: return True   # an opener held as quoted data: fragments of a compound value can be joined at run time, so the data itself is refused
+    if nested and re.search(r"[\"'\\]", raw) and (COMPOUND_PAREN.search(compound_norm(raw)) or COMPOUND_NAIVE_DATA.search(raw)): return True   # the quote pairing is not certain: judge the whole line, and any naive quoted opener is data
+    for w in words:   # any word that mixes quotes or escapes with a bare ( then an opener, wherever the builtin is and however it is named; a plain NAME=( prefix is exempt, the rest of the word is not
+        m = COMPOUND_PLAIN.match(w)
+        rest = w[m.end():] if m else w
+        if re.search(r"[\"'\\]", rest) and COMPOUND_PAREN.search(compound_norm(rest)): return True
+    return False
 SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
 
 def subscript_holds_opener(l):
@@ -1367,7 +1426,9 @@ def scan_script(path, text, row, rows, base):
             k_ += 1
             if OPENER_BUILT.search(cur_):
                 add("deny", phys_[start_], "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
-            if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_):
+            if declare_compound(cur_):
+                add("deny", phys_[start_], "%s: line %d has a compound assignment to declare, local, typeset, readonly or export (NAME=( ... )) with a substitution opener after the ( : the builtin evaluates a quoted compound assignment and runs the substitution: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
+            if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_) or subscript_holds_opener(re.sub(r"\$[@*]|[\"'\\]", "", cur_)):   # also on the line with quotes, backslashes and an empty $@ / $* removed: bash joins what they split
                 add("deny", phys_[start_], "%s: line %d has an array subscript NAME[ ... ] that holds a substitution ($( , ${ , a backtick): builtins evaluate such a string as a subscript at run time and run it: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
     for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
         if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"
