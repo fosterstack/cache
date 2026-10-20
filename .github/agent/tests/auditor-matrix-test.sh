@@ -3662,6 +3662,51 @@ LR
 )"; lr="$(printf '%s\n' "$lr" | tail -1)"
 eq "$lr" "OK" && ok || no "one PR per target, idempotent re-run, same PR updated" "$lr"
 
+begin "panel-1-parse-panel-reads-one-scanners-findings-from-the-verdict" "the auditor reads the scanner panel's verdict.json (the rescan's own tally): parse_panel(path, scanner) returns exactly the findings that scanner reported, one record per CVE+package even when several images carry it (the images are kept), and a verdict with no findings array is a parse error, never an empty list"
+pv="$WORK/panel-verdict.json"
+cat > "$pv" <<'JSON'
+{"images":{
+ "production-amd64":{"counts":{"grype":10,"scout":10,"inspector":9,"google":9},"did_not_run":[],"ran":["google","grype","inspector","scout"],"counts_for_day":true},
+ "production-arm64":{"counts":{"grype":10,"scout":10,"inspector":9},"did_not_run":[],"ran":["grype","inspector","scout"],"counts_for_day":true},
+ "debug-amd64":{"counts":{"grype":10,"inspector":9},"did_not_run":["google","scout"],"ran":["grype","inspector"],"counts_for_day":false}},
+ "not_counted":["debug-amd64"],"scanner_failures":["google on debug-amd64","scout on debug-amd64"],
+ "findings":[
+  {"image":"production-amd64","id":"CVE-2099-0001","package":"openssl","version":"3.0.1","seen_by":["grype","inspector","scout"],"of":4,"unique":false,"status":"report","purls":["pkg:apk/wolfi/openssl@3.0.1"]},
+  {"image":"production-arm64","id":"CVE-2099-0001","package":"openssl","version":"3.0.1","seen_by":["grype","inspector"],"of":3,"unique":false,"status":"report","purls":["pkg:apk/wolfi/openssl@3.0.1"]},
+  {"image":"production-amd64","id":"CVE-2099-0002","package":"zlib","version":"1.3","seen_by":["inspector"],"of":4,"unique":true,"status":"unique","purls":[]}],
+ "unique":[],"vex_covered":[],"issue":"","exit":2}
+JSON
+r="$(MF="$pv" "$PY" - <<'PYEOF'
+import importlib.util, os, sys, json
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+g = P.parse_panel(os.environ["MF"], "grype"); i = P.parse_panel(os.environ["MF"], "inspector"); s = P.parse_panel(os.environ["MF"], "scout"); gg = P.parse_panel(os.environ["MF"], "google")
+bad = os.environ["MF"] + ".bad"; json.dump({"images": {}}, open(bad, "w"))
+try:
+    P.parse_panel(bad, "grype"); err = "none"
+except P.ParseError:
+    err = "ParseError"
+print("grype=%d inspector=%d scout=%d google=%d imgs=%s err=%s scanner=%s id=%s purl=%s" % (
+  len(g), len(i), len(s), len(gg), ",".join(sorted(g[0]["extra"]["images"])), err, g[0]["scanner"], g[0]["finding_id"], g[0]["purl"]))
+PYEOF
+)"
+{ eq "$r" "grype=1 inspector=2 scout=1 google=0 imgs=production-amd64,production-arm64 err=ParseError scanner=grype id=CVE-2099-0001 purl=pkg:apk/wolfi/openssl@3.0.1"; } && ok || no "parse_panel: grype 1 (deduped over two images), inspector 2, scout 1, google 0; malformed verdict is a ParseError" "[$r]"
+
+begin "panel-2-panel-inventory-records-a-scanner-that-missed-an-image-as-did-not-run" "from the verdict, a scanner counts as ran only if it ran on EVERY image it was expected on; one image where it did not run makes it 'did not run' (never clean), named with the image; the report path is null for it and the verdict path for the rest; the quorum rule is not recomputed here (the panel owns it)"
+r="$(MF="$pv" "$PY" - <<'PYEOF'
+import importlib.util, os
+spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+rep, st = M.panel_inventory(os.environ["MF"])
+print("ran=%s null=%s ginfo=%s/%s greason=%s pkgs=%d" % (
+  ",".join(s for s in M.PANEL_SCANNERS if st[s]["ran"]),
+  ",".join(s for s in M.PANEL_SCANNERS if rep[s] is None),
+  st["grype"]["images_ran"], st["grype"]["images_expected"],
+  "debug-amd64" in (st["google"]["reason"] or "") and "google" in rep and rep["google"] is None,
+  st["grype"]["package_count"]))
+PYEOF
+)"
+{ eq "$r" "ran=grype,inspector null=scout,google ginfo=3/3 greason=True pkgs=30"; } && ok || no "panel_inventory: grype and inspector ran everywhere, scout and google missed debug-amd64 (null report, reason names the image)" "[$r]"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
