@@ -130,63 +130,60 @@ def shell_scan(raw):
 COMPOUND_GAP = re.compile(r"[$<>]\x02+[({]")   # a $ < > then an expansion of any form (a gap that may be empty) then ( or {
 COMPOUND_NESTED_CRUDE = re.compile(r"[$<>](?:[\"'\\]|\$)[^\n]*[({]")   # the quote pairing is uncertain: a $ < > followed by a quote, an escape or another $, then ( or { later on the line
 def boundary_scan(raw):
-    """True when a $ < > is separated from a following ( or { only by quote or escape characters or by expansions of any form (they may be empty), or when an expansion is left unterminated or its closing delimiter is uncertain. A separate pass from shell_scan on purpose: it adds refusals and cannot loosen the data and compound checks. Walks the line with a stack of open expansions ($name, $1 $@ $* $# $? $! $$ $-, ${...} (only a nested ${ nests; a bare { or ) is literal), $(...) (a bare ( nests), $((...)), $[...]), one character sequence per level, an expansion being ONE gap token in its parent; quotes inside an expansion open their own context; a # that starts a word inside $(...) is a comment whose end is uncertain."""
-    q, i, dollar, seg = None, 0, -2, 0
+    """True when a $ < > is separated from a following ( or { only by quote or escape characters or by expansions of any form (they may be empty), or when an expansion is left unterminated or its closing delimiter is uncertain. A separate pass from shell_scan on purpose: it adds refusals and cannot loosen the data and compound checks. Walks the line with a stack of open expansions ($name, $1 $@ $* $# $? $! $$ $-, ${...} (only a nested ${ nests; a bare { or ) is literal), $(...) (a bare ( nests), $((...)), $[...]); each level holds one small state (0 nothing, 1 a $ < > just seen, 2 a $ < > then gaps), so the scan is linear; an expansion is ONE gap in its parent; quotes inside an expansion open their own context; a # or a case inside $(...) is uncertain; a backtick substitution is one gap whose inside is scanned on its own."""
+    q, i, dollar = None, 0, -2
     ansi = False
-    seq, stack, seqs = [], [], []     # stack of (closer, saved quote, saved ansi); seqs one list of (char, segment) per open expansion level
+    stack, st = [], [0]
     gap = False
-    def cur_seq(): return seqs[-1] if stack else seq
-    def tail_gap():
-        txt = "".join(c for c, _ in cur_seq())
-        return bool(re.search(r"[$<>]\x02+$", txt))
+    def put(ch):
+        nonlocal gap
+        if ch in "({" and st[-1] == 2: gap = True
+        st[-1] = 1 if ch in "$<>" else 0
+    def gaptok():
+        st[-1] = 2 if st[-1] in (1, 2) else 0
     while i < len(raw):
         c = raw[i]
         if q is None and not stack and c in " \t":
-            if COMPOUND_GAP.search("".join(ch for ch, _ in seq)): gap = True
-            seq = []; i += 1; continue
+            st[0] = 0; i += 1; continue
         if c == "\\" and (q != "'" or ansi) and i + 1 < len(raw):
-            if raw[i + 1] in "({" and tail_gap(): gap = True
-            cur_seq().append((raw[i + 1], seg)); i += 2; continue
-        if q != "'" and c == "`":                  # a backtick substitution is ONE gap; its inside is scanned on its own
+            put(raw[i + 1]); i += 2; continue
+        if q != "'" and c == "`":
             j = i + 1
             while j < len(raw) and raw[j] != "`":
                 j += 2 if raw[j] == "\\" else 1
             if j >= len(raw): gap = True; i += 1; continue
             if boundary_scan(raw[i + 1:j]): gap = True
-            cur_seq().append(("\x02", seg)); seg += 1; i = j + 1; continue
+            gaptok(); i = j + 1; continue
         if q != "'" and c == "$":
             two = raw[i:i + 2]
-            if two == "$$" and raw[i + 2:i + 3] in ("(", "{", "["): gap = True   # a $$ then an opener character: refused
+            if two == "$$" and raw[i + 2:i + 3] in ("(", "{", "["): gap = True
             if two in ("${", "$(", "$["):
-                stack.append(({"${": "}", "$(": ")", "$[": "]"}[two], q, ansi)); seqs.append([]); q = None; ansi = False; i += 2; continue
+                stack.append(({"${": "}", "$(": ")", "$[": "]"}[two], q, ansi)); st.append(0); q = None; ansi = False; i += 2; continue
             m = re.match(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*)", raw[i:])
             if m:
-                cur_seq().append(("\x02", seg)); seg += 1; i += m.end(); continue
+                gaptok(); i += m.end(); continue
         if q is None and stack:
             top = stack[-1][0]
             if c == top:
-                _, q, ansi = stack.pop(); seqs.pop(); i += 1
-                cur_seq().append(("\x02", seg)); seg += 1; continue
+                _, q, ansi = stack.pop(); st.pop(); gaptok(); i += 1; continue
             if top == ")" and c == "(":
-                if tail_gap(): gap = True
-                stack.append((")", q, ansi)); seqs.append([]); i += 1; continue
+                if st[-1] == 2: gap = True
+                stack.append((")", q, ansi)); st.append(0); i += 1; continue
             if top == ")" and c == "#":
-                gap = True      # a # inside $( ) may start a comment (after a space, ; | & or a newline): where the substitution ends is not certain
+                gap = True
             if top == ")" and raw.startswith("case", i) and (i == 0 or not (raw[i - 1].isalnum() or raw[i - 1] == "_")) and raw[i + 4:i + 5] in (" ", "\t"):
-                gap = True      # a case arm ) inside $( ) is not its closer: uncertain
+                gap = True
             if top == "]" and c == "[":
-                stack.append(("]", q, ansi)); seqs.append([]); i += 1; continue
+                stack.append(("]", q, ansi)); st.append(0); i += 1; continue
         if c == "$": dollar = i
         if q is None and c in "\"'":
-            q = c; ansi = (c == "'" and dollar == i - 1); seg += 1
+            q = c; ansi = (c == "'" and dollar == i - 1)
         elif q == c:
-            q = None; ansi = False; seg += 1
+            q = None; ansi = False
         else:
-            if c in "({" and tail_gap(): gap = True
-            cur_seq().append((c, seg))
+            put(c)
         i += 1
-    if stack: gap = True              # an unterminated expansion
-    if COMPOUND_GAP.search("".join(ch for ch, _ in seq)): gap = True
+    if stack: gap = True
     return gap
 DOLLAR_PID = re.compile(r"\$\$[({\[]")        # $$ (the pid) then an opener character: refused
 RAW_SIMPLE = re.compile(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*)")   # one simple expansion token, unambiguous
@@ -217,30 +214,33 @@ def raw_skip(raw, j):
         k += 1
     return None
 def raw_boundary(raw):
-    """Linear scan of the raw logical line (comments and heredoc bodies included): a $ < > then one or more quote or escape characters or expansions of any form, then ( or { . A run that fails is skipped whole, so the scan is linear; an unterminated or uncertain expansion refuses."""
+    """Linear scan of the raw logical line (comments and heredoc bodies included): a $ < > then one or more quote or escape characters or expansions of any form, then ( or { . EVERY $ < > in the line is a start (also inside an expansion or a quoted span); the end of a run walked from a position is memoised, so the scan stays linear; an unterminated or uncertain expansion refuses."""
     if DOLLAR_PID.search(raw): return True
-    n, i = len(raw), 0
-    while i < n:
-        if raw[i] not in "$<>": i += 1; continue
-        j, moved = i + 1, False
+    n = len(raw)
+    memo = {}                      # position at the start of a gap item -> end of the run walked from there
+    for i in range(n):
+        if raw[i] not in "$<>": continue
+        j, seen = i + 1, []
         while j < n:
+            if j in memo: break
             c = raw[j]
-            if c in "\"'\\": j += 1; moved = True; continue
+            if c in "\"'\\": seen.append(j); j += 1; continue
             if c == "`":
                 e = j + 1
                 while e < n and raw[e] != "`": e += 2 if raw[e] == "\\" else 1
                 if e >= n: return True
-                j = e + 1; moved = True; continue
+                seen.append(j); j = e + 1; continue
             if c == "$":
                 if j + 1 < n and raw[j + 1] in "{([":
                     e = raw_skip(raw, j)
                     if e is None: return True
-                    j = e; moved = True; continue
+                    seen.append(j); j = e; continue
                 m = RAW_SIMPLE.match(raw, j)
-                if m: j = m.end(); moved = True; continue
+                if m: seen.append(j); j = m.end(); continue
             break
-        if moved and j < n and raw[j] in "({": return True
-        i = max(i + 1, j)
+        end = memo[j] if j in memo else j
+        for p_ in seen: memo[p_] = end
+        if (seen or j in memo) and end < n and raw[end] in "({": return True
     return False
 def shell_words(raw):
     return shell_scan(raw)[0]
