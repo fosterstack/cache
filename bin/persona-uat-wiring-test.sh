@@ -326,8 +326,15 @@ def judge_prereqs(name, job, steps, bad):
     if not (os.path.isdir(os.path.join(root, "docs")) and os.path.isfile(os.path.join(root, "README.md"))):
         bad.append(f"{name}: the repository has no docs/ and README.md for the personas to read")
 
+# the persona jobs and the workflows that hold them carry NO env at the job or workflow scope: any key (BASH_ENV, BASH_FUNC_<name>%%, PATH, LD_PRELOAD, OPENSSL_CONF, a proxy, a
+# harmless-looking name) would be inherited by every step, the resolver and the driver included, and a deny list cannot name them all. The real files have none.
+def judge_shell_env(env, where, bad):
+    if env:      # a mapping with any key, or an expression string
+        bad.append(f"{where} must be empty: any variable set there is inherited by every step (the resolver and the driver included), and a list of bad names cannot be complete (BASH_ENV, BASH_FUNC_*, PATH, LD_*, a proxy, a CA bundle ...)")
+
 def judge_workflow_env(doc, label, bad):
     """workflow-level `env` is inherited by every job and step: no credential, owner variable, model name or alias of one may be declared there"""
+    judge_shell_env(doc.get("env"), f"{label} workflow-level env", bad)
     for k, v in (doc.get("env") or {}).items():
         if k in CREDS or k in VARS or k.startswith(("ANTHROPIC_", "AWS_", "ACTIONS_")) or CRED_REF.search(str(v)) or MODEL.search(str(v)) or MODEL.search(str(k)):
             bad.append(f"{label} declares {k} in a workflow-level env: it would be inherited by every step, not only the driver's")
@@ -431,6 +438,7 @@ def common(name, job, bad):
             for k in s.get("env", {}):
                 if k in CREDS or k in VARS:
                     bad.append(f"{name}: {k} is set on a step other than the driver")
+    judge_shell_env(job.get("env"), f"{name}: the job-level env", bad)
     for k, v in (job.get("env") or {}).items():
         if CRED_REF.search(str(v)) or MODEL.search(str(v)):
             bad.append(f"{name}: the job-level env {k} carries a credential reference or a model name ({v!r}): every step would inherit it")
@@ -1029,7 +1037,9 @@ def judge_weekly(f, bad):
     else:
         r = res[0]; rrun = "\n".join(l for l in str(r.get("run", "")).splitlines() if not l.strip().startswith("#"))
         if not expr_is((r.get("env", {}) or {}).get("GH_REPO", ""), "github.repository") or not expr_is((r.get("env", {}) or {}).get("REGISTRY_OWNER", ""), "github.repository_owner"):
-            bad.append("weekly persona-uat's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs before any checkout)")
+            bad.append("weekly persona-uat's resolver step needs env GH_REPO = github.repository and REGISTRY_OWNER = github.repository_owner (it runs after the root checkout and the crane install, before the docs checkout)")
+        if not isinstance(r.get("env"), dict) or set(r["env"]) != {"GH_REPO", "REGISTRY_OWNER", "GH_TOKEN"}:
+            bad.append(f"weekly persona-uat's resolver step's env must be exactly GH_REPO, REGISTRY_OWNER and GH_TOKEN (found {sorted(r['env']) if isinstance(r.get('env'), dict) else repr(r.get('env'))})")
         bad.extend(run_resolver(rrun))
         m = re.search(r"(\w+)=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)", rrun)
         if not m:
@@ -1044,6 +1054,16 @@ def judge_weekly(f, bad):
             dm = re.search(r"(\w+)=\$\(\s*crane digest [^\n]*\)", rrun)
             if not dm:
                 bad.append("weekly persona-uat's resolver does not capture the digest with `crane digest <registry>/<owner>/cache:<tag>` (the chain's pinned tool; no buildx, no docker)")
+            # the resolver is EXACTLY these five lines, in this order (no other line, no second output line, nothing inside the quotes but the fixed references): a closed list
+            RESOLVER_EXACT = (r'set -euo pipefail\n(\w+)=\$\(\s*gh release view\s+--json tagName\s+(?:-q|--jq)\s+\.tagName\s*\)\n'
+                              r'(\w+)=\$\(crane digest "ghcr\.io/\$\{REGISTRY_OWNER\}/cache:\$\{\1#v\}"\)\n'
+                              r'echo "tag=\$(?:\{\1\}|\1(?!\w))" >> "\$GITHUB_OUTPUT"\n'
+                              r'echo "image=ghcr\.io/\$\{REGISTRY_OWNER\}/cache@\$(?:\{\2\}|\2(?!\w))" >> "\$GITHUB_OUTPUT"')
+            rlines = [l.strip() for l in rrun.splitlines() if l.strip()]
+            if not re.fullmatch(RESOLVER_EXACT, "\n".join(rlines)):
+                bad.append("weekly persona-uat's resolver is not one of the five allowed shapes, exactly and in this order (set -euo pipefail; the gh release view read; the one crane digest read of ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}; the tag= output; the image= output built from that digest): any extra, repeated or altered line is refused")
+            if any(not re.fullmatch(r'\s*\w+=\$\(crane digest "[^"\n]*"\)\s*', l) for l in insp):
+                bad.append("weekly persona-uat's digest line must be one `crane digest` with no pipe or fallback, the whole line exactly NAME=$(crane digest \"<ref>\") (a failing crane must fail the step, never hand the driver another digest)")
             if not dm or not re.search(r"image=[^\n]*@\$\{?" + re.escape(dm.group(1)) + r"\}?(?![\w])[^\n]*>>\s*\"?\$GITHUB_OUTPUT", rrun):
                 bad.append("weekly persona-uat's resolver does not write an image= output built from the digest it inspected")
             if not expr_is(r.get("env", {}).get("GH_TOKEN", ""), "github.token"):
@@ -1266,7 +1286,7 @@ def synth_persona_job(weekly):
            {"uses": "actions/checkout@" + H40, "with": {"path": "release-docs", "ref": "${{ steps.resolve.outputs.tag }}", "persist-credentials": "false"}}] if weekly
           else [{"uses": "actions/checkout@" + H40, "with": {"persist-credentials": "false"}}])
     resolver = [{"id": "resolve", "env": {"GH_REPO": "${{ github.repository }}", "REGISTRY_OWNER": "${{ github.repository_owner }}", "GH_TOKEN": "${{ github.token }}"},
-                 "run": 'tag=$(gh release view --json tagName -q .tagName)\nd=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")\n'
+                 "run": 'set -euo pipefail\ntag=$(gh release view --json tagName -q .tagName)\nd=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")\n'
                         'echo "tag=$tag" >> "$GITHUB_OUTPUT"\necho "image=ghcr.io/${REGISTRY_OWNER}/cache@$d" >> "$GITHUB_OUTPUT"'}] if weekly else []
     # the weekly job: the root checkout (it provides bin/install-scanner.sh), the pinned crane, the resolver, then the docs checkout; the rc job has the one checkout
     rc_load = [{"uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "with": {"name": "images", "path": "candidate/images"}},
@@ -1597,6 +1617,45 @@ mutate("weekly resolver reads the digest with buildx again (rule 61)", "uses doc
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker buildx imagetools inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" --format \'{{.Manifest.Digest}}\'')), "fresh")
 mutate("weekly resolver reads the digest with docker manifest inspect", "uses docker or buildx",
        lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"', 'docker manifest inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}"')), "fresh")
+mutate("weekly resolver falls back to a fixed digest when crane fails", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" || echo sha256:' + "a" * 64 + ')')), "fresh")
+mutate("weekly resolver follows the digest with a plain || fallback (no later parenthesis)", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}") || d=sha256:' + "a" * 64)), "fresh")
+mutate("weekly resolver wraps the digest read in an if-not", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+)=(\$\(crane digest [^\n]*\))$", r"if ! \1=\2; then \1=sha256:" + "a" * 64 + "; fi", _resolver(j)["run"])), "fresh")
+mutate("weekly resolver pipes the output after the substitution", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}") | cat')), "fresh")
+mutate("weekly resolver puts the digest read in a group with a fallback after it", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+=\$\(crane digest [^\n]*\))$", lambda m: "{\n" + m.group(1) + "\n} || " + m.group(1).split("=")[0] + "=sha256:" + "a" * 64, _resolver(j)["run"])), "fresh")
+mutate("weekly resolver turns errexit off before the digest read", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("tag=$(gh release view", "set +e\ntag=$(gh release view", 1)), "fresh")
+mutate("weekly resolver reassigns the digest on a line of its own", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=re.sub(r"(?m)^(\w+)=\$\(crane digest [^\n]*\)$", lambda m: m.group(0) + "\n" + m.group(1) + "=sha256:" + "a" * 64, _resolver(j)["run"])), "fresh")
+mutate("weekly resolver does not start with set -euo pipefail", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("set -euo pipefail\n", "", 1)), "fresh")
+mutate("weekly resolver writes a second image= line after the real one", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"] + '\necho "image=ghcr.io/evil/cache@sha256:' + "b" * 64 + '" >> "$GITHUB_OUTPUT"'), "fresh")
+mutate("weekly resolver writes a second tag= line", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"] + '\necho "tag=v9.9.9" >> "$GITHUB_OUTPUT"'), "fresh")
+mutate("weekly resolver runs a command substitution inside the image text", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=re.sub(r'(?m)^(echo "image=[^"\n]*)(" >> "\$GITHUB_OUTPUT")$', lambda m: m.group(1) + "$(true)" + m.group(2), _resolver(j)["run"])), "fresh")
+mutate("weekly resolver runs a backtick command inside the crane reference", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('cache:${tag#v}")', 'cache:${tag#v}`true`")')), "fresh")
+mutate("weekly resolver rewrites the owner with a parameter expansion", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace("${REGISTRY_OWNER}/cache:", "${REGISTRY_OWNER/#[!o]*/attacker}/cache:")), "fresh")
+mutate("weekly resolver reads a second digest with another crane line", "is not one of the five allowed shapes",
+       lambda j: _resolver(j).update(run=re.sub(r'(?m)^(\w+)=\$\(crane digest ([^\n]*)\)$', lambda m: m.group(0) + "\nz=$(crane digest " + m.group(2) + ")", _resolver(j)["run"])), "fresh")
+mutate("weekly job-level env exports a shell function (BASH_FUNC_crane%%)", "env must be empty", lambda j: j.update(env={"BASH_FUNC_crane%%": "() { echo sha256:evil; }"}), "fresh")
+mutate("weekly job-level env sets OPENSSL_CONF", "env must be empty", lambda j: j.update(env={"OPENSSL_CONF": "/tmp/x"}), "fresh")
+mutate("weekly job-level env holds a harmless-looking key", "env must be empty", lambda j: j.update(env={"FOO": "1"}), "fresh")
+mutate("rc job-level env sets REQUESTS_CA_BUNDLE", "env must be empty", lambda j: j.update(env={"REQUESTS_CA_BUNDLE": "/tmp/x"}))
+mutate("rc job-level env holds a harmless-looking key", "env must be empty", lambda j: j.update(env={"FOO": "1"}))
+mutate("weekly job-level env sets BASH_ENV", "env must be empty", lambda j: j.update(env={"BASH_ENV": "$(true)"}), "fresh")
+mutate("rc job-level env sets PATH", "env must be empty", lambda j: j.update(env={"PATH": "/tmp/x:/usr/bin"}))
+mutate("weekly resolver step env sets BASH_ENV", "resolver step's env must be exactly", lambda j: _resolver(j).setdefault("env", {}).update(BASH_ENV="$(true)"), "fresh")
+mutate("weekly resolver step env sets GH_HOST", "resolver step's env must be exactly", lambda j: _resolver(j).setdefault("env", {}).update(GH_HOST="evil.example"), "fresh")
+mutate("weekly resolver pipes the digest through another command", "no pipe or fallback",
+       lambda j: _resolver(j).update(run=_resolver(j)["run"].replace('crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")', 'crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" | head -n1)')), "fresh")
 mutate("weekly job has no crane install", "must install crane with exactly one step", lambda j: j["steps"].remove(_crane(j)), "fresh")
 mutate("weekly job installs crane twice", "must install crane with exactly one step", lambda j: j["steps"].insert(j["steps"].index(_crane(j)) + 1, dict(_crane(j))), "fresh")
 mutate("weekly crane install into a directory of its own (not the installer's default)", "must install crane with exactly one step", lambda j: _crane(j).update(run="./bin/install-scanner.sh crane /opt/crane-elsewhere"), "fresh")
@@ -1694,6 +1753,13 @@ mutate("source: privileged=True", "starts a privileged container", lambda srcs: 
 # --- round 3: environment at EVERY scope (workflow, job, step) and the checkout/SDK prerequisites -----------------------------------------------------
 VEND = "cla" + "ude-fixture"        # a model name, assembled so no file names one
 for lab, w in (("release.yml", "rel_wf"), ("go-freshness.yml", "fresh_wf")):
+    mutate(f"{lab}: workflow-level env sets BASH_ENV", "env must be empty", lambda d: d.update(env={"BASH_ENV": "$(true)"}), w)
+    mutate(f"{lab}: workflow-level env sets PATH", "env must be empty", lambda d: d.update(env={"PATH": "/tmp/x:/usr/bin"}), w)
+    mutate(f"{lab}: workflow-level env sets a proxy", "env must be empty", lambda d: d.update(env={"HTTPS_PROXY": "http://x:1"}), w)
+    mutate(f"{lab}: workflow-level env exports a shell function (BASH_FUNC_gh%%)", "env must be empty", lambda d: d.update(env={"BASH_FUNC_gh%%": "() { echo v1.0.0; }"}), w)
+    mutate(f"{lab}: workflow-level env sets OPENSSL_CONF", "env must be empty", lambda d: d.update(env={"OPENSSL_CONF": "/tmp/x"}), w)
+    mutate(f"{lab}: workflow-level env sets REQUESTS_CA_BUNDLE", "env must be empty", lambda d: d.update(env={"REQUESTS_CA_BUNDLE": "/tmp/x"}), w)
+    mutate(f"{lab}: workflow-level env holds a harmless-looking key", "env must be empty", lambda d: d.update(env={"FOO": "1"}), w)
     mutate(f"{lab}: workflow-level env holds the model API key", "workflow-level env", lambda d: d.update(env={"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}), w)
     mutate(f"{lab}: workflow-level env holds a federation secret", "workflow-level env", lambda d: d.update(env={"ANTHROPIC_WORKSPACE_ID": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}"}), w)
     mutate(f"{lab}: workflow-level env aliases a secret under another name", "workflow-level env", lambda d: d.update(env={"HARMLESS": "${{ secrets.ANTHROPIC_WORKSPACE_ID }}"}), w)
