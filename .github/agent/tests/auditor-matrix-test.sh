@@ -1028,6 +1028,26 @@ npm="$(printf '%s' "$r" | grep -oE 'npm=[A-Za-z]+' | cut -d= -f2)"
 { [ "$osc" = "3" ] 2>/dev/null && eq "$apkt" "True" && eq "$rpm" "True" && eq "$npm" "False"; } \
   && ok || no "grype counts 3 apk OS packages; apk+rpm are OS, npm is not" "[$r]"
 
+begin "osv-wolfi-1-osv-wolfi-and-chainguard-packages-are-os-packages" "osv-scanner labels the v0.3 apk images' packages Wolfi (or Chainguard); they count as OS packages for the inventory quorum (case-insensitive), Alpine still does, and an unknown ecosystem or a language ecosystem still does not (fail-closed: the quorum is not widened to anything unnamed)"
+ow="$WORK/osv-wolfi.json"
+cat > "$ow" <<'JSON'
+{"results":[{"source":{"path":"/lib/apk/db/installed","type":"os"},"packages":[
+ {"package":{"name":"musl","version":"1.2.5","ecosystem":"Wolfi"}},
+ {"package":{"name":"busybox","version":"1.36","ecosystem":"chainguard"}},
+ {"package":{"name":"openssl","version":"3.3","ecosystem":"Alpine:v3.19"}},
+ {"package":{"name":"leftpad","version":"1.0","ecosystem":"npm"}},
+ {"package":{"name":"mystery","version":"1","ecosystem":"Unknownix:9"}}
+]}]}
+JSON
+r="$(MF="$ow" "$PY" - <<'PYEOF'
+import importlib.util, os
+spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+total, osp, db, findings = M._inv_osv(os.environ["MF"])
+print("total=%d os=%d" % (total, osp))
+PYEOF
+)"
+{ eq "$r" "total=5 os=3"; } && ok || no "osv inventory: 5 packages, 3 of them OS (Wolfi, chainguard, Alpine); npm and an unknown ecosystem are not" "[$r]"
+
 begin "dadj-6-adjudicator-error-dedup-collapses-volatile-request-id" "repeated adjudicator failures that differ ONLY by a per-call request_id collapse to ONE recorded error (not one per finding/attempt), so the header/status is not flooded (R-live fix 1 dedup)"
 o="$WORK/dadj6"; rm -rf "$o"; fa="$WORK/dadj6-fail.py"
 cat > "$fa" <<'PYEOF'
