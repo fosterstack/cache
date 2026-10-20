@@ -125,6 +125,7 @@ def shell_scan(raw):
         i += 1
     if cur: words.append("".join(cur)); flush()
     return words, data, nested
+DOLLAR_BOUNDARY = re.compile(r"[$<>](?:[\"'\\]|\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z_0-9@*#?]+)+[({]")   # a $ (or < >) then one or more quote or escape characters or ANY expansion, then ( or { : an opener whose characters bash joins from separate quote segments or around an expansion that may be empty; the raw logical line, comments and heredoc bodies included
 def shell_words(raw):
     return shell_scan(raw)[0]
 def declare_compound(raw):
@@ -1426,6 +1427,8 @@ def scan_script(path, text, row, rows, base):
             k_ += 1
             if OPENER_BUILT.search(cur_):
                 add("deny", phys_[start_], "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
+            if DOLLAR_BOUNDARY.search(cur_):
+                add("deny", phys_[start_], "%s: line %d has a $ (or < >) at a quote-segment boundary or before an expansion that may be empty, next to ( or { : bash may join it into a substitution opener the text scan cannot read: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
             if declare_compound(cur_):
                 add("deny", phys_[start_], "%s: line %d has a compound assignment to declare, local, typeset, readonly or export (NAME=( ... )) with a substitution opener after the ( : the builtin evaluates a quoted compound assignment and runs the substitution: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
             if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_) or subscript_holds_opener(re.sub(r"\$[@*]|[\"'\\]", "", cur_)):   # also on the line with quotes, backslashes and an empty $@ / $* removed: bash joins what they split
