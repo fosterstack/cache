@@ -424,6 +424,32 @@ class MergeConsolidate(Base):
         self.assertEqual(len(items), 1)                                   # kept at CVE level
         self.assertNotIn("vex_id", items[0])                              # but no scope to point at
 
+    def test_panel_mode_consolidate_writes_the_vex_only(self):
+        # scanner-panel rule 4: the VEX is the only exception, so no .snyk and no osv-scanner.toml in a panel run's package
+        out = self.d("out")
+        self.wj(os.path.join(out, "vex", "a.openvex.json"), R.vex.doc("CVE-2099-24", "affected", "t", action="x", subcomponents=["pkg:deb/x@1"]))
+        try:
+            R.PANEL_MODE = True
+            supp, n = R._consolidate(out, "2026-09-22T00:00:00Z")
+        finally:
+            R.PANEL_MODE = False
+        self.assertEqual(n, 1)
+        self.assertTrue(os.path.exists(os.path.join(supp, "fosterstack-cache.openvex.json")))
+        self.assertFalse(os.path.exists(os.path.join(supp, ".snyk")))
+        self.assertFalse(os.path.exists(os.path.join(supp, "osv-scanner.toml")))
+
+    def test_panel_mode_merge_regenerates_no_scanner_ignore_files(self):
+        ws = self.d("ws"); _out, supp = self._supp([self._stmt("CVE-2099-25", ["pkg:deb/a@1"])])
+        try:
+            R.PANEL_MODE = True
+            R._merge_suppressions(ws, supp)
+        finally:
+            R.PANEL_MODE = False
+        merged = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))
+        self.assertEqual([s["vulnerability"]["name"] for s in merged["statements"]], ["CVE-2099-25"])
+        self.assertFalse(os.path.exists(os.path.join(ws, ".snyk")))
+        self.assertFalse(os.path.exists(os.path.join(ws, "osv-scanner.toml")))
+
     def test_consolidate_skips_unreadable_files(self):
         out = self.d("out")
         good = R.vex.doc("CVE-2099-23", "affected", "t", action="x", subcomponents=["pkg:deb/x@1"])
@@ -477,6 +503,18 @@ class SuppressionPR(Base):
         with mock.patch.object(R.subprocess, "run", fr):
             return self.quiet(R._deliver_suppression_pr, self.out, supp or self.supp, 1, "2026-09-22",
                               "abcdef1234567890", False, [])[0]
+
+    def test_a_panel_delivery_stages_the_vex_only(self):
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        try:
+            R.PANEL_MODE = True
+            self.real(fr)
+        finally:
+            R.PANEL_MODE = False
+        status = [a for a in fr.argvs() if a[:2] == ["git", "status"]][0]
+        paths = status[status.index("--") + 1:]
+        self.assertIn(".vex/fosterstack-cache.openvex.json", paths)
+        self.assertNotIn(".snyk", paths); self.assertNotIn("osv-scanner.toml", paths)
 
     def test_dry_run_automerge_proposes_merge(self):
         os.environ["AUDITOR_AUTOMERGE"] = "on"; would = []

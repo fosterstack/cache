@@ -3909,6 +3909,8 @@ images = {}
 for im in sorted(P.panel_images()):
     exp = [s for s in P.PANEL_SCANNERS if P.panel_expected(s, im)]
     bad = [s for s in ("scout", "google") if scenario == "uncounted" and im == "debug-amd64" and s in exp]
+    bad += [s for s in ("google",) if scenario == "googlegone" and im.endswith("-amd64") and s in exp]      # google missing on every image it is expected on
+    bad += [s for s in ("google",) if scenario == "partial" and im == "debug-amd64" and s in exp]            # google missing on one image only
     ran = sorted(s for s in exp if s not in bad)
     images[im] = {"counts": {s: 10 for s in ran}, "did_not_run": sorted(bad), "ran": ran, "counts_for_day": len(ran) >= 3}
 def f(im, vid, pkg, ver, seen, details):
@@ -3917,6 +3919,12 @@ def f(im, vid, pkg, ver, seen, details):
             "purls": ["pkg:deb/debian/%s@%s?arch=%s&distro=debian-12.0" % (pkg, ver, "arm64" if pkg == "coreutils" else "amd64")], "details": details}   # the known-defect log keys on these exact purls
 fs = [f("production-amd64", "CVE-2016-2781", "coreutils", "9.1-1", ["grype", "inspector", "scout"], {"grype": {"severity": "low"}, "inspector": {"severity": "medium"}, "scout": {}}),
       f("production-amd64", "CVE-2011-3374", "apt", "2.6.1", ["grype", "inspector", "scout"], {"grype": {"severity": "high"}, "inspector": {"severity": "critical"}, "scout": {}})]
+if scenario == "multi":     # one finding the scanners rate alike, one seen by different numbers of scanners on two images
+    fs += [f("production-amd64", "CVE-2099-5555", "zlib", "1.3", ["grype", "inspector"], {"grype": {"severity": "high"}, "inspector": {"severity": "high"}}),
+           f("production-amd64", "CVE-2099-6666", "curl", "8.0", ["grype", "inspector", "scout"], {"grype": {"severity": "low"}, "inspector": {"severity": "low"}, "scout": {}}),
+           f("production-arm64", "CVE-2099-6666", "curl", "8.0", ["grype", "inspector"], {"grype": {"severity": "low"}, "inspector": {"severity": "low"}})]
+if scenario == "partial":   # a finding only google saw, on an image google did run on, while google missed another image
+    fs.append(f("production-amd64", "CVE-2099-7777", "busybox", "1.36", ["google"], {"google": {"severity": "critical"}}))
 d = {"images": images, "not_counted": sorted(i for i, st in images.items() if not st["counts_for_day"]),
      "scanner_failures": sorted("%s on %s" % (s, i) for i, st in images.items() for s in st["did_not_run"]),
      "findings": fs, "vex_covered": [], "issue": pm.render_issue([x for x in fs if x["status"] == "report"])}
@@ -3936,7 +3944,7 @@ else:
 m["scanner_reports"] = m["panel"]["scanner_reports"]; m["scanner_status"] = m["panel"]["scanner_status"]
 json.dump(m, open(os.path.join(out, "manifest.json"), "w"))
 PYEOF
-for sc in ok uncounted nopanel; do "$PY" "$WORK/mkpm.py" $sc "$WORK/pm-$sc"; done
+for sc in ok uncounted nopanel googlegone partial multi; do "$PY" "$WORK/mkpm.py" $sc "$WORK/pm-$sc"; done
 
 begin "panel-6-classify-reads-the-four-and-writes-no-per-scanner-files" "auditor-classify on a panel manifest: the findings come from the verdict, the false positive still gets its VEX statement and section 5, and no per-scanner ignore files (ignores/<scanner>/) are written (rule 4: the VEX is the only exception)"
 o="$WORK/pm-ok-classify"; rm -rf "$o"
@@ -3970,6 +3978,34 @@ begin "panel-9-report-shows-each-scanners-severity" "for a finding the panel's s
 o="$WORK/pm-ok-run"
 { grep 'CVE-2011-3374' "$o/report.md" | grep -qi 'critical' && grep 'CVE-2011-3374' "$o/report.md" | grep -qi 'grype.*high\|high.*grype'; } \
   && ok || no "row for CVE-2011-3374 shows critical (highest) and grype's high" "$(grep 'CVE-2011-3374' "$o/report.md" | head -3 | cut -c1-300)"
+
+begin "panel-10-a-panel-run-writes-and-delivers-the-vex-only" "in panel mode the run's suppression package holds the OpenVEX document and NO .snyk or osv-scanner.toml (scanner-panel rule 4: the VEX is the only exception)"
+o="$WORK/pm-ok-run"
+{ [ -s "$o/suppressions/fosterstack-cache.openvex.json" ] && [ ! -e "$o/suppressions/.snyk" ] && [ ! -e "$o/suppressions/osv-scanner.toml" ]; } \
+  && ok || no "suppressions/ has the VEX and neither .snyk nor osv-scanner.toml" "$(ls -A "$o/suppressions" 2>&1 | tr '\n' ' ')"
+
+begin "panel-11-a-scanner-missing-everywhere-is-never-a-complete-day" "even when every image keeps three scanners (rule 3 quorum), a panel scanner that did not run anywhere it is expected is a pipeline failure: the day is AUDIT INCOMPLETE and names it (the panel's own exit 2)"
+o="$WORK/pm-gg-run"; rm -rf "$o"; : > "$LEDGER"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-googlegone/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; {
+  inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; nm="$(grep -i 'AUDIT INCOMPLETE' "$o/report.md" | grep -qi 'google' && echo yes || echo no)"
+  { eq "$inc" "yes" && eq "$nm" "yes"; } && ok || no "google missing on every amd64 image: incomplete, google named" "incomplete=$inc names_google=$nm"; }
+
+begin "panel-12-a-partial-failure-keeps-the-findings-the-scanner-did-report" "a scanner that missed one image but reported on another still contributes its findings: the finding only google saw (on production-amd64) is in the report, the day is incomplete, and the report says google did not run on the image it missed"
+o="$WORK/pm-part-run"; rm -rf "$o"; : > "$LEDGER"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; {
+  fnd="$(grep -c 'CVE-2099-7777' "$o/report.md")"; inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; why="$(grep -qi 'did not run on: debug-amd64' "$o/report.md" && echo yes || echo no)"
+  { [ "$fnd" -ge 1 ] && eq "$inc" "yes" && eq "$why" "yes"; } && ok || no "finding kept, day incomplete, partial miss named" "finding_lines=$fnd incomplete=$inc names_image=$why"; }
+
+begin "panel-13-each-scanners-severity-is-always-shown" "a finding every scanner rates the same still shows each scanner's severity (not only when they disagree)"
+o="$WORK/pm-multi-run"; rm -rf "$o"; : > "$LEDGER"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-multi/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; {
+  row="$(grep 'CVE-2099-5555' "$o/report.md" | head -1)"
+  printf '%s' "$row" | grep -qi 'severity by scanner: grype high, inspector high' && ok || no "row for CVE-2099-5555 lists grype high, inspector high" "$row"; }
+
+begin "panel-14-seen-by-n-of-m-is-shown-per-image" "a finding seen by 3 of 4 scanners on one image and 2 of 3 on another shows each image's own corroboration in the report row"
+o="$WORK/pm-multi-run"
+{ row="$(grep 'CVE-2099-6666' "$o/report.md" | head -1)"; printf '%s' "$row" | grep -q 'production-amd64 3 of 4' && printf '%s' "$row" | grep -q 'production-arm64 2 of 3'; } \
+  && ok || no "row for CVE-2099-6666 shows production-amd64 3 of 4 and production-arm64 2 of 3" "$(grep 'CVE-2099-6666' "$o/report.md" | head -2)"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
