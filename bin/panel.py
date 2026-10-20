@@ -150,11 +150,11 @@ def _cdx_findings(doc, comps, inspector=False):
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
-            # Grype writes its CISA KEV listing as a rating (method other, justification 'Listed in CISA KEV'): that is the known-exploited
+            # Grype writes its CISA KEV listing as a rating (source 'CISA KEV Catalog', method other, justification 'Listed in CISA KEV'): that is the known-exploited
             # marker, not a severity; its 'Negligible' is CycloneDX 'none'
             rts = [r for r in v.get("ratings") or [] if isinstance(r, dict)]
             is_kev = lambda r: (r.get("method") == "other" and r.get("justification") == "Listed in CISA KEV"
-                                and isinstance(r.get("source"), dict) and r["source"].get("name") == "CISA")
+                                and isinstance(r.get("source"), dict) and r["source"].get("name") == "CISA KEV Catalog")     # exactly Grype v0.118.0's emitter (grype/presenter/cyclonedx/vulnerability.go)
             word = lambda r: (r.get("severity").strip().lower() if isinstance(r.get("severity"), str) else None)
             sev = _top((norm_severity(r.get("severity")) or ("negligible" if word(r) == "none" else None))
                        for r in rts if not is_kev(r))
