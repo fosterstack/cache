@@ -326,7 +326,7 @@ st s_bw_asm    "004-AC3 the assemble job installs bubblewrap too (an assemble jo
 st s_bw_early  "004-AC3 bubblewrap installed BEFORE melange (right after the build tool, in that order)" "bubblewrap" "$MELINST$BWINST" "$BWINST$MELINST"
 st s_bw_pkg    "004-AC3 the install line names another package as well" "bubblewrap" "$BWLINE" "$BWLINE vim"
 st s_bw_noup   "004-AC3 the install line without its exact flags (a different form)" "bubblewrap" ' -y -qq ' ' -y '
-st s_bw_noid   "004-AC3 the step without its id (a pinned step is found by its id)" "bubblewrap" '      - id: bwrap\n' ''
+st s_bw_noid   "004-AC3 the step without its id (a pinned step is found by its id)" "bubblewrap" '      - id: bwrap\n        name: install bubblewrap' '      - name: install bubblewrap'
 st s_bw_env    "004-AC3 an env on the bubblewrap step (a token or secret could reach it before admission)" "bubblewrap" '      - id: bwrap\n' '      - id: bwrap\n        env:\n          K: ${{ secrets.X }}\n'
 st s_bw_if     "004-AC3 an if on the bubblewrap step (a skipped install is a build with no sandbox)" "bubblewrap" '      - id: bwrap\n' '      - id: bwrap\n        if: always()\n'
 # REQ-CHAIN-004-AC16 (advisor ACs 10-13 of Oct 15, owner rules 3 and 9): the archive is pulled by the committed digest, by the pinned crane, before anything builds
