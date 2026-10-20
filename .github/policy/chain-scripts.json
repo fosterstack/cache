@@ -20,7 +20,7 @@
       ],
       "signs": false,
       "reason": "the stage's archive pull: fetches the archive by the digest committed in build/archive.json with the pinned crane into a new directory and checks every file against the pointer (REQ-CHAIN-004-AC16); nothing is pulled by tag and there is no fallback source",
-      "sha256": "aa67406aac5ee481dff4156d50e044647f73d60afb01b1871f59b4a0f1e6b065",
+      "sha256": "f7f07098d60b94ba22d8f355b95336303b9c4bd1d10a94c5d1952774ae22dfd3",
       "exceptions": [
         {
           "rule": "script-name",
