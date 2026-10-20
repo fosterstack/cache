@@ -9,6 +9,9 @@ LINEAGE = {
     "osv-scanner": "osv",
     "osv-scanner-gomod": "osv",
     "snyk": "snyk",
+    "scout": "docker-scout",        # the other panel scanners (scanner-panel rule 1) each keep their own advisory data
+    "inspector": "amazon-inspector",
+    "google": "google-artifact-analysis",
     "govulncheck": "go-vulndb",
 }
 
