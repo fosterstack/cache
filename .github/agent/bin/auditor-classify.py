@@ -113,6 +113,8 @@ def validate_manifest(m):
         raise ValueError("manifest: scanner_reports object is missing")
     status = m.get("scanner_status") or {}
     keys = P.scanner_set(m) + (() if m.get("scanner_set") == "panel" else ("osv-scanner-gomod",))
+    if m.get("scanner_set") == "panel" and not (isinstance(m.get("panel"), dict) and "verdict" in m["panel"]):
+        raise ValueError("manifest: a panel manifest has no panel block with the verdict path (null when there is none)")
     for k in keys:
         if k not in r:
             raise ValueError("manifest: scanner_reports missing key %r (use null for 'did not run')" % k)
@@ -159,8 +161,11 @@ def manifest_findings(manifest):
                    ("osv-scanner-gomod", lambda p: P.parse_osv(p, "osv-scanner-gomod")),
                    ("snyk", P.parse_snyk)]
     allf = []
+    vpath = (m.get("panel") or {}).get("verdict") if m.get("scanner_set") == "panel" else None
     for name, fn in PARSERS:
-        path = r.get(name)
+        # panel mode reads every scanner's findings from the verdict even when the scanner missed an image (its report path is then
+        # null, which still marks it "did not run"): a partial failure must not discard what it did report
+        path = vpath if m.get("scanner_set") == "panel" else r.get(name)
         if path:                                    # a null scanner is skipped, not fatal
             allf += fn(path)
     # Group by CONNECTED alias sets, not each record's own canonical CVE (R1 outer round-4

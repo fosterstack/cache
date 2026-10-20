@@ -211,6 +211,15 @@ class PureHelpers(Base):
         finally:
             R.PANEL_MODE = False
 
+    def test_a_panel_manifest_must_carry_the_panel_block_with_the_verdict_path(self):
+        base = {"scanner_set": "panel", "scanner_reports": {k: None for k in R.PARS.PANEL_SCANNERS},
+                "scanner_status": {k: {"reason": "x"} for k in R.PARS.PANEL_SCANNERS}}
+        with self.assertRaisesRegex(ValueError, "no panel block"):
+            R.C.validate_manifest(dict(base))
+        with self.assertRaisesRegex(ValueError, "no panel block"):
+            R.C.validate_manifest(dict(base, panel={"not_counted": None}))
+        R.C.validate_manifest(dict(base, panel={"verdict": None}))              # a missing verdict is recorded, not a manifest error
+
     def test_severity_by_scanner_keeps_each_scanners_highest_and_ignores_the_unrated(self):
         got = R._sev_by_scanner([{"scanner": "grype", "severity": "low"}, {"scanner": "grype", "severity": "high"},
                                  {"scanner": "grype", "severity": "medium"}, {"scanner": "scout"}, {"scanner": "inspector", "severity": "Critical"},

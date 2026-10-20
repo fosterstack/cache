@@ -19,7 +19,7 @@ def live_cves(manifest):
                    ("osv-scanner", P.parse_osv), ("snyk", P.parse_snyk),
                    ("osv-scanner-gomod", lambda p: P.parse_osv(p, "osv-scanner-gomod")))
     for name, fn in readers:
-        path = r.get(name)
+        path = (m.get("panel") or {}).get("verdict") if m.get("scanner_set") == "panel" else r.get(name)
         if not path:                                # a null scanner (did not run) is skipped
             continue
         for f in fn(path):

@@ -337,8 +337,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     # PR (proposals take effect only after the owner merges + an audit-lane reviewer promotes them).
     extra = [p for p in (".auditor/proposals/adjudicator-proposals.json", ".auditor/knowledge.md")
              if os.path.exists(os.path.join(out, p))]
-    staged = [".vex/fosterstack-cache.openvex.json", ".snyk", "osv-scanner.toml",
-              ".auditor/accepted-items.json"] + extra
+    staged = [".vex/fosterstack-cache.openvex.json"] + ([] if PANEL_MODE else [".snyk", "osv-scanner.toml"]) + \
+             [".auditor/accepted-items.json"] + extra
     # AC3/AC4: draft unless the owner turned auto-merge on AND the change touches no prompt file.
     automerge = _automerge_allowed(staged)
     draft = "" if automerge else "--draft "
@@ -868,6 +868,8 @@ def _merge_suppressions(ws, supp):
             for purl in (it.get("scope_purls") or []):
                 expiry[(cve, purl)] = exp
             expiry.setdefault(cve, exp)                   # CVE-level fallback for a purl-less item
+    if PANEL_MODE:          # panel mode: no scanner ignore files are regenerated (rule 4); their removal from main is the legacy deletion
+        return
     otoml = os.path.join(ws, "osv-scanner.toml")
     sp = os.path.join(ws, ".snyk")
     snyk_text, toml_text = _ignores_from_statements(merged.get("statements", []), expiry)
@@ -922,9 +924,10 @@ def _consolidate(out, ts):
                 expiry_map.setdefault(d["vulnerability"], d["target_date"])
         except Exception:
             pass
-    snyk_text, toml_text = _ignores_from_statements(statements, expiry_map)
-    cli.writef(os.path.join(supp, ".snyk"), snyk_text)
-    cli.writef(os.path.join(supp, "osv-scanner.toml"), toml_text)
+    if not PANEL_MODE:      # panel mode: the VEX is the only exception (scanner-panel rule 4)
+        snyk_text, toml_text = _ignores_from_statements(statements, expiry_map)
+        cli.writef(os.path.join(supp, ".snyk"), snyk_text)
+        cli.writef(os.path.join(supp, "osv-scanner.toml"), toml_text)
     return supp, len(statements)
 
 
@@ -1090,6 +1093,15 @@ def _sev_by_scanner(findings):
     return out
 
 
+def _seen_by_images(findings):
+    """The panel's corroboration per image: {image: (scanners that saw it, scanners that ran there)}, from the verdict's own numbers."""
+    out = {}
+    for f in findings:
+        for im, v in ((f.get("extra") or {}).get("by_image") or {}).items():
+            out[im] = (len(v.get("seen_by") or []), v.get("of"))
+    return out
+
+
 def _group_facts(c, grp):
     findings = grp["findings"]
     # Per-CVE EVIDENCE comes only from findings that name this CVE as their own identity;
@@ -1159,8 +1171,11 @@ def _row_line(r):
             % (_ident(r["id"]), _ident("%s@%s" % (r["package"], r["installed"])), _text(r["severity"]),
                _ident(fix), _text(reach), _text(r["disposition"]), _text(r["action"]), _text(r["reason"])))
     sbs = r.get("sev_by_scanner") or {}
-    if PANEL_MODE and len(set(v.lower() for v in sbs.values())) > 1:     # scanners disagree: show each (policy uses the highest)
+    if PANEL_MODE and sbs:                       # each scanner's own severity, always (policy uses the highest)
         line += " — severity by scanner: " + ", ".join("%s %s" % (_ident(sc), _text(sv)) for sc, sv in sorted(sbs.items()))
+    sbi = r.get("seen_by_images") or {}
+    if PANEL_MODE and sbi:                       # the panel's own corroboration, per image ("seen by N of M")
+        line += " — seen by: " + ", ".join("%s %s of %s" % (_ident(im), n, of) for im, (n, of) in sorted(sbi.items()))
     if r["section"] in (2, 5) and r.get("vex_id"):
         line += " — vex: %s — ignores: %s" % (_ident(r["vex_id"]),
                                                ",".join(_ident(f) for f in r.get("ignore_files", [])) or "none")
@@ -1333,7 +1348,7 @@ def _dispose_split(c, findings, aliases, env, would, base=None):
         # counted (excluded from evidence by _group_facts) — a real finding backed by an advisory
         # is not mistaken for unique-lineage (R1 refactor round-4 #5).
         row, mi = _dispose(c, sub + lineage, aliases, env, would, name=nm)
-        row["sev_by_scanner"] = _sev_by_scanner(sub)
+        row["sev_by_scanner"] = _sev_by_scanner(sub); row["seen_by_images"] = _seen_by_images(sub)
         out_rows.append(row); mc += mi
     return out_rows, mc
 
@@ -1823,7 +1838,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                          "disposition": "not_affected (false positive)", "action": "closed",
                          "reachability": "n/a (OS package)", "reason": "known-defect-log FP for %s" % (",".join(covpkgs)),
                          "vex_id": _fp_sid, "ignore_files": (["vex"] if PANEL_MODE else [igf, ".snyk", "osv-scanner.toml", "vex"]),
-                         "carried": _fp_carried, "is_os": True, "sev_by_scanner": _sev_by_scanner(covered)})
+                         "carried": _fp_carried, "is_os": True, "sev_by_scanner": _sev_by_scanner(covered),
+                         "seen_by_images": _seen_by_images(covered)})
             h_count += 1
             uncovered = [f for f in grp["findings"] if not _cov(f)]
             if uncovered:
@@ -1978,13 +1994,15 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         # the auditor takes that decision, it does not recompute OS-package agreement (Google scans amd64 only, so its counts differ).
         # An unknown verdict (None) can never be a quorum.
         pn = m.get("panel") or {}
-        unc = pn.get("not_counted")
+        unc = pn.get("not_counted"); fails = pn.get("scanner_failures")
         ran_image = [s for s in SCN if (st.get(s) or {}).get("ran")]
         not_ran = [s for s in SCN if s not in ran_image]
         excluded = []
-        quorum = isinstance(unc, list) and not unc
+        # a scanner that did not run where it was expected is a pipeline failure even when every image keeps its quorum (rule 3, and the
+        # panel's own exit 2): the day is complete only with every image counted AND no scanner failure
+        quorum = isinstance(unc, list) and not unc and isinstance(fails, list) and not fails
         quorum_info = {"agreed": ran_image, "disagreed": [], "not_ran": not_ran, "excluded": [], "panel": True,
-                       "uncounted": unc, "scanner_failures": pn.get("scanner_failures"),
+                       "uncounted": unc, "scanner_failures": fails,
                        "os_counts": {s: (st.get(s) or {}).get("package_count") or 0 for s in SCN}}
     else:
         def _os(s):
@@ -2057,7 +2075,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 unc = quorum_info.get("uncounted")
                 bits.append("scanner panel quorum not met: " + (
                     "the panel's verdict is missing or invalid, so no image counts" if unc is None else
-                    "image(s) not counted (fewer than three scanners ran on them): " + ", ".join(unc))
+                    ("image(s) not counted (fewer than three scanners ran on them): " + ", ".join(unc) if unc else
+                     "scanner failure(s): " + ", ".join(quorum_info.get("scanner_failures") or [])))
                     + "; did not run: " + (", ".join(not_ran) or "none"))
             else:
                 counts = ", ".join("%s(%d)" % (s, quorum_info["os_counts"].get(s, 0)) for s in IMAGE_SCANNERS)
@@ -2240,13 +2259,16 @@ def _scanner_tables(m, rows, out):
     lines = []
     for name, fn in PARSERS:
         info = st.get(name) or {}
-        path = reports.get(name)
+        panel = m.get("scanner_set") == "panel"
+        path = (m.get("panel") or {}).get("verdict") if panel else reports.get(name)      # a partial miss keeps the findings the scanner did report
         pc = info.get("package_count"); fc = info.get("findings")
         title = "%s — %s packages, %s findings" % (name, pc if pc is not None else "?", fc if fc is not None else "?")
         lines.append("::group::" + title)
-        if not path or not info.get("ran"):
+        if not path or (not panel and not info.get("ran")):
             lines.append("  did not inventory: %s" % info.get("reason", "no report"))
             lines.append("::endgroup::"); continue
+        if panel and not info.get("ran"):
+            lines.append("  did not run (%s); what it did report follows" % info.get("reason", "no report"))
         try:
             findings = fn(path)
         except Exception as e:
