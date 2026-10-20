@@ -544,13 +544,13 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   $YAML shape "$WF" > "$WORK/sh.json"
   # + the scanner panel's second auditor seat (scanner-panel rule 8(b), owner Oct 2): its federation identifiers and
   #   model are environment secrets too (same AC: ids only from the environment, never vars.* or a file)
-  want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_APP_ID","AUDITOR_APP_PRIVATE_KEY","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY","PANEL_AUDIT_B_IDENTITY_PROVIDER_ID","PANEL_AUDIT_B_MODEL","PANEL_AUDIT_B_PROJECT_ID","PANEL_AUDIT_B_SERVICE_ACCOUNT_ID","SNYK_TOKEN"]'
+  want='["ANTHROPIC_FEDERATION_RULE_ID","ANTHROPIC_ORGANIZATION_ID","ANTHROPIC_SERVICE_ACCOUNT_ID","ANTHROPIC_WORKSPACE_ID","AUDITOR_APP_ID","AUDITOR_APP_PRIVATE_KEY","AUDITOR_MODEL_FALLBACK","AUDITOR_MODEL_PRIMARY","PANEL_AUDIT_B_IDENTITY_PROVIDER_ID","PANEL_AUDIT_B_MODEL","PANEL_AUDIT_B_PROJECT_ID","PANEL_AUDIT_B_SERVICE_ACCOUNT_ID"]'
   fromsecrets="$(pj "$WORK/sh.json" 'str(sorted(d.get("secret_refs",[]))=='"$want"')')"
   # the only permitted variable is the non-secret schedule toggle; none of the secret
   # identifiers may appear as vars.* (they would not be masked)
   onlytoggle="$(pj "$WORK/sh.json" 'str(sorted(d.get("identifier_env_vars",[]))==["AUDITOR_AUTOMERGE","AUDITOR_SCHEDULE_MODE"])')"
   { eq "$fromsecrets" "True" && eq "$onlytoggle" "True"; } \
-    && ok || no "identifiers+SNYK_TOKEN via secrets.*; only vars.* are AUDITOR_SCHEDULE_MODE + AUDITOR_AUTOMERGE" "from_secrets=$fromsecrets only_toggle=$onlytoggle vars=$(pj "$WORK/sh.json" 'd.get("identifier_env_vars")')"; fi
+    && ok || no "identifiers via secrets.* (no SNYK_TOKEN: the auditor runs no scanner); only vars.* are AUDITOR_SCHEDULE_MODE + AUDITOR_AUTOMERGE" "from_secrets=$fromsecrets only_toggle=$onlytoggle vars=$(pj "$WORK/sh.json" 'd.get("identifier_env_vars")')"; fi
 
 begin "req6-ac2-token-budget-in-workflow" "driving usage to the budget stops the run with tokens_used>0 up to the cap"
 o="$WORK/budget"; rm -rf "$o"
