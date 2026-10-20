@@ -151,7 +151,7 @@ def stage_text(family):
         if sp.get("setup_go"): out += "      - name: install Go (pinned by checksum)\n        run: %s\n" % S.INSTALL_GO
         for tl in sp.get("tools", ()): out += "      - name: install %s (pinned by checksum)\n        run: %s\n" % (tl.rsplit(" ", 1)[1], tl)
         if sp.get("bwrap"):
-            out += "      - name: install bubblewrap (the sandbox of the sealed build, from the runner's signed Ubuntu repository)\n        run: %s\n" % S.INSTALL_BWRAP
+            out += "      - id: bwrap\n        name: install bubblewrap (the sandbox of the sealed build, from the runner's signed Ubuntu repository)\n        run: %s\n" % S.INSTALL_BWRAP
         # REQ-CHAIN-004-AC16: every job that builds from the archive installs crane (pinned) and pulls the archive by its committed digest, before the downloads
         out += "      - name: install crane (pinned by checksum)\n        run: %s\n" % S.INSTALL_CRANE
         out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
@@ -314,43 +314,27 @@ st s_bt_env    "004-AC3 an env on the installer step (a token or secret could re
 st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
 # REQ-CHAIN-004-AC3 (rule 62, advisor 0522 read-back approved Oct 20): melange's bubblewrap runner needs bwrap, which the hosted images do not ship: an apk job
 # installs the distribution package bubblewrap, from the runner's signed Ubuntu repository, as one step of its own right after melange, with one exact line
-BWRUN='run: bash bin/install-bubblewrap.sh'
-BWINST='      - name: install bubblewrap (the sandbox of the sealed build, from the runner'"'"'s signed Ubuntu repository)\n        run: bash bin/install-bubblewrap.sh\n'
-BWBOTH="$BWINST"
-st s_bw_gone   "004-AC3 the bubblewrap install is missing from Build's apk job (melange's runner would find no bwrap)" "bubblewrap" "$BWBOTH" ''
-st s_bw_asm    "004-AC3 the assemble job installs bubblewrap too (an assemble job runs apko only)" "crane" "$APKINST" "$APKINST$BWBOTH"
-st s_bw_early  "004-AC3 bubblewrap installed BEFORE melange (right after the build tool, in that order)" "bubblewrap" "$MELINST$BWBOTH" "$BWBOTH$MELINST"
-st s_bw_pkg    "004-AC3 the install line names another package as well" "bubblewrap" 'install-bubblewrap.sh' 'install-bubblewrap.sh curl'
-st s_bw_noup   "004-AC3 the install line without the exact flags (a different apt form)" "bubblewrap" 'install-bubblewrap.sh' 'install-bubblewrap.sh --other'
-st s_bw_curl   "004-AC3 bubblewrap fetched by hand instead of the package manager" "bubblewrap" "$BWRUN" 'run: curl -fsSL https://example.org/bwrap -o /usr/local/bin/bwrap'
-st s_bw_env    "004-AC3 an env on the bubblewrap step (a token or secret could reach it before admission)" "bubblewrap" "$BWINST" '      - name: install bubblewrap (the sandbox of the sealed build, from the runner'"'"'s signed Ubuntu repository)\n        env:\n          K: ${{ secrets.X }}\n        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends bubblewrap\n'
-st s_bw_if     "004-AC3 an if on the bubblewrap step (a skipped install is a build with no sandbox)" "bubblewrap" 'run: bash bin/install-bubblewrap.sh' 'if: always()\n        run: bash bin/install-bubblewrap.sh'
-# The installer itself (bin/install-bubblewrap.sh), run as the REAL file with stub sudo, apt-get and bwrap first on the search path (it names them bare, each
-# sudo line under a reviewed line-bound exception): it must call apt-get update, then apt-get install of bubblewrap alone, check that bwrap runs, and fail when any fails
-BWSRC="$root/bin/install-bubblewrap.sh"
-bwrun() { # bwrun NAME APT_RC BWRAP_RC   -> $work/NAME.calls (the stub calls) and $work/NAME.rc
-  mkdir -p "$work/$1.d"
-  printf '#!/bin/sh\necho "sudo $*" >>"%s/%s.calls"\nexec "$@"\n' "$work" "$1" >"$work/$1.d/sudo"
-  printf '#!/bin/sh\necho "apt-get $*" >>"%s/%s.calls"\nif [ "$1" = install ]; then exit %s; fi\nexit 0\n' "$work" "$1" "$2" >"$work/$1.d/apt-get"
-  printf '#!/bin/sh\necho "bwrap $*" >>"%s/%s.calls"\nexit %s\n' "$work" "$1" "$3" >"$work/$1.d/bwrap"
-  chmod +x "$work/$1.d/sudo" "$work/$1.d/apt-get" "$work/$1.d/bwrap"; : >"$work/$1.calls"
-  bwrc=0; PATH="$work/$1.d:$PATH" bash "$BWSRC" >/dev/null 2>&1 || bwrc=$?; echo "$bwrc" >"$work/$1.rc"
-}
-bwrun bw_good 0 0
-if [ "$(cat "$work/bw_good.rc")" = 0 ] && [ "$(cat "$work/bw_good.calls")" = "$(printf 'sudo apt-get update -qq\napt-get update -qq\nsudo apt-get install -y -qq --no-install-recommends bubblewrap\napt-get install -y -qq --no-install-recommends bubblewrap\nbwrap --version')" ]; then
-  ok "004-AC3 bin/install-bubblewrap.sh runs apt-get update, then the install of bubblewrap alone (no recommends), then checks that bwrap runs, each through sudo"
-else bad "004-AC3 bin/install-bubblewrap.sh did not make exactly those calls: $(tr '\n' '|' <"$work/bw_good.calls")"; fi
-bwrun bw_aptfail 100 0
-if [ "$(cat "$work/bw_aptfail.rc")" != 0 ] && ! grep -q '^bwrap' "$work/bw_aptfail.calls"; then ok "004-AC3 a failed install fails the installer and nothing is run after it"
-else bad "004-AC3 a failed apt-get install did not stop the installer"; fi
-bwrun bw_nobwrap 0 1
-if [ "$(cat "$work/bw_nobwrap.rc")" != 0 ]; then ok "004-AC3 an install after which bwrap does not run fails the installer"; else bad "004-AC3 a bwrap that does not run was accepted"; fi
+BWLINE=$(python3 -I - "$shape" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shape", sys.argv[1]); S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+print(S.INSTALL_BWRAP)
+PY
+)
+BWINST='      - id: bwrap\n        name: install bubblewrap (the sandbox of the sealed build, from the runner'"'"'s signed Ubuntu repository)\n        run: '"$BWLINE"'\n'
+st s_bw_gone   "004-AC3 the bubblewrap install is missing from Build's apk job (melange's runner would find no bwrap)" "bubblewrap" "$BWINST" ''
+st s_bw_asm    "004-AC3 the assemble job installs bubblewrap too (an assemble job runs apko only)" "crane" "$APKINST" "$APKINST$BWINST"
+st s_bw_early  "004-AC3 bubblewrap installed BEFORE melange (right after the build tool, in that order)" "bubblewrap" "$MELINST$BWINST" "$BWINST$MELINST"
+st s_bw_pkg    "004-AC3 the install line names another package as well" "bubblewrap" "$BWLINE" "$BWLINE vim"
+st s_bw_noup   "004-AC3 the install line without its exact flags (a different form)" "bubblewrap" ' -y -qq ' ' -y '
+st s_bw_noid   "004-AC3 the step without its id (a pinned step is found by its id)" "bubblewrap" '      - id: bwrap\n' ''
+st s_bw_env    "004-AC3 an env on the bubblewrap step (a token or secret could reach it before admission)" "bubblewrap" '      - id: bwrap\n' '      - id: bwrap\n        env:\n          K: ${{ secrets.X }}\n'
+st s_bw_if     "004-AC3 an if on the bubblewrap step (a skipped install is a build with no sandbox)" "bubblewrap" '      - id: bwrap\n' '      - id: bwrap\n        if: always()\n'
 # REQ-CHAIN-004-AC16 (advisor ACs 10-13 of Oct 15, owner rules 3 and 9): the archive is pulled by the committed digest, by the pinned crane, before anything builds
 CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash bin/install-scanner.sh crane\n'
 PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'
 PULLRUN='run: bash bin/archive-pull.sh --pointer build/archive.json --out archive'
 st s_ar_gone    "AC16 the archive pull is missing from Build's apk job (build-apk.sh --repo archive would find nothing)" "archive-pull.sh" "$PULLSTEP" ''
-st s_bw_late   "004-AC3 bubblewrap installed after the crane install and the archive pull instead of right after melange" "bubblewrap" "$BWBOTH$CRANEINST$PULLSTEP" "$CRANEINST$PULLSTEP$BWBOTH"
+st s_bw_late   "004-AC3 bubblewrap installed after the crane install and the archive pull instead of right after melange" "bubblewrap" "$BWINST$CRANEINST$PULLSTEP" "$CRANEINST$PULLSTEP$BWINST"
 st s_ar_crane   "AC16 the crane install is missing (the pull needs the pinned tool)" "install-scanner.sh crane" "$CRANEINST" ''
 st s_ar_order   "AC16 the pull before the crane install" "install-scanner.sh crane" "$CRANEINST$PULLSTEP" "$PULLSTEP$CRANEINST"
 st s_ar_digest  "AC16 the pull names a digest of its own (only the committed one is allowed)" "archive-pull.sh" "$PULLRUN" "$PULLRUN --digest sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -501,8 +485,8 @@ rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" 
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
 rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its verdict artifact)" "on: must be" 'workflow_call:\n' \
              'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
-rb r_bw_gone "005-AC3 the bubblewrap install is missing from Rebuild's apk job" "bubblewrap" "$BWBOTH" ''
-rb r_bw_asm  "005-AC3 Rebuild's assemble job installs bubblewrap too (it runs apko only)" "crane" "$APKINST" "$APKINST$BWBOTH"
+rb r_bw_gone "005-AC3 the bubblewrap install is missing from Rebuild's apk job" "bubblewrap" "$BWINST" ''
+rb r_bw_asm  "005-AC3 Rebuild's assemble job installs bubblewrap too (it runs apko only)" "crane" "$APKINST" "$APKINST$BWINST"
 rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" '    inputs:\n      mode:' \
              '    inputs:\n      hostile:\n        type: boolean\n        default: false\n      mode:'
 # REQ-CHAIN-005-AC7: Rebuild takes the same mode input and has its own snapshot Witness steps, snapshot-rapk and snapshot-rebuild
@@ -2495,7 +2479,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=855
+EXPECT=852
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

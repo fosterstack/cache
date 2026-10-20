@@ -271,30 +271,6 @@
       "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
     },
     {
-      "path": "bin/install-bubblewrap.sh",
-      "sha256": "e6dd52f2217fcd74a3f70b6752ea0b1b768b1d36e1a1c52088848360477e5d6d",
-      "tools": [
-        "apt-get",
-        "bwrap",
-        "sudo"
-      ],
-      "runs": [],
-      "signs": "other",
-      "exceptions": [
-        {
-          "rule": "launcher",
-          "text": "sudo apt-get update -qq",
-          "why": "runner-side install of bubblewrap under R7; sudo launcher form required by the runner; neither judge's rule changes"
-        },
-        {
-          "rule": "launcher",
-          "text": "sudo apt-get install -y -qq --no-install-recommends bubblewrap",
-          "why": "runner-side install of bubblewrap under R7; sudo launcher form required by the runner; neither judge's rule changes"
-        }
-      ],
-      "reason": "installs the one distribution package bubblewrap on the hosted runner from its signed Ubuntu repository (apt-get update, then install without recommends), then checks that bwrap runs: the sandbox melange's bubblewrap runner needs and the images do not ship; never an input of the built bytes (Rebuild compares digests); the same limit as the skopeo installs (REQ-CHAIN-004-AC3, rule 38a; advisor read-back approval Oct 20)"
-    },
-    {
       "path": "bin/vex-index.py",
       "tools": [
         "python3",
@@ -2820,6 +2796,20 @@
       "id": "digests",
       "run": "echo \"digests=$(jq -c . digests.json)\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-004-AC2: the stage output Sign reads (the digests.json text); the one reviewed write into the job outputs"
+    },
+    {
+      "file": ".github/workflows/stage-build.yml",
+      "job": "apk",
+      "id": "bwrap",
+      "run": "sudo apt-get install -y -qq --no-install-recommends bubblewrap",
+      "why": "runner-side install of bubblewrap under R7 (a distribution package from the runner's signed Ubuntu repository, the same limit as scan.yml's skopeo install); the sandbox melange's bubblewrap runner needs and the hosted images do not ship; never an input of the built bytes (Rebuild compares digests); REQ-CHAIN-004-AC3, rule 38a; advisor ruling D, Oct 20"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "apk",
+      "id": "bwrap",
+      "run": "sudo apt-get install -y -qq --no-install-recommends bubblewrap",
+      "why": "runner-side install of bubblewrap under R7 (a distribution package from the runner's signed Ubuntu repository, the same limit as scan.yml's skopeo install); the sandbox melange's bubblewrap runner needs and the hosted images do not ship; never an input of the built bytes (Rebuild compares digests); REQ-CHAIN-004-AC3, rule 38a; advisor ruling D, Oct 20"
     }
   ]
 }

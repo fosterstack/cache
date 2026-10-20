@@ -2702,7 +2702,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='63c14fe8ec60c411cf78c70e7186d7f1b0f852a0f5fdf588feb586924f8fd038'
+FX_PIN='1fb16cba7b64049269f4ac3f3f236a565c160187cb290cd19c4ba2a8060facee'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -2998,6 +2998,7 @@ d=$(pfix s_nonstage); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";
 d=$(pfix s_nl); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));j[0]["run"]+="\necho x";json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): a run text of more than one line is an error"
 d=$(pfix s_shape); printf '[{"file":"x","job":"j","id":"digests","run":"echo","why":"w","extra":1}]' > "$d/.pinned.json"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): an entry with another key is an error"
 d=$(pfix s_notlist); printf '{"file":"x"}' > "$d/.pinned.json"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): pinned_steps that is not a list is an error"
+d=$(pfix s_bwtext); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));j[0]["job"]="apk";j[0]["id"]="bwrap";json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'only the ratified step' "advisor 0522 D: the bubblewrap tuple (stage-build apk bwrap) is admitted only with its ratified install line; any other run text for it is an error"
 # (6) duplicate JSON keys
 dupj() { # dupj DIR FILE 'old' 'new' : rewrite one policy file's text
   python3 -c 'import sys;p=sys.argv[1]+"/"+sys.argv[2];t=open(p).read();assert sys.argv[3] in t;open(p,"w").write(t.replace(sys.argv[3],sys.argv[4],1))' "$@"; }
@@ -4331,7 +4332,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=2031
+EXPECT=2032
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -35,8 +35,9 @@ jobs:
         run: bash bin/install-scanner.sh witness
       - name: install melange (pinned by checksum)
         run: bash bin/install-build-tools.sh melange
-      - name: install bubblewrap (the sandbox of the sealed build, from the runner's signed Ubuntu repository)
-        run: bash bin/install-bubblewrap.sh
+      - id: bwrap
+        name: install bubblewrap (the sandbox of the sealed build, from the runner's signed Ubuntu repository)
+        run: sudo apt-get install -y -qq --no-install-recommends bubblewrap
       - name: install crane (pinned by checksum)
         run: bash bin/install-scanner.sh crane
       - name: pull the archive by its committed digest
