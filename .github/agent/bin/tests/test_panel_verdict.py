@@ -20,11 +20,14 @@ def good():
         ran = sorted(s for s in P.PANEL_SCANNERS if P.panel_expected(s, im))
         images[im] = {"counts": {s: 10 for s in ran}, "did_not_run": [], "ran": ran, "counts_for_day": len(ran) >= 3}
 
-    def f(im, vid, pkg, ver, seen):
+    def f(im, vid, pkg, ver, seen, details=None):
         return {"image": im, "id": vid, "package": pkg, "version": ver, "seen_by": sorted(seen), "of": len(images[im]["ran"]),
                 "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report",
-                "purls": ["pkg:deb/debian/%s@%s" % (pkg, ver)]}
-    fs = [f("production-amd64", "CVE-2099-0001", "openssl", "3.0.1", ["grype", "inspector"]),
+                "purls": ["pkg:deb/debian/%s@%s" % (pkg, ver)],
+                "details": details if details is not None else {s: {} for s in seen}}
+    fs = [f("production-amd64", "CVE-2099-0001", "openssl", "3.0.1", ["grype", "inspector"],
+            {"grype": {"severity": "high", "fixed_version": "3.0.2", "aliases": ["GHSA-aaaa-bbbb-cccc"], "known_exploited": True},
+             "inspector": {"severity": "critical"}}),
           f("production-amd64", "CVE-2099-0002", "zlib", "1.3", ["inspector"])]
     d = {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs,
          "unique": [x for x in fs if x["unique"]],
@@ -65,6 +68,21 @@ class Validator(unittest.TestCase):
             ("not_counted against the images", lambda d: d.update(not_counted=["fips-arm64"]), "not_counted disagrees"),
             ("scanner_failures against the images", lambda d: d.update(scanner_failures=["x on y"]), "scanner_failures disagrees"),
             ("a finding with unknown keys", lambda d: d["findings"][0].update(extra=1), "a finding has missing or unknown keys"),
+            ("a finding without details", lambda d: d["findings"][0].pop("details"), "a finding has missing or unknown keys"),
+            ("details for a scanner that did not report it", lambda d: d["findings"][0]["details"].update(google={}), "details for different scanners than seen_by"),
+            ("details missing a reporting scanner", lambda d: d["findings"][0]["details"].pop("inspector"), "details for different scanners than seen_by"),
+            ("details that are not an object", lambda d: d["findings"][0].update(details=[]), "details for different scanners than seen_by"),
+            ("an unknown key in a scanner's details", lambda d: d["findings"][0]["details"]["grype"].update(cvss=9.8), "unknown key in grype's details"),
+            ("a scanner's details that are not an object", lambda d: d["findings"][0]["details"].update(grype=[]), "unknown key in grype's details"),
+            ("a severity outside the normalised words", lambda d: d["findings"][0]["details"]["grype"].update(severity="HIGH"), "malformed value in grype's details"),
+            ("a non-text severity", lambda d: d["findings"][0]["details"]["grype"].update(severity=3), "malformed value in grype's details"),
+            ("an empty fixed version", lambda d: d["findings"][0]["details"]["grype"].update(fixed_version=""), "malformed value in grype's details"),
+            ("a fixed version outside the charset", lambda d: d["findings"][0]["details"]["grype"].update(fixed_version="1\n2"), "malformed value in grype's details"),
+            ("aliases that are not a list", lambda d: d["findings"][0]["details"]["grype"].update(aliases="GHSA-aaaa-bbbb-cccc"), "malformed value in grype's details"),
+            ("duplicate aliases", lambda d: d["findings"][0]["details"]["grype"].update(aliases=["GHSA-aaaa-bbbb-cccc"] * 2), "malformed value in grype's details"),
+            ("an alias outside the id charset", lambda d: d["findings"][0]["details"]["grype"].update(aliases=["bad alias"]), "malformed value in grype's details"),
+            ("an empty aliases list", lambda d: d["findings"][0]["details"]["grype"].update(aliases=[]), "malformed value in grype's details"),
+            ("a non-boolean known_exploited", lambda d: d["findings"][0]["details"]["grype"].update(known_exploited="yes"), "malformed value in grype's details"),
             ("a finding id outside the charset", lambda d: d["findings"][0].update(id="CVE 1"), "character outside the allowed set"),
             ("a finding with an empty package", lambda d: d["findings"][0].update(package=""), "incomplete finding or one on an unknown image"),
             ("a finding on an unknown image", lambda d: d["findings"][0].update(image="nowhere-amd64"), "incomplete finding or one on an unknown image"),
@@ -119,6 +137,24 @@ class Loader(unittest.TestCase):
         self.assertEqual(P.load_panel_verdict(path)["exit"], 1)
         self.assertEqual([f["finding_id"] for f in P.parse_panel(path, "inspector")], ["CVE-2099-0001", "CVE-2099-0002"])
         self.assertEqual([f["finding_id"] for f in P.parse_panel(path, "google")], [])
+
+    def test_parse_panel_carries_a_scanners_own_severity_fix_aliases_and_exploitation(self):
+        d = good()
+        # the same finding on a second image: the scanner's record keeps the HIGHEST severity, the first fixed version, the union of aliases
+        second = copy.deepcopy(d["findings"][0]); second["image"] = "production-arm64"
+        second["of"] = len(d["images"]["production-arm64"]["ran"]); second["seen_by"] = ["grype", "inspector"]
+        second["details"] = {"grype": {"severity": "critical", "fixed_version": "9.9", "aliases": ["GHSA-dddd-eeee-ffff"]}, "inspector": {}}
+        d["findings"].append(second)
+        d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
+        path = self.write(json.dumps(d))
+        g = P.parse_panel(path, "grype")[0]
+        self.assertEqual((g["severity"], g["fixed_version"], g["extra"].get("known_exploited")), ("critical", "3.0.2", True))
+        self.assertEqual(g["aliases"], ["CVE-2099-0001", "GHSA-aaaa-bbbb-cccc", "GHSA-dddd-eeee-ffff"])
+        self.assertEqual(sorted(g["extra"]["by_image"]), ["production-amd64", "production-arm64"])
+        i = P.parse_panel(path, "inspector")[0]
+        self.assertEqual((i["severity"], i["fixed_version"], i["aliases"]), ("critical", None, ["CVE-2099-0001"]))
+        low = copy.deepcopy(d); low["findings"][0]["details"]["grype"]["severity"] = "low"; low["findings"][2]["details"]["grype"]["severity"] = "negligible"
+        self.assertEqual(P.parse_panel(self.write(json.dumps(low)), "grype")[0]["severity"], "low")      # a lower one later never lowers it
 
     def test_a_repeated_key_at_any_depth_is_refused(self):
         with self.assertRaisesRegex(P.ParseError, "appears twice"):
