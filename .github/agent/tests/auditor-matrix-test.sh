@@ -4016,12 +4016,18 @@ m = json.load(open(src)); m["panel"] = dict(m["panel"], verdict=None, not_counte
 os.makedirs(os.path.join(w, "pm-contra1"), exist_ok=True); json.dump(m, open(os.path.join(w, "pm-contra1", "manifest.json"), "w"))
 m2 = json.load(open(os.path.join(w, "pm-uncounted", "manifest.json"))); m2["panel"] = dict(m2["panel"], not_counted=[], scanner_failures=[])   # the verdict says debug-amd64 is uncounted
 os.makedirs(os.path.join(w, "pm-contra2"), exist_ok=True); json.dump(m2, open(os.path.join(w, "pm-contra2", "manifest.json"), "w"))
+m3 = json.load(open(src)); bad = os.path.join(w, "pm-contra3-verdict.json"); open(bad, "w").write("{not json")      # a verdict path that does not parse
+m3["panel"] = dict(m3["panel"], verdict=bad, not_counted=[], scanner_failures=[])
+os.makedirs(os.path.join(w, "pm-contra3"), exist_ok=True); json.dump(m3, open(os.path.join(w, "pm-contra3", "manifest.json"), "w"))
 PYEOF
 o="$WORK/pm-contra1-run"; rm -rf "$o"; : > "$LEDGER"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra1/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; i1="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
 o="$WORK/pm-contra2-run"; rm -rf "$o"; : > "$LEDGER"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra2/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; i2="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; n2="$(grep -qi 'debug-amd64' "$o/report.md" && echo yes || echo no)"
-{ eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes"; } && ok || no "contradictory manifests: no verdict -> incomplete; verdict with an uncounted image -> incomplete naming it" "null-verdict=$i1 uncounted=$i2 names_image=$n2"
+o="$WORK/pm-contra3-run"; rm -rf "$o"; : > "$LEDGER"
+rc3=0; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra3/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || rc3=$?
+i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/null; } && echo yes || echo no)"       # an unparseable verdict stops the run (manifest invalid), never a complete day
+{ eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes" && eq "$i3" "yes"; } && ok || no "contradictory manifests: no verdict, an unparseable verdict, or a verdict with an uncounted image -> incomplete (naming the image)" "null-verdict=$i1 uncounted=$i2 names_image=$n2 unparseable=$i3"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"

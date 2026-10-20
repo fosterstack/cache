@@ -34,6 +34,14 @@ from auditorlib import parsers as PARS
 IMAGE_SCANNERS = ("grype", "trivy", "osv-scanner", "snyk")          # the legacy set, until 2b-2 deletes it
 
 
+def _panel_verdict(pn):
+    """The panel's verdict, re-read and re-validated from the path the manifest names; None when there is none or it does not validate."""
+    try:
+        return PARS.validate_panel_verdict(PARS.load_panel_verdict(pn["verdict"])) if (pn or {}).get("verdict") else None
+    except (PARS.ParseError, OSError, ValueError):
+        return None
+
+
 def _scanners(m):
     """The image scanners this manifest records: the panel's four (scanner_set 'panel') or the legacy four."""
     return PARS.scanner_set(m)
@@ -1994,7 +2002,11 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         # the auditor takes that decision, it does not recompute OS-package agreement (Google scans amd64 only, so its counts differ).
         # An unknown verdict (None) can never be a quorum.
         pn = m.get("panel") or {}
-        unc = pn.get("not_counted"); fails = pn.get("scanner_failures")
+        # completion comes from the VERDICT, re-read and re-validated here, never from the manifest's copied summary lists: a manifest
+        # that says "nothing uncounted, no failures" with no (or a different) verdict must not make a complete day
+        _vd = _panel_verdict(pn)
+        unc = _vd["not_counted"] if _vd else None
+        fails = _vd["scanner_failures"] if _vd else None
         ran_image = [s for s in SCN if (st.get(s) or {}).get("ran")]
         not_ran = [s for s in SCN if s not in ran_image]
         excluded = []

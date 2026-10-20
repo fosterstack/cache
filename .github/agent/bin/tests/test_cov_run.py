@@ -220,6 +220,14 @@ class PureHelpers(Base):
             R.C.validate_manifest(dict(base, panel={"not_counted": None}))
         R.C.validate_manifest(dict(base, panel={"verdict": None}))              # a missing verdict is recorded, not a manifest error
 
+    def test_the_panel_verdict_is_reread_and_revalidated_from_its_path(self):
+        self.assertIsNone(R._panel_verdict(None)); self.assertIsNone(R._panel_verdict({})); self.assertIsNone(R._panel_verdict({"verdict": None}))
+        d = self.d("v"); bad = os.path.join(d, "verdict.json"); open(bad, "w").write("{not json")
+        self.assertIsNone(R._panel_verdict({"verdict": bad}))                              # unparseable
+        self.assertIsNone(R._panel_verdict({"verdict": os.path.join(d, "gone.json")}))     # missing file
+        open(bad, "w").write("{}")
+        self.assertIsNone(R._panel_verdict({"verdict": bad}))                              # parses, does not validate
+
     def test_severity_by_scanner_keeps_each_scanners_highest_and_ignores_the_unrated(self):
         got = R._sev_by_scanner([{"scanner": "grype", "severity": "low"}, {"scanner": "grype", "severity": "high"},
                                  {"scanner": "grype", "severity": "medium"}, {"scanner": "scout"}, {"scanner": "inspector", "severity": "Critical"},
