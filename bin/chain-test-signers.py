@@ -89,106 +89,104 @@ def compound_norm(t):
     return re.sub(r"[\"'\\]", "", t)
 COMPOUND_SEQ_OPENER = re.compile(r"\$\(|\$\{|`|<\(|>\(")   # an opener in a word after quote removal, possibly-empty expansions gone
 COMPOUND_NAIVE_DATA = re.compile(r"'[^']*(?:\$\(|\$\{|`|<\(|>\()[^']*'|\\[$`]|\"[^\"]*[<>]\([^\"]*\"")   # the pairing is uncertain: any opener in naive single quotes, any escaped $ or backtick, any <( >( in naive double quotes
-def skip_expansion(raw, i):
-    """raw[i] is a $ outside single quotes: the index just past the whole expansion ($name, $1, $@ $* $# $? $! $$ $-, ${...}, $(...), $((...)), $[...]), nested forms and quoted delimiters included; an unbalanced one runs to the end of the line (fail closed). None when the $ starts no expansion."""
-    n = len(raw)
-    if i + 1 >= n: return None
-    c = raw[i + 1]
-    if c in "{([":
-        open_, close = ("{", "}") if c == "{" else (("(", ")") if c == "(" else ("[", "]"))
-        depth, j = 1, i + 2
-        while j < n and depth:
-            ch = raw[j]
-            if ch == "\\": j += 2; continue
-            if ch in "'\"":
-                k = j + 1
-                while k < n and raw[k] != ch:
-                    if ch == '"' and raw[k] == "\\": k += 1
-                    k += 1
-                j = k + 1; continue
-            if ch == open_: depth += 1
-            elif ch == close: depth -= 1
-            j += 1
-        return j if depth == 0 else n
-    if c in "@*#?!$-" or c.isdigit(): return i + 2
-    m = re.match(r"[A-Za-z_][A-Za-z0-9_]*", raw[i + 1:])
-    return i + 1 + m.end() if m else None
-COMPOUND_GAP = re.compile(r"[$<>]\x02+[({]")   # a $ < > then an expansion of any form (a gap that may be empty) then ( or {
-COMPOUND_NESTED_CRUDE = re.compile(r"[$<>](?:[\"'\\]|\$)[^\n]*[({]")   # the quote pairing is uncertain: a $ < > followed by a quote, an escape or another $, then ( or { later on the line
+COMPOUND_SEQ_OPENER = re.compile(r"\$\(|\$\{|`|<\(|>\(")   # an opener in a word after quote removal, possibly-empty expansions gone
+COMPOUND_NAIVE_DATA = re.compile(r"'[^']*(?:\$\(|\$\{|`|<\(|>\()[^']*'|\\[$`]|\"[^\"]*[<>]\([^\"]*\"")   # the pairing is uncertain: any opener in naive single quotes, any escaped $ or backtick, any <( >( in naive double quotes
 def shell_scan(raw):
-    """Split a logical line into blank-separated words, honouring quotes, backslash escapes and nested expansions (an unbalanced quote or expansion makes the rest one word and is refused: fail closed). Returns (words, data, nested, gap). Per word the character sequence after quote removal is built; an OUTERMOST expansion ($name, $1 $@ $* $# $? $! $$ $-, ${...}, $(...), $((...)), $[...]) becomes ONE gap token (it may be empty) while its inner characters are checked on their own sequence, so quoted opener data inside an expansion is still seen. Inside ${...} only a nested ${ nests and a bare { or ) is literal; inside $(...) a bare ( nests; quotes inside an expansion open their own context. `data` is True when an opener ($( ${ ` <( >() in a sequence has any literal character (single or ANSI-C quotes, escaped, a $ before a quote, <( >( in double quotes) or characters from different quote segments; `gap` is True when a $ < > is followed by a gap and then ( or {, or an expansion is left unterminated; `nested` is True when a substitution sits inside double quotes (the quote pairing is then not certain)."""
+    """Split a logical line into blank-separated words, honouring quotes and backslash escapes (an unbalanced quote makes the rest one word: fail closed). Also returns (data, nested): `data` is True when a word, after quote removal and with every possibly-empty expansion ($1..$9, $@, $*, $name, ${name}) dropped, holds an opener ($( ${ ` <( >() that is not a plain live one: any character of it quoted in single or ANSI-C quotes or escaped, a $ before a quote, a <( or >( inside double quotes, or its characters coming from different quote segments (an opener assembled at run time from literal pieces). `nested` is True when a substitution sits inside double quotes (the quote pairing is then not certain)."""
     words, cur, q, i, ansi, dollar = [], [], None, 0, False, -2
-    seq, seg, stack, seqs = [], 0, [], []        # per word: (char, literal, segment); stack of (closer, saved quote, saved ansi); seqs = one sequence per open expansion level
-    data = nested = gap = False
-    def check_data(sq_):
-        nonlocal data, gap
-        txt = "".join(c for c, _, _ in sq_)
-        if COMPOUND_GAP.search(txt): gap = True
-        for m in COMPOUND_SEQ_OPENER.finditer(txt):
-            part = sq_[m.start():m.end()]
-            if any(lit for _, lit, _ in part) or len({sg for _, _, sg in part}) > 1: data = True
+    seq, seg = [], 0          # per word: (char, literal, segment)
+    data = nested = False
     def flush():
-        nonlocal seq
-        check_data(seq)
+        nonlocal seq, data
+        txt = "".join(c for c, _, _ in seq)
+        for m in COMPOUND_SEQ_OPENER.finditer(txt):
+            part = seq[m.start():m.end()]
+            if any(lit for _, lit, _ in part) or len({sg for _, _, sg in part}) > 1: data = True
         seq = []
-    def put(ch, lit, sg):
-        (seqs[-1] if stack else seq).append((ch, lit, sg))
-    def pop_done():
-        nonlocal seg
-        done = seqs.pop()
-        check_data(done)
-        (seqs[-1] if stack else seq).append(("\x02", False, seg)); seg += 1
     while i < len(raw):
         c = raw[i]
-        if q is None and not stack and c in " \t":
+        if q is None and c in " \t":
             if cur: words.append("".join(cur)); cur = []; flush()
             i += 1; continue
         cur.append(c)
         if c == "\\" and (q != "'" or ansi) and i + 1 < len(raw):
-            cur.append(raw[i + 1]); put(raw[i + 1], True, seg); i += 2; continue
-        if q != "'" and c == "$":
-            if q == '"' and raw.startswith("$(", i): nested = True
-            two = raw[i:i + 2]
-            if two in ("${", "$(", "$["):
-                stack.append(({"${": "}", "$(": ")", "$[": "]"}[two], q, ansi)); seqs.append([]); q = None; ansi = False
-                cur.append(raw[i + 1]); i += 2; continue
-            m = re.match(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*)", raw[i:])
+            cur.append(raw[i + 1]); seq.append((raw[i + 1], True, seg)); i += 2; continue
+        if q != "'" and c == "$":                      # a possibly-empty expansion is dropped from the sequence
+            m = re.match(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})", raw[i:])
             if m:
-                cur.append(raw[i + 1:i + m.end()]); i += m.end()
-                (seqs[-1] if stack else seq).append(("\x02", False, seg)); seg += 1
-                continue
-        if q is None and stack:                  # inside an expansion, outside any quote of its own
-            top = stack[-1][0]
-            if c == top:
-                _, q, ansi = stack.pop(); i += 1; pop_done(); continue
-            if top == ")" and c == "(":
-                stack.append((")", q, ansi)); seqs.append([]); i += 1; continue
+                cur.append(raw[i + 1:i + m.end()]); i += m.end(); seg += 1; continue
         if c == "$": dollar = i
-        if q == '"' and c == "`": nested = True
+        if q == '"' and (raw.startswith("$(", i) or c == "`"): nested = True
         if q is None and c in "\"'":
-            if not stack and seq and seq[-1][0] == "$" and dollar == i - 1: seq[-1] = ("$", True, seq[-1][2])   # $'...' / $"...": the $ is a marker, literal
+            if seq and seq[-1][0] == "$" and dollar == i - 1: seq[-1] = ("$", True, seq[-1][2])   # $'...' / $"...": the $ is a marker, literal
             q = c; ansi = (c == "'" and dollar == i - 1); seg += 1
         elif q == c:
             q = None; ansi = False; seg += 1
         else:
-            put(c, q == "'" or (q == '"' and c in "<>"), seg)
+            seq.append((c, q == "'" or (q == '"' and c in "<>"), seg))
         i += 1
-    if stack:                                  # an unterminated expansion: refused
-        gap = True
-        for lv in seqs: check_data(lv)
     if cur: words.append("".join(cur)); flush()
-    return words, data, nested, gap
-DOLLAR_BOUNDARY = re.compile(r"[$<>](?:[\"'\\]|\$\{[^}]*\}|\$\([^)]*\)|\$[A-Za-z_0-9@*#?!$-]+)+[({]")   # a $ (or < >) then one or more quote or escape characters or ANY expansion, then ( or { : an opener whose characters bash joins from separate quote segments or around an expansion that may be empty; the raw logical line, comments and heredoc bodies included
+    return words, data, nested
+COMPOUND_GAP = re.compile(r"[$<>]\x02+[({]")   # a $ < > then an expansion of any form (a gap that may be empty) then ( or {
+COMPOUND_NESTED_CRUDE = re.compile(r"[$<>](?:[\"'\\]|\$)[^\n]*[({]")   # the quote pairing is uncertain: a $ < > followed by a quote, an escape or another $, then ( or { later on the line
+def boundary_scan(raw):
+    """True when a $ < > is separated from a following ( or { only by quote or escape characters or by expansions of any form (they may be empty), or when an expansion is left unterminated or its closing delimiter is uncertain. A separate pass from shell_scan on purpose: it adds refusals and cannot loosen the data and compound checks. Walks the line with a stack of open expansions ($name, $1 $@ $* $# $? $! $$ $-, ${...} (only a nested ${ nests; a bare { or ) is literal), $(...) (a bare ( nests), $((...)), $[...]), one character sequence per level, an expansion being ONE gap token in its parent; quotes inside an expansion open their own context; a # that starts a word inside $(...) is a comment whose end is uncertain."""
+    q, i, dollar, seg = None, 0, -2, 0
+    ansi = False
+    seq, stack, seqs = [], [], []     # stack of (closer, saved quote, saved ansi); seqs one list of (char, segment) per open expansion level
+    gap = False
+    def cur_seq(): return seqs[-1] if stack else seq
+    def tail_gap():
+        txt = "".join(c for c, _ in cur_seq())
+        return bool(re.search(r"[$<>]\x02+$", txt))
+    while i < len(raw):
+        c = raw[i]
+        if q is None and not stack and c in " \t":
+            if COMPOUND_GAP.search("".join(ch for ch, _ in seq)): gap = True
+            seq = []; i += 1; continue
+        if c == "\\" and (q != "'" or ansi) and i + 1 < len(raw):
+            if raw[i + 1] in "({" and tail_gap(): gap = True
+            cur_seq().append((raw[i + 1], seg)); i += 2; continue
+        if q != "'" and c == "$":
+            two = raw[i:i + 2]
+            if two in ("${", "$(", "$["):
+                stack.append(({"${": "}", "$(": ")", "$[": "]"}[two], q, ansi)); seqs.append([]); q = None; ansi = False; i += 2; continue
+            m = re.match(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*)", raw[i:])
+            if m:
+                cur_seq().append(("\x02", seg)); seg += 1; i += m.end(); continue
+        if q is None and stack:
+            top = stack[-1][0]
+            if c == top:
+                _, q, ansi = stack.pop(); seqs.pop(); i += 1
+                cur_seq().append(("\x02", seg)); seg += 1; continue
+            if top == ")" and c == "(":
+                if tail_gap(): gap = True
+                stack.append((")", q, ansi)); seqs.append([]); i += 1; continue
+            if top == ")" and c == "#" and (i == 0 or raw[i - 1] in " \t" or raw[i - 1:i + 1] == "(#"):
+                gap = True      # a comment inside $( ): where it ends is not certain
+        if c == "$": dollar = i
+        if q is None and c in "\"'":
+            q = c; ansi = (c == "'" and dollar == i - 1); seg += 1
+        elif q == c:
+            q = None; ansi = False; seg += 1
+        else:
+            if c in "({" and tail_gap(): gap = True
+            cur_seq().append((c, seg))
+        i += 1
+    if stack: gap = True              # an unterminated expansion
+    if COMPOUND_GAP.search("".join(ch for ch, _ in seq)): gap = True
+    return gap
+DOLLAR_BOUNDARY = re.compile(r"[$<>](?:[\"'\\]|\$\{[^}]*\}|\$\([^)]*\)|\$\[[^\]]*\]|\$[A-Za-z_0-9@*#?!$-]+)+[({]")   # a $ (or < >) then one or more quote or escape characters or ANY expansion, then ( or { : an opener whose characters bash joins from separate quote segments or around an expansion that may be empty; the raw logical line, comments and heredoc bodies included
 def shell_words(raw):
     return shell_scan(raw)[0]
 def dollar_boundary(raw):
     if DOLLAR_BOUNDARY.search(raw): return True
-    _w, _d, nested, gap = shell_scan(raw)
-    if gap: return True
+    if boundary_scan(raw): return True
+    nested = shell_scan(raw)[2]
     return bool(nested and COMPOUND_NESTED_CRUDE.search(raw))
 def declare_compound(raw):
     if COMPOUND_WORD.search(compound_norm(raw)): return True
-    words, data, nested, _gap = shell_scan(raw)
+    words, data, nested = shell_scan(raw)
     if data: return True   # an opener held as quoted data: fragments of a compound value can be joined at run time, so the data itself is refused
     if nested and re.search(r"[\"'\\]", raw) and (COMPOUND_PAREN.search(compound_norm(raw)) or COMPOUND_NAIVE_DATA.search(raw)): return True   # the quote pairing is not certain: judge the whole line, and any naive quoted opener is data
     for w in words:   # any word that mixes quotes or escapes with a bare ( then an opener, wherever the builtin is and however it is named; a plain NAME=( prefix is exempt, the rest of the word is not
