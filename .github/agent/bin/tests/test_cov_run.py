@@ -220,6 +220,14 @@ class PureHelpers(Base):
             R.C.validate_manifest(dict(base, panel={"not_counted": None}))
         R.C.validate_manifest(dict(base, panel={"verdict": None}))              # a missing verdict is recorded, not a manifest error
 
+    def test_an_unknown_scanner_set_is_a_manifest_error_not_the_legacy_mode(self):
+        base = {"scanner_reports": {k: None for k in R.PARS.LEGACY_SCANNERS + ("osv-scanner-gomod",)},
+                "scanner_status": {k: {"reason": "x"} for k in R.PARS.LEGACY_SCANNERS + ("osv-scanner-gomod",)}}
+        for bad in ("Panel", "panels", "", 3, ["panel"]):
+            with self.assertRaisesRegex(ValueError, "scanner_set"):
+                R.C.validate_manifest(dict(base, scanner_set=bad))
+        R.C.validate_manifest(dict(base)); R.C.validate_manifest(dict(base, scanner_set="legacy"))
+
     def test_the_panel_verdict_is_reread_and_revalidated_from_its_path(self):
         self.assertIsNone(R._panel_verdict(None)); self.assertIsNone(R._panel_verdict({})); self.assertIsNone(R._panel_verdict({"verdict": None}))
         d = self.d("v"); bad = os.path.join(d, "verdict.json"); open(bad, "w").write("{not json")

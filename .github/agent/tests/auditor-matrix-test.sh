@@ -3988,7 +3988,9 @@ begin "panel-11-a-scanner-missing-everywhere-is-never-a-complete-day" "even when
 o="$WORK/pm-gg-run"; rm -rf "$o"; : > "$LEDGER"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-googlegone/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; {
   inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; nm="$(grep -i 'AUDIT INCOMPLETE' "$o/report.md" | grep -qi 'google' && echo yes || echo no)"
-  { eq "$inc" "yes" && eq "$nm" "yes"; } && ok || no "google missing on every amd64 image: incomplete, google named" "incomplete=$inc names_google=$nm"; }
+  gt="$(awk '/^::group::google/{f=1} f{print} /^::endgroup::/{if(f)exit}' "$o/reports/scanner-tables.txt")"
+  tc="$(printf '%s' "$gt" | grep -qi 'clean' && echo clean || echo notclean)"; ti="$(printf '%s' "$gt" | grep -qi 'scan incomplete' && echo yes || echo no)"
+  { eq "$inc" "yes" && eq "$nm" "yes" && eq "$tc" "notclean" && eq "$ti" "yes"; } && ok || no "google missing on every amd64 image: incomplete, google named, its scanner table says scan incomplete and never clean" "incomplete=$inc names_google=$nm table=[$gt]"; }
 
 begin "panel-12-a-partial-failure-keeps-the-findings-the-scanner-did-report" "a scanner that missed one image but reported on another still contributes its findings: the finding only google saw (on production-amd64) is in the report, the day is incomplete, and the report says google did not run on the image it missed"
 o="$WORK/pm-part-run"; rm -rf "$o"; : > "$LEDGER"
