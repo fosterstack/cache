@@ -2020,10 +2020,32 @@ for r in rows:
 PY
 CASE="the committed pinned-fetch rows are EXACTLY the scanner's occurrences of the nineteen pinned lines: each row's file, form, key and whole-line hash is one the scan produces for its line, none is missing, none is extra (twenty rows)"
 check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
-import importlib.util, json, sys
+import hashlib, importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); sys.modules["ac"] = ac; spec.loader.exec_module(ac)
 # the oracle is not taken from the checker alone: the lines per file are the ones REQ-SUP-001-AC26 names (1 release download, 1 client image, 14 loopback requests in four acceptance scripts, 3 Go fetches)
 assert {f: len(l) for f, l in ac.PINNED_FETCH.items()} == {"bin/release-assets.sh": 1, "bin/acceptance-k8s.sh": 1, "bin/acceptance-gradle.sh": 3, "bin/acceptance-gradle-capped.sh": 4, "bin/acceptance-maven.sh": 4, "bin/acceptance-maven-capped.sh": 3, "bin/install-scanner.sh": 1, "bin/go-bump-open-pr.sh": 2}, {f: len(l) for f, l in ac.PINNED_FETCH.items()}
+# and the content: the sha256 of each of the nineteen lines (whitespace collapsed, as the scan hashes a line), written here once so a change of a line in the checker alone fails this test
+assert sorted(hashlib.sha256(" ".join(l.split()).encode("utf-8", "replace")).hexdigest() for ls in ac.PINNED_FETCH.values() for l in ls) == [
+    "122789dd18ce1f7e0c9d9e34f02d10435f6ba715ccc666bd8a8409e44da163f4",
+    "1714fe6f02ca5bb0e5e7caeb04be023d96f15dfbd67448f45b86683a82e3e08f",
+    "1e719ae863a1d1da34ce4b288dfc584be423a6549b1a65e47bdd900b1feeb5d7",
+    "310e8130d53cf46f5d3cde34273658ff6d8a1eaab5a7e86c9244f4d4a9023fe5",
+    "33cb527c703c825a14170872548ce54e176df30ca86f7e86eac54a823e885320",
+    "4beb1efe2b83eada2f2156256abc0b376600cbdffb30fbe450f2ab77ed0aa242",
+    "59793d05534371e9074f94050a6cb3ffdcc5b22477999f8d05abd4c4f73a33dc",
+    "6d9cfda4fd54780de4d518cc04f4595e779d074ad30832bd4c0e10e887250542",
+    "72bfaad46b088a7a39da93c083a8327473c5aee27d69878aeb0ce100134c6816",
+    "745877cb813e6de69e1c4f371e860f7965339dfdff9601a72b62c42697fe3a2c",
+    "85d58dc5457660a946aa5e3aa99ad7bd8518cdf8571d542647b3dc2d0a48ee23",
+    "868738b70b28a04197b6a34e1150375a1fe2ffe1449bb68fefbc071ea244032e",
+    "8694e7cf27a55609cd6f8ad4f85430759b9e406d164b97e5d632c6dce834c798",
+    "cc171056ca9b17d70a97e8823cf1c30d19d4e17d56a13655c4b54eac0ecd0bee",
+    "cd429412808e6f44d24e8b6f9698a9ae401430eb8df4505121040a27ac75f314",
+    "d104f7480fdfddf1771f2b53803ff0c0d7d3d8bb56dcabf5b33c0e83c7b64bb2",
+    "d13281784b28c886b6b617792b2ebbd24d341f2d1629bc89ff6d54fa878906d7",
+    "f002505192d0fa92eb33f53dcc46343fa1d35b2495da122c48fb6722adb81f64",
+    "f9845b6412f4b59212b81e4a43d2059a14e2a08849261a7f1f93f008d4df137d",
+]
 want = set()
 for f, lines in ac.PINNED_FETCH.items():
     for l in lines:
