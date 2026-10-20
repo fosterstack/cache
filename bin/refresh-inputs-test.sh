@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30, REQ-REFRESH-001-AC32, REQ-REFRESH-001-AC33, REQ-REFRESH-001-AC34
+# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30, REQ-REFRESH-001-AC32, REQ-REFRESH-001-AC33, REQ-REFRESH-001-AC34, REQ-REFRESH-001-AC35, REQ-REFRESH-001-AC36, REQ-REFRESH-001-AC37, REQ-REFRESH-001-AC38
 # Tests of the PR: the daily input refresh script and the daily FIPS-module check.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -97,6 +97,8 @@ P
 }
 # the pinned Wolfi key line of the fixture repository (the refresh checks the live key against it right after the fetch)
 mkdir -p "$fx/repo/build/locks"; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(shasum -a 256 "$fx/archive/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)" >"$fx/repo/build/locks/archive-keys.sha256"
+# REQ-REFRESH-001-AC35: the packages the Build jobs run ON the runner (data file) and the committed lock of their resolution; the fixture holds the same closure as melange.lock
+printf 'packages:\n  - busybox\n  - ca-certificates-bundle\n' >"$fx/repo/build/host-tools.yaml"; cp "$fx/melange.lock" "$fx/repo/build/locks/host-tools.lock"
 mkrepo() { rm -rf "$work/rp"; mkdir -p "$work/rp"; cp -R "$fx/repo/." "$work/rp/"; rm -rf "$work/ar"; cp -R "$fx/archive" "$work/ar"; for a in x86_64 aarch64; do cp -n "$fx/envrepo/$a/"*.apk "$work/ar/$a/"; done   # melange's build tools are archived too
   printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)" "$(shasum -a 256 "$fx/archive/aarch64/APKINDEX.tar.gz" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-index.sha256"; }   # the record names the index the archive holds now
 rfe=(env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live")
@@ -1616,5 +1618,48 @@ t "AC30" "refresh: no pinned key line is exit 3 (never trust the archived key al
 mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(shasum -a 256 "$fx/archive/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-keys.sha256"
 run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC30" "refresh: the pinned key, the archived key and the live key all equal -> the run proceeds (exit 0)" bash -c "test \"\$(cat '$work/rc')\" = 0"
+# ===== REQ-REFRESH-001-AC35..AC38: the host tools (bubblewrap and its libraries, run on the runner by the Build jobs) are resolved, archived and locked like melange's build tools ==========
+# live host resolution = the fixture's "new melange closure" (adds zlib); melange's own live resolution is unchanged, so only the host lock and the archive move
+hostenv=(env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_LOCK_HOST="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$fx/live")
+mkrepo; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: apko lock also runs for the host tools (a fourth lock, made against live Wolfi from build/host-tools.yaml)" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c '^apko lock ' '$CALLS')\" -ge 4 && grep '^apko lock ' '$CALLS' | grep -q 'host-tools'"
+t "AC35" "refresh: a package only the host tools' live resolution adds (zlib) is archived for both architectures" bash -c "test -f '$work/ar/x86_64/zlib-1.3.2-r0.apk' && test -f '$work/ar/aarch64/zlib-1.3.2-r0.apk'"
+t "AC35" "refresh: build/locks/host-tools.lock holds the live host resolution (sorted name=version lines, zlib included) and melange.lock is untouched" bash -c "python3 - '$work/rp' '$fx' <<'P'
+import sys
+r, fx = sys.argv[1:3]
+lock = [l.strip() for l in open(r + '/build/locks/host-tools.lock') if l.strip()]
+assert lock == sorted(lock) and 'zlib=1.3.2-r0' in lock, lock
+assert open(r + '/build/locks/melange.lock').read() == open(fx + '/melange.lock').read()
+P"
+t "AC38" "refresh: the host lock change goes in the one refresh pull request with the archive pointer (one gh pr create, the lock among the committed paths)" bash -c "test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && $GHPATHS | grep -q 'build/locks/host-tools.lock' && ! grep -Eq '^gh pr merge|--admin|--auto|--no-verify' '$CALLS'"
+t "AC38" "refresh: the host tools carry no waiting period (a version resolved today is archived today: no cooldown or minimum age in the output)" bash -c "! grep -Eqi 'cooldown|too young|minimum age|waiting period' '$work/log'"
+# nothing moved: the host resolution equals the committed host lock -> still no commit, no push, no pull request
+mkrepo; run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: a host resolution equal to the committed host-tools.lock changes nothing (exit 0, no commit, no push, no pull request)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -Eq '^(gh |git( -C [^ ]+)? (commit|push|checkout))' '$CALLS'"
+# AC35: both data file and lock are required inputs of the repository
+mkrepo; rm -f "$work/rp/build/host-tools.yaml"; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: a repository without build/host-tools.yaml is refused (non-zero, names the file), nothing archived, no pull request" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'host-tools.yaml' '$work/log' && ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/x86_64/zlib-1.3.2-r0.apk'"
+mkrepo; rm -f "$work/rp/build/locks/host-tools.lock"; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: a repository without build/locks/host-tools.lock is refused (non-zero, names the file), no pull request" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'host-tools.lock' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+# AC36: a host package that fails its lock checksum stops the job
+mkrepo; mkdir -p "$work/badhost/x86_64" "$work/badhost/aarch64"; cp "$fx/live/x86_64/zlib-1.3.2-r0.apk" "$work/badhost/x86_64/"; cp "$fx/live/aarch64/zlib-1.3.2-r0.apk" "$work/badhost/aarch64/"; python3 "$work/lib.py" tamper "$work/badhost/x86_64/zlib-1.3.2-r0.apk"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_LOCK_HOST="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$work/badhost" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: a downloaded host-tools package that fails its checksum stops the job (non-zero, names the checksum), keeps nothing, changes no lock, opens no pull request" bash -c "test \"\$(cat '$work/rc')\" != 0 && test \"\$(cat '$work/rc')\" != 127 && grep -Eqi 'checksum|tamper|mismatch' '$work/log' && ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/x86_64/zlib-1.3.2-r0.apk' && cmp '$work/rp/build/locks/host-tools.lock' '$fx/melange.lock'"
+# AC36: the committed host lock names a version the archive does not hold (an older version the archive must keep)
+mkrepo; printf 'busybox=1.37.0-r5\nca-certificates-bundle=20260102-r0\nnosuchtool=9.9.9-r0\n' >"$work/rp/build/locks/host-tools.lock"
+run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: the committed host-tools.lock names a package the archive does not hold: exit 1 naming host-tools.lock and the file, nothing changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'host-tools.lock' '$work/log' && grep -q 'nosuchtool-9.9.9-r0.apk' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+# AC36: a damaged archived copy of a host package stops the job on every run
+mkrepo; bb=$(ls "$work/ar/x86_64/" | grep '^busybox-' | head -1); printf 'X' >>"$work/ar/x86_64/$bb"
+run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: a damaged archived host package is found (exit 1, names the file), no pull request" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q '$bb' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+# AC37: a version the live host resolution no longer names is noted and its archived copy kept
+mkrepo; python3 - "$fx/live-mel.lock.json" "$work/live-host-drop.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1])); d["contents"]["packages"] = [e for e in d["contents"]["packages"] if e["name"] != "busybox"]
+json.dump(d, open(sys.argv[2], "w"))
+P
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_LOCK_HOST="$work/live-host-drop.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC37" "refresh: a host package version live Wolfi no longer resolves (busybox) is noted as a host tool, exit 0, the archived copy kept, the lock moves to the live resolution" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -Eqi 'busybox.*host tools|host tools.*busybox' '$work/log' && grep -qi 'no longer' '$work/log' && ls '$work/ar/x86_64/' | grep -q '^busybox-' && ! grep -q '^busybox=' '$work/rp/build/locks/host-tools.lock'"
 echo "refresh-inputs-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

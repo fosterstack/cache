@@ -58,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 50 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 52 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -88,6 +88,7 @@ dependency-provenance.json
 bin/vendor-check.sh bin/vendor-provenance.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
 build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
+build/host-tools.yaml build/locks/host-tools.lock
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
 bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh
@@ -102,7 +103,7 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
 """.split())
-if len(DECLARED) != 50: errs.append("declared list is not 50 paths: %d" % len(DECLARED))
+if len(DECLARED) != 52: errs.append("declared list is not 52 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -112,7 +113,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 193, 6   # 193 (+ ^bin/scout-older-versions(\.sh|-test\.sh)$, main's advisor 0520); 192 (+ bin/chain-sign-wiring-fixtures.txt, cache#433); 191 (+ ^bin/loopback-get\.sh$ and its test, REQ-SUP-001-AC24); 189 (the merge of main's 152 and the chain's 181 over their common base; main's additions: build/archive.json, the persona-uat patterns, vendor-provenance-test, the vendor subtree); 181 (the live-test orchestrator is admitted as ^bin/vex-live-run\.sh$, not under the -test.sh name that the action-pin checker exempts as a harness; same count): 177 + ^bin/vex-guide-test\.sh$ and ^bin/vex-live-test\.py$, ^bin/vex-live-test\.sh$, ^bin/vex-live-test-test\.sh$ (REQ-SCAN-011, REQ-SCAN-012: the VEX customer guide test and the live test, admitted ahead of the PRs that carry them); 177: 175 + ^bin/inspector-reuse\.py$ and ^bin/inspector-reuse-test\.sh$ (REQ-REL-004-AC8, Inspector same-day reuse); 175: 174 + ^vendor/ (the vendored subtree, REQ-VEND-001, cache#342); 174: 173 + ^bin/marker-(pr-gate\.py|gate-test\.sh)$ (the marker-only gate, PR 4b-6); 173: 171 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 171: 170 + ^bin/suite-guard-run\.py$ (the runner is Python, R-PINS, cache#331); 172 (before that take): 170 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 170: 171 - the Dockerfile pattern (rule 61: the Dockerfiles are removed; the goreleaser name left the config alternation, PR 4b-4); 171: 170 + the PR 4b-1 pattern; 170: 166 + the 4 PR 4a patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 195, 6   # 195 (+ ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$, REQ-REFRESH-001-AC35); 193 (+ ^bin/scout-older-versions(\.sh|-test\.sh)$, main's advisor 0520); 192 (+ bin/chain-sign-wiring-fixtures.txt, cache#433); 191 (+ ^bin/loopback-get\.sh$ and its test, REQ-SUP-001-AC24); 189 (the merge of main's 152 and the chain's 181 over their common base; main's additions: build/archive.json, the persona-uat patterns, vendor-provenance-test, the vendor subtree); 181 (the live-test orchestrator is admitted as ^bin/vex-live-run\.sh$, not under the -test.sh name that the action-pin checker exempts as a harness; same count): 177 + ^bin/vex-guide-test\.sh$ and ^bin/vex-live-test\.py$, ^bin/vex-live-test\.sh$, ^bin/vex-live-test-test\.sh$ (REQ-SCAN-011, REQ-SCAN-012: the VEX customer guide test and the live test, admitted ahead of the PRs that carry them); 177: 175 + ^bin/inspector-reuse\.py$ and ^bin/inspector-reuse-test\.sh$ (REQ-REL-004-AC8, Inspector same-day reuse); 175: 174 + ^vendor/ (the vendored subtree, REQ-VEND-001, cache#342); 174: 173 + ^bin/marker-(pr-gate\.py|gate-test\.sh)$ (the marker-only gate, PR 4b-6); 173: 171 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 171: 170 + ^bin/suite-guard-run\.py$ (the runner is Python, R-PINS, cache#331); 172 (before that take): 170 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum; PR 4b-5); 170: 171 - the Dockerfile pattern (rule 61: the Dockerfiles are removed; the goreleaser name left the config alternation, PR 4b-4); 171: 170 + the PR 4b-1 pattern; 170: 166 + the 4 PR 4a patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
