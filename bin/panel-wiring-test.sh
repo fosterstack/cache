@@ -404,12 +404,21 @@ PY
   else failn=$((failn+1)); echo "FAIL auditor-$1 → $got, want $2 ($out)"; fi
 }
 aud_case real           ok  ""
-aud_case trivy-install  bad "for s in grype =>for s in grype trivy "
-aud_case snyk-token     bad "          KNOWN_DEFECT_LOG: ${{ inputs.known_defect_log }}
-=>          KNOWN_DEFECT_LOG: ${{ inputs.known_defect_log }}
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+aud_case trivy-install  bad "=>
+          ./bin/install-scanner.sh trivy
 "
-aud_case reports-download bad "-n oci-candidate =>-n rescan-scanner-reports "
+aud_case osv-install    bad "=>
+          ./bin/install-scanner.sh osv-scanner
+"
+aud_case snyk-token     bad '=>
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+' 
+aud_case reports-download bad '=>
+          gh run download "$rid" -n rescan-scanner-reports -D x
+' 
+aud_case reports-option bad "=>
+            --rescan-reports x
+"
 aud_case no-panel-dir   bad "--panel-dir =>--panel-evidence "
 echo "panel-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
