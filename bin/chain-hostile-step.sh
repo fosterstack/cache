@@ -26,7 +26,7 @@ mkdir -p attempts hostile-work
 own_claims() {
   [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || return 1
   local tok
-  tok=$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value) || return 1
+  tok=$(sh bin/loopback-get.sh -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value) || return 1
   [ -n "$tok" ] || return 1
   printf '%s.%s.\n' "$(printf '%s' "$tok" | cut -d. -f1)" "$(printf '%s' "$tok" | cut -d. -f2)"
 }

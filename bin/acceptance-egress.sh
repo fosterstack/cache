@@ -4,18 +4,17 @@
 # loaded from Build's tarball). The old stage's evidence upload is not carried: Check uploads check-results/ only.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
-# step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+# step stops the suite. Only the option line below (errexit and pipefail) applies here, GitHub's default for a run step (no -u: the bodies never ran with it).
+LGROOT=$PWD
+lgin() { (cd "$LGROOT" && "$@" < bin/loopback-get.sh); }   # the loopback helper, fed on stdin to the client inside the shared network namespace (REQ-SUP-001-AC24)
 set -eo pipefail
 
 # stage-acceptance-egress.yml, job egress, step 2: capture from before startup, prove the monitor, run both policies
 step_02() (
 set -euo pipefail
 
-NETSHOOT=nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b
 # Builder for the static strace and a libc-less image used to PROVE
 # the tracer is truly static (pinned by digest, row 78).
-ALPINE=alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
-DISTROLESS=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 # strace release built from source, statically linked, so it can be
 # the entrypoint of the distroless (no libc) candidate image.
 STRACE_VER=6.9
@@ -48,7 +47,7 @@ get_static_strace() {
   mkdir -p "$TRACE_BIN" "$TRACE_OUT"
   chmod 0777 "$TRACE_OUT"
   [ -n "$STRACE_SHA256" ] || fail "STRACE_SHA256 is not pinned; refusing to build the syscall tracer from unverified source (fail closed). Pin the published checksum of strace-${STRACE_VER}.tar.xz."
-  docker run --rm -v "$TRACE_BIN":/out -e V="$STRACE_VER" -e SUM="$STRACE_SHA256" "$ALPINE" sh -euc '
+  docker run --rm -v "$TRACE_BIN":/out -e V="$STRACE_VER" -e SUM="$STRACE_SHA256" alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc sh -euc '
     apk add --no-cache build-base linux-headers curl xz >/dev/null
     cd /tmp
     curl -fsSLO "https://strace.io/files/${V}/strace-${V}.tar.xz"
@@ -64,7 +63,7 @@ get_static_strace() {
   # PROOF the tracer runs in a libc-less image (like the candidate):
   # strace -V prints its version and exits 0 with no target. If the
   # binary were dynamically linked this errors (no loader) and fails.
-  if ! docker run --rm -v "$TRACE_BIN":/trace:ro --entrypoint /trace/strace "$DISTROLESS" -V > /tmp/strace.ver 2>&1; then
+  if ! docker run --rm -v "$TRACE_BIN":/trace:ro --entrypoint /trace/strace gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab -V > /tmp/strace.ver 2>&1; then
     cat /tmp/strace.ver >&2 || true
     fail "the built strace did not execute in a libc-less distroless image - it is not usable as the candidate entrypoint (fail closed)"
   fi
@@ -134,7 +133,7 @@ analyze_strace() {
 # UDP/SYN/DNS to any other address, private or public, is flagged.
 #
 # ANY tool/parse failure (unreadable pcap, tshark error, zero packets)
-# returns non-zero and, under `set -e`, fails the job. A broken
+# returns non-zero and, under errexit, fails the job. A broken
 # capture never passes silently.
 # ------------------------------------------------------------------
 analyze_pcap() {
@@ -144,20 +143,20 @@ analyze_pcap() {
   allowed="127.0.0.1 ::1 ${own}"
   [ -n "$own6" ] && allowed="${allowed} ${own6}"
   [ -s "$pcap" ] || { echo "::error::${label}: capture ${pcap} missing or empty (monitor failure)" >&2; return 1; }
-  if ! total=$(docker run --rm -v /tmp:/caps "$NETSHOOT" tshark -r "/caps/${base}" -T fields -e frame.number 2>/dev/null | wc -l); then
+  if ! total=$(docker run --rm -v /tmp:/caps nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b tshark -r "/caps/${base}" -T fields -e frame.number 2>/dev/null | wc -l); then
     echo "::error::${label}: tshark could not read ${pcap} (parser failure)" >&2
     return 1
   fi
   [ "$total" -gt 0 ] || { echo "::error::${label}: capture contained zero packets (monitor blind)" >&2; return 1; }
   # DNS: ANY packet on port 53 (udp or tcp), regardless of peer/direction.
-  if ! docker run --rm -v /tmp:/caps "$NETSHOOT" tshark -r "/caps/${base}" \
+  if ! docker run --rm -v /tmp:/caps nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b tshark -r "/caps/${base}" \
        -Y 'udp.port == 53 || tcp.port == 53' -T fields -e frame.number \
        > "/tmp/${label}.dnsraw" 2>/dev/null; then
     echo "::error::${label}: DNS analysis failed (parser failure)" >&2
     return 1
   fi
   # TCP connection initiations (pure SYN): src/dst + dport, IPv4 and IPv6.
-  if ! docker run --rm -v /tmp:/caps "$NETSHOOT" tshark -r "/caps/${base}" \
+  if ! docker run --rm -v /tmp:/caps nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b tshark -r "/caps/${base}" \
        -Y 'tcp.flags.syn == 1 && tcp.flags.ack == 0' \
        -T fields -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -e tcp.dstport -E separator='|' 2>/dev/null \
        | sed 's/^/TCP|/' > "/tmp/${label}.synraw"; then
@@ -166,7 +165,7 @@ analyze_pcap() {
   fi
   # Non-DNS UDP datagrams: src/dst + dport, IPv4 and IPv6. This is the
   # category the previous analyzer ignored (the audited false negative).
-  if ! docker run --rm -v /tmp:/caps "$NETSHOOT" tshark -r "/caps/${base}" \
+  if ! docker run --rm -v /tmp:/caps nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b tshark -r "/caps/${base}" \
        -Y 'udp && !(udp.port == 53)' \
        -T fields -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst -e udp.dstport -E separator='|' 2>/dev/null \
        | sed 's/^/UDP|/' > "/tmp/${label}.udpraw"; then
@@ -209,7 +208,7 @@ wait_for_tcpdump() {
 start_stack() {
   local label="$1" net="$2"
   docker rm -f "fscache-net-${label}" "fscache-tap-${label}" "fscache-cand-${label}" >/dev/null 2>&1 || true
-  docker run -d --name "fscache-net-${label}" --network "$net" "$NETSHOOT" sleep infinity >/dev/null
+  docker run -d --name "fscache-net-${label}" --network "$net" nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b sleep infinity >/dev/null
   OWN_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "fscache-net-${label}")
   OWN_IP6=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.GlobalIPv6Address}}{{end}}' "fscache-net-${label}")
   if [ -z "$OWN_IP" ]; then
@@ -217,7 +216,7 @@ start_stack() {
     return 1
   fi
   docker run -d --name "fscache-tap-${label}" --net "container:fscache-net-${label}" \
-    -v /tmp:/caps "$NETSHOOT" tcpdump -i any -n -U -w "/caps/${label}.pcap" >/dev/null
+    -v /tmp:/caps nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b tcpdump -i any -n -U -w "/caps/${label}.pcap" >/dev/null
   wait_for_tcpdump "fscache-tap-${label}" "$label"
 }
 
@@ -254,16 +253,17 @@ run_scenario() {
   # read-write TRACE_OUT mount; the read-only TRACE_BIN mount carries
   # the tracer. strace then execs the real entrypoint. SYS_PTRACE and
   # an unconfined seccomp/apparmor profile are required for ptrace.
-  # FSCACHE_* env is inherited unchanged (none is set here), so the
+  # FSCACHE_* env is inherited unchanged (none is defined here), so the
   # cache runs identically to a bare `docker run "$REF"`.
-  docker run -d --name "fscache-cand-${label}" --net "container:fscache-net-${label}" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v "$TRACE_BIN":/trace:ro -v "$TRACE_OUT":/out --entrypoint /trace/strace "$REF" -f -e trace=network -yy -qq -o "/out/${label}.strace" "$CANDIDATE_ENTRYPOINT" >/dev/null
+  docker tag "$REF" localhost/fscache-egress-candidate
+  docker run --pull=never -d --name "fscache-cand-${label}" --net "container:fscache-net-${label}" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v "$TRACE_BIN":/trace:ro -v "$TRACE_OUT":/out --entrypoint /trace/strace localhost/fscache-egress-candidate -f -e trace=network -yy -qq -o "/out/${label}.strace" "$CANDIDATE_ENTRYPOINT" >/dev/null
   # ---- startup interval (capture already running) ----
   # The client runs INSIDE the shared netns, so it reaches the server
   # over loopback with no egress and no host port - identical on the
   # ordinary and the --internal networks.
   local ok=0 t
   for ((t = 1; t <= 30; t++)); do
-    if docker exec "$owner" curl -sf "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then ok=1; break; fi
+    if lgin docker exec -i "$owner" sh -s -- -sf "http://127.0.0.1:8080/healthz" >/dev/null 2>&1; then ok=1; break; fi
     sleep 1
   done
   if [ "$ok" != 1 ]; then
@@ -278,13 +278,13 @@ run_scenario() {
   for ((i = 1; i <= 20; i++)); do
     key="k${i}"
     payload="fostercache-payload-${i}-abcdefgh"
-    put=$(docker exec "$owner" curl -s -o /dev/null -w '%{http_code}' -X PUT --data-binary "$payload" "http://127.0.0.1:8080/${key}")
+    put=$(lgin docker exec -i "$owner" sh -s -- -s -o /dev/null -w '%{http_code}' -X PUT --data-binary "$payload" "http://127.0.0.1:8080/${key}")
     case "$put" in
       200|201) ;;
       *) echo "::error::${label}: PUT ${key} returned status ${put} (expected 200/201)" >&2
          freeze_capture "$label"; teardown "$label"; return 1;;
     esac
-    resp=$(docker exec "$owner" curl -s -w $'\n%{http_code}' "http://127.0.0.1:8080/${key}")
+    resp=$(lgin docker exec -i "$owner" sh -s -- -s -w $'\n%{http_code}' "http://127.0.0.1:8080/${key}")
     get=${resp##*$'\n'}
     body=${resp%$'\n'*}
     if [ "$get" != 200 ]; then
@@ -401,7 +401,7 @@ negative_controls() {
   # An outbound TCP connect on the --internal netns: it fails with
   # ENETUNREACH/EHOSTUNREACH before any SYN is emitted. strace observes
   # the connect() syscall (SYS_PTRACE); the packet monitor cannot.
-  docker run --rm --net "container:fscache-net-ctldenied" --cap-add SYS_PTRACE "$NETSHOOT" \
+  docker run --rm --net "container:fscache-net-ctldenied" --cap-add SYS_PTRACE nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b \
     sh -c 'command -v strace >/dev/null 2>&1 || { echo "MISSING-STRACE" >&2; exit 3; }; strace -f -e trace=connect nc -w 2 203.0.113.7 80' \
     > /tmp/ctldenied.strace 2>&1 || true
   sleep 1
@@ -411,7 +411,7 @@ negative_controls() {
     fail "control B: netshoot image lacks strace - cannot attribute operations denied before a packet is emitted"
   fi
   # The packet monitor is blind to the denied connect (no packet left):
-  docker run --rm -v /tmp:/caps "$NETSHOOT" tshark -r /caps/ctldenied.pcap \
+  docker run --rm -v /tmp:/caps nicolaka/netshoot:v0.13@sha256:a20c2531bf35436ed3766cd6cfe89d352b050ccc4d7005ce6400adf97503da1b tshark -r /caps/ctldenied.pcap \
     -Y 'tcp.flags.syn == 1 && tcp.flags.ack == 0 && ip.dst == 203.0.113.7' \
     -T fields -e frame.number 2>/dev/null > /tmp/ctldenied.leak || true
   if [ -s /tmp/ctldenied.leak ]; then

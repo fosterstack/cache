@@ -11,6 +11,8 @@
 # --arch arm64 (REQ-CHAIN-006-AC17) runs the same checks on the linux/arm64 binaries and images; the check-arm64 job runs it on an arm64 runner. The default
 # is amd64, run by the check job. Writes OUT/artifacts-result.json (arm64: artifacts-result-arm64.json, with the arch) naming both candidate digests and every AC asserted. The certificate number is never written.
 set -euo pipefail
+LGROOT=$PWD
+lg() { (cd "$LGROOT" && sh bin/loopback-get.sh "$@"); }   # every request to the cache under test goes through the loopback helper (REQ-SUP-001-AC24)
 # an OCI layout directory (PR 2's interface, PROPOSED): oci-layout and an index.json; a docker-save tarball or any other directory is refused
 is_layout() { [ -d "$1" ] && [ -f "$1/oci-layout" ] && [ -f "$1/index.json" ]; }
 usage() { echo "usage: check-artifacts.sh [--arch amd64|arm64] --digests FILE --images DIR --archives DIR --out DIR" >&2; exit 2; }
@@ -29,7 +31,7 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 [ -n "$digests" ] && [ -n "$images" ] && [ -n "$archives" ] && [ -n "$out" ] || usage
-case "$arch" in amd64) plat=() ;; arm64) plat=(--platform linux/arm64) ;; *) echo "check-artifacts: --arch must be amd64 or arm64, not $arch" >&2; exit 2 ;; esac
+case "$arch" in amd64) ;; arm64) export DOCKER_DEFAULT_PLATFORM=linux/arm64 ;; *) echo "check-artifacts: --arch must be amd64 or arm64, not $arch" >&2; exit 2 ;; esac
 [ -f "$digests" ] || fail "the digest list $digests does not exist"
 [ -d "$images" ] || fail "the image directory $images does not exist"
 [ -d "$archives" ] || fail "the archive directory $archives does not exist"
@@ -47,10 +49,10 @@ trap cleanup EXIT
 
 checks="[]"
 passed() { checks=$(jq -c --arg ac "$1" --arg s "$2" '. + [{ac: $ac, subject: $s, result: "pass"}]' <<< "$checks"); }
-healthy() { for _ in $(seq 20); do curl -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0; sleep 0.5; done; return 1; }
-roundtrip() { curl -sf ${3:+-u "$3"} -X PUT --data-binary "$2" "http://127.0.0.1:$1/acckey" > /dev/null && [ "$(curl -sf ${3:+-u "$3"} "http://127.0.0.1:$1/acckey")" = "$2" ]; }
+healthy() { for _ in $(seq 20); do lg -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0; sleep 0.5; done; return 1; }
+roundtrip() { lg -sf ${3:+-u "$3"} -X PUT --data-binary "$2" "http://127.0.0.1:$1/acckey" > /dev/null && [ "$(lg -sf ${3:+-u "$3"} "http://127.0.0.1:$1/acckey")" = "$2" ]; }
 # the posture as one string, boolean first: it is compared whole, so the boolean and the note are checked together (round 1 F5)
-posture() { curl -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type == "object" and (.fips140 | type) == "boolean" and (.fips140_note | type) == "string" then "\(.fips140)|\(.fips140_note)|end" else "unreadable" end'; }
+posture() { lg -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type == "object" and (.fips140 | type) == "boolean" and (.fips140_note | type) == "string" then "\(.fips140)|\(.fips140_note)|end" else "unreadable" end'; }
 stop_last() { kill "${pids[${#pids[@]}-1]}" > /dev/null 2>&1 || true; }
 
 # the binaries of this architecture out of the archives (REQ-PLAT-001-AC1: each of the four archives must exist; this architecture's are executed)
@@ -109,16 +111,21 @@ for v in production fips; do
   loaded=$(docker load -i "$tmp/$v.tar") || fail "the $v image could not be loaded"
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || fail "docker load named no image for the $v candidate"
+  docker tag "$ref" "localhost/fscache-$v-image"   # a fixed local name per image, run below with --pull=never: no variable image for pin-age to refuse
   for probe in busybox:sh busybox:ash bin:sh bin:ash bin:bash bin:dash usr-bin:sh usr-bin:bash sbin:sh; do
     sh="${probe%%:*}"; sh="${sh//-//}/${probe##*:}"   # the directory (a - stands for /) and the shell name
-    if docker run --rm ${plat[@]+"${plat[@]}"} --entrypoint "/$sh" "$ref" -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
+    if [ "$v" = fips ]; then
+      if docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-fips-image -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
+    else
+      if docker run --pull=never --rm --entrypoint "/$sh" localhost/fscache-production-image -c true > /dev/null 2>&1; then fail "the $v image has a shell at /$sh"; fi
+    fi
   done
   name="fscache-art-$v"
   if [ "$v" = fips ]; then
-    docker run -d ${plat[@]+"${plat[@]}"} --name "$name" -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw -p 127.0.0.1::8080 "$ref" > /dev/null || fail "the $v image did not start"
+    docker run --pull=never -d --name "$name" -e FSCACHE_USERNAME=acc -e FSCACHE_PASSWORD=accpw -p 127.0.0.1::8080 localhost/fscache-fips-image > /dev/null || fail "the $v image did not start"
     auth=acc:accpw
   else
-    docker run -d ${plat[@]+"${plat[@]}"} --name "$name" -p 127.0.0.1::8080 "$ref" > /dev/null || fail "the $v image did not start"
+    docker run --pull=never -d --name "$name" -p 127.0.0.1::8080 localhost/fscache-production-image > /dev/null || fail "the $v image did not start"
     auth=""
   fi
   port=$(docker port "$name" 8080/tcp | sed -n '1s/.*://p')

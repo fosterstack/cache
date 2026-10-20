@@ -4,7 +4,7 @@
 # or the candidate image), and in Check the Check acceptance wrapper starts the candidate from Build's tarball.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
-# step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+# step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
 
 # acceptance.yml, job acceptance-gradle, step 6: gradlew build (cold — populates the remote cache) (working-directory bench/gradle-sample)
@@ -66,8 +66,8 @@ cd bench/gradle-sample
 )
 
 # acceptance.yml, job acceptance-gradle, step 11: assert the exact expected tasks were restored from cache
-# REQ-GRADLE-001-AC1: the EXACT expected task set restored FROM-CACHE
-# — not "at least one". An unexpected miss in this set fails; a task
+# REQ-GRADLE-001-AC1: the EXACT expected task list restored FROM-CACHE
+# — not "at least one". An unexpected miss in this list fails; a task
 # appearing that is not in the list fails too, because it means the
 # sample changed and the expectation file must change with it.
 step_11() (
@@ -78,7 +78,7 @@ sort bench/gradle-sample/expected-from-cache.txt > /tmp/expected-from-cache.txt
 echo "expected:"; cat /tmp/expected-from-cache.txt
 echo "actual:"; cat /tmp/actual-from-cache.txt
 if ! diff -u /tmp/expected-from-cache.txt /tmp/actual-from-cache.txt; then
-  echo "::error::FROM-CACHE task set differs from bench/gradle-sample/expected-from-cache.txt — an unexpected miss or an unlisted task. If the sample changed, change the expectation file in the same PR." >&2
+  echo "::error::FROM-CACHE task list differs from bench/gradle-sample/expected-from-cache.txt — an unexpected miss or an unlisted task. If the sample changed, change the expectation file in the same PR." >&2
   exit 1
 fi
 )
@@ -97,7 +97,7 @@ hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/metrics-warm.txt)
 warm_puts=$(awk '/^fscache_http_requests_total\{method="PUT",status="201"\}/ {print $2}' /tmp/metrics-warm.txt)
 echo "warm: hits=${hits:-0} (>= ${expected} required); PUTs cold=${cold_puts:-0} warm-cumulative=${warm_puts:-0} (must be equal)"
 [ "${hits:-0}" -ge "${expected}" ] || { echo "::error::server saw ${hits:-0} hits, expected at least ${expected}" >&2; exit 1; }
-[ "${warm_puts:-0}" -eq "${cold_puts:-0}" ] || { echo "::error::the warm build uploaded new entries — restored outputs must not re-upload" >&2; exit 1; }
+[ "${warm_puts:-0}" -eq "${cold_puts:-0}" ] || { echo "::error::the warm build uploaded new entries - restored outputs must not re-upload" >&2; exit 1; }
 )
 
 # acceptance.yml, job acceptance-gradle, step 13: assert restored outputs are byte-identical (working-directory bench/gradle-sample)

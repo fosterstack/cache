@@ -31,6 +31,7 @@ Two small things, and nothing else:
      * other workflows (ci.yml, scan.yml ...), composite actions and release.yml's non-stage jobs are NOT stage files: they keep only
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
+import codecs
 import fnmatch, hashlib, json, os, re
 
 def jload(path):
@@ -75,7 +76,97 @@ def prev_ok(l, i, ch):
     if ch == "e": return l[i:i + 4] == "esac" and l[i + 4:i + 5] in ("", " ", "\t", ";", "&", "|", ")")
     return False
 
-def strip_lines(lines, base=None):
+SUBSCRIPT_SUBST = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[[^\]\n]*(?:\$\((?!\()|\$\{|`|\\\$|\\`)")      # NAME[ ... $( | ${ | ` | \$ | \` ... : builtins (printf -v, let, read, [[ -v, typeset -n, ${!x}, $(( ))) evaluate such a string as a subscript and run it
+
+SUBSCRIPT_START = re.compile(r"(?<!\[)\[(?:\s|\'\'|\"\")*(?:\$\(|\$\{(?!#[A-Za-z_][A-Za-z0-9_]*\[[@*]\])|`|\\\$|\\`)")   # a [ whose text starts (after blanks or empty quote pairs) with a substitution opener, whatever precedes it (a quoted, escaped or built name); ${#name[@]} is a length and not refused
+COMPOUND_OPENER = r"(?:[$<>\x01][^\sA-Za-z0-9_]*[({]|`)"   # an opener on the NORMALISED text: $ < > (or the marker for a $ that sat before a quote) then any punctuation run, then ( or {, or a backtick
+COMPOUND_WORD = re.compile(r"\b(?:declare|local|typeset|readonly|export)\b.*=.*\(.*" + COMPOUND_OPENER)   # on the NORMALISED logical line: a builtin word ... = ... ( ... opener. A QUOTED compound assignment ('a=(x $(cmd))') is evaluated by the builtin and runs the substitution; default deny, whatever sits between the = and the (
+COMPOUND_PLAIN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=\(")   # the start of a plain, unquoted NAME=( array assignment: only this PREFIX is exempt, never the rest of the word
+COMPOUND_PAREN = re.compile(r"(?<!\$)\(.*" + COMPOUND_OPENER)   # a ( that does not open a $( , then an opener
+def compound_norm(t):
+    """What the builtin sees: an empty $@ / $* and any expansion that can be empty ($name, ${name}) gone, a $ before a quote (ANSI-C or locale prefix) kept as a marker so the ( after it is not taken for a $( , then every quote and backslash removed."""
+    t = re.sub(r"\$[@*]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}", "", t)
+    t = re.sub(r"\$(?=[\"'])", "\x01", t)
+    return re.sub(r"[\"'\\]", "", t)
+COMPOUND_SEQ_OPENER = re.compile(r"\$\(|\$\{|`|<\(|>\(")   # an opener in a word after quote removal, possibly-empty expansions gone
+COMPOUND_NAIVE_DATA = re.compile(r"'[^']*(?:\$\(|\$\{|`|<\(|>\()[^']*'|\\[$`]|\"[^\"]*[<>]\([^\"]*\"")   # the pairing is uncertain: any opener in naive single quotes, any escaped $ or backtick, any <( >( in naive double quotes
+def shell_scan(raw):
+    """Split a logical line into blank-separated words, honouring quotes and backslash escapes (an unbalanced quote makes the rest one word: fail closed). Also returns (data, nested): `data` is True when a word, after quote removal and with every possibly-empty expansion ($1..$9, $@, $*, $name, ${name}) dropped, holds an opener ($( ${ ` <( >() that is not a plain live one: any character of it quoted in single or ANSI-C quotes or escaped, a $ before a quote, a <( or >( inside double quotes, or its characters coming from different quote segments (an opener assembled at run time from literal pieces). `nested` is True when a substitution sits inside double quotes (the quote pairing is then not certain)."""
+    words, cur, q, i, ansi, dollar = [], [], None, 0, False, -2
+    seq, seg = [], 0          # per word: (char, literal, segment)
+    data = nested = False
+    def flush():
+        nonlocal seq, data
+        txt = "".join(c for c, _, _ in seq)
+        for m in COMPOUND_SEQ_OPENER.finditer(txt):
+            part = seq[m.start():m.end()]
+            if any(lit for _, lit, _ in part) or len({sg for _, _, sg in part}) > 1: data = True
+        seq = []
+    while i < len(raw):
+        c = raw[i]
+        if q is None and c in " \t":
+            if cur: words.append("".join(cur)); cur = []; flush()
+            i += 1; continue
+        cur.append(c)
+        if c == "\\" and (q != "'" or ansi) and i + 1 < len(raw):
+            cur.append(raw[i + 1]); seq.append((raw[i + 1], True, seg)); i += 2; continue
+        if q != "'" and c == "$":                      # a possibly-empty expansion is dropped from the sequence
+            m = re.match(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})", raw[i:])
+            if m:
+                cur.append(raw[i + 1:i + m.end()]); i += m.end(); seg += 1; continue
+        if c == "$": dollar = i
+        if q == '"' and (raw.startswith("$(", i) or c == "`"): nested = True
+        if q is None and c in "\"'":
+            if seq and seq[-1][0] == "$" and dollar == i - 1: seq[-1] = ("$", True, seq[-1][2])   # $'...' / $"...": the $ is a marker, literal
+            q = c; ansi = (c == "'" and dollar == i - 1); seg += 1
+        elif q == c:
+            q = None; ansi = False; seg += 1
+        else:
+            seq.append((c, q == "'" or (q == '"' and c in "<>"), seg))
+        i += 1
+    if cur: words.append("".join(cur)); flush()
+    return words, data, nested
+def shell_words(raw):
+    return shell_scan(raw)[0]
+def declare_compound(raw):
+    if COMPOUND_WORD.search(compound_norm(raw)): return True
+    words, data, nested = shell_scan(raw)
+    if data: return True   # an opener held as quoted data: fragments of a compound value can be joined at run time, so the data itself is refused
+    if nested and re.search(r"[\"'\\]", raw) and (COMPOUND_PAREN.search(compound_norm(raw)) or COMPOUND_NAIVE_DATA.search(raw)): return True   # the quote pairing is not certain: judge the whole line, and any naive quoted opener is data
+    for w in words:   # any word that mixes quotes or escapes with a bare ( then an opener, wherever the builtin is and however it is named; a plain NAME=( prefix is exempt, the rest of the word is not
+        m = COMPOUND_PLAIN.match(w)
+        rest = w[m.end():] if m else w
+        if re.search(r"[\"'\\]", rest) and COMPOUND_PAREN.search(compound_norm(rest)): return True
+    return False
+SUBSCRIPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\[")
+
+def subscript_holds_opener(l):
+    # default deny: once a bracket holds a backslash or a quote, the place of its closing ] is not readable
+    # from the text (quote removal re-pairs quotes), so any opener later on the logical line refuses it
+    for i, ch in enumerate(l):
+        if ch != "[": continue
+        if i > 0 and l[i - 1] == "[": continue
+        j, depth, unreliable = i + 1, 1, False
+        while j < len(l) and (depth > 0 or unreliable):
+            c = l[j]
+            if c == "\\":
+                if l[j + 1:j + 2] in ("$", "`"): return True
+                unreliable = True
+                j += 2; continue
+            if c == "`": return True
+            if c == "$" and (l.startswith("$(", j) or l.startswith("${", j)): return True   # $(( too: bash reads it as a command substitution when it does not close as arithmetic
+            if c in "\"'":
+                unreliable = True
+                j += 1; continue
+            if c == "[": depth += 1
+            elif c == "]": depth -= 1
+            j += 1
+    return False
+OPENER_BUILT = re.compile(r"\$(?:\'\'|\"\")|\$'(?:[^'\\]|\\.)*\\(?:x[0-9A-Fa-f]|[0-7]|u[0-9A-Fa-f]|U[0-9A-Fa-f])")   # $'' / $"" or an ANSI-C string with a hex, octal or unicode escape: builds an opener the text scan cannot read
+
+OPENER = {"sq": "'", "dq": '"', "ansi": "$'", "cmd": "$(", "brace": "${", "bt": "`", "arith": "$((", "brk": "$["}
+
+def strip_lines(lines, base=None, closers=None):
     """([code line], [error]) for the physical lines of a shell text, read as bash reads them (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). A stack of open
     contexts is carried across lines: a single quote, a double quote, an ANSI-C $'..', $( ), $(( )), ${ }, $[ ], a backtick pair and a ( ) group; inside
     $( ), a backtick pair and a ( ) group the text is read as shell again. A heredoc body is data and opens no quote. A heredoc is started only by a <<
@@ -86,12 +177,15 @@ def strip_lines(lines, base=None):
     out, errs = [], []
     st, hd = ([base] if base else []), None                                  # st = open contexts (innermost last); hd = [(delimiter, tab-indented, quoted)] still to be read inside a heredoc body
     DATA = ("sq", "dq", "ansi", "brace", "arith", "brk")
+    asub = []                                          # context depth (len(st)) of each open [ of an ASSIGNMENT subscript; open [ of an ASSIGNMENT subscript NAME[ ... ]=: bash reads it across newlines and starts no comment in it
     cont = base == "hb"                                       # the previous line ends in a backslash: bash joins this line to it
     for n, l in enumerate(lines):
         if hd is not None:
             if hd[0][2]: out.append(strip_line(l))                           # a quoted delimiter: the body is data
             else:                                                            # an unquoted body still runs $( ) and backticks, # or no #: keep it whole, and refuse what runs on past the line
                 out.append(l)
+                if re.search(r"\$\{(?:[ \t|]|$)", l) and closers is not None: closers.append(("funsub", n))     # bash 5.3 ${ cmd; } runs in an unquoted body too
+                if re.search(r"\$\(|\$\{|`", l) and re.search(r"['\"]", l) and closers is not None: closers.append(("hd", n))   # DEFAULT DENY: in an unquoted body bash reads ' and " as plain text outside a substitution and as quotes inside it; the reader cannot tell which a line means
                 if strip_lines([l], "hb")[1] or re.search(r"(?<!\\)(?:\\\\)*\\$", l):
                     errs.append("line %d: an unquoted heredoc body line that opens a substitution it does not close, or ends in a backslash, is not resolved" % (n + 1))
             if (l.lstrip("\t") if hd[0][1] else l) == hd[0][0]: hd = hd[1:] or None
@@ -99,19 +193,34 @@ def strip_lines(lines, base=None):
         if cont: pass                                  # a joined line: a # at its start is inside a word, and the line is kept whole
         elif st and st[-1] in DATA + ("bt",) and l.lstrip().startswith("#"):
             errs.append("line %d: a # line inside a quote or ${ } that is still open from an earlier line (bash reads it as part of the word, not as a comment)" % (n + 1))
+        elif asub and l.lstrip().startswith("#"):
+            if closers is not None: closers.append(("asub", n))                  # a # line inside an open assignment subscript is no comment (kept as code, refused)
         elif not (st and st[-1] in DATA + ("bt",)) and l.lstrip().startswith("#"):
             out.append(""); continue
         esc = prev_ws = False
         cut = skip = None
+        start_st = list(st); minlen = len(st)          # the contexts carried into this line; the fewest still open during it
         pend = []                                      # heredocs opened on this line, in plain shell text
+        bd = {}                                        # open [ on this line per context depth (a subscript pairs its own ], and only at its own level)
         for i, ch in enumerate(l):
             if skip == i: skip = None; prev_ws = False; continue            # the second character of a two-character opener
             if esc: esc = False; prev_ws = False; continue
             top, nxt = (st[-1] if st else None), l[i + 1:i + 2]
+            if ch in "()" and top in ("cmd", "paren", "bt", "case", "brk", "arith") and (bd.get(len(st), 0) > 0 or top == "brk") and any(c in ("dq", "brace") for c in st) \
+                    and any(c in ("cmd", "bt", "paren") for c in st[max(k for k, c in enumerate(st) if c in ("dq", "brace")):]):
+                errs.append("line %d: a paren inside a bracket subscript or $[ ] inside a substitution inside double quotes or ${ } is not resolved (the command reader closes the substitution at it)" % (n + 1))
+            if top in (None, "cmd", "paren", "bt", "case"):
+                if ch == "[" and (asub or re.search(r"[A-Za-z_][A-Za-z0-9_]*$", l[:i]) or (i == 0 and cont)): asub.append(len(st))     # NAME[ whatever precedes NAME (fail closed), a [ that starts a continuation line (the name may end the previous one); any [ inside an open one
+                elif ch == "]" and asub and asub[-1] == len(st): asub.pop()                                   # only a ] at the depth of its [ ends it: a ] inside a $( ) or backticks opened in the subscript does not
+            if ch in "[]" and top in (None, "cmd", "paren", "bt", "case", "arith"): bd[len(st)] = max(0, bd.get(len(st), 0) + (1 if ch == "[" else -1))
             if ch == "c" and l[i:i + 5] == "case\\" and top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{"):
                 errs.append("line %d: case followed by a backslash is not resolved (bash reads case\\ + one character as an ordinary word, or joins the next line)" % (n + 1))
             if top in (None, "cmd", "paren", "bt", "case") and (i == 0 or l[i - 1] in " \t;&|(`{") and prev_ok(l, i, ch):
-                if ch == "c": st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
+                if ch == "c":
+                    last = max((k for k, c in enumerate(st) if c in ("dq", "brace")), default=None)
+                    if (last is not None and any(c in ("cmd", "bt", "paren") for c in st[last:])) or any(c in ("cmd", "bt") for c in st):
+                        errs.append("line %d: a case inside $( ) or backticks (or a ( ) group inside double quotes or ${ }) is not resolved (the command reader closes the group at the case arm's ))" % (n + 1))
+                    st.append("case"); skip = i + 3; continue         # a case: its pattern ) is not the end of an enclosing group
                 if l[i:i + 4] == "esac" and top == "case": st.pop(); skip = i + 3; continue
             if top == "sq":
                 if ch == "'": st.pop()
@@ -129,7 +238,9 @@ def strip_lines(lines, base=None):
             elif ch == "$" and nxt == "'" and top not in ("dq", "hb"): st.append("ansi"); skip = i + 1
             elif ch == "$" and nxt == "(" and l[i + 2:i + 3] == "(": st.append("arith"); skip = i + 1
             elif ch == "$" and nxt == "(": st.append("cmd"); skip = i + 1
-            elif ch == "$" and nxt == "{": st.append("brace"); skip = i + 1
+            elif ch == "$" and nxt == "{":
+                st.append("brace"); skip = i + 1
+                if (l[i + 2:i + 3] in ("", " ", "\t", "|") or (l[i + 2:] == "\\")) and closers is not None: closers.append(("funsub", n))     # bash 5.3 ${ cmd; } / ${| cmd; }: it ends at a } in command position, which the reader does not model
             elif ch == "$" and nxt == "[" and top not in ("dq", "hb"): st.append("brk"); skip = i + 1
             elif ch == "`":
                 if top == "bt": st.pop()
@@ -143,21 +254,30 @@ def strip_lines(lines, base=None):
             elif ch == "(" and nxt == "(" and top not in ("arith", "brk", "brace"): st.append("arith"); skip = i + 1
             elif ch == "(" and top not in ("arith", "brk", "brace"): st.append("paren")
             elif ch == "<" and nxt == "<" and l[i - 1:i] != "<" and l[i + 2:i + 3] != "<":
+                in_sub_ = (bd.get(len(st), 0) > 0 or bool(asub)) and top in (None, "cmd", "paren", "bt", "case")       # an open [ : in an assignment subscript bash reads << as an arithmetic shift
+                if in_sub_ and closers is not None: closers.append(("hdsubscript", n))
+                if closers is not None and (any(c_ in ("cmd", "bt") for c_ in st) or "paren" in st[minlen:] or top == "brace") and top not in ("arith", "brk"):
+                    closers.append(("hdsub", n))        # DEFAULT DENY: bash reads a heredoc inside a substitution, a ${ cmd; } or a ( ) group opened on this line before the heredocs of the enclosing line
                 if top in ("arith", "brk"):
                     errs.append("line %d: a << inside $(( )) or $[ ] is a shift or a heredoc and is not resolved" % (n + 1))
-                elif top == "bt":
-                    errs.append("line %d: a << inside backticks is not resolved (bash reads the backtick text on its own)" % (n + 1))
-                elif top != "brace":
+                elif top != "brace" and "bt" not in st and not in_sub_:          # a heredoc in backticks has no body in bash: not queued, so the lines after it are read as code (a waiver cannot hide them)
                     tab = l[i + 2:i + 3] == "-"
                     m = HEREDOC_WORD.match(l, i + 2 + tab)
                     if m: pend.append((m.group(1) or m.group(2) or m.group(3) or m.group(4), tab, m.group(4) is None))
                     else: errs.append("line %d: a << whose delimiter is not a plain word is not resolved" % (n + 1))
                 skip = i + 1
+            elif ch == "#" and i > 0 and prev_ws and asub and top in (None, "cmd", "paren", "bt", "case"):
+                if closers is not None: closers.append(("asub", n))               # a # inside an assignment subscript starts no comment in bash: kept as code, refused
             elif ch == "#" and i > 0 and prev_ws and top not in DATA and top != "bt":      # inside backticks bash ends the comment at the closing backtick: the line is kept whole
                 cut = i; break
             prev_ws = ch.isspace()
+            minlen = min(minlen, len(st))
         cont = esc and cut is None
+        if asub and closers is not None: closers.append(("asub", n))          # an assignment subscript is still open at the end of the line
+        if cont and l.endswith("$\\") and closers is not None: closers.append(("funsub", n))    # $ at the end of a continued line: the next line may start with { and a blank (bash 5.3 ${ cmd; })
+        if minlen < len(start_st) and any(c in OPENER for c in start_st[minlen:]) and closers is not None: closers.append(("ctx", n))    # this line closes a quote or substitution carried from an earlier line
         out.append(l if cut is None else l[:cut])
+        if len(pend) > 1 and closers is not None: closers.append(("hdmulti", n))      # DEFAULT DENY: the order in which bash reads several bodies is not modelled
         if pend:
             if cont: errs.append("line %d: a heredoc is started on a line that ends in a backslash and is not resolved (bash joins the next line first)" % (n + 1))
             if st and st[-1] in ("sq", "dq", "ansi"): errs.append("line %d: a heredoc is started on a line that leaves a quote open and is not resolved" % (n + 1))
@@ -1100,12 +1220,16 @@ def _word(s, i, cmds):
     return j, s[i:j], "".join(parts)
 
 def _lex(s, i, closer, cmds):
-    n, items, kw = len(s), [], None
+    n, items, kw, depth = len(s), [], None, 0
     while i < n:
         c = s[i]
         if c in " \t": i += 1; continue
+        if closer == ")" and c == "(":                      # a group, array, function paren or (( )) inside the substitution: its ) is not the end of it
+            depth += 1; _flush(s, items, i, cmds); i += 1; continue
         if closer == ")" and c == ")":
-            _flush(s, items, i, cmds); return i + 1
+            _flush(s, items, i, cmds); i += 1
+            if depth: depth -= 1; continue
+            return i
         m = _REDIR_RE.match(s, i)
         if m and not (m.end() < n and s[m.end()] == "(" and m.group(0) in ("<", ">")):
             j = m.end()
@@ -1209,16 +1333,78 @@ def runs_a_program(operands):
     return False
 TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 
-def pathlike_deny(cmds, rows, runs):
+# cache#361 (REQ-CHAIN-001-AC1; REQ-ARCHIVE-001-AC9 / REQ-REFRESH-001-AC23): two closed forms that are STRICTER than the bare name. (1) A command word that is exactly /usr/bin/NAME, /bin/NAME
+# or /usr/local/bin/NAME (NAME a plain word: no slash, no .., no $, backquote, glob or quote) is judged as the bare NAME, and only when NAME is in the row's `tools`: a fixed path cannot be
+# redirected through PATH. (2) A python interpreter may be handed the isolation flags -I and -B (each at most once, separate words) before the script it runs; any other option, a
+# combined flag, -c, -m, stdin or an unlisted script stays refused.
+FIXED_DIRS = ("/usr/bin/", "/bin/", "/usr/local/bin/")
+FUNC_BY_PATH = re.compile(r"(?<![^\s;&|{}()!`])(?:function[ \t]+(?P<name>/[^\s(){};&|<>]*)|(?P<name2>/[^\s(){};&|<>=\"'$`]*)[ \t]*\([ \t]*\)(?=[ \t]*(?:\n|\Z|#|\{|\(|if\b|while\b|until\b|for\b|select\b|case\b|\[\[)))")
+ALIAS_USE = re.compile(r"expand_aliases|BASH_ALIASES|(?<![^\s;&|{}()!`])unalias(?=[\s;&|)]|$)|(?<![^\s;&|{}()!`])alias(?=[\s;&|)]|$)")   # cache#361 (seat A, round 5): an alias can name the function (alias x=$'\x2fusr\x2fbin\x2fcurl'; x() {...}); no listed script uses aliases
+ANSIC = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+ANSIC_ESC = re.compile(r"\\(?:x([0-9A-Fa-f]{1,2})|([0-7]{1,3})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|(.))", re.S)
+def ansic_decode(m):
+    """bash's $'..' decoding: hex (1-2 digits), octal, \\u (1-4 hex digits), \\U (1-8) and the one-letter escapes (an unknown escape keeps its letter)."""
+    def one(e):
+        try:
+            if e.group(1): return chr(int(e.group(1), 16))
+            if e.group(2): return chr(int(e.group(2), 8) & 255)
+            if e.group(3): return chr(int(e.group(3), 16))
+            if e.group(4): return chr(int(e.group(4), 16))
+        except ValueError: return ""
+        return {"n": "\n", "t": "\t", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "r": "\r", "v": "\v"}.get(e.group(5), e.group(5))
+    return ANSIC_ESC.sub(one, m.group(1))
+SUBST = re.compile(r"\$\{[^}]*\}|\$\([^()]*\)|`[^`]*`|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@*#?!$-]")
+def alias_views(text):
+    """The text as bash reads a word before it runs it, in two views: A keeps substitutions, B deletes them (a substitution can be empty: expand_al$()iases). $'..' is decoded, $".." is a plain string, every quote mark and backslash is dropped."""
+    a = re.sub(r"[\\'\"]", "", re.sub(r"\$\"", "\"", ANSIC.sub(ansic_decode, text)))
+    return (a, SUBST.sub("", a))
+ALIAS_USE = re.compile(r"expand_alias|ALIASES|unalias|(?<![A-Za-z0-9_-])alias(?![A-Za-z0-9_-])|POSIXLY_CORRECT|SHELLOPTS|BASHOPTS")   # cache#361 (rounds 5-7): an alias can name a function like a fixed-path program (alias x=$'\x2fusr\x2fbin\x2fcurl'; x() {...}); no listed script uses one. Alias expansion is switched on by shopt expand_aliases or by POSIX mode (set -o posix, POSIXLY_CORRECT, SHELLOPTS)
+SHOPT_W = re.compile(r"(?<![A-Za-z0-9_-])shopt(?![A-Za-z0-9_-])")
+SET_W = re.compile(r"(?<![A-Za-z0-9_-])set(?![A-Za-z0-9_-])")
+SET_ARG = r"[ \t]+(?:[-+][ceuxfCvEnT]*o[ \t]+(?:pipefail|errexit|nounset|noglob|noclobber|xtrace|errtrace)|[-+][ceuxfCvEnT]+|--(?:[ \t]+[^;&|)<>\n]*)?)"
+SET_AFTER = re.compile("(?:" + SET_ARG + r")*[ \t]*(?:[;&|)}\n]|#|\Z)")
+SET_BEFORE = re.compile(r"(?:\A|[\n;&|{(]|(?<![A-Za-z0-9_-])(?:then|do|else))[ \t]*\Z")
+def set_uses(v):
+    """Every whole word `set` in the text that is NOT a plain command of the closed form: right after a command delimiter (line start, ; & | { ( then do else), only closed arguments (-e -u -x ... letters, -o NAME of a short list, or -- and plain words), then a terminator. An anchored whitelist: a prefix, a redirection, an assignment, prose or a string holding the word is refused, never guessed at."""
+    bad = []
+    for m in SET_W.finditer(v):
+        if SET_BEFORE.search(v[:m.start()]) and SET_AFTER.match(v, m.end()): continue
+        a = v.rfind("\n", 0, m.start()) + 1; b = v.find("\n", m.end()); b = len(v) if b < 0 else b
+        bad.append(v[a:b].strip()[:80])
+    return bad
+
+ENABLER = re.compile(r"(?:^|[;&|{}()!])[ \t]*(?:(?:then|do|else|elif|if|while|until|time|-p|[A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*|[0-9]*[<>]+&?[^\s;&|]*)[ \t]+)*(?P<cmd>shopt)(?=[\s;&|)<>(]|$)(?P<rest>[^\n;&|)]*)", re.M)   # where a command can start; a word inside a comment sentence is not one
+ENABLER_OK = {"shopt": re.compile(r"\s+-[su]\s+(?:nullglob|extglob|globstar|lastpipe|inherit_errexit|nocaseglob|nocasematch)\s*")}
+FIXED_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*")
+PY_ISOLATION = ("-I", "-B")
+def fixed_tool(w, tools):
+    """NAME when `w` is exactly a fixed-directory path of a tool that the row lists in `tools`, else None."""
+    for d in FIXED_DIRS:
+        if w.startswith(d):
+            n = w[len(d):]
+            return n if FIXED_NAME.fullmatch(n) and n in tools else None
+    return None
+def python_operands(name, operands):
+    """The operands of a python interpreter command after its leading isolation flags (-I, -B, each at most once); other interpreters are returned unchanged."""
+    if not re.fullmatch(r"python[0-9.]*", name): return list(operands)
+    ops, seen = list(operands), set()
+    while ops and ops[0] in PY_ISOLATION and ops[0] not in seen:
+        seen.add(ops[0]); ops.pop(0)
+    return ops
+
+def pathlike_deny(cmds, rows, runs, tools=()):
     """The path-like words (see above) of the commands that are neither the command word of their command (judged by the command-word rule)
-    nor an admitted operand."""
+    nor an admitted operand. A fixed-path command (cache#361) is judged as its bare name: it keeps every operand rule of that name."""
     out = []
     for c in cmds:
         if c.cw is None: continue
-        cw = c.cw[2:] if c.cw.startswith("./") else c.cw
-        admitted = (cw in rows or (cw in SHELL_INTERP and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs)
-                    or family_kind(cw) == "interp" and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs
-                    or (c.cw in DATA_ONLY and not runs_a_program(c.operands)))
+        ecw = fixed_tool(c.cw, tools) or c.cw
+        cw = ecw[2:] if ecw.startswith("./") else ecw
+        ops = python_operands(cw, c.operands)                          # python: -I and -B do not change which operand is the script
+        first = (ops[0][2:] if ops[0].startswith("./") else ops[0]) if ops else ""
+        admitted = (cw in rows or (cw in SHELL_INTERP and bool(ops) and first in runs)
+                    or family_kind(cw) == "interp" and bool(ops) and first in runs
+                    or (ecw in DATA_ONLY and not runs_a_program(c.operands)))
         if admitted: continue
         for o in c.operands:
             for t in TOKEN.findall(o):
@@ -1258,6 +1444,7 @@ def protected_env_mentions(path, text, row):
 
 def scan_script(path, text, row, rows, base):
     """Errors for one LISTED script. Not a shell parser: a conservative TEXT scan over the raw file whatever its extension or shebang
+    LIMIT (cache#433, advisor ruling Oct 17): a command WORD built from an expansion ($x, ${x}, $(...)) is not judged, and spellings beyond what the alias/function/shopt/set checks resolve (quote and backslash removal, $'..' and $".." decoding, empty or deleted substitutions) are not read; ~40 listed scripts legitimately start a command with a variable ($PY3, $SUDO), so refusing the form would refuse them. Such a finding needs deliberately disguised shell: it is information, not a blocker.
     (it over-reports by design): (a) a command from the finite DENY list (interpreters, source/eval/exec, make/xargs/find, curl/wget/ssh,
     gh/git/docker ...) anywhere in the text unless the row lists it in `tools`; (b) any token naming another script (a path ending
     in a script extension, or a file in the tree with a shebang, or a listed path) that is not the file itself and not in its `runs`;
@@ -1291,8 +1478,31 @@ def scan_script(path, text, row, rows, base):
     if bl and bl[-1] == "": bl.pop()
     exotic = len(body.splitlines()) != len(bl)                        # another line separator: line numbers cannot be trusted (fail closed: not waivable)
     starts, i_ = [], 0                                                # first physical body line of each logical (continuation-joined) line
-    pcode, qerrs = ([strip_line(l_) for l_ in body.splitlines()], []) if py else strip_lines(body.splitlines())   # a Python file has docstrings and prose quotes: the shell quote model is for shell only
+    closers = []                                   # body lines that close a quote or substitution carried from an earlier line
+    pcode, qerrs = ([strip_line(l_) for l_ in body.splitlines()], []) if py else strip_lines(body.splitlines(), closers=closers)   # a Python file has docstrings and prose quotes: the shell quote model is for shell only
     for q in qerrs: add(None, "", "%s: %s" % (path, q))
+    if not py:                                     # DEFAULT DENY: a subscript that holds a substitution, or an opener built from quotes or escapes, in the raw text (code, quotes, a comment) of every LOGICAL line (continuations joined); waivable by a reviewed line-bound exception on the first physical line
+        phys_, k_ = body.splitlines(), 0
+        while k_ < len(phys_):
+            start_, cur_ = k_, phys_[k_]
+            while k_ + 1 < len(phys_) and (len(cur_) - len(cur_.rstrip("\\"))) % 2 == 1:
+                cur_ = cur_[:-1] + phys_[k_ + 1]; k_ += 1
+            k_ += 1
+            if OPENER_BUILT.search(cur_):
+                add("deny", phys_[start_], "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
+            if declare_compound(cur_):
+                add("deny", phys_[start_], "%s: line %d has a compound assignment to declare, local, typeset, readonly or export (NAME=( ... )) with a substitution opener after the ( : the builtin evaluates a quoted compound assignment and runs the substitution: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
+            if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_) or subscript_holds_opener(re.sub(r"\$[@*]|[\"'\\]", "", cur_)):   # also on the line with quotes, backslashes and an empty $@ / $* removed: bash joins what they split
+                add("deny", phys_[start_], "%s: line %d has an array subscript NAME[ ... ] that holds a substitution ($( , ${ , a backtick): builtins evaluate such a string as a subscript at run time and run it: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
+    for kind_, c_ in closers:                      # DEFAULT DENY: no bash grammar is emulated for such a line; refused under `deny`, waivable only by a reviewed line-bound exception
+        if kind_ == "ctx": msg_ = "closes a multi-line quote or substitution carried from an earlier line"
+        elif kind_ == "funsub": msg_ = "opens a ${ command substitution (bash 5.3 ${ cmd; } or ${| cmd; }, which ends at a } in command position)"
+        elif kind_ == "asub": msg_ = "has an assignment subscript NAME[ ... ] that is open at the end of the line or holds a # (bash reads the subscript across lines and starts no comment in it)"
+        elif kind_ == "hdsubscript": msg_ = "has a << inside a [ ] subscript (bash reads it as an arithmetic shift in an assignment subscript and as a heredoc elsewhere)"
+        elif kind_ == "hdsub": msg_ = "opens a heredoc inside a substitution or group (bash reads its body before the heredocs of the enclosing line)"
+        elif kind_ == "hdmulti": msg_ = "opens more than one heredoc (the order in which bash reads the bodies is not modelled)"
+        else: msg_ = "is an unquoted heredoc body line that holds a substitution and a quote (bash reads the quote as text outside the substitution and as a quote inside it)"
+        add("deny", body.splitlines()[c_], "%s: line %d %s: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + c_ + 1, msg_), None if exotic else off + c_)
     while i_ < len(pcode):
         starts.append(i_)
         while i_ + 1 < len(pcode) and len(pcode[i_]) - len(pcode[i_].rstrip("\\")) in range(1, len(pcode[i_]) + 1) and (len(pcode[i_]) - len(pcode[i_].rstrip("\\"))) % 2 == 1:
@@ -1335,11 +1545,13 @@ def scan_script(path, text, row, rows, base):
             if cw_budget.get(t, 0) > 0: cw_budget[t] -= 1; continue
             add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
     if not py:
-        for t, cline in pathlike_deny(cmds, rows, runs):
+        for t, cline in pathlike_deny(cmds, rows, runs, tools):
             add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)" % (path, t), phys(cline))
         for c in cmds:
             if c.cw is None: continue
-            w = c.cw
+            w = fixed_tool(c.cw, tools) or c.cw                                   # cache#361: /usr/bin|/bin|/usr/local/bin/NAME with NAME in `tools` is judged as the bare NAME
+            if fixed_tool(c.cw, tools) is not None and ("$'" in c.text or '$"' in c.text):
+                add(None, "", "%s: %r is written with ANSI-C or locale quoting ($'..' or $\"..\"), which bash decodes differently from this judge: write the fixed path plainly" % (path, c.cw))
             n = w[2:] if w.startswith("./") else w
             name = n.rsplit("/", 1)[-1]
             span = c.text                          # the whole simple command, from its first assignment or redirection, as written
@@ -1359,7 +1571,8 @@ def scan_script(path, text, row, rows, base):
                 if name not in tools: add("evaluator", span, "%s: %r at command position is an evaluator not in this script's `tools` list" % (path, w))
                 continue
             if name in SHELL_INTERP or kind == "interp":
-                first = c.operands[0] if c.operands else ""
+                pops = python_operands(name, c.operands)                          # python: -I and -B (each once) may precede the listed script
+                first = pops[0] if pops else ""
                 fn = first[2:] if first.startswith("./") else first
                 if any(op.startswith("<") for op, _t in c.redirs) or not first or first.startswith("-") or fn not in runs:
                     add("script-name", span, "%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
@@ -1367,6 +1580,23 @@ def scan_script(path, text, row, rows, base):
             in_tree = ("/" in w or w.startswith("./")) and repo_file(n)
             if (w.startswith("./") or in_tree or script_like(w)) and n != path and n not in runs and n != selfbase:
                 add("script-name", span, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
+    if not py:
+        for m in (x for v in (logical(text),) + alias_views(logical(text))[:1] for x in FUNC_BY_PATH.finditer(v)):   # also the quote- and backslash-resolved view: bash rejects a quoted function name, the judge does not rely on that                       # the RAW logical text, comments included: stripping a "comment" can diverge from bash (a # line inside a quote spanning lines, an ANSI-C escaped quote)                       # cache#361: bash accepts a function named /usr/bin/curl, which would run instead of the fixed program
+            add(None, "", "%s: defines a function named by a path (%s): it could run in place of the fixed-path program it names" % (path, m.group("name") or m.group("name2")))
+    if not py:
+        for v in alias_views(logical(text)):
+            for m in ALIAS_USE.finditer(v):                                  # "alias" counts only as a whole word (product-and-alias-scoped in a comment is not it)
+                add(None, "", "%s: uses shell aliases or POSIX mode (%s): an alias can give a function the name of a fixed-path program" % (path, m.group(0)))
+            okshopt = 0
+            for m in ENABLER.finditer(v):
+                if not ENABLER_OK[m.group("cmd")].fullmatch(m.group("rest")):
+                    add(None, "", "%s: `%s%s` is not one of the listed harmless uses (it could turn on alias expansion)" % (path, m.group("cmd"), m.group("rest").rstrip()))
+                else: okshopt += 1
+            # the backstop, by count: every whole-word shopt must be one of the matches above (a prefix the ENABLER pattern does not parse, a group, a trap string or prose is refused, not guessed at)
+            if len(SHOPT_W.findall(v)) != okshopt:
+                add(None, "", "%s: the word shopt appears somewhere other than as a plain `shopt -s|-u OPTION` command of the closed list" % path)
+            for line in set_uses(v):
+                add(None, "", "%s: the word `set` appears other than as a plain `set` command of the closed form (set -o posix turns on alias expansion; a prefix, a redirection, prose or a string is refused): %s" % (path, line))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for x in protected_env_mentions(path, text, row): add(None, "", x)

@@ -353,7 +353,7 @@ st s_if "AC2 an if: other than the mode on the Witness step" "release Witness st
        '      - name: apk under Witness\n        if: always()\n'
 st s_shell "AC2 a shell: override on the Witness step" "Witness step may carry" '      - name: apk under Witness\n' \
        '      - name: apk under Witness\n        shell: bash -c "{0}"\n'
-st s_two "AC2 a second command in the Witness step" "exactly the one line" 'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: |\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\n          pip install requests'
+st s_two "AC2 a second command in the Witness step" "exactly the one line" 'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: |\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\n          echo second'
 st s_direct "AC2 a direct witness run in a stage file (every stage goes through bin/witnessed.sh)" "witness run" \
        'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: witness run --step apk -- timeout 540 bash bin/build-stage-apk.sh'
 st s_kind   "AC2 the apk job running the assemble script" "exactly the one line" 'bin/build-stage-apk.sh' 'bin/build-stage-assemble.sh'
@@ -1061,7 +1061,7 @@ fi
 # The fake timeout enforces FAKE_TIMEOUT_SECONDS (a short test limit) and logs the limit it was given: the helper must give 540. The fake witness runs the
 # command after `--` and writes its -o record only when the command succeeded, as the real Witness does.
 helper_tree() { # helper_tree DIR HELPER
-  rm -rf "$1"; mkdir -p "$1/bin" "$1/fake" "$1/tmp"; cp "$2" "$1/bin/witnessed.sh"
+  rm -rf "$1"; mkdir -p "$1/bin" "$1/fake" "$1/tmp"; cp "$2" "$1/bin/witnessed.sh"; cp bin/loopback-get.sh "$1/bin/loopback-get.sh"
   cat > "$1/bin/wrapped.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "wrapped $*" >> calls.log
@@ -2304,6 +2304,8 @@ TEST_LOADERS = ("import copy, importlib.util, json, os, re, shutil, subprocess, 
                 "spec = importlib.util.spec_from_file_location(name, os.path.join(root, path))",
                 "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m",
                 'L = load("lt", "bin/vex-live-test.py")', 'V = load("vf", "bin/vex-forms.py")')      # the test's own helper and its two modules; the index tool is never loaded
+def runners(rows):
+    return sorted(p for p, r in rows.items() if "bin/vex-index.py" in r.get("runs", []))
 def stray(root):
     named, bad = set(), []
     for d, dirs, files in os.walk(root):      # the whole tree, any extension or none (prose under docs/, requirements/ and test-evidence/ runs nothing)
@@ -2358,8 +2360,7 @@ assert not stray_files, "named outside Build's and Rebuild's assemble scripts: %
 ci = [row.strip() for row in open(root + "/.github/workflows/ci.yml") if "vex-index" in row]
 assert all(row.startswith("run: bash bin/vex-index-test.sh") or row.startswith("- name:") for row in ci), ci      # CI runs the tool's TEST and nothing else of it
 rows = {r["path"]: r for r in json.load(open(root + "/.github/policy/chain-scripts.json"))["scripts"]}
-users = sorted(p for p, r in rows.items() if "bin/vex-index.py" in r["runs"])
-assert users == sorted(p for p in allowed if p.startswith("bin/build-stage-")), users
+assert runners(rows) == sorted(p for p in allowed if p.startswith("bin/build-stage-")), runners(rows)      # a row may carry no runs list (bin/loopback-get.sh): it runs nothing
 PY
 then ok "REQ-REL-010-AC4/AC5 only Build's and Rebuild's four assemble scripts run bin/vex-index.py: no Sign, Release, maintenance or patch-release file names it, so nothing attaches after Sign and no published version is touched"
 else bad "REQ-REL-010-AC4/AC5 a file outside Build's and Rebuild's assemble scripts names or runs bin/vex-index.py"
@@ -2423,6 +2424,18 @@ ld3="$work/vim-link3"; rm -rf "$ld3"; mkdir -p "$ld3/bin" "$ld3/docs" "$ld3/.git
 printf '```sh\n"$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout x\n```\n' > "$ld3/docs/vex-guide-body.md"; ln -s vex-guide-body.md "$ld3/docs/using-our-vex.md"
 if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); sys.exit(0 if "docs/using-our-vex.md" in b else 1)' "$work/vi-named.py" "$ld3"; then ok "REQ-REL-010-AC4 the customer page as a link to a file naming the tool is refused"; else bad "REQ-REL-010-AC4 the customer page as a link to a file naming the tool is refused"; fi
 vim m6 "REQ-REL-010-AC4 the live-test run script without its one fixture call is refused (the exemption is not a blanket)" bin/vex-live-run.sh 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1' 'true'
+# the runs rows: a row with no runs list is no runner, and a row of any other script that runs the tool is still one (Sign, Release, maintenance, patch release)
+if python3 - "$work/vi-named.py" <<'PY'
+import sys
+exec(open(sys.argv[1]).read())
+build = {"bin/build-stage-assemble.sh": {"runs": ["bin/vex-index.py"]}, "bin/loopback-get.sh": {}}
+assert runners(build) == ["bin/build-stage-assemble.sh"]
+for other in ("bin/release-sign.sh", "bin/stage-release.sh", "bin/build-stage-extra.sh", "bin/patch-release.sh"):
+    assert runners({**build, other: {"runs": ["bin/vex-index.py"]}}) != ["bin/build-stage-assemble.sh"], other
+PY
+then ok "REQ-REL-010-AC4/AC5 a script row without a runs list is no runner of bin/vex-index.py, and a row of another script that runs it is still counted"
+else bad "REQ-REL-010-AC4/AC5 the runs-row check on rows without runs or with a foreign runner"
+fi
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
 expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
 expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/main-candidate-rescan.yml"
@@ -2444,7 +2457,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=840
+EXPECT=841
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

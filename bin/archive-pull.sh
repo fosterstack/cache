@@ -27,7 +27,9 @@ done
 [ -n "$pointer" ] && [ -n "$out" ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"
 if [ -n "$want" ]; then
   case $want in
-    sha256:*) hex=${want#sha256:}; [ "${#hex}" -eq 64 ] && [ -z "${hex//[0-9a-f]/}" ] || die "--digest must be sha256:<64 lower-case hex>";;
+    sha256:*) hex=${want#sha256:}
+      case $hex in *[!0-9a-f]*) die "--digest must be sha256:<64 lower-case hex>";; esac
+      test "${#hex}" -eq 64 || die "--digest must be sha256:<64 lower-case hex>";;
     *) die "--digest must be sha256:<64 lower-case hex>";;
   esac
 fi

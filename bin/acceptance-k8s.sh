@@ -4,10 +4,9 @@
 # bin/install-kind.sh, the node image by digest) and load the candidate. CANDIDATE_LOCAL is the candidate's local tag.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
-# step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
+# step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
-# The job env of stage-acceptance-k8s.yml, unchanged: the pinned client image for the runner pod.
-export CLIENT_IMAGE=curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
+# The job env of stage-acceptance-k8s.yml, unchanged except that the pinned client image (by digest) is written out in step 6, where it is pulled.
 export CLIENT_LOCAL=fscache-client:accept
 
 # NEW (REQ-CHAIN-006-AC14, in place of the old stage's cluster action): the cluster, the node image by digest (kind v0.33.0 release notes).
@@ -43,8 +42,7 @@ python3 bin/acceptance-k8s-smoke.py
 # stage-acceptance-k8s.yml, job k8s, step 6: load a pinned client image for the runner client pod
 step_06() (
 set -euo pipefail
-docker pull -q "$CLIENT_IMAGE"
-docker tag "$CLIENT_IMAGE" "$CLIENT_LOCAL"
+docker pull -q curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 && docker tag curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 "$CLIENT_LOCAL"
 kind load docker-image "$CLIENT_LOCAL" --name fscache-accept
 )
 
@@ -59,7 +57,7 @@ kubectl wait --for=condition=Ready pod/fscache-runner --timeout=90s \
 # stage-acceptance-k8s.yml, job k8s, step 8: the runner env block populates the expected variable names (values never printed)
 step_08() (
 set -euo pipefail
-# Assert the NAMES the settings.gradle.kts reads are set and
+# Assert the NAMES the settings.gradle.kts reads are defined and
 # non-empty inside the pod; never echo the values. A regressed
 # mapping (wrong names, or an envFrom shortcut) leaves these unset.
 # shellcheck disable=SC2016
@@ -72,13 +70,12 @@ set -euo pipefail
 # Use ONLY the credentials the documented env block injected (never
 # read out-of-band from the Secret) against the cluster-internal
 # Service. A broken mapping yields empty creds -> 401 -> failure.
+# The requests run through the loopback helper (REQ-SUP-001-AC24), fed on stdin to the pod's own shell (nothing is written in the pod).
+lgin() { "$@" < bin/loopback-get.sh; }
 # shellcheck disable=SC2016
-kubectl exec fscache-runner -- sh -c '
-  set -e
-  curl -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" -X PUT --data-binary runner-roundtrip http://fscache/runnerkey123 -o /dev/null
-  got=$(curl -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" http://fscache/runnerkey123)
-  [ "$got" = runner-roundtrip ] || { echo "runner-pod authenticated round-trip failed (got: $got)" >&2; exit 1; }
-'
+lgin kubectl exec -i fscache-runner -- sh -c 'sh -s -- -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" -X PUT --data-binary runner-roundtrip http://fscache/runnerkey123 -o /dev/null'
+got=$(lgin kubectl exec -i fscache-runner -- sh -c 'sh -s -- -sf -u "$FSCACHE_USERNAME:$FSCACHE_PASSWORD" http://fscache/runnerkey123')
+[ "$got" = runner-roundtrip ] || { echo "runner-pod authenticated round-trip failed (got: $got)" >&2; exit 1; }
 )
 
 # stage-acceptance-k8s.yml, job k8s, step 10: run the documented port-forward smoke commands
