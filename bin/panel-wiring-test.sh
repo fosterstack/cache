@@ -398,9 +398,11 @@ for w in ("trivy", "osv-scanner", "snyk", "SNYK_TOKEN", "rescan-scanner-reports"
 # Grype's name stays in comments (the panel's Grype is the rescan's job), but no executable text may name it: not an
 # install, a run, a loop variable or a quoted target. Shell comments (whole-line, or after whitespace outside quotes) are dropped first.
 def strip_comment(l):
-    q = None
+    q = None; esc = False
     for k, c in enumerate(l):
-        if q:
+        if esc: esc = False; continue                      # the character after a backslash is literal (outside single quotes)
+        if c == "\\" and q != "'": esc = True
+        elif q:
             if c == q: q = None
         elif c in "'\"": q = c
         elif c == "#" and (k == 0 or l[k - 1].isspace()): return l[:k]
@@ -438,6 +440,9 @@ aud_case grype-comment  ok  "=>
 aud_case grype-inline-comment ok "=>
           true # grype docker:x -o json
 "
+aud_case grype-after-escaped-quote bad '=>
+          echo "say \" # still inside the string"; grype docker:x -o json
+'
 aud_case grype-loop     bad "=>
           for s in grype syft; do sudo ./bin/install-scanner.sh \"\$s\"; done
 "
