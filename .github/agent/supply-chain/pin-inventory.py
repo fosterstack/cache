@@ -913,11 +913,11 @@ bin/vendor-provenance.py
 bin/vendoring-test.sh
 bin/vex-forms-test.sh
 bin/vex-scope-test.sh
-bin/check-govulncheck.py
-bin/install-scanner.sh
 bin/chain-check-scripts-test.sh
 bin/chain-install-witness-test.sh
 bin/chain-release-scripts-test.sh
+bin/check-govulncheck.py
+bin/install-scanner.sh
 bin/release-metadata.py
 """.split())
 _VENDOR_LETTER = lambda c: r"(?:" + c + r"|\[[^\]]*" + c + r"[^\]]*\]|\?|\*)"
