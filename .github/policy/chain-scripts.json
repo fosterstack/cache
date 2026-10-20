@@ -271,6 +271,19 @@
       "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
     },
     {
+      "path": "bin/install-bubblewrap.sh",
+      "sha256": "45451e4a91cbbe5587ff674519df471e9b0643283f44754abca60e45557cf3a8",
+      "tools": [
+        "apt-get",
+        "bwrap",
+        "sudo"
+      ],
+      "runs": [],
+      "signs": "other",
+      "exceptions": [],
+      "reason": "installs the one distribution package bubblewrap on the hosted runner from its signed Ubuntu repository (apt-get update, then install without recommends), then checks that bwrap runs: the sandbox melange's bubblewrap runner needs and the images do not ship; never an input of the built bytes (Rebuild compares digests); the same limit as the skopeo installs (REQ-CHAIN-004-AC3, rule 38a; advisor read-back approval Oct 20)"
+    },
+    {
       "path": "bin/vex-index.py",
       "tools": [
         "python3",
