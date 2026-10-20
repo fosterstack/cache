@@ -132,6 +132,15 @@ def validate_panel_verdict(d):
                 or f.get("of") != len(ran) or f.get("unique") is not (len(sb) == 1)
                 or f.get("status") != ("unique" if len(sb) == 1 else "report")):
             raise ParseError("panel verdict: finding %s on %s has inconsistent seen_by/of/unique/status" % (f["id"], f["image"]))
+    keys = [pm.key_of(f["image"], f["id"], f["package"], f["version"]) for f in d["findings"]]
+    if len(set(keys)) != len(keys):
+        raise ParseError("panel verdict: two findings share one identity (image, CVE, package, version)")
+    if (d.get("unique") != [f for f in d["findings"] if f["unique"]] or not isinstance(d.get("vex_covered"), list)
+            or not isinstance(d.get("issue"), str)):
+        raise ParseError("panel verdict: the unique list, vex_covered or issue disagrees with the findings")
+    code = 2 if (d["not_counted"] or d["scanner_failures"]) else (1 if any(f["status"] == "report" for f in d["findings"]) else 0)
+    if d.get("exit") != code:
+        raise ParseError("panel verdict: exit status disagrees with the images and findings")
     return d
 
 

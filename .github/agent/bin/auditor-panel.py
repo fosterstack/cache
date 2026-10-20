@@ -21,7 +21,7 @@ environment's secrets (rule 8(b), rule 14, REQ-AUD-6 AC1).
 import argparse, copy, datetime, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auditorlib import policy, signed_commit  # noqa: E402
+from auditorlib import parsers, policy, signed_commit  # noqa: E402
 
 SEATS = ("A", "B")
 DEBATE_ROUNDS = (2, 3, 4)
@@ -970,8 +970,10 @@ def rescan_binding(path, oci_dir):
 
 def cmd_judge(a, seats=None, bundles=None, advisory=None):
     verdict = _load_json(a.verdict)
-    if not isinstance(verdict, dict) or not isinstance(verdict.get("findings"), list):
-        sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s); nothing was judged\n" % a.verdict)
+    try:
+        parsers.validate_panel_verdict(verdict)       # the one strict shape every reader shares (cache#466): fail closed
+    except parsers.ParseError as e:
+        sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s: %s); nothing was judged\n" % (a.verdict, e))
         return 2
     state = _load_json(a.state) or new_state()
     profiles = _load_json(a.profiles, {"entries": []})

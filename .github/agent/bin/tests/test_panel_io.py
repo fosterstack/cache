@@ -298,8 +298,17 @@ class Seats(Tmp):                                                           # RE
 
 
 def verdict_file(d, findings):
+    """A valid full-matrix verdict (every scanner ran everywhere) around `findings`, so the judge's strict check passes."""
     p = os.path.join(d, "verdict.json")
-    json.dump({"findings": findings}, open(p, "w"))
+    from auditorlib import parsers as PL
+    images = {}
+    for im in sorted(PL.panel_images()):
+        ran = sorted(s for s in PL.PANEL_SCANNERS if PL.panel_expected(s, im))
+        images[im] = {"counts": {s: 10 for s in ran}, "did_not_run": [], "ran": ran, "counts_for_day": len(ran) >= 3}
+    fs = [dict(f, of=len(images[f["image"]]["ran"])) for f in findings]
+    json.dump({"images": images, "not_counted": [], "scanner_failures": [], "findings": fs,
+               "unique": [f for f in fs if f["unique"]], "vex_covered": [], "issue": "",
+               "exit": 1 if any(f["status"] == "report" for f in fs) else 0}, open(p, "w"))
     return p
 
 
