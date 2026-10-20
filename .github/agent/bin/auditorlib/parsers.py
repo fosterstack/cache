@@ -57,31 +57,81 @@ def parse_grype(path):
 
 
 PANEL_SCANNERS = ("grype", "scout", "inspector", "google")
+_PANEL = []
+
+
+def _panel_module():
+    """bin/panel.py (the rescan's tally) is the one source of the fixed scanner/image matrix and the quorum; it is
+    loaded from the same checkout rather than copied here. Unloadable = ParseError (fail closed)."""
+    if not _PANEL:
+        import importlib.util, os
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "bin", "panel.py")
+        try:
+            spec = importlib.util.spec_from_file_location("_panel_matrix", path)
+            mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+            assert set(mod.EXPECTED) == set(PANEL_SCANNERS) and isinstance(mod.QUORUM, int)
+        except Exception as e:
+            raise ParseError("cannot load the panel's scanner/image matrix from bin/panel.py: %s" % e)
+        _PANEL.append(mod)
+    return _PANEL[0]
+
+
+def panel_images():
+    """The set of images the panel scans (every image any scanner is expected on)."""
+    return {i for imgs in _panel_module().EXPECTED.values() for i in imgs}
 
 
 def panel_expected(scanner, image):
-    """Scanner-panel rule 1: Grype, Scout and Inspector scan every image; Google only the linux/amd64 ones."""
-    return scanner != "google" or image.endswith("-amd64")
+    """Scanner-panel rule 1, from bin/panel.py: is `scanner` expected on `image`? (Google: linux/amd64 only.)"""
+    return image in _panel_module().EXPECTED.get(scanner, [])
+
+
+def _is_count(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
 
 
 def validate_panel_verdict(d):
-    """The strict shape of bin/panel.py's verdict.json, shared by every reader. Anything structurally wrong or
-    internally inconsistent raises ParseError: a malformed verdict is never read as 'no findings'. Corroboration is
-    checked against the image it names: seen_by only lists scanners that ran on that image, 'of' is the number that
-    ran, and 'unique' is exactly 'seen by one'."""
-    if not isinstance(d, dict) or not isinstance(d.get("images"), dict) or not d["images"] or not isinstance(d.get("findings"), list):
-        raise ParseError("panel verdict: no images, or no findings array")
+    """The strict shape of bin/panel.py's verdict.json, shared by every reader; fail closed. Anything structurally
+    wrong, truncated or internally inconsistent raises ParseError, so a malformed verdict is never read as 'no findings'
+    or as a scanner having run. The image set is exactly the panel's; per image, ran and did_not_run are duplicate-free,
+    disjoint, known scanner names whose union is exactly the scanners expected there; counts are positive integers
+    for exactly the scanners that ran; counts_for_day is the quorum. Each finding is complete, names a known image,
+    and its seen_by (scanners that ran on THAT image), 'of' (how many ran there), 'unique' and 'status' agree."""
+    pm = _panel_module()
+    if not isinstance(d, dict) or not isinstance(d.get("images"), dict) or not isinstance(d.get("findings"), list):
+        raise ParseError("panel verdict: no images object or findings array")
+    if set(d["images"]) != panel_images():
+        raise ParseError("panel verdict: the image set is not the panel's fixed set")
     for img, st in d["images"].items():
-        if not (isinstance(st, dict) and isinstance(st.get("ran"), list) and isinstance(st.get("did_not_run"), list)
-                and isinstance(st.get("counts"), dict)):
+        if not isinstance(st, dict):
+            raise ParseError("panel verdict: image %r is not an object" % img)
+        ran, dnr, counts = st.get("ran"), st.get("did_not_run"), st.get("counts")
+        if not (isinstance(ran, list) and isinstance(dnr, list) and isinstance(counts, dict)):
             raise ParseError("panel verdict: image %r has no ran/did_not_run/counts" % img)
+        if len(set(ran)) != len(ran) or len(set(dnr)) != len(dnr) or set(ran) & set(dnr):
+            raise ParseError("panel verdict: image %r lists a scanner twice or as both ran and did not run" % img)
+        want = {s for s in PANEL_SCANNERS if panel_expected(s, img)}
+        if set(ran) | set(dnr) != want or any(not isinstance(x, str) for x in ran + dnr):
+            raise ParseError("panel verdict: image %r does not list exactly its expected scanners" % img)
+        if set(counts) != set(ran) or not all(_is_count(v) for v in counts.values()):
+            raise ParseError("panel verdict: image %r has a ran scanner without a positive integer package count" % img)
+        if st.get("counts_for_day") is not (len(ran) >= pm.QUORUM):
+            raise ParseError("panel verdict: image %r counts_for_day disagrees with the quorum" % img)
+    st_all = d["images"]
+    if d.get("not_counted") != sorted(i for i, st in st_all.items() if not st["counts_for_day"]):
+        raise ParseError("panel verdict: not_counted disagrees with the images")
+    if d.get("scanner_failures") != sorted("%s on %s" % (s, i) for i, st in st_all.items() for s in st["did_not_run"]):
+        raise ParseError("panel verdict: scanner_failures disagrees with the images")
     for f in d["findings"]:
-        if not isinstance(f, dict) or not f.get("id") or f.get("image") not in d["images"]:
-            raise ParseError("panel verdict: a finding with no id or an unknown image")
-        sb, ran = f.get("seen_by"), d["images"][f["image"]]["ran"]
+        if not (isinstance(f, dict) and all(isinstance(f.get(k), str) and f.get(k) for k in ("id", "image", "package"))
+                and isinstance(f.get("version"), str) and isinstance(f.get("purls"), list)
+                and all(isinstance(x, str) for x in f["purls"]) and f["image"] in st_all):
+            raise ParseError("panel verdict: an incomplete finding or one on an unknown image")
+        sb, ran = f.get("seen_by"), st_all[f["image"]]["ran"]
         if (not isinstance(sb, list) or not sb or len(set(sb)) != len(sb) or any(x not in ran for x in sb)
-                or f.get("of") != len(ran) or f.get("unique") is not (len(sb) == 1)):
-            raise ParseError("panel verdict: finding %s on %s has inconsistent seen_by/of/unique" % (f.get("id"), f.get("image")))
+                or f.get("of") != len(ran) or f.get("unique") is not (len(sb) == 1)
+                or f.get("status") != ("unique" if len(sb) == 1 else "report")):
+            raise ParseError("panel verdict: finding %s on %s has inconsistent seen_by/of/unique/status" % (f["id"], f["image"]))
     return d
 
 

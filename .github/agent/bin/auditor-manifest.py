@@ -128,13 +128,13 @@ def panel_inventory(verdict_path):
     reports, status = {}, {}
     for s in PANEL_SCANNERS:
         want = sorted(i for i in imgs if P.panel_expected(s, i))
-        good = [i for i in want if s in imgs[i]["ran"] and int((imgs[i]["counts"] or {}).get(s) or 0) > 0]
+        good = [i for i in want if s in imgs[i]["ran"]]          # the validator guarantees a positive integer count for each
         missed = [i for i in want if i not in good]
         ok = bool(want) and not missed
         reason = "ok" if ok else ("did not run on: %s" % ", ".join(missed) if missed else "no image reported this scanner")
         status[s] = {"ran": ok, "scan_ok": ok, "quorum_ok": ok, "version": None, "reason": reason,
                      "images_ran": len(good), "images_expected": len(want),
-                     "package_count": sum(int(imgs[i]["counts"][s]) for i in good)}
+                     "package_count": sum(imgs[i]["counts"][s] for i in good)}
         reports[s] = verdict_path if ok else None
     return reports, status
 
