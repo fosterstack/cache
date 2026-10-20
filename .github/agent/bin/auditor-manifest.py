@@ -136,6 +136,27 @@ def panel_inventory(verdict_path):
     return reports, status
 
 
+def panel_block(panel_dir):
+    """The manifest's 'panel' block. None when no panel directory was given (an older run). A directory without
+    verdict.json records all four panel scanners 'did not run' with that reason: the panel's audits cannot run,
+    and nothing is reported clean because a file is missing."""
+    if not panel_dir:
+        return None
+    vp = os.path.join(panel_dir, "verdict.json")
+    if os.path.exists(vp) and os.path.getsize(vp) > 0:
+        try:
+            reports, status = panel_inventory(vp)
+            return {"verdict": vp, "scanner_reports": reports, "scanner_status": status}
+        except (ValueError, OSError, AttributeError, TypeError) as e:
+            why = "panel-evidence verdict.json is unreadable: %s" % e
+    else:
+        why = "panel-evidence has no verdict.json"
+    return {"verdict": None,
+            "scanner_reports": {s: None for s in PANEL_SCANNERS},
+            "scanner_status": {s: {"ran": False, "scan_ok": False, "quorum_ok": False, "version": None, "reason": why,
+                                   "images_ran": 0, "images_expected": 0, "package_count": 0} for s in PANEL_SCANNERS}}
+
+
 def _base_os(path):
     """The base OS release from syft's `distro` block (e.g. 'debian 12.0') — REQ-AUD-14 AC7 needs
     the PINNED release, not a hardcoded 'debian', so the endoflife.date lookup matches the right
@@ -533,6 +554,7 @@ def main():
         # endoflife.date maintenance flags (carriers/base on LTS/EOL lines) and the base pin-lag
         # block. `eol`/`base` are best-effort (empty when endoflife.date is unreachable).
         "carriers": carriers, "eol": _eol_list, "base": _base_block,
+        "panel": panel_block(cli.opt("--panel-dir")),     # the scanner panel's four, from the rescan's verdict.json
         "provenance": {"source": ("test-image" if test_image else "own-scan"), "candidate": src,
                        "scanned": "docker-archive"},
     }
