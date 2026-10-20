@@ -3897,6 +3897,57 @@ PYEOF
 )"
 { eq "$r" "sev=high/9.9 fix=9.9 aliases=CVE-2099-0001,GHSA-aaaa-bbbb-cccc inspector_sev=critical amd64=3/4 arm64=2/3 unique_zlib=True curl_amd64=False curl_arm64=True"; } && ok || no "grype's CVE-2099-0001: 3 of 4 on amd64, 2 of 3 on arm64; inspector's curl finding is not unique on amd64 and unique on arm64 (same deduplicated record)" "[$r]"
 
+########################################################################
+echo "=== 0600 option A, PR 2b-1: the auditor reads the four panel scanners ==="
+cat > "$WORK/mkpm.py" <<'PYEOF'
+import json, os, sys
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+scenario, out = sys.argv[1], sys.argv[2]; os.makedirs(out, exist_ok=True)
+pm = P._panel_module(); vp = os.path.join(out, "verdict.json")
+images = {}
+for im in sorted(P.panel_images()):
+    exp = [s for s in P.PANEL_SCANNERS if P.panel_expected(s, im)]
+    bad = [s for s in ("scout", "google") if scenario == "uncounted" and im == "debug-amd64" and s in exp]
+    ran = sorted(s for s in exp if s not in bad)
+    images[im] = {"counts": {s: 10 for s in ran}, "did_not_run": sorted(bad), "ran": ran, "counts_for_day": len(ran) >= 3}
+def f(im, vid, pkg, ver, seen, details):
+    return {"image": im, "id": vid, "package": pkg, "version": ver, "seen_by": sorted(seen), "of": len(images[im]["ran"]),
+            "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report",
+            "purls": ["pkg:deb/debian/%s@%s" % (pkg, ver)], "details": details}
+fs = [f("production-amd64", "CVE-2016-2781", "coreutils", "9.1-1", ["grype", "inspector", "scout"], {"grype": {"severity": "low"}, "inspector": {"severity": "medium"}, "scout": {}}),
+      f("production-amd64", "CVE-2011-3374", "apt", "2.6.1", ["grype", "inspector", "scout"], {"grype": {"severity": "high"}, "inspector": {"severity": "critical"}, "scout": {}})]
+d = {"images": images, "not_counted": sorted(i for i, st in images.items() if not st["counts_for_day"]),
+     "scanner_failures": sorted("%s on %s" % (s, i) for i, st in images.items() for s in st["did_not_run"]),
+     "findings": fs, "vex_covered": [], "issue": pm.render_issue([x for x in fs if x["status"] == "report"])}
+d["unique"] = [x for x in fs if x["unique"]]
+d["exit"] = 2 if (d["not_counted"] or d["scanner_failures"]) else 1
+json.dump(d, open(vp, "w"))
+m = json.load(open(".github/agent/fixtures/run/manifest-01.json"))
+m["scanner_set"] = "panel"
+if scenario == "nopanel":
+    rep = {s: None for s in P.PANEL_SCANNERS}
+    st = {s: {"ran": False, "scan_ok": False, "quorum_ok": False, "version": None, "reason": "panel-evidence has no verdict.json", "images_ran": 0, "images_expected": 0, "package_count": 0} for s in P.PANEL_SCANNERS}
+    m["panel"] = {"verdict": None, "not_counted": None, "scanner_failures": None, "scanner_reports": rep, "scanner_status": st}
+else:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("m", ".github/agent/bin/auditor-manifest.py"); M = importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+    m["panel"] = M.panel_block(out)
+m["scanner_reports"] = m["panel"]["scanner_reports"]; m["scanner_status"] = m["panel"]["scanner_status"]
+json.dump(m, open(os.path.join(out, "manifest.json"), "w"))
+PYEOF
+for sc in ok uncounted nopanel; do "$PY" "$WORK/mkpm.py" $sc "$WORK/pm-$sc"; done
+
+begin "panel-6-classify-reads-the-four-and-writes-no-per-scanner-files" "auditor-classify on a panel manifest: the findings come from the verdict, the false positive still gets its VEX statement and section 5, severity is the HIGHEST any scanner gave, and no per-scanner ignore files (ignores/<scanner>/) are written (rule 4: the VEX is the only exception)"
+o="$WORK/pm-ok-classify"; rm -rf "$o"
+run "$PY" "$BIN/auditor-classify.py" --manifest "$WORK/pm-ok/manifest.json" --adjudicator "$STUB" --out "$o" && {
+  st="$(vf "$o/vex/CVE-2016-2781.openvex.json" CVE-2016-2781 's["status"]')"
+  s5="$(sect_ids "$o/report.md" 5)"
+  sev="$(grep 'CVE-2011-3374' "$o/report.md" | grep -qi 'critical' && echo critical || echo other)"
+  igdirs="$(ls -d "$o"/ignores/*/ 2>/dev/null | wc -l | tr -d ' ')"
+  { eq "$st" "not_affected" && printf '%s' "$s5" | grep -q 'CVE-2016-2781' && eq "$sev" "critical" && eq "$igdirs" "0"; } \
+    && ok || no "panel manifest classified: FP not_affected in section 5, highest severity critical, no ignores/<scanner> dirs" "status=$st sec5=[$s5] sev=$sev ignoredirs=$igdirs"; }
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
