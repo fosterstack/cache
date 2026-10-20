@@ -3719,6 +3719,59 @@ PYEOF
 )"
 { eq "$r" "none=True ok=True,grype,inspector empty=True,True"; } && ok || no "panel_block: None without a directory; four statuses with a verdict; all four did-not-run (reason names verdict.json) without one" "[$r]"
 
+begin "panel-4-malformed-or-inconsistent-verdicts-are-refused-everywhere" "round 1 of cache#466 (both Codex seats): a verdict that is structurally wrong or inconsistent (no findings array, empty images, a non-object finding, a seen_by scanner that did not run on that image, a wrong 'of', a wrong 'unique', a ran scanner with a zero or missing count, a scanner listed in neither list on an image where the rule expects it) never yields a clean inventory: parse_panel raises, panel_block records all four 'did not run', and a zero count or an unlisted expected scanner makes only that scanner 'did not run'"
+r="$(MF="$pv" WK="$WORK" "$PY" - <<'PYEOF'
+import importlib.util, os, sys, json, copy
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+base = json.load(open(os.environ["MF"])); wk = os.environ["WK"]
+def put(name, d):
+    dd = os.path.join(wk, "pv-" + name); os.makedirs(dd, exist_ok=True); json.dump(d, open(os.path.join(dd, "verdict.json"), "w")); return dd
+def mut(fn):
+    d = copy.deepcopy(base); fn(d); return d
+def drop_findings(d): del d["findings"]
+def empty_images(d): d["images"] = {}
+def null_finding(d): d["findings"].append(None)
+def ghost_seen(d): d["findings"][1]["seen_by"] = ["grype", "inspector", "google"]   # google never ran on the arm64 image
+def bad_of(d): d["findings"][0]["of"] = 3
+def bad_unique(d): d["findings"][2]["unique"] = False
+def unknown_image(d): d["findings"][0]["image"] = "nowhere-amd64"
+out = []
+for name, fn in (("nofind", drop_findings), ("noimg", empty_images), ("null", null_finding), ("ghost", ghost_seen), ("of", bad_of), ("uniq", bad_unique), ("img", unknown_image)):
+    dd = put(name, mut(fn)); vp = os.path.join(dd, "verdict.json")
+    try:
+        P.parse_panel(vp, "grype"); pp = "accepted"
+    except P.ParseError:
+        pp = "refused"
+    pb = M.panel_block(dd)
+    out.append("%s=%s/%s" % (name, pp, "all-down" if all(not pb["scanner_status"][s]["ran"] for s in M.PANEL_SCANNERS) else "SOME-RAN"))
+def zero(d): d["images"]["production-amd64"]["counts"]["grype"] = 0
+def unlisted(d):
+    st = d["images"]["production-arm64"]; st["ran"] = [x for x in st["ran"] if x != "grype"]; st["counts"].pop("grype")
+    d["findings"][1]["seen_by"] = ["inspector"]; d["findings"][1]["of"] = 2; d["findings"][1]["unique"] = True
+    d["images"]["production-arm64"]["counts_for_day"] = False
+for name, fn in (("zero", zero), ("unlisted", unlisted)):
+    dd = put(name, mut(fn)); pb = M.panel_block(dd)
+    out.append("%s=grype-ran:%s,inspector-ran:%s" % (name, pb["scanner_status"]["grype"]["ran"], pb["scanner_status"]["inspector"]["ran"]))
+print(" ".join(out))
+PYEOF
+)"
+{ eq "$r" "nofind=refused/all-down noimg=refused/all-down null=refused/all-down ghost=refused/all-down of=refused/all-down uniq=refused/all-down img=refused/all-down zero=grype-ran:False,inspector-ran:True unlisted=grype-ran:False,inspector-ran:True"; } && ok || no "malformed or inconsistent verdicts refused by parse_panel and panel_block; zero count / unlisted expected scanner = that scanner did not run" "[$r]"
+
+begin "panel-5-corroboration-is-kept-per-image" "round 1 of cache#466 (seat B): the same CVE on two images keeps its own 'seen by N of M' and its own uniqueness per image; one image's numbers are never attached to another image"
+r="$(MF="$pv" "$PY" - <<'PYEOF'
+import os, sys
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+g = P.parse_panel(os.environ["MF"], "grype")[0]["extra"]["by_image"]
+i = P.parse_panel(os.environ["MF"], "inspector")
+z = [f for f in i if f["finding_id"] == "CVE-2099-0002"][0]["extra"]["by_image"]
+print("amd64=%d/%d arm64=%d/%d unique_zlib=%s" % (len(g["production-amd64"]["seen_by"]), g["production-amd64"]["of"], len(g["production-arm64"]["seen_by"]), g["production-arm64"]["of"], z["production-amd64"]["unique"]))
+PYEOF
+)"
+{ eq "$r" "amd64=3/4 arm64=2/3 unique_zlib=True"; } && ok || no "grype's CVE-2099-0001: 3 of 4 on amd64, 2 of 3 on arm64; inspector's zlib finding unique on amd64" "[$r]"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
