@@ -366,7 +366,7 @@ PY
   # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
   /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange" "$tmp/host"
   /usr/bin/python3 -I -B - "$repo" "$tmp" <<'PY'
-import sys, yaml
+import re, sys, yaml
 repo, tmp = sys.argv[1:3]
 for src, out in (("apko.yaml", "production/apko.yaml"), ("apko-fips.yaml", "fips/apko-fips.yaml")):
     d = yaml.safe_load(open("%s/build/%s" % (repo, src)))
@@ -379,8 +379,39 @@ names = [str(p).split("=")[0] for p in m["environment"]["contents"]["packages"]]
 yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": names}, "archs": ["x86_64", "aarch64"]},
                open(tmp + "/melange/melange-env.yaml", "w"))
 # REQ-REFRESH-001-AC35: the packages the Build jobs run on the runner itself (bubblewrap and its libraries), resolved like melange's build tools
-h = yaml.safe_load(open(repo + "/build/host-tools.yaml"))
-hnames = [str(p).split("=")[0] for p in h["packages"]]
+def refuse(msg):
+    print("refresh-inputs.sh: refused: %s" % msg, file=sys.stderr); sys.exit(2)
+class StrictLoader(yaml.SafeLoader):
+    pass
+def _no_dup(loader, node, deep=False):
+    seen = set()
+    for k, _ in node.value:
+        key = loader.construct_object(k, deep=True)
+        if key in seen:
+            refuse("build/host-tools.yaml has the key %r twice" % (key,))
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup)
+try:
+    h = yaml.load(open(repo + "/build/host-tools.yaml"), Loader=StrictLoader)
+except yaml.YAMLError as e:
+    refuse("build/host-tools.yaml is not valid YAML (%s)" % str(e).splitlines()[0])
+# a closed shape: exactly one key, packages, a non-empty list of unique plain package names (no version, no path: the lock pins the versions)
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+if not isinstance(h, dict) or set(h) != {"packages"}:
+    refuse("build/host-tools.yaml must hold exactly one key, packages")
+hnames = h["packages"]
+if not isinstance(hnames, list) or not hnames or not all(isinstance(n, str) and NAME.fullmatch(n) and ".." not in n for n in hnames) or len(set(hnames)) != len(hnames):
+    refuse("build/host-tools.yaml packages must be a non-empty list of unique plain package names (no version, no path)")
+# the committed lock: name=version rows in the closed grammar, each name once
+seen_n = set()
+for _row in open(repo + "/build/locks/host-tools.lock").read().splitlines():
+    if not _row:
+        continue
+    _n, _eq, _v = _row.partition("=")
+    if not _eq or not NAME.fullmatch(_n) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+~-]*", _v) or ".." in _n or ".." in _v or _n in seen_n:
+        refuse("build/locks/host-tools.lock has a row that is not a name=version of the closed grammar, or a name twice: %r" % _row)
+    seen_n.add(_n)
 yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": hnames}, "archs": ["x86_64", "aarch64"]},
                open(tmp + "/host/host-tools-env.yaml", "w"))
 PY

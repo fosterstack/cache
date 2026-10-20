@@ -4356,7 +4356,7 @@ requirements:
       - id: REQ-REFRESH-001-AC35
         given: "build/host-tools.yaml, which names the packages the Build jobs run on the runner itself (bubblewrap), and the committed build/locks/host-tools.lock"
         when: "bin/refresh-inputs.sh refresh runs"
-        then: "it resolves them with apko lock against https://packages.wolfi.dev/os for both architectures (a fourth lock, like melange's build tools), archives every package the archive lacks under the checks of AC3 (HTTPS, the lock's control and data checksums, the datahash, the signed index) before any lock changes, and writes build/locks/host-tools.lock as sorted name=version lines; when the resolution equals the committed lock nothing is committed, pushed or opened, and a repository without the data file or the lock is refused"
+        then: "it resolves them with apko lock against https://packages.wolfi.dev/os for both architectures (a fourth lock, like melange's build tools), archives every package the archive lacks under the checks of AC3 (HTTPS, the lock's control and data checksums, the datahash, the signed index) before any lock changes, and writes build/locks/host-tools.lock as sorted name=version lines; when the resolution equals the committed lock nothing is committed, pushed or opened, and a repository without the data file or the lock is refused, as is a data file that is not exactly one packages key holding a non-empty list of unique plain names (duplicate keys, versions, paths) and a lock with a row outside the name=version grammar or a name twice (exit 2, before any lock is made)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REFRESH-001-AC36

@@ -1631,7 +1631,7 @@ lock = [l.strip() for l in open(r + '/build/locks/host-tools.lock') if l.strip()
 assert lock == sorted(lock) and 'zlib=1.3.2-r0' in lock, lock
 assert open(r + '/build/locks/melange.lock').read() == open(fx + '/melange.lock').read()
 P"
-t "AC38" "refresh: the host lock change goes in the one refresh pull request with the archive pointer (one gh pr create, the lock among the committed paths)" bash -c "test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && $GHPATHS | grep -q 'build/locks/host-tools.lock' && ! grep -Eq '^gh pr merge|--admin|--auto|--no-verify' '$CALLS'"
+t "AC38" "refresh: the host lock change goes in the one refresh pull request (one gh pr create, the lock among the committed paths)" bash -c "test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && $GHPATHS | grep -q 'build/locks/host-tools.lock' && ! grep -Eq '^gh pr merge|--admin|--auto|--no-verify' '$CALLS'"
 t "AC38" "refresh: the host tools carry no waiting period (a version resolved today is archived today: no cooldown or minimum age in the output)" bash -c "! grep -Eqi 'cooldown|too young|minimum age|waiting period' '$work/log'"
 # nothing moved: the host resolution equals the committed host lock -> still no commit, no push, no pull request
 mkrepo; run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
@@ -1661,5 +1661,37 @@ json.dump(d, open(sys.argv[2], "w"))
 P
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_LOCK_HOST="$work/live-host-drop.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC37" "refresh: a host package version live Wolfi no longer resolves (busybox) is noted as a host tool, exit 0, the archived copy kept, the lock moves to the live resolution" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -Eqi 'busybox.*host tools|host tools.*busybox' '$work/log' && grep -qi 'no longer' '$work/log' && ls '$work/ar/x86_64/' | grep -q '^busybox-' && ! grep -q '^busybox=' '$work/rp/build/locks/host-tools.lock'"
+# round 1 of the seats (cache#475): the data file and the committed lock are fully validated before any use (fail closed), and the tests prove what they claim
+mkrepo; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC35" "refresh: the host-tools lock is asked to resolve exactly the packages of build/host-tools.yaml (the configuration given to apko, not a canned answer)" bash -c "python3 - '$CALLS.hostcfg' <<'P'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+assert d['contents']['packages'] == ['busybox', 'ca-certificates-bundle'], d
+assert d['contents']['repositories'] == [] and d['contents']['keyring'] == [], d
+P"
+bad_ht() { # bad_ht LABEL TEXT   a host-tools.yaml that must be refused before any lock is made
+  mkrepo; printf '%b' "$2" >"$work/rp/build/host-tools.yaml"; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+  t "AC35" "refresh: build/host-tools.yaml $1 is refused (exit 2, names the file), before any apko call, nothing archived, no pull request" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -q 'host-tools.yaml' '$work/log' && test \"\$(grep -c '^apko lock ' '$CALLS')\" -eq 0 && ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/x86_64/zlib-1.3.2-r0.apk'"
+}
+bad_ht "with a duplicate packages key" 'packages:\n  - busybox\npackages:\n  - zlib\n'
+bad_ht "whose packages is a mapping" 'packages: {busybox: null}\n'
+bad_ht "with an empty package list" 'packages: []\n'
+bad_ht "with a package that pins a version" 'packages:\n  - busybox=1.37.0-r5\n'
+bad_ht "with a package name that is a path" 'packages:\n  - ../busybox\n'
+bad_ht "with a package named twice" 'packages:\n  - busybox\n  - busybox\n'
+bad_ht "with another top-level key" 'packages:\n  - busybox\nrepositories:\n  - https://example.invalid\n'
+bad_hl() { # bad_hl LABEL TEXT   a host-tools.lock that must be refused before any lock is made
+  mkrepo; printf '%b' "$2" >"$work/rp/build/locks/host-tools.lock"; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+  t "AC36" "refresh: build/locks/host-tools.lock $1 is refused (exit 2, names the file), nothing archived, no pull request" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -q 'host-tools.lock' '$work/log' && ! grep -q '^gh pr create' '$CALLS' && test ! -e '$work/ar/x86_64/zlib-1.3.2-r0.apk'"
+}
+bad_hl "with a row that is not name=version" 'busybox=1.37.0-r5\nnonsense\n'
+bad_hl "with a package named twice" 'busybox=1.37.0-r5\nbusybox=1.36.0-r0\n'
+bad_hl "with a name that is a path" '../busybox=1.37.0-r5\n'
+bad_hl "with a version that is a path" 'busybox=../1.37.0-r5\n'
+# a retained host-only package (zlib) is checked on every run, not only the ones the melange lock shares
+mkrepo; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; cp "$work/rp/build/locks/host-tools.lock" "$work/ht.lock"
+mkrepo; cp "$work/ht.lock" "$work/rp/build/locks/host-tools.lock"; printf 'X' >>"$work/ar/x86_64/zlib-1.3.2-r0.apk" 2>/dev/null || { cp "$fx/live/x86_64/zlib-1.3.2-r0.apk" "$work/ar/x86_64/"; printf 'X' >>"$work/ar/x86_64/zlib-1.3.2-r0.apk"; }; cp -n "$fx/live/aarch64/zlib-1.3.2-r0.apk" "$work/ar/aarch64/"
+run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: a damaged archived package that only the host tools name (zlib) is found: exit 1, names the file, no pull request" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'zlib-1.3.2-r0.apk' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
 echo "refresh-inputs-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
