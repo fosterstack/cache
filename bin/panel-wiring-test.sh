@@ -395,11 +395,19 @@ bad = []
 for w in ("trivy", "osv-scanner", "snyk", "SNYK_TOKEN", "rescan-scanner-reports", "--rescan-reports"):
     if w.lower() in t.lower():
         bad.append(f"auditor.yml still mentions {w}")
-# Grype's name stays in comments (the panel's Grype is the rescan's job), but no executable line installs or runs it here
-code = [l for l in t.splitlines() if not l.lstrip().startswith("#")]
-for l in code:
-    if re.search(r"install-scanner\.sh\s+grype\b|(^|[\s;&|(])grype\s+(docker:|dir:|registry:|oci-archive:|db\b|-o\b|--)", l):
-        bad.append("auditor.yml installs or runs grype: " + l.strip()[:60])
+# Grype's name stays in comments (the panel's Grype is the rescan's job), but no executable text may name it: not an
+# install, a run, a loop variable or a quoted target. Shell comments (whole-line, or after whitespace outside quotes) are dropped first.
+def strip_comment(l):
+    q = None
+    for k, c in enumerate(l):
+        if q:
+            if c == q: q = None
+        elif c in "'\"": q = c
+        elif c == "#" and (k == 0 or l[k - 1].isspace()): return l[:k]
+    return l
+for l in t.splitlines():
+    if re.search(r"\bgrype\b", strip_comment(l), re.I):
+        bad.append("auditor.yml names grype outside a comment: " + l.strip()[:60])
 if "--panel-dir" not in t:
     bad.append("auditor.yml does not hand the panel evidence to the manifest")
 print("; ".join(bad) or "clean"); sys.exit(1 if bad else 0)
@@ -426,6 +434,18 @@ aud_case grype-run      bad "=>
 "
 aud_case grype-comment  ok  "=>
           # grype is the rescan panel's job, not the auditor's
+"
+aud_case grype-inline-comment ok "=>
+          true # grype docker:x -o json
+"
+aud_case grype-loop     bad "=>
+          for s in grype syft; do sudo ./bin/install-scanner.sh \"\$s\"; done
+"
+aud_case grype-quoted   bad "=>
+          grype \"docker:\${ref}\" -o json
+"
+aud_case grype-bare-ref bad "=>
+          grype ghcr.io/fosterstack/cache:latest -o json
 "
 aud_case reports-download bad '=>
           gh run download "$rid" -n rescan-scanner-reports -D x
