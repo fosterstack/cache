@@ -111,7 +111,9 @@ def load_panel_verdict(path):
 
 _TOP_KEYS = frozenset(("images", "not_counted", "scanner_failures", "findings", "unique", "vex_covered", "issue", "exit"))
 _IMAGE_KEYS = frozenset(("counts", "did_not_run", "ran", "counts_for_day"))
-_FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of", "unique", "status", "purls"))
+_FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of", "unique", "status", "purls", "details"))
+_DETAIL_KEYS = frozenset(("severity", "fixed_version", "aliases", "known_exploited"))
+_SEVERITIES = ("negligible", "low", "medium", "high", "critical")       # bin/panel.py SEVERITIES, in rising order
 _VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
 _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")            # no control characters, no backtick (the issue text quotes with it)
 _ID = re.compile(r"[A-Za-z0-9?][A-Za-z0-9._:+-]*")          # CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result
@@ -201,6 +203,19 @@ def _validate_panel_verdict(d):
             name, ver = pm._purl_name_version(purl)
             if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"], f["package"], f["version"])[2:]:
                 raise ParseError("panel verdict: finding %s on %s has a package URL for a different package or version" % (f["id"], f["image"]))
+    for f in d["findings"]:                      # each reporting scanner's own record: closed keys, exact types; absent = not reported
+        det = f["details"]
+        if not isinstance(det, dict) or set(det) != set(f["seen_by"]):
+            raise ParseError("panel verdict: finding %s on %s has details for different scanners than seen_by" % (f["id"], f["image"]))
+        for sc, rec in det.items():
+            if not isinstance(rec, dict) or not set(rec) <= _DETAIL_KEYS:
+                raise ParseError("panel verdict: finding %s on %s has an unknown key in %s's details" % (f["id"], f["image"], sc))
+            al = rec.get("aliases", [])
+            if (rec.get("severity", "negligible") not in _SEVERITIES or not isinstance(rec.get("severity", ""), str)
+                    or ("fixed_version" in rec and not (isinstance(rec["fixed_version"], str) and rec["fixed_version"] and _TEXT.fullmatch(rec["fixed_version"])))
+                    or not isinstance(al, list) or len(set(map(str, al))) != len(al) or not all(isinstance(a, str) and _ID.fullmatch(a) for a in al)
+                    or ("aliases" in rec and not al) or not isinstance(rec.get("known_exploited", True), bool)):
+                raise ParseError("panel verdict: finding %s on %s has a malformed value in %s's details" % (f["id"], f["image"], sc))
     keys = [pm.key_of(f["image"], f["id"], f["package"], f["version"]) for f in d["findings"]]
     if len(set(keys)) != len(keys):
         raise ParseError("panel verdict: two findings share one identity (image, CVE, package, version)")
@@ -248,6 +263,14 @@ def parse_panel(path, scanner):
             rec = seen[key] = _finding(scanner, f["id"], purl, (), f.get("package"), None, None,
                                        {"images": [], "version": f.get("version"), "by_image": {}})
         rec["extra"]["images"].append(f["image"])
+        mine = f["details"].get(scanner, {})             # this scanner's own severity / fix / aliases for this image
+        if mine.get("severity") and (rec["severity"] is None or _SEVERITIES.index(mine["severity"]) > _SEVERITIES.index(rec["severity"])):
+            rec["severity"] = mine["severity"]           # the highest across images; the scanner's words, normalised
+        if mine.get("fixed_version") and not rec["fixed_version"]:
+            rec["fixed_version"] = mine["fixed_version"]
+        if mine.get("known_exploited"):
+            rec["extra"]["known_exploited"] = True
+        rec["aliases"] = sorted(set(rec["aliases"]) | set(mine.get("aliases") or []))
         rec["extra"]["by_image"][f["image"]] = {"seen_by": sorted(f["seen_by"]), "of": f["of"], "unique": f["unique"]}
     for rec in seen.values():
         rec["extra"]["images"].sort()
