@@ -23,9 +23,10 @@ OURS=ghcr.io/fosterstack/cache:selfcheck
 OUR_PRODUCT="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
 DIGEST_PRODUCT="pkg:oci/debian@$FIXTURE_DIGEST?repository_url=docker.io/library/debian"
 
-docker pull -q "$FIXTURE" >/dev/null
-docker tag "$FIXTURE" "$CONTROL"
-docker tag "$FIXTURE" "$OURS"
+# the fixture must be in the local store: the tag-based cases scan it as local:// and never fall back to a registry lookup of a mutable tag
+docker pull -q "$FIXTURE" >/dev/null || { echo "::error::cannot pull the fixture" >&2; exit 2; }
+docker tag "$FIXTURE" "$CONTROL" || { echo "::error::cannot tag the control image" >&2; exit 2; }
+docker tag "$FIXTURE" "$OURS" || { echo "::error::cannot tag our image" >&2; exit 2; }
 {
   echo "# Docker Scout older-versions sweep"
   echo
@@ -41,8 +42,8 @@ for ver in $SCOUT_VERSIONS; do
      || ! docker scout version > "$d/version.txt" 2>&1; then
     echo "| $ver | does not run | | | | no |" >> "$summ"; continue
   fi
-  docker scout cves --format gitlab "$CONTROL" > "$d/before-control.json" 2> "$d/before-control.err"; rc1=$?
-  docker scout cves --format gitlab "$OURS"    > "$d/before-ours.json"    2> "$d/before-ours.err";    rc2=$?
+  docker scout cves --format gitlab "local://$CONTROL" > "$d/before-control.json" 2> "$d/before-control.err"; rc1=$?
+  docker scout cves --format gitlab "local://$OURS"    > "$d/before-ours.json"    2> "$d/before-ours.err";    rc2=$?
   docker scout cves --format gitlab "registry://$FIXTURE" > "$d/before-digest.json" 2> "$d/before-digest.err"; rc3=$?
   read -r cve purl < <(python3 bin/scout-root-cause.py pick "$d/before-control.json" 2>/dev/null) || { cve=none; purl=-; }
   [ -n "${cve:-}" ] || { cve=none; purl=-; }
@@ -65,9 +66,9 @@ for ver in $SCOUT_VERSIONS; do
     fi
     printf '%s\t%s\n' "$name" "$res" >> "$d/results.tsv"
   done < <(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      control-file "$CONTROL" "$d/before-control.json" "$rc1" "$AUTHOR" "$AUTHOR_RE" "$CONTROL_PRODUCT" "$cve" "$purl" file \
-      control-dir  "$CONTROL" "$d/before-control.json" "$rc1" "$AUTHOR" "$AUTHOR_RE" "$CONTROL_PRODUCT" "$cve" "$purl" dir \
-      ours-file    "$OURS" "$d/before-ours.json" "$rc2" "${OUR_AUTHOR:--}" "$OUR_AUTHOR_RE" "$OUR_PRODUCT" CVE-2023-4911 "${g_purl:--}" file \
+      control-file "local://$CONTROL" "$d/before-control.json" "$rc1" "$AUTHOR" "$AUTHOR_RE" "$CONTROL_PRODUCT" "$cve" "$purl" file \
+      control-dir  "local://$CONTROL" "$d/before-control.json" "$rc1" "$AUTHOR" "$AUTHOR_RE" "$CONTROL_PRODUCT" "$cve" "$purl" dir \
+      ours-file    "local://$OURS" "$d/before-ours.json" "$rc2" "${OUR_AUTHOR:--}" "$OUR_AUTHOR_RE" "$OUR_PRODUCT" CVE-2023-4911 "${g_purl:--}" file \
       exact-digest "registry://$FIXTURE" "$d/before-digest.json" "$rc3" "${OUR_AUTHOR:--}" "$OUR_AUTHOR_RE" "$DIGEST_PRODUCT" CVE-2023-4911 "${g_purl:--}" file)
   c1=$(awk -F'\t' '$1=="control-file"{print $2}' "$d/results.tsv"); c2=$(awk -F'\t' '$1=="control-dir"{print $2}' "$d/results.tsv")
   c3=$(awk -F'\t' '$1=="ours-file"{print $2}' "$d/results.tsv");     c4=$(awk -F'\t' '$1=="exact-digest"{print $2}' "$d/results.tsv")

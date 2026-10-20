@@ -39,10 +39,41 @@ SCOUT_DIR="$e/scout" SCOUT_VERSIONS="9.9.9 9.9.8 9.9.7 9.9.6" HOME="$e/home" PAT
 rc=$?
 [ "$rc" -eq 0 ] && ok "the sweep runs end to end, exit 0" || no "the sweep exited $rc: $(tail -5 "$e/run.log")"
 row() { grep -F "| $1 |" "$e/out/summary.md" | head -1; }
-[ "$(row 9.9.9 | grep -o applied | wc -l | tr -d ' ')" -ge 3 ] && row 9.9.9 | grep -q 'YES' && ok "a version that applies a local VEX is reported applied in every form, YES" || no "9.9.9 row: $(row 9.9.9)"
-row 9.9.8 | grep -q 'not applied' && ! row 9.9.8 | grep -q 'YES' && ok "a version that ignores a local VEX is 'not applied', not YES" || no "9.9.8 row: $(row 9.9.8)"
+[ "$(row 9.9.9)" = "| 9.9.9 | applied | applied | applied | applied | YES |" ] && ok "a version that applies a local VEX has all four cells applied, YES" || no "9.9.9 row: $(row 9.9.9)"
+[ "$(row 9.9.8)" = "| 9.9.8 | not applied | not applied | not applied | not applied | no |" ] && ok "a version that ignores a local VEX is 'not applied', not YES" || no "9.9.8 row: $(row 9.9.8)"
 row 9.9.7 | grep -q 'does not run' && ok "a version that is not installed says it does not run" || no "9.9.7 row: $(row 9.9.7)"
 row 9.9.6 | grep -q 'scan exit 1' && ! row 9.9.6 | grep -q 'YES' && ok "a version without --vex-location records the scan exit, not YES" || no "9.9.6 row: $(row 9.9.6)"
+# a fixture that cannot be pulled stops the sweep (exit 2) before any scan: no registry fallback for a mutable tag
+cat > "$e/bin/docker.bad" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = pull ] && exit 1
+echo "$*" >> "$LOGF"; exit 0
+STUB
+mkdir -p "$e/badbin"; cp "$e/bin/docker.bad" "$e/badbin/docker"; chmod +x "$e/badbin/docker"
+LOGF="$e/bad.log" SCOUT_DIR="$e/scout" SCOUT_VERSIONS="9.9.9" HOME="$e/home" PATH="$e/badbin:$PATH" bash bin/scout-older-versions.sh "$e/out2" > "$e/bad.out" 2>&1
+[ "$?" -eq 2 ] && ! grep -q 'scout cves' "$e/bad.log" 2>/dev/null && ok "a fixture that cannot be pulled exits 2 before any scan" || no "setup failure: $(tail -2 "$e/bad.out")"
+grep -q 'local://' bin/scout-older-versions.sh && ! grep -E 'scout cves[^"]*"\$(CONTROL|OURS)"' bin/scout-older-versions.sh >/dev/null && ok "the tag-based cases scan the local store (local://)" || no "a tag-based scan is not local://"
+# the installer really dispatches every swept name (past the allowlist and the checksum table; it stops at the download, which has no server)
+python3 - "$root" <<'PY' > "$e/vers.txt"
+import re, sys
+print(re.search(r"SCOUT_VERSIONS: '([^']+)'", open(sys.argv[1] + "/.github/workflows/main-candidate-rescan.yml").read()).group(1))
+PY
+bad=""
+for v in $(cat "$e/vers.txt"); do
+  m=$(INSTALL_SCANNER_ARCH=amd64 SCOUT_BASE_URL=file:///nonexistent bash bin/install-scanner.sh "docker-scout-$v" "$e/dest" 2>&1 || true)
+  case "$m" in *"unknown scanner"*|*"no pinned checksum"*|"") bad="$bad $v";; esac
+done
+[ -z "$bad" ] && ok "the installer dispatches all $(wc -w < "$e/vers.txt" | tr -d ' ') swept names (allowlist and checksum table)" || no "installer refuses:$bad"
+m=$(INSTALL_SCANNER_ARCH=amd64 SCOUT_BASE_URL=file:///nonexistent bash bin/install-scanner.sh docker-scout-0.0.1 "$e/dest" 2>&1 || true)
+case "$m" in *"unknown scanner"*) ok "an unswept version still fails closed";; *) no "docker-scout-0.0.1: $m";; esac
+# the workflow block: the job's secrets are exactly the two Docker Hub ones, no packages permission, no GHCR login
+python3 - "$root" <<'PY' && ok "the sweep job references exactly the two Docker Hub secrets and no packages or GHCR access" || no "the job's secrets or permissions differ"
+import sys, yaml, re, json
+d = yaml.safe_load(open(sys.argv[1] + "/.github/workflows/main-candidate-rescan.yml"))
+t = json.dumps(d["jobs"]["scout-older-versions"])
+assert sorted(set(re.findall(r"secrets\.[A-Z0-9_]+", t))) == ["secrets.DOCKERHUB_SCOUT_TOKEN", "secrets.DOCKERHUB_USERNAME"], re.findall(r"secrets\.[A-Z0-9_]+", t)
+assert "packages" not in t and "ghcr.io" not in t and "id-token" not in t
+PY
 # the workflow job and the installer
 python3 - "$root" <<'PY' && ok "the sweep job is dispatch-only, uses the installer for each version, and sets no secret beyond the Scout token" || no "the workflow job is not as required"
 import sys, yaml, re
