@@ -112,6 +112,8 @@ def validate_manifest(m):
     if not isinstance(r, dict):
         raise ValueError("manifest: scanner_reports object is missing")
     status = m.get("scanner_status") or {}
+    if m.get("scanner_set") not in (None, "legacy", "panel"):       # an unknown value must not silently select the legacy behaviour
+        raise ValueError("manifest: scanner_set %r is not 'panel' or 'legacy'" % (m.get("scanner_set"),))
     keys = P.scanner_set(m) + (() if m.get("scanner_set") == "panel" else ("osv-scanner-gomod",))
     if m.get("scanner_set") == "panel" and not (isinstance(m.get("panel"), dict) and "verdict" in m["panel"]):
         raise ValueError("manifest: a panel manifest has no panel block with the verdict path (null when there is none)")

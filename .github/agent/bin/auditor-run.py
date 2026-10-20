@@ -2290,7 +2290,11 @@ def _scanner_tables(m, rows, out):
         except Exception as e:
             findings = []; lines.append("  (could not parse report: %s)" % e)
         if not findings:
-            lines.append("  clean — no findings"); lines.append("::endgroup::"); continue
+            if panel and not info.get("ran"):       # a scanner that did not run has no "clean": it only reported nothing
+                lines.append("  no findings reported; scan incomplete (did not run: %s)" % info.get("reason", "no report"))
+            else:
+                lines.append("  clean — no findings")
+            lines.append("::endgroup::"); continue
         table = []
         for f in findings:
             inst = (f.get("extra") or {}).get("installed_version") or _ver_from_purl(f.get("purl")) or "-"
