@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -1924,7 +1924,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b": "printf -v CURL %s /usr/bin/curl # TEST-SUBST",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith("live fetch, owner ratified (")]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 (", "loopback fetch, advisor reading Oct 17 (", "pinned fetch, advisor reading Oct 17 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -1982,6 +1982,42 @@ for r in rows:
 assert next(r for r in rows if r["line"] == H(KEY))["count"] == 4
 assert [r.get("count", 1) for r in sorted(rows, key=lambda r: r["line"])] == [c for _, c in sorted((h, 4 if h == H(KEY) else 1) for h in LIVE)], "the counts are exactly 4, 1, 1"
 PY
+CASE="the committed Go-toolchain row is exactly the one go.dev fetch line of bin/refresh-inputs.sh: its text, its hashes (the key is the curl segment), the checker's Go rule accepts it, the same line with another program, under the Wolfi rule, or with another host is refused"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
+import hashlib, importlib.util, json, re, sys
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
+spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+GO = '/usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/go/$f" "https://go.dev/dl/$f" || die "could not download a Go toolchain from go.dev" 1'
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith(ac.GO_RULING)]
+assert len(rows) == 1, [r["line"][:12] for r in rows]
+r = rows[0]
+assert r["file"] == "bin/refresh-inputs.sh" and r["form"] == "a download" and r["line"] == H(GO) and "count" not in r, r
+segs = re.split(r"\s*(?:;|&&|\|\||\|)\s*", GO)
+assert r["key"] == H(segs[0]) and segs[0].startswith("/usr/bin/curl ") and r["key"] != H(segs[1]) and segs[1].startswith("die "), r
+assert ac._live_fetch_line_ok(GO, toolchain=True), "the Go rule refuses the line"
+assert not ac._live_fetch_line_ok(GO), "the Wolfi rule accepts a go.dev line"
+assert not ac._live_fetch_line_ok(GO.replace("/usr/bin/curl", "/usr/bin/other", 1), toolchain=True), "another program is accepted"
+assert not ac._live_fetch_line_ok(GO.replace("https://go.dev/", "https://go.dev.example/", 1), toolchain=True), "another host is accepted"
+PY
+CASE="a committed loopback row is exactly the one pinned line of bin/loopback-get.sh (file, form, no count, no context, the pinned whole-line hash) and there is at most one"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith(ac.LOOPBACK_RULING)]
+assert len(rows) <= 1, len(rows)
+for r in rows:
+    assert r["file"] == ac.LOOPBACK_FILE and r["form"] == "a download" and r["line"] == ac.LOOPBACK_LINE_SHA256 and "count" not in r and "context" not in r, r
+PY
+CASE="every committed pinned-fetch row names one of the nineteen pinned lines of its own file (its form, its whole-line hash), with no count and no context"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$chk" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[2]); ac = importlib.util.module_from_spec(spec); sys.modules["ac"] = ac; spec.loader.exec_module(ac)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith(ac.PINNED_FETCH_RULING)]
+assert len({(r["file"], r["line"]) for r in rows}) <= 19, len(rows)   # one row per command segment of a line: a line with two segments (acceptance-k8s.sh) has two rows
+assert len(rows) <= 20, len(rows)
+for r in rows:
+    assert r["line"] in ac._PINNED_FETCH_SHA.get(r["file"], {}) and r["form"] in ("a download", "a gh release or extension download") and "count" not in r and "context" not in r, r
+PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
 newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"
@@ -2017,7 +2053,7 @@ for r in rows:
     assert ("proof" not in r or "context" in r) and r.get("context", "comment") in ac.CONTEXTS and (r.get("proof", "x").strip() != "" and type(r.get("proof", "x")) is str), r
     assert re.fullmatch(r"[0-9a-f]{64}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
-    pre = next((x for x in ("text, not a command: ", "harness assertion: ", ac.LIVE_RULING) if r["ruling"].startswith(x)), None)
+    pre = next((x for x in ("text, not a command: ", "harness assertion: ", ac.LIVE_RULING, ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING) if r["ruling"].startswith(x)), None)
     assert re.fullmatch(r"[0-9a-f]{64}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
 
@@ -2280,6 +2316,102 @@ ctxno "a multi-line parameter expansion hides an assignment-looking line" "${SH}
 ctxyes "a one-line parameter expansion is understood" "${SH}"$'value=${UNSET:-b}\n# curl https://e.example/x\n' comment
 ctxno "argparse can create a file (FileType)" "${SH}"$'python3 - <<\'PY\'\nimport argparse\np = argparse.ArgumentParser()\np.add_argument("o", type=argparse.FileType("w"))\nx = "curl https://e.example/x"\nPY\n' pystring
 ctxyes "argparse with the review label" "${SH}"$'python3 - <<\'PY\'\nimport argparse\np = argparse.ArgumentParser()\nx = "curl https://e.example/x"\nPY\n' pystring "$IMP"
+# round 1 of cache#390 (both seats): imported members of sys, a definition after then/do or indented or under a versioned interpreter name, and a quoted output option are all refused
+ctxno "from sys import path then path.append" "${SH}"$'python3 - <<\'PY\'\nfrom sys import path\npath.append("x")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "from sys import modules" "${SH}"$'python3 - <<\'PY\'\nfrom sys import modules\nmodules["os"].system("true")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "from sys import setprofile (aliased)" "${SH}"$'python3 - <<\'PY\'\nfrom sys import setprofile as sp\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxyes "from sys import argv is is pure" "${SH}"$'python3 - <<\'PY\'\nfrom sys import argv\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "a cat redefined after then" "${SH}"$'if true; then cat() { sh; }; fi\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a cat redefined after do" "${SH}"$'for i in 1; do cat() { sh; }; done\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "an indented versioned python redefined" "${SH}"$'  python3.11() { sh; }\npython3.11 - <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "an indented cat redefined with function" "${SH}"$'  function cat { sh; }\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxyes "a javascript .() in a string is not a function definition" "${SH}"$'python3 - <<\'PY\'\nx = "setInterval(async () => {}).unref?.();"\ny = "curl https://e.example/x"\nPY\n' pystring "$IMP"
+ctxno "a cat definition with a space inside the parentheses" "${SH}"$'cat ( ) { sh; }\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a cat definition with a line break inside the parentheses" "${SH}"$'cat (\n) { sh; }\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a heredoc inside a process substitution run by bash" "${SH}"$'bash <(\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n)\n' heredoc
+ctxno "a heredoc inside a subshell piped to sh" "${SH}"$'(\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n) | sh\n' heredoc
+ctxno "a heredoc inside a brace group piped to sh" "${SH}"$'{\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n} | sh\n' heredoc
+ctxno "a python module alias reaches a method" "${SH}"$'python3 - <<\'PY\'\nimport sys, os.path\nruntime = sys\nruntime.modules["os"].replace("old", "new")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "a python re-exported module reaches a writer (os.path.os.replace)" "${SH}"$'python3 - <<\'PY\'\nimport os.path\nos.path.os.replace("a", "b")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "a redirection to a path that only starts with /dev/null" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload >/dev/nullcopy\nsh /dev/nullcopy\n' heredoc
+ctxno "a heredoc inside an if whose fi pipes to sh" "${SH}"$'if true; then\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\nfi | sh\n' heredoc
+ctxno "a heredoc inside a for loop whose done pipes to sh" "${SH}"$'for i in 1; do\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\ndone | sh\n' heredoc
+ctxno "a heredoc inside a while loop" "${SH}"$'while true; do\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\nbreak; done | sh\n' heredoc
+ctxyes "a heredoc after a finished if is still inert text" "${SH}"$'if true; then echo a; fi\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a python module attribute assigned to an alias" "${SH}"$'python3 - <<\'PY\'\nimport os.path\nruntime = os.path.os\nruntime.replace("old", "new")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "a redirection to /dev/null with a dynamic suffix" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload >/dev/null"$SUFFIX"\nsh copied\n' heredoc
+ctxno "a quoted -o of sort copies the written file" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsort "-o" copied payload\nsh copied\n' heredoc
+ctxno "a single-quoted --output= of sort copies the written file" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsort \'--output=copied\' payload\nsh copied\n' heredoc
+# --- hardening (round-3 residuals of #386, recorded in its PR body; advisor Oct 16) ---
+ctxno "a data consumer copies the written file with an output redirection, and the copy is run" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload >second\nsh second\n' heredoc
+ctxno "a data consumer appends to a copy" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload >>second\n' heredoc
+ctxno "tee copies the written file" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ntee copied <payload\nsh copied\n' heredoc
+ctxno "sort -o writes a copy" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsort -o copied payload\nsh copied\n' heredoc
+ctxno "sort --output writes a copy" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsort --output=copied payload\nsh copied\n' heredoc
+ctxno "uniq with an output operand writes a copy" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nuniq payload copied\nsh copied\n' heredoc
+ctxyes "sort and grep only read the written file" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nsort -u payload\ngrep -c e.example payload\n' heredoc
+ctxyes "a data consumer may send its errors to /dev/null" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload 2>/dev/null >/dev/null\n' heredoc
+ctxno "a function is defined after a command separator" "${SH}"$'true; cat() { sh; }\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a function is defined inside a group" "${SH}"$'{ cat() { sh; }; }\ncat <<\'EOF\'\ncurl https://e.example/x\nEOF\n' heredoc
+ctxno "a versioned python name is redefined" "${SH}"$'python3.11() { python3 - | sh; }\npython3.11 - <<\'PY\'\nprint("curl https://e.example/x")\nPY\n' pystring
+ctxno "python is redefined after an &&" "${SH}"$'true && python() { sh; }\npython - <<\'PY\'\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "typing.get_type_hints evaluates a string annotation" "${SH}"$'python3 - <<\'PY\'\nimport typing\nclass C:\n    x: "__import__(\'os\').system(\'true\') # curl https://e.example/x"\ntyping.get_type_hints(C)\nPY\n' pystring
+ctxyes "the same program with the review label" "${SH}"$'python3 - <<\'PY\'\nimport typing\nclass C:\n    x: "__import__(\'os\').system(\'true\') # curl https://e.example/x"\ntyping.get_type_hints(C)\nPY\n' pystring "$IMP"
+ctxno "sys.modules reaches any module" "${SH}"$'python3 - <<\'PY\'\nimport sys\nsys.modules["os"].replace("old", "new")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "sys.path changes what imports load" "${SH}"$'python3 - <<\'PY\'\nimport sys\nsys.path.append("x")\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxyes "sys.argv and sys.exit are pure" "${SH}"$'python3 - <<\'PY\'\nimport sys\nn = len(sys.argv)\nx = "curl https://e.example/x"\nsys.exit(0)\nPY\n' pystring
+ctxno "an unknown method on a computed receiver" "${SH}"$'python3 - <<\'PY\'\nd = {}\nd.frobnicate()\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxyes "string and list methods are pure" "${SH}"$'python3 - <<\'PY\'\nv = []\nv.append("a,b".split(",")[0].strip().upper())\nx = "curl https://e.example/x"\nPY\n' pystring
+ctxno "a quoted hash is not a comment in the later-use scan" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\nprintf \'%s\' \' #\'; sh payload\n' heredoc
+ctxyes "a real comment after a data consumer is ignored" "${SH}"$'cat >payload <<\'EOF\'\ncurl https://e.example/x\nEOF\ncat payload # sh payload\n' heredoc
+# --- REQ-SUP-001-AC2 (round 1 of cache#180, seat B, B1): the images the persona UAT runs are named in bin/persona-uat-tools.json, a file the driver reads and no workflow
+# names; the inventory must read it like any other image CI runs, so a new or moved persona image needs the same 7 days of public age and reaches the daily advisory check. ------
+PT1="ghcr.io/own/ptool-a@$DIG1"; PT2="ghcr.io/own/ptool-b@$DIG2"; PT3="ghcr.io/own/ptool-c@$DIG3"
+PTJ=$(printf '{\n  "capture": "%s",\n  "gradle": "%s",\n  "shell": "%s"\n}\n' "$PT1" "$PT2" "$PT3")
+newcase ptools "$(pyw bin/persona-uat-tools.json "$PTJ")"
+runck ptools '{"times": {}}'
+CASE="AC2 persona tools: a new tools file with three digest images and no age data FAILS (exit 1) and names all three"
+check test "$rc" -eq 1; for n in ptool-a@$DIG1 ptool-b@$DIG2 ptool-c@$DIG3; do check grep -qF "image:ghcr.io/own/$n" "$work/ptools.out"; done
+runck ptools "{\"times\": {\"image:ghcr.io/own/ptool-a@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}, \"image:ghcr.io/own/ptool-b@$DIG2\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}, \"image:ghcr.io/own/ptool-c@$DIG3\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
+CASE="AC2 persona tools: the same three images 10 days old via registry-push are accepted (exit 0) and named"
+check test "$rc" -eq 0; for n in ptool-a@$DIG1 ptool-b@$DIG2 ptool-c@$DIG3; do check grep -qF "image:ghcr.io/own/$n" "$work/ptools.out"; done
+runck ptools "{\"times\": {\"image:ghcr.io/own/ptool-a@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}, \"image:ghcr.io/own/ptool-b@$DIG2\": {\"time\": \"$YOUNG\", \"source\": \"registry-push\"}, \"image:ghcr.io/own/ptool-c@$DIG3\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
+CASE="AC2 persona tools: one image 3 days old FAILS the check (exit 1)"; check test "$rc" -eq 1; check grep -qF "image:ghcr.io/own/ptool-b@$DIG2" "$work/ptools.out"
+newcase ptagonly "$(pyw bin/persona-uat-tools.json "$(printf '{\n  "shell": "ghcr.io/own/ptool-a:latest"\n}\n')")"
+runck ptagonly '{"times": {}}'
+CASE="AC2 persona tools: an image named by a tag alone (no digest) can never pass: exit 1"; check test "$rc" -eq 1
+newcase pbadjson "$(pyw bin/persona-uat-tools.json 'this is not json')"
+runck pbadjson '{"times": {}}'
+CASE="AC2 persona tools: a tools file that is not JSON stops the check (exit 2), never 'nothing to measure'"; check test "$rc" -eq 2
+for bad in '{"shell": 5}' '{"shell": ["ghcr.io/own/ptool-a@'$DIG1'"]}' '["ghcr.io/own/ptool-a@'$DIG1'"]' '{"shell": {"image": "ghcr.io/own/ptool-a@'$DIG1'"}}'; do
+  newcase pbadshape "$(pyw bin/persona-uat-tools.json "$bad")"
+  runck pbadshape '{"times": {}}'
+  CASE="AC2 persona tools: a tools file of another shape ($bad) stops the check (exit 2), never skipped"; check test "$rc" -eq 2
+done
+# round 2 of cache#393: a registry with a port is an ordinary image reference, and a digest-only move in the same repository is a moved item
+PTP="registry.example:5000/team/ptool-p@$DIG1"
+newcase pport "$(pyw bin/persona-uat-tools.json "$(printf '{\n  "shell": "%s"\n}\n' "$PTP")")"
+runck pport "{\"times\": {\"image:registry.example:5000/team/ptool-p@$DIG1\": {\"time\": \"$OLD\", \"source\": \"registry-push\"}}}"
+CASE="AC2 persona tools: an image on a registry with a port, 10 days old via registry-push, is inventoried (named) and accepted (exit 0)"
+check test "$rc" -eq 0; check grep -qF "registry.example:5000/team/ptool-p@$DIG1" "$work/pport.out"
+rm -rf "$work/pmove2"; cp -R "$base" "$work/pmove2"
+( cd "$work/pmove2" && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG1" >bin/persona-uat-tools.json && git add -A && git commit -q -m b2 && printf '{\n  "shell": "%s"\n}\n' "ghcr.io/own/same@$DIG2" >bin/persona-uat-tools.json && git add -A && git commit -q -m h2 )
+runck pmove2 '{"times": {}}'
+CASE="AC2 persona tools: moving only the digest of the same repository is a moved item with no age: FAILS (exit 1) and names the new digest, not the old one"
+check test "$rc" -eq 1; check grep -qF "ghcr.io/own/same@$DIG2" "$work/pmove2.out"; check test "$(grep -cF "same@$DIG1" "$work/pmove2.out")" -eq 0
+# round 1 of cache#393 (both seats): a duplicate key, an image reference that is not <name>[:tag]@sha256:<64 hex> exactly, and a tools file that cannot be read each stop the check (exit 2): an image we cannot read is never skipped
+for bad in '{"shell": 7, "shell": "'$PT1'"}' '{"shell": "'$PT1'", "shell": "'$PT2'"}' '{"shell": "ghcr.io/own/ptool-a/'$DIG1'"}' '{"shell": "ghcr.io/own/ptool-a@'$DIG1'0"}' '{"shell": "ghcr.io/own/ptool-a@'${DIG1^^}'"}' '{"": "'$PT1'"}'; do
+  newcase pbadref "$(pyw bin/persona-uat-tools.json "$bad")"
+  runck pbadref '{"times": {}}'
+  CASE="AC2 persona tools: a tools file with a duplicate key or a reference that is not exactly name@sha256:<64 hex> ($bad) stops the check (exit 2)"; check test "$rc" -eq 2
+done
+# a digest that MOVES in a tools file the base already holds is a moved item like any other pin
+rm -rf "$work/pmove"; cp -R "$base" "$work/pmove"
+( cd "$work/pmove" && printf '{\n  "shell": "%s"\n}\n' "$PT1" >bin/persona-uat-tools.json && git add -A && git commit -q -m b1 && printf '{\n  "shell": "%s"\n}\n' "$PT3" >bin/persona-uat-tools.json && git add -A && git commit -q -m h1 )
+runck pmove '{"times": {}}'
+CASE="AC2 persona tools: moving the digest in a tools file the base holds is a moved item with no age: FAILS (exit 1) and names the new digest, not the old one"
+check test "$rc" -eq 1; check grep -qF "image:ghcr.io/own/ptool-c@$DIG3" "$work/pmove.out"; check test "$(grep -cF "ptool-a@$DIG1" "$work/pmove.out")" -eq 0
+
 # a context the file does not name, a non-text value, a proof without a context: the file is malformed (exit 2), never "nothing ruled" and never "everything ruled"
 newcase cx "$(pyw bin/ctx.sh "${SH}# curl https://e.example/x"$'\n')"
 for bad in '"context": "shell"' '"context": ""' '"context": 5' '"context": ["comment"]' '"proof": "x"' '"context": "comment", "proof": 7' '"context": "comment", "proof": ""' '"context": null'; do
@@ -3131,9 +3263,28 @@ for f in bi-str bi-int bi-dup bi-bad; do
   CASE="AC21: a malformed list ($f) stops the check, never 'nothing exempted' and never 'everything' (exit 2)"
   check test "$rc" -eq 2
 done
+# an EXPLICIT --base-inputs path that does not exist is a refusal (the default file may be missing and list nothing; a named one may not): exit 2 naming the path, never "nothing exempted"
+bick "$work/no-such-list.json"
+CASE="AC21: an explicit --base-inputs path that does not exist stops the check (exit 2, the message says it does not exist)"
+check test "$rc" -eq 2; check grep -q 'does not exist' "$work/bi.out"; check grep -q 'no-such-list.json' "$work/bi.out"
+# REQ-SUP-001-AC22: the committed list names the archive index record exactly (the daily refresh pull request moves it; rule 48: no seven-day hold on Wolfi)
+CASE="AC22: the committed .github/policy/base-inputs.json names build/locks/archive-index.sha256 exactly once, beside the archive key record"
+check python3 - "$root/.github/policy/base-inputs.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))["base_inputs"]
+assert d.count("build/locks/archive-index.sha256") == 1 and "build/locks/archive-keys.sha256" in d, d
+PY
+bick "$root/.github/policy/base-inputs.json"
+CASE="AC22: with the committed list, the moved archive index record and the archive key record are base inputs, no finding (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'base input' "$work/bi.out")" -ge 2
+rm -rf "$work/bi3"; cp -R "$work/bi" "$work/bi3"
+( cd "$work/bi3" && printf '%s\n' "x86_64 sha256:cccc" >build/locks/archive-index.sha256.bak && mkdir -p docs && printf '%s\n' "x86_64 sha256:dddd" >docs/archive-index.sha256 && git add -A && git -c user.name=t -c user.email=t@x commit -qm lookalikes )
+rc=0; python3 "$chk" --root "$work/bi3" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --base-inputs "$root/.github/policy/base-inputs.json" >"$work/bi3.out" 2>&1 || rc=$?
+CASE="AC22: a name with a suffix and the same name in another directory stay items that cannot pass, with the committed list (exit 1, two findings)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL tool:file:' "$work/bi3.out")" -eq 2
 # a pull request's own list is never read: the default is the copy beside the script, not the tree under --root
 rm -rf "$work/bi2"; cp -R "$work/bi" "$work/bi2"
-( cd "$work/bi2" && mkdir -p .github/policy && cp "$work/bi-ok.json" .github/policy/base-inputs.json && git add -A && git -c user.name=t -c user.email=t@x commit -qm list )
+( cd "$work/bi2" && printf '%s\n' "x86_64 sha256:eeee" >build/locks/zz-record.sha256 && mkdir -p .github/policy && printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", "build/locks/archive-index.sha256", "build/locks/zz-record.sha256"]}' >.github/policy/base-inputs.json && git add -A && git -c user.name=t -c user.email=t@x commit -qm list )
 rc=0; python3 "$chk" --root "$work/bi2" --base HEAD~2 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/bi2.out" 2>&1 || rc=$?
 CASE="AC21: a list the pull request itself adds under --root exempts nothing (the default list is the base branch's copy beside the script): exit 1"
 check test "$rc" -eq 1
@@ -3567,6 +3718,14 @@ assert not hits, hits[:3]
 naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/"))
           and any(m._names_vendor(l) for l in t.split("\n"))}
 extra = m.vendor_list_extras(root, files)
+import tempfile
+_t = tempfile.mkdtemp(); os_ = __import__("os"); os_.makedirs(_t + "/bin")
+_names = ("bin/install-scanner.sh", "bin/check-govulncheck.py", "bin/release-metadata.py")
+for _p in _names: open(_t + "/" + _p, "w").write("nothing here\n")
+_quiet = m.vendor_list_extras(_t, {_p: "nothing here\n" for _p in _names})
+assert _quiet == ["bin/check-govulncheck.py", "bin/install-scanner.sh", "bin/release-metadata.py"], _quiet     # the rule itself still reports every quiet listed file
+assert [p for p in _quiet if p != "bin/install-scanner.sh"] == ["bin/check-govulncheck.py", "bin/release-metadata.py"]   # the one skip below removes that one path and no other
+extra = [p for p in extra if p != "bin/install-scanner.sh"]   # listed ahead of the chain landing: its govulncheck block (REQ-SCAN-012) names tools/govulncheck/vendor on the chain branch and not yet on main
 assert not extra, "listed but names nothing: %s" % sorted(extra)
 missing = naming - set(m._VENDOR_NAMING_FILES)
 assert not missing, "names vendor but not listed: %s" % sorted(missing)
@@ -3671,6 +3830,223 @@ mkrowp "$work/lf-edit.json" bin/fetch.sh "curl -q -fsSL -o /tmp/k https://packag
 twoc lf-edit bin/fetch.sh $'#!/bin/sh\n' $'#!/bin/sh\ncurl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x --proxy http://p.example\n'
 edck lf-edit "$work/lf-edit.json"
 CASE="a live-fetch row voids when the line is edited (a proxy added): exit 1"
+check test "$rc" -eq 1
+
+# REQ-SUP-001-AC23: the second honored fetch shape, the Go toolchain tarball the refresh job archives (rule 12: Go kept in the archive; the committed recipe pins the file and its
+# sha256, which the job verifies before storing). Honored only under its own ruling text, only for ONE curl with the fixed flags and the single operand https://go.dev/dl/ followed by one variable.
+GOP='pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): '
+GOFIX='-q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/$f"'
+for v in "go-ok:curl $GOFIX \"https://go.dev/dl/\$f\" || die \"could not download the Go toolchain\" 1:0" \
+         "go-ok-braced:curl $GOFIX \"https://go.dev/dl/\${f}\":0" \
+         "go-ok-concatenated:curl $GOFIX \"https://go.dev/dl/\"\"\$f\":0" \
+         "go-without-globoff:curl -q -fsSL --max-time 900 --proto =https --tlsv1.2 -o \"\$tmp/dl/\$f\" \"https://go.dev/dl/\$f\":1" \
+         "go-literal-file-is-no-variable-shape:curl $GOFIX https://go.dev/dl/go1.27.2.linux-amd64.tar.gz:1" \
+         "go-other-path:curl $GOFIX \"https://go.dev/other/\$f\":1" \
+         "go-path-then-literal:curl $GOFIX \"https://go.dev/dl/\$f/x\":1" \
+         "go-two-variables:curl $GOFIX \"https://go.dev/dl/\$a\$b\":1" \
+         "go-variable-host:curl $GOFIX \"https://\$h/dl/\$f\":1" \
+         "go-variable-in-authority:curl $GOFIX \"https://go.dev\$f\":1" \
+         "go-host-lookalike:curl $GOFIX \"https://go.dev.evil.example/dl/\$f\":1" \
+         "go-userinfo:curl $GOFIX \"https://go.dev@evil.example/dl/\$f\":1" \
+         "go-port:curl $GOFIX \"https://go.dev:8443/dl/\$f\":1" \
+         "go-http:curl $GOFIX \"http://go.dev/dl/\$f\":1" \
+         "go-other-host:curl $GOFIX \"https://dl.google.com/go/\$f\":1" \
+         "go-wolfi-line-under-the-go-ruling:curl $GOFIX \"https://packages.wolfi.dev/os/\$f\":1" \
+         "go-second-operand:curl $GOFIX \"https://go.dev/dl/\$f\" https://go.dev/dl/other:1" \
+         "go-default-expansion:curl $GOFIX \"https://go.dev/dl/\${f:-x}\":1" \
+         "go-command-substitution:curl $GOFIX \"https://go.dev/dl/\$(cat /tmp/f)\":1" \
+         "go-pipe-to-shell:curl $GOFIX \"https://go.dev/dl/\$f\" | tar xz:1" \
+         "go-proxy-option:curl $GOFIX -x http://p.example:3128 \"https://go.dev/dl/\$f\":1" \
+         "go-no-disable-first:curl -fsSL -g -o \"\$tmp/dl/\$f\" \"https://go.dev/dl/\$f\":1" \
+         "go-disable-alias-for-q:curl --disable -fsSL -g --max-time 900 --proto =https --tlsv1.2 -o \"\$tmp/dl/\$f\" \"https://go.dev/dl/\$f\":1" \
+         "go-globoff-alias-for-g:curl -q -fsSL --globoff --max-time 900 --proto =https --tlsv1.2 -o \"\$tmp/dl/\$f\" \"https://go.dev/dl/\$f\":1" \
+         "go-single-quoted-url-is-a-literal-dollar:curl $GOFIX 'https://go.dev/dl/\$f':1" \
+         "go-output-default-expansion:curl -q -fsSL -g --max-time 900 --proto =https --tlsv1.2 -o \"\${out-fallback}\" \"https://go.dev/dl/\$f\":1" \
+         "go-output-command-word:curl -q -fsSL -g --max-time 900 --proto =https --tlsv1.2 -o \"\${out:-x}\" \"https://go.dev/dl/\$f\":1" \
+         "go-single-quoted-output:curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o '\$tmp/dl/\$f' \"https://go.dev/dl/\$f\":1" \
+         "go-single-quoted-braced-output:curl -q -fsSL -g --max-filesize 268435456 --max-time 900 --proto =https --tlsv1.2 -o '\${tmp}/dl/\$f' \"https://go.dev/dl/\$f\":1" \
+         "go-output-command-substitution:curl -q -fsSL -g --max-time 900 --proto =https --tlsv1.2 -o \"\$(cat /tmp/o)\" \"https://go.dev/dl/\$f\":1" \
+         "go-literal-wolfi-url-under-the-go-ruling:curl $GOFIX https://packages.wolfi.dev/os/wolfi-signing.rsa.pub:1" \
+         "go-resolve-option:curl $GOFIX --resolve go.dev:443:10.0.0.1 \"https://go.dev/dl/\$f\":1" \
+         "go-config-option:curl $GOFIX -K /tmp/cfg \"https://go.dev/dl/\$f\":1"; do
+  nm=${v%%:*}; rest=${v#*:}; line=${rest%:*}; want=${rest##*:}
+  mkrowp "$work/gf-$nm.json" bin/fetch.sh "$line" "$GOP"
+  twoc "gf-$nm" bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
+  edck "gf-$nm" "$work/gf-$nm.json"
+  CASE="Go-toolchain fetch row, $nm: exit $want"
+  check test "$rc" -eq "$want"
+done
+# the Go ruling is for scripts only (a *.sh file outside .github/): the same valid line, carried by a workflow step or a non-script file, is not ruled
+GLW="curl $GOFIX \"https://go.dev/dl/\$f\""
+mkrowp "$work/gf-in-workflow.json" .github/workflows/x.yml "$GLW" "$GOP"
+twoc gf-in-workflow .github/workflows/x.yml $'name: x\non: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' $'name: x\non: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          '"$GLW"$'\n'
+edck gf-in-workflow "$work/gf-in-workflow.json"
+CASE="a Go-toolchain row for a workflow file rules nothing (scripts only): exit 1"
+check test "$rc" -eq 1
+# the two rulings do not lend each other their lines: a Go-shaped line under the Wolfi ruling, and a Wolfi-shaped line under the Go ruling, rule nothing
+GL="curl $GOFIX \"https://go.dev/dl/\$f\""
+mkrowp "$work/gf-under-live.json" bin/fetch.sh "$GL" "$LIVEP"
+twoc gf-under-live bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$GL"$'\n'
+edck gf-under-live "$work/gf-under-live.json"
+CASE="a Go-toolchain line under the Wolfi live-fetch ruling rules nothing: exit 1"
+check test "$rc" -eq 1
+WL='curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p"'
+mkrowp "$work/gf-wolfi-under-go.json" bin/fetch.sh "$WL" "$GOP"
+twoc gf-wolfi-under-go bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$WL"$'\n'
+edck gf-wolfi-under-go "$work/gf-wolfi-under-go.json"
+CASE="a Wolfi per-package line under the Go-toolchain ruling rules nothing: exit 1"
+check test "$rc" -eq 1
+mkrowp "$work/gf-edit.json" bin/fetch.sh "$GL" "$GOP"
+twoc gf-edit bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$GL --proxy http://p.example"$'\n'
+edck gf-edit "$work/gf-edit.json"
+CASE="a Go-toolchain row voids when the line is edited (a proxy added): exit 1"
+check test "$rc" -eq 1
+
+# REQ-SUP-001-AC25: the third honored fetch shape, the single line of bin/loopback-get.sh that starts the fetch program for a loopback or token request. The checker pins the
+# file and the sha256 of the whole line (as the ruling's only allowance), so any edit, any other file and any other line under the prefix rule nothing.
+LRP='loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): '
+LL="curl -q -g --noproxy '*' --proto \"=\$proto\" --max-redirs 0 \"\$@\" \"\$url\" || exit \$?"
+for v in "lr-ok:bin/loopback-get.sh:$LL:0" \
+         "lr-other-file:bin/fetch.sh:$LL:1" \
+         "lr-other-name:bin/loopback-get2.sh:$LL:1" \
+         "lr-edited-one-char:bin/loopback-get.sh:${LL/--max-redirs 0/--max-redirs 1}:1" \
+         "lr-extra-option:bin/loopback-get.sh:${LL/-q -g/-q -g -k}:1" \
+         "lr-other-line-same-file:bin/loopback-get.sh:curl -x http://p.example:3128 \"\$url\":1" \
+         "lr-a-fetch-of-software:bin/loopback-get.sh:curl -q -fsSL -o /tmp/x https://example.com/x:1" \
+         "lr-in-a-workflow:.github/workflows/x.yml:$LL:1"; do
+  nm=${v%%:*}; r1=${v#*:}; file=${r1%%:*}; r2=${r1#*:}; line=${r2%:*}; want=${r2##*:}
+  mkrowp "$work/$nm.json" "$file" "$line" "$LRP"
+  twoc "$nm" "$file" $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
+  edck "$nm" "$work/$nm.json"
+  CASE="loopback fetch row, $nm: exit $want"
+  check test "$rc" -eq "$want"
+done
+# the pinned line is the raw text, not its whitespace-normalised hash (round 1): a tab for the space, a carriage return, a second copy that only differs in whitespace, and a symlink named like the helper rule nothing
+EDT=$'curl\t'"${LL#curl }"
+for v in "lr-tab:${EDT}" "lr-cr:${LL}"$'\r' "lr-indent: ${LL}" "lr-double-space:${LL/-q -g/-q  -g}"; do
+  nm=${v%%:*}; line=${v#*:}
+  mkrowp "$work/$nm.json" bin/loopback-get.sh "$LL" "$LRP"
+  twoc "$nm" bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
+  edck "$nm" "$work/$nm.json"
+  CASE="loopback fetch row, the line differs in whitespace ($nm): exit 1"
+  check test "$rc" -eq 1
+done
+mkrowp "$work/lr-dup.json" bin/loopback-get.sh "$LL" "$LRP"
+twoc lr-dup bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$LL"$'\n'"$EDT"$'\n'
+edck lr-dup "$work/lr-dup.json"
+CASE="loopback fetch row, the exact line plus a whitespace-variant copy: exit 1"
+check test "$rc" -eq 1
+mkrowp "$work/lr-link.json" bin/loopback-get.sh "$LL" "$LRP"
+twoc lr-link bin/loopback-get.sh $'#!/bin/sh\n' "$LL"
+( cd "$work/lr-link" && rm bin/loopback-get.sh && ln -s "$LL" bin/loopback-get.sh && printf '#!/bin/sh\n' > bin/target.sh && git add -A && git -c user.name=t -c user.email=t@x commit -q --amend --no-edit )
+edck lr-link "$work/lr-link.json"
+CASE="loopback fetch row, a symlink named bin/loopback-get.sh whose target is the line: exit 1"
+check test "$rc" -eq 1
+# the loopback prefix on a line of another form (a gh release download) in the helper's own file rules nothing either: every form, not only a download
+python3 - "$work/lr-other-form.json" bin/loopback-get.sh "$LRP" <<'PY'
+import hashlib, json, sys
+H = lambda s: hashlib.sha256(s.encode()).hexdigest(); line = "gh release download v1 -R x/y"
+json.dump({"exceptions": [], "unmeasured_text": [{"file": sys.argv[2], "form": "a gh release or extension download", "key": H(line), "line": H(line), "ruling": sys.argv[3] + "x"}]}, open(sys.argv[1], "w"))
+PY
+twoc lr-other-form bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n''gh release download v1 -R x/y'$'\n'
+edck lr-other-form "$work/lr-other-form.json"
+CASE="the loopback ruling prefix on a gh release download line of the helper file rules nothing: exit 1"
+check test "$rc" -eq 1
+# the prefix does not lend the line to the other rulings, and the other rulings do not lend theirs to the helper line
+mkrowp "$work/lr-under-live.json" bin/loopback-get.sh "$LL" "$LIVEP"
+twoc lr-under-live bin/loopback-get.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$LL"$'\n'
+edck lr-under-live "$work/lr-under-live.json"
+CASE="the helper line under the Wolfi live-fetch ruling rules nothing: exit 1"
+check test "$rc" -eq 1
+mkrowp "$work/lr-go-under.json" bin/fetch.sh "curl $GOFIX \"https://go.dev/dl/\$f\"" "$LRP"
+twoc lr-go-under bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"curl $GOFIX \"https://go.dev/dl/\$f\""$'\n'
+edck lr-go-under "$work/lr-go-under.json"
+CASE="a Go-toolchain line under the loopback ruling rules nothing: exit 1"
+check test "$rc" -eq 1
+
+# REQ-SUP-001-AC26: nineteen script lines the checker pins by file and by the sha256 of the whole line (the assets of our own release, the pinned client image pull, and the
+# fourteen localhost request lines of the four acceptance scripts), honored under one prefix. Anything else under the prefix, any edit, any other file rules nothing.
+PFP='pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): '
+mkrowpf() { # OUT FILE LINE PREFIX: like mkrowp, for the gh release form too (its key is the hash of the whole line)
+  python3 - "$@" <<'PY'
+import hashlib, json, re, sys
+out, f, line, pref = sys.argv[1:5]; H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
+flat = " ".join(line.split()); segs = [s for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat) if re.search(r"\b(?:curl|wget)\b", s)]
+rows = [{"file": f, "form": "a download", "key": H(sg), "line": H(flat), "ruling": pref + "pinned by file and whole line"} for sg in dict.fromkeys(segs)] if segs else \
+       [{"file": f, "form": "a gh release or extension download", "key": H(flat), "line": H(flat), "ruling": pref + "pinned by file and whole line"}]
+json.dump({"exceptions": [], "unmeasured_text": rows}, open(out, "w"))
+PY
+}
+RAL='gh release download "$rel" -D release-published'
+K8L='docker pull -q curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 && docker tag curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 "$CLIENT_LOCAL"'
+GML='curl -s localhost:18095/metrics > /tmp/metrics-cold.txt'
+MVL='hdr=$(curl -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)'
+pf_case() { # NAME FILE LINE WANT : the line (as the head holds it) under a row for LINE, in FILE
+  mkrowpf "$work/pf-$1.json" "$2" "$3" "$PFP"
+  twoc "pf-$1" "$2" $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$3"$'\n'
+  edck "pf-$1" "$work/pf-$1.json"
+  CASE="pinned fetch row, $1: exit $4"
+  check test "$rc" -eq "$4"
+}
+for v in "ra-ok:bin/release-assets.sh:$RAL:0" "gm-ok:bin/acceptance-gradle.sh:$GML:0" "mv-ok:bin/acceptance-maven-capped.sh:$MVL:0" \
+         "ra-other-file:bin/other.sh:$RAL:1" "k8-other-file:bin/other.sh:$K8L:1" "gm-in-the-maven-script:bin/acceptance-maven.sh:$GML:1" "mv-in-the-gradle-script:bin/acceptance-gradle.sh:$MVL:1" \
+         "ra-edited-one-char:bin/release-assets.sh:${RAL/-D release-published/-D release-publisheD}:1" "k8-edited-tag:bin/acceptance-k8s.sh:${K8L//8.11.1/8.11.2}:1" \
+         "gm-edited-port:bin/acceptance-gradle.sh:${GML/18095/18096}:1" "gm-extra-flag:bin/acceptance-gradle.sh:${GML/curl -s/curl -s -k}:1" \
+         "other-line-same-file:bin/acceptance-gradle.sh:curl -s http://localhost:18095/healthz:1" "software-fetch-same-file:bin/release-assets.sh:curl -fsSL -o /tmp/x https://example.com/x:1" \
+         "in-a-workflow:.github/workflows/x.yml:$GML:1"; do
+  nm=${v%%:*}; r1=${v#*:}; file=${r1%%:*}; r2=${r1#*:}; line=${r2%:*}; want=${r2##*:}
+  pf_case "$nm" "$file" "$line" "$want"
+done
+GOL1='    curl -q -fsSL -g -o "$tmp/go.tgz" "https://go.dev/dl/${gofile}" || die "download failed: go toolchain"'
+GOL2='  curl -q -fsSL -g -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1'
+for v in "go1-ok:bin/install-scanner.sh:$GOL1:0" "go2-ok:bin/go-bump-open-pr.sh:$GOL2:0" "go1-in-the-other-file:bin/go-bump-open-pr.sh:$GOL1:1" \
+         "go1-edited:bin/install-scanner.sh:${GOL1/-fsSL/-fsSLk}:1" "go2-other-host:bin/go-bump-open-pr.sh:${GOL2//go.dev/go.dev.example}:1"; do
+  nm=${v%%:*}; r1=${v#*:}; file=${r1%%:*}; r2=${r1#*:}; line=${r2%:*}; want=${r2##*:}
+  pf_case "$nm" "$file" "$line" "$want"
+done
+# the client image line holds a digest-pinned image too: with no age data its image item fails, so the ruling is judged by its own lines (both segments ruled, none left unmeasured)
+mkrowpf "$work/pf-k8-ok.json" bin/acceptance-k8s.sh "$K8L" "$PFP"
+twoc pf-k8-ok bin/acceptance-k8s.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$K8L"$'\n'
+edck pf-k8-ok "$work/pf-k8-ok.json"
+CASE="pinned fetch row, k8-ok: both segments of the client image line are ruled and none is left unmeasured"
+check test "$(grep -c 'ruled text.*AC26' "$work/rt.out")" -eq 2; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 0
+# the pinned line is the raw text: a tab, a carriage return, an indent, a doubled space, a second whitespace-variant copy and a link named like the file rule nothing
+for v in "tab:${GML/curl /curl$'\t'}" "cr:${GML}"$'\r' "indent: ${GML}" "double-space:${GML/-s localhost/-s  localhost}"; do
+  nm=${v%%:*}; line=${v#*:}
+  mkrowpf "$work/pf-ws-$nm.json" bin/acceptance-gradle.sh "$GML" "$PFP"
+  twoc "pf-ws-$nm" bin/acceptance-gradle.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
+  edck "pf-ws-$nm" "$work/pf-ws-$nm.json"
+  CASE="pinned fetch row, the line differs in whitespace ($nm): exit 1"
+  check test "$rc" -eq 1
+done
+mkrowpf "$work/pf-dup.json" bin/acceptance-gradle.sh "$GML" "$PFP"
+twoc pf-dup bin/acceptance-gradle.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$GML"$'\n'"${GML/curl /curl$'\t'}"$'\n'
+edck pf-dup "$work/pf-dup.json"
+CASE="pinned fetch row, the exact line plus a whitespace-variant copy: exit 1"
+check test "$rc" -eq 1
+mkrowpf "$work/pf-link.json" bin/release-assets.sh "$RAL" "$PFP"
+twoc pf-link bin/release-assets.sh $'#!/bin/sh\n' "$RAL"
+( cd "$work/pf-link" && rm bin/release-assets.sh && ln -s "$RAL" bin/release-assets.sh && printf '#!/bin/sh\n' > bin/target.sh && git add -A && git -c user.name=t -c user.email=t@x commit -q --amend --no-edit )
+edck pf-link "$work/pf-link.json"
+CASE="pinned fetch row, a symlink named bin/release-assets.sh whose target is the line: exit 1"
+check test "$rc" -eq 1
+CASE="the checker pins exactly nineteen lines in eight files: the release-assets line, the client image line, fourteen localhost request lines (3 + 4 + 4 + 3 in the four acceptance scripts) and three Go fetches"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); sys.modules["ac"] = ac; spec.loader.exec_module(ac)
+n = {f: len(v) for f, v in ac.PINNED_FETCH.items()}
+assert n == {"bin/release-assets.sh": 1, "bin/acceptance-k8s.sh": 1, "bin/acceptance-gradle.sh": 3, "bin/acceptance-gradle-capped.sh": 4, "bin/acceptance-maven.sh": 4, "bin/acceptance-maven-capped.sh": 3, "bin/install-scanner.sh": 1, "bin/go-bump-open-pr.sh": 2}, n
+assert sum(len(v) for v in ac._PINNED_FETCH_SHA.values()) == 19
+assert all("\r" not in l and l == l.rstrip() and "\t" not in l for v in ac.PINNED_FETCH.values() for l in v)
+PY
+# the vendor-folder list: six files that name the vendored folder for a reason are listed, any other new file that names it is still refused
+for pth in bin/chain-check-scripts-test.sh bin/chain-install-witness-test.sh bin/chain-release-scripts-test.sh bin/check-govulncheck.py bin/install-scanner.sh bin/release-metadata.py; do
+  vfile "vl-$(basename "$pth")" "$pth" "ls vendor/"
+  CASE="a file on the vendor-folder list may name the vendored folder: $pth (exit 0)"
+  check test "$rc" -eq 0
+done
+vfile vl-seventh bin/govulncheck-other-test.sh "ls vendor/"
+CASE="a seventh file that names the vendored folder is still refused (exit 1)"
 check test "$rc" -eq 1
 
 echo "pin-age-check: $pass passed, $failn failed"
