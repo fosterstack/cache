@@ -38,7 +38,7 @@ for j in jobs:
     # REQ-REL-003), which runs only the scanners in .github/policy/scanners.json — neither is the scanner panel.
     # The old scanner-reports job (trivy/osv-scanner reports for the auditor) is gone: the auditor reads the panel
     if any(x in (text(j) + " ".join(uses(j))).lower() for x in ("trivy", "snyk", "osv-scanner")) and j not in ("manifests", "rescan"):
-        bad.append(f"{j} runs Trivy or Snyk")
+        bad.append(f"{j} runs Trivy, Snyk or OSV-Scanner")
 for gone in ("scan-main", "trivy-main", "snyk-main", "scanner-reports"):
     if gone in jobs:
         bad.append(f"the retired {gone} job is still there")
@@ -395,6 +395,11 @@ bad = []
 for w in ("trivy", "osv-scanner", "snyk", "SNYK_TOKEN", "rescan-scanner-reports", "--rescan-reports"):
     if w.lower() in t.lower():
         bad.append(f"auditor.yml still mentions {w}")
+# Grype's name stays in comments (the panel's Grype is the rescan's job), but no executable line installs or runs it here
+code = [l for l in t.splitlines() if not l.lstrip().startswith("#")]
+for l in code:
+    if re.search(r"install-scanner\.sh\s+grype\b|(^|[\s;&|(])grype\s+(docker:|dir:|registry:|oci-archive:|db\b|-o\b|--)", l):
+        bad.append("auditor.yml installs or runs grype: " + l.strip()[:60])
 if "--panel-dir" not in t:
     bad.append("auditor.yml does not hand the panel evidence to the manifest")
 print("; ".join(bad) or "clean"); sys.exit(1 if bad else 0)
@@ -412,10 +417,19 @@ aud_case osv-install    bad "=>
 "
 aud_case snyk-token     bad '=>
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-' 
+'
+aud_case grype-install  bad "=>
+          ./bin/install-scanner.sh grype
+"
+aud_case grype-run      bad "=>
+          grype docker:x -o json > g.json
+"
+aud_case grype-comment  ok  "=>
+          # grype is the rescan panel's job, not the auditor's
+"
 aud_case reports-download bad '=>
           gh run download "$rid" -n rescan-scanner-reports -D x
-' 
+'
 aud_case reports-option bad "=>
             --rescan-reports x
 "
