@@ -503,11 +503,18 @@ DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-cha
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
 LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): "   # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
+GO_RULING = "pinned toolchain fetch, advisor reading Oct 16 (rule 12, the recipe pin is verified before storing): "   # the Go toolchain tarball (REQ-SUP-001-AC23): honored only for https://go.dev/dl/ plus one variable
+LOOPBACK_RULING = "loopback fetch, advisor reading Oct 17 (REQ-SUP-001-AC25): "   # the one line of the loopback helper that starts the fetch program (REQ-SUP-001-AC24): honored for that file and that line's sha256 only
+LOOPBACK_FILE = "bin/loopback-get.sh"
+LOOPBACK_LINE = """curl -q -g --noproxy '*' --proto "=$proto" --max-redirs 0 "$@" "$url" || exit $?"""    # the raw text of the line, byte for byte (no indent, no trailing space, no carriage return)
+LOOPBACK_LINE_SHA256 = "7dd5872cd29aa6ff52be7b831d287c5d72b58507d90b3a39489c70a5f8f58ccd"   # sha256 of that line as the scan hashes it (whitespace collapsed); the raw text above is what the head file must hold
 DOWNLOAD_FORM = "a download"
 _LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
 # the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash included, so the host cannot change) followed by
 # exactly ONE variable and nothing else
 _LIVE_URL_VAR = re.compile(r"https://packages\.wolfi\.dev/os/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
+_GO_OUT = re.compile(r"(?:[A-Za-z0-9_./-]|\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})+")
+_GO_URL_VAR = re.compile(r"https://go\.dev/dl/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
 _ANY_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"]+")
 _LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
 
@@ -516,9 +523,9 @@ _LIVE_FLAG_PLAIN = {"-f", "-s", "-S", "-L", "-fsSL", "-fsS", "-fSL", "-sSL", "-g
 _LIVE_FLAG_VALUE = {"--max-filesize": r"[0-9]+", "--max-time": r"[0-9]+", "--proto": r"=https", "-o": r"[A-Za-z0-9_./${}-]+", "--output": r"[A-Za-z0-9_./${}-]+"}
 
 
-def _live_fetch_line_ok(flat):
+def _live_fetch_line_ok(flat, toolchain=False):
     """The bound line is exactly ONE curl command: curl or /usr/bin/curl, then only flags from a fixed list (with a plain value where one is taken), then exactly one
-    URL operand that is https on the host packages.wolfi.dev; optionally followed by `|| die "plain text" [digit]` or `|| exit N`. The line is split into shell words,
+    URL operand that is https on the host packages.wolfi.dev (with toolchain=True instead: exactly https://go.dev/dl/ followed by ONE variable, REQ-SUP-001-AC23); optionally followed by `|| die "plain text" [digit]` or `|| exit N`. The line is split into shell words,
     so quote concatenation cannot change a word after the check; a variable may appear only as part of the -o file name; no second command, pipe, redirection,
     substitution, other operand or schemeless host is accepted."""
     import shlex
@@ -531,32 +538,40 @@ def _live_fetch_line_ok(flat):
         w = shlex.split(left, posix=True)
     except ValueError:
         return False
-    if len(w) < 3 or w[0] not in ("curl", "/usr/bin/curl") or w[1] not in ("-q", "--disable"):
-        return False                                   # -q first: no default .curlrc (CURL_HOME) can add a URL or an option
+    if len(w) < 3 or w[0] not in ("curl", "/usr/bin/curl") or w[1] not in (("-q",) if toolchain else ("-q", "--disable")):
+        return False                                   # -q first: no default .curlrc (CURL_HOME) can add a URL or an option (the Go shape takes only the spelling -q)
     raw = re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s"']+)+""", left)
     if len(raw) != len(w):
         return False
+    if toolchain and "'" in left:
+        return False                                   # the Go shape has no single quote anywhere: a single-quoted $name is a literal dollar sign, never a variable
     for rt in raw:
         # an expansion, brace, glob or tilde may appear only inside double quotes: unquoted, the shell splits it into several words
         if re.search(r"[$`{}*?\[\]~]", re.sub(r'"[^"]*"|\'[^\']*\'', "", rt)):
             return False
-    i, operands, globoff = 2, [], False
+    i, operands, globoff, op_raw = 2, [], False, []
     while i < len(w):
         t = w[i]
         if t in _LIVE_FLAG_PLAIN:
-            globoff = globoff or t in ("-g", "--globoff")
+            globoff = globoff or t in (("-g",) if toolchain else ("-g", "--globoff"))
             i += 1
         elif t in _LIVE_FLAG_VALUE:
             if i + 1 >= len(w) or not re.fullmatch(_LIVE_FLAG_VALUE[t], w[i + 1]) or (t not in ("-o", "--output") and "$" in w[i + 1]):
                 return False
+            if toolchain and t in ("-o", "--output") and not _GO_OUT.fullmatch(w[i + 1]):
+                return False                           # the Go shape: an output value is literal characters and plain $name / ${name} references only
             i += 2
         elif t.startswith("-"):
             return False                               # an option outside the list (-x, -K, --resolve, --url, an attached value, a cluster not listed)
         else:
             operands.append(t)
+            op_raw.append(raw[i])
             i += 1
     if len(operands) != 1:
         return False
+    if toolchain:
+        # the variable form only, only with -g, and the operand must be double-quoted or bare: a single-quoted $f is a literal dollar sign, not a variable
+        return globoff and "'" not in op_raw[0] and _GO_URL_VAR.fullmatch(operands[0]) is not None
     if _LIVE_URL_VAR.fullmatch(operands[0]) is not None:
         return globoff                                  # curl itself expands {a,b} and [1-2] in a URL: a variable operand is one transfer only with -g
     return _LIVE_URL.fullmatch(operands[0]) is not None
@@ -577,10 +592,10 @@ _PY_FORBIDDEN_NAMES = frozenset("exec eval compile __import__ getattr setattr gl
                                 "system popen startfile posix_spawn posix_spawnp fork forkpty execl execle execlp execlpe execv execve execvp execvpe spawnl spawnle spawnlp spawnlpe "
                                 "spawnv spawnve spawnvp spawnvpe write_text write_bytes chmod shutil touch mkdir makedirs unlink remove rmdir rename symlink link symlink_to hardlink_to "
                                 "write writelines truncate fdopen copy copyfile copytree move rmtree".split())
-_DATA_CONSUMERS = frozenset("cat tee grep egrep fgrep sort uniq head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od xxd".split())
-_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii "
+_DATA_CONSUMERS = frozenset("cat grep egrep fgrep sort head tail wc cut tr diff cmp jq base64 sha256sum shasum md5sum od".split())
+_PURE_IMPORTS = frozenset("json re sys os.path time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii "
                           "unicodedata urllib.parse shlex enum dataclasses".split())
-_DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\(\))", re.M)
+_DEF_FUNC = re.compile(r"^[ \t]*(?:function[ \t]+([A-Za-z_][\w.-]*)|([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\))", re.M)
 
 
 def _norm_word(w):
@@ -663,6 +678,14 @@ def _shell_lex(lines):
                 elif c == "$" and line[j + 1:j + 2] == "(":
                     if line[j + 2:j + 3] == "(": stack.append("$(("); j += 2
                     else: stack.append("$("); j += 1
+                elif c.isalpha() and (j == 0 or line[j - 1] in " \t;&|({") and re.match(r"(?:if|while|until|for|select|case)(?![\w.-])", line[j:]) and re.search(r"(?:^|[;&|({]|\bthen|\bdo|\belse|\belif)[ \t]*$", line[:j]):
+                    stack.append("kw")                      # a compound command: what follows its fi / done / esac (a pipe to a shell) decides what a heredoc inside it feeds
+                elif c.isalpha() and top == "kw" and (j == 0 or line[j - 1] in " \t;&|({") and re.match(r"(?:fi|done|esac)(?![\w.-])", line[j:]):
+                    stack.pop()
+                elif c == "{" and (j == 0 or line[j - 1] in " \t;&|(") and (j + 1 == len(line) or line[j + 1] in " \t"):
+                    stack.append("{")                       # a brace group: what a heredoc inside it feeds is decided by what follows the closing brace
+                elif c == "}" and top == "{" and (j == 0 or line[j - 1] in " \t;&|"):
+                    stack.pop()
                 elif c == "(":
                     if top == "(" and line[j - 1:j] == "(": stack[-1] = "(("
                     else: stack.append("(")
@@ -680,7 +703,7 @@ def _shell_lex(lines):
                         raw = m.group(2)
                         quoted = bool(re.search(r"['\"\\]", raw))
                         delim = _unquote(raw)
-                        ops.append((m.group(1) == "-", quoted, delim, any(s in ("$(", "`", '"') for s in stack)))
+                        ops.append((m.group(1) == "-", quoted, delim, any(s in ("$(", "`", '"', "(", "((", "{", "kw") for s in stack)))
                         j += m.end() - 1
             j += 1
         i += 1
@@ -753,6 +776,35 @@ _REVIEWED_FUNCS = {"run": frozenset((
 ))}
 
 
+def _strip_comment(ln):
+    """The line without a trailing shell comment: a # starts one only outside quotes, at the start or after whitespace or ; & | ( ."""
+    sq = dq = False
+    i = 0
+    while i < len(ln):
+        c = ln[i]
+        if sq:
+            sq = c != "'"
+        elif c == "\\" and not sq:
+            i += 1
+        elif c == "'" and not dq:
+            sq = True
+        elif c == '"':
+            dq = not dq
+        elif c == "#" and not dq and (i == 0 or ln[i - 1] in " \t;&|("):
+            return ln[:i]
+        i += 1
+    return ln
+
+
+def _reads_only(seg):
+    """True when the (already comment-free) segment writes nothing: no output redirection except to /dev/null or a descriptor, no -o / --output option (also clustered, e.g. -uo)."""
+    flat = re.sub(r"\d*>&\d+|&>[ \t]*/dev/null|\d*>>?[ \t]*/dev/null(?![^\s;&|<>()])", " ", seg)
+    if re.search(r"\d*>|&>", flat):
+        return False
+    flat = re.sub(r"[\"'\\]", "", flat)                       # judged on the option WORDS: "-o", '--output=x' and -\o spell the same options
+    return not re.search(r"(?:^|[ \t])(?:-[A-Za-z]*o\S*|--output\S*)(?=[ \t=]|$)", flat)
+
+
 def _written_file_used_later(lines, hd):
     """True when a file the heredoc's output goes to (or a variable the script sets to its name) is later named anywhere except: as the argument of a data consumer on a line that is
     nothing but data consumers; in a plain assignment; or read through $(cat FILE) as an argument of a reviewed content-taking function. A closed rule: running, sourcing, copying,
@@ -773,7 +825,7 @@ def _written_file_used_later(lines, hd):
     reviewed = {n for n, body in funcs.items() if n in _REVIEWED_FUNCS and _line_hash(" ".join(body.split())) in _REVIEWED_FUNCS[n]}
     readcat = re.compile(r"\$\([ \t]*cat[ \t]+(?:\"(?:[^\"`()]|\$\{?\w+\}?)*\"|'[^']*'|[^\s`$()|;&]+)[ \t]*\)")
     for ln in later:
-        ln = re.sub(r"(?:^|(?<=\s))#.*$", "", ln)
+        ln = _strip_comment(ln)
         if not any(rx.search(ln) for rx in rxs):
             continue
         if "`" in ln:
@@ -793,7 +845,7 @@ def _written_file_used_later(lines, hd):
             cmd = (_unquote(first[0]) or "").split("/")[-1] if first else ""
             if content and not rest and len(segs) == 1 and cmd in reviewed:
                 continue                                          # the content goes to a reviewed function, once, with nothing else on the line
-            if cmd not in _DATA_CONSUMERS or content:
+            if cmd not in _DATA_CONSUMERS or content or not _reads_only(seg):
                 return True
     return False
 
@@ -802,9 +854,16 @@ _PY_SAFE_BUILTINS = frozenset("print len range str int float bool list dict set 
                               "format map filter reversed bytes bytearray type hash hex bin oct divmod pow iter next slice object id callable chr super property staticmethod classmethod "
                               "Exception BaseException ValueError KeyError TypeError AssertionError RuntimeError SystemExit IndexError StopIteration AttributeError NotImplementedError "
                               "ZeroDivisionError UnicodeDecodeError UnicodeEncodeError LookupError ArithmeticError OverflowError FileNotFoundError".split())
-_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap typing copy struct binascii unicodedata shlex enum "
+_PY_PURE_MODULES = frozenset("json re sys time datetime hashlib base64 collections itertools functools math string textwrap copy struct binascii unicodedata shlex enum "
                              "dataclasses".split())
 _PY_PURE_DOTTED = frozenset(("os.path", "urllib.parse"))
+_PY_MODULE_NAMES = frozenset("os sys io builtins posix nt shutil subprocess importlib pathlib tempfile socket ctypes".split())
+_PY_SYS_OK = frozenset("argv exit stdin stdout stderr version_info platform maxsize".split())
+_PY_SAFE_METHODS = frozenset("""capitalize casefold center count decode encode endswith expandtabs find format format_map index isalnum isalpha isascii isdecimal isdigit isidentifier
+    islower isnumeric isprintable isspace istitle isupper join ljust lower lstrip maketrans partition removeprefix removesuffix replace rfind rindex rjust rpartition rsplit rstrip split
+    splitlines startswith strip swapcase title translate upper zfill append extend insert pop remove clear sort reverse copy get items keys values setdefault update add discard union
+    intersection difference symmetric_difference issubset issuperset popitem fromkeys hex fromhex group groups groupdict start end span sub subn match search fullmatch findall finditer
+    pattern hexdigest digest strftime isoformat timestamp date time utcoffset total_seconds astimezone most_common elements total""".split())
 
 
 def _py_dotted(nd):
@@ -839,16 +898,26 @@ def _py_program_flags(body):
             else:
                 for a in nd.names:
                     if a.name in _PY_FORBIDDEN_NAMES or a.name == "open": why.add(a.name)
+                    if nd.module == "sys" and a.name not in _PY_SYS_OK: why.add("sys." + a.name)      # an imported member of sys is judged like the attribute
                     mods[a.asname or a.name] = (nd.module or "") + "." + a.name
         elif isinstance(nd, ast.Assign):
             for t in nd.targets:
                 if isinstance(t, ast.Name) and isinstance(nd.value, ast.Lambda): defined.add(t.id)
     called = {id(nd.func) for nd in ast.walk(tree) if isinstance(nd, ast.Call)}
+    roots = {id(nd.value) for nd in ast.walk(tree) if isinstance(nd, ast.Attribute)}
+    for nd in ast.walk(tree):
+        if isinstance(nd, ast.Name) and nd.id in mods and nd.id not in defined and id(nd) not in roots and id(nd) not in called:
+            why.add("module " + nd.id + " used as a value")
+        if isinstance(nd, ast.Attribute) and nd.attr in _PY_MODULE_NAMES and id(nd) not in roots:
+            why.add("module " + nd.attr + " reached through an attribute")      # `x = os.path.os`: a module re-exported under a plain name      # `x = sys` then x.modules[...]: an alias the walk below would not follow
     for nd in ast.walk(tree):
         if isinstance(nd, ast.Name) and nd.id in _PY_FORBIDDEN_NAMES and nd.id not in defined: why.add(nd.id)
         if isinstance(nd, ast.Name) and nd.id == "open" and nd.id not in defined: why.add("open")
         if isinstance(nd, ast.Attribute) and nd.attr in _PY_FORBIDDEN_NAMES: why.add(nd.attr)
         if isinstance(nd, ast.Attribute) and nd.attr == "open": why.add("open")
+        if isinstance(nd, ast.Attribute):
+            dd = _py_dotted(nd)
+            if dd and dd.split(".")[0] in mods and mods[dd.split(".")[0]] == "sys" and len(dd.split(".")) > 1 and dd.split(".")[1] not in _PY_SYS_OK: why.add("sys." + dd.split(".")[1])
         if isinstance(nd, ast.Call):
             if any(isinstance(a, ast.Starred) for a in nd.args) or any(k.arg is None for k in nd.keywords): why.add("unpacked arguments")
             f = nd.func
@@ -859,9 +928,11 @@ def _py_program_flags(body):
                 root = dotted.split(".")[0] if dotted else None
                 if root in mods:
                     full = mods[root] + dotted[len(root):] if dotted else ""
-                    if not (any(full == m or full.startswith(m + ".") for m in _PY_PURE_MODULES | _PY_PURE_DOTTED)): why.add("call of " + full)
+                    ms = [m for m in _PY_PURE_MODULES | _PY_PURE_DOTTED if full == m or full.startswith(m + ".")]
+                    if not ms: why.add("call of " + full)
+                    elif "." in full[len(max(ms, key=len)):].lstrip("."): why.add("call of " + full)      # a name reached THROUGH the module (os.path.os.replace): only the module's own functions pass
                 elif root == "os": why.add("call of " + dotted)
-                # a method on some other object: the name must not be a writer (checked above)
+                elif f.attr not in _PY_SAFE_METHODS and f.attr not in defined: why.add("method " + f.attr)      # a method on some other object: a closed list of names
             else:
                 why.add("a call of a computed function")
     return tree, sorted(why)
@@ -976,8 +1047,9 @@ def _context_holds(context, proof, text, line_hash):
     hds, sane, state = _shell_lex(lines)
     if not sane:
         return False
+    trusted = "|".join(re.escape(w) for w in sorted(_DATA_CONSUMERS | _INTERP_WORDS | {"echo", "printf", "true", "test", "tee", "uniq", "xxd"})) + r"|python[\d.]*"
     if (set(_func_bodies(lines)) & (_DATA_CONSUMERS | _INTERP_WORDS | {"python", "python3", "echo", "printf", "true", "test"})) or re.search(r"(?m)^[ \t]*(?:alias[ \t]+[^\s=]|shopt[ \t]+-s[ \t]+expand_aliases)", text) \
-            or re.search(r"(?m)^[ \t]*(?:function[ \t]+)?(?:" + "|".join(sorted(_DATA_CONSUMERS | {"python", "python3"})) + r")[ \t]*\(\)", text):
+            or re.search(r"(?m)(?<![\w.$-])(?:function[ \t]+(?:" + trusted + r")(?![\w.-])|(?:" + "|".join(w for w in trusted.split("|") if w[:1].isalpha()) + r")[ \t]*\(\s*\))", text):
         return False                           # a command the grammar trusts is redefined (or aliases are on): its name proves nothing here
     def in_quoted_heredoc(i):                  # a body line of an inert here-document (a plain quoted `cat <<'X'`, its file never run): text, whatever it says
         return any(h["start"] <= i < h["end"] and _heredoc_ok(h, lines, None) for h in hds if h["end"] is not None)
@@ -1038,6 +1110,104 @@ def _has_cr(root, rev, path):
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             _RAW_CR[key] = True
     return _RAW_CR[key]
+
+
+_LOOPBACK_OK = {}
+
+
+PINNED_FETCH_RULING = "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): "   # nineteen script lines, each honored for its file and its whole-line sha256 only (see PINNED_FETCH)
+PINNED_FETCH = {   # file -> the raw text of each pinned line, byte for byte (no trailing space, no carriage return); the head file must hold each exactly once
+    'bin/release-assets.sh': [
+        'gh release download "$rel" -D release-published',
+    ],
+    'bin/acceptance-k8s.sh': [
+        'docker pull -q curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 && docker tag curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69 "$CLIENT_LOCAL"',
+    ],
+    'bin/acceptance-gradle.sh': [
+        '  code=$(curl -s -o /dev/null -w \'%{http_code}\' -I "localhost:18095/${key}")',
+        'curl -s localhost:18095/metrics > /tmp/metrics-cold.txt',
+        'curl -s localhost:18095/metrics > /tmp/metrics-warm.txt',
+    ],
+    'bin/acceptance-gradle-capped.sh': [
+        'head_code() { curl -s -o /dev/null -w \'%{http_code}\' -I "localhost:18096/$1"; }',
+        'curl -s localhost:18096/metrics > /tmp/capped-metrics.txt',
+        'hdr=$(curl -s -D - -o /dev/null -X PUT --data-binary @/tmp/oversized-probe.bin http://localhost:18096/oversizedprobe)',
+        "code=$(curl -s -o /dev/null -w '%{http_code}' -I http://localhost:18096/oversizedprobe)",
+    ],
+    'bin/acceptance-maven.sh': [
+        'curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-cold.txt',
+        'curl -s -u mvn:acceptance-secret localhost:18098/metrics > /tmp/m-warm.txt',
+        'before_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk \'/^fscache_http_requests_total\\{method="PUT",status="201"\\}/ {print $2}\')',
+        'after_puts=$(curl -s -u mvn:acceptance-secret localhost:18098/metrics | awk \'/^fscache_http_requests_total\\{method="PUT",status="201"\\}/ {print $2}\')',
+    ],
+    'bin/acceptance-maven-capped.sh': [
+        'app_code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w \'%{http_code}\' -I "http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar")',
+        'hdr=$(curl -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)',
+        "code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' -I http://localhost:18099/maven/oversizedprobe)",
+    ],
+    'bin/install-scanner.sh': [
+        '    curl -q -fsSL -g -o "$tmp/go.tgz" "https://go.dev/dl/${gofile}" || die "download failed: go toolchain"',
+    ],
+    'bin/go-bump-open-pr.sh': [
+        '  curl -q -fsSL -g -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1',
+        '    curl -q -fsSL -g -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" || die "cannot download the Go tarball from go.dev" 1',
+    ],
+}
+_PINNED_FETCH_SHA = {f: {hashlib.sha256(" ".join(l.split()).encode("utf-8", "replace")).hexdigest(): l for l in ls} for f, ls in PINNED_FETCH.items()}
+_PINNED_OK = {}
+
+
+def _pinned_line_ok(root, head, f, lh):
+    """True only when the pinned line of file f whose whole-line sha256 is lh is held by the head file byte for byte exactly once, the file is a regular file (not a link),
+    there is no carriage return in it and no other line that differs from the pinned one only in whitespace (the scan hashes with whitespace collapsed, so the raw
+    text is compared here). Unreadable, or a line the checker does not pin: False. The same shape as the loopback ruling (AC25), for the nineteen lines of AC26."""
+    key = (root, head, f, lh)
+    if key not in _PINNED_OK:
+        ok = False
+        raw_line = _PINNED_FETCH_SHA.get(f, {}).get(lh)
+        try:
+            if raw_line is not None:
+                if head is None:
+                    path = os.path.join(root, f)
+                    ok = os.path.isfile(path) and not os.path.islink(path)
+                    raw = open(path, "rb").read() if ok else b""
+                else:
+                    ent = subprocess.run(["git", "-C", root, "ls-tree", head, "--", f], capture_output=True, check=True, timeout=120).stdout.decode("utf-8", "replace").split()
+                    ok = len(ent) >= 4 and ent[0] in ("100644", "100755") and ent[1] == "blob"
+                    raw = subprocess.run(["git", "-C", root, "show", f"{head}:{f}"], capture_output=True, check=True, timeout=120).stdout if ok else b""
+                if ok:
+                    lines = raw.split(b"\n")
+                    same = [ln for ln in lines if " ".join(ln.decode("utf-8", "replace").split()) == " ".join(raw_line.split())]
+                    ok = b"\r" not in raw and lines.count(raw_line.encode()) == 1 and len(same) == 1
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            ok = False
+        _PINNED_OK[key] = ok
+    return _PINNED_OK[key]
+
+
+def _loopback_line_ok(root, head):
+    """True only when the head file bin/loopback-get.sh is a regular file (not a link) holding the pinned line byte for byte exactly once, no carriage return anywhere
+    and no other line that differs from it only in whitespace (the scan hashes with whitespace collapsed, so the raw text is compared here). Unreadable: False."""
+    key = (root, head)
+    if key not in _LOOPBACK_OK:
+        ok = False
+        try:
+            if head is None:
+                path = os.path.join(root, LOOPBACK_FILE)
+                ok = os.path.isfile(path) and not os.path.islink(path)
+                raw = open(path, "rb").read() if ok else b""
+            else:
+                ent = subprocess.run(["git", "-C", root, "ls-tree", head, "--", LOOPBACK_FILE], capture_output=True, check=True, timeout=120).stdout.decode("utf-8", "replace").split()
+                ok = len(ent) >= 4 and ent[0] in ("100644", "100755") and ent[1] == "blob"
+                raw = subprocess.run(["git", "-C", root, "show", f"{head}:{LOOPBACK_FILE}"], capture_output=True, check=True, timeout=120).stdout if ok else b""
+            if ok:
+                lines = raw.split(b"\n")
+                same = [ln for ln in lines if " ".join(ln.decode("utf-8", "replace").split()) == " ".join(LOOPBACK_LINE.split())]
+                ok = b"\r" not in raw and lines.count(LOOPBACK_LINE.encode()) == 1 and len(same) == 1
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            ok = False
+        _LOOPBACK_OK[key] = ok
+    return _LOOPBACK_OK[key]
 
 
 def _context_proved(root, head, path, line_hash, row):
@@ -1219,10 +1389,16 @@ def _run(a, moved, fx, now):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
         rs = [r if r is None or _context_proved(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]    # a row with a context that does not hold rules nothing
-        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING)) for r in rs):
+        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING, GO_RULING, LOOPBACK_RULING, PINNED_FETCH_RULING)) for r in rs):
             rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
         if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
+        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(GO_RULING) and not (k[0].endswith(".sh") and not k[0].startswith(".github/") and _live_fetch_line_ok(_LINE_TEXT.get(lh, ""), toolchain=True)) for r, lh in zip(rs, lines[k])):
+            rs = [None]                                  # a Go-toolchain ruling on a line that is not exactly the one go.dev/dl/ shape rules nothing (AC23)
+        if any(r and r[0].startswith(LOOPBACK_RULING) and not (k[0] == LOOPBACK_FILE and lh == LOOPBACK_LINE_SHA256 and _loopback_line_ok(a.root, a.head)) for r, lh in zip(rs, lines[k])):
+            rs = [None]                                  # the loopback ruling on any line but the helper's one pinned line rules nothing (AC25)
+        if any(r and r[0].startswith(PINNED_FETCH_RULING) and not _pinned_line_ok(a.root, a.head, k[0], lh) for r, lh in zip(rs, lines[k])):
+            rs = [None]                                  # the pinned-fetch ruling on any line but one of the nineteen pinned lines of its own file rules nothing (AC26)
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:

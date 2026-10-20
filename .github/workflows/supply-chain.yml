@@ -79,7 +79,7 @@ jobs:
         run: python3 .github/agent/supply-chain/pin-audit.py --observations-out "$RUNNER_TEMP/tag-observations/state.json"
       - name: Keep the tag observations (an action's age is when WE first saw its tag at that commit)
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tag-observations
           path: ${{ runner.temp }}/tag-observations/state.json
