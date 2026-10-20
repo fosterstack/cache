@@ -387,6 +387,8 @@ def _no_dup(loader, node, deep=False):
     seen = set()
     for k, _ in node.value:
         key = loader.construct_object(k, deep=True)
+        if not isinstance(key, str):
+            refuse("build/host-tools.yaml has a key that is not a plain string: %r" % (key,))
         if key in seen:
             refuse("build/host-tools.yaml has the key %r twice" % (key,))
         seen.add(key)
@@ -405,9 +407,10 @@ if not isinstance(hnames, list) or not hnames or not all(isinstance(n, str) and 
     refuse("build/host-tools.yaml packages must be a non-empty list of unique plain package names (no version, no path)")
 # the committed lock: name=version rows in the closed grammar, each name once
 seen_n = set()
-for _row in open(repo + "/build/locks/host-tools.lock").read().splitlines():
-    if not _row:
-        continue
+_lock_text = open(repo + "/build/locks/host-tools.lock", newline="").read()   # no newline translation: a carriage return is a bad row, not a line end
+if _lock_text and not _lock_text.endswith("\n"):
+    refuse("build/locks/host-tools.lock must end with a line end")
+for _row in (_lock_text.split("\n")[:-1] if _lock_text else []):
     _n, _eq, _v = _row.partition("=")
     if not _eq or not NAME.fullmatch(_n) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+~-]*", _v) or ".." in _n or ".." in _v or _n in seen_n:
         refuse("build/locks/host-tools.lock has a row that is not a name=version of the closed grammar, or a name twice: %r" % _row)

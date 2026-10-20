@@ -1679,6 +1679,7 @@ bad_ht "with an empty package list" 'packages: []\n'
 bad_ht "with a package that pins a version" 'packages:\n  - busybox=1.37.0-r5\n'
 bad_ht "with a package name that is a path" 'packages:\n  - ../busybox\n'
 bad_ht "with a package named twice" 'packages:\n  - busybox\n  - busybox\n'
+bad_ht "with a key that is a list (not a plain key)" '? [packages]\n: [busybox]\n'
 bad_ht "with another top-level key" 'packages:\n  - busybox\nrepositories:\n  - https://example.invalid\n'
 bad_hl() { # bad_hl LABEL TEXT   a host-tools.lock that must be refused before any lock is made
   mkrepo; printf '%b' "$2" >"$work/rp/build/locks/host-tools.lock"; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
@@ -1688,6 +1689,9 @@ bad_hl "with a row that is not name=version" 'busybox=1.37.0-r5\nnonsense\n'
 bad_hl "with a package named twice" 'busybox=1.37.0-r5\nbusybox=1.36.0-r0\n'
 bad_hl "with a name that is a path" '../busybox=1.37.0-r5\n'
 bad_hl "with a version that is a path" 'busybox=../1.37.0-r5\n'
+bad_hl "with a blank row between two rows" 'busybox=1.37.0-r5\n\nca-certificates-bundle=20260102-r0\n'
+bad_hl "with a carriage return in a row" 'busybox=1.37.0-r5\r\nca-certificates-bundle=20260102-r0\n'
+bad_hl "whose last row has no line end" 'busybox=1.37.0-r5\nca-certificates-bundle=20260102-r0'
 # a retained host-only package (zlib) is checked on every run, not only the ones the melange lock shares
 mkrepo; run_s2 "${hostenv[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; cp "$work/rp/build/locks/host-tools.lock" "$work/ht.lock"
 mkrepo; cp "$work/ht.lock" "$work/rp/build/locks/host-tools.lock"; printf 'X' >>"$work/ar/x86_64/zlib-1.3.2-r0.apk" 2>/dev/null || { cp "$fx/live/x86_64/zlib-1.3.2-r0.apk" "$work/ar/x86_64/"; printf 'X' >>"$work/ar/x86_64/zlib-1.3.2-r0.apk"; }; cp -n "$fx/live/aarch64/zlib-1.3.2-r0.apk" "$work/ar/aarch64/"
