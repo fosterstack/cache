@@ -372,6 +372,17 @@ class Judge(Tmp):
         day = json.load(open(os.path.join(self.d, "out", "day.json")))
         return out.getvalue(), open(os.path.join(self.d, "out", "summary.md")).read(), day
 
+    def test_a_verdict_the_shared_validator_refuses_is_never_judged(self):
+        # cache#466 round 3 (seat A): the production judge reads verdict.json directly; a verdict that is empty of images, truncated
+        # or inconsistent must fail closed here too, not become a successful zero-findings audit
+        bad = os.path.join(self.d, "bad-verdict.json")
+        json.dump({"images": {}, "findings": []}, open(bad, "w"))
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = P.cmd_judge(self.a(verdict=bad), bundles=lambda f: BUNDLE)
+        self.assertEqual(rc, 2)
+        self.assertIn("nothing was judged", err.getvalue())
+        self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")))
+
     def test_the_judgment_names_the_scanned_run_head_and_digests(self):
         _, summary, day = self.judged()
         self.assertIn("rescan run 123 of main at %s (conclusion success)" % HEAD, summary)

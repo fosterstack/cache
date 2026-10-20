@@ -3688,7 +3688,9 @@ d = {"images": images,
                   f("production-amd64", "CVE-2099-0002", "zlib", "1.3", ["inspector"], []),
                   f("production-amd64", "CVE-2099-0003", "curl", "8.0", ["inspector", "grype"], ["pkg:apk/wolfi/curl@8.0"]),
                   f("production-arm64", "CVE-2099-0003", "curl", "8.0", ["inspector"], ["pkg:apk/wolfi/curl@8.0"])],
-     "unique": [], "vex_covered": [], "issue": "", "exit": 2}
+     "vex_covered": [], "issue": ""}
+d["unique"] = [x for x in d["findings"] if x["unique"]]
+d["exit"] = 2 if (d["not_counted"] or d["scanner_failures"]) else (1 if any(x["status"] == "report" for x in d["findings"]) else 0)
 json.dump(d, open(sys.argv[1], "w"), indent=1)
 PYEOF
 "$PY" "$WORK/mkpv.py" "$pv"
@@ -3786,6 +3788,14 @@ def _(d): d["images"]["production-amd64"]["counts"].pop("grype")
 def _(d): d["images"]["production-amd64"]["counts"]["grype"] = True
 @case("cfd")
 def _(d): d["images"]["debug-amd64"]["counts_for_day"] = True
+@case("uniqlist")
+def _(d): d["unique"] = []
+@case("dupa")
+def _(d): d["findings"].append(dict(d["findings"][0], seen_by=["grype"], unique=True, status="unique"))
+@case("dupb")
+def _(d): d["findings"].insert(0, dict(d["findings"][0], seen_by=["grype"], unique=True, status="unique"))
+@case("exit")
+def _(d): d["exit"] = 0
 out = []
 for name, fn in M1.items():
     d = copy.deepcopy(base); fn(d)
@@ -3799,7 +3809,7 @@ for name, fn in M1.items():
 print(" ".join(out))
 PYEOF
 )"
-exp="$(for n in nofind noimg trunc extraimg null incomplete ghost of uniq status img dup overlap unknown unlisted zero nocount bool cfd; do printf '%s=refused/all-down ' "$n"; done)"
+exp="$(for n in nofind noimg trunc extraimg null incomplete ghost of uniq status img dup overlap unknown unlisted zero nocount bool cfd uniqlist dupa dupb exit; do printf '%s=refused/all-down ' "$n"; done)"
 { eq "$r" "${exp% }"; } && ok || no "every malformed, truncated or inconsistent verdict is refused by parse_panel and records all four scanners 'did not run' in panel_block" "[$r]"
 
 begin "panel-5-corroboration-is-kept-per-image" "round 1 of cache#466 (seat B): the same CVE on two images keeps its own 'seen by N of M' and its own uniqueness per image; one image's numbers are never attached to another image"
