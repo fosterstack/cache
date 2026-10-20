@@ -459,5 +459,9 @@ aud_case reports-option bad "=>
             --rescan-reports x
 "
 aud_case no-panel-dir   bad "--panel-dir =>--panel-evidence "
+# No workflow in the repository declares, passes or reads SNYK_TOKEN any more (the secret can be deleted by the owner once none remain)
+if grep -rIl "SNYK_TOKEN" "$root/.github/workflows" "$root/.github/actions" 2>/dev/null | grep -q .; then
+  failn=$((failn+1)); echo "FAIL no-snyk-token-in-workflows: $(grep -rIl 'SNYK_TOKEN' "$root/.github/workflows" "$root/.github/actions" 2>/dev/null | tr '\n' ' ')"
+else pass=$((pass+1)); echo "PASS no-snyk-token-in-workflows"; fi
 echo "panel-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
