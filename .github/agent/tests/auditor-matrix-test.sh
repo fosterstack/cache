@@ -3678,8 +3678,9 @@ for im in sorted(imgs):
     ran = sorted(s for s in exp if s not in dnr)
     images[im] = {"counts": {s: CNT[s] for s in ran}, "did_not_run": sorted(dnr), "ran": ran, "counts_for_day": len(ran) >= 3}
 def f(im, vid, pkg, ver, seen, purls):
+    det = {s_: ({"severity": "high", "fixed_version": "9.9", "aliases": ["GHSA-aaaa-bbbb-cccc"]} if s_ == "grype" else ({"severity": "critical"} if s_ == "inspector" else {})) for s_ in seen}
     return {"image": im, "id": vid, "package": pkg, "version": ver, "seen_by": sorted(seen), "of": len(images[im]["ran"]),
-            "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report", "purls": purls}
+            "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report", "purls": purls, "details": det}
 d = {"images": images,
      "not_counted": sorted(i for i, st in images.items() if not st["counts_for_day"]),
      "scanner_failures": sorted("%s on %s" % (s, i) for i, st in images.items() for s in st["did_not_run"]),
@@ -3815,6 +3816,22 @@ def _(d): d["issue"] = ""
 def _(d): d["issue"] = "a stale issue text"
 @case("nested")
 def _(d): d["images"]["production-amd64"]["ran"].append({"x": 1})
+@case("nodetails")
+def _(d): del d["findings"][0]["details"]
+@case("detghost")
+def _(d): d["findings"][0]["details"]["google"] = {}
+@case("detmissing")
+def _(d): del d["findings"][0]["details"]["scout"]
+@case("detsev")
+def _(d): d["findings"][0]["details"]["grype"]["severity"] = "HIGH"
+@case("detunknownkey")
+def _(d): d["findings"][0]["details"]["grype"]["cvss"] = 9.8
+@case("detfix")
+def _(d): d["findings"][0]["details"]["grype"]["fixed_version"] = ""
+@case("detalias")
+def _(d): d["findings"][0]["details"]["grype"]["aliases"] = ["GHSA-aaaa-bbbb-cccc", "GHSA-aaaa-bbbb-cccc"]
+@case("detkev")
+def _(d): d["findings"][0]["details"]["grype"]["known_exploited"] = "yes"
 @case("topextra")
 def _(d): d["note"] = "x"
 @case("imgextra")
@@ -3861,7 +3878,7 @@ for name, fn in M1.items():
 print(" ".join(out))
 PYEOF
 )"
-exp="$(for n in nofind noimg trunc extraimg null incomplete ghost of uniq status img dup overlap unknown unlisted zero nocount bool cfd uniqlist dupa dupb exit vexempty vexghost vexnoimg vexarm purl offloat issueempty issuestale nested topextra imgextra findextra vexextra purlsyntax issuewrong vexid vexpkg vexver purlq purlctl uniqtype dupkey dupkey2 idspace; do printf '%s=refused/all-down ' "$n"; done)"
+exp="$(for n in nofind noimg trunc extraimg null incomplete ghost of uniq status img dup overlap unknown unlisted zero nocount bool cfd uniqlist dupa dupb exit vexempty vexghost vexnoimg vexarm purl offloat issueempty issuestale nested nodetails detghost detmissing detsev detunknownkey detfix detalias detkev topextra imgextra findextra vexextra purlsyntax issuewrong vexid vexpkg vexver purlq purlctl uniqtype dupkey dupkey2 idspace; do printf '%s=refused/all-down ' "$n"; done)"
 { eq "$r" "${exp% }"; } && ok || no "every malformed, truncated or inconsistent verdict is refused by parse_panel and records all four scanners 'did not run' in panel_block" "[$r]"
 
 begin "panel-5-corroboration-is-kept-per-image" "round 1 of cache#466 (seat B): the same CVE on two images keeps its own 'seen by N of M' and its own uniqueness per image; one image's numbers are never attached to another image"
@@ -3873,10 +3890,12 @@ g = P.parse_panel(os.environ["MF"], "grype")[0]["extra"]["by_image"]
 i = P.parse_panel(os.environ["MF"], "inspector")
 z = [f for f in i if f["finding_id"] == "CVE-2099-0002"][0]["extra"]["by_image"]
 c = [f for f in i if f["finding_id"] == "CVE-2099-0003"][0]["extra"]["by_image"]
+g0 = P.parse_panel(os.environ["MF"], "grype")[0]; i0 = [f for f in i if f["finding_id"] == "CVE-2099-0001"][0]
+print("sev=%s/%s fix=%s aliases=%s inspector_sev=%s" % (g0["severity"], g0["fixed_version"], g0["fixed_version"], ",".join(g0["aliases"]), i0["severity"]), end=" ")
 print("amd64=%d/%d arm64=%d/%d unique_zlib=%s curl_amd64=%s curl_arm64=%s" % (len(g["production-amd64"]["seen_by"]), g["production-amd64"]["of"], len(g["production-arm64"]["seen_by"]), g["production-arm64"]["of"], z["production-amd64"]["unique"], c["production-amd64"]["unique"], c["production-arm64"]["unique"]))
 PYEOF
 )"
-{ eq "$r" "amd64=3/4 arm64=2/3 unique_zlib=True curl_amd64=False curl_arm64=True"; } && ok || no "grype's CVE-2099-0001: 3 of 4 on amd64, 2 of 3 on arm64; inspector's curl finding is not unique on amd64 and unique on arm64 (same deduplicated record)" "[$r]"
+{ eq "$r" "sev=high/9.9 fix=9.9 aliases=CVE-2099-0001,GHSA-aaaa-bbbb-cccc inspector_sev=critical amd64=3/4 arm64=2/3 unique_zlib=True curl_amd64=False curl_arm64=True"; } && ok || no "grype's CVE-2099-0001: 3 of 4 on amd64, 2 of 3 on arm64; inspector's curl finding is not unique on amd64 and unique on arm64 (same deduplicated record)" "[$r]"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
