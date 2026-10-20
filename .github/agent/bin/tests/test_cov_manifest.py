@@ -234,6 +234,60 @@ class MainHappy(Harness):
         self.assertIn("snyk 1.1293.0 packages=100 findings=2 ran=True", out)
         self.assertIn("image scanners that ran: ['grype', 'trivy', 'snyk']", out)
 
+    def panel_dir(self, findings=(), dnr=None):
+        """A valid full-matrix panel-evidence directory (every scanner ran everywhere unless `dnr` {image: [scanners]} says otherwise)."""
+        from auditorlib import parsers as PL
+        d = os.path.join(self.tmp, "panel"); os.makedirs(d, exist_ok=True)
+        images = {}
+        for im in sorted(PL.panel_images()):
+            exp = [x for x in PL.PANEL_SCANNERS if PL.panel_expected(x, im)]
+            bad = [x for x in (dnr or {}).get(im, []) if x in exp]
+            ran = sorted(x for x in exp if x not in bad)
+            images[im] = {"counts": {x: 10 for x in ran}, "did_not_run": sorted(bad), "ran": ran, "counts_for_day": len(ran) >= 3}
+        v = {"images": images, "not_counted": sorted(i for i, st in images.items() if not st["counts_for_day"]),
+             "scanner_failures": sorted("%s on %s" % (x, i) for i, st in images.items() for x in st["did_not_run"]),
+             "findings": list(findings), "unique": [f for f in findings if f["unique"]], "vex_covered": [], "issue": ""}
+        v["exit"] = 2 if (v["not_counted"] or v["scanner_failures"]) else 0
+        _wr(os.path.join(d, "verdict.json"), json.dumps(v))
+        return d
+
+    def test_panel_mode_runs_no_scanner_and_records_the_four(self):
+        # 0600 option A, PR 2b-1: with --panel-dir the auditor reads the panel's four scanners from the rescan's verdict and runs none of its own
+        self.rules([r for r in GOOD_RULES if r["tool"] in ("skopeo", "syft", "govulncheck")])
+        pd = self.panel_dir()
+        self.run_main(self.base_args("--panel-dir", pd), env_extra={"SNYK_TOKEN": "tok", "GITHUB_SHA": "abc123"})
+        m = _rj(self.out)
+        tools = {c[0] for c in self.argv()}
+        self.assertFalse(tools & {"grype", "trivy", "osv-scanner", "snyk"}, tools)
+        self.assertTrue({"syft", "govulncheck"} <= tools)                      # the cataloguer and the reachability scan are not panel scanners
+        self.assertEqual(m["scanner_set"], "panel")
+        verdict = os.path.join(pd, "verdict.json")
+        self.assertEqual(m["scanner_reports"], {x: verdict for x in ("grype", "scout", "inspector", "google")})
+        self.assertTrue(all(m["scanner_status"][x]["ran"] for x in m["scanner_reports"]))
+        self.assertEqual(m["panel"]["not_counted"], []); self.assertEqual(m["panel"]["scanner_failures"], [])
+        self.assertEqual(m["base_os"], "debian 12.0")                            # syft still supplies the base OS and the carriers
+        self.assertTrue(m["carriers"])
+
+    def test_panel_mode_with_a_scanner_that_missed_an_image_records_it_never_clean(self):
+        self.rules([r for r in GOOD_RULES if r["tool"] in ("skopeo", "syft", "govulncheck")])
+        from auditorlib import parsers as PL
+        dbg = sorted(i for i in PL.panel_images() if i.endswith("-amd64") and not i.startswith("production"))[0]    # main ships debug, chain-v030 drops it
+        pd = self.panel_dir(dnr={dbg: ["scout", "google"]})
+        self.run_main(self.base_args("--panel-dir", pd))
+        m = _rj(self.out)
+        self.assertEqual(m["scanner_reports"]["scout"], None); self.assertEqual(m["scanner_reports"]["google"], None)
+        self.assertIn(dbg, m["scanner_status"]["scout"]["reason"])
+        self.assertEqual(m["panel"]["not_counted"], [dbg])             # two scanners on an image is under the quorum of three
+
+    def test_panel_mode_without_a_verdict_is_all_four_did_not_run(self):
+        self.rules([r for r in GOOD_RULES if r["tool"] in ("skopeo", "syft", "govulncheck")])
+        empty = os.path.join(self.tmp, "no-panel"); os.makedirs(empty)
+        self.run_main(self.base_args("--panel-dir", empty))
+        m = _rj(self.out)
+        self.assertEqual(m["scanner_set"], "panel")
+        self.assertTrue(all(m["scanner_reports"][x] is None and not m["scanner_status"][x]["ran"] for x in ("grype", "scout", "inspector", "google")))
+        self.assertIsNone(m["panel"]["not_counted"])                              # unknown, so the auditor cannot call the day complete
+
     def test_script_entrypoint_runs_main(self):
         # `python auditor-manifest.py ...` reaches main(): with no archive source it exits non-zero.
         self.rules([{"tool": "skopeo", "rc": 1, "stderr": "boom"}])

@@ -242,6 +242,15 @@ def _validate_panel_verdict(d):
     return d
 
 
+LEGACY_SCANNERS = ("grype", "trivy", "osv-scanner", "snyk")
+
+
+def scanner_set(m):
+    """The image scanners a manifest records: the panel's four (manifest scanner_set 'panel', 0600 option A) or, until 2b-2
+    deletes it, the legacy four."""
+    return PANEL_SCANNERS if isinstance(m, dict) and m.get("scanner_set") == "panel" else LEGACY_SCANNERS
+
+
 def parse_panel(path, scanner):
     """One panel scanner's findings from the rescan's verdict.json (bin/panel.py tally): the findings whose
     seen_by names `scanner`, one record per (CVE id, package identity); the images that carry it are kept, each with

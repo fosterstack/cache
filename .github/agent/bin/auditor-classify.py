@@ -112,7 +112,11 @@ def validate_manifest(m):
     if not isinstance(r, dict):
         raise ValueError("manifest: scanner_reports object is missing")
     status = m.get("scanner_status") or {}
-    keys = ("grype", "trivy", "osv-scanner", "osv-scanner-gomod", "snyk")
+    if "scanner_set" in m and m["scanner_set"] not in ("legacy", "panel"):       # an unknown value or an explicit null must not silently select the legacy behaviour
+        raise ValueError("manifest: scanner_set %r is not 'panel' or 'legacy'" % (m.get("scanner_set"),))
+    keys = P.scanner_set(m) + (() if m.get("scanner_set") == "panel" else ("osv-scanner-gomod",))
+    if m.get("scanner_set") == "panel" and not (isinstance(m.get("panel"), dict) and "verdict" in m["panel"]):
+        raise ValueError("manifest: a panel manifest has no panel block with the verdict path (null when there is none)")
     for k in keys:
         if k not in r:
             raise ValueError("manifest: scanner_reports missing key %r (use null for 'did not run')" % k)
@@ -128,7 +132,7 @@ def scanners_down(m):
     r = m.get("scanner_reports") or {}
     status = m.get("scanner_status") or {}
     down = []
-    for k in ("grype", "trivy", "osv-scanner", "osv-scanner-gomod", "snyk"):
+    for k in P.scanner_set(m) + (() if m.get("scanner_set") == "panel" else ("osv-scanner-gomod",)):
         if r.get(k) is None:
             reason = (status.get(k) or {}).get("reason", "no report")
             down.append({"scanner": k, "reason": reason})
@@ -151,13 +155,19 @@ def manifest_gvc(m):
 
 def manifest_findings(manifest):
     m = json.load(open(manifest)); validate_manifest(m); r = m.get("scanner_reports") or {}
-    PARSERS = [("grype", P.parse_grype), ("trivy", P.parse_trivy),
-               ("osv-scanner", lambda p: P.parse_osv(p, "osv-scanner")),
-               ("osv-scanner-gomod", lambda p: P.parse_osv(p, "osv-scanner-gomod")),
-               ("snyk", P.parse_snyk)]
+    if m.get("scanner_set") == "panel":              # the four panel scanners, all read from the rescan's verdict.json
+        PARSERS = [(sc, (lambda p, sc=sc: P.parse_panel(p, sc))) for sc in P.PANEL_SCANNERS]
+    else:
+        PARSERS = [("grype", P.parse_grype), ("trivy", P.parse_trivy),
+                   ("osv-scanner", lambda p: P.parse_osv(p, "osv-scanner")),
+                   ("osv-scanner-gomod", lambda p: P.parse_osv(p, "osv-scanner-gomod")),
+                   ("snyk", P.parse_snyk)]
     allf = []
+    vpath = (m.get("panel") or {}).get("verdict") if m.get("scanner_set") == "panel" else None
     for name, fn in PARSERS:
-        path = r.get(name)
+        # panel mode reads every scanner's findings from the verdict even when the scanner missed an image (its report path is then
+        # null, which still marks it "did not run"): a partial failure must not discard what it did report
+        path = vpath if m.get("scanner_set") == "panel" else r.get(name)
         if path:                                    # a null scanner is skipped, not fatal
             allf += fn(path)
     # Group by CONNECTED alias sets, not each record's own canonical CVE (R1 outer round-4
@@ -241,8 +251,9 @@ def do_manifest(manifest, adjudicator, out, ts=TS):
             ev = fp_verified(ids, logpath, grp["findings"])
             if ev:
                 vex.write(out, c, "not_affected", ts, justification="vulnerable_code_not_present", evidence=ev)
-                cli.writej(os.path.join(out, "ignores", "grype", c + ".json"),
-                           {"vex": policy.stmt_id(c), "id": c, "evidence": ev})
+                if m.get("scanner_set") != "panel":      # panel mode: the VEX is the only exception (scanner-panel rule 4), no per-scanner ignore files
+                    cli.writej(os.path.join(out, "ignores", "grype", c + ".json"),
+                               {"vex": policy.stmt_id(c), "id": c, "evidence": ev})
             else:
                 cat = "under_investigation"
                 vex.write(out, c, "under_investigation", ts, evidence={"reason": "no false-positive evidence"})
@@ -253,7 +264,7 @@ def do_manifest(manifest, adjudicator, out, ts=TS):
         cli.writej(os.path.join(out, "disposition", c + ".json"), {"permanent": cat == "false_positive"})
     cli.writej(os.path.join(out, "classification.json"), {"findings": classification})
     r = m.get("scanner_reports") or {}
-    k = sum(1 for s in ("grype", "trivy", "osv-scanner") if r.get(s))
+    k = sum(1 for s in (P.PANEL_SCANNERS if m.get("scanner_set") == "panel" else ("grype", "trivy", "osv-scanner")) if r.get(s))
     _render_report(out, report_sections, conclusion="stub: no narrative", context={"k": k})
 
 
