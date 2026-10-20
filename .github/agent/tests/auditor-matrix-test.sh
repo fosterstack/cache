@@ -3662,10 +3662,16 @@ LR
 )"; lr="$(printf '%s\n' "$lr" | tail -1)"
 eq "$lr" "OK" && ok || no "one PR per target, idempotent re-run, same PR updated" "$lr"
 
+# The image set is panel.py's, not a literal: main ships debug, chain-v030 drops it (VARIANTS), so the fixtures name "the second
+# variant's amd64 image" (DBG) and count the panel's images (NIMG), and pass with either VARIANTS.
+DBG="$(python3 -c 'import sys; sys.path.insert(0, ".github/agent/bin"); from auditorlib import parsers as P; print(sorted(i for i in P.panel_images() if i.endswith("-amd64") and not i.startswith("production"))[0])')"
+NIMG="$(python3 -c 'import sys; sys.path.insert(0, ".github/agent/bin"); from auditorlib import parsers as P; print(len(P.panel_images()))')"
+export DBG NIMG
+
 begin "panel-1-parse-panel-reads-one-scanners-findings-from-the-verdict" "the auditor reads the scanner panel's verdict.json (the rescan's own tally): parse_panel(path, scanner) returns exactly the findings that scanner reported, one record per CVE+package even when several images carry it (the images are kept), and a verdict with no findings array is a parse error, never an empty list"
 pv="$WORK/panel-verdict.json"
 cat > "$WORK/mkpv.py" <<'PYEOF'
-import json, sys
+import json, os, sys
 sys.path.insert(0, ".github/agent/bin")
 from auditorlib import parsers as P
 imgs = P.panel_images()                     # the six images the panel fixes (bin/panel.py EXPECTED)
@@ -3673,7 +3679,7 @@ CNT = {"grype": 10, "scout": 10, "inspector": 9, "google": 9}
 images = {}
 for im in sorted(imgs):
     exp = [s for s in P.PANEL_SCANNERS if P.panel_expected(s, im)]
-    dnr = ["google", "scout"] if im == "debug-amd64" else []
+    dnr = ["google", "scout"] if im == os.environ["DBG"] else []
     dnr = [s for s in dnr if s in exp]
     ran = sorted(s for s in exp if s not in dnr)
     images[im] = {"counts": {s: CNT[s] for s in ran}, "did_not_run": sorted(dnr), "ran": ran, "counts_for_day": len(ran) >= 3}
@@ -3721,11 +3727,11 @@ print("ran=%s null=%s ginfo=%s/%s greason=%s pkgs=%d" % (
   ",".join(s for s in M.PANEL_SCANNERS if st[s]["ran"]),
   ",".join(s for s in M.PANEL_SCANNERS if rep[s] is None),
   st["grype"]["images_ran"], st["grype"]["images_expected"],
-  "debug-amd64" in (st["google"]["reason"] or "") and "google" in rep and rep["google"] is None,
+  os.environ["DBG"] in (st["google"]["reason"] or "") and "google" in rep and rep["google"] is None,
   st["grype"]["package_count"]))
 PYEOF
 )"
-{ eq "$r" "ran=grype,inspector null=scout,google ginfo=6/6 greason=True pkgs=60"; } && ok || no "panel_inventory: grype and inspector ran everywhere, scout and google missed debug-amd64 (null report, reason names the image)" "[$r]"
+{ eq "$r" "ran=grype,inspector null=scout,google ginfo=${NIMG}/${NIMG} greason=True pkgs=$((10 * NIMG))"; } && ok || no "panel_inventory: grype and inspector ran everywhere, scout and google missed the second variant's amd64 image (null report, reason names the image)" "[$r]"
 
 begin "panel-3-panel-block-never-hides-a-missing-verdict" "the manifest carries a 'panel' block: null when no panel directory was given (older runs), the four scanners' status and reports when verdict.json is there, and when the directory has no verdict.json every panel scanner is recorded 'did not run' with the reason (the panel's audits cannot run, never a clean pass)"
 pd="$WORK/panel-dir"; rm -rf "$pd" "$WORK/panel-empty"; mkdir -p "$pd" "$WORK/panel-empty"; cp "$pv" "$pd/verdict.json"
@@ -3789,7 +3795,7 @@ def _(d): d["images"]["production-amd64"]["counts"].pop("grype")
 @case("bool")
 def _(d): d["images"]["production-amd64"]["counts"]["grype"] = True
 @case("cfd")
-def _(d): d["images"]["debug-amd64"]["counts_for_day"] = True
+def _(d): d["images"][os.environ["DBG"]]["counts_for_day"] = True
 @case("uniqlist")
 def _(d): d["unique"] = []
 @case("dupa")
@@ -3908,9 +3914,9 @@ pm = P._panel_module(); vp = os.path.join(out, "verdict.json")
 images = {}
 for im in sorted(P.panel_images()):
     exp = [s for s in P.PANEL_SCANNERS if P.panel_expected(s, im)]
-    bad = [s for s in ("scout", "google") if scenario == "uncounted" and im == "debug-amd64" and s in exp]
+    bad = [s for s in ("scout", "google") if scenario == "uncounted" and im == os.environ["DBG"] and s in exp]
     bad += [s for s in ("google",) if scenario == "googlegone" and im.endswith("-amd64") and s in exp]      # google missing on every image it is expected on
-    bad += [s for s in ("google",) if scenario == "partial" and im == "debug-amd64" and s in exp]            # google missing on one image only
+    bad += [s for s in ("google",) if scenario == "partial" and im == os.environ["DBG"] and s in exp]            # google missing on one image only
     ran = sorted(s for s in exp if s not in bad)
     images[im] = {"counts": {s: 10 for s in ran}, "did_not_run": sorted(bad), "ran": ran, "counts_for_day": len(ran) >= 3}
 def f(im, vid, pkg, ver, seen, details):
@@ -3967,7 +3973,7 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-ok/manifest.
 begin "panel-8-an-uncounted-image-or-a-missing-verdict-is-never-complete" "an image the panel did not count (fewer than three scanners ran on it), or a missing/invalid verdict, makes the day AUDIT INCOMPLETE and the report names why (the uncounted image / the missing verdict); a scanner that did not run is listed as did not run"
 o="$WORK/pm-unc-run"; rm -rf "$o"; : > "$LEDGER"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-uncounted/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; {
-  inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; why="$(grep -qi 'debug-amd64' "$o/report.md" && echo yes || echo no)"
+  inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; why="$(grep -qi "$DBG" "$o/report.md" && echo yes || echo no)"
   { eq "$inc" "yes" && eq "$why" "yes"; } && ok || no "uncounted image: incomplete and named" "incomplete=$inc names_image=$why"; }
 o="$WORK/pm-nop-run"; rm -rf "$o"; : > "$LEDGER"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-nopanel/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; {
@@ -3995,7 +4001,7 @@ o="$WORK/pm-gg-run"; rm -rf "$o"; : > "$LEDGER"
 begin "panel-12-a-partial-failure-keeps-the-findings-the-scanner-did-report" "a scanner that missed one image but reported on another still contributes its findings: the finding only google saw (on production-amd64) is in the report, the day is incomplete, and the report says google did not run on the image it missed"
 o="$WORK/pm-part-run"; rm -rf "$o"; : > "$LEDGER"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; {
-  fnd="$(grep -c 'CVE-2099-7777' "$o/report.md")"; inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; why="$(grep -qi 'did not run on: debug-amd64' "$o/report.md" && echo yes || echo no)"
+  fnd="$(grep -c 'CVE-2099-7777' "$o/report.md")"; inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; why="$(grep -qi "did not run on: $DBG" "$o/report.md" && echo yes || echo no)"
   { [ "$fnd" -ge 1 ] && eq "$inc" "yes" && eq "$why" "yes"; } && ok || no "finding kept, day incomplete, partial miss named" "finding_lines=$fnd incomplete=$inc names_image=$why"; }
 
 begin "panel-13-each-scanners-severity-is-always-shown" "a finding every scanner rates the same still shows each scanner's severity (not only when they disagree)"
@@ -4028,7 +4034,7 @@ PYEOF
 o="$WORK/pm-contra1-run"; rm -rf "$o"; : > "$LEDGER"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra1/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; i1="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
 o="$WORK/pm-contra2-run"; rm -rf "$o"; : > "$LEDGER"
-"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra2/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; i2="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; n2="$(grep -qi 'debug-amd64' "$o/report.md" && echo yes || echo no)"
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra2/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; i2="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"; n2="$(grep -qi "$DBG" "$o/report.md" && echo yes || echo no)"
 o="$WORK/pm-contra3-run"; rm -rf "$o"; : > "$LEDGER"
 rc3=0; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra3/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || rc3=$?
 i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/null; } && echo yes || echo no)"       # an unparseable verdict stops the run (manifest invalid), never a complete day
