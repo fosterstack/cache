@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30
+# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30, REQ-REFRESH-001-AC32, REQ-REFRESH-001-AC33, REQ-REFRESH-001-AC34
 # Tests of the PR: the daily input refresh script and the daily FIPS-module check.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -101,6 +101,7 @@ mkrepo() { rm -rf "$work/rp"; mkdir -p "$work/rp"; cp -R "$fx/repo/." "$work/rp/
   printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)" "$(shasum -a 256 "$fx/archive/aarch64/APKINDEX.tar.gz" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-index.sha256"; }   # the record names the index the archive holds now
 rfe=(env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live")
 RUNNER=run_s2
+GHPATHS="python3 -c 'import json,sys;print(chr(10).join(a[\"path\"] for a in json.load(open(sys.argv[1]))[\"variables\"][\"input\"][\"fileChanges\"][\"additions\"]))' '$CALLS.graphql'"   # the paths of the commit the API was asked to make (the old assertions read them from git add)
 mkrepo; run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 if [ "$(rc)" = 0 ] && [ "$(grep -c '^apko lock ' "$CALLS")" -ge 3 ]; then ok; else bad "rule 44" "refresh: apko lock runs for production, fips and the melange environment (>= 3 calls)"; fi
 if [ "$(rc)" = 0 ] && grep '^apko lock ' "$CALLS" | grep -q -- '--repository-append https://packages.wolfi.dev/os'; then ok; else bad "rule 44" "refresh: the locks are made against live Wolfi (--repository-append https://packages.wolfi.dev/os)"; fi
@@ -202,6 +203,7 @@ t "rule 48" "refresh: ...archive and repo unchanged" test "$(treehash "$work/ar"
 mkdir -p "$work/stubs3"; cat >"$work/stubs3/git" <<'G'
 #!/bin/bash
 echo "git $*" >>"$CALLS"
+case "$*" in *"rev-parse HEAD"*) echo cafe0123;; esac
 case "$*" in *ls-remote*"refs/heads/${GIT_STUB_EXISTING:-none}") echo "deadbeef	refs/heads/${GIT_STUB_EXISTING}";; esac
 exit 0
 G
@@ -366,6 +368,9 @@ mkdir -p "$work/stubs4"; cat >"$work/stubs4/git" <<'G'
 echo "git $*" >>"$CALLS"
 case "$*" in *"rev-parse --abbrev-ref HEAD"*) echo "${GIT_STUB_DETACHED:+HEAD}${GIT_STUB_DETACHED:-main}" | sed 's/^HEAD.*/HEAD/';; esac
 case "$*" in *"rev-parse HEAD"*) echo cafe0123;; esac
+case "$*" in *"ls-files --error-unmatch"*) [ -z "${GIT_STUB_UNTRACKED:-}" ] || exit 1;; esac
+case "$*" in *"push"*"--delete"*) [ -z "${GIT_STUB_DELETE_FAIL:-}" ] || { echo "git: remote delete failed" >&2; exit 1; };; esac
+case "$*" in *"push -q origin refresh/"*) [ -z "${GIT_STUB_PUSH_SIGNAL:-}" ] || { kill -TERM $PPID; sleep 1; };; esac   # the script receives TERM right after the remote made the branch
 case "$*" in *"checkout -q "*) [ -z "${GIT_STUB_CHECKOUT_FAIL:-}" ] || { echo "git: checkout failed" >&2; exit 1; };; esac
 case "$*" in *ls-remote*) for b in ${GIT_STUB_TAKEN:-}; do case "$*" in *"refs/heads/$b") echo "deadbeef	refs/heads/$b";; esac; done;; esac
 exit 0
@@ -373,11 +378,14 @@ G
 cat >"$work/stubs4/gh" <<'G'
 #!/bin/bash
 echo "gh $*" >>"$CALLS"
+case "$*" in "api graphql"*) [ -z "${GH_STUB_API_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }; _in=; _p=; for _a in "$@"; do [ "$_p" = --input ] && _in=$_a; _p=$_a; done; [ -z "$_in" ] || cp "$_in" "$CALLS.graphql"; echo abcdef0123456789abcdef0123456789abcdef01; exit 0;; "api repos/"*"/commits/"*) echo "${GH_STUB_VERIFIED:-true}"; exit 0;; esac
 [ -z "${GH_STUB_CLOSED_RAW:-}" ] || case "$*" in "pr list"*"--state closed"*) echo "$GH_STUB_CLOSED_RAW"; exit 0;; esac
 case "$*" in "pr list"*"--state closed"*) i=50; sep=; printf '['; for b in ${GH_STUB_CLOSED:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"mergedAt":null,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done; for b in ${GH_STUB_MERGED:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"mergedAt":"2026-10-09T00:00:00Z","author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
   for b in ${GH_STUB_CLOSED_FORK:-}; do i=$((i+10)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":true,"mergedAt":null,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
   for b in ${GH_STUB_CLOSED_FOREIGN:-}; do i=$((i+10)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"mergedAt":null,"author":{"login":"someone-else"}}' "$sep" "$i" "$b"; sep=,; done; printf ']\n';; esac
 case "$*" in "pr create"*) [ -z "${GH_STUB_CREATE_FAIL:-}" ] || { echo "gh: HTTP 500" >&2; exit 1; };; esac
+case "$*" in "pr list"*"--head "*) case "$*" in *" -q length"*) if [ -n "${GH_STUB_HEAD_OPEN:-}" ]; then echo 1; else echo 0; fi;; *) if [ -n "${GH_STUB_HEAD_OPEN:-}" ]; then echo '[{"number":77}]'; else echo '[]'; fi;; esac; exit 0;; esac
+case "$*" in "pr create"*) [ -z "${GH_STUB_CREATE_SIGNAL:-}" ] || { echo "https://example.invalid/pull/77"; kill -TERM $PPID; sleep 1; exit 0; };; esac   # the shell runs gh as the last command of a subshell it replaces: $PPID is the script
 case "$*" in "pr list"*"--state closed"*) ;; "pr list"*) [ -z "${GH_STUB_FAIL:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }; i=40; sep=; printf '['
   for b in ${GH_STUB_OPEN:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":false,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
   for b in ${GH_STUB_FORK:-}; do i=$((i+1)); printf '%s{"number":%s,"headRefName":"%s","isCrossRepository":true,"author":{"login":"app/bot"}}' "$sep" "$i" "$b"; sep=,; done
@@ -785,13 +793,13 @@ P
 done
 mkrepo; run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c "grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'"
-t "rule 32" "every live fetch is a shell line in the ruled grammar: -q first, the fixed flags (-fsSL -g --max-filesize N --max-time N --proto =https --tlsv1.2 -o FILE), exactly one operand that is a literal https://packages.wolfi.dev URL or \"https://packages.wolfi.dev/os/\$p\", optional || die \"plain\" N; the embedded Python runs no download" python3 -I - "$RF_PROD" <<'PYT'
+t "rule 32" "every live fetch is a shell line in the ruled grammar: -q first, the fixed flags (-fsSL -g --max-filesize N --max-time N --proto =https --tlsv1.2 -o FILE), exactly one operand that is a literal https://packages.wolfi.dev URL, \"https://packages.wolfi.dev/os/\$p\" or \"https://go.dev/dl/\$f\", optional || die \"plain\" N; the embedded Python runs no download" python3 -I - "$RF_PROD" <<'PYT'
 import re, sys
 s = open(sys.argv[1]).read()
 lines = [l for l in s.split("\n") if " -fsSL " in l and not l.lstrip().startswith("#")]   # the fetch lines are the ones carrying the fixed flag cluster
 shell = [l for l in lines if l.lstrip().startswith("/usr/bin/")]
-assert len(shell) == len(lines) and len(lines) == 6, "every fetch line is a shell line (4 key fetches, packages, index): %d of %d" % (len(shell), len(lines))
-g = re.compile(r'^\s+/usr/bin/[a-z]+ -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
+assert len(shell) == len(lines) and len(lines) == 7, "every fetch line is a shell line (4 key fetches, packages, the Go toolchain, index): %d of %d" % (len(shell), len(lines))
+g = re.compile(r'^\s+/usr/bin/[a-z]+ -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|"https://go\.dev/dl/\$f"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
 bad = [l for l in lines if not g.match(l)]
 assert not bad, bad
 assert '"-fsSL"' not in s   # the embedded Python passes no fetch flags: it runs no download
@@ -1088,12 +1096,12 @@ mkrepo; tpl_before=$(tsha "$work/rp"); gcheck "$work/rp" >/dev/null 2>&1 || echo
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 21" "refresh: after a closure change the generator --check passes on the job's output (the job edits the lock; the recipes are the generator's output)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'zlib=1.3.2-r0' '$work/rp/build/locks/melange.lock' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange.yaml' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange-fips.yaml'" && t "rule 21" "...--check passes" gcheck "$work/rp"
 t "rule 21" "...the template is byte-for-byte what it was (an automated change never edits the template or its pin)" test "$(tsha "$work/rp")" = "$tpl_before"
-t "rule 21" "...and the daily PR adds the lock and the two regenerated recipes, never the template" bash -c "grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'melange.lock' && grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'build/melange.yaml' && ! grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'tmpl'"
+t "rule 21" "...and the daily PR adds the lock and the two regenerated recipes, never the template" bash -c "$GHPATHS | grep -q 'melange.lock' && $GHPATHS | grep -q 'build/melange.yaml' && ! $GHPATHS | grep -q 'tmpl'"
 fr; tpl_before=$(tsha "$work/rp3" 2>/dev/null || shasum -a 256 "$work/rp3/build/melange.yaml.tmpl" | cut -d' ' -f1)
 mkdir -p "$work/gr3/lib/fips140"; echo "v1.1.0-deadbeef" >"$work/gr3/lib/fips140/certified.txt"
 run_s4 "$RF" fips-module --pr-author app/bot --go-root "$work/gr3" --repo-dir "$work/rp3"
 t "rule 21" "fips-module: after the job the generator --check passes, the data file holds the new module, and the template is unchanged" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qx 'v1.1.0-deadbeef' '$work/rp3/build/locks/fips-module.txt' && test \"\$(shasum -a 256 '$work/rp3/build/melange.yaml.tmpl' | cut -d' ' -f1)\" = '$tpl_before'" && t "rule 21" "...--check passes" gcheck "$work/rp3"
-t "rule 21" "fips-module: the PR adds the data file and the regenerated FIPS recipe, never the template" bash -c "grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'fips-module.txt' && grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'melange-fips.yaml' && ! grep -E '^git( -C [^ ]+)? add ' '$CALLS' | grep -q 'tmpl'"
+t "rule 21" "fips-module: the PR adds the data file and the regenerated FIPS recipe, never the template" bash -c "$GHPATHS | grep -q 'fips-module.txt' && $GHPATHS | grep -q 'melange-fips.yaml' && ! $GHPATHS | grep -q 'tmpl'"
 
 # ---- Codex security-final on P3 (findings 2, 3, 5) ----------------------------------------------------------------------------------------------------------------------
 # F2: the archived inputs the COMMITTED locks require are checked before either guard can return success
@@ -1186,6 +1194,202 @@ SWAP
 done
 mkrepo; run_s4 env GH_STUB_OPEN="refresh/00000000" STUB_LOCK_MEL="$work/live-mel-moved.json" "${rfn[@]:1}" STUB_LOCK_MEL="$work/live-mel-moved.json" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 27" "AC17 probe A (control): the same run with the archive undamaged waits (exit 0, the open PR)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'earlier' '$work/log'"
+# ---- REQ-REFRESH-001-AC32: the first fill (advisor reading Oct 16): an archive that holds only the pinned key, and no build/archive.json on main --------------------------
+# The committed locks may name versions the live resolution has moved past; with an empty archive they can never already be there, so the job fetches those Wolfi still
+# serves and verifies each (a locked one against its lock checksums; a melange.lock one, which has no checksums, against the signed live index) before archiving it.
+ffl="$work/ff-live"; rm -rf "$ffl"; mkdir -p "$ffl/dl"; cp "$fx/archive/go/"*.tar.gz "$ffl/dl/"
+mkrepo; cp "$fx/melange.lock" "$work/mel.keep"
+oldbb=$(grep '^busybox=' "$work/rp/build/locks/melange.lock" | head -1); ffbv=${oldbb#busybox=}
+python3 - "$fx/live-mel.lock.json" "$work/ff-mel-moved.json" "$ffbv" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for e in d["contents"]["packages"]:
+    if e["name"] == "busybox": e["version"] = "9.9.9-r0"
+json.dump(d, open(sys.argv[2], "w"))
+P
+python3 - "$fx" "$ffl" "$work" "$ffbv" <<'P'
+import gzip, io, json, os, shutil, subprocess, sys, tarfile
+fx, ffl, work, bbv = sys.argv[1:5]
+def run(*a): return subprocess.run(a, check=True, capture_output=True).stdout
+def gz(b):
+    o = io.BytesIO()
+    with gzip.GzipFile(fileobj=o, mode="wb", mtime=0) as g: g.write(b)
+    return o.getvalue()
+def tarb(members):
+    b = io.BytesIO()
+    with tarfile.open(fileobj=b, mode="w", format=tarfile.GNU_FORMAT) as t:
+        for n, d in members:
+            i = tarfile.TarInfo(n); i.size = len(d); i.mtime = 0; t.addfile(i, io.BytesIO(d))
+    return b.getvalue()
+def signed_index(path, text):
+    idx = gz(tarb([("APKINDEX", text), ("DESCRIPTION", b"fixture")]))
+    open(path + ".idx", "wb").write(idx)
+    sig = run("openssl", "dgst", "-sha256", "-sign", fx + "/idxkey.pem", path + ".idx")
+    os.remove(path + ".idx")
+    open(path, "wb").write(gz(tarb([(".SIGN.RSA256.wolfi-signing.rsa.pub", sig)])) + idx)
+moved = json.load(open(work + "/ff-mel-moved.json"))
+for a in ("x86_64", "aarch64"):
+    os.makedirs("%s/%s" % (ffl, a))
+    for src in (fx + "/live/" + a, fx + "/envrepo/" + a, fx + "/archive/" + a):
+        for f in os.listdir(src):
+            if f.endswith(".apk") and not os.path.exists("%s/%s/%s" % (ffl, a, f)):
+                shutil.copy("%s/%s" % (src, f), "%s/%s/%s" % (ffl, a, f))
+    old = "%s/envrepo/%s/busybox-%s.apk" % (fx, a, bbv)
+    if os.path.exists(old):
+        shutil.copy(old, "%s/%s/busybox-%s.apk" % (ffl, a, bbv))
+        shutil.copy(old, "%s/%s/busybox-9.9.9-r0.apk" % (ffl, a))   # the moved live version carries the old bytes
+    oldtz = "%s/archive/%s/tzdata-2026a-r0.apk" % (fx, a)
+    if os.path.exists(oldtz):
+        shutil.copy(oldtz, "%s/%s/tzdata-2026a-r0.apk" % (ffl, a))
+    text = open("%s/itext-%s" % (fx, a), "rb").read().decode()
+    extra = "".join("C:%s\nP:%s\nV:%s\n\n" % (e["checksum"], e["name"], e["version"]) for e in moved["contents"]["packages"] if e["architecture"] == a and e["name"] == "busybox")
+    signed_index("%s/%s/APKINDEX.tar.gz" % (ffl, a), (text.rstrip("\n") + "\n\n" + extra).encode())
+    noold = "\n\n".join(st for st in text.split("\n\n") if not {"P:busybox", "V:" + bbv} <= set(st.split("\n")))
+    signed_index("%s/%s/APKINDEX-noold.tar.gz" % (ffl, a), (noold.rstrip("\n") + "\n\n" + extra).encode())
+    def wrongc(st):   # the stanza of the old busybox lists another package checksum; the package itself stays whole and well-formed
+        L_ = st.split("\n")
+        return "\n".join(("C:Q1" + "A" * 27) if l_.startswith("C:") else l_ for l_ in L_) if {"P:busybox", "V:" + bbv} <= set(L_) else st
+    signed_index("%s/%s/APKINDEX-wrongc.tar.gz" % (ffl, a), ("\n\n".join(wrongc(st) for st in text.split("\n\n")).rstrip("\n") + "\n\n" + extra).encode())
+    noprod = "\n\n".join(st for st in text.split("\n\n") if not {"P:tzdata", "V:2026a-r0"} <= set(st.split("\n")))
+    signed_index("%s/%s/APKINDEX-noprod.tar.gz" % (ffl, a), noprod.encode())
+P
+ffrun() {   # $1 = live fetch dir; the live melange resolution has moved busybox on, the production lock is unchanged
+  run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$work/ff-mel-moved.json" STUB_CURL_DIR="$1" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
+ffprod() {   # the live production and FIPS locks have moved tzdata on (2026a to 2026b)
+  run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-new.lock.json" STUB_LOCK_FIPS="$fx/live-new.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$1" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
+ffempty() { mkrepo; /bin/rm -f "$work/rp/build/locks/archive-index.sha256" "$work/rp/build/archive.json"; find "$work/ar" -mindepth 1 -maxdepth 1 ! -name keys -exec /bin/rm -rf {} +; }
+ffempty; ffrun "$ffl"
+t "AC32" "first fill: an archive with only the key, no build/archive.json, a committed melange.lock version the live resolution moved past, still served and listed in the signed live index: exit 0 and the old version is archived, byte for byte" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -f '$work/ar/x86_64/busybox-$ffbv.apk' && cmp -s '$work/ar/x86_64/busybox-$ffbv.apk' '$ffl/x86_64/busybox-$ffbv.apk'"
+t "AC32" "first fill: the old version was fetched (its package file name is in the fetch log)" bash -c "grep -q 'busybox-$ffbv.apk' '$CALLS'"
+ffempty; mkdir -p "$work/ar/x86_64"; : >"$work/ar/x86_64/stray.apk"; ffrun "$ffl"
+t "AC32" "first fill mutant: an archive that holds anything beside the key never takes the first-fill path: exit 1 naming the old version, which is not fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'busybox-$ffbv' '$work/log' && ! grep -q 'busybox-$ffbv.apk' '$CALLS'"
+ffempty; printf '{"version":1}\n' >"$work/rp/build/archive.json"; ffrun "$ffl"
+t "AC32" "first fill mutant: a build/archive.json in the repository never takes the first-fill path: exit 1, the old version is not fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q 'busybox-$ffbv.apk' '$CALLS'"
+rm -rf "$work/ff-bad"; cp -R "$ffl" "$work/ff-bad"; python3 "$work/lib.py" tamper "$work/ff-bad/x86_64/busybox-$ffbv.apk"
+ffempty; ffrun "$work/ff-bad"
+t "AC32" "first fill mutant: a damaged old melange.lock package (a flipped byte) is refused: exit 1 naming busybox, no package archived" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'busybox' '$work/log' && grep -Eqi 'checksum|mismatch|differ|incorrect' '$work/log' && ! ls '$work/ar'/x86_64/*.apk >/dev/null 2>&1"
+rm -rf "$work/ff-wrongc"; cp -R "$ffl" "$work/ff-wrongc"; for a_ in x86_64 aarch64; do cp "$ffl/$a_/APKINDEX-wrongc.tar.gz" "$work/ff-wrongc/$a_/APKINDEX.tar.gz"; done
+ffempty; ff_before=$(treehash "$work/ar" "$work/rp"); ffrun "$work/ff-wrongc"; ff_after=$(treehash "$work/ar" "$work/rp")
+t "AC32" "first fill mutant: a WELL-FORMED old melange.lock package whose identity checksum differs from the one the signed live index lists is refused by the index comparison itself: exit 1, the identity-mismatch message, the archive and the repository unchanged" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'does not have the package checksum the signed live index lists' '$work/log' && test '$ff_before' = '$ff_after'"
+rm -rf "$work/ff-noidx"; cp -R "$ffl" "$work/ff-noidx"; for a_ in x86_64 aarch64; do cp "$ffl/$a_/APKINDEX-noold.tar.gz" "$work/ff-noidx/$a_/APKINDEX.tar.gz"; done
+ffempty; ffrun "$work/ff-noidx"
+t "AC32" "first fill mutant: the old melange.lock version has no entry in the signed live index: exit 1 naming busybox and the index, no package archived" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'busybox' '$work/log' && grep -Eqi 'index' '$work/log' && ! ls '$work/ar'/x86_64/*.apk >/dev/null 2>&1"
+rm -rf "$work/ff-gone"; cp -R "$ffl" "$work/ff-gone"; /bin/rm -f "$work/ff-gone"/*/busybox-$ffbv.apk
+ffempty; ffrun "$work/ff-gone"
+t "AC32" "first fill mutant: the old version is no longer served: exit 1 naming busybox, no package archived" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'busybox' '$work/log' && ! ls '$work/ar'/x86_64/*.apk >/dev/null 2>&1"
+ffempty; ffprod "$ffl"
+t "AC32" "first fill: a version named by the committed production lock that the live resolution moved past (tzdata 2026a) is fetched and checked against the lock: exit 0, archived" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -f '$work/ar/x86_64/tzdata-2026a-r0.apk' && cmp -s '$work/ar/x86_64/tzdata-2026a-r0.apk' '$ffl/x86_64/tzdata-2026a-r0.apk'"
+rm -rf "$work/ff-badprod"; cp -R "$ffl" "$work/ff-badprod"; python3 "$work/lib.py" tamper "$work/ff-badprod/x86_64/tzdata-2026a-r0.apk"
+ffempty; ffprod "$work/ff-badprod"
+t "AC32" "first fill mutant: the committed production lock version fails its lock checksum: exit 1 naming tzdata, no package archived" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'tzdata' '$work/log' && grep -Eqi 'checksum|mismatch' '$work/log' && ! ls '$work/ar'/x86_64/*.apk >/dev/null 2>&1"
+rm -rf "$work/ff-noprod"; cp -R "$ffl" "$work/ff-noprod"; for a_ in x86_64 aarch64; do cp "$ffl/$a_/APKINDEX-noprod.tar.gz" "$work/ff-noprod/$a_/APKINDEX.tar.gz"; done
+ffempty; ff_before=$(treehash "$work/ar" "$work/rp"); ffprod "$work/ff-noprod"; ff_after=$(treehash "$work/ar" "$work/rp")
+t "AC32" "first fill mutant: a committed production lock version (tzdata 2026a) that the signed live index does not list is refused although its lock checksums hold: exit 1 naming tzdata and the index, the archive and the repository unchanged" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'tzdata' '$work/log' && grep -qi 'index' '$work/log' && test '$ff_before' = '$ff_after'"
+ffempty; python3 - "$work/rp/build/locks/apko.base.lock.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["contents"]["packages"] = [e for e in d["contents"]["packages"] if e["name"] != "tzdata"]   # the version is now named by the committed FIPS lock only
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+P
+ffprod "$ffl"
+t "AC32" "first fill: a version named by the committed FIPS lock only (tzdata 2026a) is fetched and checked against that lock: exit 0, archived" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -f '$work/ar/x86_64/tzdata-2026a-r0.apk'"
+# the gate is exact: a FIFO, a socket, an empty extra directory, a symlinked archive directory and a symlinked keys directory are not the key-only state
+for st_ in fifo socket dir symroot symkeys; do
+  ffempty
+  case $st_ in
+    fifo) mkfifo "$work/ar/pipe";;
+    socket) python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])" "$work/ar/sock";;
+    dir) mkdir "$work/ar/x86_64";;
+    symroot) /bin/mv "$work/ar" "$work/ar-real"; ln -s "$work/ar-real" "$work/ar";;
+    symkeys) /bin/mv "$work/ar/keys" "$work/ar/keys-real"; ln -s keys-real "$work/ar/keys";;
+  esac
+  ffrun "$ffl"
+  t "AC32" "first fill gate ($st_): an archive that is not exactly the key and nothing else never takes the first-fill path: exit 1, the old version is not fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q 'busybox-$ffbv.apk' '$CALLS'"
+done
+# ---- REQ-REFRESH-001-AC33: the Go toolchain tarballs the committed recipes pin are kept in the archive (rule 12; advisor reading Oct 16, release review R1) -----------------------
+# The recipes (build/melange.yaml, build/melange-fips.yaml) pin each Go tarball by its go.dev file name and sha256; build-apk.sh requires archive/go/<file> and checks the same
+# sha256. The refresh job stores a missing one only after the sha256 it fetched equals the pin; a present one must equal the pin; old files are never removed.
+gofx="$work/go-live"; rm -rf "$gofx"; mkdir -p "$gofx/dl"
+cp "$fx/archive/go/"*.tar.gz "$gofx/dl/"
+for a_ in x86_64 aarch64; do mkdir -p "$gofx/$a_"; cp "$fx/live/$a_/APKINDEX.tar.gz" "$gofx/$a_/"; done   # the run also fetches and checks the live index
+gofiles=$(cd "$fx/archive/go" && ls *.tar.gz)
+gorun() {   # $1 = the fetch directory (its dl/ holds the go.dev files); the live resolution equals the committed locks, so nothing but the Go files can change
+  run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$1" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
+gorepo() {   # the repository as main holds it (a pointer exists), the archive without its go/ directory
+  mkrepo; printf '{"schema":1,"artifact":"ghcr.io/fosterstack/cache-archive@sha256:%s","files":[{"name":"keys/wolfi-signing.rsa.pub","sha256":"%s"}]}\n' "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" >"$work/rp/build/archive.json"
+  /bin/rm -rf "$work/ar/go"; }
+gorepo; ff_go_before=$(treehash "$work/rp"); gorun "$gofx"
+go_same=1; for f_ in $gofiles; do cmp -s "$work/ar/go/$f_" "$gofx/dl/$f_" || go_same=0; done
+t "AC33" "Go archive: a recipe-pinned Go tarball that the archive lacks is fetched, checked against the recipe's sha256 and stored: exit 0, both files archived byte for byte" bash -c "test \"\$(cat '$work/rc')\" = 0 && test $go_same = 1"
+t "AC33" "Go archive: the fetch names the go.dev file and the pull request moves the pointer even though no other file changed (one gh pr create)" bash -c "grep -q 'go.dev/dl/go1.27.2' '$CALLS' && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1"
+gorepo; gorun "$work/no-such-dir"
+t "AC33" "Go archive: a tarball that is not served stops the job (exit 1) naming the file, nothing stored" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'go1.27.2' '$work/log' && ! test -d '$work/ar/go'"
+rm -rf "$work/go-bad"; mkdir -p "$work/go-bad/dl"; for f in $gofiles; do printf 'not the pinned bytes' >"$work/go-bad/dl/$f"; done
+gorepo; gorun "$work/go-bad"
+t "AC33" "Go archive: a fetched tarball whose sha256 differs from the recipe's pin stops the job (exit 1, names the file and the checksum), nothing stored" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'sha256' '$work/log' && grep -q 'go1.27.2' '$work/log' && ! test -d '$work/ar/go'"
+mkrepo; for f in $gofiles; do printf 'damaged' >"$work/ar/go/$f"; done; gorun "$gofx"
+t "AC33" "Go archive: an archived tarball whose sha256 is not the pin stops the job (exit 1), names the file and says to delete it, and nothing is fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'go1.27.2' '$work/log' && grep -qi 'delete' '$work/log' && ! grep -q 'go.dev/dl' '$CALLS'"
+mkrepo; gtree_before=$(treehash "$work/ar" "$work/rp"); gorun "$gofx"; gtree_after=$(treehash "$work/ar" "$work/rp")
+t "AC33" "Go archive: with every pinned tarball archived and correct, nothing is fetched from go.dev and no pull request is opened (exit 0)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q 'go.dev/dl' '$CALLS' && ! grep -q '^gh pr create' '$CALLS'"
+t "AC33" "Go archive: the archive and the repository are byte for byte unchanged after a run that has nothing to add" test "$gtree_before" = "$gtree_after"
+mkrepo; printf 'older' >"$work/ar/go/go1.26.0.linux-amd64.tar.gz"; gorun "$gofx"
+t "AC33" "Go archive: an older Go tarball that no recipe pins any more is kept, untouched" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(cat '$work/ar/go/go1.26.0.linux-amd64.tar.gz')\" = older"
+gorepo; ( cd "$work/rp" && python3 - <<'P'
+import re
+p = "build/melange.yaml"; s = open(p).read()
+s2 = re.sub(r"https://go\.dev/dl/(go[0-9.]+\.linux-amd64\.tar\.gz)", r"https://evil.example/dl/\1", s, count=1); assert s2 != s
+open(p, "w").write(s2)
+P
+); gorun "$gofx"
+t "AC33" "Go archive: a recipe fetch that is not https://go.dev/dl/<go file> is refused (exit non-zero), nothing is fetched from there" bash -c "test \"\$(cat '$work/rc')\" != 0 && ! grep -q 'evil.example' '$CALLS' && ! test -d '$work/ar/go'"
+gorepo; ( cd "$work/rp" && python3 - <<'P'
+import re
+p = "build/melange.yaml"; s = open(p).read()
+s2 = re.sub(r"expected-sha256: [0-9a-f]{64}", "expected-sha256: nothex", s, count=1); assert s2 != s
+open(p, "w").write(s2)
+P
+); gorun "$gofx"
+t "AC33" "Go archive: a recipe whose Go fetch has no valid sha256 pin stops the job (exit 2, names the recipe), nothing fetched" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -q 'melange.yaml' '$work/log' && ! grep -q 'go.dev/dl' '$CALLS'"
+gorepo; ( cd "$work/rp" && python3 - <<'P'
+import re
+p = "build/melange-fips.yaml"; s = open(p).read()
+s2 = re.sub(r"expected-sha256: [0-9a-f]{64}", "expected-sha256: " + "a" * 64, s, count=1); assert s2 != s
+open(p, "w").write(s2)
+P
+); gorun "$gofx"
+t "AC33" "Go archive: the two recipes pinning the same file with two different sha256 values stop the job (exit 1, names the file), nothing fetched" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'go1.27.2' '$work/log' && ! grep -q 'go.dev/dl' '$CALLS'"
+gorepo; ln -s "$work/no-such-go-target" "$work/ar/go"; gorun "$gofx"
+t "AC33" "Go archive: a go entry that is a symlink stops the job (exit 1)" bash -c "test \"\$(cat '$work/rc')\" = 1"
+gorepo; run_s4 env GH_STUB_OPEN="refresh/00000000" STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$gofx" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC33" "Go archive: while an earlier refresh pull request is open, a missing Go tarball waits (exit 0, nothing fetched from go.dev, nothing changed)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q 'go.dev/dl' '$CALLS' && ! test -d '$work/ar/go'"
+# ---- REQ-REFRESH-001-AC34: the pull request's commit is made through the API so that GitHub signs it, and no pull request is opened for a commit that is not verified ------------
+# main's ruleset requires signed commits; a commit made by `git commit` in the job is unsigned and the pull request can never merge. The job pushes the branch at the commit it
+# started from (nothing new to sign), creates the one commit with createCommitOnBranch (the App token's commit is signed by GitHub), asks the API whether that commit is
+# verified, and only then opens the pull request; otherwise it deletes the branch, opens nothing and exits 1.
+sgrun() {   # a refresh that changes files (the new tzdata) and opens its pull request directly; $1.. = extra env
+  mkrepo; run_s4 env "$@" STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$work/ln.json" STUB_LOCK_FIPS="$work/ln.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; }
+rm -f "$CALLS.graphql"
+sgrun GH_STUB_VERIFIED=true
+t "AC34" "signed commit: the pull request's commit is made through the API (one createCommitOnBranch call), not by git commit, and a verified commit leads to exactly one gh pr create" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'createCommitOnBranch' '$CALLS.graphql' && ! grep -Eq '^git( -C [^ ]+)? commit' '$CALLS' && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1"
+t "AC34" "signed commit: the commit's files are the working tree's, byte for byte, and its parent is the commit the job started from" python3 - "$CALLS.graphql" "$work/rp" <<'PY'
+import base64, json, subprocess, sys
+d = json.load(open(sys.argv[1]))["variables"]["input"]
+adds = d["fileChanges"]["additions"]
+assert adds and not d["fileChanges"].get("deletions"), adds
+for a in adds:
+    assert base64.b64decode(a["contents"]) == open(sys.argv[2] + "/" + a["path"], "rb").read(), a["path"]
+assert d["expectedHeadOid"] == "cafe0123", d["expectedHeadOid"]      # the commit the stubbed git reports as the job's start
+assert d["branch"]["branchName"].startswith("refresh/"), d["branch"]
+assert d["message"]["headline"], d["message"]
+PY
+rm -f "$CALLS.graphql"
+sgrun GH_STUB_VERIFIED=false
+t "AC34" "signed commit: a commit the API reports as not verified opens NO pull request, deletes the branch it pushed and fails the job (exit 1, says not verified)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete|^git( -C [^ ]+)? push .*:refs/heads/refresh/' '$CALLS' && grep -qi 'not verified' '$work/log'"
+sgrun GH_STUB_API_FAIL=1
+t "AC34" "signed commit: when the API cannot create the commit no pull request is opened, the branch is deleted and the job fails (exit 1)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete|^git( -C [^ ]+)? push .*:refs/heads/refresh/' '$CALLS'"
+sgrun GH_STUB_VERIFIED=true
+t "AC34" "signed commit: nothing is committed or pushed to main, and the only branch pushed is the refresh/ branch at the commit the job started from" bash -c "! grep -Eq '^git( -C [^ ]+)? push .*(main|HEAD:main)' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*refresh/' '$CALLS'"
+t "AC34" "signed commit: the verification is asked for the commit the API returned (the oid in its reply)" bash -c "grep -Eq '^gh api repos/.*/commits/abcdef0123456789' '$CALLS'"
 # ---- round 1 of the second review (both seats named these; the fixes are tests-first) ----------------------------------------------------------
 # AC21: locks that disagree ONLY in the package identity checksum or the signature checksum are refused like a data-checksum disagreement
 for fld in identity signature; do
@@ -1266,7 +1470,52 @@ t "AC29" "refresh --plan-dir: the plan names a refresh/ branch and the changed l
 cp -R "$work/ar" "$work/ar-keep"
 run_s2 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
 t "AC29" "open-pr: exactly one pull request is opened, from a refresh/ branch, never merged, and nothing is pushed to main" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -q refresh && ! grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -Eq '( |:|/)main( |\$)' && ! grep -Eq '^gh pr (merge|review)|--admin|--auto' '$CALLS'"
-t "AC29" "open-pr: the pull request carries build/archive.json, a valid pointer naming the stored digest and the archive's files" bash -c "python3 '$rfd/rfcopy/bin/archive-verify.py' verify --pointer '$work/rp/build/archive.json' --dir '$work/ar' --pushed-digest '$DIGEST_X' && grep -Eq '^git( -C [^ ]+)? add .*build/archive.json' '$CALLS'"
+t "AC29" "open-pr: the pull request carries build/archive.json, a valid pointer naming the stored digest and the archive's files" bash -c "python3 '$rfd/rfcopy/bin/archive-verify.py' verify --pointer '$work/rp/build/archive.json' --dir '$work/ar' --pushed-digest '$DIGEST_X' && $GHPATHS | grep -q '^build/archive.json\$'"
+# AC34, round 1 of the seats: a plan that already names build/archive.json (the Go backfill: the refresh plans the pointer, open-pr adds it again) sends each path once; a symlink
+# among the planned paths is refused; a failed branch deletion is reported; the working tree is put back to the start commit after the API commit
+rm -rf "$work/plan-dup"; cp -R "$work/plan" "$work/plan-dup"; for pd_ in "$work/plan-dup"/*/; do printf 'build/archive.json\n' >>"${pd_}paths"; done
+rm -f "$CALLS.graphql"; run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-dup" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit, staged: a plan that already names build/archive.json sends it once (the API refuses duplicate paths): every path of the commit is unique and the pointer is in it" python3 - "$CALLS.graphql" <<'PY'
+import json, sys
+paths = [a["path"] for a in json.load(open(sys.argv[1]))["variables"]["input"]["fileChanges"]["additions"]]
+assert len(paths) == len(set(paths)) and "build/archive.json" in paths, paths
+PY
+rm -rf "$work/plan-link"; cp -R "$work/plan" "$work/plan-link"; ln -sf locks/melange.lock "$work/rp/build/link-to-lock"; for pd_ in "$work/plan-link"/*/; do printf 'build/link-to-lock\n' >>"${pd_}paths"; done
+run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-link" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit: a planned path that is a symlink is refused before any branch is pushed (no pull request, exit 1, nothing pushed)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && ! grep -Eq '^git( -C [^ ]+)? push ' '$CALLS'"
+rm -f "$work/rp/build/link-to-lock"
+sgrun GH_STUB_VERIFIED=false GIT_STUB_DELETE_FAIL=1
+t "AC34" "signed commit: a branch that cannot be deleted after a refusal is REPORTED (the log names the branch and says the deletion failed), the job still fails (exit 1) and opens no pull request" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && grep -Eqi 'could not delete the branch refresh/' '$work/log'"
+# round 2 of the seats: validate the paths BEFORE any branch is pushed and restore only validated paths (a rejected .git/config or an outside file is never removed); a TERM right after
+# the push removes the branch; a failed restoration fails the job
+rm -rf "$work/plan-meta"; cp -R "$work/plan" "$work/plan-meta"; mkdir -p "$work/rp/.git"; printf 'keep me\n' >"$work/rp/.git/config"; for pd_ in "$work/plan-meta"/*/; do printf '.git/config\n' >>"${pd_}paths"; done
+run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-meta" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit: a planned path inside .git is refused BEFORE any branch is pushed (exit 1, no pull request, no push) and the file is untouched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && ! grep -Eq '^git( -C [^ ]+)? push ' '$CALLS' && test \"\$(cat '$work/rp/.git/config')\" = 'keep me'"
+rm -rf "$work/plan-out" "$work/outside-dir"; cp -R "$work/plan" "$work/plan-out"; mkdir -p "$work/outside-dir"; printf 'outside\n' >"$work/outside-dir/f"; ln -sfn "$work/outside-dir" "$work/rp/build/outlink"; for pd_ in "$work/plan-out"/*/; do printf 'build/outlink/f\n' >>"${pd_}paths"; done
+run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-out" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit: a planned path that resolves outside the repository through a linked directory is refused before any push (exit 1, no pull request) and the outside file is untouched" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^gh pr create' '$CALLS' && ! grep -Eq '^git( -C [^ ]+)? push ' '$CALLS' && test \"\$(cat '$work/outside-dir/f')\" = outside"
+rm -f "$work/rp/build/outlink"; rm -rf "$work/rp/.git"
+sgrun GH_STUB_VERIFIED=true GIT_STUB_PUSH_SIGNAL=1
+t "AC34" "signed commit: a TERM that arrives right after the push removes the pushed branch (the branch is registered before the push), opens no pull request and ends the job non-zero" bash -c "test \"\$(cat '$work/rc')\" != 0 && ! grep -q '^gh pr create' '$CALLS' && grep -Eq '^git( -C [^ ]+)? push .*--delete' '$CALLS'"
+sgrun GH_STUB_VERIFIED=true GIT_STUB_CHECKOUT_FAIL=1
+t "AC34" "signed commit: a restoration that fails fails the job (exit non-zero, says which file) although the pull request was created" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'could not restore' '$work/log'"
+# round 3 of the seats: a signal after the pull request was created must not delete its branch; ./.git is metadata too; a failed removal of an untracked planned file fails the job
+sgrun GH_STUB_VERIFIED=true GH_STUB_CREATE_SIGNAL=1 GH_STUB_HEAD_OPEN=1
+t "AC34" "signed commit: a TERM right after gh pr create, when the branch has an open pull request, does NOT delete the branch (it asked for the branch's open pull requests first) and says it was kept" bash -c "! grep -Eq '^git( -C [^ ]+)? push .*--delete' '$CALLS' && grep -q '^gh pr create' '$CALLS' && grep -Eqi 'kept|has an open pull request' '$work/log'"
+sgrun GH_STUB_VERIFIED=true GH_STUB_CREATE_SIGNAL=1
+t "AC34" "signed commit: the same TERM when the branch has NO open pull request deletes the branch" bash -c "grep -Eq '^git( -C [^ ]+)? push .*--delete' '$CALLS'"
+rm -rf "$work/plan-dot"; cp -R "$work/plan" "$work/plan-dot"; mkdir -p "$work/rp/.git"; printf 'keep me\n' >"$work/rp/.git/config"; for pd_ in "$work/plan-dot"/*/; do printf './.git/config\n' >>"${pd_}paths"; done
+run_s4 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan-dot" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC34" "signed commit: ./.git/config is refused like .git/config (before any push, the file untouched)" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -Eq '^git( -C [^ ]+)? push ' '$CALLS' && test \"\$(cat '$work/rp/.git/config')\" = 'keep me'"
+rm -rf "$work/rp/.git"
+rm -rf "$work/ro"; mkdir -p "$work/ro/plan/1-refresh"; mkrepo; mkdir -p "$work/rp/rodir"; printf 'x\n' >"$work/rp/rodir/new.txt"; chmod 555 "$work/rp/rodir"
+printf 'refresh/ro0000001\n' >"$work/ro/plan/1-refresh/branch"; printf 'Refresh\n' >"$work/ro/plan/1-refresh/title"; printf 'body\n' >"$work/ro/plan/1-refresh/body"; printf 'rodir/new.txt\n' >"$work/ro/plan/1-refresh/paths"
+run_s4 env GIT_STUB_UNTRACKED=1 "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/ro/plan" --repo-dir "$work/rp"
+t "AC34" "signed commit: when removing an untracked planned file fails the job fails (non-zero) and names the file" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -q 'could not remove rodir/new.txt' '$work/log'"
+chmod 755 "$work/rp/rodir" 2>/dev/null; rm -rf "$work/rp/rodir"
+t "AC34" "the script a workflow step runs holds no inline interpreter code (python3 -c): the action-pin checker refuses it, and main's CI went red on it" bash -c "! grep -Eq 'python3 (-[A-Za-z]+ )*-c ' '$RF_PROD'"
+sgrun GH_STUB_VERIFIED=true
+t "AC34" "signed commit: after the API commit the working tree is put back to the start commit (the files the job edited are restored, so a later invocation in the same checkout sees the start state)" bash -c "grep -Eq '^git( -C [^ ]+)? checkout -q cafe0123 -- ' '$CALLS'"
 mkrepo; rm -rf "$work/plan"
 run_s2 "${rfn[@]}" "$RF" refresh --plan-dir "$work/plan" --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 run_s2 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp"
