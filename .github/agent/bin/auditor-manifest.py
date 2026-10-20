@@ -59,7 +59,7 @@ def _module(source_dir):
 # an Alpine image while trivy/snyk saw the apk layer, sinking the quorum on every Alpine base.
 _OS_PKG_TYPES = ("deb", "apk", "rpm")
 _OS_PURL_PREFIXES = ("pkg:deb", "pkg:apk", "pkg:rpm")
-_OS_OSV_ECOSYSTEMS = ("debian", "ubuntu", "alpine", "rhel", "red hat", "rocky", "almalinux", "suse", "opensuse")
+_OS_OSV_ECOSYSTEMS = ("debian", "ubuntu", "alpine", "wolfi", "chainguard", "rhel", "red hat", "rocky", "almalinux", "suse", "opensuse")
 
 
 def _is_os_pkg(a):
