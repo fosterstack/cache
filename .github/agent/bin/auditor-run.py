@@ -975,10 +975,7 @@ def _max_sev(findings):
 
 
 def _nofix_reason(findings):
-    for f in findings:
-        st = (f.get("extra") or {}).get("status") or (f.get("extra") or {}).get("fix_state")
-        if st and str(st).lower() in ("will_not_fix", "wont-fix", "end_of_life", "not-fixed", "affected"):
-            return str(st)
+    """Why a finding has no fix. The panel's verdict carries no fix-state words (a fix is a version or absent), so it is the one reason."""
     return "no upstream fix"
 
 

@@ -22,8 +22,6 @@ def _load(path):
 
 def _finding(scanner, fid, purl, aliases=(), package=None, fixed_version=None,
              severity=None, extra=None):
-    if not fid:
-        raise ParseError("%s: finding with no id" % scanner)
     return {
         "scanner": scanner,
         "finding_id": fid,
