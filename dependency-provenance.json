@@ -47,14 +47,14 @@
         "included": true,
         "log": "sum.golang.org"
       },
-      "go_sum_hash": "h1:JnJkREXzWxUdCuPFpIWZiPispT9xVV59uiuyR2bPlnU=",
+      "go_sum_hash": "h1:cDtW1TcFsMi1RJc8khwCKB4VhzwV04aKqbYtNOXuiK0=",
       "license": "Apache-2.0",
       "origin": {
-        "tag": "v1.24.1",
+        "tag": "v1.25.0",
         "url": "https://github.com/prometheus/client_golang"
       },
       "path": "github.com/prometheus/client_golang",
-      "version": "v1.24.1"
+      "version": "v1.25.0"
     },
     {
       "checksum_log": {
@@ -75,28 +75,28 @@
         "included": true,
         "log": "sum.golang.org"
       },
-      "go_sum_hash": "h1:1HvjP4D5oL3t8RsPlwxA9onvvStjtIHYE5XuuwOi/PY=",
+      "go_sum_hash": "h1:tAYsE+sPJxIncDAobm4H5aQjmox9ZxEIIqPbiffa8G4=",
       "license": "Apache-2.0",
       "origin": {
-        "tag": "v0.70.1",
+        "tag": "v0.72.0",
         "url": "https://github.com/prometheus/common"
       },
       "path": "github.com/prometheus/common",
-      "version": "v0.70.1"
+      "version": "v0.72.0"
     },
     {
       "checksum_log": {
         "included": true,
         "log": "sum.golang.org"
       },
-      "go_sum_hash": "h1:GljZCt+zSTS+NZq88cyQ1LjZ+RCHp3uVuabBWA5+OJI=",
+      "go_sum_hash": "h1:6q9+/JL9IKAPbCmBrv9n5O5Ty3NKnciV5X7YGw0oics=",
       "license": "Apache-2.0",
       "origin": {
-        "tag": "v0.21.1",
+        "tag": "v0.22.0",
         "url": "https://github.com/prometheus/procfs"
       },
       "path": "github.com/prometheus/procfs",
-      "version": "v0.21.1"
+      "version": "v0.22.0"
     },
     {
       "checksum_log": {
@@ -117,14 +117,14 @@
         "included": true,
         "log": "sum.golang.org"
       },
-      "go_sum_hash": "h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=",
+      "go_sum_hash": "h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=",
       "license": "BSD-3-Clause",
       "origin": {
-        "tag": "v0.47.0",
+        "tag": "v0.48.0",
         "url": "https://go.googlesource.com/sys"
       },
       "path": "golang.org/x/sys",
-      "version": "v0.47.0"
+      "version": "v0.48.0"
     },
     {
       "checksum_log": {
