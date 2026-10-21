@@ -289,6 +289,8 @@ def tally(root, vexidx):
                     have["known_exploited"] = True
                 if purl and purl not in f["purls"]:
                     f["purls"].append(purl)   # the exact package identity, for a VEX statement scoped to it
+                if purl and "purl" not in have:
+                    have["purl"] = purl       # and THIS scanner's own (handoff 0601): absent when it reported none, never another scanner's
     for img, st in images.items():
         st["did_not_run"].sort(); st["ran"].sort()
         st["counts_for_day"] = len(st["ran"]) >= QUORUM

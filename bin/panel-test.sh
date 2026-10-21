@@ -136,6 +136,10 @@ google(os.path.join(r, "google", "debug-amd64"), BASE, [("CVE-2023-4911", "libc-
 v = judge(r)
 check("one finding across scanners' namings (distro namespace, escaped version, v-prefix, id case) -> seen by 2",
       sorted((f["id"], len(f["seen_by"])) for f in v["findings"]) == [("CVE-2023-4911", 2), ("GO-2099-0001", 2)], [(f["id"], f["package"], f["seen_by"]) for f in v["findings"]])
+lib = [f for f in v["findings"] if f["id"] == "CVE-2023-4911"][0]
+check("each scanner keeps its OWN package URL in its details; a scanner that reported none has none (handoff 0601: never borrowed)",
+      lib["details"]["grype"].get("purl") == "pkg:deb/debian/libc-bin@2.36-9%2Bdeb12u1?arch=amd64&distro=debian-12" and "purl" not in lib["details"]["google"]
+      and lib["purls"] == [lib["details"]["grype"]["purl"]], (lib["details"], lib["purls"]))
 r = tree({("scout", "fips-arm64"): [("CVE-2099-0002", "tzdata", "2026c")]}); v = judge(r)
 f = v["findings"][0]
 check("a unique finding never reaches the issue; it is listed for the auditor, and alone does not fail the run",
@@ -249,8 +253,8 @@ W(os.path.join(r, "google", "production-amd64"), "vulns.json", [{"noteName": "pr
   "severity": "CRITICAL", "packageIssue": [{"affectedPackage": "tzdata", "affectedVersion": {"fullName": "2026c"}, "fixedVersion": {"fullName": "2026d"}}]}}])
 v = judge(r)
 f = [x for x in v["findings"] if x["id"] == "CVE-2099-0200"][0]
-check("the verdict finding carries a details record per reporting scanner (Grype high, Google critical + fix), nothing for a scanner that did not report it",
-      f["details"] == {"grype": {"severity": "high"}, "google": {"severity": "critical", "fixed_version": "2026d"}}, f.get("details"))
+check("the verdict finding carries a details record per reporting scanner (Grype high, Google critical + fix), nothing for a scanner that did not report it; each scanner's own package URL where it reported one",
+      f["details"] == {"grype": {"severity": "high", "purl": "pkg:generic/tzdata@2026c"}, "google": {"severity": "critical", "fixed_version": "2026d"}}, f.get("details"))
 def rep(order):
     rr = tree({("grype", "production-amd64"): [("CVE-2099-0300", "tzdata", "2026c")]})
     comps = [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}] + [{"bom-ref": "p%d" % i, "name": "p%d" % i, "version": "1", "purl": "pkg:generic/p%d@1" % i} for i in range(3)]

@@ -112,7 +112,7 @@ def load_panel_verdict(path):
 _TOP_KEYS = frozenset(("images", "not_counted", "scanner_failures", "findings", "unique", "vex_covered", "issue", "exit"))
 _IMAGE_KEYS = frozenset(("counts", "did_not_run", "ran", "counts_for_day"))
 _FINDING_KEYS = frozenset(("image", "id", "package", "version", "seen_by", "of", "unique", "status", "purls", "details"))
-_DETAIL_KEYS = frozenset(("severity", "fixed_version", "aliases", "known_exploited"))
+_DETAIL_KEYS = frozenset(("severity", "fixed_version", "aliases", "known_exploited", "purl"))
 _SEVERITIES = ("negligible", "low", "medium", "high", "critical")       # bin/panel.py SEVERITIES, in rising order
 _VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
 _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")            # no control characters, no backtick (the issue text quotes with it)
@@ -214,8 +214,13 @@ def _validate_panel_verdict(d):
             if (rec.get("severity", "negligible") not in _SEVERITIES or not isinstance(rec.get("severity", ""), str)
                     or ("fixed_version" in rec and not (isinstance(rec["fixed_version"], str) and rec["fixed_version"] and _TEXT.fullmatch(rec["fixed_version"])))
                     or not isinstance(al, list) or len(set(map(str, al))) != len(al) or not all(isinstance(a, str) and _ID.fullmatch(a) for a in al)
-                    or ("aliases" in rec and not al) or not isinstance(rec.get("known_exploited", True), bool)):
+                    or ("aliases" in rec and not al) or not isinstance(rec.get("known_exploited", True), bool)
+                    or ("purl" in rec and not (isinstance(rec["purl"], str) and _PURL.fullmatch(rec["purl"])))):
                 raise ParseError("panel verdict: finding %s on %s has a malformed value in %s's details" % (f["id"], f["image"], sc))
+            if "purl" in rec:                    # that scanner's own package URL names the package and version the finding names
+                name, ver = pm._purl_name_version(rec["purl"])
+                if not name or pm.key_of(f["image"], f["id"], name, ver)[2:] != pm.key_of(f["image"], f["id"], f["package"], f["version"])[2:]:
+                    raise ParseError("panel verdict: finding %s on %s: %s's package URL is for a different package or version" % (f["id"], f["image"], sc))
     keys = [pm.key_of(f["image"], f["id"], f["package"], f["version"]) for f in d["findings"]]
     if len(set(keys)) != len(keys):
         raise ParseError("panel verdict: two findings share one identity (image, CVE, package, version)")
@@ -275,14 +280,14 @@ def parse_panel(path, scanner):
     for f in d["findings"]:
         if scanner not in f["seen_by"]:
             continue
-        purl = (f.get("purls") or [None])[0] or "pkg:generic/%s@%s" % (f.get("package"), f.get("version"))
+        mine = f["details"].get(scanner, {})             # this scanner's own severity / fix / aliases / package URL for this image
+        purl = mine.get("purl") or "pkg:generic/%s@%s" % (f.get("package"), f.get("version"))     # never another scanner's package URL
         key = (f["id"], purl)
         rec = seen.get(key)
         if rec is None:
             rec = seen[key] = _finding(scanner, f["id"], purl, (), f.get("package"), None, None,
                                        {"images": [], "version": f.get("version"), "by_image": {}})
         rec["extra"]["images"].append(f["image"])
-        mine = f["details"].get(scanner, {})             # this scanner's own severity / fix / aliases for this image
         if mine.get("severity") and (rec["severity"] is None or _SEVERITIES.index(mine["severity"]) > _SEVERITIES.index(rec["severity"])):
             rec["severity"] = mine["severity"]           # the highest across images; the scanner's words, normalised
         if mine.get("fixed_version") and not rec["fixed_version"]:
