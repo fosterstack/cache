@@ -414,7 +414,7 @@ The startup log line shall announce version, listen address, data directory, siz
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-004-AC1 | Given a starting server; when the first log line is emitted; then it contains version, addr, data_dir, max_bytes, auth, and fips140 fields | component |  | approved | none mapped |
+| REQ-OBS-004-AC1 | Given a starting server; when the startup log record is emitted; then it contains version, addr, data_dir, max_bytes, auth, and fips140 fields | component |  | approved | none mapped |
 
 ### REQ-OBS-005 — No mutable admin surface
 
@@ -830,7 +830,7 @@ Our published OpenVEX file shall be the only exception for all four scanners: Gr
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-004-AC1 | Given the four panel scanners; when they scan; then no scanner-specific ignore list and no suppression configured in any vendor account applies; the published OpenVEX file is the only exception | ci-workflow |  | approved | 1 item(s) |
-| REQ-SCAN-004-AC2 | Given a finding the VEX covers and one it does not, for each of the four scanners; when the panel judges them; then Grype and Docker Scout are given the VEX file directly; Inspector's and Google's results are filtered against it by our pipeline; the covered finding is dropped and the uncovered one remains | unit |  | approved | 3 item(s) |
+| REQ-SCAN-004-AC2 | Given a finding the VEX covers and one it does not, for each of the four scanners; when the panel judges them; then Grype and Docker Scout are given the VEX file directly; Inspector's and Google's results are filtered against it by our pipeline; the covered finding is dropped and the uncovered one remains | unit |  | approved | 4 item(s) |
 
 ### REQ-SCAN-005 — Reporting
 
@@ -1186,7 +1186,7 @@ The Rebuild stage shall be one workflow file and one identity (the same two-job 
 
 ### REQ-AUD-018 — The auditor layout and coverage gate; its second review is enforced outside the repository
 
-The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same 100% coverage gate as the Go, and let no change to the auditor merge without the independent second review, which the private review tooling enforces before merge; this repository judges no review record.
+The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same 100% coverage gate as the Go (except the listed exclusions), and let no change to the auditor merge without the independent second review, which the private review tooling enforces before merge; this repository judges no review record.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: auditor directory bin/auditor-layout-check.py; auditor directory tests/coverage-gate.sh; .github/workflows/agent-review-gate.yml; .github/workflows/ci.yml*
 
@@ -1195,7 +1195,7 @@ The auditor shall keep everything auditor-related in the auditor directory, hold
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-AUD-018-AC1 | Given any tracked file in the repository; when the layout check (auditor-layout-check.py, run by the allowlist job in ci.yml) reads the file list; then All auditor code, prompts, fixtures and tests live under the auditor directory and nowhere else; the only auditor-related files outside it are the workflow files (.github/workflows/), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml, which name test paths as metadata; and (amendment, owner Oct 3) the patch-release classifier bin/patch-decide.py and its test bin/patch-decide-test.sh, which name the auditor directory as data and hold no auditor code. | ci-workflow |  | approved | 2 item(s) |
-| REQ-AUD-018-AC2 | Given the Python in the auditor directory; when the required coverage job runs the auditor coverage gate (coverage-gate.sh); then The Python under the auditor directory is held to the 100% coverage gate in CI, the same as the Go. | ci-workflow |  | approved | 3 item(s) |
+| REQ-AUD-018-AC2 | Given the Python in the auditor directory; when the required coverage job runs the auditor coverage gate (coverage-gate.sh); then The Python under the auditor directory is held to the 100% coverage gate in CI, except the listed exclusions, the same as the Go. | ci-workflow |  | approved | 3 item(s) |
 | REQ-AUD-018-AC3 | Given a pull request that changes anything under the auditor directory; when the pull request is merged; then Every change under the auditor directory clears the independent second review's stop rule before merge. | inspection |  | approved | 2 item(s) |
 
 ### REQ-AUD-019 — The auditor unit tests touch no real system path

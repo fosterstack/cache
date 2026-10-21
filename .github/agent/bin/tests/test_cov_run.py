@@ -389,6 +389,16 @@ class Dispose(Base):
 
 # ---------------------------------------------------------------- merge / consolidate fallbacks
 
+class PurlVersion(unittest.TestCase):
+    def test_a_purl_version_is_decoded_and_stops_at_the_subpath(self):
+        # one version, however a scanner spells it: the disposition grouping must not split on %2B vs +
+        self.assertEqual(R._ver_from_purl("pkg:deb/debian/openssl@3.0.1%2Bdeb12u1?arch=amd64"), "3.0.1+deb12u1")
+        self.assertEqual(R._ver_from_purl("pkg:deb/debian/openssl@3.0.1+deb12u1"), "3.0.1+deb12u1")
+        self.assertEqual(R._ver_from_purl("pkg:golang/x/y@v1.2.3#sub/path"), "v1.2.3")
+        self.assertIsNone(R._ver_from_purl("pkg:generic/x"))
+        self.assertIsNone(R._ver_from_purl(None))
+
+
 class MergeConsolidate(Base):
     def _stmt(self, cve, purls, status="affected"):
         return R.vex.doc(cve, status, "2026-09-22T00:00:00Z", action="x", subcomponents=purls)["statements"][0]
@@ -1161,6 +1171,14 @@ class Run(Base):
                                             adjudicator="/x/real-adjudicator.py", ask=mock.Mock(side_effect=ask))
         self.assertEqual(cls[c]["section"], 4)
         self.assertEqual(cls[c]["action"], "owner-decision issue would open (dry run)")
+
+    def test_one_version_spelled_two_ways_is_one_disposition(self):
+        # two scanners' own package URLs spell one version differently (%2B vs +): one row, both lineages, no unique-lineage suspicion
+        c = "CVE-2099-65"
+        g = self.grp(F(c, "pkg:deb/debian/libq@3.0.1%2Bdeb12u1", "libq", fixed="3.0.2", scanner="grype"),
+                     F(c, "pkg:deb/debian/libq@3.0.1+deb12u1", "libq", fixed="3.0.2", scanner="scout"))
+        _complete, _printed, _o, cls, whole = self.go(g)
+        self.assertEqual([f["id"] for f in whole["findings"]].count(c), 1)
 
     def test_dry_section3_with_nothing_to_open_is_unactioned(self):
         c = "CVE-2099-64"

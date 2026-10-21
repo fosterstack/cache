@@ -167,9 +167,10 @@ for im in sorted(P.panel_images()):
     ran = sorted(s for s in exp if s not in bad)
     images[im] = {"counts": {s: 10 for s in ran}, "did_not_run": sorted(bad), "ran": ran, "counts_for_day": len(ran) >= 3}
 def f(im, vid, pkg, ver, seen, details):
+    purl = "pkg:deb/debian/%s@%s?arch=%s&distro=debian-12.0" % (pkg, ver, "arm64" if pkg == "coreutils" else "amd64")    # the known-defect log keys on these exact purls
+    details = {s_: dict(d_, purl=purl) for s_, d_ in details.items()}                                                      # each scanner's own package URL (handoff 0601)
     return {"image": im, "id": vid, "package": pkg, "version": ver, "seen_by": sorted(seen), "of": len(images[im]["ran"]),
-            "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report",
-            "purls": ["pkg:deb/debian/%s@%s?arch=%s&distro=debian-12.0" % (pkg, ver, "arm64" if pkg == "coreutils" else "amd64")], "details": details}   # the known-defect log keys on these exact purls
+            "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report", "purls": [purl], "details": details}
 fs = [f("production-amd64", "CVE-2016-2781", "coreutils", "9.1-1", ["grype", "inspector", "scout"], {"grype": {"severity": "low"}, "inspector": {"severity": "medium"}, "scout": {}}),
       f("production-amd64", "CVE-2011-3374", "apt", "2.6.1", ["grype", "inspector", "scout"], {"grype": {"severity": "high"}, "inspector": {"severity": "critical"}, "scout": {}})]
 if scenario == "multi":     # one finding the scanners rate alike, one seen by different numbers of scanners on two images
@@ -229,6 +230,7 @@ for mt in (json.load(open(gp)).get("matches") or [] if gp else []):
     sev = (v.get("severity") or "").lower()
     if sev in ("negligible", "low", "medium", "high", "critical"): det["severity"] = sev
     if (v.get("fix") or {}).get("state") == "fixed" and fixv: det["fixed_version"] = fixv[0]
+    if a.get("purl"): det["purl"] = a["purl"]                          # Grype's own package URL (handoff 0601)
     fs.append({"image": im, "id": v["id"], "package": name, "version": ver, "seen_by": ["grype"], "of": len(images[im]["ran"]), "unique": True,
                "status": "unique", "purls": [purl], "details": {"grype": det}})
 sp = (m.get("scanner_reports") or {}).get("snyk")                  # a second, Snyk-shaped report becomes Google's record of the same CVE
@@ -239,10 +241,11 @@ for v in (json.load(open(sp)).get("vulnerabilities") or [] if sp else []):
         if hit:
             f = hit[0]; f["seen_by"] = ["google", "grype"]; f["unique"] = False; f["status"] = "report"
             f["details"]["google"] = {"severity": sv} if sv in ("negligible", "low", "medium", "high", "critical") else {}
+            if v.get("purl"): f["details"]["google"]["purl"] = v["purl"]
         else:
             name, ver = v.get("packageName"), (v.get("version") or (pm._purl_name_version(v["purl"])[1] if v.get("purl") else "1.0") or "1.0")
             fs.append({"image": "production-amd64", "id": cid, "package": name, "version": ver, "seen_by": ["google"], "of": 4, "unique": True,
-                       "status": "unique", "purls": [v["purl"]] if v.get("purl") else [], "details": {"google": {}}})
+                       "status": "unique", "purls": [v["purl"]] if v.get("purl") else [], "details": {"google": ({"purl": v["purl"]} if v.get("purl") else {})}})
 reported = [f for f in fs if f["status"] == "report"]
 d = {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs, "vex_covered": [], "issue": pm.render_issue(reported),
      "unique": [f for f in fs if f["unique"]], "exit": 1 if reported else 0}
@@ -3686,6 +3689,8 @@ for im in sorted(imgs):
     images[im] = {"counts": {s: CNT[s] for s in ran}, "did_not_run": sorted(dnr), "ran": ran, "counts_for_day": len(ran) >= 3}
 def f(im, vid, pkg, ver, seen, purls):
     det = {s_: ({"severity": "high", "fixed_version": "9.9", "aliases": ["GHSA-aaaa-bbbb-cccc"]} if s_ == "grype" else ({"severity": "critical"} if s_ == "inspector" else {})) for s_ in seen}
+    for s_ in det:
+        if purls: det[s_]["purl"] = purls[0]                  # each scanner's own package URL (handoff 0601); none where the finding names none
     return {"image": im, "id": vid, "package": pkg, "version": ver, "seen_by": sorted(seen), "of": len(images[im]["ran"]),
             "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report", "purls": purls, "details": det}
 d = {"images": images,
