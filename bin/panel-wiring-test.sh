@@ -100,6 +100,8 @@ def run_block(block, mode, failing=None):
                    RUNNER_TEMP=t, GITHUB_STEP_SUMMARY=os.path.join(t, "sum"), GITHUB_RUN_ID="42")
         r = subprocess.run(["bash", "-e", "-c", block], cwd=ROOT, env=env, capture_output=True, text=True)
         return r.returncode, open(log).read().splitlines()
+if (d.get("concurrency") or {}).get("group") != "main-candidate-rescan" or str((d.get("concurrency") or {}).get("cancel-in-progress")).lower() != "false":
+    bad.append("the rescan is not serialized without cancelling (the scratch package prune and pushes must not interleave)")
 va = jobs.get("vex-attach")
 if not va:
     bad.append("no vex-attach job (the attestation children and the push to the scratch package)")
@@ -123,13 +125,18 @@ else:
         # the prune is strict, and confined to the scratch package: run it against a stub gh (approval condition b)
         GHSTUB = r"""#!/usr/bin/env bash
 { printf 'gh'; printf ' %q' "$@"; printf '\n'; } >> "$STUB_LOG"
+jqx=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && jqx="$a"; prev="$a"; done
 case "$*" in
-  *"--jq .visibility"*) echo private ;;
   *"-X DELETE"*) if [ "$STUB_MODE" = del-fail ]; then echo "HTTP 403" >&2; exit 1; fi; exit 0 ;;
   *"--paginate"*) case "$STUB_MODE" in
       list-404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
       list-fail) echo "gh: boom (HTTP 500)" >&2; exit 1 ;;
-      *) printf '11\n12\n' ;;
+      *) printf '[{"id":11,"updated_at":"2000-01-01T00:00:00Z"},{"id":12,"updated_at":"2999-01-01T00:00:00Z"},{"id":13,"updated_at":"2001-01-01T00:00:00Z"}]' | jq -r "$jqx" ;;
+    esac ;;
+  *"--jq .visibility"*) case "$STUB_MODE" in
+      pkg-404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      pkg-fail) echo "gh: boom (HTTP 500)" >&2; exit 1 ;;
+      *) echo private ;;
     esac ;;
 esac
 exit 0
@@ -148,15 +155,17 @@ exit 0
                 return r.returncode, open(log).read().splitlines()
         rc, calls = run_prune("ok")
         dels = [l for l in calls if "-X DELETE" in l]
-        if rc != 0 or len(dels) != 2 or not all("orgs/fosterstack/packages/container/cache-scout-probe/versions/" in l for l in dels):
-            bad.append("the prune does not delete the old versions of the scratch package: rc=%s %s" % (rc, calls))
+        want = ["orgs/fosterstack/packages/container/cache-scout-probe/versions/11", "orgs/fosterstack/packages/container/cache-scout-probe/versions/13"]
+        if rc != 0 or sorted(l.split()[-1] for l in dels) != want:
+            bad.append("the prune does not delete exactly the old versions (11, 13) and keep the fresh one (12): rc=%s %s" % (rc, calls))
         if any("packages/container/cache-scout-probe" not in l for l in calls if "api" in l):
             bad.append("the prune reaches a package other than the scratch package")
-        rc, calls = run_prune("list-404")
+        rc, calls = run_prune("pkg-404")
         if rc != 0 or any("-X DELETE" in l for l in calls):
             bad.append("the prune treats a missing package as an error or deletes something (rc=%s)" % rc)
-        if run_prune("list-fail")[0] == 0:
-            bad.append("the prune goes green when the version listing fails")
+        for mode in ("pkg-fail", "list-fail", "list-404"):
+            if run_prune(mode)[0] == 0:
+                bad.append("the prune goes green when the %s lookup fails" % mode)
         rc, calls = run_prune("del-fail")
         if rc == 0 or len([l for l in calls if "-X DELETE" in l]) != 2:
             bad.append("the prune goes green when a delete fails, or stops at the first failure (rc=%s)" % rc)
@@ -434,6 +443,10 @@ case_ prune-gone              bad "$J['vex-attach']['steps'] = [s for s in $J['v
 case_ prune-other-package     bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('packages/container/cache-scout-probe', 'packages/container/cache')"
 case_ prune-forever           bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('14 days ago', '3650 days ago')"
 case_ prune-list-masked       bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('exit 1\nfi\nn=0', 'ids=\"\"\nfi\nn=0')"
+case_ prune-filter-gone       bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('select(.updated_at < ', 'select(true or ')"
+case_ prune-filter-reversed   bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('.updated_at < ', '.updated_at > ')"
+case_ prune-404-anywhere      bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('if ! ids=\$(', 'if false; ids=\$(')"
+case_ rescan-concurrent       bad "d.pop('concurrency', None)"
 case_ prune-delete-soft       bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('[ \"\${failed}\" -eq 0 ] ||', 'true ||')"
 case_ prune-after-pushes      bad "st = $J['vex-attach']['steps']; k = [i for i, x in enumerate(st) if 'prune' in (x.get('name') or '')][0]; st.append(st.pop(k))"
 case_ fixture-extra-tag       bad "s = [s for s in $J['vex-attach']['steps'] if 'self-check fixtures' in (s.get('name') or '')][0]; s['run'] = s['run'] + '\nskopeo copy --all oci:/tmp/layout/fixture docker://ghcr.io/fosterstack/cache-scout-probe:selfcheck-docker-1\n'"

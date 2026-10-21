@@ -20,6 +20,11 @@ on:
 permissions:
   contents: read
 
+# One rescan at a time, none cancelled: the scratch package's prune and pushes are not safe to interleave.
+concurrency:
+  group: main-candidate-rescan
+  cancel-in-progress: false
+
 jobs:
   build:
     uses: ./.github/workflows/stage-build.yml
@@ -82,14 +87,16 @@ jobs:
           set -uo pipefail
           cutoff=$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-14d +%Y-%m-%dT%H:%M:%SZ)   # GNU date on the runner, BSD date on a laptop
           pkg="orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/cache-scout-probe"
-          vis=$(gh api "${pkg}" --jq .visibility 2>/dev/null || echo unknown)
-          echo "== the scratch package ghcr.io/fosterstack/cache-scout-probe: visibility ${vis}; keeping versions updated since ${cutoff}" | tee -a "$GITHUB_STEP_SUMMARY"
-          if ids=$(gh api --paginate "${pkg}/versions?per_page=100" --jq ".[] | select(.updated_at < \"${cutoff}\") | .id" 2>"$RUNNER_TEMP/prune.err"); then
-            :
+          # Only the package's own lookup may say "none yet" (HTTP 404); once it exists, any listing failure, a 404 included, fails the job.
+          if vis=$(gh api "${pkg}" --jq .visibility 2>"$RUNNER_TEMP/prune.err"); then
+            echo "== the scratch package ghcr.io/fosterstack/cache-scout-probe: visibility ${vis}; keeping versions updated since ${cutoff}" | tee -a "$GITHUB_STEP_SUMMARY"
+            if ! ids=$(gh api --paginate "${pkg}/versions?per_page=100" --jq ".[] | select(.updated_at < \"${cutoff}\") | .id" 2>"$RUNNER_TEMP/prune.err"); then
+              cat "$RUNNER_TEMP/prune.err" >&2; echo "::error::could not list the scratch package's versions, so it could not be pruned"; exit 1
+            fi
           elif grep -q "HTTP 404" "$RUNNER_TEMP/prune.err"; then
             ids=""; echo "no scratch package yet; nothing to prune" | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            cat "$RUNNER_TEMP/prune.err" >&2; echo "::error::could not list the scratch package's versions, so it could not be pruned"; exit 1
+            cat "$RUNNER_TEMP/prune.err" >&2; echo "::error::could not look up the scratch package, so it could not be pruned"; exit 1
           fi
           n=0; failed=0
           for id in ${ids}; do
