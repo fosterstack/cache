@@ -3441,7 +3441,7 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REFRESH-001-AC36
-        given: "a host-tools package that fails a checksum, a committed host-tools.lock that names a package version the archive does not hold, or an archived host-tools package that is damaged"
+        given: "a host-tools package that fails a checksum, a committed host-tools.lock that names a package version the archive does not hold and live Wolfi no longer resolves (a version live Wolfi still resolves is downloaded again and checked under the repair of AC17 and AC32, and a first fill fetches the committed versions), or an archived host-tools package that is damaged"
         when: "bin/refresh-inputs.sh refresh runs"
         then: "it exits non-zero naming the package and the file, keeps nothing new in the archive, changes no lock and opens no pull request (the archive is the source of truth, as for the melange lock)"
         verification: { method: unit, release_blocking: false }
