@@ -251,6 +251,16 @@ def scanner_set(m):
     return PANEL_SCANNERS if isinstance(m, dict) and m.get("scanner_set") == "panel" else LEGACY_SCANNERS
 
 
+def manifest_readers(m, legacy=None):
+    """[(scanner, reader, path)] for a manifest's image scanners: the panel's four read from the one verdict.json (a path of None
+    is the scanner that did not run anywhere, still read from the verdict by the callers that want its partial findings)."""
+    if isinstance(m, dict) and m.get("scanner_set") == "panel":
+        vp = (m.get("panel") or {}).get("verdict")
+        return [(sc, (lambda p, sc=sc: parse_panel(p, sc)), vp) for sc in PANEL_SCANNERS]
+    r = (m or {}).get("scanner_reports") or {}
+    return [(sc, fn, r.get(sc)) for sc, fn in (legacy or {}).items()]
+
+
 def parse_panel(path, scanner):
     """One panel scanner's findings from the rescan's verdict.json (bin/panel.py tally): the findings whose
     seen_by names `scanner`, one record per (CVE id, package identity); the images that carry it are kept, each with
@@ -417,6 +427,7 @@ def parse_govulncheck(path):
     by_osv = {}
     scan_level = None
     module = None
+    osv_aliases = {}
     sbom_ver = {}          # module path -> version, so a trace frame that omits the version
     saw_any = False        # can still be scoped to the exact version scanned (REQ-AUD-13 AC5)
     for obj in _stream(text):
@@ -439,6 +450,8 @@ def parse_govulncheck(path):
             if root0:
                 cands = [p for p in mods if p != "stdlib" and (root0 == p or root0.startswith(p + "/"))]
                 module = max(cands, key=len) if cands else root0
+        if isinstance(obj.get("osv"), dict) and obj["osv"].get("id"):         # the stream's own advisory entry: its aliases
+            osv_aliases[obj["osv"]["id"]] = sorted(a for a in (obj["osv"].get("aliases") or []) if isinstance(a, str))
         f = obj.get("finding")
         if not f:
             continue
@@ -457,12 +470,17 @@ def parse_govulncheck(path):
         # these, never to a sibling version the evidence does not cover (REQ-AUD-13 AC5).
         modvers = {(fr["module"], fr.get("version") or sbom_ver.get(fr["module"]))
                    for fr in trace if fr.get("module")}
-        cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set()})
+        cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set(), "fixed": None, "installed": None})
+        vuln = next((fr for fr in trace if fr.get("module")), None)         # the vulnerable dependency is the trace's first named module
         by_osv[osv] = {"reachable": cur["reachable"] or called,
                        "imported_only": cur["imported_only"] or imported_only,
-                       "modules": cur.get("modules", set()) | modvers}
+                       "modules": cur.get("modules", set()) | modvers,
+                       "fixed": cur["fixed"] or (f.get("fixed_version") if isinstance(f.get("fixed_version"), str) and f.get("fixed_version") else None),
+                       "installed": cur["installed"] or ((vuln.get("version") or sbom_ver.get(vuln["module"])) if vuln else None)}
     if not saw_any:
         raise ParseError("govulncheck: empty stream")
+    for k, v in by_osv.items():
+        v["aliases"] = osv_aliases.get(k, [])
     return {"scan_level": scan_level, "module": module, "by_osv": by_osv}
 
 

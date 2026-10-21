@@ -1,0 +1,283 @@
+{
+ "exit": 0,
+ "findings": [
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "CVE-2099-7001"
+     ]
+    }
+   },
+   "id": "DEBIAN-CVE-2099-7001",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "glibc",
+   "purls": [
+    "pkg:deb/debian/glibc@2.36-9"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "CVE-2099-7002"
+     ]
+    }
+   },
+   "id": "DEBIAN-CVE-2099-7002",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "glibc",
+   "purls": [
+    "pkg:deb/debian/glibc@2.36-9"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "CVE-2099-7003"
+     ]
+    }
+   },
+   "id": "DEBIAN-CVE-2099-7003",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "glibc",
+   "purls": [
+    "pkg:deb/debian/glibc@2.36-9"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "DEBIAN-CVE-2099-7001",
+      "DEBIAN-CVE-2099-7002",
+      "DEBIAN-CVE-2099-7003"
+     ]
+    }
+   },
+   "id": "DSA-9999-1",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "glibc",
+   "purls": [
+    "pkg:deb/debian/glibc@2.36-9"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  }
+ ],
+ "images": {
+  "debug-amd64": {
+   "counts": {
+    "google": 10,
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "google",
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "debug-arm64": {
+   "counts": {
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "fips-amd64": {
+   "counts": {
+    "google": 10,
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "google",
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "fips-arm64": {
+   "counts": {
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "production-amd64": {
+   "counts": {
+    "google": 10,
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "google",
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "production-arm64": {
+   "counts": {
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  }
+ },
+ "issue": "",
+ "not_counted": [],
+ "scanner_failures": [],
+ "unique": [
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "CVE-2099-7001"
+     ]
+    }
+   },
+   "id": "DEBIAN-CVE-2099-7001",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "glibc",
+   "purls": [
+    "pkg:deb/debian/glibc@2.36-9"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "CVE-2099-7002"
+     ]
+    }
+   },
+   "id": "DEBIAN-CVE-2099-7002",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "glibc",
+   "purls": [
+    "pkg:deb/debian/glibc@2.36-9"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "CVE-2099-7003"
+     ]
+    }
+   },
+   "id": "DEBIAN-CVE-2099-7003",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "glibc",
+   "purls": [
+    "pkg:deb/debian/glibc@2.36-9"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "DEBIAN-CVE-2099-7001",
+      "DEBIAN-CVE-2099-7002",
+      "DEBIAN-CVE-2099-7003"
+     ]
+    }
+   },
+   "id": "DSA-9999-1",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "glibc",
+   "purls": [
+    "pkg:deb/debian/glibc@2.36-9"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  }
+ ],
+ "vex_covered": []
+}

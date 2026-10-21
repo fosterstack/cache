@@ -9,12 +9,11 @@ from auditorlib import parsers as P
 
 
 def scanners_reporting(manifest, cve):
-    m = json.load(open(manifest)); r = m["scanner_reports"]
-    reps = {"grype": P.parse_grype, "trivy": P.parse_trivy,
-            "osv-scanner": P.parse_osv, "snyk": P.parse_snyk}
+    m = json.load(open(manifest))
     hit = set()
-    for name, fn in reps.items():
-        for f in fn(r[name]):
+    for name, fn, path in P.manifest_readers(m, {"grype": P.parse_grype, "trivy": P.parse_trivy,
+                                                 "osv-scanner": P.parse_osv, "snyk": P.parse_snyk}):
+        for f in (fn(path) if path else []):
             if cve == f["finding_id"] or cve in f["aliases"]:
                 hit.add(name)
     return hit

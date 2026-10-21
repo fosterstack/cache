@@ -85,10 +85,9 @@ def do_reconcile(out):
     reported = False
     if manifest:
         m = json.load(open(manifest))
-        reps = {"grype": P.parse_grype, "trivy": P.parse_trivy, "snyk": P.parse_snyk,
-                "osv-scanner": P.parse_osv}
-        fn = reps.get(sc)
-        rpt = m["scanner_reports"].get(sc)
+        rd = {n: (fn, path) for n, fn, path in P.manifest_readers(m, {"grype": P.parse_grype, "trivy": P.parse_trivy,
+                                                                    "snyk": P.parse_snyk, "osv-scanner": P.parse_osv})}
+        fn, rpt = rd.get(sc, (None, None))
         if fn and rpt:
             for f in fn(rpt):
                 if (fid == f["finding_id"] or fid in f["aliases"]) and f["purl"] == purl:

@@ -321,10 +321,10 @@ def do_single(finding, manifest, gvc, out):
                   justification="vulnerable_code_not_in_execute_path", evidence=ev)
         return
     # reachable -> real-fixable bump
-    m = json.load(open(manifest)); fixed = installed = None
-    for f in P.parse_osv(m["scanner_reports"]["osv-scanner-gomod"], "osv-scanner-gomod"):
-        if f["finding_id"] == finding or finding in f["aliases"]:
-            fixed = f["fixed_version"]; installed = f["extra"].get("installed_version")
+    fixed = installed = None                    # the bump's from/to come from govulncheck's own finding (the version it scanned, the fix it names)
+    for osv, e in P.parse_govulncheck(gvc)["by_osv"].items():
+        if (osv == finding or finding in e["aliases"]) and e["reachable"]:
+            fixed, installed = e["fixed"], e["installed"]
     cli.writej(os.path.join(out, "action", finding + ".json"),
                {"kind": "bump_pr", "from": installed, "to": fixed,
                 "lane": "auto-merge", "defer_to_dependabot": False})
