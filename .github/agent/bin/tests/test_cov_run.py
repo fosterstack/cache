@@ -1067,7 +1067,12 @@ class ConsistencyTablesMain(Base):
 
 # ---------------------------------------------------------------- run() end to end (in-process)
 
-PANEL_STATUS = {s: {"ran": True, "reason": "ok", "package_count": 6, "images_ran": 6, "images_expected": 6}
+def _expected_images(scanner):
+    from auditorlib import parsers as PL
+    return sum(1 for im in PL.panel_images() if PL.panel_expected(scanner, im))      # follows bin/panel.py VARIANTS (Google: amd64 only)
+
+
+PANEL_STATUS = {s: {"ran": True, "reason": "ok", "package_count": 6, "images_ran": _expected_images(s), "images_expected": _expected_images(s)}
                 for s in ("grype", "scout", "inspector", "google")}
 
 
