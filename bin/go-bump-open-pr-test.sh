@@ -33,12 +33,12 @@ COMMIT="gh api graphql --input <input> -q .data.createCommitOnBranch.commit.oid"
 VERIFY="gh api repos/{owner}/{repo}/commits/${OID} -q .commit.verification.verified"
 DEL_B="git push origin :refs/heads/${B} --force-with-lease=refs/heads/${B}:${BASE}"   # cleanup before the API made a commit: leased on the pushed base
 DEL_O="git push origin :refs/heads/${B} --force-with-lease=refs/heads/${B}:${OID}"    # cleanup after it: leased on the API's commit
-TIPV="gh api repos/{owner}/{repo}/commits/${B} -q [.sha, .commit.verification.verified] | @tsv"
+TIPV="gh api repos/{owner}/{repo}/commits/${B} -q [.sha, .commit.verification.verified, (.commit.message | split(\"\\n\")[0])] | @tsv"
 PRVIEW="gh pr view https://example/pr/1 --json headRefOid -q .headRefOid"
 PRCLOSE="gh pr close https://example/pr/1 --comment closed by go-bump-open-pr.sh: the branch moved after its commit was verified"
 FRESH_OK="$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$VERIFY"
 
-# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail] [versions "cur latest"] [delete fails 0|1] [text the output must contain] [remote tip when cleanup starts base|oid|other|rival|empty] [pr head after create match|differ] [pr close fails 0|1]
+# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail|basehead] [versions "cur latest"] [delete fails 0|1] [text the output must contain] [remote tip when cleanup starts base|oid|other|rival|empty] [pr head after create match|differ] [pr close fails 0|1]
 run_case() {
   local name="$1" sut="$2" prs="$3" branch_exists="$4" create_rc="$5" want_rc="$6" want_calls="$7" want_dir="$8"
   local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}" must="${15:-}" rtip="${16:-base}" headmode="${17:-match}" closefail="${18:-0}"
@@ -65,7 +65,7 @@ case "\$1 \$2" in
           *${RIVAL}) printf '%s\t%s\\\\n\\\\n%s\n' ${BASE} 'chore(go): bump toolchain 1.26.6 -> 1.27.0' 'go-bump-run: 9999-1' ;;
           *) printf '%s\t%s\n' ${OID} 'someone elses commit' ;; esac ;;
       *) case "${ver}" in true) echo true ;; false) echo false ;; fail) exit 1 ;; esac ;; esac ;;
-  "api repos/{owner}/{repo}/commits/${B}") case "${tip}" in true) printf '%s\ttrue\n' ${OID} ;; false) printf '%s\tfalse\n' ${OID} ;; null) printf '%s\tnull\n' ${OID} ;; empty) echo ;; fail) exit 1 ;; esac ;;
+  "api repos/{owner}/{repo}/commits/${B}") case "${tip}" in true) printf '%s\ttrue\tchore(go): bump toolchain 1.26.6 -> 1.27.0\n' ${OID} ;; false) printf '%s\tfalse\tchore(go): bump toolchain 1.26.6 -> 1.27.0\n' ${OID} ;; null) printf '%s\tnull\tchore(go): bump toolchain 1.26.6 -> 1.27.0\n' ${OID} ;; basehead) printf '%s\ttrue\tMerge pull request\n' ${OID} ;; empty) echo ;; fail) exit 1 ;; esac ;;
   "pr view") case "${headmode}" in match) echo ${OID} ;; differ) echo ${OTHER} ;; esac ;;
   "pr close") exit ${closefail} ;;
   *) echo "UNEXPECTED gh \$*" >> "${log}"; exit 0 ;;
@@ -121,6 +121,8 @@ run_case "AC8: orphaned branch whose tip cannot be checked -> exit 1, no PR, not
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 fail
 run_case "AC8: an answer that is neither true nor false (null) -> exit 1, nothing deleted" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 null
+run_case "AC8: a verified tip that is not a bump commit (the base a failed run pushed) -> exit 1, no PR, nothing deleted" \
+                                                     "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 basehead
 run_case "AC8: an empty answer -> exit 1, nothing deleted" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 empty
 run_case "AC8: a version that is not a Go version is refused before any call (injection)" \
@@ -205,6 +207,9 @@ mutant "the PR head is not compared with the verified commit" "the PR head is no
 awk '/^    \[ "\$info" = /{print "    [ \"${info%%$\x27\\t\x27*}\" = \"$base\" ] || return 1"; next}1' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (marker)"; fail=$((fail+1)); }
 mutant "ownership without the run marker" "ownership without the run marker" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_R" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' rival
 
+sed 's/ \&\& \[ "\$tip_head" = "\$headline" \]//' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (headline)"; fail=$((fail+1)); }
+mutant "an orphan tip that is not a bump commit is taken" "an orphan tip that is not a bump commit is taken" "$mut" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 basehead
+
 # AC8, the repository guard: no workflow, composite action or script outside the tests makes a commit with git (git commit, commit-tree, merge,
 # cherry-pick, rebase, am, revert, pull), in a shell command (quoted, after ; or &&, across a backslash continuation) or in a Python argument
 # list. Every PR-opening bot makes its commit through the API instead, so GitHub signs it. An exception is the sha256 of the file and the WHOLE
@@ -214,7 +219,7 @@ GUARD_PY='
 import hashlib, os, re, shlex, subprocess, sys
 CMDS = ("commit", "commit-tree", "merge", "cherry-pick", "rebase", "am", "revert", "pull")
 # An alias is how a commit hides behind another word (git -c alias.b=commit b; git config alias.b commit): defining one is a hit like a commit is.
-OPT_VALUE = ("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path")
+OPT_VALUE = ("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
 SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+(?:-\S+(?:\s+\S+)?\s+)*)["\x27]?(?:""" + "|".join(CMDS) + r""")["\x27]?(?![\w-])""")
 LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27](?:""" + "|".join(CMDS) + r""")["\x27]""")
 ARGS_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*((?:["\x27][^"\x27]*["\x27]\s*,?\s*)+)""")
@@ -229,7 +234,9 @@ def git_hit(args):
     while j < len(args) and args[j].startswith("-"):
         if args[j] == "-c" and j + 1 < len(args) and args[j + 1].lower().startswith("alias."):
             return True
-        if args[j].lower().startswith("-calias."):
+        if args[j].lower().startswith(("-calias.", "--config-env=alias.")):
+            return True
+        if args[j] == "--config-env" and j + 1 < len(args) and args[j + 1].lower().startswith("alias."):
             return True
         j += 2 if args[j] in OPT_VALUE else 1
     if j >= len(args):
@@ -242,7 +249,8 @@ def tokens_hit(s):
     try:
         # a redirection and its target are not arguments (git 2>/dev/null commit is git commit); an fd number counts only when it touches the operator,
         # so git --namespace 2 >/dev/null commit keeps its 2
-        s = re.sub(r"(?:(?<![\w.-])\d+)?(?:>>|>&|<&|<<|>|<)\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s;&|()<>]+)", " ", s)
+        s = re.sub(r"(\"[^\"]*\"|\x27[^\x27]*\x27)|(?:(?<![\w.-])\d+)?(?:>>|>&|<&|<<|>|<)\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s;&|()<>]+)",
+                   lambda m: m.group(1) or " ", s)    # a quoted string (which may hold a >) is kept whole; only a redirection outside quotes goes
         lx = shlex.shlex(re.sub(r"[()`{}]", " ", s), posix=True, punctuation_chars=True)
         lx.whitespace_split = True; lx.commenters = ""
         toks = list(lx)
@@ -319,6 +327,10 @@ guard_catches "a spaced numeric argument before a redirection" bin/a.sh 'git --n
 guard_catches "an fd redirection to another fd"   bin/a.sh 'git 2>&1 commit -m x\n'
 guard_catches "git -c alias.bump=commit bump"     bin/a.sh 'git -c alias.bump=commit bump -m x\n'
 guard_catches "a Python list with an alias"       bin/a.py 'subprocess.run(["git", "-c", "alias.b=commit", "b", "-m", "x"])\n'
+guard_catches "--config-env alias"                bin/a.sh 'X=commit git --config-env=alias.bump=X bump -m x\n'
+guard_catches "--config-env alias, split"         bin/a.sh 'X=commit git --config-env alias.bump=X bump -m x\n'
+guard_catches "--config-env alias in a Python list" bin/a.py 'subprocess.run(["git", "--config-env=alias.b=X", "b"])\n'
+guard_catches "a quoted > before commit"          bin/a.sh "git -c 'user.name=Build> Bot' commit -m x\\n"
 guard_catches "git config alias"                  bin/a.sh 'git config alias.b commit\n'
 guard_catches "a redirection touching git"        bin/a.sh 'git>/dev/null commit -m x\n'
 guard_catches "a quoted redirection target with a space" bin/a.sh 'git >"/tmp/a b" commit -m x\n'

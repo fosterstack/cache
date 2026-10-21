@@ -38,14 +38,16 @@ if [ -n "$closed_num" ]; then
   echo "PR #${closed_num} for ${branch} was closed without merging — a human declined this bump; not recreating"; exit 0
 fi
 
+headline="chore(go): bump toolchain ${CURRENT} -> ${LATEST}"
 fresh=1
 if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-  tip_ans="$(gh api "repos/{owner}/{repo}/commits/${branch}" -q '[.sha, .commit.verification.verified] | @tsv')" \
+  tip_ans="$(gh api "repos/{owner}/{repo}/commits/${branch}" -q '[.sha, .commit.verification.verified, (.commit.message | split("\n")[0])] | @tsv')" \
     || { echo "::error::could not ask whether the tip of ${branch} is verified; opening no pull request" >&2; exit 1; }
-  IFS=$'\t' read -r tip_sha tip_ver <<<"$tip_ans"
+  IFS=$'\t' read -r tip_sha tip_ver tip_head <<<"$tip_ans"
   # Only the exact word true is a verified tip. A branch is never deleted here: an unverified (or unreadable) tip is refused, loudly, for a person
   # to look at, so a branch a human or a concurrent run owns is never removed by this script.
-  [[ "$tip_sha" =~ ^[0-9a-f]{40}$ ]] && [ "$tip_ver" = true ] || { echo "::error::branch ${branch} exists with no PR and its tip is not reported verified by GitHub (got '${tip_ver}'; main requires signed commits); opening no pull request. Remove the branch to let the next run rebuild it through the API" >&2; exit 1; }
+  # The tip must also be a bump commit (this run's headline): a verified tip that is only the base a failed run pushed would open a PR with no bump.
+  [[ "$tip_sha" =~ ^[0-9a-f]{40}$ ]] && [ "$tip_ver" = true ] && [ "$tip_head" = "$headline" ] || { echo "::error::branch ${branch} exists with no PR and its tip is not a verified bump commit (verified '${tip_ver}', headline '${tip_head}'; main requires signed commits); opening no pull request. Remove the branch to let the next run rebuild it through the API" >&2; exit 1; }
   echo "branch ${branch} exists with no PR (orphaned by a prior push-success/create-failure) and its tip is verified — creating the PR from the existing branch"
   fresh=0; expected_head="$tip_sha"
 fi
@@ -61,7 +63,6 @@ if [ "$fresh" = 1 ]; then
   base="$(git rev-parse HEAD)"
   case "$base" in *[!0-9a-f]*|'') echo "::error::could not read the commit the job started from" >&2; exit 1;; esac
   [ "${#base}" -eq 40 ] || { echo "::error::could not read the commit the job started from" >&2; exit 1; }
-  headline="chore(go): bump toolchain ${CURRENT} -> ${LATEST}"
   marker="go-bump-run: ${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"   # unique to this run: two overlapping runs of one bump share parent and headline
   input="$(mktemp)"
   jq -n --arg repo "${GITHUB_REPOSITORY:-fosterstack/cache}" --arg b "$branch" --arg base "$base" \
