@@ -1727,6 +1727,153 @@
       "line": "f5e678332279f760051bbf0a3ddd394dc97d4b3f3c6074722b671b051ae93c9e",
       "ruling": "text, not a command: a comment in the script; nothing runs it",
       "context": "comment"
+    },
+    {
+      "file": "bin/acceptance-gradle.sh",
+      "form": "a download",
+      "key": "85d58dc5457660a946aa5e3aa99ad7bd8518cdf8571d542647b3dc2d0a48ee23",
+      "line": "85d58dc5457660a946aa5e3aa99ad7bd8518cdf8571d542647b3dc2d0a48ee23",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-gradle.sh",
+      "form": "a download",
+      "key": "59793d05534371e9074f94050a6cb3ffdcc5b22477999f8d05abd4c4f73a33dc",
+      "line": "59793d05534371e9074f94050a6cb3ffdcc5b22477999f8d05abd4c4f73a33dc",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-gradle.sh",
+      "form": "a download",
+      "key": "d104f7480fdfddf1771f2b53803ff0c0d7d3d8bb56dcabf5b33c0e83c7b64bb2",
+      "line": "d104f7480fdfddf1771f2b53803ff0c0d7d3d8bb56dcabf5b33c0e83c7b64bb2",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-gradle-capped.sh",
+      "form": "a download",
+      "key": "c302b44ec922687553467c9f0aa37b57bdb32a2f86ce716507bb0559cfcee701",
+      "line": "cd429412808e6f44d24e8b6f9698a9ae401430eb8df4505121040a27ac75f314",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-gradle-capped.sh",
+      "form": "a download",
+      "key": "cc171056ca9b17d70a97e8823cf1c30d19d4e17d56a13655c4b54eac0ecd0bee",
+      "line": "cc171056ca9b17d70a97e8823cf1c30d19d4e17d56a13655c4b54eac0ecd0bee",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-gradle-capped.sh",
+      "form": "a download",
+      "key": "1e719ae863a1d1da34ce4b288dfc584be423a6549b1a65e47bdd900b1feeb5d7",
+      "line": "1e719ae863a1d1da34ce4b288dfc584be423a6549b1a65e47bdd900b1feeb5d7",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-gradle-capped.sh",
+      "form": "a download",
+      "key": "868738b70b28a04197b6a34e1150375a1fe2ffe1449bb68fefbc071ea244032e",
+      "line": "868738b70b28a04197b6a34e1150375a1fe2ffe1449bb68fefbc071ea244032e",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-maven.sh",
+      "form": "a download",
+      "key": "f9845b6412f4b59212b81e4a43d2059a14e2a08849261a7f1f93f008d4df137d",
+      "line": "f9845b6412f4b59212b81e4a43d2059a14e2a08849261a7f1f93f008d4df137d",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-maven.sh",
+      "form": "a download",
+      "key": "8694e7cf27a55609cd6f8ad4f85430759b9e406d164b97e5d632c6dce834c798",
+      "line": "8694e7cf27a55609cd6f8ad4f85430759b9e406d164b97e5d632c6dce834c798",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-maven.sh",
+      "form": "a download",
+      "key": "9227b9379bf3ff9ff247e26216a3c5f81337e9930dfffcad8cb72437fb5ef9f7",
+      "line": "f002505192d0fa92eb33f53dcc46343fa1d35b2495da122c48fb6722adb81f64",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-maven.sh",
+      "form": "a download",
+      "key": "6ceb6cb7e0d308f1cdc2f63f4730a951cf534ca3faa9dc0d1b4d27a402a67775",
+      "line": "745877cb813e6de69e1c4f371e860f7965339dfdff9601a72b62c42697fe3a2c",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-maven-capped.sh",
+      "form": "a download",
+      "key": "6d9cfda4fd54780de4d518cc04f4595e779d074ad30832bd4c0e10e887250542",
+      "line": "6d9cfda4fd54780de4d518cc04f4595e779d074ad30832bd4c0e10e887250542",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-maven-capped.sh",
+      "form": "a download",
+      "key": "4beb1efe2b83eada2f2156256abc0b376600cbdffb30fbe450f2ab77ed0aa242",
+      "line": "4beb1efe2b83eada2f2156256abc0b376600cbdffb30fbe450f2ab77ed0aa242",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/acceptance-maven-capped.sh",
+      "form": "a download",
+      "key": "d13281784b28c886b6b617792b2ebbd24d341f2d1629bc89ff6d54fa878906d7",
+      "line": "d13281784b28c886b6b617792b2ebbd24d341f2d1629bc89ff6d54fa878906d7",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): a request to the cache under test on loopback; it fetches no software"
+    },
+    {
+      "file": "bin/release-assets.sh",
+      "form": "a gh release or extension download",
+      "key": "310e8130d53cf46f5d3cde34273658ff6d8a1eaab5a7e86c9244f4d4a9023fe5",
+      "line": "310e8130d53cf46f5d3cde34273658ff6d8a1eaab5a7e86c9244f4d4a9023fe5",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): gh release download of this repository's own published assets by tag; the line is pinned byte for byte"
+    },
+    {
+      "file": "bin/acceptance-k8s.sh",
+      "form": "a download",
+      "key": "f33a7ce3ee85a32cd54ce4a890927202c40453f8f18542a5193891286442a081",
+      "line": "72bfaad46b088a7a39da93c083a8327473c5aee27d69878aeb0ce100134c6816",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): docker pull of a digest-pinned curl image (the word curl is the image name); the line is pinned byte for byte"
+    },
+    {
+      "file": "bin/acceptance-k8s.sh",
+      "form": "a download",
+      "key": "7107ffcfae814f72b8b64647004b39529e89014cec94f4f56d856a5c53bdf2cd",
+      "line": "72bfaad46b088a7a39da93c083a8327473c5aee27d69878aeb0ce100134c6816",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): docker pull of a digest-pinned curl image (the word curl is the image name); the line is pinned byte for byte"
+    },
+    {
+      "file": "bin/install-scanner.sh",
+      "form": "a download",
+      "key": "08066773282b57a7da2ea11e4c5b6e3e448a0542158f53b16bcaad428c82ced1",
+      "line": "1714fe6f02ca5bb0e5e7caeb04be023d96f15dfbd67448f45b86683a82e3e08f",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
+    },
+    {
+      "file": "bin/go-bump-open-pr.sh",
+      "form": "a download",
+      "key": "953689ae64856c73b377ed46e8fa9caf842119547c28b44d505cc7ab9331a2a4",
+      "line": "122789dd18ce1f7e0c9d9e34f02d10435f6ba715ccc666bd8a8409e44da163f4",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
+    },
+    {
+      "file": "bin/go-bump-open-pr.sh",
+      "form": "a download",
+      "key": "9216ecefa744f0521f512c89a19f3fa14fc754f16b31bd010d0fcc4d523121ce",
+      "line": "33cb527c703c825a14170872548ce54e176df30ca86f7e86eac54a823e885320",
+      "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
+    },
+    {
+      "file": "bin/acceptance-egress.sh",
+      "form": "a system package install",
+      "key": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
+      "line": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
+      "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
     }
   ]
 }

@@ -194,6 +194,13 @@ jobs:
       id-token: write
       packages: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: install the pinned crane binary
+        run: ./bin/install-scanner.sh crane
+
       - name: resolve the latest release and its image digest
         id: resolve
         env:
@@ -203,13 +210,9 @@ jobs:
         run: |
           set -euo pipefail
           tag=$(gh release view --json tagName -q .tagName)
-          digest=$(docker buildx imagetools inspect "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}" --format '{{.Manifest.Digest}}')
+          digest=$(crane digest "ghcr.io/${REGISTRY_OWNER}/cache:${tag#v}")
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${REGISTRY_OWNER}/cache@${digest}" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
