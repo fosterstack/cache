@@ -92,7 +92,8 @@ vulnerability); this page is what we do.
 - **Scanned on every pull request.** The pull request gate builds the same image the
   release would ship and scans it ([scan workflow](../.github/workflows/scan.yml)).
 - **Four scanners, every day.** The daily rescan builds main's candidate and scans
-  it with four independent scanners, then tallies how many saw each finding
+  it with four independent scanners, Grype, Docker Scout, Amazon Inspector and
+  Google Artifact Analysis, then tallies how many saw each finding
   ([daily rescan](../.github/workflows/main-candidate-rescan.yml)).
 - **Published images are rescanned daily.** A CVE disclosed against bytes we already
   shipped raises a tracked issue ([scanning.md](scanning.md)).

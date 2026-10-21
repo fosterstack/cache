@@ -80,7 +80,7 @@ check them against the signed release manifest as described in
 |---|---|---|
 | Grype | `fosterstack-cache.openvex.json` | `grype IMAGE --vex fosterstack-cache.openvex.json` |
 | Trivy | `fosterstack-cache.openvex.json` | `trivy image --vex fosterstack-cache.openvex.json IMAGE` |
-| Docker Scout | `fosterstack-cache.openvex.json` | `docker scout cves --vex-location fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' IMAGE` (see [Docker Scout](#docker-scout)) |
+| Docker Scout | none yet | Scout does not apply a VEX file given on the command line (see [Docker Scout](#docker-scout)) |
 | Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule per statement: `aws inspector2 create-filter`, one rule per call |
 | Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
 
@@ -110,20 +110,13 @@ statement**.
 
 ## Docker Scout
 
-Docker Scout reads OpenVEX directly. It applies only the statements whose author
-matches `--vex-author` (by default Docker's own), so name ours, the author recorded in
-the published file:
-
-```sh
-docker scout cves --vex-location fosterstack-cache.openvex.json \
-  --vex-author '^FosterStack LLC$' \
-  ghcr.io/fosterstack/cache:${VER}
-```
-
-Run it once with and once without `--vex-location` and `--vex-author`: the difference
-is the set of findings that applicable `not_affected` and `fixed` statements suppress,
-the same audit as in
-[Reproducing our own gate](#reproducing-our-own-gate).
+Docker Scout does not apply a VEX file you give it on the command line. The
+`--vex-location` option is accepted, but our statements are not applied on any Scout
+release we tested, from 1.9.3 through 1.26.0 (Docker's open report is
+[docker/scout-cli#207](https://github.com/docker/scout-cli/issues/207)). A Scout scan
+of our images therefore still lists the findings our statements cover. Read them
+against the published OpenVEX file ([above](#using-our-vex-files-in-your-scanner)) by
+hand until Scout can apply it; we will say here when it can.
 
 ## Reproducing our own gate
 
@@ -162,7 +155,7 @@ trivy image --scanners vuln \
 ```
 
 To see the findings without our statements applied, run Grype or Trivy without
-`--vex`, or Docker Scout without `--vex-location` and `--vex-author`.
+`--vex`.
 The difference between the two runs is the set of findings that applicable `not_affected`
 and `fixed` statements suppress, which is how you audit them.
 
