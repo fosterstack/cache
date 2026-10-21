@@ -204,7 +204,7 @@ class ClassifyDoManifest(TmpCase):
         def f(cve, alias, name):
             return {"image": "production-amd64", "id": cve, "package": name, "version": "0.3.0", "seen_by": ["grype"], "of": 4,
                     "unique": True, "status": "unique", "purls": ["pkg:golang/%s@v0.3.0" % name],
-                    "details": {"grype": dict({"severity": "high"}, **({"aliases": [alias]} if alias else {}))}}
+                    "details": {"grype": dict({"severity": "high", "purl": "pkg:golang/%s@v0.3.0" % name}, **({"aliases": [alias]} if alias else {}))}}
         fs = [f("CVE-2024-0001", "GO-1", "text"), f("CVE-2024-0002", None, "net"), f("CVE-2024-0003", None, "a"), f("CVE-2024-0004", None, "b")]
         pm = PL._panel_module()
         verdict = self.put("verdict.json", {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs, "vex_covered": [],

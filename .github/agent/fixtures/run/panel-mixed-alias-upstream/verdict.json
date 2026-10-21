@@ -3,7 +3,9 @@
  "findings": [
   {
    "details": {
-    "inspector": {}
+    "inspector": {
+     "purl": "pkg:golang/example.org/lib@v1.0.0"
+    }
    },
    "id": "CVE-2099-9704",
    "image": "production-amd64",
@@ -24,7 +26,8 @@
     "inspector": {
      "aliases": [
       "CVE-2099-9703"
-     ]
+     ],
+     "purl": "pkg:golang/example.org/lib@v1.0.0"
     }
    },
    "id": "GO-2099-9703",
@@ -140,7 +143,9 @@
  "unique": [
   {
    "details": {
-    "inspector": {}
+    "inspector": {
+     "purl": "pkg:golang/example.org/lib@v1.0.0"
+    }
    },
    "id": "CVE-2099-9704",
    "image": "production-amd64",
@@ -161,7 +166,8 @@
     "inspector": {
      "aliases": [
       "CVE-2099-9703"
-     ]
+     ],
+     "purl": "pkg:golang/example.org/lib@v1.0.0"
     }
    },
    "id": "GO-2099-9703",

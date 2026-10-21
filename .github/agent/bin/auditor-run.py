@@ -20,7 +20,7 @@ package + finding counts with database dates, dry_run and adjudicator mode, and 
 line: AUDIT COMPLETE, or AUDIT INCOMPLETE (which FAILS the job). A dry run lists in §6 every
 PR and issue it would have opened.
 """
-import os, sys, json, re, shlex, subprocess, importlib.util
+import os, sys, json, re, shlex, subprocess, importlib.util, urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
@@ -926,8 +926,9 @@ def _eco(purl):
 
 
 def _ver_from_purl(purl):
-    m = re.search(r"@([^?]+)", purl or "")
-    return m.group(1) if m else None
+    """The version a package URL names, decoded (3.0.1%2Bdeb12u1 is 3.0.1+deb12u1) and without any qualifier or subpath."""
+    m = re.search(r"@([^?#]+)", purl or "")
+    return urllib.parse.unquote(m.group(1)) if m else None
 
 
 def _trace_covers(purl, ev):
