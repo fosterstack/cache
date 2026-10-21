@@ -226,6 +226,7 @@ for mt in (json.load(open(gp)).get("matches") or [] if gp else []):
     sev = (v.get("severity") or "").lower()
     if sev in ("negligible", "low", "medium", "high", "critical"): det["severity"] = sev
     if (v.get("fix") or {}).get("state") == "fixed" and fixv: det["fixed_version"] = fixv[0]
+    if a.get("purl"): det["purl"] = a["purl"]                          # Grype's own package URL (handoff 0601)
     fs.append({"image": im, "id": v["id"], "package": name, "version": ver, "seen_by": ["grype"], "of": len(images[im]["ran"]), "unique": True,
                "status": "unique", "purls": [purl], "details": {"grype": det}})
 sp = (m.get("scanner_reports") or {}).get("snyk")                  # a second, Snyk-shaped report becomes Google's record of the same CVE
@@ -236,10 +237,11 @@ for v in (json.load(open(sp)).get("vulnerabilities") or [] if sp else []):
         if hit:
             f = hit[0]; f["seen_by"] = ["google", "grype"]; f["unique"] = False; f["status"] = "report"
             f["details"]["google"] = {"severity": sv} if sv in ("negligible", "low", "medium", "high", "critical") else {}
+            if v.get("purl"): f["details"]["google"]["purl"] = v["purl"]
         else:
             name, ver = v.get("packageName"), (v.get("version") or (pm._purl_name_version(v["purl"])[1] if v.get("purl") else "1.0") or "1.0")
             fs.append({"image": "production-amd64", "id": cid, "package": name, "version": ver, "seen_by": ["google"], "of": 4, "unique": True,
-                       "status": "unique", "purls": [v["purl"]] if v.get("purl") else [], "details": {"google": {}}})
+                       "status": "unique", "purls": [v["purl"]] if v.get("purl") else [], "details": {"google": ({"purl": v["purl"]} if v.get("purl") else {})}})
 reported = [f for f in fs if f["status"] == "report"]
 d = {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs, "vex_covered": [], "issue": pm.render_issue(reported),
      "unique": [f for f in fs if f["unique"]], "exit": 1 if reported else 0}
