@@ -81,6 +81,18 @@ run "$w/man" "$w/a0" "$w/j1" && no "an unknown unit name passed" || ok "a comple
 slog 1 2 6 2 0 u1 u3 u5 > "$w/k1"
 run "$w/man" "$w/a0" "$w/k1" && no "ran= that disagrees with the units completed passed" || ok "a ran= count that disagrees with the units that completed is refused"
 
+# the closing pass count must equal the completed units plus the two bookkeeping checks; the bookkeeping records are exactly one each
+slog 1 2 6 3 0 u1 u3 u5 | sed 's/^check-action-pins: 5 passed, 0 failed$/check-action-pins: 0 passed, 0 failed/' > "$w/l1"
+run "$w/man" "$w/a0" "$w/l1" && no "a closing pass count that contradicts the units passed" || ok "a closing pass count that does not equal units + bookkeeping is refused"
+{ cat "$w/a1"; echo "PASS pm-case-count → duplicate"; } > "$w/l2"
+run "$w/man" "$w/a0" "$w/l2" && no "a repeated bookkeeping record passed" || ok "a repeated bookkeeping record is refused"
+grep -v '^PASS pm-case-names' "$w/a1" | sed 's/^check-action-pins: 5 passed, 0 failed$/check-action-pins: 4 passed, 0 failed/' > "$w/l3"
+run "$w/man" "$w/a0" "$w/l3" && no "a missing bookkeeping record passed" || ok "a missing bookkeeping record is refused"
+# the manifest is a dry listing in which only the bookkeeping ran: a helper that forgot take() shows up as extra passes in it
+sed 's/^check-action-pins: 2 passed, 0 failed$/check-action-pins: 3 passed, 0 failed/' "$w/man" > "$w/man3"
+run "$w/man3" "$w/a0" "$w/a1" && no "a manifest listing that ran extra work passed" || ok "a manifest listing in which something besides the bookkeeping ran is refused"
+grep -q "^check-action-pins: 2 passed, 0 failed\$" "$w/all.out" && ok "the real dry listing ran only the two bookkeeping checks" || no "the real dry listing's closing line: $(tail -1 "$w/all.out")"
+
 # --- a selector that picks no unit is not a successful run
 PINS_SHARD=0/5000 bash "$pins" > "$w/zero.out" 2>&1; zrc=$?
 [ "$zrc" -ne 0 ] && ok "a real (non-dry) shard that runs no unit exits non-zero" || no "an empty shard exited 0"

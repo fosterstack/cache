@@ -10,6 +10,17 @@ manifest's unit count; the units that COMPLETED (a `PASS <name>` line each) are 
 once, none missing, none from another shard, none unknown -- and R equals their number; and the shards are exactly 0..N-1, each once. The
 units of all shards together are then the whole manifest exactly once. Anything else is a refusal. The summary counts alone prove nothing: a
 dry run, or a shard that planned units it never ran, prints the same numbers.
+
+Also required: each shard's closing pass count equals its completed units plus exactly one record of each bookkeeping check (so a pass
+count that contradicts the units, or a repeated or missing bookkeeping record, is refused), and the manifest itself is a dry listing in which
+nothing but the bookkeeping checks ran (its closing line says exactly that many passed and none failed), so a helper that forgot take()
+shows up as extra work in the listing.
+
+What this does NOT defend against, by design (documented exclusion, round "adversarial" of cache#500): forged producer output. The checker
+trusts that the logs are the output of the shards the gate itself launched into a fresh temporary directory (coverage-gate.sh truncates every
+log with its redirection and checks every child's exit status); a case cannot print into them because every case runs the checker under test
+with its output discarded. Someone who can edit the test script or the gate can edit this checker too, and that change needs the independent
+second review like every change under the auditor directory.
 """
 import re
 import sys
@@ -44,6 +55,9 @@ def main(argv):
     total = len(units)
     if total < 1:
         refuse("the manifest lists no unit")
+    mclose = [m for m in (re.fullmatch(r"check-action-pins: ([0-9]+) passed, ([0-9]+) failed", x) for x in read(argv[1])) if m]
+    if len(mclose) != 1 or int(mclose[0].group(1)) != len(BOOKKEEPING) or int(mclose[0].group(2)) != 0:
+        refuse("the manifest listing ran something besides the %d bookkeeping checks (or has no closing line): a helper without take()?" % len(BOOKKEEPING))
     seen, n_shards = [], None
     done_all = []
     for path in argv[2:]:
@@ -63,13 +77,20 @@ def main(argv):
             n_shards = n
         elif n != n_shards:
             refuse("%s says %d shards, another shard says %d" % (path, n, n_shards))
-        done = []
+        done, book = [], []
         for x in lines:
             m = re.match(r"PASS (\S+) ", x)
-            if m and m.group(1) not in BOOKKEEPING:
+            if m and m.group(1) in BOOKKEEPING:
+                book.append(m.group(1))
+            elif m:
                 if m.group(1) not in units:
                     refuse("%s completed %r, which is not in the manifest" % (path, m.group(1)))
                 done.append(m.group(1))
+        if sorted(book) != sorted(BOOKKEEPING):
+            refuse("%s has bookkeeping records %s, want exactly one each of %s" % (path, sorted(book), sorted(BOOKKEEPING)))
+        if int(closing[0].group(1)) != len(done) + len(BOOKKEEPING):
+            refuse("%s: the closing line says %s passed but %d units and %d bookkeeping checks completed"
+                   % (path, closing[0].group(1), len(done), len(BOOKKEEPING)))
         if len(set(done)) != len(done):
             refuse("%s completed a unit more than once" % path)
         want = {name for name, idx in units.items() if idx % n == i}
