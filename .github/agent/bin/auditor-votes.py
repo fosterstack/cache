@@ -9,18 +9,24 @@ from auditorlib import parsers as P
 
 
 def scanners_reporting(manifest, cve):
-    """(scanners reporting the CVE, whether any scanner's evidence was readable at all)."""
+    """(scanners reporting the CVE, whether every scanner's evidence was readable): a scanner that did not run, or whose report cannot
+    be read, is unavailable evidence, never a vote against."""
     m = json.load(open(manifest))
-    hit, readable = set(), False
+    hit, complete, any_read = set(), True, False
     for name, fn, path in P.manifest_readers(m, {"grype": P.parse_grype, "trivy": P.parse_trivy,
                                                  "osv-scanner": P.parse_osv, "snyk": P.parse_snyk}):
-        if not path:
+        try:
+            found = fn(path) if path else None
+        except (P.ParseError, OSError):
+            found = None
+        if found is None:
+            complete = False
             continue
-        readable = True
-        for f in fn(path):
+        any_read = True
+        for f in found:
             if cve == f["finding_id"] or cve in f["aliases"]:
                 hit.add(name)
-    return hit, readable
+    return hit, (any_read and (complete or bool(hit)))
 
 
 def main():

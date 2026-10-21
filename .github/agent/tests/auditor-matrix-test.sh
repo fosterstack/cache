@@ -548,6 +548,17 @@ run "$PY" "$BIN/auditor-votes.py" --manifest "$WORK/pm-nopanel/manifest.json" --
   { eq "$hd" "evidence_unavailable" && eq "$nl" "0" && printf '%s' "$rs" | grep -qi 'unavailable' && eq "$ad" "false" && ledger_empty; } \
     && ok || no "no verdict: votes evidence_unavailable, reconcile unavailable without a model call" "handling=$hd lineages=$nl reason=$rs added=$ad ledger=$(ledger_n)"; }
 
+begin "req4-ac3c-a-down-scanner-is-not-evidence" "with Grype and Google down (manifest-down), a CVE only Grype saw is 'evidence_unavailable' (absence from the scanners that ran is not corroboration), and a reconcile for the down scanner, or against an unreadable verdict file, asks no model"
+o="$WORK/v4"; rm -rf "$o"; o2="$WORK/rc4"; o3="$WORK/rc5"; rm -rf "$o2" "$o3"; cp "$F/dl/log.json" "$WORK/log-dn.json"; : > "$LEDGER"
+"$PY" -c 'import json;m=json.load(open(".github/agent/fixtures/run/manifest-01.json"));m["panel"]["verdict"]="/nonexistent/verdict.json";json.dump(m,open("'"$WORK"'/m-gone.json","w"))'
+run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-down.json" --cve CVE-2016-2781 --adjudicator "$NOCALL" --out "$o" && {
+  hd="$(pj "$o/votes.json" 'd.get("handling")')"; sc="$(pj "$o/votes.json" 'd.get("scanners")')"
+  "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log-dn.json" --finding grype CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$F/run/manifest-down.json" --adjudicator "$NOCALL" --out "$o2" >/dev/null 2>&1
+  "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log-dn.json" --finding scout CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$WORK/m-gone.json" --adjudicator "$NOCALL" --out "$o3" >/dev/null 2>&1
+  r2="$(pj "$o2/reconcile.json" 'd.get("reason")')"; r3="$(pj "$o3/reconcile.json" 'd.get("reason")')"
+  { eq "$hd" "evidence_unavailable" && eq "$sc" "[]" && printf '%s' "$r2" | grep -qi unavailable && printf '%s' "$r3" | grep -qi unavailable && ledger_empty; } \
+    && ok || no "down scanner and unreadable verdict are unavailable evidence, no model call" "handling=$hd scanners=$sc down_reason=$r2 gone_reason=$r3 ledger=$(ledger_n)"; }
+
 begin "req4-ac4-unique-not-autoclosed" "a grype-only CVE is unique+suspect (not auto-closed); a four-scanner CVE is not unique (a constant fails one)"
 o="$WORK/u1"; o2="$WORK/u2"; rm -rf "$o" "$o2"
 run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-01.json" --cve CVE-2016-2781 --adjudicator "$NOCALL" --out "$o" && {

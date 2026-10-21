@@ -252,12 +252,12 @@ def scanner_set(m):
 
 
 def manifest_readers(m, legacy=None):
-    """[(scanner, reader, path)] for a manifest's image scanners: the panel's four read from the one verdict.json (a path of None
-    is the scanner that did not run anywhere, still read from the verdict by the callers that want its partial findings)."""
+    """[(scanner, reader, path)] for a manifest's image scanners; the path is None for a scanner whose report is not available (it did
+    not run, or missed an image). The panel's four are read from the one verdict.json."""
+    r = (m or {}).get("scanner_reports") or {}
     if isinstance(m, dict) and m.get("scanner_set") == "panel":
         vp = (m.get("panel") or {}).get("verdict")
-        return [(sc, (lambda p, sc=sc: parse_panel(p, sc)), vp) for sc in PANEL_SCANNERS]
-    r = (m or {}).get("scanner_reports") or {}
+        return [(sc, (lambda p, sc=sc: parse_panel(p, sc)), vp if r.get(sc) else None) for sc in PANEL_SCANNERS]
     return [(sc, fn, r.get(sc)) for sc, fn in (legacy or {}).items()]
 
 
