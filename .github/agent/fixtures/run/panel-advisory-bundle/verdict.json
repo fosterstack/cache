@@ -6,7 +6,8 @@
     "inspector": {
      "aliases": [
       "CVE-2099-7001"
-     ]
+     ],
+     "purl": "pkg:deb/debian/glibc@2.36-9"
     }
    },
    "id": "DEBIAN-CVE-2099-7001",
@@ -28,7 +29,8 @@
     "inspector": {
      "aliases": [
       "CVE-2099-7002"
-     ]
+     ],
+     "purl": "pkg:deb/debian/glibc@2.36-9"
     }
    },
    "id": "DEBIAN-CVE-2099-7002",
@@ -50,7 +52,8 @@
     "inspector": {
      "aliases": [
       "CVE-2099-7003"
-     ]
+     ],
+     "purl": "pkg:deb/debian/glibc@2.36-9"
     }
    },
    "id": "DEBIAN-CVE-2099-7003",
@@ -169,7 +172,8 @@
     "inspector": {
      "aliases": [
       "CVE-2099-7001"
-     ]
+     ],
+     "purl": "pkg:deb/debian/glibc@2.36-9"
     }
    },
    "id": "DEBIAN-CVE-2099-7001",
@@ -191,7 +195,8 @@
     "inspector": {
      "aliases": [
       "CVE-2099-7002"
-     ]
+     ],
+     "purl": "pkg:deb/debian/glibc@2.36-9"
     }
    },
    "id": "DEBIAN-CVE-2099-7002",
@@ -213,7 +218,8 @@
     "inspector": {
      "aliases": [
       "CVE-2099-7003"
-     ]
+     ],
+     "purl": "pkg:deb/debian/glibc@2.36-9"
     }
    },
    "id": "DEBIAN-CVE-2099-7003",
