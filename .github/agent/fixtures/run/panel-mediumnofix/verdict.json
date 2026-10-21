@@ -1,0 +1,143 @@
+{
+ "exit": 0,
+ "findings": [
+  {
+   "details": {
+    "grype": {
+     "severity": "medium"
+    }
+   },
+   "id": "CVE-2099-9200",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "libmed",
+   "purls": [
+    "pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
+   ],
+   "seen_by": [
+    "grype"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "1"
+  }
+ ],
+ "images": {
+  "debug-amd64": {
+   "counts": {
+    "google": 10,
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "google",
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "debug-arm64": {
+   "counts": {
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "fips-amd64": {
+   "counts": {
+    "google": 10,
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "google",
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "fips-arm64": {
+   "counts": {
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "production-amd64": {
+   "counts": {
+    "google": 10,
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "google",
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "production-arm64": {
+   "counts": {
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  }
+ },
+ "issue": "",
+ "not_counted": [],
+ "scanner_failures": [],
+ "unique": [
+  {
+   "details": {
+    "grype": {
+     "severity": "medium"
+    }
+   },
+   "id": "CVE-2099-9200",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "libmed",
+   "purls": [
+    "pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
+   ],
+   "seen_by": [
+    "grype"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "1"
+  }
+ ],
+ "vex_covered": []
+}
