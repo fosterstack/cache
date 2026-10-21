@@ -80,28 +80,15 @@ for dp,_,fs in os.walk(root):
                     if (st.get("vulnerability") or {}).get("name")==cve: hit="yes"
             except Exception: pass
 print(hit)' "$1" "$2" 2>/dev/null || echo no; }
-# alias_set <finding-id>: every id the SCANNER REPORTS give for that finding (OSV
-# aliases, Grype relatedVulnerabilities), read from the manifest — never hand-typed.
-alias_set(){ "$PY" -c 'import json,sys,re
+# alias_set <finding-id>: every id the panel's verdict gives for that finding (the aliases each scanner reported), read from the
+# manifest's verdict - never hand-typed.
+alias_set(){ "$PY" -c 'import json,sys
 fid=sys.argv[1]; m=json.load(open(sys.argv[2])); ids={fid}
-def add(x):
-    if x: ids.add(x)
 try:
-    for k in ("osv-scanner","osv-scanner-gomod"):
-        for r in json.load(open(m["scanner_reports"][k]))["results"]:
-            for p in r.get("packages",[]):
-                for v in p.get("vulnerabilities",[]):
-                    grp=set([v["id"]]+v.get("aliases",[]))
-                    if fid in grp:
-                        for a in grp: add(a)
-                for g in p.get("groups",[]):
-                    if fid in g.get("ids",[]):
-                        for a in g["ids"]: add(a)
-    g=json.load(open(m["scanner_reports"]["grype"]))
-    for mt in g["matches"]:
-        rel=[mt["vulnerability"]["id"]]+[r.get("id") for r in mt.get("relatedVulnerabilities",[])]
-        if fid in rel:
-            for a in rel: add(a)
+    v=json.load(open(m["panel"]["verdict"]))
+    for f in v["findings"]:
+        grp={f["id"]}|{a for d in f["details"].values() for a in d.get("aliases", [])}
+        if fid in grp: ids|=grp
 except Exception: pass
 print(" ".join(sorted(ids)))' "$1" "$F/run/manifest-01.json" 2>/dev/null; }
 # tree_vex_status_set <dir> <aliases...>: sorted set of statuses across ALL VEX files
@@ -155,6 +142,113 @@ done
 
 ########################################################################
 echo "=== REQ-AUD-1 ==="
+# ---- generated panel manifests (scenarios ok, uncounted, nopanel, googlegone, partial, multi) used by the panel and the run cases ----
+# The image set is panel.py's, not a literal: main ships debug, chain-v030 drops it (VARIANTS), so the fixtures name "the second
+# variant's amd64 image" (DBG) and count the panel's images (NIMG), and pass with either VARIANTS.
+DBG="$(python3 -c 'import sys; sys.path.insert(0, ".github/agent/bin"); from auditorlib import parsers as P; print(sorted(i for i in P.panel_images() if i.endswith("-amd64") and not i.startswith("production"))[0])')"
+NIMG="$(python3 -c 'import sys; sys.path.insert(0, ".github/agent/bin"); from auditorlib import parsers as P; print(len(P.panel_images()))')"
+export DBG NIMG
+cat > "$WORK/mkpm.py" <<'PYEOF'
+import json, os, sys
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+scenario, out = sys.argv[1], sys.argv[2]; os.makedirs(out, exist_ok=True)
+pm = P._panel_module(); vp = os.path.join(out, "verdict.json")
+images = {}
+for im in sorted(P.panel_images()):
+    exp = [s for s in P.PANEL_SCANNERS if P.panel_expected(s, im)]
+    bad = [s for s in ("scout", "google") if scenario == "uncounted" and im == os.environ["DBG"] and s in exp]
+    bad += [s for s in ("google",) if scenario == "googlegone" and im.endswith("-amd64") and s in exp]      # google missing on every image it is expected on
+    bad += [s for s in ("google",) if scenario == "partial" and im == os.environ["DBG"] and s in exp]            # google missing on one image only
+    ran = sorted(s for s in exp if s not in bad)
+    images[im] = {"counts": {s: 10 for s in ran}, "did_not_run": sorted(bad), "ran": ran, "counts_for_day": len(ran) >= 3}
+def f(im, vid, pkg, ver, seen, details):
+    return {"image": im, "id": vid, "package": pkg, "version": ver, "seen_by": sorted(seen), "of": len(images[im]["ran"]),
+            "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report",
+            "purls": ["pkg:deb/debian/%s@%s?arch=%s&distro=debian-12.0" % (pkg, ver, "arm64" if pkg == "coreutils" else "amd64")], "details": details}   # the known-defect log keys on these exact purls
+fs = [f("production-amd64", "CVE-2016-2781", "coreutils", "9.1-1", ["grype", "inspector", "scout"], {"grype": {"severity": "low"}, "inspector": {"severity": "medium"}, "scout": {}}),
+      f("production-amd64", "CVE-2011-3374", "apt", "2.6.1", ["grype", "inspector", "scout"], {"grype": {"severity": "high"}, "inspector": {"severity": "critical"}, "scout": {}})]
+if scenario == "multi":     # one finding the scanners rate alike, one seen by different numbers of scanners on two images
+    fs += [f("production-amd64", "CVE-2099-5555", "zlib", "1.3", ["grype", "inspector"], {"grype": {"severity": "high"}, "inspector": {"severity": "high"}}),
+           f("production-amd64", "CVE-2099-6666", "curl", "8.0", ["grype", "inspector", "scout"], {"grype": {"severity": "low"}, "inspector": {"severity": "low"}, "scout": {}}),
+           f("production-arm64", "CVE-2099-6666", "curl", "8.0", ["grype", "inspector"], {"grype": {"severity": "low"}, "inspector": {"severity": "low"}})]
+if scenario == "partial":   # a finding only google saw, on an image google did run on, while google missed another image
+    fs.append(f("production-amd64", "CVE-2099-7777", "busybox", "1.36", ["google"], {"google": {"severity": "critical"}}))
+d = {"images": images, "not_counted": sorted(i for i, st in images.items() if not st["counts_for_day"]),
+     "scanner_failures": sorted("%s on %s" % (s, i) for i, st in images.items() for s in st["did_not_run"]),
+     "findings": fs, "vex_covered": [], "issue": pm.render_issue([x for x in fs if x["status"] == "report"])}
+d["unique"] = [x for x in fs if x["unique"]]
+d["exit"] = 2 if (d["not_counted"] or d["scanner_failures"]) else 1
+json.dump(d, open(vp, "w"))
+m = json.load(open(".github/agent/fixtures/run/manifest-01.json"))
+m["scanner_set"] = "panel"
+if scenario == "nopanel":
+    rep = {s: None for s in P.PANEL_SCANNERS}
+    st = {s: {"ran": False, "scan_ok": False, "quorum_ok": False, "version": None, "reason": "panel-evidence has no verdict.json", "images_ran": 0, "images_expected": 0, "package_count": 0} for s in P.PANEL_SCANNERS}
+    m["panel"] = {"verdict": None, "not_counted": None, "scanner_failures": None, "scanner_reports": rep, "scanner_status": st}
+else:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("m", ".github/agent/bin/auditor-manifest.py"); M = importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+    m["panel"] = M.panel_block(out)
+m["scanner_reports"] = m["panel"]["scanner_reports"]; m["scanner_status"] = m["panel"]["scanner_status"]
+json.dump(m, open(os.path.join(out, "manifest.json"), "w"))
+PYEOF
+for sc in ok uncounted nopanel googlegone partial multi; do "$PY" "$WORK/mkpm.py" $sc "$WORK/pm-$sc"; done
+
+# g2p.py <manifest.json>: turn a hand-written single-scanner manifest (scanner_reports.grype = a Grype match list, optionally
+# scanner_reports.snyk-style siblings ignored) into the panel form the auditor reads: one verdict on production-amd64 holding the
+# Grype matches (seen by Grype alone, so each is a unique-lineage finding as before), every scanner "ran" with 10 packages.
+cat > "$WORK/g2p.py" <<'PYEOF'
+import json, os, sys, importlib.util
+sys.path.insert(0, ".github/agent/bin")
+from auditorlib import parsers as P
+pm = P._panel_module()
+spec = importlib.util.spec_from_file_location("m", ".github/agent/bin/auditor-manifest.py"); M = importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
+mp = sys.argv[1]; m = json.load(open(mp)); out = os.path.dirname(mp)
+images = {}
+for im in sorted(P.panel_images()):
+    exp = [s for s in P.PANEL_SCANNERS if P.panel_expected(s, im)]
+    images[im] = {"counts": {s: 10 for s in exp}, "did_not_run": [], "ran": sorted(exp), "counts_for_day": True}
+fs, seen = [], set()
+gp = (m.get("scanner_reports") or {}).get("grype")
+for mt in (json.load(open(gp)).get("matches") or [] if gp else []):
+    v, a = mt["vulnerability"], mt["artifact"]
+    pn, pv = pm._purl_name_version(a["purl"]) if a.get("purl") else (None, None)
+    name, ver = a.get("name") or pn, a.get("version") or pv or "0"
+    fixv = (v.get("fix") or {}).get("versions") or []
+    purl = a.get("purl") or "pkg:generic/%s@%s" % (name, ver)
+    im = a.get("image") or "production-amd64"                      # a test may put one artifact on another image
+    k = pm.key_of(im, v["id"], name, ver)
+    if k in seen: continue
+    seen.add(k)
+    det = {}
+    sev = (v.get("severity") or "").lower()
+    if sev in ("negligible", "low", "medium", "high", "critical"): det["severity"] = sev
+    if (v.get("fix") or {}).get("state") == "fixed" and fixv: det["fixed_version"] = fixv[0]
+    fs.append({"image": im, "id": v["id"], "package": name, "version": ver, "seen_by": ["grype"], "of": len(images[im]["ran"]), "unique": True,
+               "status": "unique", "purls": [purl], "details": {"grype": det}})
+sp = (m.get("scanner_reports") or {}).get("snyk")                  # a second, Snyk-shaped report becomes Google's record of the same CVE
+for v in (json.load(open(sp)).get("vulnerabilities") or [] if sp else []):
+    for cid in ((v.get("identifiers") or {}).get("CVE") or [v["id"]]):
+        sv = (v.get("severity") or "").lower()
+        hit = [f for f in fs if f["id"] == cid]
+        if hit:
+            f = hit[0]; f["seen_by"] = ["google", "grype"]; f["unique"] = False; f["status"] = "report"
+            f["details"]["google"] = {"severity": sv} if sv in ("negligible", "low", "medium", "high", "critical") else {}
+        else:
+            name, ver = v.get("packageName"), (v.get("version") or (pm._purl_name_version(v["purl"])[1] if v.get("purl") else "1.0") or "1.0")
+            fs.append({"image": "production-amd64", "id": cid, "package": name, "version": ver, "seen_by": ["google"], "of": 4, "unique": True,
+                       "status": "unique", "purls": [v["purl"]] if v.get("purl") else [], "details": {"google": {}}})
+reported = [f for f in fs if f["status"] == "report"]
+d = {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs, "vex_covered": [], "issue": pm.render_issue(reported),
+     "unique": [f for f in fs if f["unique"]], "exit": 1 if reported else 0}
+os.makedirs(os.path.join(out, "panel"), exist_ok=True)
+json.dump(d, open(os.path.join(out, "panel", "verdict.json"), "w"))
+m["scanner_set"] = "panel"; m["panel"] = M.panel_block(os.path.join(out, "panel"))
+m["scanner_reports"] = m["panel"]["scanner_reports"]; m["scanner_status"] = m["panel"]["scanner_status"]
+json.dump(m, open(mp, "w"))
+PYEOF
+
 begin "req1-ac1-workflow-path" "one auditor workflow at .github/workflows/auditor.yml and no other auditor workflow"
 if ! have "$WF"; then no "$WF present" "absent"; else
   n="$(grep -lRi 'agent/bin/auditor' .github/workflows 2>/dev/null | wc -l | tr -d ' ')"
@@ -201,20 +295,19 @@ run "$PY" "$BIN/auditor-build-parity.py" --run-state "$F/run-state/rs-01.json" -
 ########################################################################
 echo "=== REQ-AUD-2 ==="
 CDIR="$WORK/classify"; rm -rf "$CDIR"
-begin "req2-ac1-false-positive" "the statement FOR the FP finding is not_affected with a justification and repository_url-scoped product; a non-empty grype ignore cites the VEX; the report places it in section 5 not 3"
+begin "req2-ac1-false-positive" "the statement FOR the FP finding is not_affected with a justification and repository_url-scoped product; no per-scanner ignore file is written (scanner-panel rule 4: the VEX is the only exception); the report places it in section 5 not 3"
 run "$PY" "$BIN/auditor-classify.py" --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$CDIR" && {
   st="$(vf "$CDIR/vex/CVE-2016-2781.openvex.json" CVE-2016-2781 's["status"]')"
   ju="$(vf "$CDIR/vex/CVE-2016-2781.openvex.json" CVE-2016-2781 's.get("justification")')"
   prod="$(vf "$CDIR/vex/CVE-2016-2781.openvex.json" CVE-2016-2781 'json.dumps(s.get("products"))')"
-  igsz="$( [ -s "$CDIR/ignores/grype/CVE-2016-2781.json" ] && echo nonempty || echo empty )"
-  igcite="$(pj "$CDIR/ignores/grype/CVE-2016-2781.json" 'd.get("vex")')"
+  igsz="$( [ -e "$CDIR/ignores/grype/CVE-2016-2781.json" ] && echo written || echo none )"
   fpev="$(pj "$CDIR/evidence/CVE-2016-2781.evidence.json" 'str(bool(d.get("evidence")))')"
   s5="$(sect_ids "$CDIR/report.md" 5)"; s3="$(sect_ids "$CDIR/report.md" 3)"
   fpstat="$(tree_vex_status_set "$CDIR" $(alias_set CVE-2016-2781))"
   { eq "$fpstat" "not_affected" && eq "$st" "not_affected" && eq "$fpev" "True" && [ "$ju" != "$MISS" ] && printf '%s' "$prod" | grep -q 'repository_url=ghcr.io/fosterstack/cache' \
-    && eq "$igsz" "nonempty" && [ "$igcite" != "$MISS" ] \
+    && eq "$igsz" "none" \
     && printf '%s' "$s5" | grep -q 'CVE-2016-2781' && ! printf '%s' "$s3" | grep -q 'CVE-2016-2781'; } \
-    && ok || no "not_affected+justification+scoped product, ignore cites VEX, section-5 placement" "status=$st just=$ju ignore=$igsz cite=$igcite sec5=[$s5] sec3=[$s3]"; }
+    && ok || no "not_affected+justification+scoped product, no ignore file, section-5 placement" "status=$st just=$ju ignore=$igsz sec5=[$s5] sec3=[$s3]"; }
 
 begin "req2-ac2a-notpullable-and-unreachable" "the target's statement is not_affected/vulnerable_code_not_in_execute_path; the reachable sibling does NOT get a not_affected VEX; empty ledger"
 o="$WORK/ac2a"; rm -rf "$o"
@@ -240,8 +333,43 @@ o="$WORK/ac3"; rm -rf "$o"; ghs="$WORK/ac3-gh.json"; rm -f "$ghs"
 run "$PY" "$BIN/auditor-classify.py" --finding GO-2021-0113 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$STUB" --github "$GH" --state "$ghs" --out "$o" && {
   kind="$(pj "$o/action/GO-2021-0113.json" 'd.get("kind")')"; to="$(pj "$o/action/GO-2021-0113.json" 'd.get("to")')"
   novex="$(tree_has_vex_for "$o" GO-2021-0113)"
-  { eq "$kind" "bump_pr" && [ "$to" != "$MISS" ] && [ "$to" != "0.3.0" ] && eq "$novex" "no"; } \
-    && ok || no "bump_pr forward, no not_affected VEX" "kind=$kind to=$to vex=$novex"; }
+  from="$(pj "$o/action/GO-2021-0113.json" 'd.get("from")')"
+  { eq "$kind" "bump_pr" && eq "$from" "v0.3.0" && eq "$to" "v0.3.7" && eq "$novex" "no"; } \
+    && ok || no "bump_pr from the scanned version to the stream's fixed version, no not_affected VEX" "kind=$kind from=$from to=$to vex=$novex"; }
+
+# the bump's versions come from govulncheck's own finding and stay with ONE module (cache#483 round 1)
+gvmk() { "$PY" - "$1" "$2" <<'PYEOF'
+import json, sys
+name, body = sys.argv[1], sys.argv[2]
+def fin(osv, fixed, trace): return {"finding": dict({"osv": osv, "trace": trace}, **({"fixed_version": fixed} if fixed else {}))}
+out = [{"config": {"scan_level": "symbol"}}, {"SBOM": {"modules": [{"path": "example.com/reach"}, {"path": "m/v1", "version": "v1.0.0"}, {"path": "m/v2", "version": "v2.0.0"}], "roots": ["example.com/reach"]}},
+       {"osv": {"id": "GO-2099-1", "aliases": ["CVE-2099-1"]}}]
+call = lambda mod, ver: [{"module": mod, "version": ver, "package": mod + "/p", "function": "F"}, {"module": "example.com/reach", "package": "example.com/reach", "function": "main"}]
+if name == "nofix": out += [fin("GO-2099-1", None, call("m/v2", "v2.0.0"))]
+elif name == "twomods": out += [fin("GO-2099-1", None, [{"module": "m/v1", "version": "v1.0.0", "package": "m/v1/p"}]), fin("GO-2099-1", "v2.2.0", call("m/v2", "v2.0.0"))]
+elif name == "bothreach": out += [fin("GO-2099-1", "v1.1.0", call("m/v1", "v1.0.0")), fin("GO-2099-1", "v2.2.0", call("m/v2", "v2.0.0"))]
+open(sys.argv[2], "w").write("\n".join(json.dumps(x) for x in out) + "\n")
+PYEOF
+}
+begin "req2-ac3b-bump-needs-a-known-fix" "a reachable Go finding whose stream names no fixed version gets NO bump action (never from/to with a null) and stays open with the reason"
+gvmk nofix "$WORK/gv-nofix.jsonl"; o="$WORK/ac3b"; rm -rf "$o"
+run "$PY" "$BIN/auditor-classify.py" --finding GO-2099-1 --manifest "$F/run/manifest-01.json" --govulncheck "$WORK/gv-nofix.jsonl" --adjudicator "$NOCALL" --out "$o" && {
+  act="$( [ -e "$o/action/GO-2099-1.json" ] && echo yes || echo no )"; op="$(pj "$o/status/GO-2099-1.json" 'd.get("open")')"; why="$(pj "$o/status/GO-2099-1.json" 'd.get("reason")')"
+  { eq "$act" "no" && eq "$op" "true" && printf '%s' "$why" | grep -qi 'fix'; } && ok || no "no bump, open, reason names the missing fix" "action=$act open=$op reason=$why"; }
+
+begin "req2-ac3c-bump-versions-stay-with-their-module" "one advisory affecting two modules: the bump pairs the reachable module's installed version with ITS fix (m/v2 v2.0.0 -> v2.2.0), never the other module's version; two reachable modules are ambiguous: no bump"
+gvmk twomods "$WORK/gv-two.jsonl"; gvmk bothreach "$WORK/gv-both.jsonl"; o="$WORK/ac3c"; o2="$WORK/ac3d"; rm -rf "$o" "$o2"
+run "$PY" "$BIN/auditor-classify.py" --finding GO-2099-1 --manifest "$F/run/manifest-01.json" --govulncheck "$WORK/gv-two.jsonl" --adjudicator "$NOCALL" --out "$o" && {
+  fr="$(pj "$o/action/GO-2099-1.json" 'd.get("from")')"; to="$(pj "$o/action/GO-2099-1.json" 'd.get("to")')"
+  run "$PY" "$BIN/auditor-classify.py" --finding GO-2099-1 --manifest "$F/run/manifest-01.json" --govulncheck "$WORK/gv-both.jsonl" --adjudicator "$NOCALL" --out "$o2"
+  amb="$( [ -e "$o2/action/GO-2099-1.json" ] && echo bump || echo none )"
+  { eq "$fr" "v2.0.0" && eq "$to" "v2.2.0" && eq "$amb" "none"; } && ok || no "versions stay with their module; ambiguity yields no bump" "from=$fr to=$to two_reachable=$amb"; }
+
+begin "req2-ac3d-bump-by-the-finding-alias" "a finding named by the advisory's CVE alias (CVE-2021-38561) resolves to its reachable Go advisory and gets the same bump"
+o="$WORK/ac3e"; rm -rf "$o"
+run "$PY" "$BIN/auditor-classify.py" --finding CVE-2021-38561 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o" && {
+  kind="$(pj "$o/action/CVE-2021-38561.json" 'd.get("kind")')"; to="$(pj "$o/action/CVE-2021-38561.json" 'd.get("to")')"
+  { eq "$kind" "bump_pr" && eq "$to" "v0.3.7"; } && ok || no "alias resolves to the reachable advisory's bump" "kind=$kind to=$to"; }
 
 begin "req2-ac4-not-reachable" "the target's statement is not_affected with the reachability justification and names the finding; a reachable finding does NOT become not_affected; empty ledger"
 o="$WORK/ac4"; rm -rf "$o"
@@ -299,16 +427,15 @@ run "$PY" "$BIN/auditor-poam.py" --finding "$F/poam/poam-05.json" --kev "$F/kev/
   { eq "$th" "at_or_above" && eq "$why" "known-exploited" && eq "$iss" "1" && ledger_empty; } \
     && ok || no "at_or_above via known-exploited, one issue, empty ledger" "threshold=$th reason=$why issues=$iss ledger=$(ledger_n)"; }
 
-begin "req2-ac5c-expiry-reopens-item" "expiry with no fix DELETES the seeded ignore and VEX under every alias (world check) and returns the finding to section 3"
+begin "req2-ac5c-expiry-reopens-item" "expiry with no fix DELETES the seeded VEX statement under every alias (world check) and returns the finding to section 3"
 o="$WORK/ac5c"; supp="$WORK/ac5c-supp"; rm -rf "$o" "$supp"
-mkdir -p "$supp/ignores/grype" "$supp/.vex"
-echo '{"id":"CVE-2011-3374","vex":"stmt","expiry":"2026-08-23"}' > "$supp/ignores/grype/CVE-2011-3374.json"
+mkdir -p "$supp/.vex"
 printf '{"statements":[{"vulnerability":{"name":"CVE-2011-3374"},"status":"affected"}]}' > "$supp/.vex/fosterstack-cache.openvex.json"
 run "$PY" "$BIN/auditor-poam.py" --recheck --package "$F/poam/poam-04.json" --suppression-dir "$supp" --today 2026-09-22 --out "$o" && {
   rem="$(pj "$o/recheck.json" 'd.get("ignore_removed")')"; sec="$(pj "$o/recheck.json" 'd.get("returned_to_section")')"
-  anyign="$(ignore_names_any "$supp" $(alias_set CVE-2011-3374))"; anyvex="$(tree_has_vex_for "$supp" CVE-2011-3374)"
-  { eq "$rem" "true" && eq "$sec" "3" && eq "$anyign" "no" && eq "$anyvex" "no"; } \
-    && ok || no "seeded ignore AND VEX deleted from the state under every alias; section 3" "removed=$rem section=$sec any_ignore=$anyign any_vex=$anyvex"; }
+  anyvex="$(tree_has_vex_for "$supp" CVE-2011-3374)"
+  { eq "$rem" "true" && eq "$sec" "3" && eq "$anyvex" "no"; } \
+    && ok || no "seeded VEX statement deleted from the state; section 3" "removed=$rem section=$sec any_vex=$anyvex"; }
 
 begin "req2-ac6-categories-disjoint" "classification.json finding-id set EQUALS the manifest's id set (never vacuous), each with one valid category"
 run "$PY" "$BIN/auditor-classify.py" --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$CDIR" && {
@@ -321,16 +448,8 @@ try:
         for y in a:
             if re.fullmatch(r"CVE-\d{4}-\d+",y or ""): return y
         return (x.get("id") or "").replace("DEBIAN-CVE-","CVE-")
-    g=json.load(open(m["scanner_reports"]["grype"]))
-    for mt in g["matches"]: ids.add(mt["vulnerability"]["id"])
-    t=json.load(open(m["scanner_reports"]["trivy"]))
-    for r in t["Results"]:
-        for v in r.get("Vulnerabilities",[]): ids.add(v["VulnerabilityID"])
-    for k in ("osv-scanner","osv-scanner-gomod"):
-        o=json.load(open(m["scanner_reports"][k]))
-        for r in o["results"]:
-            for p in r.get("packages",[]):
-                for v in p.get("vulnerabilities",[]): ids.add(cve(v))
+    v=json.load(open(m["panel"]["verdict"]))
+    for f in v["findings"]: ids.add(cve({"id": f["id"], "aliases": [a for sc in f["details"].values() for a in sc.get("aliases", [])]}))
     got={f["id"] for f in d["findings"]}
     valid={"false_positive","not_affected_unreachable","real_fixable","risk_acceptance"}
     okc=len(d["findings"])>0 and got==ids and all(f.get("category") in valid for f in d["findings"]) and len(got)==len(d["findings"])
@@ -395,50 +514,36 @@ run "$PY" "$BIN/auditor-defectlog.py" run --log "$WORK/log4.json" --findings "$F
 
 begin "req3-ac5-second-exact-key-same-row" "from a log lacking the second key, judgment adds it to the SAME row; a later exact probe hits with an empty ledger"
 o1="$WORK/dl5a"; o2="$WORK/dl5b"; rm -rf "$o1" "$o2"
-"$PY" -c 'import json;d=json.load(open(".github/agent/fixtures/dl/log.json"));d["defects"][1]["keys"]=[k for k in d["defects"][1]["keys"] if k["scanner"]!="trivy"];json.dump(d,open("'"$WORK"'/log5.json","w"))'
+"$PY" -c 'import json;d=json.load(open(".github/agent/fixtures/dl/log.json"));d["defects"][1]["keys"]=[k for k in d["defects"][1]["keys"] if k["scanner"]!="scout"];json.dump(d,open("'"$WORK"'/log5.json","w"))'
 rowbefore="$(pj "$WORK/log5.json" 'max(len(x["keys"]) for x in d["defects"])')"
 run "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log5.json" \
-  --finding trivy CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$F/run/manifest-01.json" \
+  --finding scout CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$F/run/manifest-01.json" \
   --adjudicator "$STUB" --out "$o1" && {
   used="$( [ -s "$LEDGER" ] && echo y || echo n )"; : > "$LEDGER"
-  # the SAME row that already holds a CVE-2011-3374 key must now hold a trivy
+  # the SAME row that already holds a CVE-2011-3374 key must now hold a scout
   # CVE-2011-3374 key (not a key on some other row, nor a WRONG finding id).
   addedright="$("$PY" -c 'import json,sys
 try:
     d=json.load(open(sys.argv[1])); ok=False; purl=sys.argv[2]
     for row in d["defects"]:
         ids={k["finding_id"] for k in row["keys"]}
-        if "CVE-2011-3374" in ids and any(k["scanner"]=="trivy" and k["finding_id"]=="CVE-2011-3374" and k["purl"]==purl for k in row["keys"]): ok=True
+        if "CVE-2011-3374" in ids and any(k["scanner"]=="scout" and k["finding_id"]=="CVE-2011-3374" and k["purl"]==purl for k in row["keys"]): ok=True
     print("yes" if ok else "no")
 except Exception: print("no")' "$WORK/log5.json" 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0')"
-  run "$PY" "$BIN/auditor-defectlog.py" probe --log "$WORK/log5.json" --hit trivy CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --adjudicator "$NOCALL" --out "$o2" && {
+  run "$PY" "$BIN/auditor-defectlog.py" probe --log "$WORK/log5.json" --hit scout CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --adjudicator "$NOCALL" --out "$o2" && {
     hit="$(pj "$o2/probe.json" 'd.get("hit")')"; disp="$(pj "$o2/probe.json" 'd.get("hit_disposition")')"
     { eq "$used" "y" && eq "$addedright" "yes" && eq "$hit" "true" && eq "$disp" "false_positive" && ledger_empty; } \
-      && ok || no "trivy CVE-2011-3374 key with the exact purl on the SAME row; later probe returns that row's disposition" "judgment=$used added_to_right_row_and_purl=$addedright hit=$hit disposition=$disp ledger=$(ledger_n)"; }; }
+      && ok || no "scout CVE-2011-3374 key with the exact purl on the SAME row; later probe returns that row's disposition" "judgment=$used added_to_right_row_and_purl=$addedright hit=$hit disposition=$disp ledger=$(ledger_n)"; }; }
 
 ########################################################################
 echo "=== REQ-AUD-4 ==="
-begin "req4-ac1-four-suppressions-cite-vex" "OpenVEX status not_affected; the .snyk has an entry with a real expires field and the VEX id; the OSV ignore has an id+reason and the VEX id"
+begin "req4-ac1-four-suppressions-cite-vex" "the suppression CLI writes the OpenVEX (status not_affected) and NO per-scanner ignore file: the VEX is the only exception (scanner-panel rule 4)"
 o="$WORK/sup"; rm -rf "$o"
 run "$PY" "$BIN/auditor-suppress.py" --disposition "$F/suppression/disp-01.json" --out "$o" && {
-  vid="stmt-cve-2011-3374"
   vst="$(vf "$o/.vex/fosterstack-cache.openvex.json" CVE-2011-3374 's["status"]')"
-  snykok="$("$PY" -c 'import sys
-try: import yaml
-except Exception:
-    sys.path.insert(0,".github/agent/fixtures/testlib"); import pyyaml as yaml
-try:
-    d=yaml.safe_load(open(sys.argv[1]).read()) or {}
-    ig=d.get("ignore",{}); ok=False
-    for k,v in ig.items():
-        for e in v:
-            for sel,body in e.items():
-                if body.get("expires") and "stmt-cve-2011-3374" in str(body.get("vex","")): ok=True
-    print("yes" if ok else "no")
-except Exception: print("no")' "$o/.snyk")"
-  osvok="$(grep -qF 'stmt-cve-2011-3374' "$o/osv-scanner.toml" 2>/dev/null && grep -qiE 'reason' "$o/osv-scanner.toml" && grep -qF 'CVE-2011-3374' "$o/osv-scanner.toml" && echo yes || echo no)"
-  { eq "$vst" "not_affected" && eq "$snykok" "yes" && eq "$osvok" "yes"; } \
-    && ok || no "VEX not_affected + real .snyk expiry/vex + OSV id/reason/vex" "vex=$vst snyk=$snykok osv=$osvok"; }
+  extra="$(ls -A "$o" | grep -cE '^(\.snyk|osv-scanner\.toml)$')"
+  { eq "$vst" "not_affected" && eq "$extra" "0"; } \
+    && ok || no "VEX not_affected and no .snyk / osv-scanner.toml" "vex=$vst ignore_files=$extra"; }
 
 begin "req4-ac2-vex-repository-url-scoped" "the AUTHORED product identifier is repository_url-scoped to ghcr.io/fosterstack/cache (parsed from the authored VEX, not a boolean)"
 o="$WORK/scope"; rm -rf "$o"
@@ -464,14 +569,49 @@ print("ok" if not bad else "BAD:"+";".join(bad))' "$o")"
   ins="$( { grep -rl "_evidence\|_target_date" "$o"/vex 2>/dev/null || true; } | wc -l | tr -d ' ')"
   { eq "$conf" "ok" && eq "$ins" "0"; } && ok || no "all produced VEX OpenVEX-conformant; no _evidence/_target_date in statements" "conformance=$conf inline_custom_keys=$ins"; }
 
-begin "req4-ac3-votes-by-lineage" "a four-scanner CVE counts 3 lineages; a grype-only CVE counts 1 (a constant fails one); empty ledger"
+begin "req4-ac3-votes-by-lineage" "a four-scanner CVE counts 4 lineages (Grype, Scout, Inspector and Google keep their own advisory data); a grype-only CVE counts 1 (a constant fails one); empty ledger"
 o="$WORK/v1"; o2="$WORK/v2"; rm -rf "$o" "$o2"
 run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-01.json" --cve CVE-2011-3374 --adjudicator "$NOCALL" --out "$o" && {
   dl="$(pj "$o/votes.json" 'd.get("distinct_lineages")')"; e1="$(ledger_empty && echo y || echo n)"; : > "$LEDGER"
   run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-01.json" --cve CVE-2016-2781 --adjudicator "$NOCALL" --out "$o2" && {
     dl2="$(pj "$o2/votes.json" 'd.get("distinct_lineages")')"
-    { eq "$dl" "3" && eq "$dl2" "1" && eq "$e1" "y" && ledger_empty; } \
-      && ok || no "3 lineages for four-scanner, 1 for grype-only, empty ledger" "four=$dl one=$dl2 ledger=$(ledger_n)"; }; }
+    { eq "$dl" "4" && eq "$dl2" "1" && eq "$e1" "y" && ledger_empty; } \
+      && ok || no "4 lineages for four-scanner, 1 for grype-only, empty ledger" "four=$dl one=$dl2 ledger=$(ledger_n)"; }; }
+
+begin "req4-ac3b-no-verdict-is-unavailable-not-corroborated" "a panel manifest with no verdict gives votes.json handling 'evidence_unavailable' (no scanners, no lineages), never 'corroborated'; and a defect-log reconcile against it asks no model and says the report is unavailable"
+o="$WORK/v3"; rm -rf "$o"; o2="$WORK/rc3"; rm -rf "$o2"; cp "$F/dl/log.json" "$WORK/log-nv.json"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-votes.py" --manifest "$WORK/pm-nopanel/manifest.json" --cve CVE-2011-3374 --adjudicator "$NOCALL" --out "$o" && {
+  hd="$(pj "$o/votes.json" 'd.get("handling")')"; nl="$(pj "$o/votes.json" 'd.get("distinct_lineages")')"
+  "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log-nv.json" --finding grype CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$WORK/pm-nopanel/manifest.json" --adjudicator "$NOCALL" --out "$o2" >/dev/null 2>&1
+  rs="$(pj "$o2/reconcile.json" 'd.get("reason")')"; ad="$(pj "$o2/reconcile.json" 'd.get("added")')"
+  { eq "$hd" "evidence_unavailable" && eq "$nl" "0" && printf '%s' "$rs" | grep -qi 'unavailable' && eq "$ad" "false" && ledger_empty; } \
+    && ok || no "no verdict: votes evidence_unavailable, reconcile unavailable without a model call" "handling=$hd lineages=$nl reason=$rs added=$ad ledger=$(ledger_n)"; }
+
+begin "req4-ac3c-a-down-scanner-is-not-evidence" "with Grype and Google down (manifest-down), a CVE only Grype saw is 'evidence_unavailable' (absence from the scanners that ran is not corroboration), and a reconcile for the down scanner, or against an unreadable verdict file, asks no model"
+o="$WORK/v4"; rm -rf "$o"; o2="$WORK/rc4"; o3="$WORK/rc5"; rm -rf "$o2" "$o3"; cp "$F/dl/log.json" "$WORK/log-dn.json"; : > "$LEDGER"
+"$PY" -c 'import json;m=json.load(open(".github/agent/fixtures/run/manifest-01.json"));m["panel"]["verdict"]="/nonexistent/verdict.json";json.dump(m,open("'"$WORK"'/m-gone.json","w"))'
+run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-down.json" --cve CVE-2016-2781 --adjudicator "$NOCALL" --out "$o" && {
+  hd="$(pj "$o/votes.json" 'd.get("handling")')"; sc="$(pj "$o/votes.json" 'd.get("scanners")')"
+  "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log-dn.json" --finding grype CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$F/run/manifest-down.json" --adjudicator "$NOCALL" --out "$o2" >/dev/null 2>&1
+  "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log-dn.json" --finding scout CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$WORK/m-gone.json" --adjudicator "$NOCALL" --out "$o3" >/dev/null 2>&1
+  r2="$(pj "$o2/reconcile.json" 'd.get("reason")')"; r3="$(pj "$o3/reconcile.json" 'd.get("reason")')"
+  o4="$WORK/v6"; rm -rf "$o4"; "$PY" "$BIN/auditor-votes.py" --manifest "$WORK/m-gone.json" --cve CVE-2011-3374 --adjudicator "$NOCALL" --out "$o4" >/dev/null 2>&1       # reports named, verdict file gone
+  hd2="$(pj "$o4/votes.json" 'd.get("handling")')"
+  printf 'not a stream\n' > "$WORK/gv-junk.jsonl"; o5="$WORK/ac3f"; rm -rf "$o5"
+  "$PY" "$BIN/auditor-classify.py" --finding CVE-2099-1 --manifest "$F/run/manifest-01.json" --govulncheck "$WORK/gv-junk.jsonl" --adjudicator "$NOCALL" --out "$o5" >/dev/null 2>&1
+  op="$(pj "$o5/status/CVE-2099-1.json" 'd.get("open")')"; act="$( [ -e "$o5/action/CVE-2099-1.json" ] && echo yes || echo no )"
+  { eq "$hd" "evidence_unavailable" && eq "$sc" "[]" && printf '%s' "$r2" | grep -qi unavailable && printf '%s' "$r3" | grep -qi unavailable && ledger_empty \
+    && eq "$hd2" "evidence_unavailable" && eq "$op" "true" && eq "$act" "no"; } \
+    && ok || no "down scanner, unreadable verdict and an unparseable govulncheck stream are unavailable evidence, no model call, no bump" "handling=$hd scanners=$sc down_reason=$r2 gone_reason=$r3 gone_votes=$hd2 junk_open=$op junk_action=$act ledger=$(ledger_n)"; }
+
+begin "req4-ac3d-a-partial-scanner-casts-no-vote" "Google missed one image (pm-partial) but its verdict still holds CVE-2099-7777: the report keeps that finding in Google's table (scan incomplete), while votes counts Google as unavailable: no scanner, handling 'evidence_unavailable'"
+o="$WORK/v5"; rm -rf "$o"
+run "$PY" "$BIN/auditor-votes.py" --manifest "$WORK/pm-partial/manifest.json" --cve CVE-2099-7777 --adjudicator "$NOCALL" --out "$o" && {
+  hd="$(pj "$o/votes.json" 'd.get("handling")')"; sc="$(pj "$o/votes.json" 'd.get("scanners")')"
+  o2="$WORK/v5r"; rm -rf "$o2"; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2" >/dev/null 2>&1
+  tbl="$(grep -c 'CVE-2099-7777' "$o2/reports/scanner-tables.txt" 2>/dev/null)"; tbl="${tbl:-0}"
+  { eq "$hd" "evidence_unavailable" && eq "$sc" "[]" && [ "$tbl" -ge 1 ] 2>/dev/null; } \
+    && ok || no "partial scanner: no vote, finding still in its table" "handling=$hd scanners=$sc table_rows=$tbl"; }
 
 begin "req4-ac4-unique-not-autoclosed" "a grype-only CVE is unique+suspect (not auto-closed); a four-scanner CVE is not unique (a constant fails one)"
 o="$WORK/u1"; o2="$WORK/u2"; rm -rf "$o" "$o2"
@@ -482,15 +622,15 @@ run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-01.json" --cve CVE
     { eq "$u" "true" && eq "$cl" "false" && eq "$hd" "suspect_investigated" && eq "$u2" "false"; } \
       && ok || no "unique+suspect for grype-only, not-unique for four-scanner" "unique=$u closed=$cl handling=$hd four_unique=$u2"; }; }
 
-begin "req4-ac5-consistency-check" "the inconsistent set yields the exact problem types (parsed array); a clean control set yields none"
+begin "req4-ac5-consistency-check" "a VEX statement that answers no live finding is flagged stale_vex (parsed array); a clean control set yields none"
 o="$WORK/c1"; o2="$WORK/c2"; rm -rf "$o" "$o2"
 run "$PY" "$BIN/auditor-consistency.py" --suppression-dir "$F/suppression/set-01" --live-findings "$F/run/manifest-01.json" --out "$o/consistency.json" && {
   types="$(pj "$o/consistency.json" '",".join(sorted({p["type"] for p in d["problems"]}))')"
   mkdir -p "$WORK/clean"
   run "$PY" "$BIN/auditor-consistency.py" --suppression-dir "$WORK/clean" --live-findings "$F/run/manifest-01.json" --out "$o2/consistency.json" && {
     cleann="$(pj "$o2/consistency.json" 'len(d["problems"])')"
-    { printf '%s' "$types" | grep -q 'stale_vex' && printf '%s' "$types" | grep -q 'tool_only_ignore' && eq "$cleann" "0"; } \
-      && ok || no "stale_vex+tool_only_ignore flagged; clean set has none" "types=$types clean_problems=$cleann"; }; }
+    { eq "$types" "stale_vex" && eq "$cleann" "0"; } \
+      && ok || no "stale_vex flagged; clean set has none" "types=$types clean_problems=$cleann"; }; }
 
 ########################################################################
 echo "=== REQ-AUD-5 ==="
@@ -633,7 +773,7 @@ printf '%s' "$(pj "$dl/result.json" 'd["closed"][0]["finding_id"]')" | grep -qE 
 : > "$LEDGER"; dv="$WORK/det-v"; rm -rf "$dv"
 "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-01.json" --cve CVE-2011-3374 --adjudicator "$NOCALL" --out "$dv" >/dev/null 2>&1 || detok=no
 [ -s "$LEDGER" ] && detok=no
-[ "$(pj "$dv/votes.json" 'd.get("distinct_lineages")')" = "3" ] || detok=no
+[ "$(pj "$dv/votes.json" 'd.get("distinct_lineages")')" = "4" ] || detok=no
 eq "$detok" "yes" && ok || no "each deterministic step exits 0, correct result, empty ledger" "a step errored, was wrong, or called the model"
 
 begin "req8-ac3-fallback-order-and-logged" "the ledger shows primary,rephrase,fallback with DISTINCT model roles for the refused finding, UNASSESSABLE adjudicated three times, refusals logged; the fully-refused one reaches section 4"
@@ -718,7 +858,7 @@ o="$WORK/run1"; shim="$WORK/run1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER
 run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
   s5="$(sect_ids "$o/report.md" 5)"; s3="$(sect_ids "$o/report.md" 3)"; s6="$(sed -n '/^## PRs and issues this run/,/^## 0\./p' "$o/report.md")"
   vexev="$(pj "$o/evidence/CVE-2016-2781.evidence.json" 'str(bool(d.get("evidence")))')"
-  ig="$(have "$o/ignores/grype/CVE-2016-2781.json" && echo yes || echo no)"
+  ig="$(have "$o/ignores/grype/CVE-2016-2781.json" && echo yes || echo no)"           # panel mode writes no per-scanner ignore file (rule 4)
   unrv="$(pj "$o/vex/CVE-2020-14040.openvex.json" 'd["statements"][0].get("justification")')"
   acc="$(have "$o/.auditor/accepted-items.json" && echo yes || echo no)"
   status="$(grep -c 'AUDIT COMPLETE' "$o/report.md" 2>/dev/null)"; status="${status:-0}"
@@ -737,7 +877,7 @@ print(bad)' "$o/report.md")"
   det14040="$(grep -c '^CVE-2020-14040|' "$LEDGER" 2>/dev/null)"; det14040="${det14040:-0}"
   shimcreates="$(grep -cE 'pr create|issue create|gh .*create' "$shim" 2>/dev/null)"; shimcreates="${shimcreates:-0}"
   { printf '%s' "$s5" | grep -q CVE-2016-2781 && printf '%s' "$s5" | grep -q CVE-2020-14040 && printf '%s' "$s3" | grep -q CVE-2023-4911 \
-    && eq "$vexev" "True" && eq "$ig" "yes" && eq "$unrv" "vulnerable_code_not_in_execute_path" && eq "$acc" "yes" \
+    && eq "$vexev" "True" && eq "$ig" "no" && eq "$unrv" "vulnerable_code_not_in_execute_path" && eq "$acc" "yes" \
     && eq "$s3noaction" "0" && printf '%s' "$s6" | grep -qi 'would open' && [ "$status" -ge 1 ] 2>/dev/null \
     && eq "$det2781" "0" && eq "$det14040" "0" && eq "$shimcreates" "0"; } \
     && ok || no "deterministic §5/§3, every §3 row actioned, §6 would-open, AUDIT COMPLETE, deterministic paths made no model call, no shim" "s5=[$s5] s3=[$s3] s6=[$s6] vexev=$vexev ig=$ig unreach=$unrv acc=$acc s3_no_action=$s3noaction status=$status det2781=$det2781 det14040=$det14040 shim=$shimcreates"; }
@@ -914,14 +1054,6 @@ print("secs=%s rows=%d noaction=%d" % (secs, len(r), len(noact)))' "$o/classific
     && printf '%s' "$s5" | grep -q CVE-2011-3374 && printf '%s' "$s2" | grep -q CVE-2011-3374; } \
     && ok || no "sibling routed (§5 + §2), each actioned" "$rows s5=[$s5] s2=[$s2]"; }
 
-begin "il2-zero-package-scanner-not-quorum" "image scanners recorded ran:true but package_count 0 do NOT count toward quorum: the run is AUDIT INCOMPLETE and exits non-zero"
-o="$WORK/il2"; rm -rf "$o"
-"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-zeropkg.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1; rcz=$?
-inc="$(grep -qi 'AUDIT INCOMPLETE' "$o/report.md" && echo yes || echo no)"
-quorum="$(grep -qiE '0 of 4 inventoried the OS layer' "$o/report.md" && grep -qi 'OS counts:' "$o/report.md" && echo yes || echo no)"
-{ eq "$inc" "yes" && eq "$quorum" "yes" && [ "$rcz" -ne 0 ] 2>/dev/null; } \
-  && ok || no "AUDIT INCOMPLETE, 0 of 4 inventoried OS + per-scanner counts, non-zero exit" "incomplete=$inc quorum=$quorum exit=$rcz"
-
 begin "il3-model-id-never-in-report" "when the adjudicator errors, the Conclusion is a generic withheld line — the model id / SDK error text never reaches report.md"
 o="$WORK/il3"; rm -rf "$o"; fa="$WORK/il3-fail.py"
 cat > "$fa" <<'PYEOF'
@@ -958,7 +1090,7 @@ comments="$(grep -c 'issue comment .*CVE-2099-9001' "$shim" 2>/dev/null)"; comme
 
 begin "dadj-1-adjudicator-unavailable-one-issue-incomplete" "when the adjudicator is UNAVAILABLE (every call errors), the run is AUDIT INCOMPLETE naming the cause, exactly ONE aggregate owner issue 'adjudicator unavailable — N findings unassessed' is opened (never one per finding), and the header names the (masked) cause (R-live fixes 1+3)"
 o="$WORK/dadj1"; shim="$WORK/dadj1.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
-env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$F/adjudicator/fail-on-call.py" --out "$o" >/dev/null 2>&1
+env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$F/adjudicator/fail-on-call.py" --out "$o" >/dev/null 2>&1
 inc="$(grep -c 'AUDIT INCOMPLETE:.*adjudicator unavailable' "$o/report.md" 2>/dev/null)"; inc="${inc:-0}"
 agg="$(grep -cE "issue create.*adjudicator unavailable — [0-9]+ findings unassessed" "$shim" 2>/dev/null)"; agg="${agg:-0}"
 perfinding="$(grep -c 'issue create.*unassessed-after-fallback' "$shim" 2>/dev/null)"; perfinding="${perfinding:-0}"
@@ -973,23 +1105,13 @@ import os, sys
 sys.stderr.write("Error code: 401 auth failed for %s using claude-secret-zzz\n" % os.environ.get("AUDITOR_MODEL_PRIMARY", ""))
 sys.exit(7)
 PYEOF
-AUDITOR_MODEL_PRIMARY="SENTINEL_SECRET_9137" "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --out "$o" >/dev/null 2>&1
+AUDITOR_MODEL_PRIMARY="SENTINEL_SECRET_9137" "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --out "$o" >/dev/null 2>&1
 surfaced="$(grep -c 'UNAVAILABLE' "$o/report.md" 2>/dev/null)"; surfaced="${surfaced:-0}"
 leak_secret="$(grep -c 'SENTINEL_SECRET_9137' "$o/report.md" 2>/dev/null)"; leak_secret="${leak_secret:-0}"
 leak_model="$(grep -c 'claude-secret-zzz' "$o/report.md" 2>/dev/null)"; leak_model="${leak_model:-0}"
 masked="$(grep -cE '<AUDITOR_MODEL_PRIMARY>|<model-id>' "$o/report.md" 2>/dev/null)"; masked="${masked:-0}"
 { [ "$surfaced" -ge 1 ] 2>/dev/null && eq "$leak_secret" "0" && eq "$leak_model" "0" && [ "$masked" -ge 1 ] 2>/dev/null; } \
   && ok || no "error surfaced; secret value + model id masked" "surfaced=$surfaced leak_secret=$leak_secret leak_model=$leak_model masked=$masked"
-
-begin "dadj-3-quorum-status-shows-per-scanner-os-counts" "the OS-package quorum line shows the per-scanner OS counts it compared, names 0-OS scanners as 'did not inventory OS' (abstain, not a disagreeing vote), and never claims '4/4 agreeing' against disparate counts (R-live fix 2)"
-o="$WORK/dadj3"; rm -rf "$o"
-"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-osquorum.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1
-counts="$(grep -c 'OS counts: grype(0), trivy(53), osv-scanner(0), snyk(53)' "$o/report.md" 2>/dev/null)"; counts="${counts:-0}"
-abstain="$(grep -c 'did not inventory OS: grype, osv-scanner' "$o/report.md" 2>/dev/null)"; abstain="${abstain:-0}"
-inv2="$(grep -c '2 of 4 inventoried the OS layer' "$o/report.md" 2>/dev/null)"; inv2="${inv2:-0}"
-notfour="$(grep -cE '4/4 (agreeing|\(need)' "$o/report.md" 2>/dev/null)"; notfour="${notfour:-0}"
-{ [ "$counts" -ge 1 ] 2>/dev/null && [ "$abstain" -ge 1 ] 2>/dev/null && [ "$inv2" -ge 1 ] 2>/dev/null && eq "$notfour" "0"; } \
-  && ok || no "quorum shows compared per-scanner OS counts; 0-OS scanners abstain; no false 4/4" "counts=$counts abstain=$abstain inv2=$inv2 false_4of4=$notfour"
 
 begin "dadj-4-owner-issue-one-per-cve-package-scopes-in-body" "an at-threshold no-fix (CVE, package) present in TWO scopes opens exactly ONE owner-decision issue whose body lists BOTH scopes — never one issue per binary/version that vendors the package (R-live fix 4)"
 o="$WORK/dadj4"; shim="$WORK/dadj4.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
@@ -1001,33 +1123,6 @@ scopes2="$(grep -c 'Scope(s) (2)' "$shim" 2>/dev/null)"; scopes2="${scopes2:-0}"
 { eq "$creates" "1" && [ "$both" -ge 1 ] 2>/dev/null && [ "$both2" -ge 1 ] 2>/dev/null && [ "$scopes2" -ge 1 ] 2>/dev/null; } \
   && ok || no "one issue for (CVE,package) with both scopes in the body" "creates=$creates libfoo@1=$both libfoo@2=$both2 scopes2=$scopes2"
 
-begin "dadj-5-grype-counts-apk-and-rpm-os-packages" "grype's OS-package inventory counts apk (Alpine) and rpm, not just deb — an Alpine image inventories its OS layer, so the quorum does not fail on every Alpine base (R-live: apk count)"
-gr="$WORK/grype-alpine.json"
-cat > "$gr" <<'JSON'
-{"matches":[
- {"artifact":{"name":"musl","version":"1.2.4","type":"apk","purl":"pkg:apk/alpine/musl@1.2.4"}},
- {"artifact":{"name":"busybox","version":"1.36","type":"apk","purl":"pkg:apk/alpine/busybox@1.36"}},
- {"artifact":{"name":"openssl","version":"3.1","type":"apk","purl":"pkg:apk/alpine/openssl@3.1"}},
- {"artifact":{"name":"leftpad","version":"1.0","type":"npm","purl":"pkg:npm/leftpad@1.0"}}
-],"descriptor":{"name":"grype","version":"0.118.0","db":{"status":{"from":"x_2026-09-25T00:00:00Z_x"}}}}
-JSON
-r="$(MF="$gr" "$PY" - <<'PYEOF'
-import importlib.util, os
-spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
-total, osp, db, findings = M._inv_grype(os.environ["MF"])
-print("os=%d apk_type=%s apk_purl=%s rpm=%s deb=%s npm=%s" % (
-  osp, M._is_os_pkg({"type":"apk"}), M._is_os_pkg({"purl":"pkg:apk/alpine/x@1"}),
-  M._is_os_pkg({"type":"rpm"}), M._is_os_pkg({"type":"deb"}),
-  M._is_os_pkg({"type":"npm","purl":"pkg:npm/x@1"})))
-PYEOF
-)"
-osc="$(printf '%s' "$r" | grep -oE 'os=[0-9]+' | cut -d= -f2)"; osc="${osc:-0}"
-apkt="$(printf '%s' "$r" | grep -oE 'apk_type=[A-Za-z]+' | cut -d= -f2)"
-rpm="$(printf '%s' "$r" | grep -oE 'rpm=[A-Za-z]+' | cut -d= -f2)"
-npm="$(printf '%s' "$r" | grep -oE 'npm=[A-Za-z]+' | cut -d= -f2)"
-{ [ "$osc" = "3" ] 2>/dev/null && eq "$apkt" "True" && eq "$rpm" "True" && eq "$npm" "False"; } \
-  && ok || no "grype counts 3 apk OS packages; apk+rpm are OS, npm is not" "[$r]"
-
 begin "dadj-6-adjudicator-error-dedup-collapses-volatile-request-id" "repeated adjudicator failures that differ ONLY by a per-call request_id collapse to ONE recorded error (not one per finding/attempt), so the header/status is not flooded (R-live fix 1 dedup)"
 o="$WORK/dadj6"; rm -rf "$o"; fa="$WORK/dadj6-fail.py"
 cat > "$fa" <<'PYEOF'
@@ -1036,7 +1131,7 @@ import os, sys, time
 sys.stderr.write("APIConnectionError status=503: transient upstream [request_id=req_%d_%d]\n" % (os.getpid(), time.time_ns()))
 sys.exit(5)
 PYEOF
-"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --out "$o" >/dev/null 2>&1
+"$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --out "$o" >/dev/null 2>&1
 # one FP-suspicion finding retries primary/rephrase/fallback => >=3 calls => >=3 unique ids;
 # after dedup the report keeps exactly ONE representative request_id
 ids="$(grep -oE 'req_[0-9]+_[0-9]+' "$o/report.md" 2>/dev/null | sort -u | wc -l | tr -d ' ')"; ids="${ids:-0}"
@@ -1115,20 +1210,6 @@ prs="$(grep -c 'gh pr create' "$shim" 2>/dev/null)"; prs="${prs:-0}"
 { eq "$ordered" "yes" && [ "$prs" -ge 1 ] 2>/dev/null; } \
   && ok || no "every pr-create is preceded by its branch checkout" "ordered=$ordered pr_count=$prs"
 
-begin "il10-consolidated-suppression-files-dedup-by-cve" "consolidated .snyk / osv-scanner.toml carry exactly ONE entry per CVE even when a CVE is split across two dispositions (no duplicate keys/blocks)"
-o="$WORK/il10"; rm -rf "$o"; : > "$LEDGER"
-run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  snykn="$(grep -c 'CVE-2011-3374:' "$o/suppressions/.snyk" 2>/dev/null)"; snykn="${snykn:-0}"
-  tomln="$(grep -c 'id = "CVE-2011-3374"' "$o/suppressions/osv-scanner.toml" 2>/dev/null)"; tomln="${tomln:-0}"
-  yamlok="$("$PY" -c 'import sys
-sys.path.insert(0,".github/agent/fixtures/testlib")
-try: import yaml
-except Exception: import pyyaml as yaml
-d=yaml.safe_load(open(sys.argv[1]).read()) or {}
-print("yes" if len(d.get("ignore",{}))>=1 else "no")' "$o/suppressions/.snyk")"
-  { eq "$snykn" "1" && eq "$tomln" "1" && eq "$yamlok" "yes"; } \
-    && ok || no "one .snyk key + one toml block per CVE" "snyk_keys=$snykn toml_blocks=$tomln yaml_parses=$yamlok"; }
-
 begin "il11-consistency-not-false-stale-on-non-cve-id" "a carried VEX for a LIVE non-CVE id (DEBIAN-CVE-*) is not false-flagged stale"
 o="$WORK/il11"; supp="$WORK/il11-supp"; rm -rf "$o" "$supp"; mkdir -p "$supp"
 printf '{"statements":[{"vulnerability":{"name":"DEBIAN-CVE-2011-3374"},"status":"affected"}]}' > "$supp/fosterstack-cache.openvex.json"
@@ -1182,15 +1263,6 @@ incomplete="$(grep -c 'AUDIT INCOMPLETE' "$o/report.md" 2>/dev/null)"; incomplet
 failed="$(grep -c 'bump PR delivery FAILED' "$o/report.md" 2>/dev/null)"; failed="${failed:-0}"
 { [ "$rc" -ne 0 ] 2>/dev/null && [ "$incomplete" -ge 1 ] 2>/dev/null && [ "$failed" -ge 1 ] 2>/dev/null; } \
   && ok || no "delivery failure => INCOMPLETE, non-zero exit, honest FAILED line" "rc=$rc incomplete=$incomplete failed=$failed"
-
-begin "il14-consolidated-ignore-cites-all-statement-ids" "a split CVE's consolidated ignore cites BOTH statement ids (the sibling id is not orphaned)"
-o="$WORK/il14"; rm -rf "$o"; : > "$LEDGER"
-run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" && {
-  # the split CVE's two dispositions each get a distinct scope-derived @id (REQ-AUD-13 AC2);
-  # the consolidated ignore must cite BOTH (neither orphaned)
-  both="$(grep -A2 'CVE-2011-3374:' "$o/suppressions/.snyk" | grep -oE 'stmt-cve-2011-3374~[a-f0-9]+' | sort -u | wc -l | tr -d ' ')"; both="${both:-0}"
-  { [ "$both" -ge 2 ] 2>/dev/null; } \
-    && ok || no "both statement ids cited in the consolidated ignore" "distinct_ids_cited=$both"; }
 
 begin "il15-poam-row-names-real-vex-id" "a §2 POA&M (carried) row names a real VEX statement id, not the literal placeholder '(VEX)'"
 o="$WORK/il15"; rm -rf "$o"; : > "$LEDGER"
@@ -1339,12 +1411,6 @@ at=[i for i in items if i.get("threshold")=="at_or_above"]
 print("OK" if at and all(i.get("owner_issue") for i in at) else "BAD:%r"%[(i["cve"],i.get("owner_issue")) for i in at])' "$o/.auditor/accepted-items.json" 2>/dev/null)"
 { eq "$oiok" "OK"; } && ok || no "accepted-items records the owner_issue ref for at-or-above items (not None)" "$oiok"
 
-begin "ol6-consolidated-snyk-carries-expiry" "the consolidated .snyk for a carried (affected) CVE includes an expires field (time box survives consolidation)"
-o="$WORK/ol6"; rm -rf "$o"; : > "$LEDGER"
-run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" && {
-  exp="$(grep -c 'expires:' "$o/suppressions/.snyk" 2>/dev/null)"; exp="${exp:-0}"
-  { [ "$exp" -ge 1 ] 2>/dev/null; } && ok || no ".snyk carries expires for the carried CVE" "expires_lines=$exp"; }
-
 begin "ol7-delivery-carries-accepted-items" "the suppression delivery commits .auditor/accepted-items.json (the release gate's inventory)"
 o="$WORK/ol7"; shim="$WORK/ol7.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
@@ -1455,7 +1521,28 @@ _m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-aliases.json"
 print(len(groups))' 2>/dev/null)"
 { eq "$ng" "1"; } && ok || no "aliased matches form one group" "groups=$ng"
 
-begin "olr4-2-vex-merge-preserves-existing" "delivering this run's suppressions MERGES into an existing reviewed .vex (keeps prior statements, bumps version), never overwrites"
+begin "olr7-2-mixed-alias-upstream-keeps-identity" "a record with explicit aliases AND a multi-CVE upstream keeps its own identity (its reachability id stays in its CVE group) while only the EXTRA upstream CVE becomes a separate distributed group"
+m7res="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
+C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-mixed-alias-upstream.json")
+g=groups.get("CVE-2099-9703",{}); has_go="GO-2099-9703" in (g.get("aliases") or set())
+ok = set(groups)=={"CVE-2099-9703","CVE-2099-9704"} and has_go
+print("OK" if ok else "BAD:%s go=%s"%(sorted(groups),has_go))' 2>/dev/null)"
+{ eq "$m7res" "OK"; } && ok || no "mixed record keeps identity + splits only extra CVE" "$m7res"
+
+begin "olr5-1-advisory-bundle-does-not-merge-distinct-cves" "a scanner that reports THREE distinct CVEs for one package (the converted advisory fixture) yields three separate groups, so one CVE's decision cannot dispose of another"
+ng="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
+C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-advisory-bundle.json")
+ok = len(groups)==3 and set(groups)=={"CVE-2099-7001","CVE-2099-7002","CVE-2099-7003"}
+print("OK" if ok else "BAD:%s"%sorted(groups))' 2>/dev/null)"
+{ eq "$ng" "OK"; } && ok || no "advisory bundle splits into distinct CVE groups" "$ng"
+
+begin "olr4-2-vex-merge-preserves-existing" "delivering this run's suppressions MERGES into an existing reviewed .vex (keeps prior statements, bumps version), never overwrites, and writes no scanner ignore file"
 mo="$WORK/olr4-merge"; rm -rf "$mo"; mkdir -p "$mo/ws/.vex" "$mo/supp"
 "$PY" - "$mo" <<'PP'
 import json,os,sys
@@ -1464,13 +1551,9 @@ old={"@context":"c","@id":"i","author":"FosterStack LLC","role":"vendor","versio
  "statements":[{"@id":"s#a","vulnerability":{"name":"CVE-2024-1"},"status":"not_affected","products":[{"@id":"p"}]},
                {"@id":"s#b","vulnerability":{"name":"CVE-2024-2"},"status":"not_affected","products":[{"@id":"p"}]}]}
 json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
-open(os.path.join(ws,".snyk"),"w").write("version: v1.5.0\nignore:\n  CVE-2024-1:\n    - '*':\n        reason: reviewed\n")
-open(os.path.join(ws,"osv-scanner.toml"),"w").write('[[IgnoredVulns]]\nid = "CVE-2024-1"\nreason = "reviewed"\n')
 new={"@context":"c","@id":"i","author":"FosterStack LLC","role":"vendor","version":1,"timestamp":"t2",
  "statements":[{"@id":"s#c","vulnerability":{"name":"CVE-2099-9"},"status":"affected","products":[{"@id":"p"}]}]}
 json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
-open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore:\n  CVE-2099-9:\n    - '*':\n        reason: 'affected'\n")
-open(os.path.join(supp,"osv-scanner.toml"),"w").write('[[IgnoredVulns]]\nid = "CVE-2099-9"\nreason = "affected"\n')
 PP
 mres="$("$PY" -c '
 import sys,json,os,importlib.util
@@ -1480,22 +1563,11 @@ tmp=sys.argv[1]; ws=os.path.join(tmp,"ws")
 R._merge_suppressions(ws, os.path.join(tmp,"supp"))
 m=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))
 names=sorted(s["vulnerability"]["name"] for s in m["statements"])
-snyk=open(os.path.join(ws,".snyk")).read()
-ok = names==["CVE-2024-1","CVE-2024-2","CVE-2099-9"] and m["version"]==7 and "CVE-2024-1" in snyk and "CVE-2099-9" in snyk
+ok = names==["CVE-2024-1","CVE-2024-2","CVE-2099-9"] and m["version"]==7 and not os.path.exists(os.path.join(ws,".snyk")) and not os.path.exists(os.path.join(ws,"osv-scanner.toml"))
 print("OK" if ok else "BAD:%s v%s"%(names,m["version"]))' "$mo" 2>/dev/null)"
 { eq "$mres" "OK"; } && ok || no "merge preserves prior statements + bumps version" "$mres"
 
 echo "=== outer-loop round 5 (Codex second-vendor) regressions ==="
-
-begin "olr5-1-advisory-bundle-does-not-merge-distinct-cves" "an OSV distro advisory (DSA) that co-reports THREE distinct CVEs yields three separate groups (the bundle is lineage, never identity), so one CVE's decision cannot dispose of another"
-ng="$("$PY" -c '
-import importlib.util
-spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
-C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
-_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-advisory-bundle.json")
-ok = len(groups)==3 and set(groups)=={"CVE-2099-7001","CVE-2099-7002","CVE-2099-7003"} and all(any(f["finding_id"]=="DSA-9999-1" for f in g["findings"]) for g in groups.values())
-print("OK" if ok else "BAD:%s"%sorted(groups))' 2>/dev/null)"
-{ eq "$ng" "OK"; } && ok || no "advisory bundle splits into distinct CVE groups" "$ng"
 
 begin "olr5-2-accepted-items-merged-with-vex" "a retained affected statement (survives the VEX merge, not re-assessed this run) keeps its accepted-items.json inventory entry, so release-authz is not left inconsistent"
 io="$WORK/olr5-inv"; rm -rf "$io"; mkdir -p "$io/ws/.vex" "$io/ws/.auditor" "$io/supp" "$io/.auditor"
@@ -1586,15 +1658,6 @@ scopes=sorted((i.get("package"),i.get("threshold")) for i in inv)
 print("OK" if scopes==[("libgo","at_or_above"),("libos","below")] else "BAD:%s"%scopes)' "$iso" 2>/dev/null)"
 { eq "$ivres" "OK"; } && ok || no "inventory merge keeps both scopes of one CVE" "$ivres"
 
-begin "olr6-2-osv-aliases-are-identity-not-a-bundle" "an OSV record whose own aliases list two CVE ids (explicit equivalence, no upstream/groups) stays ONE identity — never split into a bundle — so its reachability id is retained"
-ares="$("$PY" -c '
-import sys;sys.path.insert(0,".github/agent/bin")
-from auditorlib import parsers as P
-f=P.parse_osv(".github/agent/fixtures/scanners/osv-true-aliases.json")[0]
-al=sorted(f["aliases"]); b=f.get("extra",{}).get("bundle_cves")
-print("OK" if al==["CVE-2099-9603","CVE-2099-9604","GO-2099-9603"] and b is None else "BAD:%s/%s"%(al,b))' 2>/dev/null)"
-{ eq "$ares" "OK"; } && ok || no "record aliases treated as identity, not bundle" "$ares"
-
 begin "olr6-3-scope-collision-gets-distinct-ids" "two retained statements that would share one CVE-derived @id under DIFFERENT scopes are made separately addressable (the run's statement keeps the base @id; the retained scope gets a distinct one), so no two statements share an @id"
 sco="$WORK/olr6-scope"; rm -rf "$sco"; mkdir -p "$sco/ws/.vex" "$sco/supp"
 "$PY" - "$sco" <<'PP'
@@ -1650,17 +1713,6 @@ issues=sorted(i.get("owner_issue") for i in inv)
 print("OK" if issues==[101,102] else "BAD:%s"%issues)' "$i7" 2>/dev/null)"
 { eq "$i7res" "OK"; } && ok || no "distinct owner obligations both preserved" "$i7res"
 
-begin "olr7-2-mixed-alias-upstream-keeps-identity" "a record with explicit aliases AND a multi-CVE upstream keeps its own identity (its reachability id stays in its CVE group) while only the EXTRA upstream CVE becomes a separate distributed group"
-m7res="$("$PY" -c '
-import importlib.util
-spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
-C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
-_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-mixed-alias-upstream.json")
-g=groups.get("CVE-2099-9703",{}); has_go="GO-2099-9703" in (g.get("aliases") or set())
-ok = set(groups)=={"CVE-2099-9703","CVE-2099-9704"} and has_go
-print("OK" if ok else "BAD:%s go=%s"%(sorted(groups),has_go))' 2>/dev/null)"
-{ eq "$m7res" "OK"; } && ok || no "mixed record keeps identity + splits only extra CVE" "$m7res"
-
 begin "olr7-3-reassessment-stable-no-accumulation" "reassessing a scope whose @id was suffixed on an earlier merge REPLACES it (stable @id, no accumulation, unique ids) across repeated merges"
 r7="$WORK/olr7-reassess"; rm -rf "$r7"
 rr="$("$PY" - "$r7" <<'PP' 2>/dev/null
@@ -1692,18 +1744,6 @@ PP
 { eq "$rr" "OK"; } && ok || no "reassessment stays stable (2 statements, unique ids)" "$rr"
 
 echo "=== outer-loop round 8 (Codex second-vendor) regressions ==="
-
-begin "olr8-1-bundle-lineage-not-fp-evidence" "a bundle finding distributed to another CVE's group is marked lineage-only, so an advisory's own defect-log FP cannot close a DIFFERENT bundled CVE"
-b8="$("$PY" -c '
-import importlib.util
-spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
-C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
-_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-mixed-alias-upstream.json")
-own=groups.get("CVE-2099-9703",{}).get("findings",[]); ext=groups.get("CVE-2099-9704",{}).get("findings",[])
-own_ok = own and not any(f.get("_lineage_only") for f in own)
-ext_ok = ext and all(f.get("_lineage_only") for f in ext)
-print("OK" if own_ok and ext_ok else "BAD own=%s ext=%s"%([f.get("_lineage_only") for f in own],[f.get("_lineage_only") for f in ext]))' 2>/dev/null)"
-{ eq "$b8" "OK"; } && ok || no "distributed bundle finding is lineage-only" "$b8"
 
 begin "olr8-2-go-unreachable-closure-is-scoped" "a Go imported-not-called closure writes not_affected SCOPED to the Go package's subcomponents, never product-wide (so it cannot suppress a sibling OS scope)"
 g8="$WORK/olr8-go"; rm -rf "$g8"
@@ -1748,7 +1788,7 @@ inv=json.load(open(os.path.join(ws,".auditor","accepted-items.json")))["accepted
 print("OK" if len(inv)==1 and inv[0]["owner_issue"]==102 else "BAD:%s"%[i.get("owner_issue") for i in inv])' "$i8" 2>/dev/null)"
 { eq "$iv8" "OK"; } && ok || no "same-scope reassessment replaces the obligation" "$iv8"
 
-begin "olr8-6-foreign-id-preserved-and-citation-resolves" "the merge does NOT strip a foreign statement id's legitimate '~' suffix, and the regenerated .snyk cites a real merged statement id"
+begin "olr8-6-foreign-id-preserved-and-citation-resolves" "the merge does NOT strip a foreign statement id's legitimate '~' suffix"
 c8="$WORK/olr8-cite"; rm -rf "$c8"; mkdir -p "$c8/ws/.vex" "$c8/supp"
 "$PY" - "$c8" <<'PP'
 import json,os,sys
@@ -1758,10 +1798,8 @@ tmp=sys.argv[1]; ws=os.path.join(tmp,"ws"); supp=os.path.join(tmp,"supp")
 old=vex.doc("CVE-2099-9805","not_affected","2026-09-23T00:00:00Z",justification="vulnerable_code_not_present")
 old["statements"][0]["@id"]="https://example.org/vex#review~deadbeef"; old["version"]=6
 json.dump(old,open(os.path.join(ws,".vex","fosterstack-cache.openvex.json"),"w"))
-open(os.path.join(ws,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(ws,"osv-scanner.toml"),"w").write("")
 new=vex.doc("CVE-2099-9806","not_affected","2026-09-24T00:00:00Z",justification="vulnerable_code_not_present")
 json.dump(new,open(os.path.join(supp,"fosterstack-cache.openvex.json"),"w"))
-open(os.path.join(supp,".snyk"),"w").write("version: v1.5.0\nignore: {}\n"); open(os.path.join(supp,"osv-scanner.toml"),"w").write("")
 PP
 ci8="$("$PY" -c '
 import json,os,sys,re,importlib.util
@@ -1771,10 +1809,7 @@ R._merge_suppressions(ws, os.path.join(tmp,"supp"))
 doc=json.load(open(os.path.join(ws,".vex","fosterstack-cache.openvex.json")))
 ids={s["@id"] for s in doc["statements"]}
 foreign_kept="https://example.org/vex#review~deadbeef" in ids
-snyk=open(os.path.join(ws,".snyk")).read()
-cited=set(re.findall(r"vex: \x27([^\x27]+)\x27",snyk))
-resolve=cited and cited <= ids
-print("OK" if foreign_kept and resolve else "BAD kept=%s cited=%s"%(foreign_kept,cited))' "$c8" 2>/dev/null)"
+print("OK" if foreign_kept and len(ids)==2 else "BAD kept=%s ids=%s"%(foreign_kept,sorted(ids)))' "$c8" 2>/dev/null)"
 { eq "$ci8" "OK"; } && ok || no "foreign id preserved + citations resolve to merged ids" "$ci8"
 
 begin "olr8-7-configured-model-name-filtered" "the narrative filter rejects the CONFIGURED model identifier (AUDITOR_MODEL_*), not only the fixed vendor vocabulary"
@@ -2100,25 +2135,6 @@ byp={r["package"]:r["section"] for r in rows}
 print("OK" if byp.get("aaa")==2 and byp.get("bbb")==3 else "BAD:%s"%byp)' "$t23/out" 2>/dev/null | tail -1)"
 { eq "$r23" "OK"; } && ok || no "sibling package fix does not transfer (aaa=2, bbb=3)" "$r23"
 
-begin "refr2-4-per-scope-deadlines-in-ignores" "two live scopes of one CVE with different deadlines each keep their OWN expiry in the Snyk selector, never a sibling's"
-t24="$WORK/refr2-4"; rm -rf "$t24"; mkdir -p "$t24"
-r24="$("$PY" -c '
-import sys,importlib.util
-spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-sys.path.insert(0,".github/agent/bin"); from auditorlib import vex
-c="CVE-2099-2004"; p1="pkg:deb/debian/lib@1"; p2="pkg:golang/example.org/lib@v1.0.0"
-s1=vex.doc(c,"affected","t",action="x",subcomponents=[p1])["statements"][0]
-s2=vex.doc(c,"affected","t",action="x",subcomponents=[p2])["statements"][0]
-exp={(c,p1):"2026-09-30",(c,p2):"2026-10-20"}
-snyk,toml=R._ignores_from_statements([s1,s2],exp)
-import re
-# each selector keeps its own expiry
-ok = "- \x27"+p1+"\x27" in snyk and "- \x27"+p2+"\x27" in snyk and "2026-09-30" in snyk and "2026-10-20" in snyk
-# the p1 block must carry 09-30 (not 10-20): check the p1 selector is followed by 09-30 before p2
-i1=snyk.find(p1); i2=snyk.find(p2); seg=snyk[min(i1,i2):]
-print("OK" if ok else "BAD")' 2>/dev/null)"
-{ eq "$r24" "OK"; } && ok || no "per-scope deadlines in Snyk selectors" "$r24"
-
 echo "=== report items (scanner tables, db dates, quorum honesty) ==="
 
 begin "rpt1-scanner-tables-groups-and-artifact" "after routing, each scanner gets a collapsible job-log group '<scanner> — <n> packages, <n> findings' with a fixed-width table incl a disposition (§n) column; the same text is in reports/scanner-tables.txt; a clean scanner is a one-line group"
@@ -2132,28 +2148,30 @@ ends="$(grep -c '::endgroup::' "$tf" 2>/dev/null || echo 0)"
 { [ "$gr" -ge 1 ] 2>/dev/null && [ "$hascol" -ge 1 ] 2>/dev/null && [ "$hasdisp" -ge 1 ] 2>/dev/null && [ "$ends" -ge 4 ] 2>/dev/null; } \
   && ok || no "scanner-tables.txt has per-scanner groups + table + disposition column" "groups=$gr col=$hascol disp=$hasdisp ends=$ends"
 
-begin "rpt2-no-db-date-published-never-dash" "a scanner that publishes no database date shows 'no db date published' in the header, never a bare 'db=-'"
+begin "rpt2-no-db-date-published-never-dash" "the header never shows a bare 'db=-' (the panel's verdict carries no per-scanner database date, so the header does not print one)"
 o="$WORK/rpt2"; rm -rf "$o"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
   nodash="$(grep -c 'db=-' "$o/report.md" 2>/dev/null)"; nodash="${nodash:-0}"
-  nopub="$(grep -c 'no db date published' "$o/report.md" 2>/dev/null)"; nopub="${nopub:-0}"
-  { [ "$nodash" -eq 0 ] 2>/dev/null && [ "$nopub" -ge 1 ] 2>/dev/null; } \
-    && ok || no "header says 'no db date published', never 'db=-'" "db_dash=$nodash no_db_published=$nopub"; }
+  hasscn="$(grep -c '^\*\*Scanners:\*\*' "$o/report.md" 2>/dev/null)"; hasscn="${hasscn:-0}"
+  { [ "$nodash" -eq 0 ] 2>/dev/null && [ "$hasscn" -ge 1 ] 2>/dev/null; } \
+    && ok || no "header has a Scanners line and never 'db=-'" "db_dash=$nodash scanners_line=$hasscn"; }
 
-begin "rpt3-inventory-quorum-names-agreed-and-not" "the header names which scanners' OS inventories agreed (with counts) and which did not inventory"
+
+begin "rpt3-inventory-quorum-names-agreed-and-not" "the header's quorum line states the panel's rule 3 (an image counts when at least three scanners ran on it) and names the scanners that ran everywhere"
 o="$WORK/rpt3b"; rm -rf "$o"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
   line="$(grep 'Inventory quorum:' "$o/report.md")"
-  { printf '%s' "$line" | grep -q 'agreed on OS packages:' && printf '%s' "$line" | grep -Eq 'grype\([0-9]+\)'; } \
-    && ok || no "quorum line names agreed scanners with OS counts" "line=[$line]"; }
+  { printf '%s' "$line" | grep -q 'at least three scanners ran on it' && printf '%s' "$line" | grep -q 'ran everywhere: grype, scout, inspector, google'; } \
+    && ok || no "quorum line states rule 3 and names the scanners that ran everywhere" "line=[$line]"; }
 
-begin "rpt4-scanner-table-maps-advisory-via-router-identity" "an advisory/alias scanner record (a DSA co-reporting CVEs) that the router placed in a section shows that §n in the scanner table, mapped through the ROUTER's completed identity (every alias, not an independent re-canonicalization) — never a bare '-' (R1 refactor round-5 #4)"
+
+begin "rpt4-scanner-table-maps-advisory-via-router-identity" "a scanner record named by an advisory/alias id (DEBIAN-CVE-2099-7001 for CVE-2099-7001) that the router placed in a section shows that §n in the scanner table, mapped through the ROUTER's completed identity (every alias, not an independent re-canonicalization) — never a bare '-' (R1 refactor round-5 #4)"
 o="$WORK/rpt4"; rm -rf "$o"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-advisory-bundle.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
-  dsarow="$(grep 'DSA-9999-1' "$o/reports/scanner-tables.txt" 2>/dev/null | head -1)"
+  dsarow="$(grep 'DEBIAN-CVE-2099-7001' "$o/reports/scanner-tables.txt" 2>/dev/null | head -1)"
   mapped="$(printf '%s' "$dsarow" | grep -Eq '§[0-9]' && echo yes || echo no)"
   { eq "$mapped" "yes"; } \
-    && ok || no "advisory row DSA-9999-1 shows a routed §n, not '-'" "row=[$dsarow]"; }
+    && ok || no "advisory row DEBIAN-CVE-2099-7001 shows a routed §n, not '-'" "row=[$dsarow]"; }
 
 begin "rpt5-run-report-header-token-cost-and-role" "auditor-run.py's rendered report header carries the model ROLE and a TOKEN COST field (REQ-AUD-7 AC1), never omitted and never a model id (R1 refactor round-5 #5)"
 o="$WORK/rpt5"; rm -rf "$o"
@@ -2239,41 +2257,27 @@ row,_=R._dispose("CVE-2099-1801",[f],["CVE-2099-1801"],env,[])
 print("OK" if row["section"]==1 and row.get("reopened_scope") else "BAD:%s"%row["section"])' 2>/dev/null | tail -1)"
 { eq "$res" "OK"; } && ok || no "pullable fix lifts the carried suppression (§1 + removal)" "$res"
 
-begin "refr3-4-permanent-scope-keeps-no-deadline" "a permanent not_affected scope does not acquire a temporary sibling's expiry via a CVE-wide fallback"
-res="$("$PY" -c '
-import importlib.util
-spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-import sys; sys.path.insert(0,".github/agent/bin"); from auditorlib import vex
-c="CVE-2099-1807"
-perm=vex.doc(c,"not_affected","t",justification="vulnerable_code_not_present",subcomponents=["pkg:deb/debian/perm@1"])["statements"][0]
-tmp=vex.doc(c,"affected","t",action="x",subcomponents=["pkg:deb/debian/temp@1"])["statements"][0]
-snyk,_t=R._ignores_from_statements([perm,tmp],{(c,"pkg:deb/debian/temp@1"):"2026-09-30"})
-seg=snyk.split("perm@1")[1].split("temp@1")[0]
-print("OK" if "expires" not in seg and "2026-09-30" in snyk else "BAD")' 2>/dev/null | tail -1)"
-{ eq "$res" "OK"; } && ok || no "permanent scope keeps no deadline" "$res"
-
 echo "=== REQ-AUD-13 refactor boundary regressions (round 4) ==="
 
-begin "refr4-2-fp-log-does-not-cross-ecosystem" "a trusted defect-log FP for a Debian package closes ONLY the Debian ecosystem at that name/version, never an independently installed PyPI dist of the same name/version"
+begin "refr4-2-fp-log-does-not-cross-ecosystem" "a trusted defect-log FP for a Debian package closes ONLY the Debian ecosystem at that name/version, never an independently installed PyPI dist of the same name/version (the two sit on different panel images: one finding per CVE+package+version per image)"
 o="$WORK/refr4-2"; rm -rf "$o"; mkdir -p "$o"
-cat > "$o/grype.json" <<'EOF'
+cat > "$o/grype.json" <<'JSON'
 {"matches":[
  {"vulnerability":{"id":"CVE-2099-1951","severity":"Critical"},"artifact":{"name":"requests","version":"2.28.1","type":"deb","purl":"pkg:deb/debian/requests@2.28.1"}},
- {"vulnerability":{"id":"CVE-2099-1951","severity":"Critical"},"artifact":{"name":"requests","version":"2.28.1","type":"python","purl":"pkg:pypi/requests@2.28.1"}}
-],"source":{"type":"image"},"distro":{"name":"debian","version":"12.0"},"descriptor":{"name":"grype","version":"0.118.0","db":{"status":{"from":"x_2026-09-22T00:00:00Z_x"}}}}
-EOF
-cat > "$o/log.json" <<'EOF'
+ {"vulnerability":{"id":"CVE-2099-1951","severity":"Critical"},"artifact":{"name":"requests","version":"2.28.1","type":"python","purl":"pkg:pypi/requests@2.28.1","image":"production-arm64"}}
+]}
+JSON
+cat > "$o/log.json" <<'JSON'
 {"defects":[{"package":"requests","disposition":"false_positive","keys":[{"scanner":"grype","finding_id":"CVE-2099-1951","purl":"pkg:deb/debian/requests@2.28.1"}],"evidence":{"detail":"debian backport"}}]}
-EOF
+JSON
 "$PY" - "$o" <<'PP'
 import json,os,sys
 m={"commit":"ab","module":"x","base_os":"debian","candidate_variant":"production","candidate_digests":{"production":"sha256:ab"},
-   "scanner_reports":{"grype":os.path.join(sys.argv[1],"grype.json"),"trivy":None,"osv-scanner":None,"osv-scanner-gomod":None,"snyk":None},
-   "scanner_status":{s:{"ran":True,"scan_ok":True,"quorum_ok":True,"version":"x","reason":"ok","package_count":2,"os_package_count":1,"db_date":"2026-09-22","findings":2} for s in ("grype","trivy","osv-scanner","snyk")},
+   "scanner_reports":{"grype":os.path.join(sys.argv[1],"grype.json")},"scanner_status":{},
    "govulncheck":None,"known_defect_log":os.path.join(sys.argv[1],"log.json"),"kev_catalog":None}
-m["scanner_status"]["osv-scanner-gomod"]={"ran":True,"version":"x","reason":"ok","package_count":None}
 json.dump(m,open(os.path.join(sys.argv[1],"manifest.json"),"w"))
 PP
+"$PY" "$WORK/g2p.py" "$o/manifest.json"
 r2="$("$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$o/manifest.json" --adjudicator "$STUB" --out "$o/out" >/dev/null 2>&1; "$PY" -c '
 import json
 c=json.load(open("'"$o"'/out/classification.json"))["findings"]
@@ -2331,32 +2335,25 @@ print("OK" if carried["section"]==1 and fresh["section"]==5 else "BAD carried=%s
 
 begin "refr4-6-scanner-table-disposition-by-scope" "the scanner table maps each version row to its OWN routed section, not every section the CVE touched"
 o="$WORK/refr4-6"; rm -rf "$o"; mkdir -p "$o/reports"
+"$PY" - "$o" <<'PP'
+import json,sys
+o=sys.argv[1]
+json.dump({"matches":[{"vulnerability":{"id":"CVE-9","severity":"Medium","fix":{"state":"fixed","versions":["1.0.1"]}},"artifact":{"name":"lib","version":"v1.0.0","type":"golang","purl":"pkg:golang/lib@v1.0.0"}},{"vulnerability":{"id":"CVE-9","severity":"Critical"},"artifact":{"name":"lib","version":"v8.0.0","type":"golang","purl":"pkg:golang/lib@v8.0.0"}}]},open(o+"/grype.json","w"))
+json.dump({"scanner_reports":{"grype":o+"/grype.json"}},open(o+"/manifest.json","w"))
+PP
+"$PY" "$WORK/g2p.py" "$o/manifest.json"
 r6="$("$PY" -c '
 import importlib.util,json,os
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 out=__import__("sys").argv[1]
 rows=[{"id":"CVE-9","section":3,"scope_purls":["pkg:golang/lib@v1.0.0"]},{"id":"CVE-9","section":2,"scope_purls":["pkg:golang/lib@v8.0.0"]}]
-grype={"matches":[{"vulnerability":{"id":"CVE-9","severity":"Medium","fix":{"state":"fixed","versions":["1.0.1"]}},"artifact":{"name":"lib","version":"v1.0.0","type":"golang","purl":"pkg:golang/lib@v1.0.0"}},{"vulnerability":{"id":"CVE-9","severity":"Critical"},"artifact":{"name":"lib","version":"v8.0.0","type":"golang","purl":"pkg:golang/lib@v8.0.0"}}]}
-json.dump(grype,open(out+"/grype.json","w"))
-m={"scanner_reports":{"grype":out+"/grype.json"},"scanner_status":{"grype":{"ran":True,"package_count":2,"findings":2}}}
+m=json.load(open(out+"/manifest.json"))
 R._scanner_tables(m,rows,out)
 t=open(out+"/reports/scanner-tables.txt").read().splitlines()
-v1=[l for l in t if "v1.0.0" in l][0]; v8=[l for l in t if "v8.0.0" in l][0]
+v1=[l for l in t if "0.0" in l and "lib" in l and "v1.0.0" in l or "1.0.0" in l][0]; v8=[l for l in t if "8.0.0" in l][0]
 ok=("§3" in v1 and "§2" not in v1) and ("§2" in v8 and "§3" not in v8)
 print("OK" if ok else "BAD v1=%r v8=%r"%(v1,v8))' "$o" 2>/dev/null | tail -1)"
 { eq "$r6" "OK"; } && ok || no "scanner table disposition is per-scope" "$r6"
-
-begin "refr4-8-quorum-header-matches-agreement-decision" "the Inventory-quorum header uses the run's numerical agreement: when the ran scanners' OS counts do NOT agree, none is labelled agreed"
-r8="$("$PY" -c '
-import importlib.util
-spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-qi={"agreed":[],"disagreed":["grype","trivy","osv-scanner","snyk"],"not_ran":[],"excluded":[]}
-st={s:{"ran":True,"os_package_count":(100 if s=="snyk" else 10),"package_count":10,"findings":0,"version":"x","db_date":None} for s in ("grype","trivy","osv-scanner","snyk")}
-m={"scanner_status":st,"scanner_reports":{s:"x" for s in st},"candidate_digests":{},"govulncheck":None}
-rep=R._render(m,[],{n:[] for n in range(1,8)},[],"AUDIT INCOMPLETE",True,"stub",{},"h","c",None,None,qi)
-ql=[l for l in rep.splitlines() if "Inventory quorum:" in l][0]
-print("OK" if "agreed on OS packages: none" in ql else "BAD:%s"%ql)' 2>/dev/null | tail -1)"
-{ eq "$r8" "OK"; } && ok || no "quorum header reflects the numerical agreement decision" "$r8"
 
 begin "refr4-7-lifted-bump-still-surfaced" "a bump moved to §1 by an AC7 lift but NOT delivered this run still appears as pending work above the sections (§0 / PR list), not dropped"
 r7="$("$PY" -c '
@@ -2616,6 +2613,7 @@ for s in ("trivy","osv-scanner","osv-scanner-gomod"): st[s]={"ran":False,"reason
 json.dump({"defects":[]},open(d+"/log.json","w"))
 json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":"debian 12.0","module":None,"govulncheck":None,"known_defect_log":d+"/log.json","scanner_reports":{"grype":d+"/grype.json","snyk":d+"/snyk.json","trivy":None,"osv-scanner":None,"osv-scanner-gomod":None},"scanner_status":st},open(d+"/manifest.json","w"))
 PP
+"$PY" "$WORK/g2p.py" "$d/manifest.json"
 }
 
 begin "req17-ac1-fixed-subject-prefix-family" "every PR and issue the auditor opens leads with one fixed subject-prefix family so a single mail filter catches them all; owner-decision issues keep their 'owner-decision:' sub-prefix"
@@ -2647,6 +2645,7 @@ for s in ("osv-scanner","osv-scanner-gomod"): st[s]={"ran":False,"reason":"nr","
 json.dump({"defects":[]},open(d+"/log.json","w"))
 json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":"debian 12.0","module":None,"govulncheck":None,"known_defect_log":d+"/log.json","scanner_reports":{"grype":d+"/grype.json","trivy":d+"/trivy.json","snyk":d+"/snyk.json","osv-scanner":None,"osv-scanner-gomod":None},"scanner_status":st},open(d+"/manifest.json","w"))
 PP
+"$PY" "$WORK/g2p.py" "$dc/manifest.json"
 env AUDITOR_GIT_SHIM_LOG="$sh2" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$dc/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2" >/dev/null 2>&1 || true
 close2="$(grep -c "issue close --title 'auditor: needs a human'" "$sh2" 2>/dev/null)"; close2="${close2:-0}"
 { [ "$open1" -ge 1 ] 2>/dev/null && [ "$close2" -ge 1 ] 2>/dev/null; } \
@@ -2747,6 +2746,7 @@ json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":
            "known_defect_log":d+"/log.json",
            "scanner_reports":{"grype":d+"/grype.json","trivy":None,"osv-scanner":None,"osv-scanner-gomod":None,"snyk":None},"scanner_status":st},open(d+"/manifest.json","w"))
 PP
+"$PY" "$WORK/g2p.py" "$d/manifest.json"
 }
 
 begin "req16-ac1-structured-deterministic-memory" "the run's memory is the STRUCTURED records (known-defect log + VEX), not model recall: a pure log-covered finding closes with NO model call"
@@ -2794,6 +2794,7 @@ json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":
            "known_defect_log":d+"/log.json",
            "scanner_reports":{"grype":d+"/grype.json","trivy":None,"osv-scanner":None,"osv-scanner-gomod":None,"snyk":None},"scanner_status":st},open(d+"/manifest.json","w"))
 PP
+"$PY" "$WORK/g2p.py" "$d4/manifest.json"
 cp "$d4/log.json" "$d4/log.before"
 cp .github/agent/prompts/adjudicator.md "$d4/prompt.before"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$d4/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
@@ -2825,6 +2826,7 @@ for s in ("trivy","osv-scanner","osv-scanner-gomod","snyk"): st[s]={"ran":False,
 json.dump({"defects":[]},open(d+"/log.json","w"))
 json.dump({"commit":"c","candidate_digests":{"production":"sha256:x"},"base_os":"debian 12.0","module":None,"govulncheck":None,"known_defect_log":d+"/log.json","scanner_reports":{"grype":d+"/grype.json","trivy":None,"osv-scanner":None,"osv-scanner-gomod":None,"snyk":None},"scanner_status":st},open(d+"/manifest.json","w"))
 PP
+"$PY" "$WORK/g2p.py" "$d/manifest.json"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$d/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || true
 present="$(have "$o/.auditor/proposals/adjudicator-proposals.json" && echo yes || echo no)"
 ran="$(have "$o/report.md" && echo yes || echo no)"   # the run COMPLETED (guards against a crash falsely passing the absence check)
@@ -2985,18 +2987,18 @@ s0=rep.split("## 0. Needs a human")[1].split("## 1.")[0]
 print("OK" if ("— dry" not in s0 and "CVE-DRYSENT" not in s0) else "BAD:%r"%s0)' 2>/dev/null | tail -1)"
 { eq "$sdr" "OK"; } && ok || no "§0 excludes the dry sentinel" "$sdr"
 
-begin "req15-poam-row-names-real-ignores" "a §2 POA&M row names the ignore artifacts it actually writes; _row_line never falls back to 'ignores: none' for an accepted-risk row (Codex round-2 blocker)"
+begin "req15-poam-row-names-real-ignores" "a §2 POA&M row names the exception it actually relies on (the VEX, the only one there is); _row_line never falls back to 'ignores: none' for an accepted-risk row (Codex round-2 blocker)"
 pir="$("$PY" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
      "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":sys.argv[1],"ts":"2026-09-24T00:00:00Z","dry":True,"digest":"sha256:x","carried_expiry":{},"today":"2026-09-24"}
 def f(sc): return {"scanner":sc,"finding_id":"CVE-2099-4141","purl":"pkg:deb/debian/lib@1","aliases":["CVE-2099-4141"],"package":"lib","fixed_version":None,"severity":"Critical","extra":{}}
-row,_=R._dispose("CVE-2099-4141",[f("grype"),f("snyk")],["CVE-2099-4141"],env,[])
+row,_=R._dispose("CVE-2099-4141",[f("grype"),f("google")],["CVE-2099-4141"],env,[])
 line=R._row_line(row)
-good=(row["section"]==2 and row.get("ignore_files") and "ignores: none" not in line and "ignores/grype/" in line)
+good=(row["section"]==2 and row.get("ignore_files")==["vex"] and "ignores: none" not in line and "ignores: vex" in line)
 print("OK" if good else "BAD sec=%s ig=%s line=%r"%(row["section"],row.get("ignore_files"),line))' "$WORK/req15-poamig" 2>/dev/null | tail -1)"
-{ eq "$pir" "OK"; } && ok || no "§2 row names real ignores (not 'none')" "$pir"
+{ eq "$pir" "OK"; } && ok || no "§2 row names the VEX as its exception (not 'none')" "$pir"
 
 begin "req15-carried-status-mismatch-not-in-force" "the display 'carried' flag is set only when THIS run writes the SAME disposition already on main: a scope published as 'affected' but re-dispositioned 'not_affected' this run (new unreachability) is NOT 'in force (main)' (Codex round-2 residual #3)"
 gsm="$WORK/req15-statusmm"; rm -rf "$gsm"; mkdir -p "$gsm"
@@ -3079,6 +3081,7 @@ man={"commit":"deadbeef","candidate_digests":{"production":"sha256:abc"},"base_o
      "scanner_status":st}
 json.dump(man,open(os.path.join(d,"manifest.json"),"w"))
 PP
+"$PY" "$WORK/g2p.py" "$dat/manifest.json"
 "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$dat/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$dat/out" >/dev/null 2>&1 || true
 falseopen="$(grep -c 'opened/updated (issues:write)' "$dat/out/report.md" 2>/dev/null)"; falseopen="${falseopen:-1}"
 wouldact="$(grep -c 'owner-decision issue would open (dry run)' "$dat/out/report.md" 2>/dev/null)"; wouldact="${wouldact:-0}"
@@ -3662,12 +3665,6 @@ LR
 )"; lr="$(printf '%s\n' "$lr" | tail -1)"
 eq "$lr" "OK" && ok || no "one PR per target, idempotent re-run, same PR updated" "$lr"
 
-# The image set is panel.py's, not a literal: main ships debug, chain-v030 drops it (VARIANTS), so the fixtures name "the second
-# variant's amd64 image" (DBG) and count the panel's images (NIMG), and pass with either VARIANTS.
-DBG="$(python3 -c 'import sys; sys.path.insert(0, ".github/agent/bin"); from auditorlib import parsers as P; print(sorted(i for i in P.panel_images() if i.endswith("-amd64") and not i.startswith("production"))[0])')"
-NIMG="$(python3 -c 'import sys; sys.path.insert(0, ".github/agent/bin"); from auditorlib import parsers as P; print(len(P.panel_images()))')"
-export DBG NIMG
-
 begin "panel-1-parse-panel-reads-one-scanners-findings-from-the-verdict" "the auditor reads the scanner panel's verdict.json (the rescan's own tally): parse_panel(path, scanner) returns exactly the findings that scanner reported, one record per CVE+package even when several images carry it (the images are kept), and a verdict with no findings array is a parse error, never an empty list"
 pv="$WORK/panel-verdict.json"
 cat > "$WORK/mkpv.py" <<'PYEOF'
@@ -3733,13 +3730,13 @@ PYEOF
 )"
 { eq "$r" "ran=grype,inspector null=scout,google ginfo=${NIMG}/${NIMG} greason=True pkgs=$((10 * NIMG))"; } && ok || no "panel_inventory: grype and inspector ran everywhere, scout and google missed the second variant's amd64 image (null report, reason names the image)" "[$r]"
 
-begin "panel-3-panel-block-never-hides-a-missing-verdict" "the manifest carries a 'panel' block: null when no panel directory was given (older runs), the four scanners' status and reports when verdict.json is there, and when the directory has no verdict.json every panel scanner is recorded 'did not run' with the reason (the panel's audits cannot run, never a clean pass)"
+begin "panel-3-panel-block-never-hides-a-missing-verdict" "the manifest always carries a 'panel' block: all four did-not-run (reason: no directory given) when no panel directory was given, the four scanners' status and reports when verdict.json is there, and when the directory has no verdict.json every panel scanner is recorded 'did not run' with the reason (the panel's audits cannot run, never a clean pass)"
 pd="$WORK/panel-dir"; rm -rf "$pd" "$WORK/panel-empty"; mkdir -p "$pd" "$WORK/panel-empty"; cp "$pv" "$pd/verdict.json"
 r="$(PD="$pd" PE="$WORK/panel-empty" "$PY" - <<'PYEOF'
 import importlib.util, os
 spec=importlib.util.spec_from_file_location("m",".github/agent/bin/auditor-manifest.py"); M=importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
 a = M.panel_block(None); b = M.panel_block(os.environ["PD"]); c = M.panel_block(os.environ["PE"])
-print("none=%s ok=%s,%s empty=%s,%s" % (a is None, b["verdict"].endswith("verdict.json"), ",".join(s for s in M.PANEL_SCANNERS if b["scanner_status"][s]["ran"]),
+print("none=%s ok=%s,%s empty=%s,%s" % (a["verdict"] is None and all(a["scanner_status"][s]["reason"] == "no panel-evidence directory was given" for s in M.PANEL_SCANNERS), b["verdict"].endswith("verdict.json"), ",".join(s for s in M.PANEL_SCANNERS if b["scanner_status"][s]["ran"]),
   all(c["scanner_reports"][s] is None for s in M.PANEL_SCANNERS), all("verdict.json" in c["scanner_status"][s]["reason"] for s in M.PANEL_SCANNERS)))
 PYEOF
 )"
@@ -3905,52 +3902,6 @@ PYEOF
 
 ########################################################################
 echo "=== 0600 option A, PR 2b-1: the auditor reads the four panel scanners ==="
-cat > "$WORK/mkpm.py" <<'PYEOF'
-import json, os, sys
-sys.path.insert(0, ".github/agent/bin")
-from auditorlib import parsers as P
-scenario, out = sys.argv[1], sys.argv[2]; os.makedirs(out, exist_ok=True)
-pm = P._panel_module(); vp = os.path.join(out, "verdict.json")
-images = {}
-for im in sorted(P.panel_images()):
-    exp = [s for s in P.PANEL_SCANNERS if P.panel_expected(s, im)]
-    bad = [s for s in ("scout", "google") if scenario == "uncounted" and im == os.environ["DBG"] and s in exp]
-    bad += [s for s in ("google",) if scenario == "googlegone" and im.endswith("-amd64") and s in exp]      # google missing on every image it is expected on
-    bad += [s for s in ("google",) if scenario == "partial" and im == os.environ["DBG"] and s in exp]            # google missing on one image only
-    ran = sorted(s for s in exp if s not in bad)
-    images[im] = {"counts": {s: 10 for s in ran}, "did_not_run": sorted(bad), "ran": ran, "counts_for_day": len(ran) >= 3}
-def f(im, vid, pkg, ver, seen, details):
-    return {"image": im, "id": vid, "package": pkg, "version": ver, "seen_by": sorted(seen), "of": len(images[im]["ran"]),
-            "unique": len(seen) == 1, "status": "unique" if len(seen) == 1 else "report",
-            "purls": ["pkg:deb/debian/%s@%s?arch=%s&distro=debian-12.0" % (pkg, ver, "arm64" if pkg == "coreutils" else "amd64")], "details": details}   # the known-defect log keys on these exact purls
-fs = [f("production-amd64", "CVE-2016-2781", "coreutils", "9.1-1", ["grype", "inspector", "scout"], {"grype": {"severity": "low"}, "inspector": {"severity": "medium"}, "scout": {}}),
-      f("production-amd64", "CVE-2011-3374", "apt", "2.6.1", ["grype", "inspector", "scout"], {"grype": {"severity": "high"}, "inspector": {"severity": "critical"}, "scout": {}})]
-if scenario == "multi":     # one finding the scanners rate alike, one seen by different numbers of scanners on two images
-    fs += [f("production-amd64", "CVE-2099-5555", "zlib", "1.3", ["grype", "inspector"], {"grype": {"severity": "high"}, "inspector": {"severity": "high"}}),
-           f("production-amd64", "CVE-2099-6666", "curl", "8.0", ["grype", "inspector", "scout"], {"grype": {"severity": "low"}, "inspector": {"severity": "low"}, "scout": {}}),
-           f("production-arm64", "CVE-2099-6666", "curl", "8.0", ["grype", "inspector"], {"grype": {"severity": "low"}, "inspector": {"severity": "low"}})]
-if scenario == "partial":   # a finding only google saw, on an image google did run on, while google missed another image
-    fs.append(f("production-amd64", "CVE-2099-7777", "busybox", "1.36", ["google"], {"google": {"severity": "critical"}}))
-d = {"images": images, "not_counted": sorted(i for i, st in images.items() if not st["counts_for_day"]),
-     "scanner_failures": sorted("%s on %s" % (s, i) for i, st in images.items() for s in st["did_not_run"]),
-     "findings": fs, "vex_covered": [], "issue": pm.render_issue([x for x in fs if x["status"] == "report"])}
-d["unique"] = [x for x in fs if x["unique"]]
-d["exit"] = 2 if (d["not_counted"] or d["scanner_failures"]) else 1
-json.dump(d, open(vp, "w"))
-m = json.load(open(".github/agent/fixtures/run/manifest-01.json"))
-m["scanner_set"] = "panel"
-if scenario == "nopanel":
-    rep = {s: None for s in P.PANEL_SCANNERS}
-    st = {s: {"ran": False, "scan_ok": False, "quorum_ok": False, "version": None, "reason": "panel-evidence has no verdict.json", "images_ran": 0, "images_expected": 0, "package_count": 0} for s in P.PANEL_SCANNERS}
-    m["panel"] = {"verdict": None, "not_counted": None, "scanner_failures": None, "scanner_reports": rep, "scanner_status": st}
-else:
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("m", ".github/agent/bin/auditor-manifest.py"); M = importlib.util.module_from_spec(spec); spec.loader.exec_module(M)
-    m["panel"] = M.panel_block(out)
-m["scanner_reports"] = m["panel"]["scanner_reports"]; m["scanner_status"] = m["panel"]["scanner_status"]
-json.dump(m, open(os.path.join(out, "manifest.json"), "w"))
-PYEOF
-for sc in ok uncounted nopanel googlegone partial multi; do "$PY" "$WORK/mkpm.py" $sc "$WORK/pm-$sc"; done
 
 begin "panel-6-classify-reads-the-four-and-writes-no-per-scanner-files" "auditor-classify on a panel manifest: the findings come from the verdict, the false positive still gets its VEX statement and section 5, and no per-scanner ignore files (ignores/<scanner>/) are written (rule 4: the VEX is the only exception)"
 o="$WORK/pm-ok-classify"; rm -rf "$o"

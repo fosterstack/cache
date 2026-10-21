@@ -1,14 +1,114 @@
 {
  "commit": "owner-multiscope",
- "module": null, "base_os": "debian", "candidate_variant": "production",
- "candidate_digests": {"production": "sha256:oms"},
- "scanner_reports": {"grype": ".github/agent/fixtures/scanners/grype-owner-multiscope.json", "trivy": null, "osv-scanner": null, "osv-scanner-gomod": null, "snyk": null},
- "scanner_status": {
-   "grype": {"ran": true, "scan_ok": true, "quorum_ok": true, "version": "x", "reason": "ok", "package_count": 10, "os_package_count": 10, "db_date": "2026-09-22", "findings": 2},
-   "trivy": {"ran": true, "scan_ok": true, "quorum_ok": true, "version": "x", "reason": "ok", "package_count": 10, "os_package_count": 10, "db_date": "2026-09-22", "findings": 0},
-   "osv-scanner": {"ran": true, "scan_ok": true, "quorum_ok": true, "version": "x", "reason": "ok", "package_count": 10, "os_package_count": 10, "db_date": "2026-09-22", "findings": 0},
-   "snyk": {"ran": true, "scan_ok": true, "quorum_ok": true, "version": "x", "reason": "ok", "package_count": 10, "os_package_count": 10, "db_date": "2026-09-22", "findings": 0},
-   "osv-scanner-gomod": {"ran": true, "version": "x", "reason": "ok", "package_count": null}
+ "module": null,
+ "base_os": "debian",
+ "candidate_variant": "production",
+ "candidate_digests": {
+  "production": "sha256:oms"
  },
- "govulncheck": null, "known_defect_log": null, "kev_catalog": null
+ "scanner_reports": {
+  "grype": ".github/agent/fixtures/run/panel-owner-multiscope/verdict.json",
+  "scout": ".github/agent/fixtures/run/panel-owner-multiscope/verdict.json",
+  "inspector": ".github/agent/fixtures/run/panel-owner-multiscope/verdict.json",
+  "google": ".github/agent/fixtures/run/panel-owner-multiscope/verdict.json"
+ },
+ "scanner_status": {
+  "grype": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": null,
+   "reason": "ok",
+   "images_ran": 6,
+   "images_expected": 6,
+   "package_count": 60
+  },
+  "scout": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": null,
+   "reason": "ok",
+   "images_ran": 6,
+   "images_expected": 6,
+   "package_count": 60
+  },
+  "inspector": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": null,
+   "reason": "ok",
+   "images_ran": 6,
+   "images_expected": 6,
+   "package_count": 60
+  },
+  "google": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": null,
+   "reason": "ok",
+   "images_ran": 3,
+   "images_expected": 3,
+   "package_count": 30
+  }
+ },
+ "govulncheck": null,
+ "known_defect_log": null,
+ "kev_catalog": null,
+ "scanner_set": "panel",
+ "panel": {
+  "verdict": ".github/agent/fixtures/run/panel-owner-multiscope/verdict.json",
+  "scanner_reports": {
+   "grype": ".github/agent/fixtures/run/panel-owner-multiscope/verdict.json",
+   "scout": ".github/agent/fixtures/run/panel-owner-multiscope/verdict.json",
+   "inspector": ".github/agent/fixtures/run/panel-owner-multiscope/verdict.json",
+   "google": ".github/agent/fixtures/run/panel-owner-multiscope/verdict.json"
+  },
+  "scanner_status": {
+   "grype": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 6,
+    "images_expected": 6,
+    "package_count": 60
+   },
+   "scout": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 6,
+    "images_expected": 6,
+    "package_count": 60
+   },
+   "inspector": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 6,
+    "images_expected": 6,
+    "package_count": 60
+   },
+   "google": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 3,
+    "images_expected": 3,
+    "package_count": 30
+   }
+  },
+  "not_counted": [],
+  "scanner_failures": []
+ }
 }

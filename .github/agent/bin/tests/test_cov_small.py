@@ -87,28 +87,37 @@ class DigestGuards(Tmp):
 
 
 class Consistency(Tmp):
-    def test_toml_ignore_without_vex_citation_is_tool_only(self):
-        m = load("auditor-consistency")
-        live = self.wj("manifest.json", {"scanner_reports": {"grype": None}})
-        self.wj("supp/osv-scanner.toml",
-                '[[IgnoredVulns]]\nid = "GHSA-aaaa"\nreason = "no citation"\n'
-                '[[IgnoredVulns]]\nid = "CVE-2020-1"\nreason = "see stmt-cve-2020-1"\n'
-                '[[IgnoredVulns]]\nreason = "no id at all"\n')
-        with self.args("--suppression-dir", self.p("supp"), "--live-findings", live,
-                       "--out", self.p("c.json")):
-            m.main()
-        self.assertEqual(self.rj("c.json"),
-                         {"consistent": False,
-                          "problems": [{"type": "tool_only_ignore", "id": "GHSA-aaaa"}]})
+    VERDICT = os.path.join(FIX, "run", "panel-01", "verdict.json")
 
-    def test_toml_all_cited_is_consistent(self):
+    def panel_manifest(self, verdict):
+        return self.wj("manifest.json", {"scanner_set": "panel", "panel": {"verdict": verdict},
+                                         "scanner_reports": {s: verdict for s in P.PANEL_SCANNERS}})
+
+    def vex(self, *names):
+        return self.wj("supp/fosterstack-cache.openvex.json", {"statements": [{"vulnerability": {"name": n}} for n in names]})
+
+    def run_check(self, manifest):
         m = load("auditor-consistency")
-        live = self.wj("manifest.json", {"scanner_reports": {}})
-        self.wj("supp/osv-scanner.toml", '[[IgnoredVulns]]\nid = "CVE-2020-1"\nreason = "stmt-x"\n')
-        with self.args("--suppression-dir", self.p("supp"), "--live-findings", live,
-                       "--out", self.p("c.json")):
+        with self.args("--suppression-dir", self.p("supp"), "--live-findings", manifest, "--out", self.p("c.json")):
             m.main()
-        self.assertEqual(self.rj("c.json"), {"consistent": True, "problems": []})
+        return self.rj("c.json")
+
+    def test_a_vex_statement_answering_a_live_finding_is_consistent(self):
+        self.vex("CVE-2016-2781")
+        self.assertEqual(self.run_check(self.panel_manifest(self.VERDICT)), {"consistent": True, "problems": []})
+
+    def test_a_vex_statement_for_a_finding_nobody_reports_is_stale(self):
+        self.vex("CVE-2016-2781", "CVE-1999-0001")
+        self.assertEqual(self.run_check(self.panel_manifest(self.VERDICT)),
+                         {"consistent": False, "problems": [{"type": "stale_vex", "cve": "CVE-1999-0001"}]})
+
+    def test_no_verdict_means_nothing_is_live(self):
+        self.vex("CVE-2016-2781")
+        res = self.run_check(self.wj("m.json", {"scanner_set": "panel", "panel": {"verdict": None}}))
+        self.assertEqual(res, {"consistent": False, "problems": [{"type": "stale_vex", "cve": "CVE-2016-2781"}]})
+
+    def test_no_vex_file_is_consistent(self):
+        self.assertEqual(self.run_check(self.panel_manifest(self.VERDICT)), {"consistent": True, "problems": []})
 
 
 ADJ_STUB = r'''
@@ -146,10 +155,10 @@ class Defectlog(WithAdjudicator):
     def setUp(self):
         super().setUp()
         self.m = load("auditor-defectlog")
-        g = P.parse_grype(os.path.join(FIX, "scanners", "grype.json"))
-        self.gf = next(f for f in g if f["finding_id"] == "CVE-2016-2781")
-        self.manifest = self.wj("manifest.json", {"scanner_reports": {
-            "grype": os.path.join(FIX, "scanners", "grype.json")}})
+        self.vp = os.path.join(FIX, "run", "panel-01", "verdict.json")
+        self.gf = next(f for f in P.parse_panel(self.vp, "grype") if f["finding_id"] == "CVE-2016-2781")
+        self.manifest = self.wj("manifest.json", {"scanner_set": "panel", "panel": {"verdict": self.vp},
+                                                  "scanner_reports": {sc: self.vp for sc in P.PANEL_SCANNERS}})
 
     def reconcile(self, log, fid, purl, manifest=True):
         lp = self.wj("log.json", log)
@@ -162,14 +171,14 @@ class Defectlog(WithAdjudicator):
         return self.rj("out", "reconcile.json"), json.loads(read(lp))
 
     def test_model_says_not_same_defect(self):
-        log = {"defects": [{"keys": [{"scanner": "trivy", "finding_id": "NOT-1", "purl": "x"}]}]}
+        log = {"defects": [{"keys": [{"scanner": "scout", "finding_id": "NOT-1", "purl": "x"}]}]}
         res, after = self.reconcile(log, "NOT-1", "pkg:x")
         self.assertEqual(res, {"added": False, "reason": "model: not the same defect"})
         self.assertEqual(after, log)
         self.assertEqual([r["finding_id"] for r in self.adj_requests()], ["NOT-1"])
 
     def test_scanner_does_not_report_purl(self):
-        log = {"defects": [{"keys": [{"scanner": "trivy", "finding_id": "CVE-2016-2781", "purl": "x"}]}]}
+        log = {"defects": [{"keys": [{"scanner": "scout", "finding_id": "CVE-2016-2781", "purl": "x"}]}]}
         res, after = self.reconcile(log, "CVE-2016-2781", "pkg:deb/debian/other@1")
         self.assertEqual(res, {"added": False, "reason": "scanner does not report this purl"})
         self.assertEqual(after, log)
@@ -178,17 +187,31 @@ class Defectlog(WithAdjudicator):
         self.assertEqual(res2["reason"], "scanner does not report this purl")
 
     def test_reported_but_no_row_names_it(self):
-        log = {"defects": [{"keys": [{"scanner": "trivy", "finding_id": "CVE-1999-0001", "purl": "x"}]}]}
+        log = {"defects": [{"keys": [{"scanner": "scout", "finding_id": "CVE-1999-0001", "purl": "x"}]}]}
         res, after = self.reconcile(log, "CVE-2016-2781", self.gf["purl"])
         self.assertEqual(res, {"added": False, "reason": "no row names this finding"})
         self.assertEqual(after, log)
 
     def test_reported_and_row_names_it_adds_key(self):
-        log = {"defects": [{"keys": [{"scanner": "trivy", "finding_id": "CVE-2016-2781", "purl": "x"}]}]}
+        log = {"defects": [{"keys": [{"scanner": "scout", "finding_id": "CVE-2016-2781", "purl": "x"}]}]}
         res, after = self.reconcile(log, "CVE-2016-2781", self.gf["purl"])
         new = {"scanner": "grype", "finding_id": "CVE-2016-2781", "purl": self.gf["purl"]}
         self.assertEqual(res, {"added": new})
         self.assertEqual(after["defects"][0]["keys"][-1], new)
+
+    def test_a_scanner_that_did_not_run_or_a_verdict_that_cannot_be_read_is_unavailable_and_asks_no_model(self):
+        log = {"defects": [{"keys": [{"scanner": "scout", "finding_id": "CVE-2016-2781", "purl": "x"}]}]}
+        down = self.wj("down.json", {"scanner_set": "panel", "panel": {"verdict": self.vp},
+                                     "scanner_reports": {sc: (None if sc == "grype" else self.vp) for sc in P.PANEL_SCANNERS}})
+        gone = self.wj("gone.json", {"scanner_set": "panel", "panel": {"verdict": self.p("absent.json")},
+                                     "scanner_reports": {sc: self.p("absent.json") for sc in P.PANEL_SCANNERS}})
+        for man in (down, gone):
+            self.manifest = man
+            res, after = self.reconcile(log, "CVE-2016-2781", self.gf["purl"])
+            self.assertEqual(res["added"], False)
+            self.assertIn("unavailable", res["reason"])
+            self.assertEqual(after, log)
+        self.assertEqual(self.adj_requests(), [])                            # the model was never asked
 
     def test_unknown_op_exits(self):
         with self.args("frobnicate", "--out", self.p("out")):
@@ -494,32 +517,10 @@ class CliGh(Tmp):
 class Parsers(Tmp):
     def test_load_missing_file(self):
         with self.assertRaises(P.ParseError) as cm:
-            P.parse_grype(self.p("absent.json"))
+            P._load(self.p("absent.json"))
         self.assertIn("cannot load %s" % self.p("absent.json"), str(cm.exception))
         with self.assertRaises(P.ParseError):
-            P.parse_grype(self.wj("bad.json", "{not json"))
-
-    def test_trivy_without_results(self):
-        with self.assertRaisesRegex(P.ParseError, "trivy: no Results"):
-            P.parse_trivy(self.wj("t.json", {"SchemaVersion": 2}))
-        self.assertEqual(P.parse_trivy(self.wj("t2.json", {"Results": None})), [])
-
-    def test_osv_generic_ecosystem_purl(self):
-        self.assertEqual(P._osv_purl({"ecosystem": "PyPI", "name": "requests", "version": "2.0"}),
-                         "pkg:pypi/requests@2.0")
-        self.assertEqual(P._osv_purl({"ecosystem": "npm", "name": "left-pad"}), "pkg:npm/left-pad")
-        self.assertEqual(P._osv_purl({"ecosystem": "Go", "name": "x/y", "version": "v1"}),
-                         "pkg:golang/x/y@v1")
-        rep = self.wj("osv.json", {"results": [{"packages": [{
-            "package": {"ecosystem": "crates.io", "name": "smallvec", "version": "1.0"},
-            "vulnerabilities": [{"id": "RUSTSEC-1", "aliases": ["CVE-2021-1"]}]}]}]})
-        f, = P.parse_osv(rep)
-        self.assertEqual((f["purl"], f["aliases"]),
-                         ("pkg:crates.io/smallvec@1.0", ["CVE-2021-1", "RUSTSEC-1"]))
-
-    def test_osv_without_results(self):
-        with self.assertRaisesRegex(P.ParseError, "osv: no results"):
-            P.parse_osv(self.wj("o.json", {"packages": []}))
+            P._load(self.wj("bad.json", "{not json"))
 
     def test_govulncheck_unreadable_and_non_object(self):
         with self.assertRaisesRegex(P.ParseError, "govulncheck: cannot read"):
@@ -534,6 +535,19 @@ class Parsers(Tmp):
             P.parse_kev(self.wj("k.json", {"catalogVersion": "1"}))
         self.assertEqual(P.parse_kev(self.wj("k2.json", {"vulnerabilities": [{"cveID": "CVE-1"}]})),
                          {"CVE-1"})
+
+
+class NoYamlLibrary(unittest.TestCase):
+    def test_no_auditor_code_imports_the_vendored_pyyaml(self):
+        # the vendored PyYAML under fixtures/testlib is a test-only reference parser (coverage-exclusions.txt says so): nothing the
+        # auditor runs may import it
+        for root, _dirs, files in os.walk(BIN):
+            if os.path.basename(root) in ("tests", "__pycache__"):
+                continue
+            for fn in files:
+                if fn.endswith(".py"):
+                    src = read(os.path.join(root, fn))
+                    self.assertNotIn("pyyaml", src, fn)
 
 
 class VexValidate(unittest.TestCase):

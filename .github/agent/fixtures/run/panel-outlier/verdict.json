@@ -1,0 +1,462 @@
+{
+ "exit": 1,
+ "findings": [
+  {
+   "details": {
+    "grype": {
+     "severity": "negligible"
+    },
+    "scout": {
+     "severity": "low"
+    }
+   },
+   "id": "CVE-2011-3374",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "apt",
+   "purls": [
+    "pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0",
+    "pkg:deb/debian/apt@2.6.1?arch=arm64&distro=debian-12.0"
+   ],
+   "seen_by": [
+    "grype",
+    "scout"
+   ],
+   "status": "report",
+   "unique": false,
+   "version": "2.6.1"
+  },
+  {
+   "details": {
+    "grype": {
+     "severity": "negligible"
+    },
+    "scout": {
+     "severity": "low"
+    }
+   },
+   "id": "CVE-2011-3374",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "libapt-pkg6.0",
+   "purls": [
+    "pkg:deb/debian/libapt-pkg6.0@2.6.1?arch=amd64&distro=debian-12.0",
+    "pkg:deb/debian/libapt-pkg6.0@2.6.1?arch=arm64&distro=debian-12.0&upstream=apt"
+   ],
+   "seen_by": [
+    "grype",
+    "scout"
+   ],
+   "status": "report",
+   "unique": false,
+   "version": "2.6.1"
+  },
+  {
+   "details": {
+    "grype": {
+     "severity": "low"
+    }
+   },
+   "id": "CVE-2016-2781",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "coreutils",
+   "purls": [
+    "pkg:deb/debian/coreutils@9.1-1?arch=arm64&distro=debian-12.0"
+   ],
+   "seen_by": [
+    "grype"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "9.1-1"
+  },
+  {
+   "details": {
+    "grype": {
+     "fixed_version": "1.34+dfsg-1.2+deb12u1",
+     "severity": "medium"
+    },
+    "scout": {
+     "fixed_version": "1.34+dfsg-1.2+deb12u1",
+     "severity": "low"
+    }
+   },
+   "id": "CVE-2022-48303",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "tar",
+   "purls": [
+    "pkg:deb/debian/tar@1.34%2Bdfsg-1.2?arch=amd64&distro=debian-12.0",
+    "pkg:deb/debian/tar@1.34%2Bdfsg-1.2?arch=arm64&distro=debian-12.0"
+   ],
+   "seen_by": [
+    "grype",
+    "scout"
+   ],
+   "status": "report",
+   "unique": false,
+   "version": "1.34+dfsg-1.2"
+  },
+  {
+   "details": {
+    "grype": {
+     "fixed_version": "2.36-9+deb12u3",
+     "known_exploited": true,
+     "severity": "high"
+    }
+   },
+   "id": "CVE-2023-4911",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "libc-bin",
+   "purls": [
+    "pkg:deb/debian/libc-bin@2.36-9?arch=arm64&distro=debian-12.0&upstream=glibc"
+   ],
+   "seen_by": [
+    "grype"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "grype": {
+     "fixed_version": "2.36-9+deb12u3",
+     "known_exploited": true,
+     "severity": "high"
+    }
+   },
+   "id": "CVE-2023-4911",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "libc6",
+   "purls": [
+    "pkg:deb/debian/libc6@2.36-9?arch=arm64&distro=debian-12.0&upstream=glibc"
+   ],
+   "seen_by": [
+    "grype"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "CVE-2011-3374"
+     ]
+    }
+   },
+   "id": "DEBIAN-CVE-2011-3374",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "apt",
+   "purls": [
+    "pkg:deb/debian/apt@2.6.1"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.6.1"
+  },
+  {
+   "details": {
+    "grype": {
+     "aliases": [
+      "CVE-2020-14040",
+      "GHSA-5rcv-m4m3-hfh7"
+     ],
+     "fixed_version": "0.3.3"
+    },
+    "scout": {
+     "aliases": [
+      "CVE-2020-14040",
+      "GHSA-5rcv-m4m3-hfh7"
+     ],
+     "fixed_version": "0.3.3"
+    }
+   },
+   "id": "GO-2020-0015",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "golang.org/x/text",
+   "purls": [
+    "pkg:golang/golang.org/x/text@0.3.0"
+   ],
+   "seen_by": [
+    "grype",
+    "scout"
+   ],
+   "status": "report",
+   "unique": false,
+   "version": "0.3.0"
+  },
+  {
+   "details": {
+    "grype": {
+     "aliases": [
+      "CVE-2021-38561",
+      "GHSA-ppp9-7jff-5vj2"
+     ],
+     "fixed_version": "0.3.7"
+    },
+    "scout": {
+     "aliases": [
+      "CVE-2021-38561",
+      "GHSA-ppp9-7jff-5vj2"
+     ],
+     "fixed_version": "0.3.7"
+    }
+   },
+   "id": "GO-2021-0113",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "golang.org/x/text",
+   "purls": [
+    "pkg:golang/golang.org/x/text@0.3.0"
+   ],
+   "seen_by": [
+    "grype",
+    "scout"
+   ],
+   "status": "report",
+   "unique": false,
+   "version": "0.3.0"
+  },
+  {
+   "details": {
+    "google": {
+     "aliases": [
+      "CVE-2011-3374"
+     ],
+     "severity": "low"
+    }
+   },
+   "id": "SNYK-DEBIAN12-APT-1234567",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "apt",
+   "purls": [
+    "pkg:deb/debian/apt@2.6.1?distro=debian-12.0"
+   ],
+   "seen_by": [
+    "google"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.6.1"
+  }
+ ],
+ "images": {
+  "debug-amd64": {
+   "counts": {
+    "google": 10,
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "google",
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "debug-arm64": {
+   "counts": {
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "fips-amd64": {
+   "counts": {
+    "google": 10,
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "google",
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "fips-arm64": {
+   "counts": {
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "production-amd64": {
+   "counts": {
+    "google": 10,
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "google",
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  },
+  "production-arm64": {
+   "counts": {
+    "grype": 10,
+    "inspector": 10,
+    "scout": 10
+   },
+   "counts_for_day": true,
+   "did_not_run": [],
+   "ran": [
+    "grype",
+    "inspector",
+    "scout"
+   ]
+  }
+ },
+ "issue": "The daily scanner panel found 5 finding(s) on main's candidate that the published VEX does not cover, each seen by two or more scanners.\n\n- `CVE-2011-3374` in `apt 2.6.1` on production-amd64 \u2014 seen by 2 of 4 (grype, scout)\n- `CVE-2011-3374` in `libapt-pkg6.0 2.6.1` on production-amd64 \u2014 seen by 2 of 4 (grype, scout)\n- `CVE-2022-48303` in `tar 1.34+dfsg-1.2` on production-amd64 \u2014 seen by 2 of 4 (grype, scout)\n- `GO-2020-0015` in `golang.org/x/text 0.3.0` on production-amd64 \u2014 seen by 2 of 4 (grype, scout)\n- `GO-2021-0113` in `golang.org/x/text 0.3.0` on production-amd64 \u2014 seen by 2 of 4 (grype, scout)\n",
+ "not_counted": [],
+ "scanner_failures": [],
+ "unique": [
+  {
+   "details": {
+    "grype": {
+     "severity": "low"
+    }
+   },
+   "id": "CVE-2016-2781",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "coreutils",
+   "purls": [
+    "pkg:deb/debian/coreutils@9.1-1?arch=arm64&distro=debian-12.0"
+   ],
+   "seen_by": [
+    "grype"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "9.1-1"
+  },
+  {
+   "details": {
+    "grype": {
+     "fixed_version": "2.36-9+deb12u3",
+     "known_exploited": true,
+     "severity": "high"
+    }
+   },
+   "id": "CVE-2023-4911",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "libc-bin",
+   "purls": [
+    "pkg:deb/debian/libc-bin@2.36-9?arch=arm64&distro=debian-12.0&upstream=glibc"
+   ],
+   "seen_by": [
+    "grype"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "grype": {
+     "fixed_version": "2.36-9+deb12u3",
+     "known_exploited": true,
+     "severity": "high"
+    }
+   },
+   "id": "CVE-2023-4911",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "libc6",
+   "purls": [
+    "pkg:deb/debian/libc6@2.36-9?arch=arm64&distro=debian-12.0&upstream=glibc"
+   ],
+   "seen_by": [
+    "grype"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.36-9"
+  },
+  {
+   "details": {
+    "inspector": {
+     "aliases": [
+      "CVE-2011-3374"
+     ]
+    }
+   },
+   "id": "DEBIAN-CVE-2011-3374",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "apt",
+   "purls": [
+    "pkg:deb/debian/apt@2.6.1"
+   ],
+   "seen_by": [
+    "inspector"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.6.1"
+  },
+  {
+   "details": {
+    "google": {
+     "aliases": [
+      "CVE-2011-3374"
+     ],
+     "severity": "low"
+    }
+   },
+   "id": "SNYK-DEBIAN12-APT-1234567",
+   "image": "production-amd64",
+   "of": 4,
+   "package": "apt",
+   "purls": [
+    "pkg:deb/debian/apt@2.6.1?distro=debian-12.0"
+   ],
+   "seen_by": [
+    "google"
+   ],
+   "status": "unique",
+   "unique": true,
+   "version": "2.6.1"
+  }
+ ],
+ "vex_covered": []
+}
