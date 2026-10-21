@@ -28,8 +28,11 @@ DIGEST_PRODUCT="pkg:oci/debian@$FIXTURE_DIGEST?repository_url=docker.io/library/
 docker rmi scoutcontrol/app:v1 ghcr.io/fosterstack/cache:selfcheck >/dev/null 2>&1 || true   # a stale tag from an earlier run must not pass for this fixture
 STAGE_ONLY=1 PROBE_REPO=ghcr.io/fosterstack/cache-scout-probe RELEASE_TAG=none bash bin/scout-root-cause.sh "$out/stage" >/dev/null \
   || { echo "::error::cannot stage the fixture" >&2; exit 2; }
-# the staging script does not stop on a failed pull: both tags must exist in the local store before any scan
-docker image inspect scoutcontrol/app:v1 ghcr.io/fosterstack/cache:selfcheck >/dev/null 2>&1 || { echo "::error::the fixture is not in the local store" >&2; exit 2; }
+# the staging script does not stop on a failed pull or tag, and a tag that could not be removed survives: both tags must be the pinned fixture's image
+want=$(docker image inspect --format '{{.Id}}' "$FIXTURE" 2>/dev/null) && [ -n "$want" ] || { echo "::error::the fixture is not in the local store" >&2; exit 2; }
+for t in "$CONTROL" "$OURS"; do
+  [ "$(docker image inspect --format '{{.Id}}' "$t" 2>/dev/null)" = "$want" ] || { echo "::error::$t is not the pinned fixture" >&2; exit 2; }
+done
 {
   echo "# Docker Scout older-versions sweep"
   echo
