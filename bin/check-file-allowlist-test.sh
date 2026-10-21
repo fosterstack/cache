@@ -159,7 +159,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "6fd07547ba20dc794427149e0ef34d0d90dff16f128ac7b714867ce5ae9a0881"   # + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
+PINNED_SHA256 = "07476805bd59e36fe0a57ff947fe25b5ef7fbe4f2314d7657761332f7ac9f093"   # - the two suppression/set-01 .snyk and osv-scanner.toml fixture patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
 if rstart and rend:
     import hashlib
     _b = _rawlines
