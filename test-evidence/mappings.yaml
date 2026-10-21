@@ -1179,6 +1179,18 @@ mappings:
   - ac: REQ-REFRESH-001-AC34
     evidence:
       - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC35
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC36
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC37
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC38
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
   - ac: REQ-ARCHIVE-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/archive-test.sh" }
