@@ -49,6 +49,21 @@
       "scope": "push"
     },
     {
+      "context": "allowlist-persona",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "allowlist-chain",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
+      "context": "allowlist-pins-auditor",
+      "integration_id": 15368,
+      "scope": "push"
+    },
+    {
       "context": "dependency-review",
       "integration_id": 15368,
       "scope": "pull_request"
