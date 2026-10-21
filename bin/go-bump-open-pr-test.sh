@@ -38,10 +38,10 @@ PRVIEW="gh pr view https://example/pr/1 --json headRefOid -q .headRefOid"
 PRCLOSE="gh pr close https://example/pr/1 --comment closed by go-bump-open-pr.sh: the branch moved after its commit was verified"
 FRESH_OK="$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$VERIFY"
 
-# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail|basehead] [versions "cur latest"] [delete fails 0|1] [text the output must contain] [remote tip when cleanup starts base|oid|other|rival|empty] [pr head after create match|differ] [pr close fails 0|1]
+# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail|basehead] [versions "cur latest"] [delete fails 0|1] [text the output must contain] [remote tip when cleanup starts base|oid|other|rival|empty|lsfail] [pr head after create match|differ] [pr close fails 0|1] [branch push fails 0|1]
 run_case() {
   local name="$1" sut="$2" prs="$3" branch_exists="$4" create_rc="$5" want_rc="$6" want_calls="$7" want_dir="$8"
-  local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}" must="${15:-}" rtip="${16:-base}" headmode="${17:-match}" closefail="${18:-0}"
+  local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}" must="${15:-}" rtip="${16:-base}" headmode="${17:-match}" closefail="${18:-0}" pushfail="${19:-0}"
   local work; work="$(mktemp -d)"
   printf 'module x\n\ngo 1.26.6\n' > "$work/go.mod"
   mkdir -p "$work/tools/requirements"; printf 'module x/t\n\ngo 1.26.6\n' > "$work/tools/requirements/go.mod"
@@ -75,9 +75,9 @@ GH
 #!/usr/bin/env bash
 echo "git \$*" >> "${log}"
 case "\$1" in
-  ls-remote) case "\$*" in *--exit-code*) [ "${branch_exists}" = 1 ] && exit 0 || exit 2 ;; *) case "${rtip}" in base) printf '%s\trefs/heads/${B}\n' ${BASE} ;; oid) printf '%s\trefs/heads/${B}\n' ${OID} ;; rival) printf '%s\trefs/heads/${B}\n' ${RIVAL} ;; other) printf '%s\trefs/heads/${B}\n' ${OTHER} ;; empty) ;; esac ;; esac ;;
+  ls-remote) case "\$*" in *--exit-code*) [ "${branch_exists}" = 1 ] && exit 0 || exit 2 ;; *) case "${rtip}" in base) printf '%s\trefs/heads/${B}\n' ${BASE} ;; oid) printf '%s\trefs/heads/${B}\n' ${OID} ;; rival) printf '%s\trefs/heads/${B}\n' ${RIVAL} ;; other) printf '%s\trefs/heads/${B}\n' ${OTHER} ;; empty) ;; lsfail) exit 1 ;; esac ;; esac ;;
   rev-parse) echo ${BASE} ;;
-  push) case "\$*" in *" :refs/heads/"*) exit ${delfail} ;; esac; exit 0 ;;
+  push) case "\$*" in *" :refs/heads/"*) exit ${delfail} ;; esac; exit ${pushfail} ;;
   *) echo "UNEXPECTED git \$*" >> "${log}"; exit 0 ;;
 esac
 GIT
@@ -145,7 +145,13 @@ run_case "AC8: the API made the commit but its answer was lost -> the remote tip
 run_case "AC8: the remote tip is someone else's commit -> left in place, said so, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_X" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' other
 run_case "AC8: the remote tip cannot be read -> left in place, said so, exit 1" \
-                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' empty
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' lsfail
+run_case "AC8: after a failed API commit the branch is not on the remote -> nothing to remove, exit 1" \
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM" skip fail true 0 true '1.26.6 1.27.0' 0 'nothing to remove' empty
+run_case "AC8: a branch push whose answer was lost but made the branch at the base -> leased delete, exit 1, no PR" \
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$LSREM"$'\n'"$DEL_B" skip ok true 0 true '1.26.6 1.27.0' 0 'the push of' base match 0 1
+run_case "AC8: a branch push that failed and left nothing -> exit 1, nothing to remove, no PR" \
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$LSREM" skip ok true 0 true '1.26.6 1.27.0' 0 'nothing to remove' empty match 0 1
 run_case "AC8: the remote tip is another run's commit (same parent and headline, other run marker) -> left in place" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_R" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' rival
 run_case "AC8: the branch moved after the commit was verified -> the PR is closed, exit 1" \
