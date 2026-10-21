@@ -67,10 +67,19 @@ if [ "$fresh" = 1 ]; then
       variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $b}, message: {headline: $head}, expectedHeadOid: $base,
                           fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}]}}}}' > "$input"
   git push origin "${base}:refs/heads/${branch}"
-  refuse() { echo "::error::$1; removing ${branch} and opening no pull request" >&2; git push origin --delete "$branch" >&2 || true; rm -f "$input"; exit 1; }
+  # Cleanup removes only what this run owns: the delete is leased on the tip this run last knew (the commit it pushed, then the one the API made),
+  # so a branch someone else advanced is kept. A cleanup that fails is its own loud message: the branch remains and a person must remove it.
+  owned="$base"
+  refuse() {
+    echo "::error::$1; opening no pull request" >&2
+    git push origin ":refs/heads/${branch}" --force-with-lease="refs/heads/${branch}:${owned}" >&2 \
+      || echo "::error::could not remove ${branch} (it remains at or after ${owned}); remove it by hand before the next run" >&2
+    rm -f "$input"; exit 1
+  }
   oid="$(gh api graphql --input "$input" -q '.data.createCommitOnBranch.commit.oid')" || refuse "the API could not create the commit"
   case "$oid" in *[!0-9a-f]*|'') refuse "the API returned no commit id";; esac
   [ "${#oid}" -eq 40 ] || refuse "the API returned no commit id"
+  owned="$oid"
   ver="$(gh api "repos/{owner}/{repo}/commits/${oid}" -q '.commit.verification.verified')" || refuse "could not ask whether commit ${oid} is verified"
   [ "$ver" = true ] || refuse "commit ${oid} is not verified by GitHub (main requires signed commits)"
   rm -f "$input"

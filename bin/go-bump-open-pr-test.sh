@@ -24,14 +24,15 @@ REVP="git rev-parse HEAD"
 PUSH="git push origin ${BASE}:refs/heads/${B}"
 COMMIT="gh api graphql --input <input> -q .data.createCommitOnBranch.commit.oid"
 VERIFY="gh api repos/{owner}/{repo}/commits/${OID} -q .commit.verification.verified"
-DEL="git push origin --delete ${B}"
+DEL_B="git push origin :refs/heads/${B} --force-with-lease=refs/heads/${B}:${BASE}"   # cleanup before the API made a commit: leased on the pushed base
+DEL_O="git push origin :refs/heads/${B} --force-with-lease=refs/heads/${B}:${OID}"    # cleanup after it: leased on the API's commit
 TIPV="gh api repos/{owner}/{repo}/commits/${B} -q .commit.verification.verified"
 FRESH_OK="$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$VERIFY"
 
-# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail] [versions "cur latest"] [delete fails 0|1]
+# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail] [versions "cur latest"] [delete fails 0|1] [text the output must contain]
 run_case() {
   local name="$1" sut="$2" prs="$3" branch_exists="$4" create_rc="$5" want_rc="$6" want_calls="$7" want_dir="$8"
-  local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}"
+  local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}" must="${15:-}"
   local work; work="$(mktemp -d)"
   printf 'module x\n\ngo 1.26.6\n' > "$work/go.mod"
   mkdir -p "$work/tools/requirements"; printf 'module x/t\n\ngo 1.26.6\n' > "$work/tools/requirements/go.mod"
@@ -60,7 +61,7 @@ echo "git \$*" >> "${log}"
 case "\$1" in
   ls-remote) [ "${branch_exists}" = 1 ] && exit 0 || exit 2 ;;
   rev-parse) echo ${BASE} ;;
-  push) case "\$*" in *--delete*) exit ${delfail} ;; esac; exit 0 ;;
+  push) case "\$*" in *" :refs/heads/"*) exit ${delfail} ;; esac; exit 0 ;;
   *) echo "UNEXPECTED git \$*" >> "${log}"; exit 0 ;;
 esac
 GIT
@@ -77,6 +78,7 @@ GIT
   grep -q UNEXPECTED <<<"$got" && why+=" an unexpected call;"
   # a bump that never reached a created PR may leave the working tree bumped; only a fresh success has a fixed expectation
   [ "$want_dir" = skip ] || { [ "$dir_root" = "$wd" ] && [ "$dir_tools" = "$wd" ] || why+=" go directives $dir_root/$dir_tools want $wd;"; }
+  [ -z "$must" ] || grep -qF -- "$must" <<<"$out" || why+=" the output lacks '${must}';"
   if [ "$chk" = 1 ]; then
     # the request the API receives: this branch, this base, no deletions, exactly the two bumped files' bytes, a headline, no author override
     jq -e --arg b "$B" --arg base "$BASE" --arg r "$(base64 < "$work/go.mod" | tr -d '\n')" --arg t "$(base64 < "$work/tools/requirements/go.mod" | tr -d '\n')" '
@@ -113,13 +115,15 @@ run_case "fresh -> both modules bumped, one API commit verified, draft PR (REQ-R
                                                      "$SUT" '[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE" new ok true 1
 run_case "a denied create fails the run (42)"        "$SUT" '[]' 1 42 42 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE" old ok true 0 true
 run_case "AC8: a commit the API does not report verified -> branch deleted, no PR, exit 1" \
-                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL" skip ok false
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok false
 run_case "AC8: the verification question failing -> branch deleted, no PR, exit 1" \
-                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL" skip ok fail
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok fail
 run_case "AC8: the commit API failing -> branch deleted, no PR, exit 1" \
-                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$DEL" skip fail
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$DEL_B" skip fail
+run_case "AC8: a cleanup that fails says the branch remains, and still exits 1 with no PR" \
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok false 0 true '1.26.6 1.27.0' 1 'remove it by hand'
 run_case "AC8: an id that is not a commit id -> branch deleted, no PR, exit 1" \
-                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$DEL" skip badoid
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$DEL_B" skip badoid
 
 # the harness must catch these mutants of the script (each counted as a pass only when it is caught)
 mut="$(mktemp)"; trap 'rm -f "$mut"' EXIT
@@ -140,9 +144,9 @@ mutant "only one module bumped" "only one module bumped" "$mut" "${FRESH_CASE[@]
 { cat "$SUT"; printf '\ngit commit -q -m x\n'; } > "$mut"
 mutant "a git commit added" "a git commit added" "$mut" "${FRESH_CASE[@]}"
 sed 's/\[ "\$ver" = true \]/true/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (verification)"; fail=$((fail+1)); }
-mutant "the verification result ignored" "the verification result ignored" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL" skip ok false
-sed 's/ --delete / /' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (delete)"; fail=$((fail+1)); }
-mutant "the branch is left behind on failure" "the branch is left behind on failure" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL" skip ok false
+mutant "the verification result ignored" "the verification result ignored" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok false
+sed 's/ --force-with-lease="[^"]*"//' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (lease on the delete)"; fail=$((fail+1)); }
+mutant "the cleanup delete is not leased" "the cleanup delete is not leased" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok false
 sed 's/expectedHeadOid/expectedHead/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (lease)"; fail=$((fail+1)); }
 mutant "the commit is not leased on the base" "the commit is not leased on the base" "$mut" "${FRESH_CASE[@]}"
 
@@ -153,22 +157,50 @@ mutant "a branch deleted" "a branch deleted" "$mut" '[]' 1 0 0 "$LIST"$'\n'"$LSR
 sed 's/exit 2; }/true; }/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (grammar)"; fail=$((fail+1)); }
 mutant "the version grammar loosened" "the version grammar loosened" "$mut" '[]' 0 0 2 "" old ok true 0 true '1.26.6 1.27.0;rm'
 
+sed 's/owned="\$oid"/true/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (owned)"; fail=$((fail+1)); }
+mutant "the lease stays on the pushed base after the API commit" "the lease stays on the pushed base after the API commit" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok false
+sed 's/ \\$//; s/ *|| echo "::error::could not remove[^;]*$/ || true/' "$SUT" > "$mut"
+sed -i.bak 's/|| echo "::error::could not remove.*$/|| true/' "$mut"; rm -f "$mut.bak"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (cleanup failure silent)"; fail=$((fail+1)); }
+mutant "a failed cleanup is silent" "a failed cleanup is silent" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok false 0 true '1.26.6 1.27.0' 1 'remove it by hand'
+
 # AC8, the repository guard: no workflow, composite action or script outside the tests makes a commit with git (git commit, commit-tree, merge,
 # cherry-pick, rebase, am, revert, pull), in a shell command (quoted, after ; or &&, across a backslash continuation) or in a Python argument
 # list. Every PR-opening bot makes its commit through the API instead, so GitHub signs it. An exception is the sha256 of the file and the WHOLE
 # line, so nothing else on that line can run: a test fixture inside a library the tests source, a ledger string the harness reads, error
 # messages and prose that name the command (the two API-commit scripts and their docstrings).
 GUARD_PY='
-import hashlib, os, re, subprocess, sys
-CMDS = r"(?:commit|commit-tree|merge|cherry-pick|rebase|am|revert|pull)"
-SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+(?:-\S+(?:\s+\S+)?\s+)*)["\x27]?""" + CMDS + r"""["\x27]?(?![\w-])""")
-LIST_RE = re.compile(r"""["\x27]git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27]""" + CMDS + r"""["\x27]""")
-TESTS = re.compile(r"(^|/)(tests?|testdata|fixtures)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|^\.github/agent/fixtures/")
+import hashlib, os, re, shlex, subprocess, sys
+CMDS = ("commit", "commit-tree", "merge", "cherry-pick", "rebase", "am", "revert", "pull")
+OPT_VALUE = ("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path")
+SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+(?:-\S+(?:\s+\S+)?\s+)*)["\x27]?(?:""" + "|".join(CMDS) + r""")["\x27]?(?![\w-])""")
+LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27](?:""" + "|".join(CMDS) + r""")["\x27]""")
+# every tracked file is read except the tests, the prose and data (docs, markdown, json, the vendored tree, the evidence and requirement files)
+SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures|docs|vendor|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$|^\.github/agent/fixtures/")
 ALLOWED = set(sys.argv[2:])      # sha256 of "file\nwhole logical line, stripped": exact rows, nothing else on the line may run
 root = sys.argv[1]
-files = subprocess.run(["git", "ls-files", "-z", "--", "bin", ".github", "tools"], cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")
+
+def tokens_hit(s):
+    """The shell reads the line: quote concatenation (g\x27\x27it, g"it") and backslashes are resolved, then any word whose basename is git, followed by
+    its options, naming a commit-making subcommand, is a hit. False when the line cannot be tokenized (the regex still looks at it)."""
+    try:
+        lx = shlex.shlex(re.sub(r"[()`{}]", " ", s), posix=True, punctuation_chars=True)
+        lx.whitespace_split = True; lx.commenters = ""
+        toks = list(lx)
+    except ValueError:
+        return False
+    for k, tok in enumerate(toks):
+        if os.path.basename(tok) != "git":
+            continue
+        j = k + 1
+        while j < len(toks) and toks[j].startswith("-"):
+            j += 2 if toks[j] in OPT_VALUE else 1
+        if j < len(toks) and toks[j] in CMDS:
+            return True
+    return False
+
+files = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")
 for f in files:
-    if not f or TESTS.search(f) or not os.path.isfile(os.path.join(root, f)):
+    if not f or SKIP.search(f) or not os.path.isfile(os.path.join(root, f)) or os.path.islink(os.path.join(root, f)):
         continue
     try:
         lines = open(os.path.join(root, f), encoding="utf-8").read().split("\n")
@@ -177,31 +209,30 @@ for f in files:
     i = 0
     while i < len(lines):
         start, cur = i + 1, lines[i]
-        while cur.rstrip().endswith("\\") and i + 1 < len(lines):      # a shell continuation is one command
-            i += 1; cur = cur.rstrip()[:-1] + " " + lines[i].lstrip()
+        while cur.endswith("\\") and i + 1 < len(lines):      # backslash-newline is removed by the shell: g\<newline>it is git
+            i += 1; cur = cur[:-1] + lines[i]
         i += 1
         s = cur.strip()
-        n = re.sub(r"\\(?=[A-Za-z])", "", re.sub(r"(\x27\x27|\"\")", "", s))    # g\x27\x27it and g\\it are git to the shell
-        if s.startswith("#") or not (SHELL_RE.search(n) or LIST_RE.search(n)):
+        n = re.sub(r"\\(?=[A-Za-z])", "", re.sub(r"(\x27\x27|\"\")", "", s))
+        if s.startswith("#") or not (tokens_hit(s) or SHELL_RE.search(n) or LIST_RE.search(n)):
             continue
         if hashlib.sha256((f + "\n" + s).encode()).hexdigest() in ALLOWED:
             continue
         print("%s:%d:%s" % (f, start, s[:160]))
     whole = "\n".join(lines)
     for m in LIST_RE.finditer(whole):           # an argument list that is spread over lines
-        ln = whole.count("\n", 0, m.start()) + 1
         if "\n" in m.group(0):
-            print("%s:%d:%s" % (f, ln, " ".join(m.group(0).split())[:160]))
+            print("%s:%d:%s" % (f, whole.count("\n", 0, m.start()) + 1, " ".join(m.group(0).split())[:160]))
 '
 guard_scan() { python3 -I -c "$GUARD_PY" "$@"; }   # guard_scan <repo root> [allowed sha256 ...]
-ALLOW=(987df78d130b69c21e8c0c0aec49d065857f250fdc58e429a2fc3c36c2bb50b3 4ecf328cb07ea2e678cec7c6bda8aaf5d45a4569d93a92439cc0e65caf40425f 214234061c415ef2a41afd9c51fe8503b0645b31679d08fb6a06f7ddce85ffb0 5268fb8e50f332bb34b20260158a11e3169918db862866888a14e63996042130 809e4cd3d001b8f260e59002af8ee8c4bc14a7b0aee7a746bdf1a45fe260894d 93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9 2449244a68f1430fd2adeda5e9baf812b46470c590b9e77a9b60b2db11fd950f)
+ALLOW=(0d66bd309433e4fd5f4961caf87b2088ac642b517c9f9ff3923f29a8dce26c3c 4ecf328cb07ea2e678cec7c6bda8aaf5d45a4569d93a92439cc0e65caf40425f 214234061c415ef2a41afd9c51fe8503b0645b31679d08fb6a06f7ddce85ffb0 5268fb8e50f332bb34b20260158a11e3169918db862866888a14e63996042130 809e4cd3d001b8f260e59002af8ee8c4bc14a7b0aee7a746bdf1a45fe260894d 93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9 2449244a68f1430fd2adeda5e9baf812b46470c590b9e77a9b60b2db11fd950f)
 bad_lines="$(guard_scan "$root" "${ALLOW[@]}")" || bad_lines="the guard itself failed"
 if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC8)"; pass=$((pass+1))
 else echo "FAIL: a commit-making git call outside the tests:"; printf '%s\n' "$bad_lines" | sed 's/^/    /'; fail=$((fail+1)); fi
 # the guard must catch each form on its own, in a throwaway repository
-g="$(mktemp -d)"; ( cd "$g" && git init -q && mkdir -p bin .github/workflows ) >/dev/null 2>&1
+g="$(mktemp -d)"; ( cd "$g" && git init -q && mkdir -p bin .github/workflows .githooks ) >/dev/null 2>&1
 guard_in() {   # guard_in <file> <content>: the number of hits when the repository holds only that file
-  ( cd "$g" && git rm -q -r -f --cached . >/dev/null 2>&1; rm -f bin/* .github/workflows/*; printf '%b' "$2" > "$1" && git add -A >/dev/null 2>&1 ); guard_scan "$g" "${@:3}" | wc -l | tr -d ' '
+  ( cd "$g" && git rm -q -r -f --cached . >/dev/null 2>&1; rm -f bin/* .github/workflows/* .githooks/*; printf '%b' "$2" > "$1" && git add -A >/dev/null 2>&1 ); guard_scan "$g" "${@:3}" | wc -l | tr -d ' '
 }
 guard_catches() { local n; n="$(guard_in "$2" "$3")"; if [ "$n" -ge 1 ]; then echo "ok: guard catches ${1}"; pass=$((pass+1)); else echo "FAIL: guard misses ${1}"; fail=$((fail+1)); fi; }
 guard_passes()  { local n; n="$(guard_in "$2" "$3")"; if [ "$n" = 0 ]; then echo "ok: guard lets through ${1}"; pass=$((pass+1)); else echo "FAIL: guard flags ${1}"; fail=$((fail+1)); fi; }
@@ -220,6 +251,13 @@ guard_catches "a Python argument list"            bin/a.py 'subprocess.run(["git
 guard_catches "a Python list with an option first" bin/a.py 'subprocess.run(["git", "-c", "user.name=x", "commit", "-m", "x"], check=True)\n'
 guard_catches "a concatenated command name"       bin/a.sh "g''it commit -m x\\n"
 guard_catches "a backslash inside the command name" bin/a.sh 'g\\it commit -m x\n'
+guard_catches "a quote inside the name g'it'"     bin/a.sh "g'it' commit -m x\\n"
+guard_catches "a quote inside the name g\"it\""    bin/a.sh 'g"it" commit -m x\n'
+guard_catches "a split name across a continuation" bin/a.sh 'g\\\nit commit -m x\n'
+guard_catches "command -p git"                    bin/a.sh 'command -p git commit -m x\n'
+guard_catches "git in a subshell"                 bin/a.sh 'x=$(git commit-tree T -m x)\n'
+guard_catches "a script outside bin and .github"  .githooks/pre-commit 'git commit -m x\n'
+guard_catches "a Python list with an absolute git" bin/a.py 'subprocess.run(["/usr/bin/git", "commit", "-m", "x"])\n'
 guard_catches "git by absolute path"              bin/a.sh '/usr/bin/git commit -m x\n'
 guard_catches "git behind command"                bin/a.sh 'command git commit -m x\n'
 guard_catches "a Python list spread over lines"   bin/a.py 'subprocess.run([\n    "git",\n    "commit",\n    "-m", "x"\n])\n'
