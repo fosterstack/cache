@@ -460,8 +460,15 @@ aud_case reports-option bad "=>
 "
 aud_case no-panel-dir   bad "--panel-dir =>--panel-evidence "
 # No workflow in the repository declares, passes or reads SNYK_TOKEN any more (the secret can be deleted by the owner once none remain)
-snyk_files="$(grep -rIl "SNYK_TOKEN" "$root/.github/workflows" 2>/dev/null || true)"
+snyk_scan() { grep -rIl "SNYK_TOKEN" "$1/.github/workflows" "$1/.github/actions" 2>/dev/null || true; }     # workflows and composite actions
+snyk_files="$(snyk_scan "$root")"
 if [ -n "$snyk_files" ]; then failn=$((failn+1)); echo "FAIL no-snyk-token-in-workflows: $(printf '%s' "$snyk_files" | tr '\n' ' ')"
 else pass=$((pass+1)); echo "PASS no-snyk-token-in-workflows"; fi
+for where in workflows/x.yml actions/x/action.yml actions/x/y/action.yaml; do          # the scan catches it in either place
+  rm -rf "$work/snyk-mut"; mkdir -p "$work/snyk-mut/.github/$(dirname "$where")"
+  printf 'env:\n  T: ${{ secrets.SNYK_TOKEN }}\n' > "$work/snyk-mut/.github/$where"
+  if [ -n "$(snyk_scan "$work/snyk-mut")" ]; then pass=$((pass+1)); echo "PASS snyk-scan-catches-$where"
+  else failn=$((failn+1)); echo "FAIL snyk-scan-misses-$where"; fi
+done
 echo "panel-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
