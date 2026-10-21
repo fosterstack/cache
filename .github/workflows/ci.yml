@@ -550,6 +550,8 @@ jobs:
         run: bash bin/dependabot-reviewer-gather-test.sh
       - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)
         run: bash bin/panel-test.sh
+      - name: the final image index that carries our OpenVEX for Docker Scout — the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)
+        run: bash bin/vex-index-test.sh </dev/null
       - name: the auditor's fixtures and tests follow the panel's image set — the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)
         run: bash .github/agent/tests/auditor-variants-test.sh
       - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)
