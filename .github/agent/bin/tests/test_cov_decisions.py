@@ -124,19 +124,12 @@ class ClassifyGvcVerdict(TmpCase):
         self.assertEqual(classify.gvc_verdict(g2, ["GO-1"])[0], "reachable")
 
 
-class ClassifyFpVerified(TmpCase):
-    def test_lineage_only_copy_is_not_evidence(self):
-        key = {"scanner": "grype", "finding_id": "DSA-1", "purl": "pkg:deb/debian/x@1"}
-        log = self.put("log.json", {"defects": [{"disposition": "false_positive", "keys": [key]}]})
-        lineage = dict(key, _lineage_only=True)
-        self.assertIsNone(classify.fp_verified(["CVE-1"], log, [lineage]))
-        ev = classify.fp_verified(["CVE-1"], log, [lineage, dict(key)])
-        self.assertEqual(ev, {"check": "known-defect-log", "source_file": log,
-                              "detail": "exact key grype/DSA-1/pkg:deb/debian/x@1"})
-
-
 class ClassifyManifestValidation(unittest.TestCase):
-    FULL = {k: None for k in ("grype", "trivy", "osv-scanner", "osv-scanner-gomod", "snyk")}
+    FULL = {k: None for k in ("grype", "scout", "inspector", "google")}
+    PANEL = {"verdict": None}
+
+    def man(self, **kw):
+        return dict({"scanner_set": "panel", "panel": self.PANEL, "scanner_reports": dict(self.FULL)}, **kw)
 
     def test_scanner_reports_missing(self):
         with self.assertRaisesRegex(ValueError, "scanner_reports object is missing"):
@@ -144,26 +137,37 @@ class ClassifyManifestValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "scanner_reports object is missing"):
             classify.validate_manifest({"scanner_reports": []})
 
+    def test_only_the_panel_scanner_set_is_read(self):
+        for bad in (None, "legacy", "other"):
+            with self.assertRaisesRegex(ValueError, "is not 'panel'"):
+                classify.validate_manifest({"scanner_set": bad, "scanner_reports": dict(self.FULL)})
+        with self.assertRaisesRegex(ValueError, "is not 'panel'"):
+            classify.validate_manifest({"scanner_reports": dict(self.FULL)})                    # absent is not the panel either
+
+    def test_a_panel_manifest_needs_the_panel_block(self):
+        with self.assertRaisesRegex(ValueError, "no panel block with the verdict path"):
+            classify.validate_manifest({"scanner_set": "panel", "scanner_reports": dict(self.FULL)})
+
     def test_missing_key(self):
-        r = dict(self.FULL); del r["snyk"]
-        with self.assertRaisesRegex(ValueError, "missing key 'snyk'"):
-            classify.validate_manifest({"scanner_reports": r})
+        r = dict(self.FULL); del r["google"]
+        with self.assertRaisesRegex(ValueError, "missing key 'google'"):
+            classify.validate_manifest(self.man(scanner_reports=r))
 
     def test_null_needs_reason_when_status_recorded(self):
-        m = {"scanner_reports": dict(self.FULL), "scanner_status": {"grype": {"reason": None}}}
+        m = self.man(scanner_status={"grype": {"reason": None}})
         with self.assertRaisesRegex(ValueError, "grype is null with no scanner_status reason"):
             classify.validate_manifest(m)
         reasons = {k: {"reason": "timeout"} for k in self.FULL}
-        ok = {"scanner_reports": dict(self.FULL), "scanner_status": reasons}
+        ok = self.man(scanner_status=reasons)
         self.assertIs(classify.validate_manifest(ok), ok)
 
     def test_null_needs_reason_even_without_scanner_status(self):
         # LR-27 (c): a null report with no scanner_status at all used to pass validation
         with self.assertRaisesRegex(ValueError, "grype is null with no scanner_status reason"):
-            classify.validate_manifest({"scanner_reports": dict(self.FULL)})
-        r = dict(self.FULL, grype="/g.json", trivy="/t.json", **{"osv-scanner": "/o.json", "osv-scanner-gomod": "/og.json"})
-        with self.assertRaisesRegex(ValueError, "snyk is null with no scanner_status reason"):
-            classify.validate_manifest({"scanner_reports": r, "scanner_status": {"grype": {"reason": "x"}}})
+            classify.validate_manifest(self.man())
+        r = dict(self.FULL, grype="/g.json", scout="/s.json", inspector="/i.json")
+        with self.assertRaisesRegex(ValueError, "google is null with no scanner_status reason"):
+            classify.validate_manifest(self.man(scanner_reports=r, scanner_status={"grype": {"reason": "x"}}))
 
 
 class ClassifyManifestGvc(unittest.TestCase):
@@ -191,25 +195,28 @@ class ClassifyDoManifest(TmpCase):
                  "CVE-2024-0004": "false_positive"}             # log row present
 
     def _manifest(self, commit):
-        def m(cve, alias, name):
-            rel = [{"id": alias}] if alias else []
-            return {"vulnerability": {"id": cve, "severity": "High", "fix": {"state": "not-fixed"}},
-                    "artifact": {"purl": "pkg:golang/%s@v0.3.0" % name, "name": name},
-                    "relatedVulnerabilities": rel}
-        grype = self.put("grype.json", {"matches": [m("CVE-2024-0001", "GO-1", "text"),
-                                                    m("CVE-2024-0002", None, "net"),
-                                                    m("CVE-2024-0003", None, "a"),
-                                                    m("CVE-2024-0004", None, "b")]})
+        from auditorlib import parsers as PL
+        images = {}
+        for im in sorted(PL.panel_images()):
+            ran = sorted(x for x in PL.PANEL_SCANNERS if PL.panel_expected(x, im))
+            images[im] = {"counts": {x: 10 for x in ran}, "did_not_run": [], "ran": ran, "counts_for_day": True}
+
+        def f(cve, alias, name):
+            return {"image": "production-amd64", "id": cve, "package": name, "version": "0.3.0", "seen_by": ["grype"], "of": 4,
+                    "unique": True, "status": "unique", "purls": ["pkg:golang/%s@v0.3.0" % name],
+                    "details": {"grype": dict({"severity": "high"}, **({"aliases": [alias]} if alias else {}))}}
+        fs = [f("CVE-2024-0001", "GO-1", "text"), f("CVE-2024-0002", None, "net"), f("CVE-2024-0003", None, "a"), f("CVE-2024-0004", None, "b")]
+        pm = PL._panel_module()
+        verdict = self.put("verdict.json", {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs, "vex_covered": [],
+                                            "issue": pm.render_issue([]), "unique": fs, "exit": 0})
         gv = self.put("gv.json", gv_stream([("GO-1", IMPORTED)]))
         log = self.put("log.json", {"defects": [{"disposition": "false_positive", "keys": [
             {"scanner": "grype", "finding_id": "CVE-2024-0004", "purl": "pkg:golang/b@v0.3.0"}]}]})
-        down = {"reason": "not run in test"}
         return self.put("manifest-%s.json" % commit, {
             "module": "example.com/app", "commit": "c1", "known_defect_log": log,
             "govulncheck": {"path": gv, "commit": commit, "complete": True},
-            "scanner_reports": {"grype": grype, "trivy": None, "osv-scanner": None,
-                                "osv-scanner-gomod": None, "snyk": None},
-            "scanner_status": {k: down for k in ("trivy", "osv-scanner", "osv-scanner-gomod", "snyk")}})
+            "scanner_set": "panel", "panel": {"verdict": verdict},
+            "scanner_reports": {k: verdict for k in PL.PANEL_SCANNERS}, "scanner_status": {}})
 
     def _run(self, commit):
         out = self.p("out-" + commit)
@@ -242,8 +249,7 @@ class ClassifyDoManifest(TmpCase):
                          {"reason": "no finding message for any id"})
         self.assertEqual(self.sidecar(out, "CVE-2024-0003")["evidence"],
                          {"reason": "no false-positive evidence"})
-        self.assertFalse(os.path.exists(os.path.join(out, "ignores", "grype", "CVE-2024-0003.json")))
-        self.assertTrue(os.path.exists(os.path.join(out, "ignores", "grype", "CVE-2024-0004.json")))
+        self.assertFalse(os.path.exists(os.path.join(out, "ignores")))                # the OpenVEX is the only exception (rule 4)
         self.assertEqual(json.load(open(os.path.join(out, "report-sections", "CVE-2024-0003.json"))),
                          {"sections": [4]})
         report = open(os.path.join(out, "report.md")).read()
@@ -326,40 +332,10 @@ class PoamRemoveFromVex(TmpCase):
         self.assertFalse(os.path.exists(f))
 
 
-SNYK = ("version: v1.5.0\nignore:\n"
-        "  CVE-2011-3374:\n    - '*':\n        reason: 'a'\n\n"
-        "  'CVE-2011-33740':\n    - '*':\n        reason: 'b'\n"
-        "  CVE-2099-9:\n    - '*':\n        reason: 'c'\n")
-
-
-class PoamEditSnyk(TmpCase):
-    def test_exact_key_removed_prefix_collision_survives(self):
-        f = self.put(".snyk", SNYK)
-        poam._edit_snyk(f, {"CVE-2011-3374", "CVE-2099-9"})
-        self.assertEqual(self.rt(".snyk"),
-                         "version: v1.5.0\nignore:\n  'CVE-2011-33740':\n    - '*':\n        reason: 'b'\n")
-
-    def test_quoted_key_and_no_trailing_newline(self):
-        f = self.put(".snyk", SNYK.rstrip("\n"))
-        poam._edit_snyk(f, {"CVE-2011-33740"})
-        text = self.rt(".snyk")
-        self.assertFalse(text.endswith("\n"))
-        self.assertNotIn("33740", text)
-        self.assertIn("  CVE-2011-3374:\n", text)
-        self.assertIn("  CVE-2099-9:", text)
-
-
 class PoamRecheck(TmpCase):
     def _supp(self):
         s = "supp"
         self.put(s + "/.vex/a.openvex.json", vexfile(("CVE-1", []), ("CVE-2", [])))
-        self.put(s + "/ignores/grype/CVE-1.json", {"id": "CVE-1"})
-        self.put(s + "/ignores/grype/GHSA-1.json", {"id": "GHSA-1"})   # alias of CVE-1
-        self.put(s + "/ignores/grype/CVE-2.json", {"id": "CVE-2"})
-        self.put(s + "/ignores/broken.json", "{not json")
-        self.put(s + "/.snyk", SNYK.replace("CVE-2011-3374:", "CVE-1:"))
-        self.put(s + "/osv-scanner.toml", '# head\n[[IgnoredVulns]]\nid = "CVE-1"\n'
-                 '[[IgnoredVulns]]\nid = "CVE-2"\n')
         return self.p(s)
 
     def test_expired_without_fix_removes_only_this_finding(self):
@@ -370,16 +346,9 @@ class PoamRecheck(TmpCase):
         self.assertEqual((r["ignore_removed"], r["returned_to_section"], r["policy_reapplied"], r["cve"]),
                          (True, 3, True, "CVE-1"))
         rel = sorted(os.path.relpath(x, supp) for x in r["removed_files"])
-        self.assertEqual(rel, [".vex/a.openvex.json", "ignores/grype/CVE-1.json", "ignores/grype/GHSA-1.json"])
-        self.assertTrue(os.path.exists(os.path.join(supp, "ignores/grype/CVE-2.json")))
-        self.assertTrue(os.path.exists(os.path.join(supp, "ignores/broken.json")))
+        self.assertEqual(rel, [".vex/a.openvex.json"])                      # the OpenVEX is the only exception there is
         v = json.load(open(os.path.join(supp, ".vex/a.openvex.json")))
         self.assertEqual([s["vulnerability"]["name"] for s in v["statements"]], ["CVE-2"])
-        snyk = open(os.path.join(supp, ".snyk")).read()
-        self.assertNotIn("CVE-1:", snyk)
-        self.assertIn("CVE-2011-33740", snyk)
-        self.assertEqual(open(os.path.join(supp, "osv-scanner.toml")).read(),
-                         '# head\n[[IgnoredVulns]]\nid = "CVE-2"\n')
 
     def test_not_expired_or_fixed_stays_active(self):
         supp = self._supp()
@@ -390,7 +359,8 @@ class PoamRecheck(TmpCase):
             self.assertEqual(json.load(open(os.path.join(out, "recheck.json"))),
                              {"ignore_removed": False, "returned_to_section": None, "policy_reapplied": False})
             self.assertEqual(json.load(open(os.path.join(out, "ignores", "still-active.json"))), pkgd)
-        self.assertTrue(os.path.exists(os.path.join(supp, "ignores/grype/CVE-1.json")))
+        kept = json.load(open(os.path.join(supp, ".vex/a.openvex.json")))
+        self.assertEqual([s["vulnerability"]["name"] for s in kept["statements"]], ["CVE-1", "CVE-2"])      # nothing was removed
 
 
 class PoamAcceptGuard(TmpCase):
@@ -575,8 +545,8 @@ class SuppressMain(TmpCase):
         side = self.rj("out", "evidence", "CVE-2020-14040.evidence.json")
         self.assertEqual(side["evidence"]["source_file"], src)
         self.assertEqual(side["scoped_purls"], [self.PURLS["grype"]])
-        self.assertIn('id = "CVE-2020-14040"', self.rt("out", "osv-scanner.toml"))
-        self.assertIn("  CVE-2020-14040:\n", self.rt("out", ".snyk"))
+        self.assertFalse(os.path.exists(self.p("out", "osv-scanner.toml")))          # the OpenVEX is the only exception (rule 4)
+        self.assertFalse(os.path.exists(self.p("out", ".snyk")))
 
     def test_unknown_check(self):
         src = self.put("x.json", "{}")
