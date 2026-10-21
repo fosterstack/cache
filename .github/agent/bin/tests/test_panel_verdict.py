@@ -26,8 +26,9 @@ def good():
                 "purls": ["pkg:deb/debian/%s@%s" % (pkg, ver)],
                 "details": details if details is not None else {s: {} for s in seen}}
     fs = [f("production-amd64", "CVE-2099-0001", "openssl", "3.0.1", ["grype", "inspector"],
-            {"grype": {"severity": "high", "fixed_version": "3.0.2", "aliases": ["GHSA-aaaa-bbbb-cccc"], "known_exploited": True},
-             "inspector": {"severity": "critical"}}),
+            {"grype": {"severity": "high", "fixed_version": "3.0.2", "aliases": ["GHSA-aaaa-bbbb-cccc"], "known_exploited": True,
+                       "purl": "pkg:deb/debian/openssl@3.0.1?arch=amd64&distro=debian-12"},
+             "inspector": {"severity": "critical", "purl": "pkg:deb/debian/openssl@3.0.1"}}),
           f("production-amd64", "CVE-2099-0002", "zlib", "1.3", ["inspector"])]
     d = {"images": images, "not_counted": [], "scanner_failures": [], "findings": fs,
          "unique": [x for x in fs if x["unique"]],
@@ -74,6 +75,16 @@ class Validator(unittest.TestCase):
             ("details that are not an object", lambda d: d["findings"][0].update(details=[]), "details for different scanners than seen_by"),
             ("an unknown key in a scanner's details", lambda d: d["findings"][0]["details"]["grype"].update(cvss=9.8), "unknown key in grype's details"),
             ("a scanner's details that are not an object", lambda d: d["findings"][0]["details"].update(grype=[]), "unknown key in grype's details"),
+            ("a non-text package URL in a scanner's details", lambda d: d["findings"][0]["details"]["grype"].update(purl=3), "malformed value in grype's details"),
+            ("an empty package URL in a scanner's details", lambda d: d["findings"][0]["details"]["grype"].update(purl=""), "malformed value in grype's details"),
+            ("a scanner's package URL that is not pkg:", lambda d: d["findings"][0]["details"]["inspector"].update(purl="openssl@3.0.1"), "malformed value in inspector's details"),
+            ("a package URL with an empty version", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/openssl@"), "malformed value in inspector's details"),
+            ("a package URL with an empty qualifier value", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/openssl@3.0.1?arch="), "malformed value in inspector's details"),
+            ("a package URL with a repeated qualifier key", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/openssl@3.0.1?arch=amd64&arch=arm64"), "malformed value in inspector's details"),
+            ("a package URL with an empty subpath", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/openssl@3.0.1#"), "malformed value in inspector's details"),
+            ("a finding package URL with a repeated qualifier key", lambda d: d["findings"][0].update(purls=["pkg:deb/debian/openssl@3.0.1?arch=amd64&arch=arm64"]), "is not pkg:TYPE"),
+            ("a scanner's package URL for another package", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/other@3.0.1"), "inspector's package URL is for a different package or version"),
+            ("a scanner's package URL for another version", lambda d: d["findings"][0]["details"]["grype"].update(purl="pkg:deb/debian/openssl@9.9"), "grype's package URL is for a different package or version"),
             ("a severity outside the normalised words", lambda d: d["findings"][0]["details"]["grype"].update(severity="HIGH"), "malformed value in grype's details"),
             ("a non-text severity", lambda d: d["findings"][0]["details"]["grype"].update(severity=3), "malformed value in grype's details"),
             ("an empty fixed version", lambda d: d["findings"][0]["details"]["grype"].update(fixed_version=""), "malformed value in grype's details"),
@@ -107,6 +118,31 @@ class Validator(unittest.TestCase):
         for name, mutate, pattern in cases:
             with self.subTest(name):
                 refuse(self, mutate, pattern)
+
+    def test_each_scanner_keeps_its_own_package_url_and_borrows_none(self):
+        # handoff 0601 item 2: a scanner's package identity is what THAT scanner reported; absent stays absent (a generic one is built
+        # from the finding's package and version), never copied from another scanner
+        path = tempfile.mkstemp(suffix=".json")[1]; self.addCleanup(os.unlink, path)
+        with open(path, "w") as fh:
+            json.dump(good(), fh)
+        grype = {f["finding_id"]: f for f in P.parse_panel(path, "grype")}
+        insp = {f["finding_id"]: f for f in P.parse_panel(path, "inspector")}
+        self.assertEqual(grype["CVE-2099-0001"]["purl"], "pkg:deb/debian/openssl@3.0.1?arch=amd64&distro=debian-12")
+        self.assertEqual(insp["CVE-2099-0001"]["purl"], "pkg:deb/debian/openssl@3.0.1")
+        self.assertEqual(insp["CVE-2099-0002"]["purl"], "pkg:generic/zlib@1.3")        # reported no package URL: not the finding's, not another scanner's
+
+    def test_one_scanner_with_two_package_urls_on_two_images_is_two_records(self):
+        d = good()
+        second = copy.deepcopy(d["findings"][0]); second["image"] = "production-arm64"
+        second["of"] = len(d["images"]["production-arm64"]["ran"])
+        second["details"]["grype"]["purl"] = "pkg:deb/debian/openssl@3.0.1?arch=arm64&distro=debian-12"
+        d["findings"].append(second)
+        d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
+        path = tempfile.mkstemp(suffix=".json")[1]; self.addCleanup(os.unlink, path)
+        with open(path, "w") as fh:
+            json.dump(d, fh)
+        recs = sorted(r["purl"] for r in P.parse_panel(path, "grype"))
+        self.assertEqual(recs, ["pkg:deb/debian/openssl@3.0.1?arch=amd64&distro=debian-12", "pkg:deb/debian/openssl@3.0.1?arch=arm64&distro=debian-12"])
 
     def test_the_document_must_be_an_object(self):
         with self.assertRaisesRegex(P.ParseError, "no images object or findings array"):
@@ -143,7 +179,8 @@ class Loader(unittest.TestCase):
         # the same finding on a second image: the scanner's record keeps the HIGHEST severity, the first fixed version, the union of aliases
         second = copy.deepcopy(d["findings"][0]); second["image"] = "production-arm64"
         second["of"] = len(d["images"]["production-arm64"]["ran"]); second["seen_by"] = ["grype", "inspector"]
-        second["details"] = {"grype": {"severity": "critical", "fixed_version": "9.9", "aliases": ["GHSA-dddd-eeee-ffff"]}, "inspector": {}}
+        second["details"] = {"grype": {"severity": "critical", "fixed_version": "9.9", "aliases": ["GHSA-dddd-eeee-ffff"],
+                                       "purl": d["findings"][0]["details"]["grype"]["purl"]}, "inspector": {}}       # the same package URL on both images: one record
         d["findings"].append(second)
         d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
         path = self.write(json.dumps(d))
