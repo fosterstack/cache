@@ -11,7 +11,7 @@ here=$(cd "$(dirname "$0")/../../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
-judge() { PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
@@ -463,14 +463,37 @@ if pol is not None:
 # the four protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
 # name may be an expression or come from a matrix (its rendered name cannot be judged).
+def name_disjoint(nm):   # a literal name is compared as it is; an expression name needs a literal space or `(` (no protected name has either)
+    nm = str(nm)
+    return "${{" not in nm or bool(re.search(r"[ (]", re.sub(r"\$\{\{.*?\}\}", "", nm)))
 for jid_, j_ in d.get("jobs", {}).items():
     if not isinstance(j_, dict):
         continue
     nm = j_.get("name", jid_)
     if jid_ not in PROTECTED and (nm in PROTECTED or jid_ in PROTECTED):
         bad.append(f"the job {jid_} produces the protected check name {nm}")
-    if jid_ not in PROTECTED and ("${{" in str(nm) or "strategy" in j_):
-        bad.append(f"the job {jid_} has an expression name or a matrix (its check names cannot be judged against the protected ones)")
+    if jid_ not in PROTECTED and not name_disjoint(nm):
+        bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
+# and no other workflow file may carry such a job either (admission accepts any success with the matching name and app); an unreadable or
+# unparseable workflow file is refused, since its job names cannot be judged
+_wdir = os.environ["PIN_WIRING_WORKFLOWS_DIR"]
+for _f in sorted(os.listdir(_wdir)):
+    if not _f.endswith((".yml", ".yaml")) or _f == "ci.yml":
+        continue
+    try:
+        _w = yaml.load(open(os.path.join(_wdir, _f)).read(), Loader=yaml.BaseLoader)
+        _jobs = (_w or {}).get("jobs") or {}
+        if not isinstance(_jobs, dict):
+            raise ValueError("jobs is not a mapping")
+    except Exception as e:
+        bad.append(f"the workflow {_f} cannot be read ({type(e).__name__}), so its job names cannot be judged")
+        continue
+    for _jid, _j in _jobs.items():
+        _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
+        if _jid in PROTECTED or _nm in PROTECTED:
+            bad.append(f"{_f}: the job {_jid} takes the protected check name {_nm if _nm in PROTECTED else _jid}")
+        elif not name_disjoint(_nm):
+            bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -481,7 +504,11 @@ PY
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
   git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/required-checks.json" > "$work/head-policy.json" || { echo "pin-wiring: no required-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
-  PIN_WIRING_POLICY_FILE="$work/head-policy.json" judge "$work/head-ci.yml" && exit 0
+  mkdir -p "$work/head-wf"
+  for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
+    git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
+  done
+  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" judge "$work/head-ci.yml" && exit 0
   exit 1
 fi
 
@@ -582,6 +609,7 @@ gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
   local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
+  cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true; cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   if [ -n "$3" ]; then python3 - "$r/.github/workflows/ci.yml" "$3" <<'PY'
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
@@ -623,8 +651,9 @@ case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append(
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
-case_ job-name-expression     bad "d['jobs']['lint']['name'] = 'lint \${{ matrix.x }}'"
-case_ job-matrix-other        bad "d['jobs']['lint']['strategy'] = {'matrix': {'x': ['1']}}"
+case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
+case_ job-name-expr-spaced    ok  "d['jobs']['lint']['name'] = 'lint (\${{ matrix.x }})'"
+case_ job-matrix-other        ok  "d['jobs']['lint']['strategy'] = {'matrix': {'x': ['1']}}"
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
@@ -701,6 +730,21 @@ if out=$(gate_timeouts "$here/.github/workflows/agent-review-gate.yml"); then pa
 else failn=$((failn+1)); echo "FAIL gate jobs without timeout-minutes: $out"; fi
 cp "$here/.github/workflows/agent-review-gate.yml" "$work/gate-mut.yml"; sed -i.bak '/^    timeout-minutes:/d' "$work/gate-mut.yml"
 if gate_timeouts "$work/gate-mut.yml" >/dev/null; then failn=$((failn+1)); echo "FAIL gate without timeouts accepted"; else pass=$((pass+1)); echo "PASS gate without timeouts → bad"; fi
+
+# a job in ANOTHER workflow file that takes a protected check name, or can render as one, or a workflow that cannot be read
+for mut in "name" "id" "expr" "garbage" "okexpr"; do
+  rm -rf "$work/wf-$mut"; mkdir -p "$work/wf-$mut"; cp "$here"/.github/workflows/*.y*ml "$work/wf-$mut/"
+  case "$mut" in
+    name) printf 'name: x\non: push\njobs:\n  zz:\n    name: allowlist-persona\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    id) printf 'name: x\non: push\njobs:\n  allowlist-chain:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    expr) printf 'name: x\non: push\njobs:\n  zz:\n    name: ${{ matrix.n }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    garbage) printf 'jobs: [\n' > "$work/wf-$mut/zz.yml" ;;
+    okexpr) printf 'name: x\non: push\njobs:\n  zz:\n    name: scan (${{ matrix.n }})\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+  esac
+  want=bad; [ "$mut" = okexpr ] && want=ok
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/wf-$mut" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
+done
 
 # the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them)
 for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
