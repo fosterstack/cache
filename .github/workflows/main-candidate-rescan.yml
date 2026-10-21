@@ -71,8 +71,8 @@ jobs:
         with:
           name: oci-candidate
           path: /tmp/oci/
-      - name: install skopeo
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+      - name: skopeo is on the runner image
+        run: command -v skopeo >/dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
       - name: log in to GHCR (the scratch package)
         env:
           GH_TOKEN: ${{ github.token }}
