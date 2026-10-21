@@ -1,4 +1,5 @@
-# Hash-pinned TEST-ONLY tools for the auditor's report lint (.github/agent/tests/report-lint.py):
+# Hash-pinned TEST-ONLY tools: the auditor's report lint (.github/agent/tests/report-lint.py) and PyYAML, which the workflow-wiring suites of the
+# split CI jobs (allowlist-persona, allowlist-chain, allowlist-pins-auditor) read workflows with:
 # cmarkgfm is GitHub's own cmark-gfm renderer, so the lint sees reports exactly as GitHub renders
 # them. Installed by CI with `pip install --require-hashes --only-binary=:all:`; bumped by the pip
 # ecosystem in dependabot.yml (directory /.github/agent). Never imported by auditor code.
@@ -11,3 +12,6 @@ cffi==2.1.1 \
     --hash=sha256:661c298b4821edebead0c91edd2b00374d67ad7c5a1f7a91d4442633b79d6a72
 pycparser==3.0 \
     --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992
+pyyaml==6.0.2 \
+    --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 \
+    --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5
