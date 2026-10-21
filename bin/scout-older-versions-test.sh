@@ -53,6 +53,21 @@ STUB
 mkdir -p "$e/badbin"; cp "$e/bin/docker.bad" "$e/badbin/docker"; chmod +x "$e/badbin/docker"
 LOGF="$e/bad.log" SCOUT_DIR="$e/scout" SCOUT_VERSIONS="9.9.9" HOME="$e/home" PATH="$e/badbin:$PATH" bash bin/scout-older-versions.sh "$e/out2" > "$e/bad.out" 2>&1
 [ "$?" -eq 2 ] && ! grep -q 'scout cves' "$e/bad.log" 2>/dev/null && ok "a fixture that cannot be pulled exits 2 before any scan" || no "setup failure: $(tail -2 "$e/bad.out")"
+# stale tags from an earlier run do not stand in for the fixture: the sweep removes both tags first, so a failed pull leaves nothing to scan
+mkdir -p "$e/stale" "$e/stalebin"; : > "$e/stale/scoutcontrol_app_v1"; : > "$e/stale/cache_selfcheck"
+cat > "$e/stalebin/docker" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  pull) exit 1 ;;
+  rmi) shift; for t in "$@"; do case "$t" in scoutcontrol/app:v1) rm -f "$STALE/scoutcontrol_app_v1" ;; ghcr.io/fosterstack/cache:selfcheck) rm -f "$STALE/cache_selfcheck" ;; esac; done; exit 0 ;;
+  image) [ -e "$STALE/scoutcontrol_app_v1" ] && [ -e "$STALE/cache_selfcheck" ] && exit 0; exit 1 ;;
+  scout) echo "$*" >> "$LOGF"; exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$e/stalebin/docker"
+STALE="$e/stale" LOGF="$e/stale.log" SCOUT_DIR="$e/scout" SCOUT_VERSIONS="9.9.9" HOME="$e/home" PATH="$e/stalebin:$PATH" bash bin/scout-older-versions.sh "$e/out3" > "$e/stale.out" 2>&1
+[ "$?" -eq 2 ] && ! grep -q 'scout cves' "$e/stale.log" 2>/dev/null && ok "stale local tags from an earlier run do not pass for a fixture that failed to pull (exit 2, no scan)" || no "stale tags: $(tail -2 "$e/stale.out")"
 grep -q 'local://' bin/scout-older-versions.sh && ! grep -E 'scout cves[^"]*"\$(CONTROL|OURS)"' bin/scout-older-versions.sh >/dev/null && ok "the tag-based cases scan the local store (local://)" || no "a tag-based scan is not local://"
 # the installer really dispatches every swept name (past the allowlist and the checksum table; it stops at the download, which has no server)
 python3 - "$root" <<'PY' > "$e/vers.txt"
