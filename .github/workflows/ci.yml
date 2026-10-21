@@ -306,28 +306,6 @@ jobs:
       - name: scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)
         run: bash bin/scan-no-workflow-call-test.sh
 
-      - name: build helper tools regressions (apk tool, recipe generator, lock tool, module SBOM)
-        run: bash bin/build-helpers-test.sh
-
-      - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
-        run: bash bin/vendoring-test.sh </dev/null
-      - name: apk build driver and release signing regressions
-        run: bash bin/build-apk-test.sh
-
-      - name: input refresh script regressions
-        run: bash bin/refresh-inputs-test.sh
-
-      - name: archive push, pull and verify regressions
-        run: bash bin/archive-test.sh
-
-      - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
-        run: python3 bin/gen-recipes.py --check
-
-      - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
-        run: bash bin/vendor-provenance-test.sh </dev/null
-      - name: image assembly, lock proof and sealed proof regressions
-        run: bash bin/assemble-image-test.sh
-
       # Row 78: every action reference is a full commit digest with its version in
       # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.
       - name: the pin checker's own cases (row 78)
@@ -376,11 +354,202 @@ jobs:
           "$RUNNER_TEMP/panel-sdk/bin/pip" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt
           PANEL_SDK_TEST_REQUIRED=1 "$RUNNER_TEMP/panel-sdk/bin/python" .github/agent/bin/tests/test_panel_sdk_probe.py -v
 
+      # VEX tripwire (punch list #4b). A dependency we answered with a VEX
+      # statement is answered on the facts as they were: golang-jwt is not
+      # in the build at all, which is why CVE-2024-51744 does not apply to
+      # us. If it ever enters go.sum, that premise is dead and the published
+      # statement becomes a false public claim — the worst failure mode an
+      # attestation has. Fail loudly and make someone re-check it.
+      #
+      # go.sum, not `go mod graph`: the graph lists modules that packages we
+      # do not import happen to require, which is exactly the distinction
+      # the VEX statement rests on.
+      # Punch list #3c/#6c. Version literals in prose and commands rot at
+      # the next release, and this class has bitten twice: a README
+      # "Release pipeline (v0.1.0)" line, and an entire RELEASING.md
+      # verification section built around one tag. Owner doctrine is that
+      # "we need not forget" resolves to a mechanical check, never to
+      # memory. This is that check, and it lands only now that every doc is
+      # already clean, so it goes green on arrival rather than as a
+      # standing red.
+      - name: no unmarked version literals in public docs
+        run: ./bin/check-version-literals.sh
+
+      - name: VEX tripwire — components answered by a VEX statement must stay absent
+        run: |
+          set -euo pipefail
+          if grep -q 'golang-jwt' go.sum; then
+            echo "::error::golang-jwt has entered go.sum. The published VEX statement for CVE-2024-51744 claims component_not_present, which is no longer true on its face. VEX statement requires review before this can merge — see .vex/README.md." >&2
+            exit 1
+          fi
+          echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
+
+  # persona UAT suites (split out of the allowlist job; the driver suite is the long one)
+  allowlist-persona:
+    name: allowlist-persona
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
+
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+      - name: PyYAML (hash-pinned), which the wiring suites read the workflows with
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r /dev/stdin <<'REQ'
+          pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5
+          REQ
+
+
+      # The persona UAT (REQ-UAT-001): its three suites run here like their neighbours. Their fixtures pick free ports per run, so they never collide with
+      # each other or with a developer's machine. The driver suite is the long one (it runs the real driver through hundreds of cases).
+      - name: persona UAT — agent and provider suite
+        run: bash bin/persona-uat-agent-test.sh
+
+      - name: persona UAT — wiring suite (workflows, tools file, installer, identity refresher)
+        run: bash bin/persona-uat-wiring-test.sh
+
+      - name: persona UAT — driver suite
+        run: bash bin/persona-uat-test.sh
+
+  # build, archive, assembly, VEX and scanner-gate regression suites (split out of the allowlist job)
+  allowlist-chain:
+    name: allowlist-chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
+
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+      - name: PyYAML (hash-pinned), which the wiring suites read the workflows with
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r /dev/stdin <<'REQ'
+          pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5
+          REQ
+
+
+      - name: build helper tools regressions (apk tool, recipe generator, lock tool, module SBOM)
+        run: bash bin/build-helpers-test.sh
+
+      - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
+        run: bash bin/vendoring-test.sh </dev/null
+      - name: apk build driver and release signing regressions
+        run: bash bin/build-apk-test.sh
+
+      - name: input refresh script regressions
+        run: bash bin/refresh-inputs-test.sh
+
+      - name: archive push, pull and verify regressions
+        run: bash bin/archive-test.sh
+
+      - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
+        run: python3 bin/gen-recipes.py --check
+
+      - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
+        run: bash bin/vendor-provenance-test.sh </dev/null
+      - name: image assembly, lock proof and sealed proof regressions
+        run: bash bin/assemble-image-test.sh
+
       - name: privacy candidate-trace analyzer regressions (B03)
         run: bash bin/analyze-egress-trace-test.sh
 
       - name: scanner installer failure-path regressions (pinned-checksum contract)
         run: bash bin/install-scanner-test.sh
+
+      - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
+        run: bash bin/inspector-gate-test.sh
+
+      - name: VEX product-scope regressions (audit R01 — exception bound to the FosterStack product)
+        run: |
+          ./bin/install-scanner.sh grype
+          bash bin/vex-scope-test.sh
+
+      - name: VEX applied by both gate scanners (REQ-REL-004-AC1 — covered suppressed, uncovered blocks, zero packages fails)
+        run: bash bin/vex-both-scanners-test.sh
+
+      - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
+        run: bash bin/vex-forms-test.sh
+
+      - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
+        run: bash bin/scout-root-cause-test.sh
+
+      - name: the Docker Scout older-versions sweep (advisor 0520) — table logic with docker stubbed, installer pins, dispatch-only job
+        run: bash bin/scout-older-versions-test.sh
+
+      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
+        run: bash bin/go-bump-open-pr-test.sh
+
+  # supply-chain, panel, release-wiring and dependency-lane suites (split out of the allowlist job)
+  allowlist-pins-auditor:
+    name: allowlist-pins-auditor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
+
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+      - name: PyYAML (hash-pinned), which the wiring suites read the workflows with
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r /dev/stdin <<'REQ'
+          pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5
+          REQ
+      - name: the hash-pinned test requirements (the report lint renders with cmark-gfm)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
+
 
       - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
         run: bash bin/dependabot-reviewer-test.sh
@@ -419,70 +588,6 @@ jobs:
         run: bash .github/agent/tests/pin-audit-test.sh
       - name: where the supply-chain checks run — Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)
         run: bash .github/agent/tests/supply-chain-wiring-test.sh
-
-      - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
-        run: bash bin/inspector-gate-test.sh
-
-      - name: VEX product-scope regressions (audit R01 — exception bound to the FosterStack product)
-        run: |
-          ./bin/install-scanner.sh grype
-          bash bin/vex-scope-test.sh
-
-      - name: VEX applied by both gate scanners (REQ-REL-004-AC1 — covered suppressed, uncovered blocks, zero packages fails)
-        run: bash bin/vex-both-scanners-test.sh
-
-      - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
-        run: bash bin/vex-forms-test.sh
-
-      - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
-        run: bash bin/scout-root-cause-test.sh
-
-      - name: the Docker Scout older-versions sweep (advisor 0520) — table logic with docker stubbed, installer pins, dispatch-only job
-        run: bash bin/scout-older-versions-test.sh
-
-      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
-        run: bash bin/go-bump-open-pr-test.sh
-
-      # The persona UAT (REQ-UAT-001): its three suites run here like their neighbours. Their fixtures pick free ports per run, so they never collide with
-      # each other or with a developer's machine. The driver suite is the long one (it runs the real driver through hundreds of cases).
-      - name: persona UAT — agent and provider suite
-        run: bash bin/persona-uat-agent-test.sh
-
-      - name: persona UAT — wiring suite (workflows, tools file, installer, identity refresher)
-        run: bash bin/persona-uat-wiring-test.sh
-
-      - name: persona UAT — driver suite
-        run: bash bin/persona-uat-test.sh
-
-      # VEX tripwire (punch list #4b). A dependency we answered with a VEX
-      # statement is answered on the facts as they were: golang-jwt is not
-      # in the build at all, which is why CVE-2024-51744 does not apply to
-      # us. If it ever enters go.sum, that premise is dead and the published
-      # statement becomes a false public claim — the worst failure mode an
-      # attestation has. Fail loudly and make someone re-check it.
-      #
-      # go.sum, not `go mod graph`: the graph lists modules that packages we
-      # do not import happen to require, which is exactly the distinction
-      # the VEX statement rests on.
-      # Punch list #3c/#6c. Version literals in prose and commands rot at
-      # the next release, and this class has bitten twice: a README
-      # "Release pipeline (v0.1.0)" line, and an entire RELEASING.md
-      # verification section built around one tag. Owner doctrine is that
-      # "we need not forget" resolves to a mechanical check, never to
-      # memory. This is that check, and it lands only now that every doc is
-      # already clean, so it goes green on arrival rather than as a
-      # standing red.
-      - name: no unmarked version literals in public docs
-        run: ./bin/check-version-literals.sh
-
-      - name: VEX tripwire — components answered by a VEX statement must stay absent
-        run: |
-          set -euo pipefail
-          if grep -q 'golang-jwt' go.sum; then
-            echo "::error::golang-jwt has entered go.sum. The published VEX statement for CVE-2024-51744 claims component_not_present, which is no longer true on its face. VEX statement requires review before this can merge — see .vex/README.md." >&2
-            exit 1
-          fi
-          echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must
