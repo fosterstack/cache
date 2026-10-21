@@ -9,6 +9,7 @@ from unittest import mock
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, BIN)
 from auditorlib import cli, knowledge as K, parsers as P, policy, vex  # noqa: E402
+import verdict_fixture  # noqa: E402  (fixture verdicts adapted to the panel's current image set)
 
 FIX = os.path.join(BIN, "..", "fixtures")
 
@@ -87,7 +88,10 @@ class DigestGuards(Tmp):
 
 
 class Consistency(Tmp):
-    VERDICT = os.path.join(FIX, "run", "panel-01", "verdict.json")
+    def setUp(self):
+        super().setUp()
+        self.VERDICT = verdict_fixture.fixture_verdict("panel-01", [])
+        self.addCleanup(os.unlink, self.VERDICT)
 
     def panel_manifest(self, verdict):
         return self.wj("manifest.json", {"scanner_set": "panel", "panel": {"verdict": verdict},
@@ -155,7 +159,8 @@ class Defectlog(WithAdjudicator):
     def setUp(self):
         super().setUp()
         self.m = load("auditor-defectlog")
-        self.vp = os.path.join(FIX, "run", "panel-01", "verdict.json")
+        self.vp = verdict_fixture.fixture_verdict("panel-01", [])
+        self.addCleanup(os.unlink, self.vp)
         self.gf = next(f for f in P.parse_panel(self.vp, "grype") if f["finding_id"] == "CVE-2016-2781")
         self.manifest = self.wj("manifest.json", {"scanner_set": "panel", "panel": {"verdict": self.vp},
                                                   "scanner_reports": {sc: self.vp for sc in P.PANEL_SCANNERS}})
@@ -535,6 +540,49 @@ class Parsers(Tmp):
             P.parse_kev(self.wj("k.json", {"catalogVersion": "1"}))
         self.assertEqual(P.parse_kev(self.wj("k2.json", {"vulnerabilities": [{"cveID": "CVE-1"}]})),
                          {"CVE-1"})
+
+
+class VerdictFixtureAdapter(unittest.TestCase):
+    """verdict_fixture.adapt makes a committed fixture verdict valid under any VARIANTS set (cache#486 sibling: pipeline take 25)."""
+    def src(self):
+        with open(os.path.join(FIX, "run", "panel-01", "verdict.json")) as fh:
+            return json.load(fh)
+
+    def test_under_the_set_the_fixture_was_written_for_it_changes_nothing_and_validates(self):
+        d = self.src(); a = verdict_fixture.adapt(d)
+        self.assertEqual(sorted(a["images"]), sorted(P.panel_images()))
+        P.validate_panel_verdict(a)                                  # whatever set this checkout has, the adapted verdict is a valid one
+        if set(d["images"]) == set(P.panel_images()):
+            self.assertEqual(a, d)
+
+    def test_images_the_set_lacks_are_dropped_with_their_findings_and_the_derived_lists_follow(self):
+        d = self.src()
+        d["findings"][0]["image"] = "debug-amd64"
+        d["findings"][0]["status"] = "report"
+        keep = {"production-amd64", "production-arm64"}
+        with mock.patch.object(P, "panel_images", return_value=keep):
+            a = verdict_fixture.adapt(d)
+        self.assertEqual(set(a["images"]), keep)
+        self.assertTrue(all(f["image"] in keep for f in a["findings"]))
+        self.assertEqual(len(a["findings"]), len([f for f in d["findings"] if f["image"] in keep]))
+        self.assertEqual(a["unique"], [f for f in a["findings"] if f["unique"]])
+        self.assertEqual(a["not_counted"], [])
+
+    def test_an_image_the_fixture_never_had_is_filled_with_every_expected_scanner_having_run(self):
+        d = self.src()
+        want = set(P.panel_images()) | {"extra-amd64"}
+        with mock.patch.object(P, "panel_images", return_value=want), mock.patch.object(P, "panel_expected", return_value=True):
+            a = verdict_fixture.adapt(d)
+        blk = a["images"]["extra-amd64"]
+        self.assertEqual(blk["did_not_run"], [])
+        self.assertTrue(blk["counts_for_day"] and set(blk["counts"]) == set(blk["ran"]) and len(blk["ran"]) >= 3)
+
+    def test_the_temporary_copy_is_written_and_registered_for_cleanup(self):
+        keep = []
+        path = verdict_fixture.fixture_verdict("panel-01", keep)
+        self.addCleanup(os.unlink, path)
+        self.assertEqual(keep, [path])
+        P.validate_panel_verdict(P.load_panel_verdict(path))
 
 
 class NoYamlLibrary(unittest.TestCase):
