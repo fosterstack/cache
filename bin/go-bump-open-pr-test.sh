@@ -230,7 +230,7 @@ OPT = r"""["\x27]?-[^\s"\x27]*["\x27]?(?:\s+""" + WORD + r""")?"""     # an opti
 SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+""" + OPT + r""")*\s+["\x27]?""" + CMDS + r"""["\x27]?(?![\w-])""")
 LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27]""" + CMDS + r"""["\x27]""")
 # every tracked file is read except the tests, the prose and the data (docs, markdown, json, the vendored tree, the evidence and the root requirements)
-SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures)/|^(docs|vendor|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$|^\.github/agent/fixtures/")
+SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures)/|^(docs|vendor|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$")
 ALLOWED = set(sys.argv[2:])      # sha256 of "file\nwhole line, stripped"
 root = sys.argv[1]
 files = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")
@@ -287,7 +287,7 @@ guard_catches "a script in a requirements module" tools/requirements/probe.sh 'g
 guard_passes  "a comment and other git calls"     bin/a.sh '# git commit is not run here\ngit status\ngit push origin --delete b\ngit push origin :refs/heads/x\ngit rev-parse HEAD\n'
 guard_passes  "a word that only contains the name" bin/a.sh 'echo digit commit; mygit commit\n'
 # an exception is the exact whole line: the same line with anything executable around it is still caught
-L="$(grep -h -F 'over the %d-byte limit of createCommitOnBranch; the commit cannot' "$root/.github/agent/bin/auditorlib/signed_commit.py" | head -1)"; L="${L#"${L%%[![:space:]]*}"}"
+L='raise CommitError("signed commit: %s is %d bytes, over the %d-byte limit of createCommitOnBranch; the commit cannot be made through the API (and a git commit would be unsigned)"'   # a copy of the one excepted line (the repo-wide scan below still reads the real file)
 sig="$(printf '%s\n%s' "bin/a.py" "$L" | shasum -a 256 | cut -d' ' -f1)"
 n="$(guard_in bin/a.py "${L//\\/\\\\}"'\n' "$sig")"; [ "$n" = 0 ] && { echo "ok: an exception row passes exactly its own line"; pass=$((pass+1)); } || { echo "FAIL: an exception row does not pass its own line ($n)"; fail=$((fail+1)); }
 n="$(guard_in bin/a.py "subprocess.run(['git','commit']); ${L//\\/\\\\}"'\n' "$sig")"; [ "$n" -ge 1 ] && { echo "ok: an executable prefix on an excepted line is caught"; pass=$((pass+1)); } || { echo "FAIL: an executable prefix on an excepted line passes"; fail=$((fail+1)); }
