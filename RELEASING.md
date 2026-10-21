@@ -41,9 +41,10 @@ step, never re-resolved from a registry.
 - **Scans**: every scanner in
   [`.github/policy/scanners.json`](.github/policy/scanners.json) runs
   against the exact candidate digests; block at any severity; a
-  published VEX statement is the only exception. **Acceptance**: the
-  release-artifact scenarios plus the Gradle and Maven acceptance
-  suites run against the exact candidate image.
+  published VEX statement is the only exception for Grype, and OSV-Scanner
+  runs without VEX input. **Acceptance**: the release-artifact scenarios
+  plus the Gradle and Maven acceptance suites run against the exact
+  candidate image.
 - **Release authorization** verifies the entire graph — every predicate,
   signed by the expected stage, naming these digests — and is the only
   stage that can approve promotion. Anything missing fails closed.
@@ -219,9 +220,10 @@ archive matches a file that anyone could have written.
 
 Any scanner finding we ship past is answered by a published statement in
 [`.vex/`](.vex/), attached to the release as
-`fosterstack-cache.openvex.json`. Both release scanners read it, so an
-exception is one public claim rather than two tool-local suppressions. No
-statement, no exception, no push.
+`fosterstack-cache.openvex.json`. Grype reads it in the release gate, so an
+exception is one public claim rather than a tool-local suppression. The
+OSV-Scanner scans in the release gate run without it, so an OSV finding blocks a
+release even when a statement covers it. No statement, no exception, no push.
 
 ## CI-only releases, verified in practice
 

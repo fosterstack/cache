@@ -298,8 +298,17 @@ class Seats(Tmp):                                                           # RE
 
 
 def verdict_file(d, findings):
+    """A valid full-matrix verdict (every scanner ran everywhere) around `findings`, so the judge's strict check passes."""
     p = os.path.join(d, "verdict.json")
-    json.dump({"findings": findings}, open(p, "w"))
+    from auditorlib import parsers as PL
+    images = {}
+    for im in sorted(PL.panel_images()):
+        ran = sorted(s for s in PL.PANEL_SCANNERS if PL.panel_expected(s, im))
+        images[im] = {"counts": {s: 10 for s in ran}, "did_not_run": [], "ran": ran, "counts_for_day": len(ran) >= 3}
+    fs = [dict(f, of=len(images[f["image"]]["ran"]), details={sc: {} for sc in f["seen_by"]}) for f in findings]
+    json.dump({"images": images, "not_counted": [], "scanner_failures": [], "findings": fs,
+               "unique": [f for f in fs if f["unique"]], "vex_covered": [], "issue": "",
+               "exit": 1 if any(f["status"] == "report" for f in fs) else 0}, open(p, "w"))
     return p
 
 
@@ -371,6 +380,27 @@ class Judge(Tmp):
             self.assertEqual(P.cmd_judge(self.a(**kw), bundles=lambda f: BUNDLE), 0)
         day = json.load(open(os.path.join(self.d, "out", "day.json")))
         return out.getvalue(), open(os.path.join(self.d, "out", "summary.md")).read(), day
+
+    def test_a_verdict_the_shared_validator_refuses_is_never_judged(self):
+        # cache#466 round 3 (seat A): the production judge reads verdict.json directly; a verdict that is empty of images, truncated
+        # or inconsistent must fail closed here too, not become a successful zero-findings audit
+        bad = os.path.join(self.d, "bad-verdict.json")
+        json.dump({"images": {}, "findings": []}, open(bad, "w"))
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:
+            rc = P.cmd_judge(self.a(verdict=bad), bundles=lambda f: BUNDLE)
+        self.assertEqual(rc, 2)
+        self.assertIn("nothing was judged", err.getvalue())
+        self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")))
+
+    def test_a_verdict_that_is_not_json_is_refused_with_the_same_diagnostic(self):
+        # cache#466 round 4: empty or truncated JSON returns 2 'nothing was judged', not a traceback
+        for text in ("", "{not json", "[1, 2"):
+            bad = os.path.join(self.d, "bad-verdict.json")
+            open(bad, "w").write(text)
+            with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_judge(self.a(verdict=bad), bundles=lambda f: BUNDLE)
+            self.assertEqual(rc, 2, text)
+            self.assertIn("nothing was judged", err.getvalue())
 
     def test_the_judgment_names_the_scanned_run_head_and_digests(self):
         _, summary, day = self.judged()

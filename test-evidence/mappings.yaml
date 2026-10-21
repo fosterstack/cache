@@ -398,6 +398,10 @@ mappings:
       - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the pm-* cases for the literal-label runner matrix" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — the auditor coverage gate runs the checker's unit tests (test_check_action_pins.py, class LiteralRunnerMatrix) and the fixture cases, and requires every line of the checker covered" }
+  - ac: REQ-REL-005-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the ac3-* cases for downloads in a job that runs a committed script" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
@@ -524,6 +528,7 @@ mappings:
       - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }   # requires the rescan's Scout self-check (real Scout, real VEX)
       - { type: shell-test, ref: "bin/scout-root-cause-test.sh" }
+      - { type: shell-test, ref: "bin/scout-older-versions-test.sh" }
   - ac: REQ-SCAN-005-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-labels-test.sh" }
@@ -661,6 +666,9 @@ mappings:
   - ac: REQ-REL-009-AC11
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+  - ac: REQ-REL-009-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/patch-decide-test.sh" }
   - ac: REQ-REL-009-AC3
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
@@ -678,6 +686,30 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
       - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-UAT-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
+      - { type: shell-test, ref: "bin/persona-uat-test.sh" }
+      - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
+  - ac: REQ-UAT-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
+      - { type: shell-test, ref: "bin/persona-uat-test.sh" }
+      - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
+  - ac: REQ-UAT-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/persona-uat-test.sh" }
+      - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
+  - ac: REQ-UAT-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/persona-uat-test.sh" }
+      - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
+      - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
+  - ac: REQ-UAT-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }
+      - { type: shell-test, ref: "bin/persona-uat-test.sh" }
+      - { type: shell-test, ref: "bin/persona-uat-wiring-test.sh" }
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
@@ -724,6 +756,27 @@ mappings:
   - ac: REQ-SUP-001-AC18
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC19
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC20
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC21
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC22
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC23
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC25
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC26
+    evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-REPO-001-AC1
     evidence:
@@ -810,6 +863,7 @@ mappings:
   # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC2 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
   # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
   #   The Python under `.github/agent/` is held to the **100% coverage gate** in CI, the same as the Go.
+  #   (Oct 20: requirements.yaml now reads "except the listed exclusions" under the owner's Oct 13 stale-wording OK; the ratified sentence above is kept as it was.)
   - ac: REQ-AUD-018-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
@@ -948,3 +1002,248 @@ mappings:
   - ac: REQ-BUILDTOOLS-001-AC10
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-VEND-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-VEND-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-REFRESH-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC16
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC17
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC18
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC19
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC20
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC21
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC22
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC23
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC24
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC25
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC26
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC27
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC28
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC29
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC30
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC31
+    evidence:
+      - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+  - ac: REQ-REFRESH-001-AC32
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC33
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC34
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-ARCHIVE-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/archive-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-IMAGE-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }

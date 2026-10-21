@@ -69,8 +69,10 @@ different sources, low overlap, and a lead of roughly a week over public
 feeds — because two scanners that agree with each other only tell you what
 one of them already knew. Anti-correlation is the point.
 
-Exceptions are OpenVEX documents in [`.vex/`](.vex/), read by both scanners
-and published as a release asset. VEX is the single source of truth: any
+Exceptions are OpenVEX documents in [`.vex/`](.vex/), read by Grype in the
+release gate and published as a release asset. The OSV-Scanner scans in the
+release gate run without it, so an OSV finding blocks a release even when a
+statement covers it. VEX is the single source of truth: any
 tool-specific ignore must cite the statement that governs it and may never
 stand alone. No statement, no exception, no push.
 

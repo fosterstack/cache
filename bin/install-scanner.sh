@@ -6,7 +6,7 @@
 # branch (the old approach) both broke - trivy v0.66.0 was not a real
 # release - and was unpinned. This verifies the exact bytes.
 #
-# Usage: install-scanner.sh <trivy|grype|snyk|osv-scanner|inspector-sbomgen> [dest-dir]
+# Usage: install-scanner.sh <trivy|grype|snyk|osv-scanner|inspector-sbomgen|kind|crane> [dest-dir]
 # inspector-sbomgen is Amazon Inspector's SBOM generator (the PR gate's
 # second scanner sends its SBOM to inspector-scan:ScanSbom). It is pinned
 # here rather than downloaded by the vendor action at run time, so its
@@ -28,15 +28,19 @@ OSV_VER=2.6.0
 SBOMGEN_VER=1.16.0
 SCOUT_VER=1.26.0
 GITSIGN_VER=0.17.1
+KIND_VER=0.33.0
+# crane reads the digest of the latest release's image in the weekly persona job (the chain's pinned tool for digest reads: no buildx, rule 61). The two sums are the sha256 of the
+# Linux release tarballs of google/go-containerregistry v0.22.1, equal to the release's checksums.txt and to the downloaded files (the same values chain-v030 pins). The version is
+# written only in the two literal release URLs below (no version variable): the pin-age scan measures those URLs.
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
+case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|docker-scout-1.0.9|docker-scout-1.2.2|docker-scout-1.3.0|docker-scout-1.4.1|docker-scout-1.5.2|docker-scout-1.6.4|docker-scout-1.7.0|docker-scout-1.8.0|docker-scout-1.9.3|docker-scout-1.10.0|docker-scout-1.11.0|docker-scout-1.12.0|docker-scout-1.14.0|docker-scout-1.15.1|docker-scout-1.16.3|docker-scout-1.17.1|docker-scout-1.18.4|docker-scout-1.19.0|docker-scout-1.20.4|docker-scout-1.21.0|docker-scout-1.22.0|docker-scout-1.23.1|gitsign|kind|crane) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|kind)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
-  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64 ;;
-  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64 ;;
+  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64; A_KIND=kind-linux-amd64 ;;
+  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64; A_KIND=kind-linux-arm64 ;;
   *) pipeline_fail "unsupported architecture: $arch" ;;
 esac
 
@@ -58,8 +62,36 @@ case "${TOOL}:${arch}" in
   # the two previous minors, for the Scout root-cause round only (advisor 0120/0122; amd64 runners)
   docker-scout-1.25.0:x86_64|docker-scout-1.25.0:amd64) SUM=34971682f9d2507f02d4e0e86ae0416bfe53ad40c644819eaeab348a9bae8602 ;;
   docker-scout-1.24.0:x86_64|docker-scout-1.24.0:amd64) SUM=f4e2814bd61040365153d5b964b144cb2dc6ee536a68b5bac4cadf00fc0ec34b ;;
+  # every older Scout minor (its newest patch), amd64 only, for the Scout older-versions sweep (advisor 0520; sha256 from each release's checksums.txt)
+  docker-scout-1.0.9:x86_64|docker-scout-1.0.9:amd64) SUM=25c1c8d6fa3f498d488a015c86cf79353358aa85ecff17d1baa009c3c2e70763 ;;
+  docker-scout-1.2.2:x86_64|docker-scout-1.2.2:amd64) SUM=6b685afc55202138b1bc18ff83a8c8072cedd9958f0a3aaec2f418ca77aaf3b5 ;;
+  docker-scout-1.3.0:x86_64|docker-scout-1.3.0:amd64) SUM=68722f85b29f610b5d38ce2182209dd36a92749b187054400017f6f62b61a2de ;;
+  docker-scout-1.4.1:x86_64|docker-scout-1.4.1:amd64) SUM=e4beb047697f88cefda50c5f937083a7aaf1e235a81482cca51abecdf05bb565 ;;
+  docker-scout-1.5.2:x86_64|docker-scout-1.5.2:amd64) SUM=dde5ac2819cd6c5068540da2e450b4c36fc6e46a5ed10ff36a5efe09707f2b81 ;;
+  docker-scout-1.6.4:x86_64|docker-scout-1.6.4:amd64) SUM=cf7b04b459e0db38d5d88176d55d52818d14a14409183b9ae77e100229f9835b ;;
+  docker-scout-1.7.0:x86_64|docker-scout-1.7.0:amd64) SUM=ec38faa6f5f63acf05d09595261f98c127cfee31896f5946eb0121c632d0a3a8 ;;
+  docker-scout-1.8.0:x86_64|docker-scout-1.8.0:amd64) SUM=f6448c94b6549431525baefb6d8e856a98a9d910bbf080d14c5cd99ba1d9688a ;;
+  docker-scout-1.9.3:x86_64|docker-scout-1.9.3:amd64) SUM=24016d5d80d2c9347d2fcaaf7194e299139283ea24d52371a3ce827ff65746b7 ;;
+  docker-scout-1.10.0:x86_64|docker-scout-1.10.0:amd64) SUM=d8ef1e723d12d51255ee52edca8d29181aaeaf59c6f94f13fc703e1bebeb6917 ;;
+  docker-scout-1.11.0:x86_64|docker-scout-1.11.0:amd64) SUM=892b1fd5d7259625750aaaa8497f1a146386d8c6a3a67ed4984263cd873dbadc ;;
+  docker-scout-1.12.0:x86_64|docker-scout-1.12.0:amd64) SUM=12ee997a8f969979c6eb3d6ecc9703d5233a75298e163f89b2a2f35a454f78e0 ;;
+  docker-scout-1.14.0:x86_64|docker-scout-1.14.0:amd64) SUM=f3e79ed43b50155c74d484a50d7a5d62b2a41720392aa141fae755356c5527fc ;;
+  docker-scout-1.15.1:x86_64|docker-scout-1.15.1:amd64) SUM=83860e9753eab0ec6f4da0d5a2aae97ec63653b3ec6b9d926d46df5651767ddb ;;
+  docker-scout-1.16.3:x86_64|docker-scout-1.16.3:amd64) SUM=bb9ec1bd9049d07a8e57558ee7ace161d77ea93e2c2b2f45dfb056a419f8c428 ;;
+  docker-scout-1.17.1:x86_64|docker-scout-1.17.1:amd64) SUM=e59016cde629ab8832763a29d0136a663ed08c7e1753f47cc04ba0d61b945811 ;;
+  docker-scout-1.18.4:x86_64|docker-scout-1.18.4:amd64) SUM=eb081bc7584f9b7b9d5f6b7e7147de850f3bfa8706076f4dc10776ead497086c ;;
+  docker-scout-1.19.0:x86_64|docker-scout-1.19.0:amd64) SUM=14bbc42086e0ebdc125b98fd33ed0d3252146811031d380d9b403175108d1497 ;;
+  docker-scout-1.20.4:x86_64|docker-scout-1.20.4:amd64) SUM=92e20757cf18f4698aec56d32e15cb4435e9dcbfcb1b09708cd97674c70f845e ;;
+  docker-scout-1.21.0:x86_64|docker-scout-1.21.0:amd64) SUM=07b075d532efd3ca04893a0a1845cb57df3b367e2c4b4717658e2425caa8e1f8 ;;
+  docker-scout-1.22.0:x86_64|docker-scout-1.22.0:amd64) SUM=a3c6c38741153a8477be61eccc9d48490745496bddbd0c5e0fc301c334fdd734 ;;
+  docker-scout-1.23.1:x86_64|docker-scout-1.23.1:amd64) SUM=0f778f9d833f28bc6cccff95e33039849c0afcecafa38d9f46fe74bfd0915714 ;;
   gitsign:x86_64|gitsign:amd64) SUM=69213a8a0813a151e5a47d0060862952ff833a845d57309dff76f7ba6600abae ;;
   gitsign:aarch64|gitsign:arm64) SUM=477018736a80b36e703dd58db8d6e158a2c1b8b727af0ab8ffdcce9fdf610ada ;;
+  # kind v0.33.0 release assets; sha256 from the release's asset digests (api.github.com/repos/kubernetes-sigs/kind/releases/tags/v0.33.0) and the .sha256sum files
+  kind:x86_64|kind:amd64) SUM=aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d ;;
+  kind:aarch64|kind:arm64) SUM=20022bee6cfcd5086cb7234d218e3454e6090022f2a8f55d1fa7fcf42c3867a2 ;;
+  crane:x86_64|crane:amd64) SUM=0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 ;;
+  crane:aarch64|crane:arm64) SUM=898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110 ;;
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
@@ -130,7 +162,7 @@ case "$TOOL" in
     install -m 0755 "$tmp/inspector-sbomgen" "${DEST}/inspector-sbomgen" || pipeline_fail "install failed for inspector-sbomgen"
     "${DEST}/inspector-sbomgen" --version >/dev/null || pipeline_fail "inspector-sbomgen does not run after install"
     ;;
-  docker-scout|docker-scout-1.25.0|docker-scout-1.24.0)
+  docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|docker-scout-1.0.9|docker-scout-1.2.2|docker-scout-1.3.0|docker-scout-1.4.1|docker-scout-1.5.2|docker-scout-1.6.4|docker-scout-1.7.0|docker-scout-1.8.0|docker-scout-1.9.3|docker-scout-1.10.0|docker-scout-1.11.0|docker-scout-1.12.0|docker-scout-1.14.0|docker-scout-1.15.1|docker-scout-1.16.3|docker-scout-1.17.1|docker-scout-1.18.4|docker-scout-1.19.0|docker-scout-1.20.4|docker-scout-1.21.0|docker-scout-1.22.0|docker-scout-1.23.1)
     [ "$TOOL" = docker-scout ] || SCOUT_VER="${TOOL#docker-scout-}"
     # a Docker CLI plugin: installed as DEST/docker-scout; the caller links it into ~/.docker/cli-plugins
     url="${SCOUT_BASE}/v${SCOUT_VER}/docker-scout_${SCOUT_VER}_${A_SCOUT}.tar.gz"
@@ -148,8 +180,31 @@ case "$TOOL" in
     install -m 0755 "$tmp/gitsign" "${DEST}/gitsign" || pipeline_fail "install failed for gitsign"
     "${DEST}/gitsign" --version >/dev/null || pipeline_fail "gitsign does not run after install"
     ;;
+  kind)
+    # the Kubernetes-in-Docker CLI for the persona UAT (on-call persona): a single binary; the driver finds it on PATH
+    # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (the version here must equal KIND_VER; the wiring test checks)
+    case "$A_KIND" in
+      kind-linux-amd64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64" || pipeline_fail "download failed: kind v${KIND_VER} amd64" ;;
+      kind-linux-arm64) curl -fsSL -o "$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-arm64" || pipeline_fail "download failed: kind v${KIND_VER} arm64" ;;
+      *) pipeline_fail "no kind asset for ${arch}" ;;
+    esac
+    verify "$tmp/kind"
+    install -m 0755 "$tmp/kind" "${DEST}/kind" || pipeline_fail "install failed for kind"
+    "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"
+    ;;
+  crane)
+    # the digest reader of the weekly persona job (the chain's pinned tool; no buildx): a release tarball holding the crane binary, verified against the pinned sum.
+    # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (no version variable and no base-URL hook)
+    case "$arch" in
+      x86_64|amd64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;
+      *) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;
+    esac
+    verify "$tmp/c.tgz"
+    tar -xzf "$tmp/c.tgz" -C "$DEST" crane || pipeline_fail "extract failed for crane"
+    "${DEST}/crane" version >/dev/null || pipeline_fail "the installed crane binary does not start"
+    ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|kind|crane)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

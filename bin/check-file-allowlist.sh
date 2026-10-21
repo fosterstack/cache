@@ -107,6 +107,7 @@ ALLOW_PATTERNS=(
   '^bin/scout-vex-scan\.sh$'
   '^bin/scout-selfcheck\.py$'
   '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
+  '^bin/scout-older-versions(\.sh|-test\.sh)$'
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
   '^bin/release-patch-wiring-test\.sh$'
@@ -115,6 +116,12 @@ ALLOW_PATTERNS=(
   '^bin/admission-tag-signer-test\.sh$'
   '^bin/panel-test\.sh$'
   '^bin/panel-wiring-test\.sh$'
+  '^bin/persona-uat(-agent|-provider)?\.py$'
+  '^bin/persona-uat(-wiring|-agent|-decrypt)?-test\.sh$'
+  '^bin/persona-uat-decrypt\.sh$'
+  '^bin/persona-uat-recipient\.pem$'
+  '^bin/persona-uat-tools\.json$'
+  '^bin/persona-uat-requirements\.txt$'
   '^\.github/agent/supply-chain/pin-(inventory|age-check|audit)\.py$'
   '^\.github/agent/supply-chain/tag_observer\.py$'
   '^\.github/supply-chain-exceptions\.json$'
@@ -184,15 +191,20 @@ ALLOW_PATTERNS=(
   # no manifest would fold these package-main sources into the parent module and break
   # `go ./...` / gosec. So a plain go.mod / go.sum / *.go here is intentionally NOT allowed.
   '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/(go\.(mod|sum)|[A-Za-z0-9._-]+\.go)\.fixture$'
-  '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
-  '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 
-  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ is admitted by the PR that adds it.
+  # The vendored dependency tree (REQ-VEND-001): names only. Every directory component starts with a letter, digit, _, +, ~ or @ (no dot
+  # directory, no .github, no .git); only the FINAL component may start with one dot (a dot file go mod vendor itself produces, such as
+  # .gitignore). A name is judged here and the CONTENT is judged by bin/vendor-check.sh, which the required `vendor` job in ci.yml runs
+  # on every pull request: this pattern never lands without that check.
+  '^vendor/([A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*/)*\.?[A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*$'
+
+  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ has its own subtree pattern above (REQ-VEND-001).
   # Vendoring: the dependency record (root), the regenerate-and-compare script, the provenance tool, their test.
   '^dependency-provenance\.json$'
   '^bin/vendor-check\.sh$'
   '^bin/vendor-provenance\.py$'
   '^bin/vendoring-test\.sh$'
+  '^bin/vendor-provenance-test\.sh$'
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
   # (build/apko.yaml, build/apko-fips.yaml).
   '^build/melange(-fips)?\.yaml$'
@@ -205,6 +217,8 @@ ALLOW_PATTERNS=(
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'
+  # The archive pointer the daily refresh pull request moves (build/archive.json): which registry digest the build pulls its packages from.
+  '^build/archive\.json$'
   # The certified Go Cryptographic Module the FIPS recipe is generated with (build/locks/fips-module.txt): one of the two data files the daily job edits.
   '^build/locks/fips-module\.txt$'
   # Signing keys: build/keys/assembly.rsa and build/keys/assembly.rsa.pub (the committed, non-secret assembly

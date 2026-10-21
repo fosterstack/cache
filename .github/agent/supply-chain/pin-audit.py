@@ -1100,7 +1100,7 @@ def body_of(f, rb, owner, ran, today):
 # ---------- history: what we ran in the last 90 days ----------
 def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml"]
+    paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
     refs = ["--all"] if start == "HEAD" else [start]  # daily mode: every branch and PR ref this checkout has, not only the default branch's ancestry
     revs = [r for r in inv.git(root, "log", f"--since={since}", "--format=%H", *refs, "--", *paths).split() if r]
     before = inv.git(root, "rev-list", "-1", f"--before={since}", start).strip()
@@ -1170,9 +1170,14 @@ def file_issues(gh, plan, today):
 # ---------- held pull requests ----------
 def rerun_held(gh, net, now):
     n = 0
+    base_inputs = age.load_base_inputs(age.DEFAULT_BASE_INPUTS)
     for pr in net.prs():
         try:  # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being re-run
             items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
+            for it in items:     # a key-built item (fixtures): its repository path is the part after file:
+                if it.raw is None and it.kind == "tool" and it.version == "(file)" and it.name.startswith("file:"):
+                    it.raw = it.name[5:]
+            items, _ = age.split_base_inputs(items, base_inputs)   # REQ-SUP-001-AC21: the same trusted decision the age check takes, or a mixed pull request is never re-run
             rows = [age.judge_item(it, net.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
         except (Fail, age.CouldNotLook, RuntimeError, ValueError) as e:
             print(f"information: pull request #{pr.get('number')} was skipped: {clean(e)}")
@@ -1215,7 +1220,7 @@ def main(argv=None):
                 fx = json.load(open(a.fixtures))
             except (OSError, ValueError) as e:
                 raise Fail(f"unreadable fixtures: {e}")
-        now = age.parse_time(a.now) if a.now else dt.datetime.now(dt.timezone.utc)
+        now = age.parse_time(a.now, True) if a.now else dt.datetime.now(dt.timezone.utc)
         if now is None:
             raise Fail("--now is not an ISO time")
         gh = Gh(a.gh)
@@ -1239,6 +1244,11 @@ def main(argv=None):
             raise Fail(str(e))
         # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the age check
         audited = [i for i in audited if i.version not in ("(local)", "(source)")]
+        if a.base:    # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling (the age check reports it), never as an advisory hit
+            try:
+                audited = age.drop_ruled_unpinned(audited, age.ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or age.DEFAULT_EXCEPTIONS))
+            except RuntimeError as e:
+                raise Fail(str(e))
         today = now.strftime("%Y-%m-%d")
         if a.observations_out and not a.base:
             state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))

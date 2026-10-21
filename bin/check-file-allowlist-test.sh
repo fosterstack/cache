@@ -58,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 48 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 50 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -85,10 +85,10 @@ for _n, _bl in enumerate(_rawlines, 1):
 # PR each declared path belongs to is named in the comments
 DECLARED = set("""
 dependency-provenance.json
-bin/vendor-check.sh bin/vendor-provenance.py bin/vendoring-test.sh
+bin/vendor-check.sh bin/vendor-provenance.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
 build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
-build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub
+build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
 bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh
 bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py
@@ -102,7 +102,7 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
 """.split())
-if len(DECLARED) != 48: errs.append("declared list is not 48 paths: %d" % len(DECLARED))
+if len(DECLARED) != 50: errs.append("declared list is not 50 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -112,7 +112,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 143, 6   # 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 151, 6   # 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: + ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -159,7 +159,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "73cb3a176cc02e824637fc15a6c9b6b34be5d03b0a5fd764629ba2b117d61c7a"   # + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region
+PINNED_SHA256 = "07476805bd59e36fe0a57ff947fe25b5ef7fbe4f2314d7657761332f7ac9f093"   # - the two suppression/set-01 .snyk and osv-scanner.toml fixture patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -297,7 +297,7 @@ bytemut "a vertical tab in a comment"            'b.replace(b"# OCI digest and n
 bytemut "a form feed in a comment"               'b.replace(b"# OCI digest and network-probe tools.", b"# OCI digest\x0c and network-probe tools.")'
 bytemut "U+2028 in a comment"                    'b.replace(b"# OCI digest and network-probe tools.", "# OCI digest  and network-probe tools.".encode())'
 bytemut "a lone CR in the NOTE comments"         'b.replace(b"# NOTE: only the PATH is gated here, not the file", b"# NOTE: only the PATH\r is gated here, not the file")'
-bytemut "the region marker line with a trailing CR" 'b.replace(b"vendor/ is admitted by the PR that adds it.\n", b"vendor/ is admitted by the PR that adds it.\r\n", 1)'
+bytemut "the region marker line with a trailing CR" 'b.replace(b"vendor/ has its own subtree pattern above (REQ-VEND-001).\n", b"vendor/ has its own subtree pattern above (REQ-VEND-001).\r\n", 1)'
 bytemut "invalid UTF-8 byte in a comment"        'b.replace(b"# OCI digest and network-probe tools.", b"# OCI digest\xff and network-probe tools.")'
 rm -rf "$_mut_dir"
 # same, but drive GITHUB_REF_NAME (the push path) instead of a PR head ref
@@ -669,7 +669,7 @@ hkexpect fail "hook: squash merge adding an unlisted file is rejected (no MERGE_
 
 # --- v0.3.0 build-chain paths: one exact pattern per path family (PR 1 of the v0.3.0 plan) ----------------
 # Each family: the intended path(s) pass; near-misses (extra segment, other extension, uppercase, traversal,
-# one directory up, a sibling name) are refused. vendor/ is NOT admitted yet.
+# one directory up, a sibling name) are refused. vendor/ has its own subtree pattern, tested below (REQ-VEND-001).
 passfam "feature/x" "v030: dependency-provenance.json at the repo root" "dependency-provenance.json"
 runeach fail "feature/x" "v030: dependency-provenance.json nested is refused"        "tools/dependency-provenance.json"
 runeach fail "feature/x" "v030: dependency-provenance.json uppercase is refused"     "Dependency-Provenance.json"
@@ -677,7 +677,14 @@ runeach fail "feature/x" "v030: dependency-provenance.yaml (other extension) ref
 runeach fail "feature/x" "v030: dependency-provenance.json.bak refused"              "dependency-provenance.json.bak"
 runeach fail "feature/x" "v030: other root json refused"                             "provenance.json" "dependency-provenanceXjson" "dependency-provenance-json" "dependency-provenance.json "
 
-passfam "feature/x" "v030: the vendoring scripts and their test" "bin/vendor-check.sh" "bin/vendor-provenance.py" "bin/vendoring-test.sh"
+# The vendor/ subtree pattern (REQ-VEND-001): names only; each admitted path alone, and each near-miss refused alone
+runeach pass "feature/x" "vendor: a vendored path is admitted" "vendor/modules.txt" "vendor/github.com/prometheus/client_golang/prometheus/counter.go" "vendor/golang.org/x/sys/unix/zerrors_linux_amd64.go" "vendor/github.com/Azure/x/y_test.go" "vendor/gopkg.in/yaml.v3/LICENSE" "vendor/go.etcd.io/bbolt/internal/common/a.s" "vendor/a/b+c~d@e/f"
+runeach fail "feature/x" "vendor: the directory alone, a trailing slash, an empty component" "vendor" "vendor/" "vendor//a" "vendor/a//b" "vendor/a/"
+runeach pass "feature/x" "vendor: a dot-leading FILE name (the final component only) is admitted" "vendor/a/.gitignore" "vendor/.hidden" "vendor/go.etcd.io/bbolt/.gitattributes" "vendor/a/.golangci.yml" "vendor/a/.go-version"
+runeach fail "feature/x" "vendor: a dot DIRECTORY or any other dot component is refused" "vendor/.git/x" "vendor/.github/workflows/w.yml" "vendor/a/.git/config" "vendor/a/.hidden/x" "vendor/.a/b" "vendor/." "vendor/.." "vendor/a/.." "vendor/../x" "vendor/a/../b" "vendor/./a" "vendor/a/./b" "vendor/..a/b" "vendor/a/..b" "vendor/a/." "vendor/a/.." "vendor/a/..." "vendor/a/.b/.c"
+runeach fail "feature/x" "vendor: not at the top, or another case, is refused" "x/vendor/a" "Vendor/a" "VENDOR/a" "vendors/a" "vendor-x/a" "pkg/vendor/a/b.go" "../vendor/a"
+runeach fail "feature/x" "vendor: a space, a backslash, a colon or a glob character is refused" "vendor/a b" "vendor/a\\b" "vendor/a:b" "vendor/a*b" "vendor/a?b" "vendor/a[b]" "vendor/a;b" "vendor/a\$b"
+passfam "feature/x" "v030: the vendoring scripts and their test" "bin/vendor-check.sh" "bin/vendor-provenance.py" "bin/vendoring-test.sh" "bin/vendor-provenance-test.sh"
 runeach fail "feature/x" "v030: bin/vendor-check.sh nested refused"        "bin/x/vendor-check.sh"
 runeach fail "feature/x" "v030: bin/vendor-check.py (other extension) refused" "bin/vendor-check.py"
 runeach fail "feature/x" "v030: bin/vendor-provenance.sh (swapped extension) refused" "bin/vendor-provenance.sh"
@@ -718,6 +725,8 @@ runeach fail "feature/x" "v030: key with a suffix refused" "build/keys/assembly.
 passfam "feature/x" "v030: the recipe template" "build/melange.yaml.tmpl"
 runeach fail "feature/x" "v030: other template names refused" "build/melange-fips.yaml.tmpl" "build/apko.yaml.tmpl" "build/melange.yaml.tmpl.bak" "build/x/melange.yaml.tmpl" "melange.yaml.tmpl" "build/Melange.yaml.tmpl" "build/../melange.yaml.tmpl"
 passfam "feature/x" "v030: the archive keyring digest and index record" "build/locks/archive-keys.sha256" "build/locks/archive-index.sha256"
+passfam "feature/x" "v030: the archive pointer the refresh pull request moves (build/archive.json)" "build/archive.json"
+runeach fail "feature/x" "v030: near-miss archive pointer names refused" "build/archive.json.bak" "build/Archive.json" "build/x/archive.json" "archive.json" "build/archive.jsonl" "build/locks/archive.json" "build/archive.yaml" "build/../archive.json" "build/archive-json"
 passfam "feature/x" "v030: the FIPS module data file" "build/locks/fips-module.txt"
 runeach fail "feature/x" "v030: near-miss FIPS module file names refused" "build/locks/fips-module.txt.bak" "build/locks/fips-module.json" "build/locks/x/fips-module.txt" "build/fips-module.txt" "build/locks/Fips-module.txt" "build/locks/../fips-module.txt" "build/locks/fips-modules.txt"
 runeach fail "feature/x" "v030: the two archive record names are literal, not a group (no mixed or merged name)" "build/locks/archive-keysindex.sha256" "build/locks/archive-(keys|index).sha256" "build/locks/archive-.sha256" "build/locks/archive-keys.sha256x" "build/locks/archive-index.sha2561"
@@ -744,9 +753,17 @@ passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the
 runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
 passfam "feature/x" "v030: the archive scripts and their test" "bin/archive-push.sh" "bin/archive-pull.sh" "bin/archive-verify.py" "bin/archive-test.sh"
 passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.yml"
-runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "build/archive.json" "secret_scanning.yml"
+runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "secret_scanning.yml"
 passfam "feature/x" "REQ-REL-009: .github/release-identity.json" ".github/release-identity.json"
 runeach fail "feature/x" "REQ-REL-009: release-identity near-miss refused" ".github/release-identity.json.bak" ".github/Release-Identity.json" ".github/release-identity.yaml" ".github/other.json" ".github/nested/release-identity.json" ".github/x/release-identity.json" "release-identity.json" ".github/release-identity.json " ".github/release-identityXjson" ".github/policy/../release-identity.json"
+passfam "feature/x" "REQ-UAT-001: the persona UAT driver, agent, provider, decrypt script, tests, recipient key, tool list and requirements" "bin/persona-uat.py" "bin/persona-uat-agent.py" "bin/persona-uat-provider.py" "bin/persona-uat-test.sh" "bin/persona-uat-wiring-test.sh" "bin/persona-uat-agent-test.sh" "bin/persona-uat-decrypt-test.sh" "bin/persona-uat-decrypt.sh" "bin/persona-uat-recipient.pem" "bin/persona-uat-tools.json" "bin/persona-uat-requirements.txt"
+runeach fail "feature/x" "REQ-UAT-001: near-miss siblings refused" "bin/persona-uat.sh" "bin/persona-uat-other.py" "bin/persona-uat-provider-test.sh" "bin/persona-uat-agent.sh" "bin/persona-uat-decrypt.py" "bin/persona-uat-recipient.key" "bin/persona-uat-recipient.pem.bak" "bin/persona-uat-tools.yaml" "bin/persona-uat-requirements.in" "bin/Persona-UAT.py" "bin/persona-uat-agent-wiring-test.sh"
+# REQ-UAT-001 is the rule the six bin/persona-uat* patterns above serve: it must be defined on the tree that admits
+# them (round 2, seat A: an allowlist grant citing a requirement the source of truth lacks has no ratified rule behind it).
+for ac in "" -AC1 -AC2 -AC3 -AC4 -AC5; do
+  if grep -q "^ *- id: REQ-UAT-001$ac\$" requirements/requirements.yaml; then gp "REQ-UAT-001$ac is defined in requirements/requirements.yaml"
+  else gf "REQ-UAT-001$ac is defined in requirements/requirements.yaml" "missing"; fi
+done
 passfam "feature/x" "REQ-REL-004-AC5: the daily-rescan current-release test" "bin/rescan-current-only-test.sh"
 runeach fail "feature/x" "REQ-REL-004-AC5: rescan-current-only-test near-miss refused" "bin/rescan-current-only-test.sh.bak" "bin/rescan-current-only-test.shx" "bin/Rescan-Current-Only-Test.sh" "bin/sub/rescan-current-only-test.sh" "bin/rescan-current-only-test.py" "rescan-current-only-test.sh" "bin/rescan-current-only-test.sh "
 
@@ -770,7 +787,6 @@ passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
-runeach fail "feature/x" "v030: vendor/ files are NOT admitted yet" "vendor/modules.txt" "vendor/golang.org/x/text/a.go"
 
 echo "----"
 echo "check-file-allowlist: $pass passed, $fail failed"
