@@ -43,9 +43,9 @@ WITNESS_VER=0.12.0
 # The Go toolchain admission's verify-freeze needs (Codex A r3 F4; advisor): the exact go<ver>.linux-<arch>.tar.gz, pinned by sha256 per architecture, values
 # equal to go.dev's published checksums (https://go.dev/dl/?mode=json), checked Oct 11 2026. GO_VER must equal the version go.mod names.
 GO_VER=1.27.2
-# crane copies the exact image bytes by digest in the Release stage (rules 16 and 64 of the release rules: the copy tool is pinned by checksum, no build step).
-# The two crane sums are the sha256 of the Linux release tarballs of google/go-containerregistry v0.22.1, equal to the release's checksums.txt and to the downloaded files (Oct 11 2026).
-CRANE_VER=0.22.1
+# crane copies the exact image bytes by digest in the Release stage (rules 16 and 64 of the release rules: the copy tool is pinned by checksum, no build step) and reads the digest of the
+# latest release's image in the weekly persona job (rule 61: no image builder). The two sums are the sha256 of the Linux release tarballs of google/go-containerregistry v0.22.1, equal to the
+# release's checksums.txt and to the downloaded files (Oct 11 2026). The version is written only in the two literal release URLs of the crane arm below (no version variable): the pin-age scan measures those URLs.
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 die() { pipeline_fail "$@"; }   # the plain-text failure word of the pinned Go fetch line (pin-age honours that line shape, REQ-SUP-001-AC23)
@@ -202,17 +202,6 @@ case "$TOOL" in
     install -m 0755 "$tmp/witness" "${DEST}/witness" || pipeline_fail "install failed for witness"
     "${DEST}/witness" version >/dev/null || pipeline_fail "the installed witness binary does not start"
     ;;
-  crane)
-    # the release URL below names the pinned version literally (pin-age dates a download from its URL); the install tests fail when CRANE_VER and that URL disagree
-    # the copy tool of the Release stage: a release tarball holding the crane binary, verified against the pinned sum
-    case "$arch" in
-      x86_64|amd64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed: crane v${CRANE_VER}" ;;
-      *) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz" || pipeline_fail "download failed: crane v${CRANE_VER}" ;;
-    esac
-    verify "$tmp/c.tgz"
-    tar -xzf "$tmp/c.tgz" -C "$DEST" crane || pipeline_fail "extract failed for crane"
-    "${DEST}/crane" version >/dev/null || pipeline_fail "the installed crane binary does not start"
-    ;;
   go)
     # the toolchain go.mod names: its `toolchain` line wins; a file without one is read by its `go` line; it must be the pinned version
     [ -f go.mod ] || pipeline_fail "no go.mod in the working directory: cannot tell which Go toolchain to install"
@@ -267,6 +256,17 @@ case "$TOOL" in
     verify "$tmp/kind"
     install -m 0755 "$tmp/kind" "${DEST}/kind" || pipeline_fail "install failed for kind"
     "${DEST}/kind" version >/dev/null || pipeline_fail "kind does not run after install"
+    ;;
+  crane)
+    # the digest reader of the weekly persona job (the chain's pinned tool; no image builder): a release tarball holding the crane binary, verified against the pinned sum.
+    # each release asset is written out in full, with its version: the pin-age scan measures a literal release URL (no version variable and no base-URL hook)
+    case "$arch" in
+      x86_64|amd64) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;
+      *) curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_arm64.tar.gz" || pipeline_fail "download failed: crane v0.22.1" ;;
+    esac
+    verify "$tmp/c.tgz"
+    tar -xzf "$tmp/c.tgz" -C "$DEST" crane || pipeline_fail "extract failed for crane"
+    "${DEST}/crane" version >/dev/null || pipeline_fail "the installed crane binary does not start"
     ;;
   *)
     pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|go|crane|govulncheck|kind)"

@@ -2702,7 +2702,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='b7c90d90bb18fff473213ec6808858693e214c24a0523fad3f7ac1e2a901b87b'
+FX_PIN='63c14fe8ec60c411cf78c70e7186d7f1b0f852a0f5fdf588feb586924f8fd038'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -3969,11 +3969,197 @@ w \'(\' \'<\'"(printf audit))"\n' caught 'compound assignment' 'round 9: <( spli
 dc dc_zzza $'w() { declare -a "a=$1$2"; }
 w \'(\' \'$\'"{y})"\n' caught 'compound assignment' 'round 9: ${ split across quote segments'
 dc dc_zzzb $'set --
-declare -a \'a=(x $\'$1\'(printf audit))\'\n' caught 'compound assignment' 'round 9: a possibly-empty positional between $ and ('
+declare -a \'a=(x $\'$1\'(printf audit))\'\n' caught 'quote-segment boundary' 'round 9: a possibly-empty positional between $ and ('
 dc dc_zzzc $'w() { declare -a "a=$1$2"; }
 x="$(printf \'"\')"; w \'$(printf marker)\'\n' caught 'compound assignment' 'round 9: a nested-quote line leaves the splitter uncertain, quoted data still refused'
 dc dc_zzzd $'echo "$(date)" "${x:-y}" "a$(b)c" "$1" "${name}" \'plain\'
 v="$(dirname "$0")"\n' ok - 'control: live substitutions in double quotes and unquoted, simple expansions, plain single-quoted data'
+bd() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "dollar at a quote-segment boundary: $5"; }
+bd bd_a $'w() { declare -a "a=$1$2"; }
+w \'(\' \'$\'"(printf x))"\n' caught 'quote-segment boundary' '$ closes a single-quoted segment, ( opens a double-quoted one'
+bd bd_b $'e=
+w() { declare -a "a=$1$2"; }
+w \'$\'${e:-}\'(printf x)\'\n' caught 'quote-segment boundary' 'an empty-producing ${e:-} between the literal $ and ('
+bd bd_c $'set --
+w() { declare -a "a=$1$2"; }
+w \'$\'${1}\'(printf x)\'\n' caught 'quote-segment boundary' 'a ${1} between the literal $ and ('
+bd bd_d $'w() { declare -a "a=$1$2"; }
+w \'$\'$(true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a $(true) between the literal $ and ('
+bd bd_e $'w() { declare -a "a=$1$2"; }
+w \'$\'$e\'(printf x)\'\n' caught 'quote-segment boundary' 'a $e between the literal $ and ('
+bd bd_f $'w() { declare -a "a=$1$2"; }
+w \'<\'${e:-}\'(printf x)\'\n' caught 'quote-segment boundary' 'a process-substitution fragment, < then an expansion then ('
+bd bd_g $'w() { declare -a "a=$1$2"; }
+x="$(printf \'"\')"; w \'$\'"(printf x)"\n' caught 'quote-segment boundary' 'a nested-quote line: the raw line is still scanned'
+bd bd_h $'w() { declare -a "a=$1$2"; }
+w \'$\'"{y}"\n' caught 'quote-segment boundary' '$ then a quote boundary then {'
+bd bd_i $'w() { declare -a "a=$1$2"; }
+w $"(printf x)"\n' caught 'quote-segment boundary' 'a locale-quote $" before ('
+bd bd_j $'echo "$(date)" "${x}" "$1" "${x:-y}"
+printf \'%s\\n\' \'{print $1}\' \'a $5 b\'
+v=$(cmd)\n' ok - 'control: live substitutions, simple expansions, $1 and $5 in single-quoted text, no quote-segment boundary'
+bd bd_k $'# the $(cmd) form and ${x} and "$(y)" are fine in a comment
+echo ok\n' ok - 'control: a comment line with ordinary substitution text'
+bd bd_l $'cat <<\'EOF\' >/dev/null
+price $5, ${x}, "$(y)" and a $1}
+EOF
+echo ok\n' ok - 'control: a quoted-heredoc body with ordinary text that never runs'
+bd bd_m $'# note: \'$\'"(printf x)" is what to avoid
+echo ok\n' caught 'quote-segment boundary' 'by design a comment line holding the boundary form is refused, like every raw-line rule (a line-bound waiver clears it)'
+bd bd_n $'cat <<\'EOF\' >/dev/null
+\'$\'"(printf x)"
+EOF
+echo ok\n' caught 'quote-segment boundary' 'by design a heredoc body holding the boundary form is refused (a line-bound waiver clears it)'
+bd bd_o $'w() { declare -a "a=($1)"; }
+w \'$\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'nested braces in the expansion between the literal $ and ('
+bd bd_p $'w() { declare -a "a=($1)"; }
+w \'$\'${e:+${f}}\'(printf x)\'\n' caught 'quote-segment boundary' 'nested braces with a + operator'
+bd bd_q $'w() { declare -a "a=($1)"; }
+w \'<\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a < fragment, nested braces'
+bd bd_r $'w() { declare -a "a=($1)"; }
+w \'>\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a > fragment, nested braces'
+bd bd_s $'w() { declare -a "a=($1)"; }
+w \'$\'$( (true) )\'(printf x)\'\n' caught 'quote-segment boundary' 'a command substitution holding a subshell'
+bd bd_t $'w() { declare -a "a=($1)"; }
+w \'$\'$(printf \')\')\'(printf x)\'\n' caught 'quote-segment boundary' 'a command substitution holding a quoted delimiter'
+bd bd_u $'w() { declare -a "a=($1)"; }
+w \'$\'$(printf ")")\'(printf x)\'\n' caught 'quote-segment boundary' 'a command substitution holding a double-quoted delimiter'
+bd bd_v $'w() { declare -a "a=($1)"; }
+w \'$\'${e:-\'}\'}\'(printf x)\'\n' caught 'quote-segment boundary' 'a brace expansion holding a quoted delimiter'
+bd bd_w $'w() { declare -a "a=($1)"; }
+w \'$\'$((0))\'(printf x)\'\n' caught 'quote-segment boundary' 'an arithmetic expansion between'
+bd bd_x $'w() { declare -a "a=($1)"; }
+w \'$\'$[0]\'(printf x)\'\n' caught 'quote-segment boundary' 'a bracket arithmetic expansion between'
+bd bd_y $'w() { declare -a "a=($1)"; }
+w \'$\'$!\'(printf x)\'\n' caught 'quote-segment boundary' 'the special parameter $! between'
+bd bd_z $'w() { declare -a "a=($1)"; }
+w \'$\'$-\'(printf x)\'\n' caught 'quote-segment boundary' 'the special parameter $- between'
+bd bd_za $'w() { declare -a "a=($1)"; }
+w \'$\'$$\'(printf x)\'\n' caught 'quote-segment boundary' 'the special parameter $$ between'
+bd bd_zb $'w() { declare -a "a=($1)"; }
+x="$(printf \'"\')"; w \'$\'$!\'(printf x)\'\n' caught 'quote-segment boundary' 'a nested-quote line, $! between'
+bd bd_zc $'w() { declare -a "a=($1)"; }
+x="$(printf \'"\')"; w \'$\'$[0]\'(printf x)\'\n' caught 'quote-segment boundary' 'a nested-quote line, $[0] between'
+bd bd_zd $'w() { declare -a "a=($1)"; }
+x="$(printf \'"\')"; w \'$\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a nested-quote line, nested braces between'
+bd bd_ze $'w() { declare -a "a=($1)"; }
+w "$(date)" "${e:-${f:-}}" "$(printf x)" "$((1+2))" "$[3]" "$!" "$-" "$$"\n' ok - 'control: live expansions of every form in double quotes are not boundaries'
+bd bd_zf $'w() { declare -a "a=($1)"; }
+w ${e:-\'$(printf x)\'}\n' caught 'compound assignment' 'quoted opener data inside an expansion is still inspected (the earlier refusal is kept)'
+bd bd_zg $'w() { declare -a "a=($1)"; }
+echo $(w \'$\'${e:-${f:-}}\'(printf x)\')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution is still inspected'
+bd bd_zh $'w() { declare -a "a=($1)"; }
+w $(printf \'%s\' \'$\'${e:-${f:-}}\'(printf x)\')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution with quotes'
+bd bd_zi $'w() { declare -a "a=($1)"; }
+w \'$\'${e+${f:-{}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a bare { inside a brace expansion is literal'
+bd bd_zj $'w() { declare -a "a=($1)"; }
+w \'<\'${e+${f:-{}}\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a < fragment'
+bd bd_zk $'w() { declare -a "a=($1)"; }
+w \'>\'${e+${f:-{}}\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a > fragment'
+bd bd_zl $'w() { declare -a "a=($1)"; }
+w \'$\'$(printf %s ${e+)})\'(printf x)\'\n' caught 'quote-segment boundary' 'a ) inside a nested brace expansion is literal'
+bd bd_zm $'w() { declare -a "a=($1)"; }
+w \'<\'$(printf %s ${e+)})\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a < fragment'
+bd bd_zn $'w() { declare -a "a=($1)"; }
+w \'>\'$(printf %s ${e+)})\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a > fragment'
+bd bd_zo $'# \'<$!(\'
+echo ok\n' caught 'quote-segment boundary' 'a special parameter in single quotes inside a comment'
+bd bd_zp $'cat <<\'EOF\' >/dev/null
+\'<$!(\'
+EOF
+echo ok\n' caught 'quote-segment boundary' 'a special parameter in single quotes inside a heredoc body'
+bd bd_zq $'w() { declare -a "a=($1)"; }
+w \'$\'${e:-${f
+echo ok\n' caught 'quote-segment boundary' 'an unterminated expansion is refused (fail closed)'
+bd bd_zr $'echo \'<$[0](\'\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes'
+bd bd_zs $'# \'<$[0](\'
+echo ok\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes in a comment'
+bd bd_zt $'cat <<\'EOF\' >/dev/null
+\'<$[0](\'
+EOF
+echo ok\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes in a heredoc body'
+bd bd_zu $'# $(echo \'$\'${e:-${f:-}}(true))
+echo ok\n' caught 'quote-segment boundary' 'a boundary before a bare ( inside a command substitution'
+bd bd_zv $'echo "$(printf \'"\')"${e}\n' caught 'compound assignment' 'an earlier refusal is kept: a uncertain quote pattern next to an expansion'
+bd bd_zw $'# $(printf \\$(x))
+echo ok\n' caught 'compound assignment' 'an earlier refusal is kept: an escaped opener behind a bare ('
+bd bd_zx $'w() { declare -a "a=($1)"; }
+w \'$\'$(# )
+:)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment inside a command substitution makes its closer uncertain'
+bd bd_zy $'w() { declare -a "a=($1)"; }
+w \'$\'$(true;# )
+true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after a ; inside a command substitution'
+bd bd_zz $'w() { declare -a "a=($1)"; }
+w \'$\'$(true|# )
+true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after a | inside a command substitution'
+bd bd_zza $'w() { declare -a "a=($1)"; }
+w \'$\'$(true&&# )
+true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after && inside a command substitution'
+bd bd_zzb $'echo \'<\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets inside $[ ]'
+bd bd_zzc $'echo \'<$[1+$[0]](\'\n' caught 'quote-segment boundary' 'a nested $[ ] in single quotes'
+bd bd_zzd $'echo \'$\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets, a $ prefix'
+bd bd_zze $'echo \'>\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets, a > prefix'
+bd bd_zzf $'w() { declare -a "a=($1)"; }
+w \'$\'`true`\'(printf x)\'\n' caught 'quote-segment boundary' 'a backtick substitution is a gap'
+bd bd_zzg $'# $$((0))(
+echo ok\n' caught 'quote-segment boundary' 'a $$ before an arithmetic expansion and ('
+bd bd_zzh $'# $${x:-${y:-}}(
+echo ok\n' caught 'quote-segment boundary' 'a $$ before a brace expansion and ('
+bd bd_zzi $'# \'<\'$(case x in x) :;; esac)\'(x)\'
+echo ok\n' caught 'quote-segment boundary' 'a case-arm ) inside a command substitution in a comment'
+bd bd_zzj $'cat <<\'EOF\' >/dev/null
+\'<\'$(case x in x) :;; esac)\'(x)\'
+EOF
+echo ok\n' caught 'quote-segment boundary' 'a case-arm ) inside a command substitution in a heredoc body'
+bd bd_zzk $'echo \'<$[a[b[0]]](x)\'\n' caught 'quote-segment boundary' 'deeply nested brackets inside single quotes'
+bd bd_zzl $'echo \'<$[1+$[1+$[0]]](x)\'\n' caught 'quote-segment boundary' 'nested $[ ] three deep inside single quotes'
+bd bd_zzm $'echo \'<$["]"](x)\'\n' caught 'quote-segment boundary' 'a quoted ] inside $[ ] is uncertain'
+bd bd_zzn $'# \'<$[a[b[0]]](x)\'
+echo ok\n' caught 'quote-segment boundary' 'deep brackets in a comment'
+bd bd_zzo $'cat <<\'EOF\' >/dev/null
+\'<$[a[b[0]]](x)\'
+EOF
+echo ok\n' caught 'quote-segment boundary' 'deep brackets in a heredoc body'
+bd bd_zzp $'echo \'<$[1+$[1+$[0]]](\'\n' caught 'quote-segment boundary' 'unbalanced-looking nested $[ ] then ('
+bd bd_zzq $'echo "<$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a>"
+echo ok\n' ok - 'control: 28 adjacent simple expansions must scan in linear time and are not a boundary'
+bd bd_zzr $'echo <$(echo \'<$!(x)\')z\n' caught 'quote-segment boundary' 'a boundary inside a quoted span inside an expansion (the outer candidate fails first)'
+bd bd_zzs $'echo <$(echo \'<$[0](x)\')z\n' caught 'quote-segment boundary' 'a $[ ] boundary inside a quoted span inside an expansion'
+bd bd_zzt $'# <${x:-<\'\'{}
+echo ok\n' caught 'quote-segment boundary' 'a quote-only boundary inside a brace expansion in a comment'
+bd bd_zzu $'# <$(echo <\'\'{)
+echo ok\n' caught 'quote-segment boundary' 'a quote-only boundary inside a command substitution in a comment'
+bd bd_zzv $'# <`echo <\'\'{`
+echo ok\n' caught 'quote-segment boundary' 'a quote-only boundary inside a backtick span in a comment'
+bd bd_zzw $'cat <<\'EOF\' >/dev/null
+<${x:-<\'\'{}
+EOF
+echo ok\n' caught 'quote-segment boundary' 'the brace-expansion form in a heredoc body'
+bd bd_zzy $'# <"${x:-"${y:-"}"}"}\'(x)
+echo ok\n' caught 'quote-segment boundary' 'a nested expansion inside double quotes inside an expansion: the end is uncertain'
+bd bd_zzz $'# <"${x:-$\'\\\'}\'}\'(x)
+echo ok\n' caught 'quote-segment boundary' 'an ANSI-C quote with an escaped quote inside an expansion'
+bd bd_zzza $'echo \'<$(printf "%s" "$(printf ")")")(x)\'\n' caught 'quote-segment boundary' 'a nested quoted substitution inside a command substitution'
+# the boundary scan must stay linear on deeply nested input (Codex seats A and B, PR 459 round 7): each case builds its line in python and asserts the scan of one line takes under 2 seconds
+tmscan() { # tmscan LABEL PYEXPR : PYEXPR builds the line; the judge's dollar_boundary must finish in time and refuse nothing
+  local label="$1" out rc=0
+  out=$(timeout 60 python3 -I - "$2" <<'PY' 2>&1
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("j", "bin/chain-test-signers.py"); j = importlib.util.module_from_spec(spec); spec.loader.exec_module(j)
+line = eval(sys.argv[1])
+t0 = time.time(); r = j.dollar_boundary(line); dt = time.time() - t0
+print("%.2f %s" % (dt, r))
+PY
+  ) || rc=$?
+  if [ "$rc" = 0 ] && awk -v o="$out" 'BEGIN{split(o,a," "); exit !(a[1] < 2.0)}'; then pass=$((pass + 1)); echo "ok   linear scan: $label ($out)"
+  else failn=$((failn + 1)); echo "FAIL linear scan: $label -> rc=$rc ${out:0:200}"; fi
+}
+tmscan "16000 nested command substitutions after <" '"# " + "<$(" * 16000 + "x" + ")x" * 16000'
+tmscan "16000 nested brace expansions after <" '"# " + "<${x:-" * 16000 + "}" * 16000 + "z"'
+tmscan "16000 nested arithmetic brackets after <" '"# " + "<$[" * 16000 + "x" + "]" * 16000'
+tmscan "64000 braces in a comment" '"# " + "{" * 64000'
+tmscan "16000 escaped backticks after <" '"# " + ("<" + chr(92) + "`") * 16000 + "`z"'
+tmscan "16000 dollar pairs after a nested substitution" '"echo \"$(true)\" " + "$$a " * 16000'
 sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
 sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
@@ -4145,7 +4331,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1947
+EXPECT=2031
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

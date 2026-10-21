@@ -106,13 +106,9 @@ jobs:
           echo "rescan_created=$(printf '%s' "$meta" | jq -r .createdAt)" >> "$GITHUB_OUTPUT"
           echo "rescan_head=$(printf '%s' "$meta" | jq -r .headSha)" >> "$GITHUB_OUTPUT"
           echo "rescan_conclusion=$(printf '%s' "$meta" | jq -r '.conclusion // ""')" >> "$GITHUB_OUTPUT"
-          mkdir -p "${RUNNER_TEMP}/rescan" "${RUNNER_TEMP}/rescan-reports"
+          mkdir -p "${RUNNER_TEMP}/rescan"
           gh run download "$rid" -n images -D "${RUNNER_TEMP}/rescan" \
             || gh run download "$rid" -D "${RUNNER_TEMP}/rescan"
-          # the rescan's own scanner reports + recorded candidate digests, if that run
-          # produced them (added this round; older runs pre-date the upload — not fatal)
-          gh run download "$rid" -n rescan-scanner-reports -D "${RUNNER_TEMP}/rescan-reports" \
-            || echo "::warning::selected run has no rescan-scanner-reports artifact; the auditor will scan on the runner and cannot assert the recorded digest"
           # the scanner panel's tally (scanner-panel rules 3-6): its unique findings are judged below (rules 7-9)
           gh run download "$rid" -n panel-evidence -D "${RUNNER_TEMP}/panel" \
             || echo "::warning::selected run has no panel-evidence artifact; the scanner panel's audits cannot run"
@@ -124,34 +120,30 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Install the pinned scanners and build the validated run manifest
+      - name: Install syft and govulncheck and build the validated run manifest
         id: manifest
         env:
           GITHUB_SHA: ${{ github.sha }}
           TEST_IMAGE: ${{ inputs.test_image }}
           KNOWN_DEFECT_LOG: ${{ inputs.known_defect_log }}
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -uo pipefail
           command -v skopeo >/dev/null 2>&1 || sudo apt-get update -qq && sudo apt-get install -y -qq skopeo || true
-          for s in grype trivy osv-scanner snyk; do ./bin/install-scanner.sh "$s" || echo "::warning::${s} install failed; it will be recorded 'did not run'"; done
           # govulncheck pinned by module version; syft a pinned, checksummed release binary (below). Both
-          # best-effort: syft is grype's cataloguer and reads distroless status.d, so grype's package inventory is
-          # real even on distroless; without it grype falls back and the OS quorum decides
+          # best-effort: syft catalogues the image's carriers and base OS (it reads distroless status.d)
           GOBIN="${RUNNER_TEMP}/gobin" go install golang.org/x/vuln/cmd/govulncheck@v1.1.4 \
             || echo "::warning::could not install govulncheck; reachability will be recorded 'did not run'"
           # syft: a pinned, checksum-verified release binary (no run-time module download: Sep 30's run failed on
           # transient sum.golang.org errors while building it from source)
           mkdir -p "${RUNNER_TEMP}/gobin"
           ./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \
-            || echo "::warning::could not install syft; grype inventory falls back to matched packages"
+            || echo "::warning::could not install syft; the package inventory falls back to matched packages"
           export PATH="${RUNNER_TEMP}/gobin:${PATH}"
-          # Scan a CONTAINER ARCHIVE, never a daemon ref (R12 item 2). one line per scanner
-          # is printed here (grype 0.118.0 db=… packages=… findings=…); a scanner that
-          # inventories zero packages is recorded 'did not run'.
+          # No scanner runs here: the manifest takes the four panel scanners' results from the rescan's verdict.json
+          # (the panel directory option), and a scanner that did not run is recorded 'did not run', never clean.
           python3 .github/agent/bin/auditor-manifest.py \
             --rescan-dir "${RUNNER_TEMP}/rescan" \
-            --rescan-reports "${RUNNER_TEMP}/rescan-reports" \
+            --panel-dir "${RUNNER_TEMP}/panel" \
             --source-dir "${GITHUB_WORKSPACE}" \
             --reports "${RUNNER_TEMP}/reports" \
             --test-image "${TEST_IMAGE}" \

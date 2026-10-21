@@ -31,7 +31,7 @@ Two small things, and nothing else:
      * other workflows (ci.yml, scan.yml ...), composite actions and release.yml's non-stage jobs are NOT stage files: they keep only
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
-import codecs
+import bisect, codecs
 import fnmatch, hashlib, json, os, re
 
 def jload(path):
@@ -90,6 +90,8 @@ def compound_norm(t):
     return re.sub(r"[\"'\\]", "", t)
 COMPOUND_SEQ_OPENER = re.compile(r"\$\(|\$\{|`|<\(|>\(")   # an opener in a word after quote removal, possibly-empty expansions gone
 COMPOUND_NAIVE_DATA = re.compile(r"'[^']*(?:\$\(|\$\{|`|<\(|>\()[^']*'|\\[$`]|\"[^\"]*[<>]\([^\"]*\"")   # the pairing is uncertain: any opener in naive single quotes, any escaped $ or backtick, any <( >( in naive double quotes
+COMPOUND_SEQ_OPENER = re.compile(r"\$\(|\$\{|`|<\(|>\(")   # an opener in a word after quote removal, possibly-empty expansions gone
+COMPOUND_NAIVE_DATA = re.compile(r"'[^']*(?:\$\(|\$\{|`|<\(|>\()[^']*'|\\[$`]|\"[^\"]*[<>]\([^\"]*\"")   # the pairing is uncertain: any opener in naive single quotes, any escaped $ or backtick, any <( >( in naive double quotes
 def shell_scan(raw):
     """Split a logical line into blank-separated words, honouring quotes and backslash escapes (an unbalanced quote makes the rest one word: fail closed). Also returns (data, nested): `data` is True when a word, after quote removal and with every possibly-empty expansion ($1..$9, $@, $*, $name, ${name}) dropped, holds an opener ($( ${ ` <( >() that is not a plain live one: any character of it quoted in single or ANSI-C quotes or escaped, a $ before a quote, a <( or >( inside double quotes, or its characters coming from different quote segments (an opener assembled at run time from literal pieces). `nested` is True when a substitution sits inside double quotes (the quote pairing is then not certain)."""
     words, cur, q, i, ansi, dollar = [], [], None, 0, False, -2
@@ -126,8 +128,140 @@ def shell_scan(raw):
         i += 1
     if cur: words.append("".join(cur)); flush()
     return words, data, nested
+COMPOUND_GAP = re.compile(r"[$<>]\x02+[({]")   # a $ < > then an expansion of any form (a gap that may be empty) then ( or {
+COMPOUND_NESTED_START = re.compile(r"[$<>](?:[\"'\\]|\$)")
+COMPOUND_NESTED_CRUDE = re.compile(r"[$<>](?:[\"'\\]|\$)[^\n]*[({]")   # the quote pairing is uncertain: a $ < > followed by a quote, an escape or another $, then ( or { later on the line
+def boundary_scan(raw):
+    """True when a $ < > is separated from a following ( or { only by quote or escape characters or by expansions of any form (they may be empty), or when an expansion is left unterminated or its closing delimiter is uncertain. A separate pass from shell_scan on purpose: it adds refusals and cannot loosen the data and compound checks. Walks the line with a stack of open expansions ($name, $1 $@ $* $# $? $! $$ $-, ${...} (only a nested ${ nests; a bare { or ) is literal), $(...) (a bare ( nests), $((...)), $[...]); each level holds one small state (0 nothing, 1 a $ < > just seen, 2 a $ < > then gaps), so the scan is linear; an expansion is ONE gap in its parent; quotes inside an expansion open their own context; a # or a case inside $(...) is uncertain; a backtick substitution is one gap whose inside is scanned on its own."""
+    q, i, dollar = None, 0, -2
+    ansi = False
+    stack, st = [], [0]
+    gap = False
+    def put(ch):
+        nonlocal gap
+        if ch in "({" and st[-1] == 2: gap = True
+        st[-1] = 1 if ch in "$<>" else 0
+    def gaptok():
+        st[-1] = 2 if st[-1] in (1, 2) else 0
+    while i < len(raw):
+        c = raw[i]
+        if q is None and not stack and c in " \t":
+            st[0] = 0; i += 1; continue
+        if c == "\\" and (q != "'" or ansi) and i + 1 < len(raw):
+            put(raw[i + 1]); i += 2; continue
+        if q != "'" and c == "`":
+            j = i + 1
+            while j < len(raw) and raw[j] != "`":
+                j += 2 if raw[j] == "\\" else 1
+            if j >= len(raw): gap = True; i += 1; continue
+            if boundary_scan(raw[i + 1:j]): gap = True
+            gaptok(); i = j + 1; continue
+        if q != "'" and c == "$":
+            two = raw[i:i + 2]
+            if two == "$$" and raw[i + 2:i + 3] in ("(", "{", "["): gap = True
+            if two in ("${", "$(", "$["):
+                stack.append(({"${": "}", "$(": ")", "$[": "]"}[two], q, ansi)); st.append(0); q = None; ansi = False; i += 2; continue
+            m = re.match(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*)", raw[i:])
+            if m:
+                gaptok(); i += m.end(); continue
+        if q is None and stack:
+            top = stack[-1][0]
+            if c == top:
+                _, q, ansi = stack.pop(); st.pop(); gaptok(); i += 1; continue
+            if top == ")" and c == "(":
+                if st[-1] == 2: gap = True
+                stack.append((")", q, ansi)); st.append(0); i += 1; continue
+            if top == ")" and c == "#":
+                gap = True
+            if top == ")" and raw.startswith("case", i) and (i == 0 or not (raw[i - 1].isalnum() or raw[i - 1] == "_")) and raw[i + 4:i + 5] in (" ", "\t"):
+                gap = True
+            if top == "]" and c == "[":
+                stack.append(("]", q, ansi)); st.append(0); i += 1; continue
+        if c == "$": dollar = i
+        if q is None and c in "\"'":
+            q = c; ansi = (c == "'" and dollar == i - 1)
+        elif q == c:
+            q = None; ansi = False
+        else:
+            put(c)
+        i += 1
+    if stack: gap = True
+    return gap
+DOLLAR_PID = re.compile(r"\$\$[({\[]")        # $$ (the pid) then an opener character: refused
+RAW_SIMPLE = re.compile(r"\$(?:[0-9@*#?!$-]|[A-Za-z_][A-Za-z0-9_]*)")   # one simple expansion token, unambiguous
+def raw_ends(raw):
+    """One pass over the line: for every ${ $( $[ opener the index just past its balanced end, or None when it is unterminated or uncertain (a quote inside $[ ]). Iterative (no recursion), so deep nesting is linear. Any opener nests in any context; inside ${ } only } closes, inside $( ) a bare ( nests and ) closes, inside $[ ] a bare [ nests and ] closes; quoted spans inside an expansion are skipped (a quote inside $[ ] makes it uncertain); a backslash skips the next character."""
+    n, ends, stack, k = len(raw), {}, [], 0      # stack entries: [kind, start, depth, uncertain]
+    unsure = False                                # once any quoting inside an expansion is not certain, every end from then on is None (fail closed)
+    while k < n:
+        c = raw[k]
+        if c == "\\": k += 2; continue
+        if c == "$" and k + 1 < n and raw[k + 1] in "{([":
+            stack.append([raw[k + 1], k, 1, False]); k += 2; continue
+        if stack:
+            top = stack[-1]
+            if c in "'\"":
+                if top[0] == "[": top[3] = True; k += 1; continue
+                if c == "'" and raw[k - 1:k] == "$": unsure = True; k += 1; continue      # an ANSI-C quote inside an expansion: its escapes are not tracked here
+                e = k + 1
+                while e < n and raw[e] != c: e += 2 if (c == '"' and raw[e] == "\\") else 1
+                if e >= n:
+                    for ent in stack: ends[ent[1]] = None
+                    return ends
+                if c == '"' and re.search(r"\$[({\[]|`", raw[k + 1:e]): unsure = True    # a nested expansion inside double quotes: the quote pairing is not certain
+                k = e + 1; continue
+            kind = top[0]
+            if (kind == "(" and c == "(") or (kind == "[" and c == "["): top[2] += 1
+            elif (kind == "{" and c == "}") or (kind == "(" and c == ")") or (kind == "[" and c == "]"):
+                top[2] -= 1
+                if top[2] == 0:
+                    stack.pop(); ends[top[1]] = None if (top[3] or unsure) else k + 1
+        k += 1
+    for ent in stack: ends[ent[1]] = None
+    return ends
+def raw_boundary(raw):
+    """Linear scan of the raw logical line (comments and heredoc bodies included): a $ < > then one or more quote or escape characters or expansions of any form, then ( or { . EVERY $ < > in the line is a start (also inside an expansion or a quoted span); the end of a run walked from a position is memoised, so the scan stays linear; an unterminated or uncertain expansion refuses."""
+    if DOLLAR_PID.search(raw): return True
+    n = len(raw)
+    ends = raw_ends(raw)           # the balanced end of every expansion, computed once
+    unesc, run = [], 0                # positions of backticks not escaped by an odd run of backslashes, computed once
+    for q_, ch in enumerate(raw):
+        if ch == "\\": run += 1; continue
+        if ch == "`" and run % 2 == 0: unesc.append(q_)
+        run = 0
+    memo = {}                      # position at the start of a gap item -> end of the run walked from there
+    for i in range(n):
+        if raw[i] not in "$<>": continue
+        j, seen = i + 1, []
+        while j < n:
+            if j in memo: break
+            c = raw[j]
+            if c in "\"'\\": seen.append(j); j += 1; continue
+            if c == "`":
+                b = bisect.bisect_right(unesc, j)
+                if b >= len(unesc): return True
+                seen.append(j); j = unesc[b] + 1; continue
+            if c == "$":
+                if j + 1 < n and raw[j + 1] in "{([":
+                    e = ends.get(j)
+                    if e is None: return True
+                    seen.append(j); j = e; continue
+                m = RAW_SIMPLE.match(raw, j)
+                if m: seen.append(j); j = m.end(); continue
+            break
+        end = memo[j] if j in memo else j
+        for p_ in seen: memo[p_] = end
+        if (seen or j in memo) and end < n and raw[end] in "({": return True
+    return False
 def shell_words(raw):
     return shell_scan(raw)[0]
+def dollar_boundary(raw):
+    if raw_boundary(raw): return True
+    if boundary_scan(raw): return True
+    nested = shell_scan(raw)[2]
+    if not nested: return False
+    m = COMPOUND_NESTED_START.search(raw)         # the first $ < > followed by a quote, an escape or another $ ; any ( or { after it refuses (one linear search)
+    return bool(m and re.search(r"[({]", raw[m.start():]))
 def declare_compound(raw):
     if COMPOUND_WORD.search(compound_norm(raw)): return True
     words, data, nested = shell_scan(raw)
@@ -1490,6 +1624,8 @@ def scan_script(path, text, row, rows, base):
             k_ += 1
             if OPENER_BUILT.search(cur_):
                 add("deny", phys_[start_], "%s: line %d builds a substitution opener from quotes or escapes ($'' , $\"\", or an ANSI-C string with a hex, octal or unicode escape): not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
+            if dollar_boundary(cur_):
+                add("deny", phys_[start_], "%s: line %d has a $ (or < >) at a quote-segment boundary or before an expansion that may be empty, next to ( or { : bash may join it into a substitution opener the text scan cannot read: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
             if declare_compound(cur_):
                 add("deny", phys_[start_], "%s: line %d has a compound assignment to declare, local, typeset, readonly or export (NAME=( ... )) with a substitution opener after the ( : the builtin evaluates a quoted compound assignment and runs the substitution: not resolved (a reviewed line-bound `deny` exception for this exact line waives it)" % (path, off + start_ + 1), None if exotic else off + start_)
             if subscript_holds_opener(cur_) or SUBSCRIPT_START.search(cur_) or subscript_holds_opener(re.sub(r"\$[@*]|[\"'\\]", "", cur_)):   # also on the line with quotes, backslashes and an empty $@ / $* removed: bash joins what they split

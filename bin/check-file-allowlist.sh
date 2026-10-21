@@ -102,6 +102,7 @@ ALLOW_PATTERNS=(
   '^bin/scout-vex-scan\.sh$'
   '^bin/scout-selfcheck\.py$'
   '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
+  '^bin/scout-older-versions(\.sh|-test\.sh)$'
   '^bin/patch-decide\.py$'
   '^bin/patch-decide-test\.sh$'
   '^bin/release-patch-wiring-test\.sh$'
@@ -239,8 +240,6 @@ ALLOW_PATTERNS=(
   # no manifest would fold these package-main sources into the parent module and break
   # `go ./...` / gosec. So a plain go.mod / go.sum / *.go here is intentionally NOT allowed.
   '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/(go\.(mod|sum)|[A-Za-z0-9._-]+\.go)\.fixture$'
-  '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
-  '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 
   # The vendored dependency tree (REQ-VEND-001): names only. Every directory component starts with a letter, digit, _, +, ~ or @ (no dot
   # directory, no .github, no .git); only the FINAL component may start with one dot (a dot file go mod vendor itself produces, such as
