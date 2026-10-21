@@ -10,6 +10,7 @@ from unittest import mock
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 FIX = os.path.abspath(os.path.join(BIN, "..", "fixtures"))
 sys.path.insert(0, BIN)
+import verdict_fixture  # noqa: E402  (fixture verdicts adapted to the panel's current image set)
 _spec = importlib.util.spec_from_file_location("auditor_run_cov", os.path.join(BIN, "auditor-run.py"))
 R = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(R)
 policy = R.policy
@@ -1013,7 +1014,8 @@ class ConsistencyTablesMain(Base):
         self.assertTrue(res["problems"][0]["detail"].startswith("rc=1 "), res)
 
     def test_scanner_tables_fallback_clean_and_not_run(self):
-        vp = os.path.join(FIX, "run", "panel-01", "verdict.json")
+        keep = []; self.addCleanup(lambda: [os.unlink(k) for k in keep])
+        vp = verdict_fixture.fixture_verdict("panel-01", keep)
         status = {"grype": {"ran": True, "package_count": 18}, "scout": {"ran": True, "package_count": 18},
                   "inspector": {"ran": False, "reason": "did not run on: production-amd64", "package_count": 0},
                   "google": {"ran": True, "package_count": 6}}
@@ -1031,7 +1033,7 @@ class ConsistencyTablesMain(Base):
         insp = text.split("::group::inspector")[1].split("::endgroup::")[0]
         self.assertIn("did not run (did not run on: production-amd64); what it did report follows", insp)
         # a scanner that ran and reported nothing is clean; one that did not run and reported nothing is incomplete, never clean
-        vz = os.path.join(FIX, "run", "panel-osquorum", "verdict.json")
+        vz = verdict_fixture.fixture_verdict("panel-osquorum", keep)
         out2 = self.d("out2")
         m2 = dict(m, panel={"verdict": vz}, scanner_status=dict(status))
         self.quiet(R._scanner_tables, m2, [], out2)
@@ -1075,7 +1077,12 @@ class ConsistencyTablesMain(Base):
 
 # ---------------------------------------------------------------- run() end to end (in-process)
 
-PANEL_STATUS = {s: {"ran": True, "reason": "ok", "package_count": 6, "images_ran": 6, "images_expected": 6}
+def _expected_images(scanner):
+    from auditorlib import parsers as PL
+    return sum(1 for im in PL.panel_images() if PL.panel_expected(scanner, im))      # follows bin/panel.py VARIANTS (Google: amd64 only)
+
+
+PANEL_STATUS = {s: {"ran": True, "reason": "ok", "package_count": 6, "images_ran": _expected_images(s), "images_expected": _expected_images(s)}
                 for s in ("grype", "scout", "inspector", "google")}
 
 
