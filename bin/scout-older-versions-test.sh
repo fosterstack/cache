@@ -47,6 +47,7 @@ row 9.9.6 | grep -q 'scan exit 1' && ! row 9.9.6 | grep -q 'YES' && ok "a versio
 cat > "$e/bin/docker.bad" <<'STUB'
 #!/usr/bin/env bash
 [ "$1" = pull ] && exit 1
+[ "$1 $2" = "image inspect" ] && exit 1
 echo "$*" >> "$LOGF"; exit 0
 STUB
 mkdir -p "$e/badbin"; cp "$e/bin/docker.bad" "$e/badbin/docker"; chmod +x "$e/badbin/docker"

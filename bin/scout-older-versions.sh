@@ -27,6 +27,8 @@ DIGEST_PRODUCT="pkg:oci/debian@$FIXTURE_DIGEST?repository_url=docker.io/library/
 # ghcr.io/fosterstack/cache:selfcheck, then stops (STAGE_ONLY); the tag-based cases scan it as local:// and never fall back to a registry lookup
 STAGE_ONLY=1 PROBE_REPO=ghcr.io/fosterstack/cache-scout-probe RELEASE_TAG=none bash bin/scout-root-cause.sh "$out/stage" >/dev/null \
   || { echo "::error::cannot stage the fixture" >&2; exit 2; }
+# the staging script does not stop on a failed pull: both tags must exist in the local store before any scan
+docker image inspect scoutcontrol/app:v1 ghcr.io/fosterstack/cache:selfcheck >/dev/null 2>&1 || { echo "::error::the fixture is not in the local store" >&2; exit 2; }
 {
   echo "# Docker Scout older-versions sweep"
   echo
