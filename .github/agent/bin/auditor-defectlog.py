@@ -77,22 +77,27 @@ def do_reconcile(out):
     logpath = cli.opt("--log"); log = load(logpath)
     a = cli.ARGS; sc, fid, purl = a[a.index("--finding") + 1:a.index("--finding") + 4]
     adjudicator = cli.opt("--adjudicator"); manifest = cli.opt("--manifest")
+    readers = {}
+    if manifest:                                             # no readable report is "unavailable", decided before any model is asked
+        readers = {n: (fn, path) for n, fn, path in P.manifest_readers(json.load(open(manifest)), {"grype": P.parse_grype, "trivy": P.parse_trivy,
+                                                                                                 "snyk": P.parse_snyk, "osv-scanner": P.parse_osv})}
+        fn, rpt = readers.get(sc, (None, None))
+        try:
+            records = fn(rpt) if (fn and rpt) else None
+        except (P.ParseError, OSError):
+            records = None
+        if records is None:
+            cli.writej(os.path.join(out, "reconcile.json"), {"added": False, "reason": "scanner report unavailable (it did not run, or its report cannot be read)"})
+            return
     ans = cli.ask_model(adjudicator, fid)                    # PROPOSAL: same defect?
     if not ans.get("same_defect"):
         cli.writej(os.path.join(out, "reconcile.json"), {"added": False, "reason": "model: not the same defect"})
         return
     # the scanner must actually report this exact (id/alias, purl).
     reported = False
-    if manifest:
-        m = json.load(open(manifest))
-        reps = {"grype": P.parse_grype, "trivy": P.parse_trivy, "snyk": P.parse_snyk,
-                "osv-scanner": P.parse_osv}
-        fn = reps.get(sc)
-        rpt = m["scanner_reports"].get(sc)
-        if fn and rpt:
-            for f in fn(rpt):
-                if (fid == f["finding_id"] or fid in f["aliases"]) and f["purl"] == purl:
-                    reported = True
+    for f in (records if manifest else []):
+        if (fid == f["finding_id"] or fid in f["aliases"]) and f["purl"] == purl:
+            reported = True
     if not reported:
         cli.writej(os.path.join(out, "reconcile.json"), {"added": False, "reason": "scanner does not report this purl"})
         return

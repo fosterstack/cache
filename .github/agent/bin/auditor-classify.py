@@ -92,8 +92,6 @@ def fp_verified(ids, logpath, findings):
         keys = {(k["scanner"], k["finding_id"], k["purl"]): row
                 for row in log.get("defects", []) for k in row.get("keys", [])}
         for f in findings:
-            if f.get("_lineage_only"):      # a bundle lineage vote is not per-CVE FP evidence
-                continue
             row = keys.get((f["scanner"], f["finding_id"], f["purl"]))
             if row and row.get("disposition") == "false_positive":
                 return {"check": "known-defect-log", "source_file": logpath,
@@ -187,23 +185,13 @@ def manifest_findings(manifest):
     def _union(a, b):
         parent[_find(a)] = _find(b)
 
-    # `bundle_cves` marks the EXTRA CVEs a distro advisory co-reports beyond its own identity;
-    # those extra members must not bridge (R1 outer round-5 #1). But a record can ALSO carry a
-    # real identity in its aliases (R1 outer round-7 #2), so EVERY record still unions by its
-    # own aliases — that keeps a reachability id (e.g. a Go advisory's own id) attached to its
-    # CVE. Only a PURE bundle (bundle_cves but no CVE of its own) anchors no group; it is only
-    # distributed. Bundle members are attached to their groups as lineage after grouping.
-    def _own_cves(f):
-        ids = [f["finding_id"]] + list(f["aliases"])
-        return {a for a in ids if re.fullmatch(r"CVE-\d{4}-\d+", a)}
-    pure_bundles = [f for f in allf if f.get("extra", {}).get("bundle_cves") and not _own_cves(f)]
-    anchoring = [f for f in allf if f not in pure_bundles]
-    for f in anchoring:
+    # Every record unions by its own id and aliases, so a reachability id (e.g. a Go advisory's own id) stays attached to its CVE.
+    for f in allf:
         ids = [f["finding_id"]] + list(f["aliases"])
         for i in ids[1:]:
             _union(ids[0], i)
     comps = {}
-    for f in anchoring:
+    for f in allf:
         root = _find(f["finding_id"])
         g = comps.setdefault(root, {"aliases": set(), "findings": []})
         g["aliases"].update(f["aliases"]); g["aliases"].add(f["finding_id"]); g["findings"].append(f)
@@ -214,21 +202,6 @@ def manifest_findings(manifest):
         groups[cid] = {"id": cid, "aliases": g["aliases"], "findings": g["findings"]}
         for a in g["aliases"]:
             cid_by_member[a] = cid
-    # distribute each advisory's bundle members (extra CVEs) to their groups as LINEAGE,
-    # creating a group for any CVE seen ONLY in an advisory, without bridging distinct CVEs.
-    # The attached copy is marked `_lineage_only`: it counts as a scanner lineage/coverage vote
-    # for that CVE, but MUST NOT be used as per-CVE evidence (e.g. a defect-log false positive
-    # keyed to THIS advisory record's own vulnerability must not close a DIFFERENT bundled CVE)
-    # (R1 outer round-8 #1).
-    for f in allf:
-        for cve in (f.get("extra", {}).get("bundle_cves") or []):
-            cid = cid_by_member.get(cve, cve)
-            grp = groups.setdefault(cid, {"id": cid, "aliases": {cid}, "findings": []})
-            grp["aliases"].add(cve)
-            fk = (f.get("scanner"), f.get("finding_id"), f.get("purl"))
-            if not any((g.get("scanner"), g.get("finding_id"), g.get("purl")) == fk for g in grp["findings"]):
-                grp["findings"].append(dict(f, _lineage_only=True))
-            cid_by_member.setdefault(cve, cid)
     return m, groups
 
 
@@ -307,11 +280,21 @@ def _render_report(out, sections, header="", conclusion=None, context=None):
     cli.writef(os.path.join(out, "report.md"), "\n".join(lines) + "\n")
 
 
+def _go_ids(gvc, finding):
+    """The finding's id plus every Go advisory in the stream that lists it as an alias (a CVE names its GO- entry)."""
+    try:
+        by = P.parse_govulncheck(gvc)["by_osv"]
+    except (P.ParseError, OSError, TypeError):
+        return [finding]
+    return [finding] + sorted(osv for osv, e in by.items() if osv != finding and finding in e["aliases"])
+
+
 def do_single(finding, manifest, gvc, out):
     module = None
     if manifest and os.path.exists(manifest):
         module = json.load(open(manifest)).get("module")
-    verdict, ev = gvc_verdict(gvc, [finding], module)
+    ids = _go_ids(gvc, finding)
+    verdict, ev = gvc_verdict(gvc, ids, module)
     if verdict == "no-evidence":
         cli.writej(os.path.join(out, "status", finding + ".json"),
                    {"open": True, "reason": ev.get("reason", "no evidence")})
@@ -320,13 +303,17 @@ def do_single(finding, manifest, gvc, out):
         vex.write(out, finding, "not_affected", cli.opt("--today", TS) + "T00:00:00Z" if len(cli.opt("--today", TS)) == 10 else TS,
                   justification="vulnerable_code_not_in_execute_path", evidence=ev)
         return
-    # reachable -> real-fixable bump
-    m = json.load(open(manifest)); fixed = installed = None
-    for f in P.parse_osv(m["scanner_reports"]["osv-scanner-gomod"], "osv-scanner-gomod"):
-        if f["finding_id"] == finding or finding in f["aliases"]:
-            fixed = f["fixed_version"]; installed = f["extra"].get("installed_version")
+    # reachable -> real-fixable bump: from/to are govulncheck's own finding for the ONE module the call path reaches (the version it
+    # scanned, the fix it names); no fix named, no installed version, or several reachable modules is not a bump (stays open)
+    by = P.parse_govulncheck(gvc)["by_osv"]
+    reach = [(mod, e) for i in ids if i in by for mod, e in by[i]["mods"].items() if e["reachable"]]
+    if len(reach) != 1 or not (reach[0][1]["installed"] and reach[0][1]["fixed"]):
+        why = ("govulncheck reaches %d modules for this finding: no single bump" % len(reach) if len(reach) != 1
+               else "govulncheck names no fixed version (or no installed version) for %s" % reach[0][0])
+        cli.writej(os.path.join(out, "status", finding + ".json"), {"open": True, "reason": why})
+        return
     cli.writej(os.path.join(out, "action", finding + ".json"),
-               {"kind": "bump_pr", "from": installed, "to": fixed,
+               {"kind": "bump_pr", "from": reach[0][1]["installed"], "to": reach[0][1]["fixed"],
                 "lane": "auto-merge", "defer_to_dependabot": False})
 
 

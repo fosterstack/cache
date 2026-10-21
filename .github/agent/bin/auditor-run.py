@@ -1820,8 +1820,6 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         # backport does not patch an independently installed PyPI dist) (R1 refactor round-4 #2).
         fp_keys = set()   # (ecosystem, package, version)
         for f in grp["findings"]:
-            if f.get("_lineage_only"):     # an advisory's defect-log FP is about ITS OWN
-                continue                   # vulnerability, not a different bundled CVE (round-8 #1)
             r = idx.get((f["scanner"], f["finding_id"], f["purl"]))
             if r and r.get("disposition") == "false_positive":
                 fp_keys.add((_eco(f.get("purl")), (r.get("package") or f.get("package")), _ver_from_purl(f["purl"])))
@@ -2278,6 +2276,12 @@ def _scanner_tables(m, rows, out):
         panel = m.get("scanner_set") == "panel"
         path = (m.get("panel") or {}).get("verdict") if panel else reports.get(name)      # a partial miss keeps the findings the scanner did report
         pc = info.get("package_count"); fc = info.get("findings")
+        pre = err = None
+        if panel and path:                          # the verdict has no per-scanner findings count: it is what the scanner's own records number
+            try:
+                pre = fn(path); fc = len(pre)
+            except Exception as e:
+                err = e
         title = "%s — %s packages, %s findings" % (name, pc if pc is not None else "?", fc if fc is not None else "?")
         lines.append("::group::" + title)
         if not path or (not panel and not info.get("ran")):
@@ -2286,7 +2290,9 @@ def _scanner_tables(m, rows, out):
         if panel and not info.get("ran"):
             lines.append("  did not run (%s); what it did report follows" % info.get("reason", "no report"))
         try:
-            findings = fn(path)
+            if err:
+                raise err
+            findings = pre if pre is not None else fn(path)
         except Exception as e:
             findings = []; lines.append("  (could not parse report: %s)" % e)
         if not findings:

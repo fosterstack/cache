@@ -9,27 +9,36 @@ from auditorlib import parsers as P
 
 
 def scanners_reporting(manifest, cve):
-    m = json.load(open(manifest)); r = m["scanner_reports"]
-    reps = {"grype": P.parse_grype, "trivy": P.parse_trivy,
-            "osv-scanner": P.parse_osv, "snyk": P.parse_snyk}
-    hit = set()
-    for name, fn in reps.items():
-        for f in fn(r[name]):
+    """(scanners reporting the CVE, whether every scanner's evidence was readable): a scanner that did not run, or whose report cannot
+    be read, is unavailable evidence, never a vote against."""
+    m = json.load(open(manifest))
+    hit, complete, any_read = set(), True, False
+    for name, fn, path in P.manifest_readers(m, {"grype": P.parse_grype, "trivy": P.parse_trivy,
+                                                 "osv-scanner": P.parse_osv, "snyk": P.parse_snyk}):
+        try:
+            found = fn(path) if path else None
+        except (P.ParseError, OSError):
+            found = None
+        if found is None:
+            complete = False
+            continue
+        any_read = True
+        for f in found:
             if cve == f["finding_id"] or cve in f["aliases"]:
                 hit.add(name)
-    return hit
+    return hit, (any_read and (complete or bool(hit)))
 
 
 def main():
     out = cli.opt("--out"); cve = cli.opt("--cve")
-    sc = scanners_reporting(cli.opt("--manifest"), cve)
+    sc, readable = scanners_reporting(cli.opt("--manifest"), cve)
     lineages = {policy.lineage_of(s) for s in sc}
     unique = len(sc) == 1
     cli.writej(os.path.join(out, "votes.json"), {"cve": cve, "scanners": sorted(sc),
                      "lineage_votes": {l: 1 for l in lineages},
                      "distinct_lineages": len(lineages), "unique": unique,
                      "auto_closed": False,
-                     "handling": "suspect_investigated" if unique else "corroborated"})
+                     "handling": ("evidence_unavailable" if not readable else "suspect_investigated" if unique else "corroborated")})
 
 
 if __name__ == "__main__":

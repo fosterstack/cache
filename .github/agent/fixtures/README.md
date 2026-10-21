@@ -35,6 +35,12 @@ changing field structure:
 - `scanners/snyk-debian12.json` — **BEST-EFFORT, marked synthetic**: snyk 1.1307.0 could not
   be captured here (no `SNYK_TOKEN`/account). Shaped to snyk's published container-test JSON
   and carrying the shared votes CVE, to be replaced by a real capture when a token exists.
+- `run/panel-<tag>/verdict.json` + `run/manifest-<tag>.json` — the auditor's run fixtures, in the form the daily auditor now
+  reads (scanner-panel verdict; `scanner_set: panel`). They are derived from the captures above, not captured: each legacy
+  scanner file's findings are carried into one verdict on `production-amd64` (Trivy's as Scout's, OSV's as Inspector's, Snyk's as
+  Google's, the Go-module scan's as Grype's and Scout's), then `bin/panel.py`'s own issue rendering and
+  `auditor-manifest.py`'s `panel_block` produce the verdict's issue text and the manifest's panel block. They stand in for the
+  panel's output; the first real finding in a rescan is the live proof of the vendors' key names.
 - `govulncheck/reachable.json`, `govulncheck/imported-not-called.json` — real
   **govulncheck v1.7.0** `-json` streams over the tiny Go modules in `govulncheck/src/`
   (a module requiring `golang.org/x/text v0.3.0`): GO-2021-0113 is reachable (a call trace

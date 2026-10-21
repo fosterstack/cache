@@ -251,6 +251,16 @@ def scanner_set(m):
     return PANEL_SCANNERS if isinstance(m, dict) and m.get("scanner_set") == "panel" else LEGACY_SCANNERS
 
 
+def manifest_readers(m, legacy=None):
+    """[(scanner, reader, path)] for a manifest's image scanners; the path is None for a scanner whose report is not available (it did
+    not run, or missed an image). The panel's four are read from the one verdict.json."""
+    r = (m or {}).get("scanner_reports") or {}
+    if isinstance(m, dict) and m.get("scanner_set") == "panel":
+        vp = (m.get("panel") or {}).get("verdict")
+        return [(sc, (lambda p, sc=sc: parse_panel(p, sc)), vp if r.get(sc) else None) for sc in PANEL_SCANNERS]
+    return [(sc, fn, r.get(sc)) for sc, fn in (legacy or {}).items()]
+
+
 def parse_panel(path, scanner):
     """One panel scanner's findings from the rescan's verdict.json (bin/panel.py tally): the findings whose
     seen_by names `scanner`, one record per (CVE id, package identity); the images that carry it are kept, each with
@@ -314,15 +324,6 @@ def _osv_purl(pkg):
     return base + ("@%s" % ver if ver else "")
 
 
-_CVE_RE = None
-
-
-def _cves(ids):
-    global _CVE_RE
-    if _CVE_RE is None:
-        import re
-        _CVE_RE = re.compile(r"CVE-\d{4}-\d+")
-    return {a for a in ids if _CVE_RE.fullmatch(a or "")}
 
 
 def parse_osv(path, scanner="osv-scanner"):
@@ -336,33 +337,11 @@ def parse_osv(path, scanner="osv-scanner"):
             purl = _osv_purl(pkg)
             for v in p.get("vulnerabilities") or []:
                 fid = v.get("id")
-                # TRUE identity vs BUNDLE membership. OSV's own `aliases` ALWAYS assert the
-                # SAME vulnerability (cross-namespace equivalence) — they are identity, never a
-                # bundle signal, even when they list two CVE ids (R1 outer round-6 #2). Only
-                # `upstream` under a NON-CVE record signals a distro advisory that maps to
-                # SEVERAL distinct upstream CVEs; that is a co-report bundle, not one identity
-                # (R1 outer round-5 #1). We deliberately IGNORE `groups` (also a shared-fix
-                # bundle). Bundle detection therefore keys on `upstream` alone.
                 aliases = set(v.get("aliases") or [])
                 upstream = set(v.get("upstream") or [])
-                # The record's OWN identity CVEs come from its id + its explicit aliases (always
-                # equivalence). `upstream` CVEs that are NOT part of that identity are the extra
-                # members a distro advisory bundles in — those, and only those, are bundle
-                # members that must NOT bridge (R1 outer round-6 #2, round-7 #2). A record can be
-                # BOTH: its own identity (kept as aliases, union normally) AND an advisory that
-                # also covers other CVEs (carried as bundle_cves, distributed as lineage).
-                identity_cves = _cves(aliases | {fid})
-                up_cves = _cves(upstream | {fid})
-                extra_cves = up_cves - identity_cves
                 extra = {"ecosystem": pkg.get("ecosystem"),
                          "installed_version": pkg.get("version")}
-                if len(up_cves) >= 2 and fid not in up_cves and extra_cves:
-                    # keep own identity (aliases + any non-extra upstream ids); the extra
-                    # upstream CVEs are bundle members, distributed to their own groups as lineage.
-                    al = aliases | {a for a in upstream if a not in extra_cves}
-                    extra["bundle_cves"] = sorted(extra_cves)
-                else:
-                    al = aliases | upstream
+                al = aliases | upstream
                 fixed = None
                 for aff in v.get("affected") or []:
                     for rng in aff.get("ranges") or []:
@@ -400,7 +379,10 @@ def _stream(text):
             i += 1
         if i >= n:
             break
-        obj, j = dec.raw_decode(text, i)
+        try:
+            obj, j = dec.raw_decode(text, i)
+        except ValueError as e:
+            raise ParseError("govulncheck: not a JSON stream at offset %d: %s" % (i, e))
         yield obj
         i = j
 
@@ -417,6 +399,7 @@ def parse_govulncheck(path):
     by_osv = {}
     scan_level = None
     module = None
+    osv_aliases = {}
     sbom_ver = {}          # module path -> version, so a trace frame that omits the version
     saw_any = False        # can still be scoped to the exact version scanned (REQ-AUD-13 AC5)
     for obj in _stream(text):
@@ -439,6 +422,8 @@ def parse_govulncheck(path):
             if root0:
                 cands = [p for p in mods if p != "stdlib" and (root0 == p or root0.startswith(p + "/"))]
                 module = max(cands, key=len) if cands else root0
+        if isinstance(obj.get("osv"), dict) and obj["osv"].get("id"):         # the stream's own advisory entry: its aliases
+            osv_aliases[obj["osv"]["id"]] = sorted(a for a in (obj["osv"].get("aliases") or []) if isinstance(a, str))
         f = obj.get("finding")
         if not f:
             continue
@@ -457,12 +442,22 @@ def parse_govulncheck(path):
         # these, never to a sibling version the evidence does not cover (REQ-AUD-13 AC5).
         modvers = {(fr["module"], fr.get("version") or sbom_ver.get(fr["module"]))
                    for fr in trace if fr.get("module")}
-        cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set()})
+        cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set(), "mods": {}})
+        mods = dict(cur["mods"])
+        vuln = next((fr for fr in trace if fr.get("module")), None)         # the vulnerable dependency is the trace's first named module
+        if vuln:                                                            # its installed version and the stream's fix stay with THAT module
+            e = dict(mods.get(vuln["module"], {"installed": None, "fixed": None, "reachable": False}))
+            e["installed"] = e["installed"] or vuln.get("version") or sbom_ver.get(vuln["module"])
+            e["fixed"] = e["fixed"] or (f["fixed_version"] if isinstance(f.get("fixed_version"), str) and f["fixed_version"] else None)
+            e["reachable"] = e["reachable"] or called
+            mods[vuln["module"]] = e
         by_osv[osv] = {"reachable": cur["reachable"] or called,
                        "imported_only": cur["imported_only"] or imported_only,
-                       "modules": cur.get("modules", set()) | modvers}
+                       "modules": cur.get("modules", set()) | modvers, "mods": mods}
     if not saw_any:
         raise ParseError("govulncheck: empty stream")
+    for k, v in by_osv.items():
+        v["aliases"] = osv_aliases.get(k, [])
     return {"scan_level": scan_level, "module": module, "by_osv": by_osv}
 
 

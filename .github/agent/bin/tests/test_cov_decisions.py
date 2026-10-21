@@ -124,17 +124,6 @@ class ClassifyGvcVerdict(TmpCase):
         self.assertEqual(classify.gvc_verdict(g2, ["GO-1"])[0], "reachable")
 
 
-class ClassifyFpVerified(TmpCase):
-    def test_lineage_only_copy_is_not_evidence(self):
-        key = {"scanner": "grype", "finding_id": "DSA-1", "purl": "pkg:deb/debian/x@1"}
-        log = self.put("log.json", {"defects": [{"disposition": "false_positive", "keys": [key]}]})
-        lineage = dict(key, _lineage_only=True)
-        self.assertIsNone(classify.fp_verified(["CVE-1"], log, [lineage]))
-        ev = classify.fp_verified(["CVE-1"], log, [lineage, dict(key)])
-        self.assertEqual(ev, {"check": "known-defect-log", "source_file": log,
-                              "detail": "exact key grype/DSA-1/pkg:deb/debian/x@1"})
-
-
 class ClassifyManifestValidation(unittest.TestCase):
     FULL = {k: None for k in ("grype", "trivy", "osv-scanner", "osv-scanner-gomod", "snyk")}
 
