@@ -229,8 +229,8 @@ WORD = r"""(?:"[^"]*"|\x27[^\x27]*\x27|[^\s"\x27]+)"""      # an ordinary shell 
 OPT = r"""["\x27]?-[^\s"\x27]*["\x27]?(?:\s+""" + WORD + r""")?"""     # an option and, when it has one, its value: -c "user.name=Build Bot"
 SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+""" + OPT + r""")*\s+["\x27]?""" + CMDS + r"""["\x27]?(?![\w-])""")
 LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27]""" + CMDS + r"""["\x27]""")
-# every tracked file is read except the tests, the prose and the data (docs, markdown, json, the vendored tree, the evidence and the root requirements)
-SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures)/|^(docs|vendor|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$")
+# every tracked file is read except the tests, the prose and the data (docs, markdown, json, the evidence and the root requirements)
+SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures)/|^(docs|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$")
 ALLOWED = set(sys.argv[2:])      # sha256 of "file\nwhole line, stripped"
 root = sys.argv[1]
 files = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")
