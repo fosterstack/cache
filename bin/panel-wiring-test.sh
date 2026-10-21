@@ -114,9 +114,52 @@ else:
     vsteps = va.get("steps", [])
     att = [x for x in vsteps if "attach our OpenVEX to each candidate index" in (x.get("name") or "")]
     fxs = [x for x in vsteps if "self-check fixtures" in (x.get("name") or "")]
-    if len(att) != 1 or len(fxs) != 1:
-        bad.append("vex-attach lacks its two steps (attach and push the candidates; build the self-check fixtures)")
+    prn = [x for x in vsteps if "prune the scratch package" in (x.get("name") or "")]
+    if len(att) != 1 or len(fxs) != 1 or len(prn) != 1:
+        bad.append("vex-attach lacks one of its three steps (prune; attach and push the candidates; build the self-check fixtures)")
     else:
+        if not (vsteps.index(prn[0]) < vsteps.index(att[0]) and vsteps.index(prn[0]) < vsteps.index(fxs[0])):
+            bad.append("the prune must run before this run's pushes (nothing it pushes can lose its version to it)")
+        # the prune is strict, and confined to the scratch package: run it against a stub gh (approval condition b)
+        GHSTUB = r"""#!/usr/bin/env bash
+{ printf 'gh'; printf ' %q' "$@"; printf '\n'; } >> "$STUB_LOG"
+case "$*" in
+  *"--jq .visibility"*) echo private ;;
+  *"-X DELETE"*) if [ "$STUB_MODE" = del-fail ]; then echo "HTTP 403" >&2; exit 1; fi; exit 0 ;;
+  *"--paginate"*) case "$STUB_MODE" in
+      list-404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+      list-fail) echo "gh: boom (HTTP 500)" >&2; exit 1 ;;
+      *) printf '11\n12\n' ;;
+    esac ;;
+esac
+exit 0
+"""
+        def run_prune(mode):
+            with tempfile.TemporaryDirectory() as t:
+                os.makedirs(os.path.join(t, "stub"))
+                with open(os.path.join(t, "stub", "gh"), "w") as fh:
+                    fh.write(GHSTUB)
+                os.chmod(os.path.join(t, "stub", "gh"), 0o755)
+                log = os.path.join(t, "log")
+                open(log, "w").close()
+                env = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], STUB_LOG=log, STUB_MODE=mode, RUNNER_TEMP=t,
+                           GITHUB_STEP_SUMMARY=os.path.join(t, "sum"), GITHUB_REPOSITORY_OWNER="fosterstack", GH_TOKEN="x")
+                r = subprocess.run(["bash", "-e", "-c", prn[0].get("run", "")], cwd=ROOT, env=env, capture_output=True, text=True)
+                return r.returncode, open(log).read().splitlines()
+        rc, calls = run_prune("ok")
+        dels = [l for l in calls if "-X DELETE" in l]
+        if rc != 0 or len(dels) != 2 or not all("orgs/fosterstack/packages/container/cache-scout-probe/versions/" in l for l in dels):
+            bad.append("the prune does not delete the old versions of the scratch package: rc=%s %s" % (rc, calls))
+        if any("packages/container/cache-scout-probe" not in l for l in calls if "api" in l):
+            bad.append("the prune reaches a package other than the scratch package")
+        rc, calls = run_prune("list-404")
+        if rc != 0 or any("-X DELETE" in l for l in calls):
+            bad.append("the prune treats a missing package as an error or deletes something (rc=%s)" % rc)
+        if run_prune("list-fail")[0] == 0:
+            bad.append("the prune goes green when the version listing fails")
+        rc, calls = run_prune("del-fail")
+        if rc == 0 or len([l for l in calls if "-X DELETE" in l]) != 2:
+            bad.append("the prune goes green when a delete fails, or stops at the first failure (rc=%s)" % rc)
         for need in ("vex=.vex/fosterstack-cache.openvex.json", 'python3 bin/vex-index.py layout --layout "${d}" --vex "${vex}"',
                      'python3 bin/vex-index.py verify-layout --layout "${d}" --vex "${vex}" --base-digest "${base}"',
                      'python3 bin/release-layout.py "${d}" "${final}"', 'tag="cand-${GITHUB_RUN_ID}-${v}"', "chmod -R go-w", "skopeo copy --all",
@@ -124,10 +167,11 @@ else:
             if need not in att[0].get("run", ""):
                 bad.append("the attach step lacks %s" % need)
         for need in ("python3 bin/vex-index.py layout --layout", "python3 bin/vex-index.py verify-layout --layout", "--base-digest",
-                     ".vex/fosterstack-cache.openvex.json", "CVE-2023-4911", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "chmod -R go-w"):
+                     ".vex/fosterstack-cache.openvex.json", "CVE-2023-4911", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "chmod -R go-w",
+                     "--digestfile", "selfcheck-before-${GITHUB_RUN_ID}", "selfcheck-ours-${GITHUB_RUN_ID}"):
             if need not in fxs[0].get("run", ""):
                 bad.append("the fixture step lacks %s" % need)
-    for need in ("docker login ghcr.io", "-X DELETE", "14 days ago"):
+    for need in ("docker login ghcr.io", "-X DELETE", "timedelta(days=14)"):
         if need not in vt:
             bad.append("vex-attach lacks %s" % need)
     # the only registry name the job writes or reads is the scratch package (plus the pinned debian fixture): never the release package
@@ -139,7 +183,7 @@ else:
         if not (ref.startswith(SCRATCH + ":") or ref == "docker.io/library/debian@" + FIXTURE_DIGEST):
             bad.append("vex-attach touches the registry reference %s" % ref)
     for m in re.finditer(re.escape(SCRATCH) + r":([^\s\")]+)", vt):
-        if not re.fullmatch(r"cand-\$\{GITHUB_RUN_ID\}-\$\{v\}|\$\{tag\}|selfcheck-(before|\$\{form\})-\$\{GITHUB_RUN_ID\}", m.group(1).rstrip('"')):
+        if not re.fullmatch(r"cand-\$\{GITHUB_RUN_ID\}-\$\{v\}|\$\{tag\}|selfcheck-(before|ours)-\$\{GITHUB_RUN_ID\}", m.group(1).rstrip('"')):
             bad.append("vex-attach pushes a tag that is not an attested candidate or a self-check fixture: %s" % m.group(1))
     if re.findall(r"packages/container/([A-Za-z0-9._-]+)", vt) != ["cache-scout-probe"]:
         bad.append("vex-attach prunes or reads a package other than the scratch package")
@@ -197,7 +241,7 @@ else:
     for failing in ("docker", "skopeo", "sudo"):   # a diagnostic failure never fails the step
         if run_block(diag.get("run", ""), "applies", failing)[0] != 0:
             bad.append("the diagnostics step fails the job when %s fails" % failing)
-    for need in ("GITHUB_STEP_SUMMARY", "ours-amd64", "ours-arm64", "ours-noplatform", "ours-tag", "docker-form", "exit 0"):
+    for need in ("GITHUB_STEP_SUMMARY", "ours-amd64", "ours-arm64", "ours-noplatform", "ours-tag", "exit 0"):
         if need not in diag.get("run", ""):
             bad.append("the diagnostics lack %s" % need)
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
@@ -388,7 +432,12 @@ case_ attach-other-vex        bad "s = $(step_of vex-attach 'vex-index.py layout
 case_ attach-step-soft        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['continue-on-error'] = 'true'"
 case_ prune-gone              bad "$J['vex-attach']['steps'] = [s for s in $J['vex-attach']['steps'] if 'prune' not in (s.get('name') or '')]"
 case_ prune-other-package     bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('packages/container/cache-scout-probe', 'packages/container/cache')"
-case_ prune-forever           bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('14 days ago', '3650 days ago')"
+case_ prune-forever           bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('timedelta(days=14)', 'timedelta(days=3650)')"
+case_ prune-list-masked       bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('cat \"\$RUNNER_TEMP/prune.err\" >&2; echo \"::error::could not list', 'echo \"::warning::could not list').replace('exit 1\n          fi\n          n=0', 'ids=\"\"\n          fi\n          n=0')"
+case_ prune-delete-soft       bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('[ \"\${failed}\" -eq 0 ] ||', 'true ||')"
+case_ prune-after-pushes      bad "st = $J['vex-attach']['steps']; k = [i for i, x in enumerate(st) if 'prune' in (x.get('name') or '')][0]; st.append(st.pop(k))"
+case_ fixture-extra-tag       bad "s = [s for s in $J['vex-attach']['steps'] if 'self-check fixtures' in (s.get('name') or '')][0]; s['run'] = s['run'] + '\nskopeo copy --all oci:/tmp/layout/fixture docker://ghcr.io/fosterstack/cache-scout-probe:selfcheck-docker-1\n'"
+case_ fixture-no-digest-check bad "s = [s for s in $J['vex-attach']['steps'] if 'self-check fixtures' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('--digestfile /tmp/attach/ours.pushed ', '')"
 case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('--format gitlab', '--format sarif')"
 case_ grype-only-fixed        bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype ', 'grype --only-fixed ', 1)"
 case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('bin/panel.py tally', 'bin/panel.py collect')"
