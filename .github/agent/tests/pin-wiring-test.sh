@@ -205,8 +205,8 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt\npython3 -m pip --version\n"
   },
   {
-   "name": "PyYAML (hash-pinned), which the wiring suites read the workflows with",
-   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r /dev/stdin <<'REQ'\npyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5\nREQ\n"
+   "name": "the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)",
+   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt\n"
   },
   {
    "name": "build helper tools regressions (apk tool, recipe generator, lock tool, module SBOM)",
@@ -303,8 +303,8 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt\npython3 -m pip --version\n"
   },
   {
-   "name": "PyYAML (hash-pinned), which the wiring suites read the workflows with",
-   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r /dev/stdin <<'REQ'\npyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5\nREQ\n"
+   "name": "the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)",
+   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt\n"
   },
   {
    "name": "persona UAT \u2014 agent and provider suite",
@@ -345,11 +345,7 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt\npython3 -m pip --version\n"
   },
   {
-   "name": "PyYAML (hash-pinned), which the wiring suites read the workflows with",
-   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r /dev/stdin <<'REQ'\npyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5\nREQ\n"
-  },
-  {
-   "name": "the hash-pinned test requirements (the report lint renders with cmark-gfm)",
+   "name": "the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)",
    "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt\n"
   },
   {
