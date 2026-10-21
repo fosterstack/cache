@@ -862,6 +862,7 @@ mappings:
   # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC2 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
   # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
   #   The Python under `.github/agent/` is held to the **100% coverage gate** in CI, the same as the Go.
+  #   (Oct 20: requirements.yaml now reads "except the listed exclusions" under the owner's Oct 13 stale-wording OK; the ratified sentence above is kept as it was.)
   - ac: REQ-AUD-018-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
