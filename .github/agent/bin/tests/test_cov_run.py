@@ -189,17 +189,39 @@ class PureHelpers(Base):
         self.assertIsNone(R._go_modver("pkg:npm/left-pad@1.0.0"))
         self.assertEqual(R._go_modver("pkg:golang/example.com/m@v1.2.0?x=1"), "example.com/m@1.2.0")
 
-    def test_ignores_skip_statement_without_vulnerability(self):
-        sts = [{"@id": "orphan", "status": "affected", "vulnerability": {}},
-               {"@id": "S1", "status": "affected", "vulnerability": {"name": "CVE-2099-1"},
-                "products": [{"@id": PROD, "subcomponents": [{"@id": "pkg:deb/x@1"}]}]}]
-        snyk, toml = R._ignores_from_statements(sts, {("CVE-2099-1", "pkg:deb/x@1"): "2026-10-01"})
-        self.assertNotIn("orphan", snyk + toml)
-        self.assertEqual(snyk.count("  CVE-"), 1)
-        self.assertIn("    - 'pkg:deb/x@1':", snyk)
-        self.assertIn("expires: 2026-10-01T00:00:00.000Z", snyk)
-        self.assertEqual(toml.count("[[IgnoredVulns]]"), 1)
-        self.assertIn('expires = "2026-10-01T00:00:00Z"', toml)
+    def test_a_panel_manifest_must_carry_the_panel_block_with_the_verdict_path(self):
+        base = {"scanner_set": "panel", "scanner_reports": {k: None for k in R.PARS.PANEL_SCANNERS},
+                "scanner_status": {k: {"reason": "x"} for k in R.PARS.PANEL_SCANNERS}}
+        with self.assertRaisesRegex(ValueError, "no panel block"):
+            R.C.validate_manifest(dict(base))
+        with self.assertRaisesRegex(ValueError, "no panel block"):
+            R.C.validate_manifest(dict(base, panel={"not_counted": None}))
+        R.C.validate_manifest(dict(base, panel={"verdict": None}))              # a missing verdict is recorded, not a manifest error
+
+    def test_only_the_panel_scanner_set_is_a_manifest(self):
+        base = {"scanner_reports": {k: None for k in R.PARS.PANEL_SCANNERS}, "panel": {"verdict": None},
+                "scanner_status": {k: {"reason": "x"} for k in R.PARS.PANEL_SCANNERS}}
+        for bad in ("Panel", "panels", "", 3, ["panel"], None, "legacy"):         # an explicit null or the retired legacy value is not the panel
+            with self.assertRaisesRegex(ValueError, "scanner_set"):
+                R.C.validate_manifest(dict(base, scanner_set=bad))
+        with self.assertRaisesRegex(ValueError, "scanner_set"):
+            R.C.validate_manifest(dict(base))
+        R.C.validate_manifest(dict(base, scanner_set="panel"))
+
+    def test_the_panel_verdict_is_reread_and_revalidated_from_its_path(self):
+        self.assertIsNone(R._panel_verdict(None)); self.assertIsNone(R._panel_verdict({})); self.assertIsNone(R._panel_verdict({"verdict": None}))
+        d = self.d("v"); bad = os.path.join(d, "verdict.json"); open(bad, "w").write("{not json")
+        self.assertIsNone(R._panel_verdict({"verdict": bad}))                              # unparseable
+        self.assertIsNone(R._panel_verdict({"verdict": os.path.join(d, "gone.json")}))     # missing file
+        open(bad, "w").write("{}")
+        self.assertIsNone(R._panel_verdict({"verdict": bad}))                              # parses, does not validate
+
+    def test_severity_by_scanner_keeps_each_scanners_highest_and_ignores_the_unrated(self):
+        got = R._sev_by_scanner([{"scanner": "grype", "severity": "low"}, {"scanner": "grype", "severity": "high"},
+                                 {"scanner": "grype", "severity": "medium"}, {"scanner": "scout"}, {"scanner": "inspector", "severity": "Critical"},
+                                 {"severity": "high"}, {"scanner": "google", "severity": "weird"}, {"scanner": "google", "severity": "low"}])
+        # a scanner that reported the finding without a severity is shown as not rated (never guessed, never dropped)
+        self.assertEqual(got, {"grype": "high", "inspector": "Critical", "google": "low", "scout": "not rated"})
 
     def test_narrative_ok(self):
         secs = {n: [] for n in range(1, 8)}
@@ -330,8 +352,8 @@ class Dispose(Base):
         self.assertEqual(row["owner_issue_intent"]["reason_key"], "kev-unavailable (fail-closed)")
         self.assertEqual(row["owner_issue_intent"]["kind"], "risk_acceptance")
         self.assertIn("carried by nodejs at 20.1", row["reason"])
-        ig = json.load(open(os.path.join(env["out"], "ignores", "grype", c + ".json")))
-        self.assertEqual((ig["expiry"], ig["scoped_purls"]), ("2026-10-22", [self.PURL]))
+        self.assertEqual(row["ignore_files"], ["vex"])                       # the OpenVEX is the only exception (rule 4)
+        self.assertFalse(os.path.exists(os.path.join(env["out"], "ignores")))
 
     def test_not_pullable_below_threshold_when_kev_ok(self):
         _c, _e, row = self._not_pullable(kev_ok=True)
@@ -384,7 +406,6 @@ class MergeConsolidate(Base):
         merged = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))
         self.assertEqual(merged["version"], 4)                            # new doc's version, not existing+1
         self.assertEqual([s["vulnerability"]["name"] for s in merged["statements"]], ["CVE-2099-20"])
-        self.assertIn("CVE-2099-20", open(os.path.join(ws, ".snyk")).read())
 
     def test_legacy_item_resolved_by_unique_package(self):
         ws = self.d("ws"); st = self._stmt("CVE-2099-21", ["pkg:deb/debian/libfoo@1.0"])
@@ -408,22 +429,24 @@ class MergeConsolidate(Base):
         self.assertEqual(len(items), 1)                                   # kept at CVE level
         self.assertNotIn("vex_id", items[0])                              # but no scope to point at
 
+    def test_panel_mode_merge_regenerates_no_scanner_ignore_files(self):
+        ws = self.d("ws"); _out, supp = self._supp([self._stmt("CVE-2099-25", ["pkg:deb/a@1"])])
+        R._merge_suppressions(ws, supp)
+        merged = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))
+        self.assertEqual([s["vulnerability"]["name"] for s in merged["statements"]], ["CVE-2099-25"])
+        self.assertFalse(os.path.exists(os.path.join(ws, ".snyk")))
+        self.assertFalse(os.path.exists(os.path.join(ws, "osv-scanner.toml")))
+
     def test_consolidate_skips_unreadable_files(self):
         out = self.d("out")
         good = R.vex.doc("CVE-2099-23", "affected", "t", action="x", subcomponents=["pkg:deb/x@1"])
         self.wj(os.path.join(out, "vex", "a-good.openvex.json"), good)
         self.wj(os.path.join(out, "vex", "b-bad.openvex.json"), "{")
-        self.wj(os.path.join(out, "ignores", "grype", "good.json"),
-                {"id": "CVE-2099-23", "expiry": "2026-10-01", "scoped_purls": ["pkg:deb/x@1"]})
-        self.wj(os.path.join(out, "ignores", "grype", "bad.json"), "{")
-        self.wj(os.path.join(out, "evidence", "bad.evidence.json"), "{")
-        self.wj(os.path.join(out, "evidence", "good.evidence.json"), {"vulnerability": "CVE-2099-23", "target_date": "2027-01-01"})
         supp, n = R._consolidate(out, "2026-09-22T00:00:00Z")
         self.assertEqual(n, 1)
         doc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))
         self.assertEqual(len(doc["statements"]), 1)
-        snyk = open(os.path.join(supp, ".snyk")).read()
-        self.assertIn("expires: 2026-10-01T00:00:00.000Z", snyk)          # the scoped box, not the sidecar's
+        self.assertEqual(sorted(os.listdir(supp)), ["fosterstack-cache.openvex.json"])         # the VEX is the only file there is
 
 
 # ---------------------------------------------------------------- real-gh delivery (FakeRun)
@@ -461,6 +484,14 @@ class SuppressionPR(Base):
         with mock.patch.object(R.subprocess, "run", fr):
             return self.quiet(R._deliver_suppression_pr, self.out, supp or self.supp, 1, "2026-09-22",
                               "abcdef1234567890", False, [])[0]
+
+    def test_a_panel_delivery_stages_the_vex_only(self):
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.real(fr)
+        status = [a for a in fr.argvs() if a[:2] == ["git", "status"]][0]
+        paths = status[status.index("--") + 1:]
+        self.assertIn(".vex/fosterstack-cache.openvex.json", paths)
+        self.assertNotIn(".snyk", paths); self.assertNotIn("osv-scanner.toml", paths)
 
     def test_dry_run_automerge_proposes_merge(self):
         os.environ["AUDITOR_AUTOMERGE"] = "on"; would = []
@@ -971,24 +1002,47 @@ class ConsistencyTablesMain(Base):
         self.assertEqual(res["problems"][0]["type"], "consistency-check-failed")
         self.assertTrue(res["problems"][0]["detail"].startswith("rc=1 "), res)
 
-    def test_scanner_tables_fallback_and_unparseable(self):
-        bad = self.wj(os.path.join(self.tmp, "trivy-bad.json"), "{")
-        m = {"scanner_status": {"grype": {"ran": True, "package_count": 18, "findings": 6},
-                                "trivy": {"ran": True, "package_count": 18, "findings": 3},
-                                "snyk": {"ran": False, "reason": "no token"}},
-             "scanner_reports": {"grype": os.path.join(FIX, "scanners", "grype.json"), "trivy": bad}}
+    def test_scanner_tables_fallback_clean_and_not_run(self):
+        vp = os.path.join(FIX, "run", "panel-01", "verdict.json")
+        status = {"grype": {"ran": True, "package_count": 18}, "scout": {"ran": True, "package_count": 18},
+                  "inspector": {"ran": False, "reason": "did not run on: production-amd64", "package_count": 0},
+                  "google": {"ran": True, "package_count": 6}}
+        m = {"scanner_set": "panel", "panel": {"verdict": vp}, "scanner_status": status,
+             "scanner_reports": {sc: vp for sc in ("grype", "scout", "inspector", "google")}}
         rows = [{"id": "CVE-2022-48303", "section": 3, "aliases": [], "scope_purls": ["pkg:deb/debian/other@1"]}]
         out = self.d("out")
         _r, printed = self.quiet(R._scanner_tables, m, rows, out)
         text = open(os.path.join(out, "reports", "scanner-tables.txt")).read()
         self.assertIn(text.strip(), printed)
-        tar = [l for l in text.splitlines() if "CVE-2022-48303" in l]
-        self.assertEqual(len(tar), 1); self.assertTrue(tar[0].rstrip().endswith("§3"), tar[0])  # id-only fallback
+        tar = [l for l in text.splitlines() if "CVE-2022-48303" in l and "tar" in l]
+        self.assertTrue(tar and tar[0].rstrip().endswith("§3"), tar)                    # id-only fallback when the purl matches no routed scope
         cu = [l for l in text.splitlines() if "CVE-2016-2781" in l][0]
-        self.assertTrue(cu.rstrip().endswith("-"))                          # unrouted -> "-"
-        self.assertIn("::group::trivy — 18 packages, 3 findings\n  (could not parse report:", text)
-        self.assertIn("  clean — no findings", text.split("::group::trivy")[1].split("::endgroup::")[0])
-        self.assertIn("::group::snyk — ? packages, ? findings\n  did not inventory: no token", text)
+        self.assertTrue(cu.rstrip().endswith("-"))                                      # unrouted -> "-"
+        insp = text.split("::group::inspector")[1].split("::endgroup::")[0]
+        self.assertIn("did not run (did not run on: production-amd64); what it did report follows", insp)
+        # a scanner that ran and reported nothing is clean; one that did not run and reported nothing is incomplete, never clean
+        vz = os.path.join(FIX, "run", "panel-osquorum", "verdict.json")
+        out2 = self.d("out2")
+        m2 = dict(m, panel={"verdict": vz}, scanner_status=dict(status))
+        self.quiet(R._scanner_tables, m2, [], out2)
+        text2 = open(os.path.join(out2, "reports", "scanner-tables.txt")).read()
+        self.assertIn("  clean — no findings", text2.split("::group::grype")[1].split("::endgroup::")[0])
+        self.assertIn("no findings reported; scan incomplete (did not run: did not run on: production-amd64)",
+                      text2.split("::group::inspector")[1].split("::endgroup::")[0])
+        out3 = self.d("out3")
+        self.quiet(R._scanner_tables, dict(m, panel={"verdict": None}), [], out3)
+        self.assertIn("did not inventory: ", open(os.path.join(out3, "reports", "scanner-tables.txt")).read())
+
+    def test_scanner_tables_panel_with_an_unreadable_verdict_says_so(self):
+        bad = self.wj(os.path.join(self.tmp, "verdict-bad.json"), "{")
+        m = {"scanner_set": "panel", "panel": {"verdict": bad},
+             "scanner_status": {s: {"ran": True, "package_count": 5} for s in ("grype", "scout", "inspector", "google")},
+             "scanner_reports": {s: bad for s in ("grype", "scout", "inspector", "google")}}
+        out = self.d("out")
+        self.quiet(R._scanner_tables, m, [], out)
+        text = open(os.path.join(out, "reports", "scanner-tables.txt")).read()
+        self.assertEqual(text.count("(could not parse report:"), 4)               # each scanner's group says it could not read the verdict
+        self.assertIn("::group::grype — 5 packages, ? findings", text)            # no count is invented for a verdict that cannot be read
 
     def test_main_exit_codes(self):
         with mock.patch.object(R.cli, "ARGS", []), mock.patch.object(R.cli, "close_adjudicators") as close:
@@ -1011,8 +1065,23 @@ class ConsistencyTablesMain(Base):
 
 # ---------------------------------------------------------------- run() end to end (in-process)
 
-QUORUM = {s: {"ran": True, "reason": "ok", "package_count": 6, "os_package_count": 6, "findings": 1}
-          for s in ("grype", "trivy", "snyk")}
+PANEL_STATUS = {s: {"ran": True, "reason": "ok", "package_count": 6, "images_ran": 6, "images_expected": 6}
+                for s in ("grype", "scout", "inspector", "google")}
+
+
+def panel_manifest_fields(tmp):
+    """A full-matrix panel verdict (every scanner ran on every image, no findings) and the manifest fields that name it."""
+    from auditorlib import parsers as PL
+    images = {}
+    for im in sorted(PL.panel_images()):
+        ran = sorted(x for x in PL.PANEL_SCANNERS if PL.panel_expected(x, im))
+        images[im] = {"counts": {x: 10 for x in ran}, "did_not_run": [], "ran": ran, "counts_for_day": True}
+    path = os.path.join(tmp, "verdict-ok.json")
+    with open(path, "w") as fh:
+        json.dump({"images": images, "not_counted": [], "scanner_failures": [], "findings": [], "vex_covered": [],
+                   "issue": PL._panel_module().render_issue([]), "unique": [], "exit": 0}, fh)
+    return {"scanner_set": "panel", "panel": {"verdict": path}, "scanner_status": PANEL_STATUS,
+            "scanner_reports": {x: path for x in PL.PANEL_SCANNERS}}
 
 
 class Run(Base):
@@ -1025,8 +1094,7 @@ class Run(Base):
 
     def go(self, groups, dry=True, adjudicator="/x/stub-adjudicator.py", kevpath=None, m_extra=None, ask=None,
            consistency=None):
-        m = {"commit": "abcdef1234567890", "candidate_digests": {"production": "sha256:d"},
-             "scanner_status": QUORUM, "scanner_reports": {}}
+        m = dict({"commit": "abcdef1234567890", "candidate_digests": {"production": "sha256:d"}}, **panel_manifest_fields(self.tmp))
         m.update(m_extra or {})
         out = self.d("out")
         ask = ask or mock.Mock(side_effect=AssertionError("no model call expected"))
@@ -1066,13 +1134,12 @@ class Run(Base):
                          [("CVE-2099-60", "at_or_above", "nodejs >= 20.2")])   # KEV unparseable -> fail closed
         self.assertTrue(os.path.exists(os.path.join(out, ".auditor", "knowledge.md")))
 
-    def test_unparseable_snyk_makes_the_run_incomplete(self):
-        # an unreadable .snyk means the consistency check did not complete -> AUDIT INCOMPLETE,
-        # never a clean run (Codex AC2 round-5 residual); the same empty run is complete without it
+    def test_a_consistency_check_that_did_not_complete_makes_the_run_incomplete(self):
+        # a consistency check that did not complete means AUDIT INCOMPLETE, never a clean run
+        # (Codex AC2 round-5 residual); the same empty run is complete without it
         clean, _p, _o, _c, whole = self.go({})
         self.assertTrue(clean)
-        bad = {"consistent": False, "problems": [{"type": "consistency-check-unparseable-snyk",
-                                                  "detail": ".snyk line 5: not in the auditor's ignore shape"}]}
+        bad = {"consistent": False, "problems": [{"type": "consistency-check-failed", "detail": "rc=1 no manifest"}]}
         complete, printed, _o, _c, whole = self.go({}, consistency=bad)
         self.assertFalse(complete)
         self.assertIn("consistency check did not complete", whole["status"])

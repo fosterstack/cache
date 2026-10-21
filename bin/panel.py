@@ -106,7 +106,41 @@ def key_of(image, vid, package, version):
     return (image, (vid or "").upper(), (package or "").lower(), v)
 
 
-def _cdx_findings(doc, comps):
+SEVERITIES = ("negligible", "low", "medium", "high", "critical")
+_SEV_WORDS = {"critical": "critical", "high": "high", "medium": "medium", "moderate": "medium", "low": "low",
+              "negligible": "negligible", "minimal": "negligible", "info": "negligible", "informational": "negligible"}
+
+
+def norm_severity(x):
+    """A scanner's severity word as one of SEVERITIES; an unknown, unspecified or non-text value is None (absent, never guessed)."""
+    return _SEV_WORDS.get(x.strip().lower()) if isinstance(x, str) else None
+
+
+def _top(sevs):
+    """The highest of several normalised severities, or None."""
+    got = [s for s in sevs if s in SEVERITIES]
+    return max(got, key=SEVERITIES.index) if got else None
+
+
+def _extra(severity=None, fixed=None, aliases=(), vid=None, known_exploited=False):
+    """One scanner's own facts about a finding; a key is present only when the scanner reported it."""
+    out = {}
+    if severity:
+        out["severity"] = severity
+    if known_exploited:
+        out["known_exploited"] = True
+    if isinstance(fixed, str) and fixed:
+        out["fixed_version"] = fixed
+    al = []
+    for a in aliases:
+        if isinstance(a, str) and a and a != vid and a not in al:
+            al.append(a)
+    if al:
+        out["aliases"] = al
+    return out
+
+
+def _cdx_findings(doc, comps, inspector=False):
     by_ref = {c.get("bom-ref"): c for c in comps + [c for c in doc.get("components") or [] if isinstance(c, dict)]
               if c.get("bom-ref")}
     out = []
@@ -116,7 +150,24 @@ def _cdx_findings(doc, comps):
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
-            out.append((v.get("id") or "?", name, ver, c.get("purl")))
+            # Grype writes its CISA KEV listing as a rating (source 'CISA KEV Catalog', method other, justification 'Listed in CISA KEV'): that is the known-exploited
+            # marker, not a severity; its 'Negligible' is CycloneDX 'none'
+            rts = [r for r in v.get("ratings") or [] if isinstance(r, dict)]
+            is_kev = lambda r: (r.get("method") == "other" and r.get("justification") == "Listed in CISA KEV"
+                                and isinstance(r.get("source"), dict) and r["source"].get("name") == "CISA KEV Catalog")     # exactly Grype v0.118.0's emitter (grype/presenter/cyclonedx/vulnerability.go)
+            word = lambda r: (r.get("severity").strip().lower() if isinstance(r.get("severity"), str) else None)
+            sev = _top((norm_severity(r.get("severity")) or ("negligible" if word(r) == "none" else None))
+                       for r in rts if not is_kev(r))
+            # CycloneDX 'unaffected' versions say which versions are not affected, not that one contains the fix: no fixed version from them.
+            # Inspector documents its own properties: the fixed version per affected component and the CISA KEV date.
+            fixed, kev = None, any(is_kev(r) for r in rts)
+            if inspector:
+                pre = "amazon:inspector:sbom_scanner:"
+                props = {p_.get("name"): p_.get("value") for p_ in v.get("properties") or [] if isinstance(p_, dict)}
+                fixed = props.get(pre + "fixed_version:" + str(a.get("ref")))
+                kev = kev or bool(props.get(pre + "cisa_kev_date_added"))
+            al = [r.get("id") for r in v.get("references") or [] if isinstance(r, dict)]
+            out.append((v.get("id") or "?", name, ver, c.get("purl"), _extra(sev, fixed, al, v.get("id"), kev)))
     return out
 
 
@@ -139,7 +190,7 @@ def read_scout(d):
         dep = (v.get("location") or {}).get("dependency") or {}
         name, ver = (dep.get("package") or {}).get("name") or "?", dep.get("version") or ""
         purl = next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
-        out.append((ids[0] if ids else "?", name, ver, purl))
+        out.append((ids[0] if ids else "?", name, ver, purl, _extra(norm_severity(v.get("severity")), None, ids[1:], ids[0] if ids else None)))
     return len(arts), out
 
 
@@ -153,7 +204,7 @@ def read_inspector(d):
     if not isinstance(sbom, dict) or sbom.get("bomFormat") != "CycloneDX":
         raise ValueError("inspector-sbomgen's SBOM is not CycloneDX")
     comps = [c for c in sbom.get("components") or [] if isinstance(c, dict)]
-    return len(_cdx_packages(sbom)), _cdx_findings(scan, comps)
+    return len(_cdx_packages(sbom)), _cdx_findings(scan, comps, inspector=True)
 
 
 def read_google(d):
@@ -166,7 +217,10 @@ def read_google(d):
         x = v.get("vulnerability") or {}
         vid = x.get("shortDescription") or (v.get("noteName") or "?").rsplit("/", 1)[-1]
         for p in x.get("packageIssue") or [{}]:
-            out.append((vid, p.get("affectedPackage") or "?", (p.get("affectedVersion") or {}).get("fullName") or "", None))
+            out.append((vid, p.get("affectedPackage") or "?", (p.get("affectedVersion") or {}).get("fullName") or "", None,
+                        _extra(norm_severity(p.get("effectiveSeverity")) or norm_severity(x.get("severity")),      # the package-level severity wins
+                               (p.get("fixedVersion") or {}).get("fullName"), (), vid,
+                               isinstance(x.get("risk"), dict) and "cisaKev" in x["risk"])))
     return len(pkgs), out
 
 
@@ -187,6 +241,19 @@ READ = {"grype": read_grype, "scout": read_scout, "inspector": read_inspector, "
 FILTER_HERE = ("inspector", "google")   # rule 4: their scan calls cannot read the VEX
 
 
+def render_issue(reported):
+    """The tracking issue's text for the findings seen by two or more scanners (rule 5); empty when there are none.
+    One renderer: the tally writes it and the auditor's verdict validator compares against it."""
+    if not reported:
+        return ""
+    lines = ["The daily scanner panel found %d finding(s) on main's candidate that the published VEX does not "
+             "cover, each seen by two or more scanners." % len(reported), ""]
+    for f in reported:
+        lines.append("- `%s` in `%s %s` on %s — seen by %d of %d (%s)" % (
+            f["id"], f["package"], f["version"], f["image"], len(f["seen_by"]), f["of"], ", ".join(f["seen_by"])))
+    return "\n".join(lines) + "\n"
+
+
 def tally(root, vexidx):
     images, findings, covered_log = {}, {}, []
     for s, imgs in EXPECTED.items():
@@ -202,15 +269,24 @@ def tally(root, vexidx):
                 continue
             st["counts"][s] = n
             st["ran"].append(s)
-            for vid, name, ver, purl in found:
+            for vid, name, ver, purl, extra in found:
                 if s in FILTER_HERE and _gate.covered(vexidx[img], vid, (name.lower(), ver)):
                     covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver})
                     continue
                 key = key_of(img, vid, name, ver)
                 f = findings.setdefault(key, {"image": img, "id": vid, "package": name, "version": ver, "seen_by": [],
-                                              "purls": []})
+                                              "purls": [], "details": {}})
                 if s not in f["seen_by"]:
                     f["seen_by"].append(s)
+                have = f["details"].setdefault(s, {})        # this scanner's own record; a repeated entry is merged, never dropped
+                if extra.get("severity"):
+                    have["severity"] = _top([have.get("severity"), extra["severity"]])      # the highest, in either order
+                if extra.get("fixed_version"):
+                    have.setdefault("fixed_version", extra["fixed_version"])
+                if extra.get("aliases"):
+                    have["aliases"] = list(have.get("aliases", [])) + [a_ for a_ in extra["aliases"] if a_ not in have.get("aliases", [])]
+                if extra.get("known_exploited"):
+                    have["known_exploited"] = True
                 if purl and purl not in f["purls"]:
                     f["purls"].append(purl)   # the exact package identity, for a VEX statement scoped to it
     for img, st in images.items():
@@ -229,14 +305,7 @@ def tally(root, vexidx):
         f["status"] = "unique" if f["unique"] else "report"
         out.append(f)
     reported = [f for f in out if f["status"] == "report"]
-    issue = ""
-    if reported:
-        lines = ["The daily scanner panel found %d finding(s) on main's candidate that the published VEX does not "
-                 "cover, each seen by two or more scanners." % len(reported), ""]
-        for f in reported:
-            lines.append("- `%s` in `%s %s` on %s — seen by %d of %d (%s)" % (
-                f["id"], f["package"], f["version"], f["image"], len(f["seen_by"]), f["of"], ", ".join(f["seen_by"])))
-        issue = "\n".join(lines) + "\n"
+    issue = render_issue(reported)
     # rule 3: a scanner that did not run is a pipeline failure even when the image still has its quorum
     code = 2 if (not_counted or scanner_failures) else (1 if reported else 0)
     return {"images": images, "not_counted": not_counted, "scanner_failures": scanner_failures, "findings": out,
