@@ -5,11 +5,10 @@
  },
  "base_os": "debian 12.0",
  "scanner_reports": {
-  "grype": ".github/agent/fixtures/scanners/grype.json",
-  "trivy": ".github/agent/fixtures/scanners/trivy.json",
-  "osv-scanner": ".github/agent/fixtures/scanners/osv-image.json",
-  "snyk": ".github/agent/fixtures/scanners/snyk.json",
-  "osv-scanner-gomod": ".github/agent/fixtures/scanners/osv-gomod.json"
+  "grype": ".github/agent/fixtures/run/panel-zeropkg/verdict.json",
+  "scout": ".github/agent/fixtures/run/panel-zeropkg/verdict.json",
+  "inspector": ".github/agent/fixtures/run/panel-zeropkg/verdict.json",
+  "google": ".github/agent/fixtures/run/panel-zeropkg/verdict.json"
  },
  "govulncheck": ".github/agent/fixtures/govulncheck/gv-01.json",
  "known_defect_log": ".github/agent/fixtures/dl/log.json",
@@ -17,45 +16,97 @@
  "scanner_status": {
   "grype": {
    "ran": true,
-   "version": "x",
-   "reason": "0 packages inventoried",
-   "package_count": 0,
-   "os_package_count": 0,
-   "db_date": null,
-   "findings": 0
-  },
-  "trivy": {
-   "ran": true,
-   "version": "x",
-   "reason": "0 packages inventoried",
-   "package_count": 0,
-   "os_package_count": 0,
-   "db_date": null,
-   "findings": 0
-  },
-  "osv-scanner": {
-   "ran": true,
-   "version": "x",
-   "reason": "0 packages inventoried",
-   "package_count": 0,
-   "os_package_count": 0,
-   "db_date": null,
-   "findings": 0
-  },
-  "snyk": {
-   "ran": true,
-   "version": "x",
-   "reason": "0 packages inventoried",
-   "package_count": 0,
-   "os_package_count": 0,
-   "db_date": null,
-   "findings": 0
-  },
-  "osv-scanner-gomod": {
-   "ran": true,
-   "version": "x",
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": null,
    "reason": "ok",
-   "package_count": null
+   "images_ran": 6,
+   "images_expected": 6,
+   "package_count": 60
+  },
+  "scout": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": null,
+   "reason": "ok",
+   "images_ran": 6,
+   "images_expected": 6,
+   "package_count": 60
+  },
+  "inspector": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": null,
+   "reason": "ok",
+   "images_ran": 6,
+   "images_expected": 6,
+   "package_count": 60
+  },
+  "google": {
+   "ran": true,
+   "scan_ok": true,
+   "quorum_ok": true,
+   "version": null,
+   "reason": "ok",
+   "images_ran": 3,
+   "images_expected": 3,
+   "package_count": 30
   }
+ },
+ "scanner_set": "panel",
+ "panel": {
+  "verdict": ".github/agent/fixtures/run/panel-zeropkg/verdict.json",
+  "scanner_reports": {
+   "grype": ".github/agent/fixtures/run/panel-zeropkg/verdict.json",
+   "scout": ".github/agent/fixtures/run/panel-zeropkg/verdict.json",
+   "inspector": ".github/agent/fixtures/run/panel-zeropkg/verdict.json",
+   "google": ".github/agent/fixtures/run/panel-zeropkg/verdict.json"
+  },
+  "scanner_status": {
+   "grype": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 6,
+    "images_expected": 6,
+    "package_count": 60
+   },
+   "scout": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 6,
+    "images_expected": 6,
+    "package_count": 60
+   },
+   "inspector": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 6,
+    "images_expected": 6,
+    "package_count": 60
+   },
+   "google": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 3,
+    "images_expected": 3,
+    "package_count": 30
+   }
+  },
+  "not_counted": [],
+  "scanner_failures": []
  }
 }

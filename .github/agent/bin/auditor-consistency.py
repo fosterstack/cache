@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-"""Every-run suppression consistency check (REQ-AUD-4 AC5): every ignore must cite a
-governing VEX; every VEX must answer a live finding; nothing suppressed in one
-scanner and unhandled in another."""
-import os, re, sys, json
+"""Every-run suppression consistency check (REQ-AUD-4 AC5): every VEX statement must answer a
+live finding. The OpenVEX file is the only exception there is (scanner-panel rule 4), so there are
+no per-scanner ignore files to cross-check."""
+import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
 from auditorlib import parsers as P
-from auditorlib import snykpolicy
 
 
 def live_cves(manifest):
-    m = json.load(open(manifest)); r = m.get("scanner_reports") or {}
+    """Every id the panel's four scanners carry for a live finding, read from the rescan's verdict.json."""
+    m = json.load(open(manifest))
     cves = set()
-    for name, fn in (("grype", P.parse_grype), ("trivy", P.parse_trivy),
-                     ("osv-scanner", P.parse_osv), ("snyk", P.parse_snyk),
-                     ("osv-scanner-gomod", lambda p: P.parse_osv(p, "osv-scanner-gomod"))):
-        path = r.get(name)
-        if not path:                                # a null scanner (did not run) is skipped
-            continue
-        for f in fn(path):
+    path = (m.get("panel") or {}).get("verdict")
+    if not path:                                    # no verdict (the panel did not report): nothing is live
+        return cves
+    for sc in P.PANEL_SCANNERS:
+        for f in P.parse_panel(path, sc):
             # every id the finding carries is 'live' — CVE, GO-, GHSA-, DEBIAN-CVE-, TEMP-*,
             # DLA-* — so a carried VEX for a non-CVE id is NOT false-flagged stale (R1 round-4).
             cves.update(f["aliases"]); cves.add(f["finding_id"])
@@ -37,27 +35,6 @@ def main():
             vex_cves.add(cve)
             if cve not in live:
                 problems.append({"type": "stale_vex", "cve": cve})
-    snykf = os.path.join(d, ".snyk")
-    if os.path.exists(snykf):
-        with open(snykf) as fh:
-            text = fh.read()
-        try:
-            y = snykpolicy.load(text)
-        except ValueError as e:            # fail closed: an unreadable policy is a problem
-            y = {"ignore": {}}
-            # a "consistency-check-*" problem: the run is INCOMPLETE, not merely inconsistent
-            problems.append({"type": "consistency-check-unparseable-snyk", "detail": str(e)})
-        for k, entries in y["ignore"].items():
-            cites = any("stmt-" in str(e.get(sel, {}).get("vex", "")) for e in entries for sel in e)
-            if not cites:
-                problems.append({"type": "tool_only_ignore", "id": k})
-    tomlf = os.path.join(d, "osv-scanner.toml")
-    if os.path.exists(tomlf):
-        blocks = re.split(r"\[\[IgnoredVulns\]\]", open(tomlf).read())[1:]
-        for b in blocks:
-            mid = re.search(r'id\s*=\s*"([^"]+)"', b)
-            if mid and "stmt-" not in b:
-                problems.append({"type": "tool_only_ignore", "id": mid.group(1)})
     cli.writej(out, {"consistent": not problems, "problems": problems})
 
 
