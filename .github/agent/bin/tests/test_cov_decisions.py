@@ -124,8 +124,6 @@ class ClassifyGvcVerdict(TmpCase):
         self.assertEqual(classify.gvc_verdict(g2, ["GO-1"])[0], "reachable")
 
 
-class ClassifyFpVerified(TmpCase):
-
 class ClassifyManifestValidation(unittest.TestCase):
     FULL = {k: None for k in ("grype", "trivy", "osv-scanner", "osv-scanner-gomod", "snyk")}
 
