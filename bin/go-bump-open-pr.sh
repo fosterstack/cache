@@ -22,10 +22,11 @@ for v in "$CURRENT" "$LATEST"; do
 done
 branch="chore/go-${LATEST}"
 
-prs="$(gh pr list --head "$branch" --base main --state all --json number,state,mergedAt)"
+prs="$(gh pr list --head "$branch" --base main --state all --json number,state,mergedAt,comments)"
 open_num="$(jq -r '[.[] | select(.state=="OPEN")] | .[0].number // empty' <<<"$prs")"
 merged_num="$(jq -r '[.[] | select(.mergedAt != null)] | .[0].number // empty' <<<"$prs")"
-closed_num="$(jq -r '[.[] | select(.state=="CLOSED" and .mergedAt==null)] | .[0].number // empty' <<<"$prs")"
+# a pull request this script closed itself (its branch moved after verification) is not a human's decline: recovery may go on
+closed_num="$(jq -r '[.[] | select(.state=="CLOSED" and .mergedAt==null and ([.comments[]?.body | startswith("closed by go-bump-open-pr.sh:")] | any | not))] | .[0].number // empty' <<<"$prs")"
 
 if [ -n "$open_num" ]; then
   echo "PR #${open_num} already open for ${branch} — nothing to do"; exit 0
@@ -126,6 +127,11 @@ echo "$url"
 head_now="$(gh pr view "$url" --json headRefOid -q .headRefOid)" || head_now=""
 if [ -z "${expected_head:-}" ] || [ "$head_now" != "$expected_head" ]; then
   echo "::error::${url} is at '${head_now}', not at the verified commit '${expected_head:-}'; closing it" >&2
-  gh pr close "$url" --comment "closed by go-bump-open-pr.sh: the branch moved after its commit was verified" >&2 || true
+  closed=0
+  for _ in 1 2 3; do
+    gh pr close "$url" --comment "closed by go-bump-open-pr.sh: the branch moved after its commit was verified" >&2 && { closed=1; break; }
+    sleep "${GO_BUMP_CLOSE_WAIT:-5}"
+  done
+  [ "$closed" = 1 ] || echo "::error::could not close ${url}; it is still open at an unverified commit; close it by hand" >&2
   exit 1
 fi

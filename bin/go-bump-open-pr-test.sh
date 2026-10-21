@@ -19,7 +19,7 @@ BASE=0123456789abcdef0123456789abcdef01234567
 OID=89abcdef0123456789abcdef0123456789abcdef
 OTHER=fedcba9876543210fedcba9876543210fedcba98
 RIVAL=00112233445566778899aabbccddeeff00112233
-LIST="gh pr list --head $B --base main --state all --json number,state,mergedAt"
+LIST="gh pr list --head $B --base main --state all --json number,state,mergedAt,comments"
 LSR="git ls-remote --exit-code --heads origin $B"
 CREATE="gh pr create --draft --base main --head $B --title chore(go): bump toolchain 1.26.6 -> 1.27.0 --body <body> --label dependencies"
 REVP="git rev-parse HEAD"
@@ -38,10 +38,10 @@ PRVIEW="gh pr view https://example/pr/1 --json headRefOid -q .headRefOid"
 PRCLOSE="gh pr close https://example/pr/1 --comment closed by go-bump-open-pr.sh: the branch moved after its commit was verified"
 FRESH_OK="$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$VERIFY"
 
-# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail] [versions "cur latest"] [delete fails 0|1] [text the output must contain] [remote tip when cleanup starts base|oid|other|rival|empty] [pr head after create match|differ]
+# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail] [versions "cur latest"] [delete fails 0|1] [text the output must contain] [remote tip when cleanup starts base|oid|other|rival|empty] [pr head after create match|differ] [pr close fails 0|1]
 run_case() {
   local name="$1" sut="$2" prs="$3" branch_exists="$4" create_rc="$5" want_rc="$6" want_calls="$7" want_dir="$8"
-  local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}" must="${15:-}" rtip="${16:-base}" headmode="${17:-match}"
+  local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}" must="${15:-}" rtip="${16:-base}" headmode="${17:-match}" closefail="${18:-0}"
   local work; work="$(mktemp -d)"
   printf 'module x\n\ngo 1.26.6\n' > "$work/go.mod"
   mkdir -p "$work/tools/requirements"; printf 'module x/t\n\ngo 1.26.6\n' > "$work/tools/requirements/go.mod"
@@ -67,7 +67,7 @@ case "\$1 \$2" in
       *) case "${ver}" in true) echo true ;; false) echo false ;; fail) exit 1 ;; esac ;; esac ;;
   "api repos/{owner}/{repo}/commits/${B}") case "${tip}" in true) printf '%s\ttrue\n' ${OID} ;; false) printf '%s\tfalse\n' ${OID} ;; null) printf '%s\tnull\n' ${OID} ;; empty) echo ;; fail) exit 1 ;; esac ;;
   "pr view") case "${headmode}" in match) echo ${OID} ;; differ) echo ${OTHER} ;; esac ;;
-  "pr close") exit 0 ;;
+  "pr close") exit ${closefail} ;;
   *) echo "UNEXPECTED gh \$*" >> "${log}"; exit 0 ;;
 esac
 GH
@@ -83,7 +83,7 @@ esac
 GIT
   chmod +x "$work/bin/gh" "$work/bin/git"
   local out rc
-  out="$(cd "$work" && PATH="$work/bin:$PATH" AUDITOR_APP_SLUG=fosterstack-auditor GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 bash "$sut" $vers 2>&1)"; rc=$?
+  out="$(cd "$work" && PATH="$work/bin:$PATH" AUDITOR_APP_SLUG=fosterstack-auditor GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 GO_BUMP_CLOSE_WAIT=0 bash "$sut" $vers 2>&1)"; rc=$?
   local got; got="$(cat "$log")"
   local want="$want_calls"
   local dir_root dir_tools; dir_root=$(awk '/^go /{print $2}' "$work/go.mod"); dir_tools=$(awk '/^go /{print $2}' "$work/tools/requirements/go.mod")
@@ -148,6 +148,12 @@ run_case "AC8: the remote tip is another run's commit (same parent and headline,
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_R" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' rival
 run_case "AC8: the branch moved after the commit was verified -> the PR is closed, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE" new ok true 0 true '1.26.6 1.27.0' 0 'closing it' base differ
+run_case "AC8: a pull request that cannot be closed is retried three times and reported (close it by hand), exit 1" \
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE"$'\n'"$PRCLOSE"$'\n'"$PRCLOSE" new ok true 0 true '1.26.6 1.27.0' 0 'close it by hand' base differ 1
+run_case "AC8: a pull request this script closed itself is not a human's decline -> recovery goes on" \
+                                                     "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"comments":[{"body":"closed by go-bump-open-pr.sh: the branch moved after its commit was verified"}]}]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
+run_case "a closed pull request with someone else's comment is still a decline" \
+                                                     "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"comments":[{"body":"not now"}]}]' 1 0 0 "$LIST" old
 run_case "AC8: an orphan's branch moved after its tip was verified -> the PR is closed, exit 1" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE" old ok true 0 true '1.26.6 1.27.0' 0 'closing it' base differ
 run_case "AC8: an id that is not a commit id -> branch deleted, no PR, exit 1" \
@@ -207,13 +213,28 @@ mutant "ownership without the run marker" "ownership without the run marker" "$m
 GUARD_PY='
 import hashlib, os, re, shlex, subprocess, sys
 CMDS = ("commit", "commit-tree", "merge", "cherry-pick", "rebase", "am", "revert", "pull")
+# An alias is how a commit hides behind another word (git -c alias.b=commit b; git config alias.b commit): defining one is a hit like a commit is.
 OPT_VALUE = ("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path")
 SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+(?:-\S+(?:\s+\S+)?\s+)*)["\x27]?(?:""" + "|".join(CMDS) + r""")["\x27]?(?![\w-])""")
 LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27](?:""" + "|".join(CMDS) + r""")["\x27]""")
+ARGS_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*((?:["\x27][^"\x27]*["\x27]\s*,?\s*)+)""")
 # every tracked file is read except the tests, the prose and data (docs, markdown, json, the vendored tree, the evidence and requirement files)
 SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures|docs|vendor|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$|^\.github/agent/fixtures/")
 ALLOWED = set(sys.argv[2:])      # sha256 of "file\nwhole logical line, stripped": exact rows, nothing else on the line may run
 root = sys.argv[1]
+
+def git_hit(args):
+    """args follow the word git: True when its subcommand makes a commit, or git is handed an alias."""
+    j = 0
+    while j < len(args) and args[j].startswith("-"):
+        if args[j] == "-c" and j + 1 < len(args) and args[j + 1].lower().startswith("alias."):
+            return True
+        if args[j].lower().startswith("-calias."):
+            return True
+        j += 2 if args[j] in OPT_VALUE else 1
+    if j >= len(args):
+        return False
+    return args[j] in CMDS or (args[j] == "config" and any(a.lower().startswith("alias.") for a in args[j + 1:]))
 
 def tokens_hit(s):
     """The shell reads the line: quote concatenation (g\x27\x27it, g"it") and backslashes are resolved, then any word whose basename is git, followed by
@@ -221,19 +242,14 @@ def tokens_hit(s):
     try:
         # a redirection and its target are not arguments (git 2>/dev/null commit is git commit); an fd number counts only when it touches the operator,
         # so git --namespace 2 >/dev/null commit keeps its 2
-        s = re.sub(r"(?<!\S)\d*(?:>>|>&|<&|<<|>|<)\s*[^\s;&|()<>]+", " ", s)
+        s = re.sub(r"(?:(?<![\w.-])\d+)?(?:>>|>&|<&|<<|>|<)\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s;&|()<>]+)", " ", s)
         lx = shlex.shlex(re.sub(r"[()`{}]", " ", s), posix=True, punctuation_chars=True)
         lx.whitespace_split = True; lx.commenters = ""
         toks = list(lx)
     except ValueError:
         return False
     for k, tok in enumerate(toks):
-        if os.path.basename(tok) != "git":
-            continue
-        j = k + 1
-        while j < len(toks) and toks[j].startswith("-"):
-            j += 2 if toks[j] in OPT_VALUE else 1
-        if j < len(toks) and toks[j] in CMDS:
+        if os.path.basename(tok) == "git" and git_hit(toks[k + 1:]):
             return True
     return False
 
@@ -259,8 +275,8 @@ for f in files:
             continue
         print("%s:%d:%s" % (f, start, s[:160]))
     whole = "\n".join(lines)
-    for m in LIST_RE.finditer(whole):           # an argument list that is spread over lines
-        if "\n" in m.group(0):
+    for m in ARGS_RE.finditer(whole):           # an argument list or tuple, on one line or spread over several
+        if git_hit(re.findall(r"""["\x27]([^"\x27]*)["\x27]""", m.group(1))):
             print("%s:%d:%s" % (f, whole.count("\n", 0, m.start()) + 1, " ".join(m.group(0).split())[:160]))
 '
 guard_scan() { python3 -I -c "$GUARD_PY" "$@"; }   # guard_scan <repo root> [allowed sha256 ...]
@@ -301,6 +317,12 @@ guard_catches "a redirection between git and commit" bin/a.sh 'git 2>/dev/null c
 guard_catches "a stdout redirection before commit"  bin/a.sh 'git >/dev/null commit -m x\n'
 guard_catches "a spaced numeric argument before a redirection" bin/a.sh 'git --namespace 2 >/dev/null commit -m x\n'
 guard_catches "an fd redirection to another fd"   bin/a.sh 'git 2>&1 commit -m x\n'
+guard_catches "git -c alias.bump=commit bump"     bin/a.sh 'git -c alias.bump=commit bump -m x\n'
+guard_catches "a Python list with an alias"       bin/a.py 'subprocess.run(["git", "-c", "alias.b=commit", "b", "-m", "x"])\n'
+guard_catches "git config alias"                  bin/a.sh 'git config alias.b commit\n'
+guard_catches "a redirection touching git"        bin/a.sh 'git>/dev/null commit -m x\n'
+guard_catches "a quoted redirection target with a space" bin/a.sh 'git >"/tmp/a b" commit -m x\n'
+guard_passes  "read-only and plumbing git calls"  bin/a.sh 'git status\ngit -C d ls-files -z\ngit diff --name-only a b\ngit push origin :refs/heads/x\ngit rev-parse HEAD\n'
 guard_catches "a Python tuple of arguments"       bin/a.py 'subprocess.run(("git", "commit", "-m", "x"))\n'
 guard_catches "git by absolute path"              bin/a.sh '/usr/bin/git commit -m x\n'
 guard_catches "git behind command"                bin/a.sh 'command git commit -m x\n'
