@@ -96,20 +96,11 @@ _VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
 _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")            # no control characters, no backtick (the issue text quotes with it)
 _ID = re.compile(r"[A-Za-z0-9?][A-Za-z0-9._:+-]*")          # CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result
 _NOCTL = r"[^\s\x00-\x1f\x7f"
-_PURL_RE = re.compile(r"pkg:[a-z][a-z0-9.+-]*/" + _NOCTL + r"?#@]+(@" + _NOCTL + r"?#]+)?"                      # type/namespace/name @ version (not empty)
-                      r"(\?[A-Za-z][A-Za-z0-9._-]*=" + _NOCTL + r"&#]+(&[A-Za-z][A-Za-z0-9._-]*=" + _NOCTL + r"&#]+)*)?"   # ?key=value&key=value (values not empty)
-                      r"(#" + _NOCTL + r"]+)?")                                                                           # #subpath (not empty)
-
-
 class _PurlGrammar:
-    """The package-URL grammar the verdict allows, with the one rule a regular expression cannot state: a qualifier key appears once."""
+    """The package-URL grammar the verdict allows: one rule, defined where the tally writes the URLs (bin/panel.py purl_ok)."""
     @staticmethod
     def fullmatch(purl):
-        if not _PURL_RE.fullmatch(purl):
-            return None
-        q = purl.partition("#")[0].partition("?")[2]
-        keys = [kv.partition("=")[0] for kv in q.split("&")] if q else []
-        return None if len(set(keys)) != len(keys) else True
+        return True if _panel_module().purl_ok(purl) else None
 
 
 _PURL = _PurlGrammar

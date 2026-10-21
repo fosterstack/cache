@@ -149,6 +149,15 @@ W(d, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [
 v = judge(r); lib2 = [f for f in v["findings"] if f["id"] == "CVE-2023-4911"][0]
 check("a scanner that names one finding with two package URLs keeps the first in its details; the finding lists both",
       lib2["details"]["grype"].get("purl") == "pkg:deb/debian/libc-bin@2.36-9?arch=amd64" and len(lib2["purls"]) == 2, (lib2["details"], lib2["purls"]))
+# a scanner's package URL the verdict's grammar refuses is dropped (the finding still counts), so the tally never writes a verdict the auditor cannot read
+r = tree(); d = os.path.join(r, "grype", "debug-amd64")
+W(d, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [
+    {"bom-ref": "a", "name": "openssl", "version": "3.0.1", "purl": "pkg:deb/debian/openssl@3.0.1?arch="}],
+    "vulnerabilities": [{"id": "CVE-2099-0777", "affects": [{"ref": "a"}]}]})
+v = judge(r); bad = [f for f in v["findings"] if f["id"] == "CVE-2099-0777"][0]
+check("a package URL outside the grammar is dropped from the finding and from the scanner's details; the finding is still reported",
+      "purl" not in bad["details"]["grype"] and bad["purls"] == [] and bad["seen_by"] == ["grype"], (bad["details"], bad["purls"]))
+BADPURL_ROOT = r
 r = tree({("scout", "fips-arm64"): [("CVE-2099-0002", "tzdata", "2026c")]}); v = judge(r)
 f = v["findings"][0]
 check("a unique finding never reaches the issue; it is listed for the auditor, and alone does not fail the run",
@@ -282,7 +291,8 @@ from auditorlib import parsers as PL
 SCEN = {"clean": tree(), "two scanners report one finding": tree({("grype", "production-amd64"): [("CVE-2099-1", "tzdata", "2026c")],
                                                                    ("scout", "production-amd64"): [("CVE-2099-1", "tzdata", "2026c")]}),
         "one scanner only (unique)": tree({("inspector", "fips-arm64"): [("CVE-2099-2", "busybox", "1.37.0")]}),
-        "google did not run": tree(skip=("google",)), "an image short of its quorum": tree(skip=("grype", "scout"))}
+        "google did not run": tree(skip=("google",)), "an image short of its quorum": tree(skip=("grype", "scout")),
+        "a scanner's package URL outside the grammar": BADPURL_ROOT}
 for name, root in SCEN.items():
     try:
         PL.validate_panel_verdict(json.loads(json.dumps(judge(root))))

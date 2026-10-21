@@ -98,6 +98,22 @@ def _purl_name_version(purl):
     return name, urllib.parse.unquote(ver)
 
 
+_NOCTL = r"[^\s\x00-\x1f\x7f"
+_PURL_RE = re.compile(r"pkg:[a-z][a-z0-9.+-]*/" + _NOCTL + r"?#@]+(@" + _NOCTL + r"?#]+)?"                      # type/namespace/name @ version (not empty)
+                      r"(\?[A-Za-z][A-Za-z0-9._-]*=" + _NOCTL + r"&#]+(&[A-Za-z][A-Za-z0-9._-]*=" + _NOCTL + r"&#]+)*)?"   # ?key=value&key=value (values not empty)
+                      r"(#" + _NOCTL + r"]+)?")                                                                           # #subpath (not empty)
+
+
+def purl_ok(purl):
+    """The package-URL grammar the verdict allows (the auditor reads the same rule from here): a regular expression plus the one thing it
+    cannot state, that a qualifier key appears once."""
+    if not isinstance(purl, str) or not _PURL_RE.fullmatch(purl):
+        return False
+    q = purl.partition("#")[0].partition("?")[2]
+    keys = [kv.partition("=")[0] for kv in q.split("&")] if q else []
+    return len(set(keys)) == len(keys)
+
+
 def key_of(image, vid, package, version):
     """One finding per CVE + package + version per image (rule 6): case and a Go-style leading v ignored."""
     v = urllib.parse.unquote(version or "")
@@ -270,6 +286,8 @@ def tally(root, vexidx):
             st["counts"][s] = n
             st["ran"].append(s)
             for vid, name, ver, purl, extra in found:
+                if purl and not purl_ok(purl):
+                    purl = None           # a package URL outside the verdict's grammar is dropped, never written (the finding still counts)
                 if s in FILTER_HERE and _gate.covered(vexidx[img], vid, (name.lower(), ver)):
                     covered_log.append({"image": img, "scanner": s, "id": vid, "package": name, "version": ver})
                     continue
