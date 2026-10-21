@@ -559,6 +559,15 @@ run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-down.json" --cve C
   { eq "$hd" "evidence_unavailable" && eq "$sc" "[]" && printf '%s' "$r2" | grep -qi unavailable && printf '%s' "$r3" | grep -qi unavailable && ledger_empty; } \
     && ok || no "down scanner and unreadable verdict are unavailable evidence, no model call" "handling=$hd scanners=$sc down_reason=$r2 gone_reason=$r3 ledger=$(ledger_n)"; }
 
+begin "req4-ac3d-a-partial-scanner-casts-no-vote" "Google missed one image (pm-partial) but its verdict still holds CVE-2099-7777: the report keeps that finding in Google's table (scan incomplete), while votes counts Google as unavailable: no scanner, handling 'evidence_unavailable'"
+o="$WORK/v5"; rm -rf "$o"
+run "$PY" "$BIN/auditor-votes.py" --manifest "$WORK/pm-partial/manifest.json" --cve CVE-2099-7777 --adjudicator "$NOCALL" --out "$o" && {
+  hd="$(pj "$o/votes.json" 'd.get("handling")')"; sc="$(pj "$o/votes.json" 'd.get("scanners")')"
+  o2="$WORK/v5r"; rm -rf "$o2"; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-partial/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o2" >/dev/null 2>&1
+  tbl="$(grep -c 'CVE-2099-7777' "$o2/reports/scanner-tables.txt" 2>/dev/null)"; tbl="${tbl:-0}"
+  { eq "$hd" "evidence_unavailable" && eq "$sc" "[]" && [ "$tbl" -ge 1 ] 2>/dev/null; } \
+    && ok || no "partial scanner: no vote, finding still in its table" "handling=$hd scanners=$sc table_rows=$tbl"; }
+
 begin "req4-ac4-unique-not-autoclosed" "a grype-only CVE is unique+suspect (not auto-closed); a four-scanner CVE is not unique (a constant fails one)"
 o="$WORK/u1"; o2="$WORK/u2"; rm -rf "$o" "$o2"
 run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-01.json" --cve CVE-2016-2781 --adjudicator "$NOCALL" --out "$o" && {
