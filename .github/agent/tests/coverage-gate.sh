@@ -31,15 +31,15 @@ export COVERAGE_RCFILE="$W/rc" COVERAGE_PROCESS_START="$W/rc"
 # The suites are independent and each process writes its own coverage data file (parallel = true), so they run at the same time and
 # every data file is combined below, before the unchanged threshold check (advisor 0618: the job was 18 minutes, 14 of them the action-pin
 # cases one after another). The pin cases run as PINS_SHARDS parallel shards of one list; coverage-shard-sum.py then proves the shards
-# together ran exactly the whole list (counted by a dry listing of the file) once and none failed, and coverage-shard-test.sh proves that
+# together completed exactly the whole list (the manifest is a dry listing of the file), each unit once, by name, and none failed, and coverage-shard-test.sh proves that
 # partition and that check first.
 PINS_SHARDS=4
 bash .github/agent/tests/coverage-shard-test.sh > "$W/shardtest.log" 2>&1 \
   || { tail -25 "$W/shardtest.log" >&2; echo "::error::the shard partition test failed" >&2; exit 1; }
 tail -1 "$W/shardtest.log"
-pins_total=$(PINS_DRY=1 bash .github/agent/tests/check-action-pins-test.sh 2>/dev/null \
-  | sed -n 's/^check-action-pins: shard 0\/1 units=\([0-9][0-9]*\) ran=.*$/\1/p')
-[ -n "$pins_total" ] || { echo "::error::could not count the action-pin units" >&2; exit 1; }
+PINS_DRY=1 bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.manifest" 2>/dev/null \
+  || { echo "::error::could not list the action-pin units" >&2; exit 1; }
+unset PINS_DRY PINS_SHARD   # the launches below are real runs, never dry ones the environment might have left on
 python3 -m coverage run -m unittest discover -s .github/agent/bin/tests -p 'test_*.py' 2> "$W/unit.log" & p_unit=$!
 bash .github/agent/tests/auditor-matrix-test.sh > "$W/matrix.log" 2>&1 & p_matrix=$!
 p_pins=()
@@ -59,7 +59,7 @@ done
 wait "$p_fence" || { tail -25 "$W/fence.log" >&2; echo "::error::k8s fence cases failed under coverage" >&2; bad=1; }
 [ "$bad" -eq 0 ] || exit 1
 tail -1 "$W/matrix.log"
-python3 .github/agent/tests/coverage-shard-sum.py "$pins_total" "$W"/pins.[0-9].log \
+python3 .github/agent/tests/coverage-shard-sum.py "$W/pins.manifest" "$W"/pins.[0-9].log \
   || { echo "::error::the action-pin shards did not run the whole list exactly once" >&2; exit 1; }
 tail -qn1 "$W"/pins.[0-9].log
 tail -1 "$W/fence.log"

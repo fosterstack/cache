@@ -2906,6 +2906,8 @@ assert judge(D, "review", 4, dsteps[8]["run"], {D: dwf}), "one excluded step's k
 PY
 fi
 
+# a real shard that selected no unit is not a successful run (PINS_SHARD=0/5000 would otherwise exit 0 having tested nothing)
+if [ -z "${PINS_DRY:-}" ] && [ "$unit_run" -eq 0 ]; then failn=$((failn+1)); echo "FAIL shard-selected-no-unit → shard $shard_i/$shard_n ran no unit of $unit_n"; fi
 echo "check-action-pins: shard $shard_i/$shard_n units=$unit_n ran=$unit_run"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
