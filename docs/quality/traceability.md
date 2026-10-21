@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 88 |
-| Acceptance criteria | 361 |
+| Active requirements | 89 |
+| Acceptance criteria | 367 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 345 |
+| ACs with mapped evidence | 347 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 42 |
+| Confidence: implementation-only | 43 |
 
 ## Cache protocol
 
@@ -765,6 +765,21 @@ Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at o
 | REQ-REL-009-AC12 | Given a PR the lane labels patch-fix; when the label is applied; then both reviewers' step-8 records for that PR say no behavior change; otherwise only the owner applies it, or the change waits for a minor release | ci-workflow |  | approved | none mapped |
 | REQ-REL-009-AC13 | Given a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses); when decide considers cutting it, and source admission admits it; then it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline | unit |  | approved | 2 item(s) |
 | REQ-REL-009-AC14 | Given the notes sources of a patch release: the fix records the release scans and go.mod give, the entries of docs/next-release-notes.md, and the changelog inputs (the notes file the changelog step is handed and the existing docs/quality/releases/CHANGELOG.md); when the notes are generated (patch-decide notes) or the changelog is written (patch-decide changelog); then a source is refused outright, never decoded, escaped or rewritten, when any line of it holds (1) a '<' followed by a letter, '/', '!' or '?'; (2) the shape of a Markdown link reference definition: up to three spaces, '[', a label, ']' and ':'; (3) a character reference: '&#' digits ';', '&#x' or '&#X' hex digits ';', or '&' a letter, letters or digits and ';'; or (4) the text '-----BEGIN '; and (5) two entries whose published lines are the same line are refused before any entry is dropped as already published or cleared from docs/next-release-notes.md; the refusal message names the file and line of each offending source line (both, for a collision); on a refusal the command exits 2 and writes nothing, so no patch tag is cut (notes) or no changelog PR is opened (changelog) | unit |  | approved | 1 item(s) |
+
+### REQ-REL-010 — Our OpenVEX is attached to each published image index for Docker Scout
+
+The final image index that Sign signs and Release publishes shall carry our OpenVEX as attestation children, one per platform, and nothing after Sign shall change any digest. Owner, RATIFIED Oct 3: "Docker main path as attestation!!!!! We want that and we tell users it's the easiest path for seeing scanner omit findings that are just noise." Owner, RATIFIED Oct 7: every change to our published VEX cuts an automatic patch release.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/vex-index.py; .github/workflows/stage-build.yml*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-010-AC1 | Given Build's image layouts and the tag's .vex/ OpenVEX file; when Build writes digests.json; then each published index (production and fips) has exactly one attestation child per platform, carrying that file's content (the same OpenVEX document, which the in-toto statement of the attestation holds as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index) and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build | unit |  | approved | 2 item(s) |
+| REQ-REL-010-AC2 | Given the same inputs; when Build and Rebuild each make the final index; then the two are byte-identical (Rebuild's comparison covers it) | ci-workflow |  | approved | none mapped |
+| REQ-REL-010-AC3 | Given the final index; when its attestation children are removed; then every platform image and the index's other entries are byte-identical to what Build made without them | unit |  | approved | 2 item(s) |
+| REQ-REL-010-AC4 | Given Sign's digest list; when Release publishes; then the digest customers pull equals the digest the signature, provenance and release manifest name, and no step after Sign attaches, adds or changes an attestation (an attempt is refused) | ci-workflow |  | approved | none mapped |
+| REQ-REL-010-AC5 | Given a changed OpenVEX for an already published version; when the pipeline runs; then it makes no change to that version's image; the change reaches images only through the next automatic patch release | unit |  | approved | none mapped |
+| REQ-REL-010-AC6 | Given the published final index; when Docker Scout scans it by tag and by exact digest with our author; then it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image | acceptance-release-artifact |  | approved | none mapped |
 
 ## SCAN
 

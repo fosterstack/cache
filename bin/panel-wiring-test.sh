@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-001-AC1, REQ-SCAN-001-AC2, REQ-SCAN-001-AC3, REQ-SCAN-002-AC1, REQ-SCAN-004-AC1, REQ-SCAN-004-AC2, REQ-SCAN-009-AC5, REQ-REL-004-AC3
+# proves: REQ-REL-010-AC1, REQ-REL-010-AC3, REQ-SCAN-001-AC1, REQ-SCAN-001-AC2, REQ-SCAN-001-AC3, REQ-SCAN-002-AC1, REQ-SCAN-004-AC1, REQ-SCAN-004-AC2, REQ-SCAN-009-AC5, REQ-REL-004-AC3
 # The scanner panel's wiring in the daily rescan (scanner-panel rules 1, 2, 4, 9; ratified Oct 2): which
 # scanner runs on which images (fixed in the workflow, never computed), Google only through the federation
 # with repository variables, the VEX as the only exception (Grype and Scout given the file, no ignore
@@ -56,23 +56,29 @@ if "secrets." in str(gj) or "GOOGLE_APPLICATION_CREDENTIALS" in tg:
 # rule 4: the VEX is the only exception
 if "--vex .vex/fosterstack-cache.openvex.json" not in text("panel-grype"):
     bad.append("Grype is not given the VEX file")
-# Scout applies only statements by an author --vex-author accepts (default Docker's own; rule 4). Proven by RUNNING the
-# two Scout steps of the (possibly mutated) workflow against a stub docker/skopeo (Codex #168 r1, B1/B2): the executed
-# arguments, and the self-check's verdict on reports where Scout applies, ignores, over-drops or returns nothing
+# REQ-REL-010 on the rescan (handoff 0521): Scout applies our statements only through an attestation in the image index, and an
+# attestation lives in a registry. The vex-attach job gives each candidate index its attestation children (bin/vex-index.py) and
+# pushes it to the SCRATCH package only; panel-scout scans those registry refs by exact index digest with our author.
 import json, os, subprocess, tempfile
 ROOT = os.environ.get("PANEL_ROOT", ".")
-FIXTURE = "docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab"
+SCRATCH = "ghcr.io/fosterstack/cache-scout-probe"
+FIXTURE_DIGEST = "sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab"
+DIG = {"fixture-before": "sha256:" + "1" * 64, "fixture-ours": "sha256:" + "2" * 64, "fixture-docker": "sha256:" + "6" * 64,
+       "production": "sha256:" + "3" * 64, "debug": "sha256:" + "4" * 64, "fips": "sha256:" + "5" * 64}
 STUB = r"""#!/usr/bin/env bash
 { printf '%s' "$(basename "$0")"; printf ' %q' "$@"; printf '\n'; } >> "$STUB_LOG"
 if [ "$(basename "$0")" = docker ] && [ "$1 $2" = "scout cves" ]; then
-  vex=""; prev=""; for a in "$@"; do [ "$prev" = --vex-location ] && vex=$a; prev=$a; done
-  [ -f "$vex" ] && cp "$vex" "$STUB_LOG.vex.$(wc -l < "$STUB_LOG" | tr -d ' ')"
-  n=$(jq '[.statements[].vulnerability.name] | map(select(. == "CVE-2023-4911")) | length' "$vex" 2>/dev/null || echo 0)
-  case "$STUB_MODE:$n" in
-    *:0|ignores:*) printf '%s' '{"vulnerabilities":[{"identifiers":[{"value":"CVE-2023-4911"}],"location":{"dependency":{"package":{"name":"libc6"},"version":"2.36-9"}}},{"identifiers":[{"value":"CVE-2099-0001"}],"location":{"dependency":{"package":{"name":"libalpha"},"version":"1.0"}}}]}' ;;
-    applies:*) printf '%s' '{"vulnerabilities":[{"identifiers":[{"value":"CVE-2099-0001"}],"location":{"dependency":{"package":{"name":"libalpha"},"version":"1.0"}}}]}' ;;
-    drops-all:*) printf '%s' '{"vulnerabilities":[]}' ;;
-    empty:*) printf '%s' '{}' ;;
+  ref=""; for a in "$@"; do case "$a" in registry://*) ref=$a;; esac; done
+  T='{"identifiers":[{"value":"CVE-2023-4911"}],"location":{"dependency":{"package":{"name":"libc6"},"version":"2.36-9"}}}'
+  O='{"identifiers":[{"value":"CVE-2099-0001"}],"location":{"dependency":{"package":{"name":"libalpha"},"version":"1.0"}}}'
+  case "$ref" in
+    *@sha256:2222*) case "$STUB_MODE" in
+        applies) printf '{"vulnerabilities":[%s]}' "$O" ;;
+        ignores) printf '{"vulnerabilities":[%s,%s]}' "$T" "$O" ;;
+        drops-all) printf '{"vulnerabilities":[]}' ;;
+        empty) printf '{}' ;;
+      esac ;;
+    *) printf '{"vulnerabilities":[%s,%s]}' "$T" "$O" ;;
   esac
 elif [ "$(basename "$0")" = docker ] && [ "$1 $2" = "scout sbom" ]; then
   printf '%s' '{"artifacts":[]}'
@@ -80,99 +86,120 @@ fi
 exit 0
 """
 author = json.load(open(os.path.join(ROOT, ".vex/fosterstack-cache.openvex.json")))["author"]
-VEXCOPIES = []
-KEEP = tempfile.mkdtemp()
-scout_steps = jobs.get("panel-scout", {}).get("steps", [])
-def step(name_part):
-    hit = [s for s in scout_steps if name_part in (s.get("name") or "")]
-    return hit[0] if len(hit) == 1 else None
-def run_block(block, mode):
+def run_block(block, mode, failing=None):
     with tempfile.TemporaryDirectory() as t:
-        os.makedirs(os.path.join(t, "stub"))
+        os.makedirs(os.path.join(t, "stub")); os.makedirs(os.path.join(t, "attach"))
+        json.dump(DIG, open(os.path.join(t, "attach", "digests.json"), "w"))
         for tool in ("docker", "skopeo", "sudo"):
             with open(os.path.join(t, "stub", tool), "w") as fh:
-                fh.write(STUB)
+                fh.write("#!/usr/bin/env bash\nexit 23\n" if tool == failing else STUB)
             os.chmod(os.path.join(t, "stub", tool), 0o755)
         log = os.path.join(t, "log")
         open(log, "w").close()
         env = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], STUB_LOG=log, STUB_MODE=mode,
-                   RUNNER_TEMP=t)
+                   RUNNER_TEMP=t, GITHUB_STEP_SUMMARY=os.path.join(t, "sum"), GITHUB_RUN_ID="42")
         r = subprocess.run(["bash", "-e", "-c", block], cwd=ROOT, env=env, capture_output=True, text=True)
-        VEXCOPIES[:] = []
-        import glob, shutil
-        for x in glob.glob(log + ".vex.*"):
-            keep = os.path.join(KEEP, os.path.basename(x))
-            shutil.copy(x, keep)
-            VEXCOPIES.append(keep)
         return r.returncode, open(log).read().splitlines()
-pr = step("product-form probe")
-if not pr or scout_steps.index(pr) > scout_steps.index(step("rule 4 self-check") or pr):
-    bad.append("no Scout product-form probe before the self-check (advisor 0106)")
+va = jobs.get("vex-attach")
+if not va:
+    bad.append("no vex-attach job (the attestation children and the push to the scratch package)")
 else:
-    prun = pr.get("run", "")
-    for need in ("./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck", "scout-selfcheck.py probe-doc",
-                 "scout-selfcheck.py probe-report", "--only-vex-affected", 'tee -a "$GITHUB_STEP_SUMMARY"',
-                 "scout-selfcheck.py probe-doc3", "docker scout sbom --format json local://ghcr.io/fosterstack/cache:selfcheck",
-                 "registry://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab",
-                 'cp -r "$RUNNER_TEMP/probe" /tmp/panel/scout-probe'):
-        if need not in prun:
-            bad.append("the probe lacks %s" % need)
-    if pr.get("if") != "github.event_name == 'workflow_dispatch'" or pr.get("continue-on-error"):
-        bad.append("the probe must run on a manual dispatch only, without continue-on-error (Codex #170 r1, R1)")
-    for failing in ("sudo", "skopeo", "mkdir", "docker"):   # Codex #170 r1, B1: a diagnostic failure never fails the step
-        with tempfile.TemporaryDirectory() as t:
-            os.makedirs(os.path.join(t, "stub"))
-            for tool in ("docker", "skopeo", "sudo", failing):   # the others succeed; only the one under test fails
-                with open(os.path.join(t, "stub", tool), "w") as fh:
-                    fh.write("#!/usr/bin/env bash\nexit 23\n" if tool == failing else STUB)
-                os.chmod(os.path.join(t, "stub", tool), 0o755)
-            open(os.path.join(t, "log"), "w").close()
-            r = subprocess.run(["bash", "-e", "-c", prun], cwd=ROOT, capture_output=True, text=True,
-                               env=dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"],
-                                        RUNNER_TEMP=t, GITHUB_STEP_SUMMARY=os.path.join(t, "sum"),
-                                        STUB_LOG=os.path.join(t, "log"), STUB_MODE="applies"))
-        if r.returncode != 0:
-            bad.append("the probe step fails the job when %s fails (exit %d)" % (failing, r.returncode))
-sc, scan = step("rule 4 self-check"), step("Docker Scout every image")
+    perms = va.get("permissions") or {}
+    if perms != {"contents": "read", "packages": "write"} or va.get("environment") or va.get("if"):
+        bad.append("vex-attach must hold exactly contents: read and packages: write, no environment, no identity token, no condition: %s" % perms)
+    vneeds = va.get("needs", []); vneeds = vneeds if isinstance(vneeds, list) else [vneeds]
+    if "assemble" not in vneeds or "build" not in vneeds:
+        bad.append("vex-attach does not wait for the build and the assembled candidates")
+    vt = text("vex-attach")
+    vsteps = va.get("steps", [])
+    att = [x for x in vsteps if "attach our OpenVEX to each candidate index" in (x.get("name") or "")]
+    fxs = [x for x in vsteps if "self-check fixtures" in (x.get("name") or "")]
+    if len(att) != 1 or len(fxs) != 1:
+        bad.append("vex-attach lacks its two steps (attach and push the candidates; build the self-check fixtures)")
+    else:
+        for need in ("vex=.vex/fosterstack-cache.openvex.json", 'python3 bin/vex-index.py layout --layout "${d}" --vex "${vex}"',
+                     'python3 bin/vex-index.py verify-layout --layout "${d}" --vex "${vex}" --base-digest "${base}"',
+                     'python3 bin/release-layout.py "${d}" "${final}"', 'tag="cand-${GITHUB_RUN_ID}-${v}"', "chmod -R go-w", "skopeo copy --all",
+                     '--digestfile "/tmp/attach/${v}.pushed"', '[ "${pushed}" = "${final}" ]', "for v in production debug fips"):
+            if need not in att[0].get("run", ""):
+                bad.append("the attach step lacks %s" % need)
+        for need in ("python3 bin/vex-index.py layout --layout", "python3 bin/vex-index.py verify-layout --layout", "--base-digest",
+                     ".vex/fosterstack-cache.openvex.json", "CVE-2023-4911", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "chmod -R go-w"):
+            if need not in fxs[0].get("run", ""):
+                bad.append("the fixture step lacks %s" % need)
+    for need in ("docker login ghcr.io", "-X DELETE", "14 days ago"):
+        if need not in vt:
+            bad.append("vex-attach lacks %s" % need)
+    # the only registry name the job writes or reads is the scratch package (plus the pinned debian fixture): never the release package
+    stripped = re.sub(r"repository_url=ghcr\.io/fosterstack/cache(?![-\w])", "", vt)
+    if re.search(r"ghcr\.io/fosterstack/cache(?![-\w])", stripped) or re.search(r"cache-candidates|ghcr\.io/\$\{?GITHUB_REPOSITORY", stripped):
+        bad.append("vex-attach names a package other than the scratch package")
+    for m in re.finditer(r"docker://(\S+)", vt):
+        ref = m.group(1).strip('"\\')
+        if not (ref.startswith(SCRATCH + ":") or ref == "docker.io/library/debian@" + FIXTURE_DIGEST):
+            bad.append("vex-attach touches the registry reference %s" % ref)
+    for m in re.finditer(re.escape(SCRATCH) + r":([^\s\")]+)", vt):
+        if not re.fullmatch(r"cand-\$\{GITHUB_RUN_ID\}-\$\{v\}|\$\{tag\}|selfcheck-(before|\$\{form\})-\$\{GITHUB_RUN_ID\}", m.group(1).rstrip('"')):
+            bad.append("vex-attach pushes a tag that is not an attested candidate or a self-check fixture: %s" % m.group(1))
+    if re.findall(r"packages/container/([A-Za-z0-9._-]+)", vt) != ["cache-scout-probe"]:
+        bad.append("vex-attach prunes or reads a package other than the scratch package")
+    for st in va.get("steps", []):
+        if st.get("if") or str(st.get("continue-on-error", "false")) != "false":
+            bad.append("vex-attach: step %r is conditional or may fail quietly" % st.get("name"))
+ps = jobs.get("panel-scout", {})
+scout_steps = ps.get("steps", [])
+def step(name_part):
+    hit = [x for x in scout_steps if name_part in (x.get("name") or "")]
+    return hit[0] if len(hit) == 1 else None
+pneeds = ps.get("needs", []); pneeds = pneeds if isinstance(pneeds, list) else [pneeds]
+if "vex-attach" not in pneeds:
+    bad.append("panel-scout does not wait for the attested candidates")
+if (ps.get("permissions") or {}) != {"contents": "read", "packages": "read"}:
+    bad.append("panel-scout must hold contents: read and packages: read only")
+st_text = text("panel-scout")
+if re.search(r"--vex-location|local://|docker-daemon:|skopeo", st_text):
+    bad.append("panel-scout reads a local image or a local VEX file (Scout applies our statements only through the index's attestation)")
+sc, scan, diag = step("rule 4 self-check"), step("Docker Scout every image"), step("attestation diagnostics")
 if not sc or not scan or scout_steps.index(sc) > scout_steps.index(scan):
     bad.append("no Scout self-check before the scan")
 else:
     if sc.get("continue-on-error") or sc.get("if"):
         bad.append("the Scout self-check can be skipped or softened")
-    rc, log = run_block(sc.get("run", ""), "applies")
-    scouts = [l for l in log if l.startswith("docker scout cves")]
-    if rc != 0:
-        bad.append("the Scout self-check fails when Scout applies our statement")
-    # the WHOLE argument array, only the VEX path free (Codex #168 r3, B1: an extra option in between must fail)
-    want_sc = re.compile(r"docker scout cves --format gitlab --vex-location [^ ]+ --vex-author "
-                         r"\\\^FosterStack\\ LLC\\\$ local://ghcr\.io/fosterstack/cache:selfcheck")
-    if len(scouts) != 2 or not all(want_sc.fullmatch(l) for l in scouts):
-        bad.append("the self-check does not run Scout with our author on the fixture under our name: %s" % scouts)
-    # the VEX documents the self-check hands Scout: ours by author, the second covering exactly the target on our image
-    try:
-        docs = [json.load(open(x)) for x in sorted(VEXCOPIES, key=lambda p: int(p.rsplit(".", 1)[1]))]
-    except (OSError, ValueError):
-        docs = []
-    want_stmt = {"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected",
-                 "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}
-    def stmt_ok(st, cve):
-        return {k: st.get(k) for k in want_stmt} == dict(want_stmt, vulnerability={"name": cve})
-    if len(docs) != 2 or any(d.get("author") != author for d in docs) \
-            or len(docs[0].get("statements") or []) != 1 or not stmt_ok(docs[0]["statements"][0], "CVE-1999-0001") \
-            or len(docs[1].get("statements") or []) != 1 or not stmt_ok(docs[1]["statements"][0], "CVE-2023-4911"):
-        bad.append("the self-check's VEX documents are not ours (author, product, status, CVE): %s" % docs)
-    if "skopeo copy " + FIXTURE + " docker-daemon:ghcr.io/fosterstack/cache:selfcheck" not in log:
-        bad.append("the self-check does not load the pinned fixture by digest")
+    AUTHOR = r"--vex-author \\\^FosterStack\\ LLC\\\$"
+    for mode in ("applies",):
+        rc, log = run_block(sc.get("run", ""), mode)
+        scouts = [l for l in log if l.startswith("docker scout cves")]
+        if rc != 0:
+            bad.append("the Scout self-check fails when Scout applies our attestation")
+        want = ["docker scout cves --format gitlab --vex-author \\^FosterStack\\ LLC\\$ --platform linux/amd64 registry://%s@%s" % (SCRATCH, DIG[k])
+                for k in ("fixture-before", "fixture-ours")]
+        if scouts != want:
+            bad.append("the self-check does not scan the fixture plain and attested, by exact digest, with our author: %s" % scouts)
     for mode in ("ignores", "drops-all", "empty"):
         if run_block(sc.get("run", ""), mode)[0] == 0:
             bad.append("the Scout self-check passes when Scout %s" % mode)
     rc, log = run_block(scan.get("run", ""), "applies")
     scouts = [l for l in log if l.startswith("docker scout cves")]
-    want = ["docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author "
-            "\\^FosterStack\\ LLC\\$ local://ghcr.io/fosterstack/cache:cand-%s-%s" % (v, a)
+    sboms = [l for l in log if l.startswith("docker scout sbom")]
+    want = ["docker scout cves --format gitlab --vex-author \\^FosterStack\\ LLC\\$ --platform linux/%s registry://%s@%s" % (a, SCRATCH, DIG[v])
             for v in ("production", "debug", "fips") for a in ("amd64", "arm64")]
-    if scouts != want:
-        bad.append("Scout's scan does not run with our VEX and author on our six images: %s" % scouts)
+    wsbom = ["docker scout sbom --format json --platform linux/%s registry://%s@%s" % (a, SCRATCH, DIG[v])
+             for v in ("production", "debug", "fips") for a in ("amd64", "arm64")]
+    if scouts != want or sboms != wsbom:
+        bad.append("Scout's scan does not run on our six attested candidates by exact digest with our author: %s" % scouts)
+    if rc != 0:
+        bad.append("the Scout scan step fails on a clean day")
+if not diag:
+    bad.append("no Scout attestation diagnostics (read-back 5a/5b)")
+else:
+    if diag.get("if") or diag.get("continue-on-error"):
+        bad.append("the Scout diagnostics must be unconditional and contained inside the step, not continue-on-error")
+    for failing in ("docker", "skopeo", "sudo"):   # a diagnostic failure never fails the step
+        if run_block(diag.get("run", ""), "applies", failing)[0] != 0:
+            bad.append("the diagnostics step fails the job when %s fails" % failing)
+    for need in ("GITHUB_STEP_SUMMARY", "ours-amd64", "ours-arm64", "ours-noplatform", "ours-tag", "docker-form", "exit 0"):
+        if need not in diag.get("run", ""):
+            bad.append("the diagnostics lack %s" % need)
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
@@ -195,11 +222,14 @@ crons = [c.get("cron", "") for c in ((d.get("on") or {}).get("schedule") or []) 
 if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.split("#")[0].strip()) for c in crons):
     bad.append("the rescan has no daily schedule")
 # the exact scan commands: each architecture once, Google's package count from its request log
-for j in ("panel-grype", "panel-scout", "panel-inspector"):
+for j in ("panel-grype", "panel-inspector"):
     t = text(j)
     if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != 1 \
             or '--override-arch "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
         bad.append(f"{j} does not load each architecture once by the loop variable")
+t = text("panel-scout")      # Scout names the platform of an attested index, each architecture once
+if not re.search(r"for arch in amd64 arm64; do", t) or '--platform "linux/${arch}"' not in t or "for v in production debug fips" not in t:
+    bad.append("panel-scout does not scan each variant on each architecture once by the loop variables")
 if "--log-http" not in tg or "bin/panel.py google-packages" not in tg or "list-vulnerabilities" not in tg:
     bad.append("panel-google does not take its package count from the request log and its findings from list-vulnerabilities")
 if jobs["panel-google"].get("environment") != "agent":
@@ -209,11 +239,7 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
         bad.append(f"{j} is conditional")
     for st in jobs[j].get("steps", []):
         cond = str(st.get("if", "")).replace(" ", "")
-        # the one exception: the Scout product-form probe, a manual-dispatch diagnostic that never decides the job
-        # (advisor 0106; its own containment and its place before the unconditional self-check are checked below)
-        diag = j == "panel-scout" and st.get("name") == "Scout product-form probe (rule 4 diagnostic, advisor 0106)" \
-            and cond == "github.event_name=='workflow_dispatch'"
-        if cond and not diag and not cond.startswith("${{always()") and "steps.judge" not in cond:
+        if cond and not cond.startswith("${{always()") and "steps.judge" not in cond:
             bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
         if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")
@@ -267,18 +293,6 @@ judge_case id-number         bad "{\"vulnerabilities\":[$T,$(F 123 libalpha 1.0 
 judge_case id-true           bad "{\"vulnerabilities\":[$T,$(F x libalpha 1.0 | sed 's/"x"/true/')]}" "{\"vulnerabilities\":[$(F x libalpha 1.0 | sed 's/"x"/true/')]}"
 judge_case id-blank          bad "{\"vulnerabilities\":[$T,$(F ' ' libalpha 1.0)]}" "{\"vulnerabilities\":[$(F ' ' libalpha 1.0)]}"
 judge_case no-location       bad "{\"vulnerabilities\":[$T,{\"identifiers\":[{\"value\":\"CVE-1\"}]}]}" "{\"vulnerabilities\":[{\"identifiers\":[{\"value\":\"CVE-1\"}]}]}"
-# Codex #168 r2 (B1): the helper's argument boundaries are what is checked — a mutated copy of bin/scout-vex-scan.sh in
-# a scratch root must fail the real workflow's judge
-helper_case() {   # name sed-expression
-  local r="$work/root-$1"; mkdir -p "$r/bin" "$r/.vex"
-  cp "$root/bin/scout-selfcheck.py" "$r/bin/"; cp "$root/.vex/fosterstack-cache.openvex.json" "$r/.vex/"
-  sed "$2" "$root/bin/scout-vex-scan.sh" > "$r/bin/scout-vex-scan.sh"; chmod +x "$r/bin/scout-vex-scan.sh"
-  cmp -s "$root/bin/scout-vex-scan.sh" "$r/bin/scout-vex-scan.sh" && { failn=$((failn+1)); echo "FAIL helper-$1: the mutation did not apply"; return; }
-  if out=$(PANEL_ROOT="$r" judge "$root/.github/workflows/main-candidate-rescan.yml"); then got=ok; else got=bad; fi
-  if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS helper-$1 → bad"; else failn=$((failn+1)); echo "FAIL helper-$1 → ok, want bad"; fi
-}
-helper_case unquoted-author 's/--vex-author "\$re"/--vex-author $re/'
-helper_case merged-image    's/"\$re" "local:\/\/\$1"/"\$re local:\/\/\$1"/'
 # advisor 0106: the Scout product-form probe — one statement per candidate form, each on a different fixture CVE; it
 # reports which forms Scout applied and never decides the job (the self-check does)
 probe_case() {   # name want-substring before after
@@ -343,19 +357,39 @@ case_ google-secret           bad "[s.__setitem__('with', {'credentials_json': '
 case_ google-literal-provider bad "[s['with'].__setitem__('workload_identity_provider', 'projects/1/locations/global/workloadIdentityPools/p/providers/q') for s in $J['panel-google']['steps'] if str(s.get('uses','')).startswith('google-github-actions/auth@')]"
 case_ google-no-idtoken       bad "$J['panel-google']['permissions'].pop('id-token')"
 case_ grype-no-vex            bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('--vex .vex/fosterstack-cache.openvex.json', '')"
-case_ scout-no-author         bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('./bin/scout-vex-scan.sh \"\${ref}\" .vex/fosterstack-cache.openvex.json \"\${d}/cves.json\"', 'docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json \"local://\${ref}\" > \"\${d}/cves.json\"  # --vex-author ^FosterStack LLC\$')"
+case_ scout-no-author         bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace(\"--vex-author '^FosterStack LLC\$' \", '')"
 case_ scout-no-selfcheck      bad "$J['panel-scout']['steps'] = [s for s in $J['panel-scout']['steps'] if 'self-check' not in (s.get('name') or '')]"
 case_ scout-selfcheck-soft    bad "[s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]['continue-on-error'] = 'true'"
 case_ scout-selfcheck-exit0   bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = 'exit 0\n' + s['run']"
 case_ scout-selfcheck-nojudge bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('python3 bin/scout-selfcheck.py', 'true')"
-case_ scout-selfcheck-novex   bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('\"\$RUNNER_TEMP/selfcheck/one.json\"', '\"\$RUNNER_TEMP/selfcheck/none.json\"')"
-case_ scout-other-repo        bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('ghcr.io/fosterstack/cache:cand-', 'ghcr.io/another-vendor/cache:cand-')"
-case_ scout-fixture-tag       bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab', 'debian:latest') + '\n# debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab'"
-case_ scout-vex-other-repo    bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('repository_url=ghcr.io/fosterstack/cache\"}]}]\' \"\$RUNNER_TEMP/selfcheck/one.json', 'repository_url=ghcr.io/another-vendor/cache\"}]}]\' \"\$RUNNER_TEMP/selfcheck/one.json')"
-case_ scout-vex-affected      bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('\"CVE-2023-4911\"}, \"status\": \"not_affected\"', '\"CVE-2023-4911\"}, \"status\": \"affected\"')"
-case_ scout-fixture-elsewhere bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('docker-daemon:ghcr.io/fosterstack/cache:selfcheck', 'docker-daemon:another-vendor/cache:selfcheck')"
-case_ scout-sc-extra-option  bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck \"\$RUNNER_TEMP/selfcheck/one.json\" \"\$RUNNER_TEMP/selfcheck/after.json\"', 'docker scout cves --format gitlab --vex-location \"\$RUNNER_TEMP/selfcheck/one.json\" --only-vex-affected --vex-author \'^FosterStack LLC\$\' local://ghcr.io/fosterstack/cache:selfcheck > \"\$RUNNER_TEMP/selfcheck/after.json\"'); assert 'only-vex-affected' in s['run']"
-case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('.vex/fosterstack-cache.openvex.json \"\${d}', '/dev/null \"\${d}')"
+case_ scout-selfcheck-same    bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('.\"fixture-ours\"', '.\"fixture-before\"')"
+case_ scout-selfcheck-other-repo bad "s = [s for s in $J['panel-scout']['steps'] if 'self-check' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('ghcr.io/fosterstack/cache-scout-probe', 'ghcr.io/another-vendor/cache-scout-probe')"
+case_ scout-scan-other-repo   bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('ghcr.io/fosterstack/cache-scout-probe', 'ghcr.io/fosterstack/cache')"
+case_ scout-scan-local-vex    bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('--vex-author', '--vex-location .vex/fosterstack-cache.openvex.json --vex-author')"
+case_ scout-scan-no-author    bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace(\"--vex-author '^FosterStack LLC\$' \", '')"
+case_ scout-scan-wrong-digest bad "s = $(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('.[\$v]', '.production')"
+case_ scout-no-attach-need    bad "$J['panel-scout']['needs'] = ['build', 'assemble']"
+case_ scout-perms-write       bad "$J['panel-scout']['permissions']['packages'] = 'write'"
+case_ scout-diag-fails        bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('exit 0', 'exit \$rc')"
+case_ scout-diag-gone         bad "$J['panel-scout']['steps'] = [s for s in $J['panel-scout']['steps'] if 'diagnostics' not in (s.get('name') or '')]"
+case_ attach-gone             bad "$J.pop('vex-attach')"
+case_ attach-perms-id-token   bad "$J['vex-attach']['permissions']['id-token'] = 'write'"
+case_ attach-perms-wide       bad "$J['vex-attach']['permissions']['contents'] = 'write'"
+case_ attach-environment      bad "$J['vex-attach']['environment'] = 'agent'"
+case_ attach-conditional      bad "$J['vex-attach']['if'] = \"github.ref == 'refs/heads/main'\""
+case_ attach-no-assemble-need bad "$J['vex-attach']['needs'] = ['build']"
+case_ attach-release-package  bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache:')"
+case_ attach-candidates-package bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache-candidates:')"
+case_ attach-other-tag        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('tag=\"cand-\${GITHUB_RUN_ID}-\${v}\"', 'tag=\"latest\"')"
+case_ attach-no-verify        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('python3 bin/vex-index.py verify-layout', 'true')"
+case_ attach-no-layout-check  bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('python3 bin/release-layout.py', 'true')"
+case_ attach-no-digest-check  bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('[ \"\${pushed}\" = \"\${final}\" ]', 'true')"
+case_ attach-other-vex        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('vex=.vex/fosterstack-cache.openvex.json', 'vex=/dev/null')"
+case_ attach-step-soft        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['continue-on-error'] = 'true'"
+case_ prune-gone              bad "$J['vex-attach']['steps'] = [s for s in $J['vex-attach']['steps'] if 'prune' not in (s.get('name') or '')]"
+case_ prune-other-package     bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('packages/container/cache-scout-probe', 'packages/container/cache')"
+case_ prune-forever           bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('14 days ago', '3650 days ago')"
+case_ scout-no-vex            bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('--format gitlab', '--format sarif')"
 case_ grype-only-fixed        bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype ', 'grype --only-fixed ', 1)"
 case_ audits-elsewhere        bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('bin/panel.py tally', 'bin/panel.py collect')"
 case_ google-amd64-gone        bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('cand-\${v}-amd64', 'cand-\${v}')"
