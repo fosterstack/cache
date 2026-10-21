@@ -59,9 +59,10 @@ if [ "$fresh" = 1 ]; then
   base="$(git rev-parse HEAD)"
   case "$base" in *[!0-9a-f]*|'') echo "::error::could not read the commit the job started from" >&2; exit 1;; esac
   [ "${#base}" -eq 40 ] || { echo "::error::could not read the commit the job started from" >&2; exit 1; }
+  headline="chore(go): bump toolchain ${CURRENT} -> ${LATEST}"
   input="$(mktemp)"
   jq -n --arg repo "${GITHUB_REPOSITORY:-fosterstack/cache}" --arg b "$branch" --arg base "$base" \
-        --arg head "chore(go): bump toolchain ${CURRENT} -> ${LATEST}" \
+        --arg head "$headline" \
         --arg r "$(base64 < go.mod | tr -d '\n')" --arg t "$(base64 < tools/requirements/go.mod | tr -d '\n')" \
     '{query: "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",
       variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $b}, message: {headline: $head}, expectedHeadOid: $base,
@@ -70,10 +71,26 @@ if [ "$fresh" = 1 ]; then
   # Cleanup removes only what this run owns: the delete is leased on the tip this run last knew (the commit it pushed, then the one the API made),
   # so a branch someone else advanced is kept. A cleanup that fails is its own loud message: the branch remains and a person must remove it.
   owned="$base"
+  # The API may have made the commit although its answer never arrived: before the cleanup, the remote tip is read. It is ours when it is the pushed
+  # base, or a commit whose parent is that base and whose headline is this run's; any other tip belongs to someone else and is left alone.
+  settle_owned() {
+    local tip info
+    [ "$owned" = "$base" ] || return 0
+    tip="$(git ls-remote origin "refs/heads/${branch}" | cut -f1)" || return 1
+    [ "$tip" = "$base" ] && return 0
+    [ -n "$tip" ] || return 1
+    info="$(gh api "repos/{owner}/{repo}/commits/${tip}" -q '[.parents[0].sha, (.commit.message | split("\n")[0])] | @tsv')" || return 1
+    [ "$info" = "$(printf '%s\t%s' "$base" "$headline")" ] || return 1
+    owned="$tip"
+  }
   refuse() {
     echo "::error::$1; opening no pull request" >&2
-    git push origin ":refs/heads/${branch}" --force-with-lease="refs/heads/${branch}:${owned}" >&2 \
-      || echo "::error::could not remove ${branch} (it remains at or after ${owned}); remove it by hand before the next run" >&2
+    if settle_owned; then
+      git push origin ":refs/heads/${branch}" --force-with-lease="refs/heads/${branch}:${owned}" >&2 \
+        || echo "::error::could not remove ${branch} (it remains at or after ${owned}); remove it by hand before the next run" >&2
+    else
+      echo "::error::${branch} is not at a tip this run owns, or its tip could not be read; leaving it; remove it by hand before the next run" >&2
+    fi
     rm -f "$input"; exit 1
   }
   oid="$(gh api graphql --input "$input" -q '.data.createCommitOnBranch.commit.oid')" || refuse "the API could not create the commit"
