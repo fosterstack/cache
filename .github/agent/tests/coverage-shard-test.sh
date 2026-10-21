@@ -9,6 +9,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 pins="$here/check-action-pins-test.sh"; sumchk="$here/coverage-shard-sum.py"
 pass=0; fail=0
+unset PINS_DRY PINS_SHARD   # the real launches below are real whatever the environment holds; the dry ones set it themselves
 ok() { echo "ok   $1"; pass=$((pass+1)); }
 no() { echo "FAIL $1"; fail=$((fail+1)); }
 w=$(mktemp -d); trap 'rm -rf "$w"' EXIT

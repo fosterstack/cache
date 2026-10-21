@@ -34,12 +34,12 @@ export COVERAGE_RCFILE="$W/rc" COVERAGE_PROCESS_START="$W/rc"
 # together completed exactly the whole list (the manifest is a dry listing of the file), each unit once, by name, and none failed, and coverage-shard-test.sh proves that
 # partition and that check first.
 PINS_SHARDS=4
+unset PINS_DRY PINS_SHARD   # every launch below is a real run (the self-test and the dry listing set PINS_DRY themselves), never one the environment left dry
 bash .github/agent/tests/coverage-shard-test.sh > "$W/shardtest.log" 2>&1 \
   || { tail -25 "$W/shardtest.log" >&2; echo "::error::the shard partition test failed" >&2; exit 1; }
 tail -1 "$W/shardtest.log"
 PINS_DRY=1 bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.manifest" 2>/dev/null \
   || { echo "::error::could not list the action-pin units" >&2; exit 1; }
-unset PINS_DRY PINS_SHARD   # the launches below are real runs, never dry ones the environment might have left on
 python3 -m coverage run -m unittest discover -s .github/agent/bin/tests -p 'test_*.py' 2> "$W/unit.log" & p_unit=$!
 bash .github/agent/tests/auditor-matrix-test.sh > "$W/matrix.log" 2>&1 & p_matrix=$!
 p_pins=()
