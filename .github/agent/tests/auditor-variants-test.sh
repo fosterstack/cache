@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-001-AC1
 # The auditor's fixtures and tests take the scanner panel's image set from bin/panel.py (VARIANTS), never from a literal list. Main ships v0.2.2
 # with the debug variant (production, debug, fips: six images); chain-v030 drops it (production, fips: four). This guard runs the auditor's unit
 # suite and the matrix suite on a copy of the working tree with bin/panel.py set to EACH of the two sets, so a fixture or test that hard-codes
