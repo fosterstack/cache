@@ -24,7 +24,7 @@ OUR_PRODUCT="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
 DIGEST_PRODUCT="pkg:oci/debian@$FIXTURE_DIGEST?repository_url=docker.io/library/debian"
 
 # the fixture must be in the local store: the tag-based cases scan it as local:// and never fall back to a registry lookup of a mutable tag
-docker pull -q "$FIXTURE" >/dev/null || { echo "::error::cannot pull the fixture" >&2; exit 2; }
+docker pull -q docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab >/dev/null || { echo "::error::cannot pull the fixture" >&2; exit 2; }
 docker tag "$FIXTURE" "$CONTROL" || { echo "::error::cannot tag the control image" >&2; exit 2; }
 docker tag "$FIXTURE" "$OURS" || { echo "::error::cannot tag our image" >&2; exit 2; }
 {
