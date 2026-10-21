@@ -58,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 50 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 52 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -88,6 +88,7 @@ dependency-provenance.json
 bin/vendor-check.sh bin/vendor-provenance.py bin/vendoring-test.sh bin/vendor-provenance-test.sh
 build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
 build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
+build/host-tools.yaml build/locks/host-tools.lock
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub build/archive.json
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
 bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh
@@ -102,7 +103,7 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 bin/build-apk-helper.py build/sealed-env.json
 """.split())
-if len(DECLARED) != 50: errs.append("declared list is not 50 paths: %d" % len(DECLARED))
+if len(DECLARED) != 52: errs.append("declared list is not 52 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -112,7 +113,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 151, 6   # 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: + ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 153, 6   # 153: + ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$ (REQ-REFRESH-001-AC35); 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: + ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
