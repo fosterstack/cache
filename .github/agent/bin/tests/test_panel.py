@@ -411,6 +411,14 @@ class Day(unittest.TestCase):
         self.assertEqual(out["misses"][0]["by"], "a later audit")
         self.assertEqual([(v["status"], v["purls"]) for v in out["vex"]], [("affected", list(finding(ver=OLD)["purls"]))])
 
+    def test_a_day_with_no_images_leaves_a_remembered_false_judgment_alone(self):
+        # no image to look in (a direct apply_day call: a verdict read through the strict reader always carries the panel's images):
+        # the re-check of a remembered false judgment has nothing to re-check against and keeps it
+        st, _ = self.day(verdict(finding()))
+        st, out = self.day(verdict(images=[]), st, today="2026-10-04")
+        self.assertEqual((len(st["false"]), len(st["real"])), (1, 0))
+        self.assertEqual(out["misses"], [])
+
     def test_once_real_stays_reported_without_new_audits(self):
         st, _ = self.day(verdict(finding()), a=Seat({"audit": real()}), b=Seat({"audit": real()}))
         a = Seat({})
