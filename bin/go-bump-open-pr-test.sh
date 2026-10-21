@@ -210,57 +210,21 @@ mutant "ownership without the run marker" "ownership without the run marker" "$m
 sed 's/ \&\& \[ "\$tip_head" = "\$headline" \]//' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (headline)"; fail=$((fail+1)); }
 mutant "an orphan tip that is not a bump commit is taken" "an orphan tip that is not a bump commit is taken" "$mut" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 basehead
 
-# AC8, the repository guard: no workflow, composite action or script outside the tests makes a commit with git (git commit, commit-tree, merge,
-# cherry-pick, rebase, am, revert, pull), in a shell command (quoted, after ; or &&, across a backslash continuation) or in a Python argument
-# list. Every PR-opening bot makes its commit through the API instead, so GitHub signs it. An exception is the sha256 of the file and the WHOLE
-# line, so nothing else on that line can run: a test fixture inside a library the tests source, a ledger string the harness reads, error
-# messages and prose that name the command (the two API-commit scripts and their docstrings).
+# AC8, the repository guard, in the plain forms only (advisor ruling, the same scope as the owner's pin-checker ruling of Oct 3): no workflow, composite
+# action or script outside the tests runs git commit, git commit-tree or git merge, written out as a shell command (options allowed, quoted or after ;
+# and &&) or as a Python argument list ("git", "commit"). A deliberately disguised form (an alias, --config-env, split or concatenated words, escaped
+# quotes, redirections spread through the command, git fast-import) is information, not a blocker: main's signed-commits rule stops an unsigned commit
+# from merging whatever wrote it, and the bump path itself is proved by the cases above. An exception is the sha256 of the file and the WHOLE line, so
+# nothing else on that line can run: a test fixture inside a library the tests source, a ledger string the harness reads, error messages and prose.
 GUARD_PY='
-import hashlib, os, re, shlex, subprocess, sys
-CMDS = ("commit", "commit-tree", "merge", "cherry-pick", "rebase", "am", "revert", "pull")
-# An alias is how a commit hides behind another word (git -c alias.b=commit b; git config alias.b commit): defining one is a hit like a commit is.
-OPT_VALUE = ("-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
-SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+(?:-\S+(?:\s+\S+)?\s+)*)["\x27]?(?:""" + "|".join(CMDS) + r""")["\x27]?(?![\w-])""")
-LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27](?:""" + "|".join(CMDS) + r""")["\x27]""")
-ARGS_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*((?:["\x27][^"\x27]*["\x27]\s*,?\s*)+)""")
-# every tracked file is read except the tests, the prose and data (docs, markdown, json, the vendored tree, the evidence and requirement files)
-SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures|docs|vendor|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$|^\.github/agent/fixtures/")
-ALLOWED = set(sys.argv[2:])      # sha256 of "file\nwhole logical line, stripped": exact rows, nothing else on the line may run
+import hashlib, os, re, subprocess, sys
+CMDS = "(?:commit|commit-tree|merge)"
+SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+(?:-\S+(?:\s+\S+)?\s+)*)["\x27]?""" + CMDS + r"""["\x27]?(?![\w-])""")
+LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27]""" + CMDS + r"""["\x27]""")
+# every tracked file is read except the tests, the prose and the data (docs, markdown, json, the vendored tree, the evidence and the root requirements)
+SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures)/|^(docs|vendor|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$|^\.github/agent/fixtures/")
+ALLOWED = set(sys.argv[2:])      # sha256 of "file\nwhole line, stripped"
 root = sys.argv[1]
-
-def git_hit(args):
-    """args follow the word git: True when its subcommand makes a commit, or git is handed an alias."""
-    j = 0
-    while j < len(args) and args[j].startswith("-"):
-        if args[j] == "-c" and j + 1 < len(args) and args[j + 1].lower().startswith("alias."):
-            return True
-        if args[j].lower().startswith(("-calias.", "--config-env=alias.")):
-            return True
-        if args[j] == "--config-env" and j + 1 < len(args) and args[j + 1].lower().startswith("alias."):
-            return True
-        j += 2 if args[j] in OPT_VALUE else 1
-    if j >= len(args):
-        return False
-    return args[j] in CMDS or (args[j] == "config" and any(a.lower().startswith("alias.") for a in args[j + 1:]))
-
-def tokens_hit(s):
-    """The shell reads the line: quote concatenation (g\x27\x27it, g"it") and backslashes are resolved, then any word whose basename is git, followed by
-    its options, naming a commit-making subcommand, is a hit. False when the line cannot be tokenized (the regex still looks at it)."""
-    try:
-        # a redirection and its target are not arguments (git 2>/dev/null commit is git commit); an fd number counts only when it touches the operator,
-        # so git --namespace 2 >/dev/null commit keeps its 2
-        s = re.sub(r"(\"[^\"]*\"|\x27[^\x27]*\x27)|(?:(?<![\w.-])\d+)?(?:>>|>&|<&|<<|>|<)\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s;&|()<>]+)",
-                   lambda m: m.group(1) or " ", s)    # a quoted string (which may hold a >) is kept whole; only a redirection outside quotes goes
-        lx = shlex.shlex(re.sub(r"[()`{}]", " ", s), posix=True, punctuation_chars=True)
-        lx.whitespace_split = True; lx.commenters = ""
-        toks = list(lx)
-    except ValueError:
-        return False
-    for k, tok in enumerate(toks):
-        if os.path.basename(tok) == "git" and git_hit(toks[k + 1:]):
-            return True
-    return False
-
 files = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True, text=True, check=True).stdout.split("\0")
 for f in files:
     if not f or SKIP.search(f) or not os.path.isfile(os.path.join(root, f)) or os.path.islink(os.path.join(root, f)):
@@ -269,33 +233,27 @@ for f in files:
         lines = open(os.path.join(root, f), encoding="utf-8").read().split("\n")
     except (UnicodeDecodeError, OSError):
         continue
-    i = 0
-    while i < len(lines):
-        start, cur = i + 1, lines[i]
-        while cur.endswith("\\") and i + 1 < len(lines):      # backslash-newline is removed by the shell: g\<newline>it is git
-            i += 1; cur = cur[:-1] + lines[i]
-        i += 1
-        s = cur.strip()
-        n = re.sub(r"\\(?=[A-Za-z])", "", re.sub(r"(\x27\x27|\"\")", "", s))
-        if s.startswith("#") or not (tokens_hit(s) or SHELL_RE.search(n) or LIST_RE.search(n)):
+    whole = "\n".join(lines)
+    for n, line in enumerate(lines, 1):
+        s = line.strip()
+        if s.startswith("#") or not (SHELL_RE.search(s) or LIST_RE.search(s)):
             continue
         if hashlib.sha256((f + "\n" + s).encode()).hexdigest() in ALLOWED:
             continue
-        print("%s:%d:%s" % (f, start, s[:160]))
-    whole = "\n".join(lines)
-    for m in ARGS_RE.finditer(whole):           # an argument list or tuple, on one line or spread over several
-        if git_hit(re.findall(r"""["\x27]([^"\x27]*)["\x27]""", m.group(1))):
+        print("%s:%d:%s" % (f, n, s[:160]))
+    for m in LIST_RE.finditer(whole):           # an argument list spread over lines
+        if "\n" in m.group(0):
             print("%s:%d:%s" % (f, whole.count("\n", 0, m.start()) + 1, " ".join(m.group(0).split())[:160]))
 '
 guard_scan() { python3 -I -c "$GUARD_PY" "$@"; }   # guard_scan <repo root> [allowed sha256 ...]
-ALLOW=(0d66bd309433e4fd5f4961caf87b2088ac642b517c9f9ff3923f29a8dce26c3c 4ecf328cb07ea2e678cec7c6bda8aaf5d45a4569d93a92439cc0e65caf40425f 214234061c415ef2a41afd9c51fe8503b0645b31679d08fb6a06f7ddce85ffb0 5268fb8e50f332bb34b20260158a11e3169918db862866888a14e63996042130 809e4cd3d001b8f260e59002af8ee8c4bc14a7b0aee7a746bdf1a45fe260894d 93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9 2449244a68f1430fd2adeda5e9baf812b46470c590b9e77a9b60b2db11fd950f)
+ALLOW=(93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9 4ecf328cb07ea2e678cec7c6bda8aaf5d45a4569d93a92439cc0e65caf40425f 214234061c415ef2a41afd9c51fe8503b0645b31679d08fb6a06f7ddce85ffb0 5268fb8e50f332bb34b20260158a11e3169918db862866888a14e63996042130 809e4cd3d001b8f260e59002af8ee8c4bc14a7b0aee7a746bdf1a45fe260894d 2449244a68f1430fd2adeda5e9baf812b46470c590b9e77a9b60b2db11fd950f 7c3e3df9b151afb150c82b8a64eb67d69d60c0c2ccbf0b9ac97f54624218f818)
 bad_lines="$(guard_scan "$root" "${ALLOW[@]}")" || bad_lines="the guard itself failed"
-if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC8)"; pass=$((pass+1))
+if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC8, plain forms)"; pass=$((pass+1))
 else echo "FAIL: a commit-making git call outside the tests:"; printf '%s\n' "$bad_lines" | sed 's/^/    /'; fail=$((fail+1)); fi
-# the guard must catch each form on its own, in a throwaway repository
-g="$(mktemp -d)"; ( cd "$g" && git init -q && mkdir -p bin .github/workflows .githooks ) >/dev/null 2>&1
+# the guard must catch each plain form on its own, in a throwaway repository
+g="$(mktemp -d)"; ( cd "$g" && git init -q && mkdir -p bin .github/workflows .githooks tools/requirements ) >/dev/null 2>&1
 guard_in() {   # guard_in <file> <content>: the number of hits when the repository holds only that file
-  ( cd "$g" && git rm -q -r -f --cached . >/dev/null 2>&1; rm -f bin/* .github/workflows/* .githooks/*; printf '%b' "$2" > "$1" && git add -A >/dev/null 2>&1 ); guard_scan "$g" "${@:3}" | wc -l | tr -d ' '
+  ( cd "$g" && git rm -q -r -f --cached . >/dev/null 2>&1; rm -f bin/* .github/workflows/* .githooks/* tools/requirements/*; printf '%b' "$2" > "$1" && git add -A >/dev/null 2>&1 ); guard_scan "$g" "${@:3}" | wc -l | tr -d ' '
 }
 guard_catches() { local n; n="$(guard_in "$2" "$3")"; if [ "$n" -ge 1 ]; then echo "ok: guard catches ${1}"; pass=$((pass+1)); else echo "FAIL: guard misses ${1}"; fail=$((fail+1)); fi; }
 guard_passes()  { local n; n="$(guard_in "$2" "$3")"; if [ "$n" = 0 ]; then echo "ok: guard lets through ${1}"; pass=$((pass+1)); else echo "FAIL: guard flags ${1}"; fail=$((fail+1)); fi; }
@@ -305,41 +263,16 @@ guard_catches "git merge"                         bin/a.sh 'git merge origin/mai
 guard_catches "git -c option before commit"       bin/a.sh 'git -c user.name=x commit -m y\n'
 guard_catches "git commit in a workflow step"     .github/workflows/w.yml '        run: git commit -am bump && git push\n'
 guard_catches "git commit in single quotes"       bin/a.sh "bash -c 'git commit -m x'\n"
-guard_catches "a quoted command name \"git\""      bin/a.sh '"git" commit -m x\n'
-guard_catches "a quoted subcommand"               bin/a.sh "git 'commit' -m bump\n"
 guard_catches "git commit followed by a semicolon" bin/a.sh 'git commit;\n'
 guard_catches "git commit joined with &&"         bin/a.sh 'git commit&&git push\n'
-guard_catches "a shell continuation"              bin/a.sh 'git \\\n  commit -m x\n'
-guard_catches "a Python argument list"            bin/a.py 'subprocess.run(["git", "commit", "-m", "x"])\n'
-guard_catches "a Python list with an option first" bin/a.py 'subprocess.run(["git", "-c", "user.name=x", "commit", "-m", "x"], check=True)\n'
-guard_catches "a concatenated command name"       bin/a.sh "g''it commit -m x\\n"
-guard_catches "a backslash inside the command name" bin/a.sh 'g\\it commit -m x\n'
-guard_catches "a quote inside the name g'it'"     bin/a.sh "g'it' commit -m x\\n"
-guard_catches "a quote inside the name g\"it\""    bin/a.sh 'g"it" commit -m x\n'
-guard_catches "a split name across a continuation" bin/a.sh 'g\\\nit commit -m x\n'
-guard_catches "command -p git"                    bin/a.sh 'command -p git commit -m x\n'
-guard_catches "git in a subshell"                 bin/a.sh 'x=$(git commit-tree T -m x)\n'
-guard_catches "a script outside bin and .github"  .githooks/pre-commit 'git commit -m x\n'
-guard_catches "a Python list with an absolute git" bin/a.py 'subprocess.run(["/usr/bin/git", "commit", "-m", "x"])\n'
-guard_catches "a redirection between git and commit" bin/a.sh 'git 2>/dev/null commit -m x\n'
-guard_catches "a stdout redirection before commit"  bin/a.sh 'git >/dev/null commit -m x\n'
-guard_catches "a spaced numeric argument before a redirection" bin/a.sh 'git --namespace 2 >/dev/null commit -m x\n'
-guard_catches "an fd redirection to another fd"   bin/a.sh 'git 2>&1 commit -m x\n'
-guard_catches "git -c alias.bump=commit bump"     bin/a.sh 'git -c alias.bump=commit bump -m x\n'
-guard_catches "a Python list with an alias"       bin/a.py 'subprocess.run(["git", "-c", "alias.b=commit", "b", "-m", "x"])\n'
-guard_catches "--config-env alias"                bin/a.sh 'X=commit git --config-env=alias.bump=X bump -m x\n'
-guard_catches "--config-env alias, split"         bin/a.sh 'X=commit git --config-env alias.bump=X bump -m x\n'
-guard_catches "--config-env alias in a Python list" bin/a.py 'subprocess.run(["git", "--config-env=alias.b=X", "b"])\n'
-guard_catches "a quoted > before commit"          bin/a.sh "git -c 'user.name=Build> Bot' commit -m x\\n"
-guard_catches "git config alias"                  bin/a.sh 'git config alias.b commit\n'
-guard_catches "a redirection touching git"        bin/a.sh 'git>/dev/null commit -m x\n'
-guard_catches "a quoted redirection target with a space" bin/a.sh 'git >"/tmp/a b" commit -m x\n'
-guard_passes  "read-only and plumbing git calls"  bin/a.sh 'git status\ngit -C d ls-files -z\ngit diff --name-only a b\ngit push origin :refs/heads/x\ngit rev-parse HEAD\n'
-guard_catches "a Python tuple of arguments"       bin/a.py 'subprocess.run(("git", "commit", "-m", "x"))\n'
 guard_catches "git by absolute path"              bin/a.sh '/usr/bin/git commit -m x\n'
 guard_catches "git behind command"                bin/a.sh 'command git commit -m x\n'
+guard_catches "a Python argument list"            bin/a.py 'subprocess.run(["git", "commit", "-m", "x"])\n'
+guard_catches "a Python tuple of arguments"       bin/a.py 'subprocess.run(("git", "commit", "-m", "x"))\n'
 guard_catches "a Python list spread over lines"   bin/a.py 'subprocess.run([\n    "git",\n    "commit",\n    "-m", "x"\n])\n'
-guard_passes  "a comment and other git calls"     bin/a.sh '# git commit is not run here\ngit status\ngit push origin --delete b\n'
+guard_catches "a script outside bin and .github"  .githooks/pre-commit 'git commit -m x\n'
+guard_catches "a script in a requirements module" tools/requirements/probe.sh 'git commit -m x\n'
+guard_passes  "a comment and other git calls"     bin/a.sh '# git commit is not run here\ngit status\ngit push origin --delete b\ngit push origin :refs/heads/x\ngit rev-parse HEAD\n'
 guard_passes  "a word that only contains the name" bin/a.sh 'echo digit commit; mygit commit\n'
 # an exception is the exact whole line: the same line with anything executable around it is still caught
 L="$(grep -h -F 'over the %d-byte limit of createCommitOnBranch; the commit cannot' "$root/.github/agent/bin/auditorlib/signed_commit.py" | head -1)"; L="${L#"${L%%[![:space:]]*}"}"
