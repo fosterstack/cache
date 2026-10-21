@@ -78,6 +78,11 @@ class Validator(unittest.TestCase):
             ("a non-text package URL in a scanner's details", lambda d: d["findings"][0]["details"]["grype"].update(purl=3), "malformed value in grype's details"),
             ("an empty package URL in a scanner's details", lambda d: d["findings"][0]["details"]["grype"].update(purl=""), "malformed value in grype's details"),
             ("a scanner's package URL that is not pkg:", lambda d: d["findings"][0]["details"]["inspector"].update(purl="openssl@3.0.1"), "malformed value in inspector's details"),
+            ("a package URL with an empty version", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/openssl@"), "malformed value in inspector's details"),
+            ("a package URL with an empty qualifier value", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/openssl@3.0.1?arch="), "malformed value in inspector's details"),
+            ("a package URL with a repeated qualifier key", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/openssl@3.0.1?arch=amd64&arch=arm64"), "malformed value in inspector's details"),
+            ("a package URL with an empty subpath", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/openssl@3.0.1#"), "malformed value in inspector's details"),
+            ("a finding package URL with a repeated qualifier key", lambda d: d["findings"][0].update(purls=["pkg:deb/debian/openssl@3.0.1?arch=amd64&arch=arm64"]), "is not pkg:TYPE"),
             ("a scanner's package URL for another package", lambda d: d["findings"][0]["details"]["inspector"].update(purl="pkg:deb/debian/other@3.0.1"), "inspector's package URL is for a different package or version"),
             ("a scanner's package URL for another version", lambda d: d["findings"][0]["details"]["grype"].update(purl="pkg:deb/debian/openssl@9.9"), "grype's package URL is for a different package or version"),
             ("a severity outside the normalised words", lambda d: d["findings"][0]["details"]["grype"].update(severity="HIGH"), "malformed value in grype's details"),
@@ -125,6 +130,19 @@ class Validator(unittest.TestCase):
         self.assertEqual(grype["CVE-2099-0001"]["purl"], "pkg:deb/debian/openssl@3.0.1?arch=amd64&distro=debian-12")
         self.assertEqual(insp["CVE-2099-0001"]["purl"], "pkg:deb/debian/openssl@3.0.1")
         self.assertEqual(insp["CVE-2099-0002"]["purl"], "pkg:generic/zlib@1.3")        # reported no package URL: not the finding's, not another scanner's
+
+    def test_one_scanner_with_two_package_urls_on_two_images_is_two_records(self):
+        d = good()
+        second = copy.deepcopy(d["findings"][0]); second["image"] = "production-arm64"
+        second["of"] = len(d["images"]["production-arm64"]["ran"])
+        second["details"]["grype"]["purl"] = "pkg:deb/debian/openssl@3.0.1?arch=arm64&distro=debian-12"
+        d["findings"].append(second)
+        d["issue"] = P._panel_module().render_issue([x for x in d["findings"] if x["status"] == "report"])
+        path = tempfile.mkstemp(suffix=".json")[1]; self.addCleanup(os.unlink, path)
+        with open(path, "w") as fh:
+            json.dump(d, fh)
+        recs = sorted(r["purl"] for r in P.parse_panel(path, "grype"))
+        self.assertEqual(recs, ["pkg:deb/debian/openssl@3.0.1?arch=amd64&distro=debian-12", "pkg:deb/debian/openssl@3.0.1?arch=arm64&distro=debian-12"])
 
     def test_the_document_must_be_an_object(self):
         with self.assertRaisesRegex(P.ParseError, "no images object or findings array"):

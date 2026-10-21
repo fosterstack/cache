@@ -140,6 +140,15 @@ lib = [f for f in v["findings"] if f["id"] == "CVE-2023-4911"][0]
 check("each scanner keeps its OWN package URL in its details; a scanner that reported none has none (handoff 0601: never borrowed)",
       lib["details"]["grype"].get("purl") == "pkg:deb/debian/libc-bin@2.36-9%2Bdeb12u1?arch=amd64&distro=debian-12" and "purl" not in lib["details"]["google"]
       and lib["purls"] == [lib["details"]["grype"]["purl"]], (lib["details"], lib["purls"]))
+# one scanner naming one finding twice with two package URLs: its details keep the FIRST it reported, the finding keeps both
+r = tree(); d = os.path.join(r, "grype", "debug-amd64")
+W(d, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [
+    {"bom-ref": "a", "name": "libc-bin", "version": "2.36-9", "purl": "pkg:deb/debian/libc-bin@2.36-9?arch=amd64"},
+    {"bom-ref": "b", "name": "libc-bin", "version": "2.36-9", "purl": "pkg:deb/debian/libc-bin@2.36-9?arch=all"}],
+    "vulnerabilities": [{"id": "CVE-2023-4911", "affects": [{"ref": "a"}, {"ref": "b"}]}]})
+v = judge(r); lib2 = [f for f in v["findings"] if f["id"] == "CVE-2023-4911"][0]
+check("a scanner that names one finding with two package URLs keeps the first in its details; the finding lists both",
+      lib2["details"]["grype"].get("purl") == "pkg:deb/debian/libc-bin@2.36-9?arch=amd64" and len(lib2["purls"]) == 2, (lib2["details"], lib2["purls"]))
 r = tree({("scout", "fips-arm64"): [("CVE-2099-0002", "tzdata", "2026c")]}); v = judge(r)
 f = v["findings"][0]
 check("a unique finding never reaches the issue; it is listed for the auditor, and alone does not fail the run",
