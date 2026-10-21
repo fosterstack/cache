@@ -467,6 +467,12 @@ rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its v
              'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
 rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" '    inputs:\n      mode:' \
              '    inputs:\n      hostile:\n        type: boolean\n        default: false\n      mode:'
+# Release review R1 (Oct 21), REQ-CHAIN-005-AC2/AC6: Rebuild's apk job installs the same checksum-pinned Go toolchain as Build's (build-apk.sh refuses to run in CI without it), right after Witness
+rb r_go_gone  "005-AC2 the Go toolchain install is missing from Rebuild's apk job (build-apk.sh would die in CI)" "install-scanner.sh go" "$GOINST" ''
+rb r_go_twice "005-AC2 Rebuild's apk job installs Go twice" "step" "$GOINST" "$GOINST$GOINST"
+rb r_go_first "005-AC2 Go installed BEFORE Witness in Rebuild (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
+rb r_go_asm   "005-AC2 Rebuild's assemble job installs Go too (an assemble job installs apko only)" "install-" "$APKINST" "$GOINST$APKINST"
+rb r_go_other "005-AC2 Rebuild's Go install is another command (not the pinned installer)" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: bash bin/install-scanner.sh go /tmp/go'
 # REQ-CHAIN-005-AC7: Rebuild takes the same mode input and has its own snapshot Witness steps, snapshot-rapk and snapshot-rebuild
 RSNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
 RSNAP_OWN="      - name: snapshot-rapk under Witness\n        $RSNAP_IF\n"
@@ -2457,7 +2463,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=841
+EXPECT=846
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
