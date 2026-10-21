@@ -307,11 +307,21 @@ def _render_report(out, sections, header="", conclusion=None, context=None):
     cli.writef(os.path.join(out, "report.md"), "\n".join(lines) + "\n")
 
 
+def _go_ids(gvc, finding):
+    """The finding's id plus every Go advisory in the stream that lists it as an alias (a CVE names its GO- entry)."""
+    try:
+        by = P.parse_govulncheck(gvc)["by_osv"]
+    except (P.ParseError, OSError, TypeError):
+        return [finding]
+    return [finding] + sorted(osv for osv, e in by.items() if osv != finding and finding in e["aliases"])
+
+
 def do_single(finding, manifest, gvc, out):
     module = None
     if manifest and os.path.exists(manifest):
         module = json.load(open(manifest)).get("module")
-    verdict, ev = gvc_verdict(gvc, [finding], module)
+    ids = _go_ids(gvc, finding)
+    verdict, ev = gvc_verdict(gvc, ids, module)
     if verdict == "no-evidence":
         cli.writej(os.path.join(out, "status", finding + ".json"),
                    {"open": True, "reason": ev.get("reason", "no evidence")})
@@ -320,13 +330,17 @@ def do_single(finding, manifest, gvc, out):
         vex.write(out, finding, "not_affected", cli.opt("--today", TS) + "T00:00:00Z" if len(cli.opt("--today", TS)) == 10 else TS,
                   justification="vulnerable_code_not_in_execute_path", evidence=ev)
         return
-    # reachable -> real-fixable bump
-    fixed = installed = None                    # the bump's from/to come from govulncheck's own finding (the version it scanned, the fix it names)
-    for osv, e in P.parse_govulncheck(gvc)["by_osv"].items():
-        if (osv == finding or finding in e["aliases"]) and e["reachable"]:
-            fixed, installed = e["fixed"], e["installed"]
+    # reachable -> real-fixable bump: from/to are govulncheck's own finding for the ONE module the call path reaches (the version it
+    # scanned, the fix it names); no fix named, no installed version, or several reachable modules is not a bump (stays open)
+    by = P.parse_govulncheck(gvc)["by_osv"]
+    reach = [(mod, e) for i in ids if i in by for mod, e in by[i]["mods"].items() if e["reachable"]]
+    if len(reach) != 1 or not (reach[0][1]["installed"] and reach[0][1]["fixed"]):
+        why = ("govulncheck reaches %d modules for this finding: no single bump" % len(reach) if len(reach) != 1
+               else "govulncheck names no fixed version (or no installed version) for %s" % reach[0][0])
+        cli.writej(os.path.join(out, "status", finding + ".json"), {"open": True, "reason": why})
+        return
     cli.writej(os.path.join(out, "action", finding + ".json"),
-               {"kind": "bump_pr", "from": installed, "to": fixed,
+               {"kind": "bump_pr", "from": reach[0][1]["installed"], "to": reach[0][1]["fixed"],
                 "lane": "auto-merge", "defer_to_dependabot": False})
 
 

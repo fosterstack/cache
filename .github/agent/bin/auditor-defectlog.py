@@ -77,6 +77,11 @@ def do_reconcile(out):
     logpath = cli.opt("--log"); log = load(logpath)
     a = cli.ARGS; sc, fid, purl = a[a.index("--finding") + 1:a.index("--finding") + 4]
     adjudicator = cli.opt("--adjudicator"); manifest = cli.opt("--manifest")
+    if manifest:                                             # no readable report is "unavailable", decided before any model is asked
+        rd = {n: path for n, _fn, path in P.manifest_readers(json.load(open(manifest)), {"grype": 0, "trivy": 0, "snyk": 0, "osv-scanner": 0})}
+        if not rd.get(sc):
+            cli.writej(os.path.join(out, "reconcile.json"), {"added": False, "reason": "scanner report unavailable (it did not run, or the verdict is missing)"})
+            return
     ans = cli.ask_model(adjudicator, fid)                    # PROPOSAL: same defect?
     if not ans.get("same_defect"):
         cli.writej(os.path.join(out, "reconcile.json"), {"added": False, "reason": "model: not the same defect"})

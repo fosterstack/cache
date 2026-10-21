@@ -279,8 +279,43 @@ o="$WORK/ac3"; rm -rf "$o"; ghs="$WORK/ac3-gh.json"; rm -f "$ghs"
 run "$PY" "$BIN/auditor-classify.py" --finding GO-2021-0113 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$STUB" --github "$GH" --state "$ghs" --out "$o" && {
   kind="$(pj "$o/action/GO-2021-0113.json" 'd.get("kind")')"; to="$(pj "$o/action/GO-2021-0113.json" 'd.get("to")')"
   novex="$(tree_has_vex_for "$o" GO-2021-0113)"
-  { eq "$kind" "bump_pr" && [ "$to" != "$MISS" ] && [ "$to" != "0.3.0" ] && eq "$novex" "no"; } \
-    && ok || no "bump_pr forward, no not_affected VEX" "kind=$kind to=$to vex=$novex"; }
+  from="$(pj "$o/action/GO-2021-0113.json" 'd.get("from")')"
+  { eq "$kind" "bump_pr" && eq "$from" "v0.3.0" && eq "$to" "v0.3.7" && eq "$novex" "no"; } \
+    && ok || no "bump_pr from the scanned version to the stream's fixed version, no not_affected VEX" "kind=$kind from=$from to=$to vex=$novex"; }
+
+# the bump's versions come from govulncheck's own finding and stay with ONE module (cache#483 round 1)
+gvmk() { "$PY" - "$1" "$2" <<'PYEOF'
+import json, sys
+name, body = sys.argv[1], sys.argv[2]
+def fin(osv, fixed, trace): return {"finding": dict({"osv": osv, "trace": trace}, **({"fixed_version": fixed} if fixed else {}))}
+out = [{"config": {"scan_level": "symbol"}}, {"SBOM": {"modules": [{"path": "example.com/reach"}, {"path": "m/v1", "version": "v1.0.0"}, {"path": "m/v2", "version": "v2.0.0"}], "roots": ["example.com/reach"]}},
+       {"osv": {"id": "GO-2099-1", "aliases": ["CVE-2099-1"]}}]
+call = lambda mod, ver: [{"module": mod, "version": ver, "package": mod + "/p", "function": "F"}, {"module": "example.com/reach", "package": "example.com/reach", "function": "main"}]
+if name == "nofix": out += [fin("GO-2099-1", None, call("m/v2", "v2.0.0"))]
+elif name == "twomods": out += [fin("GO-2099-1", None, [{"module": "m/v1", "version": "v1.0.0", "package": "m/v1/p"}]), fin("GO-2099-1", "v2.2.0", call("m/v2", "v2.0.0"))]
+elif name == "bothreach": out += [fin("GO-2099-1", "v1.1.0", call("m/v1", "v1.0.0")), fin("GO-2099-1", "v2.2.0", call("m/v2", "v2.0.0"))]
+open(sys.argv[2], "w").write("\n".join(json.dumps(x) for x in out) + "\n")
+PYEOF
+}
+begin "req2-ac3b-bump-needs-a-known-fix" "a reachable Go finding whose stream names no fixed version gets NO bump action (never from/to with a null) and stays open with the reason"
+gvmk nofix "$WORK/gv-nofix.jsonl"; o="$WORK/ac3b"; rm -rf "$o"
+run "$PY" "$BIN/auditor-classify.py" --finding GO-2099-1 --manifest "$F/run/manifest-01.json" --govulncheck "$WORK/gv-nofix.jsonl" --adjudicator "$NOCALL" --out "$o" && {
+  act="$( [ -e "$o/action/GO-2099-1.json" ] && echo yes || echo no )"; op="$(pj "$o/status/GO-2099-1.json" 'd.get("open")')"; why="$(pj "$o/status/GO-2099-1.json" 'd.get("reason")')"
+  { eq "$act" "no" && eq "$op" "true" && printf '%s' "$why" | grep -qi 'fix'; } && ok || no "no bump, open, reason names the missing fix" "action=$act open=$op reason=$why"; }
+
+begin "req2-ac3c-bump-versions-stay-with-their-module" "one advisory affecting two modules: the bump pairs the reachable module's installed version with ITS fix (m/v2 v2.0.0 -> v2.2.0), never the other module's version; two reachable modules are ambiguous: no bump"
+gvmk twomods "$WORK/gv-two.jsonl"; gvmk bothreach "$WORK/gv-both.jsonl"; o="$WORK/ac3c"; o2="$WORK/ac3d"; rm -rf "$o" "$o2"
+run "$PY" "$BIN/auditor-classify.py" --finding GO-2099-1 --manifest "$F/run/manifest-01.json" --govulncheck "$WORK/gv-two.jsonl" --adjudicator "$NOCALL" --out "$o" && {
+  fr="$(pj "$o/action/GO-2099-1.json" 'd.get("from")')"; to="$(pj "$o/action/GO-2099-1.json" 'd.get("to")')"
+  run "$PY" "$BIN/auditor-classify.py" --finding GO-2099-1 --manifest "$F/run/manifest-01.json" --govulncheck "$WORK/gv-both.jsonl" --adjudicator "$NOCALL" --out "$o2"
+  amb="$( [ -e "$o2/action/GO-2099-1.json" ] && echo bump || echo none )"
+  { eq "$fr" "v2.0.0" && eq "$to" "v2.2.0" && eq "$amb" "none"; } && ok || no "versions stay with their module; ambiguity yields no bump" "from=$fr to=$to two_reachable=$amb"; }
+
+begin "req2-ac3d-bump-by-the-finding-alias" "a finding named by the advisory's CVE alias (CVE-2021-38561) resolves to its reachable Go advisory and gets the same bump"
+o="$WORK/ac3e"; rm -rf "$o"
+run "$PY" "$BIN/auditor-classify.py" --finding CVE-2021-38561 --manifest "$F/run/manifest-01.json" --govulncheck "$F/govulncheck/gv-01.json" --adjudicator "$NOCALL" --out "$o" && {
+  kind="$(pj "$o/action/CVE-2021-38561.json" 'd.get("kind")')"; to="$(pj "$o/action/CVE-2021-38561.json" 'd.get("to")')"
+  { eq "$kind" "bump_pr" && eq "$to" "v0.3.7"; } && ok || no "alias resolves to the reachable advisory's bump" "kind=$kind to=$to"; }
 
 begin "req2-ac4-not-reachable" "the target's statement is not_affected with the reachability justification and names the finding; a reachable finding does NOT become not_affected; empty ledger"
 o="$WORK/ac4"; rm -rf "$o"
@@ -503,6 +538,15 @@ run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-01.json" --cve CVE
     dl2="$(pj "$o2/votes.json" 'd.get("distinct_lineages")')"
     { eq "$dl" "4" && eq "$dl2" "1" && eq "$e1" "y" && ledger_empty; } \
       && ok || no "4 lineages for four-scanner, 1 for grype-only, empty ledger" "four=$dl one=$dl2 ledger=$(ledger_n)"; }; }
+
+begin "req4-ac3b-no-verdict-is-unavailable-not-corroborated" "a panel manifest with no verdict gives votes.json handling 'evidence_unavailable' (no scanners, no lineages), never 'corroborated'; and a defect-log reconcile against it asks no model and says the report is unavailable"
+o="$WORK/v3"; rm -rf "$o"; o2="$WORK/rc3"; rm -rf "$o2"; cp "$F/dl/log.json" "$WORK/log-nv.json"; : > "$LEDGER"
+run "$PY" "$BIN/auditor-votes.py" --manifest "$WORK/pm-nopanel/manifest.json" --cve CVE-2011-3374 --adjudicator "$NOCALL" --out "$o" && {
+  hd="$(pj "$o/votes.json" 'd.get("handling")')"; nl="$(pj "$o/votes.json" 'd.get("distinct_lineages")')"
+  "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log-nv.json" --finding grype CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$WORK/pm-nopanel/manifest.json" --adjudicator "$NOCALL" --out "$o2" >/dev/null 2>&1
+  rs="$(pj "$o2/reconcile.json" 'd.get("reason")')"; ad="$(pj "$o2/reconcile.json" 'd.get("added")')"
+  { eq "$hd" "evidence_unavailable" && eq "$nl" "0" && printf '%s' "$rs" | grep -qi 'unavailable' && eq "$ad" "false" && ledger_empty; } \
+    && ok || no "no verdict: votes evidence_unavailable, reconcile unavailable without a model call" "handling=$hd lineages=$nl reason=$rs added=$ad ledger=$(ledger_n)"; }
 
 begin "req4-ac4-unique-not-autoclosed" "a grype-only CVE is unique+suspect (not auto-closed); a four-scanner CVE is not unique (a constant fails one)"
 o="$WORK/u1"; o2="$WORK/u2"; rm -rf "$o" "$o2"
@@ -1439,6 +1483,27 @@ _m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-aliases.json"
 print(len(groups))' 2>/dev/null)"
 { eq "$ng" "1"; } && ok || no "aliased matches form one group" "groups=$ng"
 
+begin "olr7-2-mixed-alias-upstream-keeps-identity" "a record with explicit aliases AND a multi-CVE upstream keeps its own identity (its reachability id stays in its CVE group) while only the EXTRA upstream CVE becomes a separate distributed group"
+m7res="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
+C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-mixed-alias-upstream.json")
+g=groups.get("CVE-2099-9703",{}); has_go="GO-2099-9703" in (g.get("aliases") or set())
+ok = set(groups)=={"CVE-2099-9703","CVE-2099-9704"} and has_go
+print("OK" if ok else "BAD:%s go=%s"%(sorted(groups),has_go))' 2>/dev/null)"
+{ eq "$m7res" "OK"; } && ok || no "mixed record keeps identity + splits only extra CVE" "$m7res"
+
+begin "olr5-1-advisory-bundle-does-not-merge-distinct-cves" "a scanner that reports THREE distinct CVEs for one package (the converted advisory fixture) yields three separate groups, so one CVE's decision cannot dispose of another"
+ng="$("$PY" -c '
+import importlib.util
+spec=importlib.util.spec_from_file_location("c",".github/agent/bin/auditor-classify.py")
+C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+_m,groups=C.manifest_findings(".github/agent/fixtures/run/manifest-advisory-bundle.json")
+ok = len(groups)==3 and set(groups)=={"CVE-2099-7001","CVE-2099-7002","CVE-2099-7003"}
+print("OK" if ok else "BAD:%s"%sorted(groups))' 2>/dev/null)"
+{ eq "$ng" "OK"; } && ok || no "advisory bundle splits into distinct CVE groups" "$ng"
+
 begin "olr4-2-vex-merge-preserves-existing" "delivering this run's suppressions MERGES into an existing reviewed .vex (keeps prior statements, bumps version), never overwrites"
 mo="$WORK/olr4-merge"; rm -rf "$mo"; mkdir -p "$mo/ws/.vex" "$mo/supp"
 "$PY" - "$mo" <<'PP'
@@ -2100,13 +2165,13 @@ run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-01.js
     && ok || no "quorum line states rule 3 and names the scanners that ran everywhere" "line=[$line]"; }
 
 
-begin "rpt4-scanner-table-maps-advisory-via-router-identity" "an advisory/alias scanner record (a DSA co-reporting CVEs) that the router placed in a section shows that §n in the scanner table, mapped through the ROUTER's completed identity (every alias, not an independent re-canonicalization) — never a bare '-' (R1 refactor round-5 #4)"
+begin "rpt4-scanner-table-maps-advisory-via-router-identity" "a scanner record named by an advisory/alias id (DEBIAN-CVE-2099-7001 for CVE-2099-7001) that the router placed in a section shows that §n in the scanner table, mapped through the ROUTER's completed identity (every alias, not an independent re-canonicalization) — never a bare '-' (R1 refactor round-5 #4)"
 o="$WORK/rpt4"; rm -rf "$o"
 run "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$F/run/manifest-advisory-bundle.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 && {
-  dsarow="$(grep 'DSA-9999-1' "$o/reports/scanner-tables.txt" 2>/dev/null | head -1)"
+  dsarow="$(grep 'DEBIAN-CVE-2099-7001' "$o/reports/scanner-tables.txt" 2>/dev/null | head -1)"
   mapped="$(printf '%s' "$dsarow" | grep -Eq '§[0-9]' && echo yes || echo no)"
   { eq "$mapped" "yes"; } \
-    && ok || no "advisory row DSA-9999-1 shows a routed §n, not '-'" "row=[$dsarow]"; }
+    && ok || no "advisory row DEBIAN-CVE-2099-7001 shows a routed §n, not '-'" "row=[$dsarow]"; }
 
 begin "rpt5-run-report-header-token-cost-and-role" "auditor-run.py's rendered report header carries the model ROLE and a TOKEN COST field (REQ-AUD-7 AC1), never omitted and never a model id (R1 refactor round-5 #5)"
 o="$WORK/rpt5"; rm -rf "$o"

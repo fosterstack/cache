@@ -9,26 +9,30 @@ from auditorlib import parsers as P
 
 
 def scanners_reporting(manifest, cve):
+    """(scanners reporting the CVE, whether any scanner's evidence was readable at all)."""
     m = json.load(open(manifest))
-    hit = set()
+    hit, readable = set(), False
     for name, fn, path in P.manifest_readers(m, {"grype": P.parse_grype, "trivy": P.parse_trivy,
                                                  "osv-scanner": P.parse_osv, "snyk": P.parse_snyk}):
-        for f in (fn(path) if path else []):
+        if not path:
+            continue
+        readable = True
+        for f in fn(path):
             if cve == f["finding_id"] or cve in f["aliases"]:
                 hit.add(name)
-    return hit
+    return hit, readable
 
 
 def main():
     out = cli.opt("--out"); cve = cli.opt("--cve")
-    sc = scanners_reporting(cli.opt("--manifest"), cve)
+    sc, readable = scanners_reporting(cli.opt("--manifest"), cve)
     lineages = {policy.lineage_of(s) for s in sc}
     unique = len(sc) == 1
     cli.writej(os.path.join(out, "votes.json"), {"cve": cve, "scanners": sorted(sc),
                      "lineage_votes": {l: 1 for l in lineages},
                      "distinct_lineages": len(lineages), "unique": unique,
                      "auto_closed": False,
-                     "handling": "suspect_investigated" if unique else "corroborated"})
+                     "handling": ("evidence_unavailable" if not readable else "suspect_investigated" if unique else "corroborated")})
 
 
 if __name__ == "__main__":

@@ -66,12 +66,20 @@ class Govulncheck(unittest.TestCase):
         self.assertNotIn("CVE-2099-0", g["by_osv"])  # absent -> absent, not reachable=False
     def test_fix_and_installed_version_come_from_the_stream(self):        # the bump PR's from/to, with no module scanner (0600 option A)
         by = P.parse_govulncheck(F + "/govulncheck/gv-01.json")["by_osv"]
-        self.assertEqual((by["GO-2021-0113"]["fixed"], by["GO-2021-0113"]["installed"]), ("v0.3.7", "v0.3.0"))
-        self.assertEqual(by["GO-2020-0015"]["fixed"], "v0.3.3")
+        mod = by["GO-2021-0113"]["mods"]["golang.org/x/text"]
+        self.assertEqual((mod["fixed"], mod["installed"], mod["reachable"]), ("v0.3.7", "v0.3.0", True))
+        self.assertEqual(by["GO-2020-0015"]["mods"]["golang.org/x/text"]["fixed"], "v0.3.3")
+        self.assertFalse(by["GO-2020-0015"]["mods"]["golang.org/x/text"]["reachable"])
         self.assertIn("CVE-2021-38561", by["GO-2021-0113"]["aliases"])      # from the stream's own osv entry
     def test_a_finding_without_a_fixed_version_has_none(self):
         g = P.parse_govulncheck(w('{"finding": {"osv": "GO-1", "trace": [{"module": "m", "version": "v1.0.0"}]}}'))
-        self.assertEqual((g["by_osv"]["GO-1"]["fixed"], g["by_osv"]["GO-1"]["installed"]), (None, "v1.0.0"))
+        self.assertEqual(g["by_osv"]["GO-1"]["mods"], {"m": {"installed": "v1.0.0", "fixed": None, "reachable": False}})
+    def test_versions_stay_with_their_own_module(self):                   # one advisory, two modules: a version of one never pairs with the other's fix
+        g = P.parse_govulncheck(w('{"finding": {"osv": "GO-1", "trace": [{"module": "m/v1", "version": "v1.0.0"}]}}\n'
+                                  '{"finding": {"osv": "GO-1", "fixed_version": "v2.2.0", "trace": [{"module": "m/v2", "version": "v2.0.0", "function": "F"}, {"module": "app"}]}}'))
+        self.assertEqual(g["by_osv"]["GO-1"]["mods"],
+                         {"m/v1": {"installed": "v1.0.0", "fixed": None, "reachable": False},
+                          "m/v2": {"installed": "v2.0.0", "fixed": "v2.2.0", "reachable": True}})
     def test_malformed(self):
         self.assertRaises(P.ParseError, P.parse_govulncheck, w(""))
         self.assertRaises(P.ParseError, P.parse_govulncheck, w('{"finding": {"trace": []}}'))

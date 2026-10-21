@@ -470,13 +470,18 @@ def parse_govulncheck(path):
         # these, never to a sibling version the evidence does not cover (REQ-AUD-13 AC5).
         modvers = {(fr["module"], fr.get("version") or sbom_ver.get(fr["module"]))
                    for fr in trace if fr.get("module")}
-        cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set(), "fixed": None, "installed": None})
+        cur = by_osv.get(osv, {"reachable": False, "imported_only": False, "modules": set(), "mods": {}})
+        mods = dict(cur["mods"])
         vuln = next((fr for fr in trace if fr.get("module")), None)         # the vulnerable dependency is the trace's first named module
+        if vuln:                                                            # its installed version and the stream's fix stay with THAT module
+            e = dict(mods.get(vuln["module"], {"installed": None, "fixed": None, "reachable": False}))
+            e["installed"] = e["installed"] or vuln.get("version") or sbom_ver.get(vuln["module"])
+            e["fixed"] = e["fixed"] or (f["fixed_version"] if isinstance(f.get("fixed_version"), str) and f["fixed_version"] else None)
+            e["reachable"] = e["reachable"] or called
+            mods[vuln["module"]] = e
         by_osv[osv] = {"reachable": cur["reachable"] or called,
                        "imported_only": cur["imported_only"] or imported_only,
-                       "modules": cur.get("modules", set()) | modvers,
-                       "fixed": cur["fixed"] or (f.get("fixed_version") if isinstance(f.get("fixed_version"), str) and f.get("fixed_version") else None),
-                       "installed": cur["installed"] or ((vuln.get("version") or sbom_ver.get(vuln["module"])) if vuln else None)}
+                       "modules": cur.get("modules", set()) | modvers, "mods": mods}
     if not saw_any:
         raise ParseError("govulncheck: empty stream")
     for k, v in by_osv.items():
