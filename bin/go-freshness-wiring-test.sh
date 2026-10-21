@@ -34,7 +34,7 @@ ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "swee
            ("main-candidate-rescan.yml", "panel-google"), ("release.yml", "scans"), ("release.yml", "promotion"),
            # the Scout root-cause round (#176): the agent environment for its own Docker Hub token, same reason as
            # panel-scout/panel-google above; it never mints or uses the auditor App's token
-           ("main-candidate-rescan.yml", "scout-root-cause"),
+           ("main-candidate-rescan.yml", "scout-root-cause"), ("main-candidate-rescan.yml", "scout-older-versions"),
            # automatic patch releases (REQ-REL-009, PR B/#159): decide is main-only + gitsign (id-token) AND mints
            # the auditor App's token (contents write only) to push the signed tag; patch-notes mints the same App's
            # token (contents + pull-requests) to open the changelog PR after that tag — both deliberate, reviewed
