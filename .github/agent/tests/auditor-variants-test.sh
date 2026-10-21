@@ -16,11 +16,13 @@ variants_line() { grep -nE '^VARIANTS = \(' bin/panel.py | head -1 | cut -d: -f1
 # What a passing suite looks like: exit status 0, the summary line, and a non-empty run (a floor, so a suite that discovers nothing or a copy that
 # lost its tests cannot pass). The judging is a pair of functions, checked below against output they must refuse.
 MIN_UNIT=100; MIN_MATRIX=100
-unit_passes()   { local rc="$1" out="$2" n; [ "$rc" -eq 0 ] || return 1; n="$(printf '%s' "$out" | sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in .*/\1/p' | tail -1)"; [ -n "$n" ] && [ "$n" -ge "$MIN_UNIT" ] && printf '%s' "$out" | grep -qE '^OK'; }
+unit_passes()   { local rc="$1" out="$2" n k; [ "$rc" -eq 0 ] || return 1; n="$(printf '%s' "$out" | sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in .*/\1/p' | tail -1)"
+                  k="$(printf '%s' "$out" | sed -n 's/^OK (.*skipped=\([0-9][0-9]*\).*/\1/p' | tail -1)"; [ -n "$n" ] && [ $((n - ${k:-0})) -ge "$MIN_UNIT" ] && printf '%s' "$out" | grep -qE '^OK'; }   # skipped tests are not run tests
 matrix_passes() { local rc="$1" out="$2" n; [ "$rc" -eq 0 ] || return 1; n="$(printf '%s' "$out" | sed -n 's/^auditor-matrix: \([0-9][0-9]*\) passed, 0 failed.*/\1/p' | tail -1)"; [ -n "$n" ] && [ "$n" -ge "$MIN_MATRIX" ]; }
 unit_passes 0 $'Ran 625 tests in 5.1s\n\nOK (skipped=2)' && ok "the unit judge accepts a full passing run" || bad "the unit judge accepts a full passing run"
 unit_passes 0 $'Ran 0 tests in 0.0s\n\nOK' && bad "the unit judge refuses a run that discovered no tests" || ok "the unit judge refuses a run that discovered no tests"
 unit_passes 1 $'Ran 625 tests in 5.1s\n\nOK' && bad "the unit judge refuses a non-zero exit with an OK-looking summary" || ok "the unit judge refuses a non-zero exit with an OK-looking summary"
+unit_passes 0 $'Ran 150 tests in 0.1s\n\nOK (skipped=150)' && bad "the unit judge refuses a run whose tests were all skipped" || ok "the unit judge refuses a run whose tests were all skipped"
 unit_passes 0 $'Ran 625 tests in 5.1s\n\nFAILED (failures=1)' && bad "the unit judge refuses a failed run" || ok "the unit judge refuses a failed run"
 matrix_passes 0 'auditor-matrix: 239 passed, 0 failed' && ok "the matrix judge accepts a full passing run" || bad "the matrix judge accepts a full passing run"
 matrix_passes 0 'auditor-matrix: 0 passed, 0 failed' && bad "the matrix judge refuses an empty run" || ok "the matrix judge refuses an empty run"
