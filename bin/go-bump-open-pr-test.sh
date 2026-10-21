@@ -28,7 +28,7 @@ DEL="git push origin --delete ${B}"
 TIPV="gh api repos/{owner}/{repo}/commits/${B} -q .commit.verification.verified"
 FRESH_OK="$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$VERIFY"
 
-# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|fail] [versions "cur latest"] [delete fails 0|1]
+# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail] [versions "cur latest"] [delete fails 0|1]
 run_case() {
   local name="$1" sut="$2" prs="$3" branch_exists="$4" create_rc="$5" want_rc="$6" want_calls="$7" want_dir="$8"
   local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}"
@@ -49,7 +49,7 @@ case "\$1 \$2" in
   "pr list") printf '%s' '${prs}' ;;
   "pr create") [ "${create_rc}" = 0 ] && echo "https://example/pr/1"; exit ${create_rc} ;;
   "api graphql") case "${gql}" in ok) echo ${OID} ;; badoid) echo "not-an-oid" ;; fail) echo "HTTP 502" >&2; exit 1 ;; esac ;;
-  "api repos/{owner}/{repo}/commits/${B}") case "${tip}" in true) echo true ;; false) echo false ;; fail) exit 1 ;; esac ;;
+  "api repos/{owner}/{repo}/commits/${B}") case "${tip}" in true) echo true ;; false) echo false ;; null) echo null ;; empty) echo ;; fail) exit 1 ;; esac ;;
   "api repos/{owner}/{repo}/commits/${OID}") case "${ver}" in true) echo true ;; false) echo false ;; fail) exit 1 ;; esac ;;
   *) echo "UNEXPECTED gh \$*" >> "${log}"; exit 0 ;;
 esac
@@ -97,12 +97,14 @@ run_case "open PR -> dedup, nothing else"           "$SUT" '[{"number":42,"state
 run_case "merged PR -> landed, nothing else"        "$SUT" '[{"number":40,"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z"}]' 1 0 0 "$LIST" old
 run_case "closed-not-merged -> respected"           "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null}]' 1 0 0 "$LIST" old
 run_case "orphaned branch with a verified tip -> draft PR, no push, no commit" "$SUT" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE" old ok true 0 true
-run_case "AC8: orphaned branch with an unverified tip -> removed and rebuilt through the API, then the draft PR" \
-                                                     "$SUT" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$DEL"$'\n'"$FRESH_OK"$'\n'"$CREATE" new ok true 1 false
-run_case "AC8: orphaned branch whose tip cannot be checked -> exit 1, no PR, nothing removed" \
+run_case "AC8: orphaned branch with an unverified tip -> exit 1, no PR, nothing deleted or committed" \
+                                                     "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 false
+run_case "AC8: orphaned branch whose tip cannot be checked -> exit 1, no PR, nothing deleted" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 fail
-run_case "AC8: an unverified orphan that cannot be removed -> exit 1, no PR, no commit" \
-                                                     "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$DEL" skip ok true 0 false '1.26.6 1.27.0' 1
+run_case "AC8: an answer that is neither true nor false (null) -> exit 1, nothing deleted" \
+                                                     "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 null
+run_case "AC8: an empty answer -> exit 1, nothing deleted" \
+                                                     "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 empty
 run_case "AC8: a version that is not a Go version is refused before any call (injection)" \
                                                      "$SUT" '[]' 0 0 2 "" old ok true 0 true '1.26.6/g;s/^module .*/module evil/;s/x 1.27.0'
 run_case "AC8: a latest that is not a Go version is refused before any call" \
@@ -145,7 +147,9 @@ sed 's/expectedHeadOid/expectedHead/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && {
 mutant "the commit is not leased on the base" "the commit is not leased on the base" "$mut" "${FRESH_CASE[@]}"
 
 sed 's/\[ "\$tip_ver" = true \]/true/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (tip)"; fail=$((fail+1)); }
-mutant "the orphan's tip verification ignored" "the orphan's tip verification ignored" "$mut" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$DEL"$'\n'"$FRESH_OK"$'\n'"$CREATE" new ok true 1 false
+mutant "the orphan's tip verification ignored" "the orphan's tip verification ignored" "$mut" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 false
+{ cat "$SUT"; printf '\ngit push origin --delete "$branch"\n'; } > "$mut"
+mutant "a branch deleted" "a branch deleted" "$mut" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE" old ok true 0 true
 sed 's/exit 2; }/true; }/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (grammar)"; fail=$((fail+1)); }
 mutant "the version grammar loosened" "the version grammar loosened" "$mut" '[]' 0 0 2 "" old ok true 0 true '1.26.6 1.27.0;rm'
 
@@ -157,7 +161,7 @@ mutant "the version grammar loosened" "the version grammar loosened" "$mut" '[]'
 GUARD_PY='
 import hashlib, os, re, subprocess, sys
 CMDS = r"(?:commit|commit-tree|merge|cherry-pick|rebase|am|revert|pull)"
-SHELL_RE = re.compile(r"""(?<![\w./-])["\x27]?git["\x27]?(?:\s+(?:-\S+(?:\s+\S+)?\s+)*)["\x27]?""" + CMDS + r"""["\x27]?(?![\w-])""")
+SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+(?:-\S+(?:\s+\S+)?\s+)*)["\x27]?""" + CMDS + r"""["\x27]?(?![\w-])""")
 LIST_RE = re.compile(r"""["\x27]git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27]""" + CMDS + r"""["\x27]""")
 TESTS = re.compile(r"(^|/)(tests?|testdata|fixtures)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|^\.github/agent/fixtures/")
 ALLOWED = set(sys.argv[2:])      # sha256 of "file\nwhole logical line, stripped": exact rows, nothing else on the line may run
@@ -177,11 +181,17 @@ for f in files:
             i += 1; cur = cur.rstrip()[:-1] + " " + lines[i].lstrip()
         i += 1
         s = cur.strip()
-        if s.startswith("#") or not (SHELL_RE.search(s) or LIST_RE.search(s)):
+        n = re.sub(r"\\(?=[A-Za-z])", "", re.sub(r"(\x27\x27|\"\")", "", s))    # g\x27\x27it and g\\it are git to the shell
+        if s.startswith("#") or not (SHELL_RE.search(n) or LIST_RE.search(n)):
             continue
         if hashlib.sha256((f + "\n" + s).encode()).hexdigest() in ALLOWED:
             continue
         print("%s:%d:%s" % (f, start, s[:160]))
+    whole = "\n".join(lines)
+    for m in LIST_RE.finditer(whole):           # an argument list that is spread over lines
+        ln = whole.count("\n", 0, m.start()) + 1
+        if "\n" in m.group(0):
+            print("%s:%d:%s" % (f, ln, " ".join(m.group(0).split())[:160]))
 '
 guard_scan() { python3 -I -c "$GUARD_PY" "$@"; }   # guard_scan <repo root> [allowed sha256 ...]
 ALLOW=(987df78d130b69c21e8c0c0aec49d065857f250fdc58e429a2fc3c36c2bb50b3 4ecf328cb07ea2e678cec7c6bda8aaf5d45a4569d93a92439cc0e65caf40425f 214234061c415ef2a41afd9c51fe8503b0645b31679d08fb6a06f7ddce85ffb0 5268fb8e50f332bb34b20260158a11e3169918db862866888a14e63996042130 809e4cd3d001b8f260e59002af8ee8c4bc14a7b0aee7a746bdf1a45fe260894d 93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9 2449244a68f1430fd2adeda5e9baf812b46470c590b9e77a9b60b2db11fd950f)
@@ -208,6 +218,11 @@ guard_catches "git commit joined with &&"         bin/a.sh 'git commit&&git push
 guard_catches "a shell continuation"              bin/a.sh 'git \\\n  commit -m x\n'
 guard_catches "a Python argument list"            bin/a.py 'subprocess.run(["git", "commit", "-m", "x"])\n'
 guard_catches "a Python list with an option first" bin/a.py 'subprocess.run(["git", "-c", "user.name=x", "commit", "-m", "x"], check=True)\n'
+guard_catches "a concatenated command name"       bin/a.sh "g''it commit -m x\\n"
+guard_catches "a backslash inside the command name" bin/a.sh 'g\\it commit -m x\n'
+guard_catches "git by absolute path"              bin/a.sh '/usr/bin/git commit -m x\n'
+guard_catches "git behind command"                bin/a.sh 'command git commit -m x\n'
+guard_catches "a Python list spread over lines"   bin/a.py 'subprocess.run([\n    "git",\n    "commit",\n    "-m", "x"\n])\n'
 guard_passes  "a comment and other git calls"     bin/a.sh '# git commit is not run here\ngit status\ngit push origin --delete b\n'
 guard_passes  "a word that only contains the name" bin/a.sh 'echo digit commit; mygit commit\n'
 # an exception is the exact whole line: the same line with anything executable around it is still caught

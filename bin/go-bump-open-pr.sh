@@ -11,7 +11,7 @@
 #   merged PR                 -> the bump already landed, nothing to do
 #   closed (not merged) PR    -> a human declined it; respect that, do not recreate
 #   branch exists, no PR      -> orphaned by push-success/create-failure; create the PR from it ONLY when its tip is verified by GitHub;
-#                                an unverified tip (a branch an older unsigned run pushed) is removed and rebuilt through the signed path
+#                                anything else (an unsigned older run's branch, an unreadable answer) fails the run and deletes nothing
 #   no branch, no PR          -> fresh: bump both go.mod, commit, push, create the PR
 set -euo pipefail
 CURRENT="${1:?usage: go-bump-open-pr.sh <current> <latest>}"
@@ -41,13 +41,11 @@ fresh=1
 if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
   tip_ver="$(gh api "repos/{owner}/{repo}/commits/${branch}" -q '.commit.verification.verified')" \
     || { echo "::error::could not ask whether the tip of ${branch} is verified; opening no pull request" >&2; exit 1; }
-  if [ "$tip_ver" = true ]; then
-    echo "branch ${branch} exists with no PR (orphaned by a prior push-success/create-failure) and its tip is verified — creating the PR from the existing branch"
-    fresh=0
-  else
-    echo "::warning::branch ${branch} exists with no PR and its tip is not verified by GitHub (main requires signed commits); removing it and rebuilding it through the API" >&2
-    git push origin --delete "$branch" >&2 || { echo "::error::could not remove the unverified branch ${branch}; opening no pull request" >&2; exit 1; }
-  fi
+  # Only the exact word true is a verified tip. A branch is never deleted here: an unverified (or unreadable) tip is refused, loudly, for a person
+  # to look at, so a branch a human or a concurrent run owns is never removed by this script.
+  [ "$tip_ver" = true ] || { echo "::error::branch ${branch} exists with no PR and its tip is not reported verified by GitHub (got '${tip_ver}'; main requires signed commits); opening no pull request. Remove the branch to let the next run rebuild it through the API" >&2; exit 1; }
+  echo "branch ${branch} exists with no PR (orphaned by a prior push-success/create-failure) and its tip is verified — creating the PR from the existing branch"
+  fresh=0
 fi
 if [ "$fresh" = 1 ]; then
   echo "creating ${branch}: bumping the go directive in both modules"
