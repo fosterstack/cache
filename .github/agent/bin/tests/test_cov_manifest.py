@@ -417,6 +417,12 @@ class Inventories(unittest.TestCase):
         self.assertIsNone(M._base_os(w("{broken", self.tmp)))
         self.assertIsNone(M._base_os(os.path.join(self.tmp, "missing.json")))
 
+    def test_a_syft_document_of_the_wrong_shape_yields_no_carriers_and_no_base_os(self):
+        for bad in ([], "x", 5, {"artifacts": 5}, {"artifacts": [1]}, {"artifacts": [{"id": "a"}], "artifactRelationships": 3},
+                    {"artifacts": [{"id": "a"}], "artifactRelationships": [7]}, {"distro": [1]}):
+            self.assertEqual(M._carriers(w(bad, self.tmp)), [], bad)
+            self.assertIsNone(M._base_os(w(bad, self.tmp)), bad)
+
     def test_carriers(self):
         self.assertEqual(M._carriers(w("nope", self.tmp)), [])
         art = [{"id": "a", "name": "node", "version": "18", "purl": "pkg:generic/node@18"},

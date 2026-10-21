@@ -217,14 +217,15 @@ for mt in (json.load(open(gp)).get("matches") or [] if gp else []):
     name, ver = a.get("name") or pn, a.get("version") or pv or "0"
     fixv = (v.get("fix") or {}).get("versions") or []
     purl = a.get("purl") or "pkg:generic/%s@%s" % (name, ver)
-    k = pm.key_of("production-amd64", v["id"], name, ver)
+    im = a.get("image") or "production-amd64"                      # a test may put one artifact on another image
+    k = pm.key_of(im, v["id"], name, ver)
     if k in seen: continue
     seen.add(k)
     det = {}
     sev = (v.get("severity") or "").lower()
     if sev in ("negligible", "low", "medium", "high", "critical"): det["severity"] = sev
     if (v.get("fix") or {}).get("state") == "fixed" and fixv: det["fixed_version"] = fixv[0]
-    fs.append({"image": "production-amd64", "id": v["id"], "package": name, "version": ver, "seen_by": ["grype"], "of": 4, "unique": True,
+    fs.append({"image": im, "id": v["id"], "package": name, "version": ver, "seen_by": ["grype"], "of": len(images[im]["ran"]), "unique": True,
                "status": "unique", "purls": [purl], "details": {"grype": det}})
 sp = (m.get("scanner_reports") or {}).get("snyk")                  # a second, Snyk-shaped report becomes Google's record of the same CVE
 for v in (json.load(open(sp)).get("vulnerabilities") or [] if sp else []):
@@ -426,16 +427,15 @@ run "$PY" "$BIN/auditor-poam.py" --finding "$F/poam/poam-05.json" --kev "$F/kev/
   { eq "$th" "at_or_above" && eq "$why" "known-exploited" && eq "$iss" "1" && ledger_empty; } \
     && ok || no "at_or_above via known-exploited, one issue, empty ledger" "threshold=$th reason=$why issues=$iss ledger=$(ledger_n)"; }
 
-begin "req2-ac5c-expiry-reopens-item" "expiry with no fix DELETES the seeded ignore and VEX under every alias (world check) and returns the finding to section 3"
+begin "req2-ac5c-expiry-reopens-item" "expiry with no fix DELETES the seeded VEX statement under every alias (world check) and returns the finding to section 3"
 o="$WORK/ac5c"; supp="$WORK/ac5c-supp"; rm -rf "$o" "$supp"
-mkdir -p "$supp/ignores/grype" "$supp/.vex"
-echo '{"id":"CVE-2011-3374","vex":"stmt","expiry":"2026-08-23"}' > "$supp/ignores/grype/CVE-2011-3374.json"
+mkdir -p "$supp/.vex"
 printf '{"statements":[{"vulnerability":{"name":"CVE-2011-3374"},"status":"affected"}]}' > "$supp/.vex/fosterstack-cache.openvex.json"
 run "$PY" "$BIN/auditor-poam.py" --recheck --package "$F/poam/poam-04.json" --suppression-dir "$supp" --today 2026-09-22 --out "$o" && {
   rem="$(pj "$o/recheck.json" 'd.get("ignore_removed")')"; sec="$(pj "$o/recheck.json" 'd.get("returned_to_section")')"
-  anyign="$(ignore_names_any "$supp" $(alias_set CVE-2011-3374))"; anyvex="$(tree_has_vex_for "$supp" CVE-2011-3374)"
-  { eq "$rem" "true" && eq "$sec" "3" && eq "$anyign" "no" && eq "$anyvex" "no"; } \
-    && ok || no "seeded ignore AND VEX deleted from the state under every alias; section 3" "removed=$rem section=$sec any_ignore=$anyign any_vex=$anyvex"; }
+  anyvex="$(tree_has_vex_for "$supp" CVE-2011-3374)"
+  { eq "$rem" "true" && eq "$sec" "3" && eq "$anyvex" "no"; } \
+    && ok || no "seeded VEX statement deleted from the state; section 3" "removed=$rem section=$sec any_vex=$anyvex"; }
 
 begin "req2-ac6-categories-disjoint" "classification.json finding-id set EQUALS the manifest's id set (never vacuous), each with one valid category"
 run "$PY" "$BIN/auditor-classify.py" --manifest "$F/run/manifest-01.json" --adjudicator "$STUB" --out "$CDIR" && {
@@ -2258,6 +2258,34 @@ print("OK" if row["section"]==1 and row.get("reopened_scope") else "BAD:%s"%row[
 { eq "$res" "OK"; } && ok || no "pullable fix lifts the carried suppression (§1 + removal)" "$res"
 
 echo "=== REQ-AUD-13 refactor boundary regressions (round 4) ==="
+
+begin "refr4-2-fp-log-does-not-cross-ecosystem" "a trusted defect-log FP for a Debian package closes ONLY the Debian ecosystem at that name/version, never an independently installed PyPI dist of the same name/version (the two sit on different panel images: one finding per CVE+package+version per image)"
+o="$WORK/refr4-2"; rm -rf "$o"; mkdir -p "$o"
+cat > "$o/grype.json" <<'JSON'
+{"matches":[
+ {"vulnerability":{"id":"CVE-2099-1951","severity":"Critical"},"artifact":{"name":"requests","version":"2.28.1","type":"deb","purl":"pkg:deb/debian/requests@2.28.1"}},
+ {"vulnerability":{"id":"CVE-2099-1951","severity":"Critical"},"artifact":{"name":"requests","version":"2.28.1","type":"python","purl":"pkg:pypi/requests@2.28.1","image":"production-arm64"}}
+]}
+JSON
+cat > "$o/log.json" <<'JSON'
+{"defects":[{"package":"requests","disposition":"false_positive","keys":[{"scanner":"grype","finding_id":"CVE-2099-1951","purl":"pkg:deb/debian/requests@2.28.1"}],"evidence":{"detail":"debian backport"}}]}
+JSON
+"$PY" - "$o" <<'PP'
+import json,os,sys
+m={"commit":"ab","module":"x","base_os":"debian","candidate_variant":"production","candidate_digests":{"production":"sha256:ab"},
+   "scanner_reports":{"grype":os.path.join(sys.argv[1],"grype.json")},"scanner_status":{},
+   "govulncheck":None,"known_defect_log":os.path.join(sys.argv[1],"log.json"),"kev_catalog":None}
+json.dump(m,open(os.path.join(sys.argv[1],"manifest.json"),"w"))
+PP
+"$PY" "$WORK/g2p.py" "$o/manifest.json"
+r2="$("$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$o/manifest.json" --adjudicator "$STUB" --out "$o/out" >/dev/null 2>&1; "$PY" -c '
+import json
+c=json.load(open("'"$o"'/out/classification.json"))["findings"]
+secs={}
+for r in c: secs.setdefault(r["section"],0); secs[r["section"]]+=1
+# the deb FP closes in §5; the pypi finding must NOT be §5 (routed on its own, e.g. §2)
+print("OK" if 5 in secs and any(r["section"]!=5 for r in c) else "BAD:%s"%[(r["id"],r["section"]) for r in c])' 2>/dev/null)"
+{ eq "$r2" "OK"; } && ok || no "deb FP does not close a same-name PyPI dist" "$r2"
 
 begin "refr4-3-pure-lineage-no-product-wide-acceptance" "a CVE reported ONLY via advisory lineage (no per-CVE scanner record) is surfaced §4 under investigation, not a product-wide affected acceptance"
 o="$WORK/refr4-3"; rm -rf "$o"

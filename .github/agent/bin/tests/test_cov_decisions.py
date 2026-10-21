@@ -336,10 +336,6 @@ class PoamRecheck(TmpCase):
     def _supp(self):
         s = "supp"
         self.put(s + "/.vex/a.openvex.json", vexfile(("CVE-1", []), ("CVE-2", [])))
-        self.put(s + "/ignores/grype/CVE-1.json", {"id": "CVE-1"})
-        self.put(s + "/ignores/grype/GHSA-1.json", {"id": "GHSA-1"})   # alias of CVE-1
-        self.put(s + "/ignores/grype/CVE-2.json", {"id": "CVE-2"})
-        self.put(s + "/ignores/broken.json", "{not json")
         return self.p(s)
 
     def test_expired_without_fix_removes_only_this_finding(self):
@@ -350,9 +346,7 @@ class PoamRecheck(TmpCase):
         self.assertEqual((r["ignore_removed"], r["returned_to_section"], r["policy_reapplied"], r["cve"]),
                          (True, 3, True, "CVE-1"))
         rel = sorted(os.path.relpath(x, supp) for x in r["removed_files"])
-        self.assertEqual(rel, [".vex/a.openvex.json", "ignores/grype/CVE-1.json", "ignores/grype/GHSA-1.json"])
-        self.assertTrue(os.path.exists(os.path.join(supp, "ignores/grype/CVE-2.json")))
-        self.assertTrue(os.path.exists(os.path.join(supp, "ignores/broken.json")))
+        self.assertEqual(rel, [".vex/a.openvex.json"])                      # the OpenVEX is the only exception there is
         v = json.load(open(os.path.join(supp, ".vex/a.openvex.json")))
         self.assertEqual([s["vulnerability"]["name"] for s in v["statements"]], ["CVE-2"])
 
@@ -365,7 +359,8 @@ class PoamRecheck(TmpCase):
             self.assertEqual(json.load(open(os.path.join(out, "recheck.json"))),
                              {"ignore_removed": False, "returned_to_section": None, "policy_reapplied": False})
             self.assertEqual(json.load(open(os.path.join(out, "ignores", "still-active.json"))), pkgd)
-        self.assertTrue(os.path.exists(os.path.join(supp, "ignores/grype/CVE-1.json")))
+        kept = json.load(open(os.path.join(supp, ".vex/a.openvex.json")))
+        self.assertEqual([s["vulnerability"]["name"] for s in kept["statements"]], ["CVE-1", "CVE-2"])      # nothing was removed
 
 
 class PoamAcceptGuard(TmpCase):

@@ -40,20 +40,13 @@ def _remove_from_vex(path, aliases):
 
 
 def _remove_ignores(root, aliases):
+    """Remove the finding's statements from every OpenVEX file under root (the VEX is the only exception there is)."""
     removed = []
     for dp, _, fs in os.walk(root):
         for fn in fs:
             p = os.path.join(dp, fn)
-            if fn.endswith(".openvex.json"):
-                if _remove_from_vex(p, aliases):
-                    removed.append(p)
-            elif fn.endswith(".json"):
-                try:
-                    d = json.load(open(p))
-                except Exception:
-                    continue
-                if isinstance(d, dict) and d.get("id") in aliases:   # a per-finding ignore for this id
-                    os.remove(p); removed.append(p)
+            if fn.endswith(".openvex.json") and _remove_from_vex(p, aliases):
+                removed.append(p)
     return removed
 
 
@@ -88,9 +81,6 @@ def accept(finding_file, kevfile, github, state, today, out):
                         "detail": "reachable=%s fix_pullable=%s" % (f.get("reachable"), f.get("fix_pullable"))},
               target_date=exp)
     cli.writej(os.path.join(out, "package.json"), {"cve": cve, "ignore_expiry_days": policy.IGNORE_EXPIRY_DAYS, "expiry": exp})
-    for sc in f.get("scanners", []):
-        cli.writej(os.path.join(out, "ignores", sc, cve + ".json"),
-                   {"id": cve, "vex": policy.stmt_id(cve), "expiry": exp, "reason": "accepted risk; re-checked daily"})
     cli.writej(os.path.join(out, "decision.json"),
                {"accepted": True, "ci_stays_green": True, "report_section": 2,
                 "threshold": "at_or_above" if at else "below", "threshold_reason": reason})

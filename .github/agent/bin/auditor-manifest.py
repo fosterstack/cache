@@ -101,10 +101,10 @@ def _base_os(path):
     cycle. None if syft did not report a distro."""
     try:
         dist = (json.load(open(path)).get("distro") or {})
-    except Exception:
+        did = (dist.get("id") or "").strip().lower()
+        ver = (dist.get("versionID") or "").strip()
+    except Exception:                          # unreadable, or not an SBOM-shaped document
         return None
-    did = (dist.get("id") or "").strip().lower()
-    ver = (dist.get("versionID") or "").strip()
     if did and ver:
         return "%s %s" % (did, ver)
     return did or None
@@ -122,14 +122,14 @@ def _carriers(path):
     authoritative carrier analysis."""
     try:
         d = json.load(open(path))
-    except Exception:
+        by_id = {a.get("id"): a for a in (d.get("artifacts") or []) if a.get("id")}
+        rels = list(d.get("artifactRelationships") or [])
+        rels = [r for r in rels if r.get("type") in _CARRY_RELS]
+    except (OSError, ValueError, AttributeError, TypeError):           # unreadable, or not an SBOM-shaped document: no carriers
         return []
-    by_id = {a.get("id"): a for a in (d.get("artifacts") or []) if a.get("id")}
     out = []; seen = set()
-    for rel in (d.get("artifactRelationships") or []):
-        how = _CARRY_RELS.get(rel.get("type"))
-        if not how:
-            continue
+    for rel in rels:
+        how = _CARRY_RELS[rel["type"]]
         parent = by_id.get(rel.get("parent")); child = by_id.get(rel.get("child"))
         if not parent or not child:
             continue
