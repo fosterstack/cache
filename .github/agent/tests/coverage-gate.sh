@@ -28,21 +28,40 @@ exclude_lines =
     (?!)
 EOF
 export COVERAGE_RCFILE="$W/rc" COVERAGE_PROCESS_START="$W/rc"
-python3 -m coverage run -m unittest discover -s .github/agent/bin/tests -p 'test_*.py' 2> "$W/unit.log" \
-  || { cat "$W/unit.log" >&2; echo "::error::parser unit tests failed under coverage" >&2; exit 1; }
-bash .github/agent/tests/auditor-matrix-test.sh > "$W/matrix.log" 2>&1 \
-  || { grep -A2 '^FAIL' "$W/matrix.log" >&2; tail -1 "$W/matrix.log" >&2
-       echo "::error::matrix suite failed under coverage" >&2; exit 1; }
-tail -1 "$W/matrix.log"
-# row 78: the action-pin checker's fixture cases (it lives here so its changes need the independent second review)
-bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.log" 2>&1 \
-  || { grep '^FAIL' "$W/pins.log" >&2; tail -1 "$W/pins.log" >&2
-       echo "::error::action-pin cases failed under coverage" >&2; exit 1; }
-tail -1 "$W/pins.log"
+# The suites are independent and each process writes its own coverage data file (parallel = true), so they run at the same time and
+# every data file is combined below, before the unchanged threshold check (advisor 0618: the job was 18 minutes, 14 of them the action-pin
+# cases one after another). The pin cases run as PINS_SHARDS parallel shards of one list; coverage-shard-sum.py then proves the shards
+# together ran exactly the whole list (counted by a dry listing of the file) once and none failed, and coverage-shard-test.sh proves that
+# partition and that check first.
+PINS_SHARDS=4
+bash .github/agent/tests/coverage-shard-test.sh > "$W/shardtest.log" 2>&1 \
+  || { tail -25 "$W/shardtest.log" >&2; echo "::error::the shard partition test failed" >&2; exit 1; }
+tail -1 "$W/shardtest.log"
+pins_total=$(PINS_DRY=1 bash .github/agent/tests/check-action-pins-test.sh 2>/dev/null \
+  | sed -n 's/^check-action-pins: shard 0\/1 units=\([0-9][0-9]*\) ran=.*$/\1/p')
+[ -n "$pins_total" ] || { echo "::error::could not count the action-pin units" >&2; exit 1; }
+python3 -m coverage run -m unittest discover -s .github/agent/bin/tests -p 'test_*.py' 2> "$W/unit.log" & p_unit=$!
+bash .github/agent/tests/auditor-matrix-test.sh > "$W/matrix.log" 2>&1 & p_matrix=$!
+p_pins=()
+for i in $(seq 0 $((PINS_SHARDS-1))); do   # row 78: the action-pin checker's fixture cases (it lives here so its changes need the independent second review)
+  PINS_SHARD=$i/$PINS_SHARDS bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.$i.log" 2>&1 & p_pins+=($!)
+done
 # the k8s harness's fenced exclusion (advisor 0084): its refusals are branches of the same checker
-bash .github/agent/tests/k8s-harness-fence-test.sh > "$W/fence.log" 2>&1 \
-  || { tail -25 "$W/fence.log" >&2
-       echo "::error::k8s fence cases failed under coverage" >&2; exit 1; }
+bash .github/agent/tests/k8s-harness-fence-test.sh > "$W/fence.log" 2>&1 & p_fence=$!
+bad=0
+wait "$p_unit" || { cat "$W/unit.log" >&2; echo "::error::parser unit tests failed under coverage" >&2; bad=1; }
+wait "$p_matrix" || { grep -A2 '^FAIL' "$W/matrix.log" >&2; tail -1 "$W/matrix.log" >&2
+                      echo "::error::matrix suite failed under coverage" >&2; bad=1; }
+for i in "${!p_pins[@]}"; do
+  wait "${p_pins[$i]}" || { grep '^FAIL' "$W/pins.$i.log" >&2; tail -1 "$W/pins.$i.log" >&2
+                            echo "::error::action-pin cases (shard $i/$PINS_SHARDS) failed under coverage" >&2; bad=1; }
+done
+wait "$p_fence" || { tail -25 "$W/fence.log" >&2; echo "::error::k8s fence cases failed under coverage" >&2; bad=1; }
+[ "$bad" -eq 0 ] || exit 1
+tail -1 "$W/matrix.log"
+python3 .github/agent/tests/coverage-shard-sum.py "$pins_total" "$W"/pins.[0-9].log \
+  || { echo "::error::the action-pin shards did not run the whole list exactly once" >&2; exit 1; }
+tail -qn1 "$W"/pins.[0-9].log
 tail -1 "$W/fence.log"
 python3 -m coverage combine -q
 python3 -m coverage json -q -o "$W/coverage.json"
