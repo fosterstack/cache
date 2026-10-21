@@ -40,9 +40,9 @@
          "type": "string",
          "enum": [
           "grype",
-          "osv-scanner",
-          "trivy",
-          "snyk"
+          "scout",
+          "inspector",
+          "google"
          ]
         },
         "finding_id": {

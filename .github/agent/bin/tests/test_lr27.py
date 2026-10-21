@@ -31,17 +31,20 @@ class NormRef(unittest.TestCase):
 
 
 class RemoveIgnores(unittest.TestCase):
-    """(b) a JSON file that is not an object in the suppression dir is not an ignore — no crash,
-    and the real per-finding ignore beside it is still removed."""
+    """(b) an OpenVEX-named file that is not an object in the suppression dir is not a VEX document — no crash, and the real
+    statement beside it is still removed (the VEX is the only exception there is)."""
     def test_array_json_is_skipped(self):
         d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
-        with open(os.path.join(d, "list.json"), "w") as fh:
+        with open(os.path.join(d, "list.openvex.json"), "w") as fh:
             json.dump([1, 2], fh)
+        with open(os.path.join(d, "a.openvex.json"), "w") as fh:
+            json.dump({"statements": [{"vulnerability": {"name": "CVE-1"}}]}, fh)
         with open(os.path.join(d, "ig.json"), "w") as fh:
-            json.dump({"id": "CVE-1"}, fh)
+            json.dump({"id": "CVE-1"}, fh)                              # not a VEX file: untouched
         removed = P._remove_ignores(d, {"CVE-1"})
-        self.assertEqual([os.path.basename(x) for x in removed], ["ig.json"])
-        self.assertTrue(os.path.exists(os.path.join(d, "list.json")))
+        self.assertEqual([os.path.basename(x) for x in removed], ["a.openvex.json"])
+        self.assertTrue(os.path.exists(os.path.join(d, "list.openvex.json")))
+        self.assertTrue(os.path.exists(os.path.join(d, "ig.json")))
 
 
 class SchemaLocation(unittest.TestCase):

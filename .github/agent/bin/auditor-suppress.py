@@ -97,11 +97,6 @@ def main():
     cli.writej(os.path.join(out, "evidence", cve + ".evidence.json"),
                {"statement_id": vid, "vulnerability": cve, "evidence": ev, "expiry": expiry,
                 "scoped_purls": subcomponents})
-    cli.writef(os.path.join(out, ".snyk"),
-               "version: v1.5.0\nignore:\n  %s:\n    - '*':\n        reason: '%s; %s'\n"
-               "        expires: %sT00:00:00.000Z\n        vex: '%s'\n" % (cve, status, vid, expiry, vid))
-    cli.writef(os.path.join(out, "osv-scanner.toml"),
-               '[[IgnoredVulns]]\nid = "%s"\nreason = "%s; governed by %s"\n' % (cve, status, vid))
 
 
 if __name__ == "__main__":
