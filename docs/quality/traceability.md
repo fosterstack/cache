@@ -789,7 +789,7 @@ The final image index that Sign signs and Release publishes shall carry our Open
 
 ### REQ-SCAN-001 — The four-scanner panel on the daily rescan
 
-The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all six images, and Google Artifact Analysis on the three variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
+The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all four images, and Google Artifact Analysis on the two variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/main-candidate-rescan.yml*
 

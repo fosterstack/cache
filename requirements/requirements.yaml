@@ -2065,7 +2065,7 @@ requirements:
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >
-      The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all six images, and Google Artifact Analysis on the three variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
+      The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all four images, and Google Artifact Analysis on the two variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
     source: [.github/workflows/main-candidate-rescan.yml]
     tier: community
     introduced: v0.3.0
