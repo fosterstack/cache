@@ -1820,8 +1820,6 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         # backport does not patch an independently installed PyPI dist) (R1 refactor round-4 #2).
         fp_keys = set()   # (ecosystem, package, version)
         for f in grp["findings"]:
-            if f.get("_lineage_only"):     # an advisory's defect-log FP is about ITS OWN
-                continue                   # vulnerability, not a different bundled CVE (round-8 #1)
             r = idx.get((f["scanner"], f["finding_id"], f["purl"]))
             if r and r.get("disposition") == "false_positive":
                 fp_keys.add((_eco(f.get("purl")), (r.get("package") or f.get("package")), _ver_from_purl(f["purl"])))

@@ -82,6 +82,7 @@ class Govulncheck(unittest.TestCase):
                           "m/v2": {"installed": "v2.0.0", "fixed": "v2.2.0", "reachable": True}})
     def test_malformed(self):
         self.assertRaises(P.ParseError, P.parse_govulncheck, w(""))
+        self.assertRaises(P.ParseError, P.parse_govulncheck, w("not a stream\n"))        # junk is a ParseError, not a JSONDecodeError escaping the callers
         self.assertRaises(P.ParseError, P.parse_govulncheck, w('{"finding": {"trace": []}}'))
 
 

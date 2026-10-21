@@ -324,15 +324,6 @@ def _osv_purl(pkg):
     return base + ("@%s" % ver if ver else "")
 
 
-_CVE_RE = None
-
-
-def _cves(ids):
-    global _CVE_RE
-    if _CVE_RE is None:
-        import re
-        _CVE_RE = re.compile(r"CVE-\d{4}-\d+")
-    return {a for a in ids if _CVE_RE.fullmatch(a or "")}
 
 
 def parse_osv(path, scanner="osv-scanner"):
@@ -346,33 +337,11 @@ def parse_osv(path, scanner="osv-scanner"):
             purl = _osv_purl(pkg)
             for v in p.get("vulnerabilities") or []:
                 fid = v.get("id")
-                # TRUE identity vs BUNDLE membership. OSV's own `aliases` ALWAYS assert the
-                # SAME vulnerability (cross-namespace equivalence) — they are identity, never a
-                # bundle signal, even when they list two CVE ids (R1 outer round-6 #2). Only
-                # `upstream` under a NON-CVE record signals a distro advisory that maps to
-                # SEVERAL distinct upstream CVEs; that is a co-report bundle, not one identity
-                # (R1 outer round-5 #1). We deliberately IGNORE `groups` (also a shared-fix
-                # bundle). Bundle detection therefore keys on `upstream` alone.
                 aliases = set(v.get("aliases") or [])
                 upstream = set(v.get("upstream") or [])
-                # The record's OWN identity CVEs come from its id + its explicit aliases (always
-                # equivalence). `upstream` CVEs that are NOT part of that identity are the extra
-                # members a distro advisory bundles in — those, and only those, are bundle
-                # members that must NOT bridge (R1 outer round-6 #2, round-7 #2). A record can be
-                # BOTH: its own identity (kept as aliases, union normally) AND an advisory that
-                # also covers other CVEs (carried as bundle_cves, distributed as lineage).
-                identity_cves = _cves(aliases | {fid})
-                up_cves = _cves(upstream | {fid})
-                extra_cves = up_cves - identity_cves
                 extra = {"ecosystem": pkg.get("ecosystem"),
                          "installed_version": pkg.get("version")}
-                if len(up_cves) >= 2 and fid not in up_cves and extra_cves:
-                    # keep own identity (aliases + any non-extra upstream ids); the extra
-                    # upstream CVEs are bundle members, distributed to their own groups as lineage.
-                    al = aliases | {a for a in upstream if a not in extra_cves}
-                    extra["bundle_cves"] = sorted(extra_cves)
-                else:
-                    al = aliases | upstream
+                al = aliases | upstream
                 fixed = None
                 for aff in v.get("affected") or []:
                     for rng in aff.get("ranges") or []:
@@ -410,7 +379,10 @@ def _stream(text):
             i += 1
         if i >= n:
             break
-        obj, j = dec.raw_decode(text, i)
+        try:
+            obj, j = dec.raw_decode(text, i)
+        except ValueError as e:
+            raise ParseError("govulncheck: not a JSON stream at offset %d: %s" % (i, e))
         yield obj
         i = j
 

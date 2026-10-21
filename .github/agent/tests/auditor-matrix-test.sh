@@ -556,8 +556,14 @@ run "$PY" "$BIN/auditor-votes.py" --manifest "$F/run/manifest-down.json" --cve C
   "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log-dn.json" --finding grype CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$F/run/manifest-down.json" --adjudicator "$NOCALL" --out "$o2" >/dev/null 2>&1
   "$PY" "$BIN/auditor-defectlog.py" reconcile --log "$WORK/log-dn.json" --finding scout CVE-2011-3374 'pkg:deb/debian/apt@2.6.1?arch=amd64&distro=debian-12.0' --manifest "$WORK/m-gone.json" --adjudicator "$NOCALL" --out "$o3" >/dev/null 2>&1
   r2="$(pj "$o2/reconcile.json" 'd.get("reason")')"; r3="$(pj "$o3/reconcile.json" 'd.get("reason")')"
-  { eq "$hd" "evidence_unavailable" && eq "$sc" "[]" && printf '%s' "$r2" | grep -qi unavailable && printf '%s' "$r3" | grep -qi unavailable && ledger_empty; } \
-    && ok || no "down scanner and unreadable verdict are unavailable evidence, no model call" "handling=$hd scanners=$sc down_reason=$r2 gone_reason=$r3 ledger=$(ledger_n)"; }
+  o4="$WORK/v6"; rm -rf "$o4"; "$PY" "$BIN/auditor-votes.py" --manifest "$WORK/m-gone.json" --cve CVE-2011-3374 --adjudicator "$NOCALL" --out "$o4" >/dev/null 2>&1       # reports named, verdict file gone
+  hd2="$(pj "$o4/votes.json" 'd.get("handling")')"
+  printf 'not a stream\n' > "$WORK/gv-junk.jsonl"; o5="$WORK/ac3f"; rm -rf "$o5"
+  "$PY" "$BIN/auditor-classify.py" --finding CVE-2099-1 --manifest "$F/run/manifest-01.json" --govulncheck "$WORK/gv-junk.jsonl" --adjudicator "$NOCALL" --out "$o5" >/dev/null 2>&1
+  op="$(pj "$o5/status/CVE-2099-1.json" 'd.get("open")')"; act="$( [ -e "$o5/action/CVE-2099-1.json" ] && echo yes || echo no )"
+  { eq "$hd" "evidence_unavailable" && eq "$sc" "[]" && printf '%s' "$r2" | grep -qi unavailable && printf '%s' "$r3" | grep -qi unavailable && ledger_empty \
+    && eq "$hd2" "evidence_unavailable" && eq "$op" "true" && eq "$act" "no"; } \
+    && ok || no "down scanner, unreadable verdict and an unparseable govulncheck stream are unavailable evidence, no model call, no bump" "handling=$hd scanners=$sc down_reason=$r2 gone_reason=$r3 gone_votes=$hd2 junk_open=$op junk_action=$act ledger=$(ledger_n)"; }
 
 begin "req4-ac3d-a-partial-scanner-casts-no-vote" "Google missed one image (pm-partial) but its verdict still holds CVE-2099-7777: the report keeps that finding in Google's table (scan incomplete), while votes counts Google as unavailable: no scanner, handling 'evidence_unavailable'"
 o="$WORK/v5"; rm -rf "$o"

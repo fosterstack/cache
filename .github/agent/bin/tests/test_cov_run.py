@@ -1070,6 +1070,17 @@ class ConsistencyTablesMain(Base):
         self.assertIn("  clean — no findings", text.split("::group::trivy")[1].split("::endgroup::")[0])
         self.assertIn("::group::snyk — ? packages, ? findings\n  did not inventory: no token", text)
 
+    def test_scanner_tables_panel_with_an_unreadable_verdict_says_so(self):
+        bad = self.wj(os.path.join(self.tmp, "verdict-bad.json"), "{")
+        m = {"scanner_set": "panel", "panel": {"verdict": bad},
+             "scanner_status": {s: {"ran": True, "package_count": 5} for s in ("grype", "scout", "inspector", "google")},
+             "scanner_reports": {s: bad for s in ("grype", "scout", "inspector", "google")}}
+        out = self.d("out")
+        self.quiet(R._scanner_tables, m, [], out)
+        text = open(os.path.join(out, "reports", "scanner-tables.txt")).read()
+        self.assertEqual(text.count("(could not parse report:"), 4)               # each scanner's group says it could not read the verdict
+        self.assertIn("::group::grype — 5 packages, ? findings", text)            # no count is invented for a verdict that cannot be read
+
     def test_main_exit_codes(self):
         with mock.patch.object(R.cli, "ARGS", []), mock.patch.object(R.cli, "close_adjudicators") as close:
             rc, out = self.quiet(R.main)
