@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Risk-acceptance / POA&M (REQ-AUD-2 AC5/5b/5c). Guarded by reachable + no-pullable-fix
 facts. Writes a conformant `affected` VEX (evidence + target date in a sidecar), a
-per-scanner ignore with a run-date + 30 day expiry, a decision, and an accepted-item entry.
+run-date + 30 day expiry, a decision, and an accepted-item entry.
 Threshold = Critical OR CISA-KEV OR known-exploited. On expiry with no fix, the recheck
-SURGICALLY removes only the finding's statements and ignore entries (matched by id or
+SURGICALLY removes only the finding's statements and per-finding ignore records (matched by id or
 vulnerability.aliases), never whole shared files."""
 import os, sys, json, datetime, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -39,26 +39,6 @@ def _remove_from_vex(path, aliases):
     return True
 
 
-def _edit_snyk(path, aliases):
-    """Structurally remove ONLY the ignore entries whose top-level key is EXACTLY one of the
-    aliases (R11 rank 8). Keyed on the exact 2-space-indented `<id>:` line — a prefix
-    collision (CVE-...-33740 vs ...-3374) and unrelated entries survive; no regex substring
-    matching. The auditor authors this file, so its shape (ignore: {<id>: [ {'*': {...}} ]})
-    is known and parsed by indentation."""
-    import re as _re
-    text = open(path).read(); lines = text.splitlines(); out = []; i = 0; n = len(lines)
-    while i < n:
-        m = _re.match(r"^  ([^\s].*?):\s*$", lines[i])         # a top-level ignore key
-        if m and m.group(1).strip().strip("'\"") in aliases:
-            i += 1
-            while i < n and (lines[i].strip() == "" or _re.match(r"^   ", lines[i])):
-                i += 1                                          # drop its indented children
-            continue
-        out.append(lines[i]); i += 1
-    new = "\n".join(out) + ("\n" if text.endswith("\n") else "")
-    open(path, "w").write(new)
-
-
 def _remove_ignores(root, aliases):
     removed = []
     for dp, _, fs in os.walk(root):
@@ -74,13 +54,6 @@ def _remove_ignores(root, aliases):
                     continue
                 if isinstance(d, dict) and d.get("id") in aliases:   # a per-finding ignore for this id
                     os.remove(p); removed.append(p)
-            elif fn == ".snyk":
-                _edit_snyk(p, aliases)
-            elif fn == "osv-scanner.toml":
-                import re
-                blocks = open(p).read().split("[[IgnoredVulns]]")
-                keep = [blocks[0]] + [b for b in blocks[1:] if not any(('"%s"' % a) in b for a in aliases)]
-                open(p, "w").write("[[IgnoredVulns]]".join(keep))
     return removed
 
 
