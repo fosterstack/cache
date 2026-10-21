@@ -31,9 +31,6 @@ on:
         description: 'checksums.txt content from the build stage'
         required: true
         type: string
-    secrets:
-      SNYK_TOKEN:
-        required: true
 
 permissions:
   contents: read
