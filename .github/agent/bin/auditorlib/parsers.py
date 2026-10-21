@@ -22,8 +22,6 @@ def _load(path):
 
 def _finding(scanner, fid, purl, aliases=(), package=None, fixed_version=None,
              severity=None, extra=None):
-    if not fid:
-        raise ParseError("%s: finding with no id" % scanner)
     return {
         "scanner": scanner,
         "finding_id": fid,
@@ -34,26 +32,6 @@ def _finding(scanner, fid, purl, aliases=(), package=None, fixed_version=None,
         "severity": severity,
         "extra": extra or {},
     }
-
-
-def parse_grype(path):
-    d = _load(path)
-    if "matches" not in d or not isinstance(d["matches"], list):
-        raise ParseError("grype: no matches array")
-    out = []
-    for m in d["matches"]:
-        v = m.get("vulnerability") or {}
-        a = m.get("artifact") or {}
-        rel = [r.get("id") for r in m.get("relatedVulnerabilities", []) if r.get("id")]
-        fix = v.get("fix") or {}
-        fv = None
-        if fix.get("state") == "fixed" and fix.get("versions"):
-            fv = fix["versions"][0]
-        out.append(_finding("grype", v.get("id"), a.get("purl"), rel,
-                            a.get("name"), fv, v.get("severity"),
-                            {"fix_state": fix.get("state"),
-                             "known_exploited": v.get("knownExploited")}))
-    return out
 
 
 PANEL_SCANNERS = ("grype", "scout", "inspector", "google")
@@ -247,23 +225,12 @@ def _validate_panel_verdict(d):
     return d
 
 
-LEGACY_SCANNERS = ("grype", "trivy", "osv-scanner", "snyk")
-
-
-def scanner_set(m):
-    """The image scanners a manifest records: the panel's four (manifest scanner_set 'panel', 0600 option A) or, until 2b-2
-    deletes it, the legacy four."""
-    return PANEL_SCANNERS if isinstance(m, dict) and m.get("scanner_set") == "panel" else LEGACY_SCANNERS
-
-
-def manifest_readers(m, legacy=None):
-    """[(scanner, reader, path)] for a manifest's image scanners; the path is None for a scanner whose report is not available (it did
-    not run, or missed an image). The panel's four are read from the one verdict.json."""
+def manifest_readers(m):
+    """[(scanner, reader, path)] for a manifest's four panel scanners; the path is None for a scanner whose report is not available
+    (it did not run, or missed an image). All four are read from the one verdict.json."""
+    vp = ((m or {}).get("panel") or {}).get("verdict")
     r = (m or {}).get("scanner_reports") or {}
-    if isinstance(m, dict) and m.get("scanner_set") == "panel":
-        vp = (m.get("panel") or {}).get("verdict")
-        return [(sc, (lambda p, sc=sc: parse_panel(p, sc)), vp if r.get(sc) else None) for sc in PANEL_SCANNERS]
-    return [(sc, fn, r.get(sc)) for sc, fn in (legacy or {}).items()]
+    return [(sc, (lambda p, sc=sc: parse_panel(p, sc)), vp if r.get(sc) else None) for sc in PANEL_SCANNERS]
 
 
 def parse_panel(path, scanner):
@@ -299,81 +266,6 @@ def parse_panel(path, scanner):
     for rec in seen.values():
         rec["extra"]["images"].sort()
     return list(seen.values())
-
-
-def parse_trivy(path):
-    d = _load(path)
-    if "Results" not in d:
-        raise ParseError("trivy: no Results")
-    out = []
-    for r in d.get("Results") or []:
-        for v in r.get("Vulnerabilities") or []:
-            purl = (v.get("PkgIdentifier") or {}).get("PURL")
-            # Trivy carries no cross-id aliases; the VulnerabilityID stands alone.
-            out.append(_finding("trivy", v.get("VulnerabilityID"), purl, (),
-                                v.get("PkgName"), v.get("FixedVersion") or None,
-                                v.get("Severity"),
-                                {"status": v.get("Status")}))
-    return out
-
-
-def _osv_purl(pkg):
-    eco = (pkg.get("ecosystem") or "").lower().split(":")[0]
-    name = pkg.get("name")
-    ver = pkg.get("version")
-    if not (eco and name):
-        return None
-    base = {"go": "pkg:golang/%s" % name, "debian": "pkg:deb/debian/%s" % name}.get(eco)
-    if not base:
-        base = "pkg:%s/%s" % (eco, name)
-    return base + ("@%s" % ver if ver else "")
-
-
-
-
-def parse_osv(path, scanner="osv-scanner"):
-    d = _load(path)
-    if "results" not in d:
-        raise ParseError("osv: no results")
-    out = []
-    for r in d.get("results") or []:
-        for p in r.get("packages") or []:
-            pkg = p.get("package") or {}
-            purl = _osv_purl(pkg)
-            for v in p.get("vulnerabilities") or []:
-                fid = v.get("id")
-                aliases = set(v.get("aliases") or [])
-                upstream = set(v.get("upstream") or [])
-                extra = {"ecosystem": pkg.get("ecosystem"),
-                         "installed_version": pkg.get("version")}
-                al = aliases | upstream
-                fixed = None
-                for aff in v.get("affected") or []:
-                    for rng in aff.get("ranges") or []:
-                        for ev in rng.get("events") or []:
-                            if ev.get("fixed"):
-                                fixed = ev["fixed"]
-                out.append(_finding(scanner, fid, purl, al, pkg.get("name"),
-                                    fixed, None, extra))
-    return out
-
-
-def parse_snyk(path):
-    d = _load(path)
-    if "vulnerabilities" not in d and "applications" not in d:
-        raise ParseError("snyk: no vulnerabilities or applications")
-    out = []
-    def emit(v):
-        cves = (v.get("identifiers") or {}).get("CVE") or []
-        out.append(_finding("snyk", v.get("id"), v.get("purl"), cves,
-                            v.get("packageName"), v.get("nearestFixedInVersion") or None,
-                            v.get("severity")))
-    for v in d.get("vulnerabilities") or []:
-        emit(v)
-    for app in d.get("applications") or []:
-        for v in app.get("vulnerabilities") or []:
-            emit(v)
-    return out
 
 
 def _stream(text):

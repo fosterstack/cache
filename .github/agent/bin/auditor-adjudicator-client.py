@@ -12,7 +12,7 @@ import json, os, re, sys
 # (class, HTTP status, message) so a failure is diagnosable, but with these values redacted.
 _SECRET_ENVS = ("ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_ORGANIZATION_ID",
                 "ANTHROPIC_SERVICE_ACCOUNT_ID", "ANTHROPIC_WORKSPACE_ID",
-                "AUDITOR_MODEL_PRIMARY", "AUDITOR_MODEL_FALLBACK", "SNYK_TOKEN",
+                "AUDITOR_MODEL_PRIMARY", "AUDITOR_MODEL_FALLBACK",
                 "AUDITOR_APP_PRIVATE_KEY", "ANTHROPIC_API_KEY")
 
 

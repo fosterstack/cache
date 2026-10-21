@@ -79,8 +79,7 @@ def do_reconcile(out):
     adjudicator = cli.opt("--adjudicator"); manifest = cli.opt("--manifest")
     readers = {}
     if manifest:                                             # no readable report is "unavailable", decided before any model is asked
-        readers = {n: (fn, path) for n, fn, path in P.manifest_readers(json.load(open(manifest)), {"grype": P.parse_grype, "trivy": P.parse_trivy,
-                                                                                                 "snyk": P.parse_snyk, "osv-scanner": P.parse_osv})}
+        readers = {n: (fn, path) for n, fn, path in P.manifest_readers(json.load(open(manifest)))}
         fn, rpt = readers.get(sc, (None, None))
         try:
             records = fn(rpt) if (fn and rpt) else None

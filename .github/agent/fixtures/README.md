@@ -27,14 +27,8 @@ Captured by scanning a public image known to carry findings —
 with the pinned scanner versions, then trimmed to a handful of real findings without
 changing field structure:
 
-- `scanners/grype-debian12.json` — **grype 0.118.0** (official `anchore/grype:v0.118.0`).
-- `scanners/trivy-debian12.json` — **trivy 0.74.0** (`aquasec/trivy:0.74.0`).
-- `scanners/osv-debian12.json` — **osv-scanner 2.6.0** (`ghcr.io/google/osv-scanner:v2.6.0`,
-  `scan image --archive` of the saved image).
-- `scanners/osv-gomod.json` — **osv-scanner 2.6.0** source scan of the Go module below.
-- `scanners/snyk-debian12.json` — **BEST-EFFORT, marked synthetic**: snyk 1.1307.0 could not
-  be captured here (no `SNYK_TOKEN`/account). Shaped to snyk's published container-test JSON
-  and carrying the shared votes CVE, to be replaced by a real capture when a token exists.
+- The legacy scanner captures (Grype, Trivy, OSV-Scanner, Snyk JSON under `scanners/`) are gone with the code that read them
+  (0600 option A, PR 2b-2c): the auditor reads the panel verdict now. `run/panel-<tag>/verdict.json` keeps their findings.
 - `run/panel-<tag>/verdict.json` + `run/manifest-<tag>.json` — the auditor's run fixtures, in the form the daily auditor now
   reads (scanner-panel verdict; `scanner_set: panel`). They are derived from the captures above, not captured: each legacy
   scanner file's findings are carried into one verdict on `production-amd64` (Trivy's as Scout's, OSV's as Inspector's, Snyk's as
