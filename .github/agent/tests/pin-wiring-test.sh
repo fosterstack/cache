@@ -443,14 +443,34 @@ for jid, want_steps in SPLIT_STEPS.items():
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
         why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
         bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why) or 'a step differs in its command, env, uses, with or order'})")
-# the three required-check policy entries (release admission reads them): present, GitHub Actions' integration id, scope push
+# the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
+# and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
+PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
 try:
     pol = json.load(open(os.environ["PIN_WIRING_POLICY_FILE"]))["required_checks"]
-except (OSError, ValueError, KeyError):
+    if not isinstance(pol, list) or not all(isinstance(c, dict) for c in pol):
+        raise ValueError("required_checks is not a list of objects")
+except (OSError, ValueError, KeyError, TypeError) as e:
     pol = None
-for jid in SPLIT_STEPS:
-    if pol is not None and {"context": jid, "integration_id": 15368, "scope": "push"} not in pol:
-        bad.append(f"required-checks.json has no entry {jid} (integration 15368, scope push)")
+    bad.append(f"required-checks.json is unreadable or malformed ({type(e).__name__})")
+if pol is not None:
+    ctxs = [c.get("context") for c in pol]
+    for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
+        bad.append(f"required-checks.json lists the context {dup} more than once")
+    for jid in PROTECTED:
+        if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
+            bad.append(f"required-checks.json does not have exactly one entry {jid} (integration 15368, scope push)")
+# the four protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
+# `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
+# name may be an expression or come from a matrix (its rendered name cannot be judged).
+for jid_, j_ in d.get("jobs", {}).items():
+    if not isinstance(j_, dict):
+        continue
+    nm = j_.get("name", jid_)
+    if jid_ not in PROTECTED and (nm in PROTECTED or jid_ in PROTECTED):
+        bad.append(f"the job {jid_} produces the protected check name {nm}")
+    if jid_ not in PROTECTED and ("${{" in str(nm) or "strategy" in j_):
+        bad.append(f"the job {jid_} has an expression name or a matrix (its check names cannot be judged against the protected ones)")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -601,6 +621,10 @@ case_ split-suite-or-true     bad "x = [x for x in d['jobs']['allowlist-persona'
 case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain']['steps']; st[-1], st[-2] = st[-2], st[-1]"
 case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append({'name': 'x', 'run': 'true'})"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
+case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
+case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+case_ job-name-expression     bad "d['jobs']['lint']['name'] = 'lint \${{ matrix.x }}'"
+case_ job-matrix-other        bad "d['jobs']['lint']['strategy'] = {'matrix': {'x': ['1']}}"
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
@@ -679,15 +703,20 @@ cp "$here/.github/workflows/agent-review-gate.yml" "$work/gate-mut.yml"; sed -i.
 if gate_timeouts "$work/gate-mut.yml" >/dev/null; then failn=$((failn+1)); echo "FAIL gate without timeouts accepted"; else pass=$((pass+1)); echo "PASS gate without timeouts → bad"; fi
 
 # the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them)
-for mut in "drop" "scope" "integration"; do
+for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
   python3 - "$here/.github/policy/required-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1])); rc = d["required_checks"]
 e = [c for c in rc if c["context"] == "allowlist-chain"][0]
 if sys.argv[3] == "drop": rc.remove(e)
 elif sys.argv[3] == "scope": e["scope"] = "pull_request"
-else: e["integration_id"] = 1
-json.dump(d, open(sys.argv[2], "w"))
+elif sys.argv[3] == "integration": e["integration_id"] = 1
+elif sys.argv[3] == "null": d["required_checks"] = None
+elif sys.argv[3] == "empty": d = {}
+elif sys.argv[3] == "dup": rc.append(dict(e, scope="pull_request"))
+elif sys.argv[3] == "notlist": d["required_checks"] = {"a": 1}
+if sys.argv[3] == "garbage": open(sys.argv[2], "w").write("{not json")
+else: json.dump(d, open(sys.argv[2], "w"))
 PY
   if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
 done
