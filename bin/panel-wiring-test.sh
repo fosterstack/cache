@@ -34,12 +34,12 @@ if "for v in production fips" not in tg or "arm64" in tg or "for arch" in tg \
         or "--override-arch amd64" not in tg or 'cand-${v}-amd64"' not in tg:
     bad.append("panel-google does not scan exactly the two variants on linux/amd64 (and never arm64)")
 for j in jobs:
-    # scanner-reports hands the auditor its inputs; manifests/rescan are the PUBLISHED-release rescan (merged from
-    # daily-rescan.yml, consolidation 3 of 4; REQ-REL-003), which runs only the scanners in .github/policy/scanners.json —
-    # none of the three is the scanner panel
-    if any(x in (text(j) + " ".join(uses(j))).lower() for x in ("trivy", "snyk")) and j not in ("scanner-reports", "manifests", "rescan"):
-        bad.append(f"{j} runs Trivy or Snyk")
-for gone in ("scan-main", "trivy-main", "snyk-main"):
+    # manifests/rescan are the PUBLISHED-release rescan (merged from daily-rescan.yml, consolidation 3 of 4;
+    # REQ-REL-003), which runs only the scanners in .github/policy/scanners.json — neither is the scanner panel.
+    # The old scanner-reports job (trivy/osv-scanner reports for the auditor) is gone: the auditor reads the panel
+    if any(x in (text(j) + " ".join(uses(j))).lower() for x in ("trivy", "snyk", "osv-scanner")) and j not in ("manifests", "rescan"):
+        bad.append(f"{j} runs Trivy, Snyk or OSV-Scanner")
+for gone in ("scan-main", "trivy-main", "snyk-main", "scanner-reports"):
     if gone in jobs:
         bad.append(f"the retired {gone} job is still there")
 # rule 2: Google through the federation, identifiers from repository variables, no secrets, no keys
@@ -342,6 +342,8 @@ case_ real                    ok  ""
 case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
 case_ grype-three-images      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production fips', 'for v in production')"
 case_ computed-images         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in \$ARCHES')"
+case_ scanner-reports-back    bad "$J['scanner-reports'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'osv-scanner scan image x'}]}"
+case_ osv-in-panel            bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'] + '\\nosv-scanner scan image x'"
 case_ trivy-back              bad "$J['trivy-main'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'trivy image x'}]}"
 case_ google-secret           bad "[s.__setitem__('with', {'credentials_json': '\${{ secrets.GCP_KEY }}'}) for s in $J['panel-google']['steps'] if str(s.get('uses','')).startswith('google-github-actions/auth@')]"
 case_ google-literal-provider bad "[s['with'].__setitem__('workload_identity_provider', 'projects/1/locations/global/workloadIdentityPools/p/providers/q') for s in $J['panel-google']['steps'] if str(s.get('uses','')).startswith('google-github-actions/auth@')]"
@@ -379,5 +381,89 @@ case_ google-no-log-http      bad "s=$(step_of panel-google 'for v in'); s['run'
 case_ panel-audits             bad "$J['panel']['permissions']['id-token'] = 'write'"
 case_ panel-reads-history     bad "s=$(step_of panel 'bin/panel.py tally'); s['run'] = s['run'].replace('--out', '--prior /tmp/prior/judgments.json --out')"
 case_ panel-skips-on-failure  bad "$J['panel']['if'] = 'success()'"
+# The auditor (auditor.yml) runs no scanner of its own: it reads the panel's verdict (handoffs 0518/0600, owner:
+# "the auditor reads the four"). No Trivy, Snyk or OSV-Scanner install or token, no copy of the retired scanner reports.
+aud_case() {
+  local f="$work/aud-$1.yml"
+  cp "$root/.github/workflows/auditor.yml" "$f"
+  [ -n "$3" ] && python3 - "$f" "$3" <<'PY'
+import sys
+p, edit = sys.argv[1], sys.argv[2]
+t = open(p).read()
+old, new = edit.split("=>", 1)
+assert old in t or old == "", "mutation target missing"
+open(p, "w").write(t.replace(old, new) if old else t + new)
+PY
+  if out=$(python3 - "$f" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+bad = []
+for w in ("trivy", "osv-scanner", "snyk", "SNYK_TOKEN", "rescan-scanner-reports", "--rescan-reports"):
+    if w.lower() in t.lower():
+        bad.append(f"auditor.yml still mentions {w}")
+# Grype's name stays in comments (the panel's Grype is the rescan's job), but no executable text may name it: not an
+# install, a run, a loop variable or a quoted target. Shell comments (whole-line, or after whitespace outside quotes) are dropped first.
+def strip_comment(l):
+    q = None; esc = False
+    for k, c in enumerate(l):
+        if esc: esc = False; continue                      # the character after a backslash is literal (outside single quotes)
+        if c == "\\" and q != "'": esc = True
+        elif q:
+            if c == q: q = None
+        elif c in "'\"": q = c
+        elif c == "#" and (k == 0 or l[k - 1].isspace()): return l[:k]
+    return l
+for l in t.splitlines():
+    if re.search(r"\bgrype\b", strip_comment(l), re.I):
+        bad.append("auditor.yml names grype outside a comment: " + l.strip()[:60])
+if "--panel-dir" not in t:
+    bad.append("auditor.yml does not hand the panel evidence to the manifest")
+print("; ".join(bad) or "clean"); sys.exit(1 if bad else 0)
+PY
+  ); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS auditor-$1 → $got ($out)"
+  else failn=$((failn+1)); echo "FAIL auditor-$1 → $got, want $2 ($out)"; fi
+}
+aud_case real           ok  ""
+aud_case trivy-install  bad "=>
+          ./bin/install-scanner.sh trivy
+"
+aud_case osv-install    bad "=>
+          ./bin/install-scanner.sh osv-scanner
+"
+aud_case snyk-token     bad '=>
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+'
+aud_case grype-install  bad "=>
+          ./bin/install-scanner.sh grype
+"
+aud_case grype-run      bad "=>
+          grype docker:x -o json > g.json
+"
+aud_case grype-comment  ok  "=>
+          # grype is the rescan panel's job, not the auditor's
+"
+aud_case grype-inline-comment ok "=>
+          true # grype docker:x -o json
+"
+aud_case grype-after-escaped-quote bad '=>
+          echo "say \" # still inside the string"; grype docker:x -o json
+'
+aud_case grype-loop     bad "=>
+          for s in grype syft; do sudo ./bin/install-scanner.sh \"\$s\"; done
+"
+aud_case grype-quoted   bad "=>
+          grype \"docker:\${ref}\" -o json
+"
+aud_case grype-bare-ref bad "=>
+          grype ghcr.io/fosterstack/cache:latest -o json
+"
+aud_case reports-download bad '=>
+          gh run download "$rid" -n rescan-scanner-reports -D x
+'
+aud_case reports-option bad "=>
+            --rescan-reports x
+"
+aud_case no-panel-dir   bad "--panel-dir =>--panel-evidence "
 echo "panel-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

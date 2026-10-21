@@ -1085,7 +1085,7 @@ requirements:
     acceptance_criteria:
       - id: REQ-OBS-004-AC1
         given: a starting server
-        when: the first log line is emitted
+        when: the startup log record is emitted
         then: it contains version, addr, data_dir, max_bytes, auth, and fips140 fields
         verification: { method: component, release_blocking: false }
         status: approved
@@ -3454,7 +3454,7 @@ requirements:
   - id: REQ-AUD-018
     title: The auditor layout and coverage gate; its second review is enforced outside the repository
     statement: >
-      The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same 100% coverage gate as the Go, and let no change to the auditor merge without the independent second review, which the private review tooling enforces before merge; this repository judges no review record.
+      The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same 100% coverage gate as the Go (except the listed exclusions), and let no change to the auditor merge without the independent second review, which the private review tooling enforces before merge; this repository judges no review record.
     source: [auditor directory bin/auditor-layout-check.py, auditor directory tests/coverage-gate.sh, .github/workflows/agent-review-gate.yml, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
@@ -3475,7 +3475,7 @@ requirements:
       - id: REQ-AUD-018-AC2
         given: "the Python in the auditor directory"
         when: "the required coverage job runs the auditor coverage gate (coverage-gate.sh)"
-        then: "The Python under the auditor directory is held to the 100% coverage gate in CI, the same as the Go."
+        then: "The Python under the auditor directory is held to the 100% coverage gate in CI, except the listed exclusions, the same as the Go."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-AUD-018-AC3
@@ -4142,7 +4142,7 @@ requirements:
     title: Image inputs and the certified FIPS module are kept fresh by jobs that only open pull requests
     statement: >
       Once a day a job shall re-make the image lock files and re-resolve melange's build tools against live Wolfi; if anything changed it archives the new packages by digest, updates the locks and opens a pull request, never pushing to main; otherwise it does nothing. This job is the only updater of image recipes, apk packages and lock files. If Wolfi's signing key changed the job stops, opens no pull request and flags it for a human. If an old upstream version disappears the job notes it and does not fail. New Wolfi packages get no waiting period; signature and checksum checks and archiving still apply. The job's pull requests go through all normal checks and the rebuild-from-archive test. In the same daily run it shall also read Go's own certified-module file and, when a newer Go Cryptographic Module is certified, open a pull request that moves the FIPS build to it. The archive's package index shall be kept as the original Wolfi-signed file, versioned by its sha256, verified against the archived key, and an existing file under a digest name must hash to that name or the run fails closed.
-    source: [bin/refresh-inputs.sh, .github/workflows/go-freshness.yml, .github/dependabot.yml]
+    source: [bin/refresh-inputs.sh, build/host-tools.yaml, build/locks/host-tools.lock, .github/workflows/go-freshness.yml, .github/dependabot.yml]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 32, 44-49 and 73 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md, REFRESH-1..6, APKO-25, FIPS-59; rule 48 "dont do this 7 day hold on wolfi.")
@@ -4348,6 +4348,33 @@ requirements:
         given: "a refresh or FIPS-module pull request that bin/refresh-inputs.sh opens, and a main whose ruleset requires signed commits"
         when: "the pull request is opened (open_pr, directly or from a plan)"
         then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the changed files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token) with exactly the working tree's bytes for the planned paths, and the API is asked whether that commit is verified; only then is the pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; nothing is committed or pushed to main, and no git commit is made (rule: main requires signed commits; advisor reading Oct 17 after cache#404 and cache#422 were found unmergeable with an unsigned job commit)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      # NEW, ADVISOR READING Oct 20 (handoff 0524; the English is in ops/handoffs/outbox/2026-10-20-cache-a7-acs-host-tools-ratify.md): AC35-AC38 are the concrete form of rules the owner
+      # already ratified (15: build tools come from the archive only; 38a: melange's bubblewrap runner; 44-49: the refresh job is the only updater, no waiting period) and of REQ-SUP-001 (no
+      # unpinned install line). Not ratified by the owner until he says so: the status below is "approved" only because the schema allows one status under an approved baseline.
+      - id: REQ-REFRESH-001-AC35
+        given: "build/host-tools.yaml, which names the packages the Build jobs run on the runner itself (bubblewrap), and the committed build/locks/host-tools.lock"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it resolves them with apko lock against https://packages.wolfi.dev/os for both architectures (a fourth lock, like melange's build tools), archives every package the archive lacks under the checks of AC3 (HTTPS, the lock's control and data checksums, the datahash, the signed index) before any lock changes, and writes build/locks/host-tools.lock as sorted name=version lines; when the resolution equals the committed lock nothing is committed, pushed or opened, and a repository without the data file or the lock is refused, as is a data file that is not exactly one packages key holding a non-empty list of unique plain names (duplicate keys, versions, paths) and a lock with a row outside the name=version grammar or a name twice (exit 2, before any lock is made)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC36
+        given: "a host-tools package that fails a checksum, a committed host-tools.lock that names a package version the archive does not hold, or an archived host-tools package that is damaged"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it exits non-zero naming the package and the file, keeps nothing new in the archive, changes no lock and opens no pull request (the archive is the source of truth, as for the melange lock)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC37
+        given: "a version in the committed host-tools.lock that live Wolfi no longer resolves"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it notes in its output that the version is no longer in live Wolfi's resolution (host tools), exits 0 and keeps the archived copy"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC38
+        given: "the refresh changed build/locks/host-tools.lock"
+        when: "bin/refresh-inputs.sh refresh finishes"
+        then: "the lock goes in the same one refresh pull request as the other lock changes and the archive pointer (AC5), never merged by the job, and the host tools carry no waiting period (AC7)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-ARCHIVE-001

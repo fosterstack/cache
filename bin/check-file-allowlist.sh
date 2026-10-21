@@ -240,8 +240,6 @@ ALLOW_PATTERNS=(
   # no manifest would fold these package-main sources into the parent module and break
   # `go ./...` / gosec. So a plain go.mod / go.sum / *.go here is intentionally NOT allowed.
   '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/(go\.(mod|sum)|[A-Za-z0-9._-]+\.go)\.fixture$'
-  '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
-  '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 
   # The vendored dependency tree (REQ-VEND-001): names only. Every directory component starts with a letter, digit, _, +, ~ or @ (no dot
   # directory, no .github, no .git); only the FINAL component may start with one dot (a dot file go mod vendor itself produces, such as
@@ -265,6 +263,9 @@ ALLOW_PATTERNS=(
   # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
   '^build/locks/apko(-fips)?\.base\.lock\.json$'
   '^build/locks/melange\.lock$'
+  # The host tools (REQ-REFRESH-001-AC35): the data file naming the packages the Build jobs run on the runner, and the lock of their resolution.
+  '^build/host-tools\.yaml$'
+  '^build/locks/host-tools\.lock$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'
