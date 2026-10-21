@@ -459,9 +459,14 @@ if pol is not None:
 # the four protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
 # `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
 # name may be an expression or come from a matrix (its rendered name cannot be judged).
-def name_disjoint(nm):   # a literal name is compared as it is; an expression name needs a literal space or `(` (no protected name has either)
-    nm = str(nm)
-    return "${{" not in nm or bool(re.search(r"[ (]", re.sub(r"\$\{\{.*?\}\}", "", nm)))
+def name_disjoint(nm):   # a literal name is compared as it is; an expression name may hold only plain `${{ matrix.a.b }}` tokens and must keep a
+    nm = str(nm)        # literal space or `(` around them (no protected name has either); any other `${{` is refused, never parsed
+    if "${{" not in nm:
+        return True
+    rest = re.sub(r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}", "", nm)
+    return "${{" not in rest and "}}" not in rest and bool(re.search(r"[ (]", rest))
+def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
+    return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
 for jid_, j_ in d.get("jobs", {}).items():
     if not isinstance(j_, dict):
         continue
@@ -470,6 +475,10 @@ for jid_, j_ in d.get("jobs", {}).items():
         bad.append(f"the job {jid_} produces the protected check name {nm}")
     if jid_ not in PROTECTED and not name_disjoint(nm):
         bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
+    if writes_checks(j_.get("permissions")):
+        bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
+if writes_checks(d.get("permissions")):
+    bad.append("the workflow can write checks with the Actions token (it could publish a check run under a protected name)")
 # and no other workflow file may carry such a job either (admission accepts any success with the matching name and app); an unreadable or
 # unparseable workflow file is refused, since its job names cannot be judged
 _wdir = os.environ["PIN_WIRING_WORKFLOWS_DIR"]
@@ -490,6 +499,10 @@ for _f in sorted(os.listdir(_wdir)):
             bad.append(f"{_f}: the job {_jid} takes the protected check name {_nm if _nm in PROTECTED else _jid}")
         elif not name_disjoint(_nm):
             bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
+        if isinstance(_j, dict) and writes_checks(_j.get("permissions")):
+            bad.append(f"{_f}: the job {_jid} can write checks with the Actions token")
+    if writes_checks((_w or {}).get("permissions")):
+        bad.append(f"{_f}: the workflow can write checks with the Actions token")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -650,6 +663,12 @@ case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlis
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
 case_ job-name-expr-spaced    ok  "d['jobs']['lint']['name'] = 'lint (\${{ matrix.x }})'"
 case_ job-matrix-other        ok  "d['jobs']['lint']['strategy'] = {'matrix': {'x': ['1']}}"
+case_ checks-write-job        bad "d['jobs']['lint']['permissions'] = {'checks': 'write'}"
+case_ checks-write-all        bad "d['permissions'] = 'write-all'"
+case_ checks-write-top        bad "d['permissions'] = {'contents': 'read', 'checks': 'write'}"
+case_ name-expr-quoted        bad "d['jobs']['lint']['name'] = \"\${{ 'allowlist-persona' || '}} ' }}\""
+case_ name-expr-multiline     bad "d['jobs']['lint']['name'] = \"\${{\\n  'allowlist-persona'\\n}}\""
+case_ name-expr-function      bad "d['jobs']['lint']['name'] = \"x \${{ format('{0}', 'a') }}\""
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
@@ -728,13 +747,26 @@ cp "$here/.github/workflows/agent-review-gate.yml" "$work/gate-mut.yml"; sed -i.
 if gate_timeouts "$work/gate-mut.yml" >/dev/null; then failn=$((failn+1)); echo "FAIL gate without timeouts accepted"; else pass=$((pass+1)); echo "PASS gate without timeouts → bad"; fi
 
 # a job in ANOTHER workflow file that takes a protected check name, or can render as one, or a workflow that cannot be read
-for mut in "name" "id" "expr" "garbage" "okexpr"; do
+for mut in "name" "id" "expr" "garbage" "okexpr" "checks" "checks-top" "quoted"; do
   rm -rf "$work/wf-$mut"; mkdir -p "$work/wf-$mut"; cp "$here"/.github/workflows/*.y*ml "$work/wf-$mut/"
   case "$mut" in
     name) printf 'name: x\non: push\njobs:\n  zz:\n    name: allowlist-persona\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
     id) printf 'name: x\non: push\njobs:\n  allowlist-chain:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
     expr) printf 'name: x\non: push\njobs:\n  zz:\n    name: ${{ matrix.n }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
     garbage) printf 'jobs: [\n' > "$work/wf-$mut/zz.yml" ;;
+    checks) printf 'name: x\\non: push\\njobs:\\n  zz:\\n    runs-on: ubuntu-latest\\n    permissions:\\n      checks: write\\n    steps:\\n      - run: "true"\\n' > "$work/wf-$mut/zz.yml" ;;
+    checks-top) printf 'name: x\\non: push\\npermissions: write-all\\njobs:\\n  zz:\\n    runs-on: ubuntu-latest\\n    steps:\\n      - run: "true"\\n' > "$work/wf-$mut/zz.yml" ;;
+    quoted) cat > "$work/wf-$mut/zz.yml" <<'WF'
+name: x
+on: push
+jobs:
+  zz:
+    name: "${{ 'allowlist-persona' || '}} ' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+WF
+      ;;
     okexpr) printf 'name: x\non: push\njobs:\n  zz:\n    name: scan (${{ matrix.n }})\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
   esac
   want=bad; [ "$mut" = okexpr ] && want=ok
