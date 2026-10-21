@@ -18,26 +18,30 @@ B=chore/go-1.27.0
 BASE=0123456789abcdef0123456789abcdef01234567
 OID=89abcdef0123456789abcdef0123456789abcdef
 OTHER=fedcba9876543210fedcba9876543210fedcba98
+RIVAL=00112233445566778899aabbccddeeff00112233
 LIST="gh pr list --head $B --base main --state all --json number,state,mergedAt"
 LSR="git ls-remote --exit-code --heads origin $B"
 CREATE="gh pr create --draft --base main --head $B --title chore(go): bump toolchain 1.26.6 -> 1.27.0 --body <body> --label dependencies"
 REVP="git rev-parse HEAD"
 LSREM="git ls-remote origin refs/heads/${B}"
-INFOQ='[.parents[0].sha, (.commit.message | split("\n")[0])] | @tsv'
+INFOQ='[.parents[0].sha, .commit.message] | @tsv'
 INFO_O="gh api repos/{owner}/{repo}/commits/${OID} -q ${INFOQ}"
 INFO_X="gh api repos/{owner}/{repo}/commits/${OTHER} -q ${INFOQ}"
+INFO_R="gh api repos/{owner}/{repo}/commits/${RIVAL} -q ${INFOQ}"
 PUSH="git push origin ${BASE}:refs/heads/${B}"
 COMMIT="gh api graphql --input <input> -q .data.createCommitOnBranch.commit.oid"
 VERIFY="gh api repos/{owner}/{repo}/commits/${OID} -q .commit.verification.verified"
 DEL_B="git push origin :refs/heads/${B} --force-with-lease=refs/heads/${B}:${BASE}"   # cleanup before the API made a commit: leased on the pushed base
 DEL_O="git push origin :refs/heads/${B} --force-with-lease=refs/heads/${B}:${OID}"    # cleanup after it: leased on the API's commit
-TIPV="gh api repos/{owner}/{repo}/commits/${B} -q .commit.verification.verified"
+TIPV="gh api repos/{owner}/{repo}/commits/${B} -q [.sha, .commit.verification.verified] | @tsv"
+PRVIEW="gh pr view https://example/pr/1 --json headRefOid -q .headRefOid"
+PRCLOSE="gh pr close https://example/pr/1 --comment closed by go-bump-open-pr.sh: the branch moved after its commit was verified"
 FRESH_OK="$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$VERIFY"
 
-# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail] [versions "cur latest"] [delete fails 0|1] [text the output must contain] [remote tip when cleanup starts base|oid|other|empty]
+# run_case name sut prs branch_exists create_rc want_rc want_calls want_directive(new|old|skip) [graphql ok|fail|badoid] [verified true|false|fail] [check_input 0|1] [orphan tip true|false|null|empty|fail] [versions "cur latest"] [delete fails 0|1] [text the output must contain] [remote tip when cleanup starts base|oid|other|rival|empty] [pr head after create match|differ]
 run_case() {
   local name="$1" sut="$2" prs="$3" branch_exists="$4" create_rc="$5" want_rc="$6" want_calls="$7" want_dir="$8"
-  local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}" must="${15:-}" rtip="${16:-base}"
+  local gql="${9:-ok}" ver="${10:-true}" chk="${11:-0}" tip="${12:-true}" vers="${13:-1.26.6 1.27.0}" delfail="${14:-0}" must="${15:-}" rtip="${16:-base}" headmode="${17:-match}"
   local work; work="$(mktemp -d)"
   printf 'module x\n\ngo 1.26.6\n' > "$work/go.mod"
   mkdir -p "$work/tools/requirements"; printf 'module x/t\n\ngo 1.26.6\n' > "$work/tools/requirements/go.mod"
@@ -55,10 +59,15 @@ case "\$1 \$2" in
   "pr list") printf '%s' '${prs}' ;;
   "pr create") [ "${create_rc}" = 0 ] && echo "https://example/pr/1"; exit ${create_rc} ;;
   "api graphql") case "${gql}" in ok) echo ${OID} ;; badoid) echo "not-an-oid" ;; fail) echo "HTTP 502" >&2; exit 1 ;; esac ;;
-  "api repos/{owner}/{repo}/commits/${OID}"|"api repos/{owner}/{repo}/commits/${OTHER}") case "\$*" in
-      *parents*) if [ "\$2" = "repos/{owner}/{repo}/commits/${OID}" ]; then printf '%s\t%s\n' ${BASE} 'chore(go): bump toolchain 1.26.6 -> 1.27.0'; else printf '%s\t%s\n' ${OID} 'someone elses commit'; fi ;;
+  "api repos/{owner}/{repo}/commits/${OID}"|"api repos/{owner}/{repo}/commits/${OTHER}"|"api repos/{owner}/{repo}/commits/${RIVAL}") case "\$*" in
+      *parents*) case "\$2" in
+          *${OID}) printf '%s\t%s\\\\n\\\\n%s\n' ${BASE} 'chore(go): bump toolchain 1.26.6 -> 1.27.0' 'go-bump-run: 4242-1' ;;
+          *${RIVAL}) printf '%s\t%s\\\\n\\\\n%s\n' ${BASE} 'chore(go): bump toolchain 1.26.6 -> 1.27.0' 'go-bump-run: 9999-1' ;;
+          *) printf '%s\t%s\n' ${OID} 'someone elses commit' ;; esac ;;
       *) case "${ver}" in true) echo true ;; false) echo false ;; fail) exit 1 ;; esac ;; esac ;;
-  "api repos/{owner}/{repo}/commits/${B}") case "${tip}" in true) echo true ;; false) echo false ;; null) echo null ;; empty) echo ;; fail) exit 1 ;; esac ;;
+  "api repos/{owner}/{repo}/commits/${B}") case "${tip}" in true) printf '%s\ttrue\n' ${OID} ;; false) printf '%s\tfalse\n' ${OID} ;; null) printf '%s\tnull\n' ${OID} ;; empty) echo ;; fail) exit 1 ;; esac ;;
+  "pr view") case "${headmode}" in match) echo ${OID} ;; differ) echo ${OTHER} ;; esac ;;
+  "pr close") exit 0 ;;
   *) echo "UNEXPECTED gh \$*" >> "${log}"; exit 0 ;;
 esac
 GH
@@ -66,7 +75,7 @@ GH
 #!/usr/bin/env bash
 echo "git \$*" >> "${log}"
 case "\$1" in
-  ls-remote) case "\$*" in *--exit-code*) [ "${branch_exists}" = 1 ] && exit 0 || exit 2 ;; *) case "${rtip}" in base) printf '%s\trefs/heads/${B}\n' ${BASE} ;; oid) printf '%s\trefs/heads/${B}\n' ${OID} ;; other) printf '%s\trefs/heads/${B}\n' ${OTHER} ;; empty) ;; esac ;; esac ;;
+  ls-remote) case "\$*" in *--exit-code*) [ "${branch_exists}" = 1 ] && exit 0 || exit 2 ;; *) case "${rtip}" in base) printf '%s\trefs/heads/${B}\n' ${BASE} ;; oid) printf '%s\trefs/heads/${B}\n' ${OID} ;; rival) printf '%s\trefs/heads/${B}\n' ${RIVAL} ;; other) printf '%s\trefs/heads/${B}\n' ${OTHER} ;; empty) ;; esac ;; esac ;;
   rev-parse) echo ${BASE} ;;
   push) case "\$*" in *" :refs/heads/"*) exit ${delfail} ;; esac; exit 0 ;;
   *) echo "UNEXPECTED git \$*" >> "${log}"; exit 0 ;;
@@ -74,7 +83,7 @@ esac
 GIT
   chmod +x "$work/bin/gh" "$work/bin/git"
   local out rc
-  out="$(cd "$work" && PATH="$work/bin:$PATH" AUDITOR_APP_SLUG=fosterstack-auditor bash "$sut" $vers 2>&1)"; rc=$?
+  out="$(cd "$work" && PATH="$work/bin:$PATH" AUDITOR_APP_SLUG=fosterstack-auditor GITHUB_RUN_ID=4242 GITHUB_RUN_ATTEMPT=1 bash "$sut" $vers 2>&1)"; rc=$?
   local got; got="$(cat "$log")"
   local want="$want_calls"
   local dir_root dir_tools; dir_root=$(awk '/^go /{print $2}' "$work/go.mod"); dir_tools=$(awk '/^go /{print $2}' "$work/tools/requirements/go.mod")
@@ -105,7 +114,7 @@ SUT="$here/go-bump-open-pr.sh"
 run_case "open PR -> dedup, nothing else"           "$SUT" '[{"number":42,"state":"OPEN","mergedAt":null}]' 1 0 0 "$LIST" old
 run_case "merged PR -> landed, nothing else"        "$SUT" '[{"number":40,"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z"}]' 1 0 0 "$LIST" old
 run_case "closed-not-merged -> respected"           "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null}]' 1 0 0 "$LIST" old
-run_case "orphaned branch with a verified tip -> draft PR, no push, no commit" "$SUT" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE" old ok true 0 true
+run_case "orphaned branch with a verified tip -> draft PR, no push, no commit" "$SUT" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
 run_case "AC8: orphaned branch with an unverified tip -> exit 1, no PR, nothing deleted or committed" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 false
 run_case "AC8: orphaned branch whose tip cannot be checked -> exit 1, no PR, nothing deleted" \
@@ -119,7 +128,7 @@ run_case "AC8: a version that is not a Go version is refused before any call (in
 run_case "AC8: a latest that is not a Go version is refused before any call" \
                                                      "$SUT" '[]' 0 0 2 "" old ok true 0 true '1.26.6 1.27.0;rm'
 run_case "fresh -> both modules bumped, one API commit verified, draft PR (REQ-REL-004-AC8)" \
-                                                     "$SUT" '[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE" new ok true 1
+                                                     "$SUT" '[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW" new ok true 1
 run_case "a denied create fails the run (42)"        "$SUT" '[]' 1 42 42 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE" old ok true 0 true
 run_case "AC8: a commit the API does not report verified -> branch deleted, no PR, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok false
@@ -135,6 +144,12 @@ run_case "AC8: the remote tip is someone else's commit -> left in place, said so
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_X" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' other
 run_case "AC8: the remote tip cannot be read -> left in place, said so, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' empty
+run_case "AC8: the remote tip is another run's commit (same parent and headline, other run marker) -> left in place" \
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_R" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' rival
+run_case "AC8: the branch moved after the commit was verified -> the PR is closed, exit 1" \
+                                                     "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE" new ok true 0 true '1.26.6 1.27.0' 0 'closing it' base differ
+run_case "AC8: an orphan's branch moved after its tip was verified -> the PR is closed, exit 1" \
+                                                     "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE" old ok true 0 true '1.26.6 1.27.0' 0 'closing it' base differ
 run_case "AC8: an id that is not a commit id -> branch deleted, no PR, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$DEL_B" skip badoid
 
@@ -145,11 +160,11 @@ mutant() {
   if run_case "$@" >/dev/null 2>&1; then echo "FAIL: mutant not caught: $name"; fail=$((fail+1)); pass=$((pass-1))
   else echo "ok: mutant caught: $name"; pass=$((pass+1)); fail=$((fail-1)); fi
 }
-FRESH_CASE=('[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE" new ok true 1)
+FRESH_CASE=('[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW" new ok true 1)
 { cat "$SUT"; printf '\ngh pr ready "$branch"\ngh pr merge --squash --auto "$branch"\n'; } > "$mut"
 mutant "draft readied and auto-merge armed" "draft readied and auto-merge armed" "$mut" "${FRESH_CASE[@]}"
 sed 's/gh pr create --draft /gh pr create /' "$SUT" > "$mut"
-mutant "not a draft" "not a draft" "$mut" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE" old ok true 0 true
+mutant "not a draft" "not a draft" "$mut" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
 sed 's/--label dependencies$/--label dependencies || true/' "$SUT" > "$mut"; grep -q 'dependencies || true' "$mut" || { echo "FAIL: mutant not built"; fail=$((fail+1)); }
 mutant "a denied create swallowed" "a denied create swallowed" "$mut" '[]' 1 42 42 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE" old ok true 0 true
 sed 's#for f in go.mod tools/requirements/go.mod; do#for f in go.mod; do#' "$SUT" > "$mut"
@@ -166,7 +181,7 @@ mutant "the commit is not leased on the base" "the commit is not leased on the b
 sed 's/\[ "\$tip_ver" = true \]/true/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (tip)"; fail=$((fail+1)); }
 mutant "the orphan's tip verification ignored" "the orphan's tip verification ignored" "$mut" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 false
 { cat "$SUT"; printf '\ngit push origin --delete "$branch"\n'; } > "$mut"
-mutant "a branch deleted" "a branch deleted" "$mut" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE" old ok true 0 true
+mutant "a branch deleted" "a branch deleted" "$mut" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
 sed 's/exit 2; }/true; }/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (grammar)"; fail=$((fail+1)); }
 mutant "the version grammar loosened" "the version grammar loosened" "$mut" '[]' 0 0 2 "" old ok true 0 true '1.26.6 1.27.0;rm'
 
@@ -178,6 +193,11 @@ mutant "a failed cleanup is silent" "a failed cleanup is silent" "$mut" '[]' 0 0
 
 sed 's/\[ "\$info" = "\$(printf [^)]*)" \] || return 1/true/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (ownership)"; fail=$((fail+1)); }
 mutant "any tip is taken as ours" "any tip is taken as ours" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_X" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' other
+
+sed 's/\[ "\$head_now" != "\$expected_head" \]/false/' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (head check)"; fail=$((fail+1)); }
+mutant "the PR head is not compared with the verified commit" "the PR head is not compared with the verified commit" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE" new ok true 0 true '1.26.6 1.27.0' 0 'closing it' base differ
+awk '/^    \[ "\$info" = /{print "    [ \"${info%%$\x27\\t\x27*}\" = \"$base\" ] || return 1"; next}1' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (marker)"; fail=$((fail+1)); }
+mutant "ownership without the run marker" "ownership without the run marker" "$mut" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_R" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' rival
 
 # AC8, the repository guard: no workflow, composite action or script outside the tests makes a commit with git (git commit, commit-tree, merge,
 # cherry-pick, rebase, am, revert, pull), in a shell command (quoted, after ; or &&, across a backslash continuation) or in a Python argument
@@ -199,20 +219,14 @@ def tokens_hit(s):
     """The shell reads the line: quote concatenation (g\x27\x27it, g"it") and backslashes are resolved, then any word whose basename is git, followed by
     its options, naming a commit-making subcommand, is a hit. False when the line cannot be tokenized (the regex still looks at it)."""
     try:
+        # a redirection and its target are not arguments (git 2>/dev/null commit is git commit); an fd number counts only when it touches the operator,
+        # so git --namespace 2 >/dev/null commit keeps its 2
+        s = re.sub(r"(?<!\S)\d*(?:>>|>&|<&|<<|>|<)\s*[^\s;&|()<>]+", " ", s)
         lx = shlex.shlex(re.sub(r"[()`{}]", " ", s), posix=True, punctuation_chars=True)
         lx.whitespace_split = True; lx.commenters = ""
         toks = list(lx)
     except ValueError:
         return False
-    clean, k = [], 0
-    while k < len(toks):                 # a redirection and its target are not arguments: git 2>/dev/null commit is git commit
-        tk = toks[k]
-        if re.fullmatch(r"[<>&|]+", tk) and ("<" in tk or ">" in tk):
-            if clean and clean[-1].isdigit():
-                clean.pop()
-            k += 2; continue
-        clean.append(tk); k += 1
-    toks = clean
     for k, tok in enumerate(toks):
         if os.path.basename(tok) != "git":
             continue
@@ -285,6 +299,8 @@ guard_catches "a script outside bin and .github"  .githooks/pre-commit 'git comm
 guard_catches "a Python list with an absolute git" bin/a.py 'subprocess.run(["/usr/bin/git", "commit", "-m", "x"])\n'
 guard_catches "a redirection between git and commit" bin/a.sh 'git 2>/dev/null commit -m x\n'
 guard_catches "a stdout redirection before commit"  bin/a.sh 'git >/dev/null commit -m x\n'
+guard_catches "a spaced numeric argument before a redirection" bin/a.sh 'git --namespace 2 >/dev/null commit -m x\n'
+guard_catches "an fd redirection to another fd"   bin/a.sh 'git 2>&1 commit -m x\n'
 guard_catches "a Python tuple of arguments"       bin/a.py 'subprocess.run(("git", "commit", "-m", "x"))\n'
 guard_catches "git by absolute path"              bin/a.sh '/usr/bin/git commit -m x\n'
 guard_catches "git behind command"                bin/a.sh 'command git commit -m x\n'

@@ -39,13 +39,14 @@ fi
 
 fresh=1
 if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-  tip_ver="$(gh api "repos/{owner}/{repo}/commits/${branch}" -q '.commit.verification.verified')" \
+  tip_ans="$(gh api "repos/{owner}/{repo}/commits/${branch}" -q '[.sha, .commit.verification.verified] | @tsv')" \
     || { echo "::error::could not ask whether the tip of ${branch} is verified; opening no pull request" >&2; exit 1; }
+  IFS=$'\t' read -r tip_sha tip_ver <<<"$tip_ans"
   # Only the exact word true is a verified tip. A branch is never deleted here: an unverified (or unreadable) tip is refused, loudly, for a person
   # to look at, so a branch a human or a concurrent run owns is never removed by this script.
-  [ "$tip_ver" = true ] || { echo "::error::branch ${branch} exists with no PR and its tip is not reported verified by GitHub (got '${tip_ver}'; main requires signed commits); opening no pull request. Remove the branch to let the next run rebuild it through the API" >&2; exit 1; }
+  [[ "$tip_sha" =~ ^[0-9a-f]{40}$ ]] && [ "$tip_ver" = true ] || { echo "::error::branch ${branch} exists with no PR and its tip is not reported verified by GitHub (got '${tip_ver}'; main requires signed commits); opening no pull request. Remove the branch to let the next run rebuild it through the API" >&2; exit 1; }
   echo "branch ${branch} exists with no PR (orphaned by a prior push-success/create-failure) and its tip is verified — creating the PR from the existing branch"
-  fresh=0
+  fresh=0; expected_head="$tip_sha"
 fi
 if [ "$fresh" = 1 ]; then
   echo "creating ${branch}: bumping the go directive in both modules"
@@ -60,27 +61,29 @@ if [ "$fresh" = 1 ]; then
   case "$base" in *[!0-9a-f]*|'') echo "::error::could not read the commit the job started from" >&2; exit 1;; esac
   [ "${#base}" -eq 40 ] || { echo "::error::could not read the commit the job started from" >&2; exit 1; }
   headline="chore(go): bump toolchain ${CURRENT} -> ${LATEST}"
+  marker="go-bump-run: ${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"   # unique to this run: two overlapping runs of one bump share parent and headline
   input="$(mktemp)"
   jq -n --arg repo "${GITHUB_REPOSITORY:-fosterstack/cache}" --arg b "$branch" --arg base "$base" \
-        --arg head "$headline" \
+        --arg head "$headline" --arg mark "$marker" \
         --arg r "$(base64 < go.mod | tr -d '\n')" --arg t "$(base64 < tools/requirements/go.mod | tr -d '\n')" \
     '{query: "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",
-      variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $b}, message: {headline: $head}, expectedHeadOid: $base,
+      variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $b}, message: {headline: $head, body: $mark}, expectedHeadOid: $base,
                           fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}]}}}}' > "$input"
   git push origin "${base}:refs/heads/${branch}"
   # Cleanup removes only what this run owns: the delete is leased on the tip this run last knew (the commit it pushed, then the one the API made),
   # so a branch someone else advanced is kept. A cleanup that fails is its own loud message: the branch remains and a person must remove it.
   owned="$base"
   # The API may have made the commit although its answer never arrived: before the cleanup, the remote tip is read. It is ours when it is the pushed
-  # base, or a commit whose parent is that base and whose headline is this run's; any other tip belongs to someone else and is left alone.
+  # base, or a commit whose parent is that base and whose message is this run's (headline and its unique run marker); any other tip belongs to
+  # someone else (an overlapping run of the same bump included) and is left alone.
   settle_owned() {
     local tip info
     [ "$owned" = "$base" ] || return 0
     tip="$(git ls-remote origin "refs/heads/${branch}" | cut -f1)" || return 1
     [ "$tip" = "$base" ] && return 0
     [ -n "$tip" ] || return 1
-    info="$(gh api "repos/{owner}/{repo}/commits/${tip}" -q '[.parents[0].sha, (.commit.message | split("\n")[0])] | @tsv')" || return 1
-    [ "$info" = "$(printf '%s\t%s' "$base" "$headline")" ] || return 1
+    info="$(gh api "repos/{owner}/{repo}/commits/${tip}" -q '[.parents[0].sha, .commit.message] | @tsv')" || return 1
+    [ "$info" = "$(printf '%s\t%s\\n\\n%s' "$base" "$headline" "$marker")" ] || return 1
     owned="$tip"
   }
   refuse() {
@@ -101,6 +104,7 @@ if [ "$fresh" = 1 ]; then
   [ "$ver" = true ] || refuse "commit ${oid} is not verified by GitHub (main requires signed commits)"
   rm -f "$input"
   echo "signed commit ${oid} on ${branch} (verified by GitHub)"
+  expected_head="$oid"
 fi
 
 body="$(cat <<EOF
@@ -113,6 +117,15 @@ A minor bump can change toolchain behavior (and the FIPS validated-module snapsh
 The required \`scan\` gate must pass on this PR before merge. It is opened as a draft proposal: a minor jump is proposed, never auto-applied.
 EOF
 )"
-gh pr create --draft --base main --head "$branch" \
+url="$(gh pr create --draft --base main --head "$branch" \
   --title "chore(go): bump toolchain ${CURRENT} -> ${LATEST}" \
   --body "$body" --label dependencies
+)" || exit $?
+echo "$url"
+# The branch name is mutable: the pull request must be at the commit that was verified, or it is closed (the verification covers a commit, not a name).
+head_now="$(gh pr view "$url" --json headRefOid -q .headRefOid)" || head_now=""
+if [ -z "${expected_head:-}" ] || [ "$head_now" != "$expected_head" ]; then
+  echo "::error::${url} is at '${head_now}', not at the verified commit '${expected_head:-}'; closing it" >&2
+  gh pr close "$url" --comment "closed by go-bump-open-pr.sh: the branch moved after its commit was verified" >&2 || true
+  exit 1
+fi
