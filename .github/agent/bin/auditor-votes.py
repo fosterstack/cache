@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Votes by lineage (REQ-AUD-4 AC3/AC4). Grype and Trivy share the Anchore/Aqua
-lineage and count as ONE vote; OSV, Snyk and the Go vuln DB are their own. A finding
-reported by exactly one scanner is suspect and investigated, never auto-closed."""
+"""Votes by lineage (REQ-AUD-4 AC3/AC4). Each of the panel's four scanners (Grype, Scout, Inspector,
+Google) keeps its own advisory data and is its own vote, as is the Go vuln DB. A finding reported by
+exactly one scanner is suspect and investigated, never auto-closed."""
 import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli, policy
@@ -13,8 +13,7 @@ def scanners_reporting(manifest, cve):
     be read, is unavailable evidence, never a vote against."""
     m = json.load(open(manifest))
     hit, complete, any_read = set(), True, False
-    for name, fn, path in P.manifest_readers(m, {"grype": P.parse_grype, "trivy": P.parse_trivy,
-                                                 "osv-scanner": P.parse_osv, "snyk": P.parse_snyk}):
+    for name, fn, path in P.manifest_readers(m):
         try:
             found = fn(path) if path else None
         except (P.ParseError, OSError):

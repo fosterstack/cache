@@ -1,15 +1,11 @@
 """Auditor policy constants — the thresholds and tables the code applies exactly.
 No vendor or model names live here; model ids come from the agent environment."""
 
-# Vote lineage: which scanners share a vulnerability database lineage. Grype and
-# Trivy both derive from the same advisory feeds and count as ONE anchore-aqua vote.
+# Vote lineage: which scanners share a vulnerability database lineage. The panel's four (scanner-panel rule 1)
+# each keep their own advisory data, so each is its own vote; so is the Go vulnerability database.
 LINEAGE = {
-    "grype": "anchore-aqua",
-    "trivy": "anchore-aqua",
-    "osv-scanner": "osv",
-    "osv-scanner-gomod": "osv",
-    "snyk": "snyk",
-    "scout": "docker-scout",        # the other panel scanners (scanner-panel rule 1) each keep their own advisory data
+    "grype": "anchore",
+    "scout": "docker-scout",
     "inspector": "amazon-inspector",
     "google": "google-artifact-analysis",
     "govulncheck": "go-vulndb",
