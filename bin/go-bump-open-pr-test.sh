@@ -225,7 +225,9 @@ mutant "an orphan tip that is not a bump commit is taken" "an orphan tip that is
 GUARD_PY='
 import hashlib, os, re, subprocess, sys
 CMDS = "(?:commit|commit-tree|merge)"
-SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+(?:-\S+(?:\s+\S+)?\s+)*)["\x27]?""" + CMDS + r"""["\x27]?(?![\w-])""")
+WORD = r"""(?:"[^"]*"|\x27[^\x27]*\x27|[^\s"\x27]+)"""      # an ordinary shell word, quoted or not (quotes around the whole word)
+OPT = r"""["\x27]?-[^\s"\x27]*["\x27]?(?:\s+""" + WORD + r""")?"""     # an option and, when it has one, its value: -c "user.name=Build Bot"
+SHELL_RE = re.compile(r"""(?<![\w.-])(?:[\w./-]*/)?["\x27]?git["\x27]?(?:\s+""" + OPT + r""")*\s+["\x27]?""" + CMDS + r"""["\x27]?(?![\w-])""")
 LIST_RE = re.compile(r"""["\x27](?:[^"\x27]*/)?git["\x27]\s*,\s*(?:["\x27][^"\x27]*["\x27]\s*,\s*)*["\x27]""" + CMDS + r"""["\x27]""")
 # every tracked file is read except the tests, the prose and the data (docs, markdown, json, the vendored tree, the evidence and the root requirements)
 SKIP = re.compile(r"(^|/)(tests?|testdata|fixtures)/|^(docs|vendor|test-evidence|requirements)/|-test\.(sh|py)$|_test\.(py|go)$|(^|/)test_[^/]*\.py$|\.(md|json|txt|sum|mod|png|svg|gz|lock|pub)$|^\.github/agent/fixtures/")
@@ -267,6 +269,10 @@ guard_catches "git commit in a script"            bin/a.sh '  git commit -q -m x
 guard_catches "git commit-tree"                   bin/a.sh 'sha=$(git commit-tree "$tree" -p HEAD -m x)\n'
 guard_catches "git merge"                         bin/a.sh 'git merge origin/main\n'
 guard_catches "git -c option before commit"       bin/a.sh 'git -c user.name=x commit -m y\n'
+guard_catches "a quoted option value with a space"  bin/a.sh "git -c 'user.name=Build Bot' commit -m x\\n"
+guard_catches "a double-quoted option value with a space" bin/a.sh 'git -c "user.name=Build Bot" commit -m x\n'
+guard_catches "a quoted option name"              bin/a.sh 'git "-c" user.name=Bot commit -m x\n'
+guard_catches "a quoted directory with a space before merge" bin/a.sh 'git -C "my repo" merge topic\n'
 guard_catches "git commit in a workflow step"     .github/workflows/w.yml '        run: git commit -am bump && git push\n'
 guard_catches "git commit in single quotes"       bin/a.sh "bash -c 'git commit -m x'\n"
 guard_catches "git commit followed by a semicolon" bin/a.sh 'git commit;\n'
