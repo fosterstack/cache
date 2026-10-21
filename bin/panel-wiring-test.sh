@@ -168,10 +168,10 @@ exit 0
                 bad.append("the attach step lacks %s" % need)
         for need in ("python3 bin/vex-index.py layout --layout", "python3 bin/vex-index.py verify-layout --layout", "--base-digest",
                      ".vex/fosterstack-cache.openvex.json", "CVE-2023-4911", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "chmod -R go-w",
-                     "--digestfile", "selfcheck-before-${GITHUB_RUN_ID}", "selfcheck-ours-${GITHUB_RUN_ID}"):
+                     "--digestfile /tmp/attach/before.pushed", "--digestfile /tmp/attach/ours.pushed", '[ "$(cat /tmp/attach/ours.pushed)" = "${final}" ]', '[ "$(cat /tmp/attach/before.pushed)" = "${before}" ]', "selfcheck-before-${GITHUB_RUN_ID}", "selfcheck-ours-${GITHUB_RUN_ID}"):
             if need not in fxs[0].get("run", ""):
                 bad.append("the fixture step lacks %s" % need)
-    for need in ("docker login ghcr.io", "-X DELETE", "timedelta(days=14)"):
+    for need in ("docker login ghcr.io", "-X DELETE", "14 days ago"):
         if need not in vt:
             bad.append("vex-attach lacks %s" % need)
     # the only registry name the job writes or reads is the scratch package (plus the pinned debian fixture): never the release package
@@ -432,8 +432,8 @@ case_ attach-other-vex        bad "s = $(step_of vex-attach 'vex-index.py layout
 case_ attach-step-soft        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['continue-on-error'] = 'true'"
 case_ prune-gone              bad "$J['vex-attach']['steps'] = [s for s in $J['vex-attach']['steps'] if 'prune' not in (s.get('name') or '')]"
 case_ prune-other-package     bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('packages/container/cache-scout-probe', 'packages/container/cache')"
-case_ prune-forever           bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('timedelta(days=14)', 'timedelta(days=3650)')"
-case_ prune-list-masked       bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('cat \"\$RUNNER_TEMP/prune.err\" >&2; echo \"::error::could not list', 'echo \"::warning::could not list').replace('exit 1\n          fi\n          n=0', 'ids=\"\"\n          fi\n          n=0')"
+case_ prune-forever           bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('14 days ago', '3650 days ago')"
+case_ prune-list-masked       bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('exit 1\nfi\nn=0', 'ids=\"\"\nfi\nn=0')"
 case_ prune-delete-soft       bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('[ \"\${failed}\" -eq 0 ] ||', 'true ||')"
 case_ prune-after-pushes      bad "st = $J['vex-attach']['steps']; k = [i for i, x in enumerate(st) if 'prune' in (x.get('name') or '')][0]; st.append(st.pop(k))"
 case_ fixture-extra-tag       bad "s = [s for s in $J['vex-attach']['steps'] if 'self-check fixtures' in (s.get('name') or '')][0]; s['run'] = s['run'] + '\nskopeo copy --all oci:/tmp/layout/fixture docker://ghcr.io/fosterstack/cache-scout-probe:selfcheck-docker-1\n'"

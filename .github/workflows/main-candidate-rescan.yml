@@ -80,7 +80,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          cutoff=$(python3 -c 'import datetime; print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ"))')
+          cutoff=$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-14d +%Y-%m-%dT%H:%M:%SZ)   # GNU date on the runner, BSD date on a laptop
           pkg="orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/cache-scout-probe"
           vis=$(gh api "${pkg}" --jq .visibility 2>/dev/null || echo unknown)
           echo "== the scratch package ghcr.io/fosterstack/cache-scout-probe: visibility ${vis}; keeping versions updated since ${cutoff}" | tee -a "$GITHUB_STEP_SUMMARY"
