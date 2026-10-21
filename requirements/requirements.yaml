@@ -4084,7 +4084,7 @@ requirements:
       - id: REQ-BUILDAPK-001-AC1
         given: "the two committed recipes build/melange.yaml and build/melange-fips.yaml"
         when: "they are read"
-        then: "each builds ./cmd/fscache from the vendored source with -trimpath and no Dockerfile (rule 11), takes Go 1.27.2 from go.dev through one sha256-pinned fetch step per architecture with GOTOOLCHAIN=local, GOFLAGS=-mod=vendor, GOPROXY=off and CGO_ENABLED=0 (rule 12), uses only local repositories and name=version pins for its build environment (rule 15), writes go version -m to usr/share/fscache/buildinfo.txt (rule 20), stamps the tree and refuses a (devel) or modified binary (rule 24); only the FIPS recipe sets GOFIPS140=v1.0.0 and proves the binary records GOFIPS140=v1.0.0-c2097c7c (rule 13); bin/gen-recipes.py --check passes (both recipes equal the generator's output and the template matches its pin, rule 21)"
+        then: "each builds ./cmd/fscache from the vendored source with -trimpath and no Dockerfile (rule 11), takes Go 1.27.3 from go.dev through one sha256-pinned fetch step per architecture with GOTOOLCHAIN=local, GOFLAGS=-mod=vendor, GOPROXY=off and CGO_ENABLED=0 (rule 12), uses only local repositories and name=version pins for its build environment (rule 15), writes go version -m to usr/share/fscache/buildinfo.txt (rule 20), stamps the tree and refuses a (devel) or modified binary (rule 24); only the FIPS recipe sets GOFIPS140=v1.0.0 and proves the binary records GOFIPS140=v1.0.0-c2097c7c (rule 13); bin/gen-recipes.py --check passes (both recipes equal the generator's output and the template matches its pin, rule 21)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDAPK-001-AC2

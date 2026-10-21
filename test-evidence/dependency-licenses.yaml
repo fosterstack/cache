@@ -2,11 +2,11 @@
  "github.com/beorn7/perks@v1.0.1": "MIT",
  "github.com/cespare/xxhash/v2@v2.3.0": "MIT",
  "github.com/munnerz/goautoneg@v0.0.0-20191010083416-a7dc8b61c822": "BSD-3-Clause",
- "github.com/prometheus/client_golang@v1.24.1": "Apache-2.0",
+ "github.com/prometheus/client_golang@v1.25.0": "Apache-2.0",
  "github.com/prometheus/client_model@v0.6.3": "Apache-2.0",
- "github.com/prometheus/common@v0.70.1": "Apache-2.0",
- "github.com/prometheus/procfs@v0.21.1": "Apache-2.0",
+ "github.com/prometheus/common@v0.72.0": "Apache-2.0",
+ "github.com/prometheus/procfs@v0.22.0": "Apache-2.0",
  "go.etcd.io/bbolt@v1.5.0": "MIT",
- "golang.org/x/sys@v0.47.0": "BSD-3-Clause",
+ "golang.org/x/sys@v0.48.0": "BSD-3-Clause",
  "google.golang.org/protobuf@v1.36.12": "BSD-3-Clause"
 }

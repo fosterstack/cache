@@ -41,8 +41,8 @@ COSIGN_VER=3.1.3
 # their .sigstore.json (identity https://github.com/in-toto/witness/.github/workflows/release.yml@refs/tags/v0.12.0, issuer token.actions.githubusercontent.com).
 WITNESS_VER=0.12.0
 # The Go toolchain admission's verify-freeze needs (Codex A r3 F4; advisor): the exact go<ver>.linux-<arch>.tar.gz, pinned by sha256 per architecture, values
-# equal to go.dev's published checksums (https://go.dev/dl/?mode=json), checked Oct 11 2026. GO_VER must equal the version go.mod names.
-GO_VER=1.27.2
+# equal to go.dev's published checksums (https://go.dev/dl/?mode=json), checked Oct 21 2026 for go1.27.3 (main's Go bump, cache#464). GO_VER must equal the version go.mod names.
+GO_VER=1.27.3
 # crane copies the exact image bytes by digest in the Release stage (rules 16 and 64 of the release rules: the copy tool is pinned by checksum, no build step) and reads the digest of the
 # latest release's image in the weekly persona job (rule 61: no image builder). The two sums are the sha256 of the Linux release tarballs of google/go-containerregistry v0.22.1, equal to the
 # release's checksums.txt and to the downloaded files (Oct 11 2026). The version is written only in the two literal release URLs of the crane arm below (no version variable): the pin-age scan measures those URLs.
@@ -110,8 +110,8 @@ case "${TOOL}:${arch}" in
   witness:aarch64|witness:arm64) SUM=3043bba438276c4c2b1afff7deb97cf1c0301c77515a4b1cff15549b378d2aaf ;;
   crane:x86_64|crane:amd64) SUM=0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 ;;
   crane:aarch64|crane:arm64) SUM=898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110 ;;
-  go:x86_64|go:amd64) SUM=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5 ;;
-  go:aarch64|go:arm64) SUM=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8 ;;
+  go:x86_64|go:amd64) SUM=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40 ;;
+  go:aarch64|go:arm64) SUM=a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49 ;;
   govulncheck:*) SUM="" ;;   # a module: pinned by go.sum (tools/govulncheck), not by the sum of a download
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
