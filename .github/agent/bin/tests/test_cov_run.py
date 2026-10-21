@@ -201,6 +201,48 @@ class PureHelpers(Base):
         self.assertEqual(toml.count("[[IgnoredVulns]]"), 1)
         self.assertIn('expires = "2026-10-01T00:00:00Z"', toml)
 
+    def test_ignore_files_listed_in_a_row_follow_the_scanner_set(self):
+        # 0600 option A: in panel mode the VEX is the only exception (scanner-panel rule 4), so a row lists no per-scanner ignore file
+        try:
+            R.PANEL_MODE = True
+            self.assertEqual(R._ign(["grype", "scout"], "stmt-x"), ["vex"])
+            R.PANEL_MODE = False
+            self.assertEqual(R._ign(["grype"], "stmt-x"), [os.path.join("ignores", "grype", "stmt-x.json"), ".snyk", "osv-scanner.toml"])
+        finally:
+            R.PANEL_MODE = False
+
+    def test_a_panel_manifest_must_carry_the_panel_block_with_the_verdict_path(self):
+        base = {"scanner_set": "panel", "scanner_reports": {k: None for k in R.PARS.PANEL_SCANNERS},
+                "scanner_status": {k: {"reason": "x"} for k in R.PARS.PANEL_SCANNERS}}
+        with self.assertRaisesRegex(ValueError, "no panel block"):
+            R.C.validate_manifest(dict(base))
+        with self.assertRaisesRegex(ValueError, "no panel block"):
+            R.C.validate_manifest(dict(base, panel={"not_counted": None}))
+        R.C.validate_manifest(dict(base, panel={"verdict": None}))              # a missing verdict is recorded, not a manifest error
+
+    def test_an_unknown_scanner_set_is_a_manifest_error_not_the_legacy_mode(self):
+        base = {"scanner_reports": {k: None for k in R.PARS.LEGACY_SCANNERS + ("osv-scanner-gomod",)},
+                "scanner_status": {k: {"reason": "x"} for k in R.PARS.LEGACY_SCANNERS + ("osv-scanner-gomod",)}}
+        for bad in ("Panel", "panels", "", 3, ["panel"], None):           # an explicit null is not an absent key
+            with self.assertRaisesRegex(ValueError, "scanner_set"):
+                R.C.validate_manifest(dict(base, scanner_set=bad))
+        R.C.validate_manifest(dict(base)); R.C.validate_manifest(dict(base, scanner_set="legacy"))
+
+    def test_the_panel_verdict_is_reread_and_revalidated_from_its_path(self):
+        self.assertIsNone(R._panel_verdict(None)); self.assertIsNone(R._panel_verdict({})); self.assertIsNone(R._panel_verdict({"verdict": None}))
+        d = self.d("v"); bad = os.path.join(d, "verdict.json"); open(bad, "w").write("{not json")
+        self.assertIsNone(R._panel_verdict({"verdict": bad}))                              # unparseable
+        self.assertIsNone(R._panel_verdict({"verdict": os.path.join(d, "gone.json")}))     # missing file
+        open(bad, "w").write("{}")
+        self.assertIsNone(R._panel_verdict({"verdict": bad}))                              # parses, does not validate
+
+    def test_severity_by_scanner_keeps_each_scanners_highest_and_ignores_the_unrated(self):
+        got = R._sev_by_scanner([{"scanner": "grype", "severity": "low"}, {"scanner": "grype", "severity": "high"},
+                                 {"scanner": "grype", "severity": "medium"}, {"scanner": "scout"}, {"scanner": "inspector", "severity": "Critical"},
+                                 {"severity": "high"}, {"scanner": "google", "severity": "weird"}, {"scanner": "google", "severity": "low"}])
+        # a scanner that reported the finding without a severity is shown as not rated (never guessed, never dropped)
+        self.assertEqual(got, {"grype": "high", "inspector": "Critical", "google": "low", "scout": "not rated"})
+
     def test_narrative_ok(self):
         secs = {n: [] for n in range(1, 8)}
         secs[3] = [{"id": "CVE-2099-3"}]; secs[5] = [{"id": "CVE-2099-5"}]
@@ -408,6 +450,32 @@ class MergeConsolidate(Base):
         self.assertEqual(len(items), 1)                                   # kept at CVE level
         self.assertNotIn("vex_id", items[0])                              # but no scope to point at
 
+    def test_panel_mode_consolidate_writes_the_vex_only(self):
+        # scanner-panel rule 4: the VEX is the only exception, so no .snyk and no osv-scanner.toml in a panel run's package
+        out = self.d("out")
+        self.wj(os.path.join(out, "vex", "a.openvex.json"), R.vex.doc("CVE-2099-24", "affected", "t", action="x", subcomponents=["pkg:deb/x@1"]))
+        try:
+            R.PANEL_MODE = True
+            supp, n = R._consolidate(out, "2026-09-22T00:00:00Z")
+        finally:
+            R.PANEL_MODE = False
+        self.assertEqual(n, 1)
+        self.assertTrue(os.path.exists(os.path.join(supp, "fosterstack-cache.openvex.json")))
+        self.assertFalse(os.path.exists(os.path.join(supp, ".snyk")))
+        self.assertFalse(os.path.exists(os.path.join(supp, "osv-scanner.toml")))
+
+    def test_panel_mode_merge_regenerates_no_scanner_ignore_files(self):
+        ws = self.d("ws"); _out, supp = self._supp([self._stmt("CVE-2099-25", ["pkg:deb/a@1"])])
+        try:
+            R.PANEL_MODE = True
+            R._merge_suppressions(ws, supp)
+        finally:
+            R.PANEL_MODE = False
+        merged = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))
+        self.assertEqual([s["vulnerability"]["name"] for s in merged["statements"]], ["CVE-2099-25"])
+        self.assertFalse(os.path.exists(os.path.join(ws, ".snyk")))
+        self.assertFalse(os.path.exists(os.path.join(ws, "osv-scanner.toml")))
+
     def test_consolidate_skips_unreadable_files(self):
         out = self.d("out")
         good = R.vex.doc("CVE-2099-23", "affected", "t", action="x", subcomponents=["pkg:deb/x@1"])
@@ -461,6 +529,18 @@ class SuppressionPR(Base):
         with mock.patch.object(R.subprocess, "run", fr):
             return self.quiet(R._deliver_suppression_pr, self.out, supp or self.supp, 1, "2026-09-22",
                               "abcdef1234567890", False, [])[0]
+
+    def test_a_panel_delivery_stages_the_vex_only(self):
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        try:
+            R.PANEL_MODE = True
+            self.real(fr)
+        finally:
+            R.PANEL_MODE = False
+        status = [a for a in fr.argvs() if a[:2] == ["git", "status"]][0]
+        paths = status[status.index("--") + 1:]
+        self.assertIn(".vex/fosterstack-cache.openvex.json", paths)
+        self.assertNotIn(".snyk", paths); self.assertNotIn("osv-scanner.toml", paths)
 
     def test_dry_run_automerge_proposes_merge(self):
         os.environ["AUDITOR_AUTOMERGE"] = "on"; would = []
