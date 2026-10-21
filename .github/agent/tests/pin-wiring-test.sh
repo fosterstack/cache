@@ -173,6 +173,31 @@ if len(sg) != 1:
     bad.append(f"the allowlist job has {len(sg)} scanner guard steps, not exactly one (REQ-SCAN-015-AC2)")
 elif sg[0] != SCAN_STEP:
     bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC2)")
+# The three jobs that took the slow suites out of `allowlist` (cache#499; REQ-SCAN-015-AC2's reasoning applies to each: a required job that is skipped, or
+# whose step is skipped or its failure ignored, passes while the suites never ran). Each is exactly name / runs-on / steps, named as its id, on
+# ubuntu-latest, with no step that skips, ignores its failure, changes its shell or directory, or has a timeout, and each still runs its anchor suite.
+SPLIT = {"allowlist-persona": "bash bin/persona-uat-test.sh", "allowlist-chain": "bash bin/assemble-image-test.sh",
+         "allowlist-pins-auditor": "bash .github/agent/tests/pin-age-check-test.sh"}
+for jid, anchor in SPLIT.items():
+    sj = d.get("jobs", {}).get(jid)
+    if not isinstance(sj, dict):
+        bad.append(f"the job {jid} is missing")
+        continue
+    for k in sorted(set(sj) - {"name", "runs-on", "steps"}):
+        bad.append(f"the {jid} job has `{k}`")
+    if sj.get("name") != jid:
+        bad.append(f"the {jid} job is not named `{jid}` (the required-check context)")
+    if sj.get("runs-on") != "ubuntu-latest":
+        bad.append(f"the {jid} job does not run on exactly `ubuntu-latest`")
+    sst = sj.get("steps", [])
+    for st in sst:
+        for k in plain:
+            if k in st:
+                bad.append(f"a {jid} step has `{k}`")
+    if not sst or not str(sst[0].get("uses", "")).startswith("actions/checkout@") or sst[0].get("with") != {"fetch-depth": "0"}:
+        bad.append(f"the {jid} job does not start with the full-depth checkout")
+    if sum(1 for st in sst if norm(st.get("run")) == anchor) != 1:
+        bad.append(f"the {jid} job does not run exactly one `{anchor}` step")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -301,6 +326,17 @@ gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref 
 gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
 
 case_ job-needs-skipped          bad "d['jobs']['skip_guard'] = {'runs-on': 'ubuntu-latest', 'if': 'false', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist']['needs'] = 'skip_guard'"
+case_ split-job-if            bad "d['jobs']['allowlist-chain']['if'] = 'false'"
+case_ split-job-missing       bad "d['jobs'].pop('allowlist-persona')"
+case_ split-job-renamed       bad "d['jobs']['allowlist-pins-auditor']['name'] = 'pins'"
+case_ split-job-needs         bad "d['jobs']['allowlist-chain']['needs'] = ['lint']"
+case_ split-job-runs-on       bad "d['jobs']['allowlist-persona']['runs-on'] = 'self-hosted'"
+case_ split-job-continue      bad "d['jobs']['allowlist-chain']['steps'][-1]['continue-on-error'] = 'true'"
+case_ split-step-if           bad "d['jobs']['allowlist-persona']['steps'][-1]['if'] = 'false'"
+case_ split-step-shell        bad "d['jobs']['allowlist-pins-auditor']['steps'][-2]['shell'] = 'bash -c true {0}'"
+case_ split-anchor-gone       bad "st = d['jobs']['allowlist-chain']['steps']; st[:] = [x for x in st if 'assemble-image-test' not in (x.get('run') or '')]"
+case_ split-no-checkout       bad "d['jobs']['allowlist-persona']['steps'].pop(0)"
+case_ split-job-env           bad "d['jobs']['allowlist-chain']['env'] = {'X': '1'}"
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
