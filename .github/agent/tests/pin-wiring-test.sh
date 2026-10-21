@@ -493,6 +493,8 @@ for _f in sorted(os.listdir(_wdir)):
     except Exception as e:
         bad.append(f"the workflow {_f} cannot be read ({type(e).__name__}), so its job names cannot be judged")
         continue
+    if "permissions" not in (_w or {}):   # omitted permissions inherit the repository default, which may include checks: write
+        bad.append(f"{_f}: no workflow-level `permissions` (an omitted block inherits repository defaults that may allow writing checks)")
     for _jid, _j in _jobs.items():
         _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
         if _jid in PROTECTED or _nm in PROTECTED:
@@ -747,18 +749,21 @@ cp "$here/.github/workflows/agent-review-gate.yml" "$work/gate-mut.yml"; sed -i.
 if gate_timeouts "$work/gate-mut.yml" >/dev/null; then failn=$((failn+1)); echo "FAIL gate without timeouts accepted"; else pass=$((pass+1)); echo "PASS gate without timeouts → bad"; fi
 
 # a job in ANOTHER workflow file that takes a protected check name, or can render as one, or a workflow that cannot be read
-for mut in "name" "id" "expr" "garbage" "okexpr" "checks" "checks-top" "quoted"; do
+for mut in "name" "id" "expr" "garbage" "okexpr" "checks" "checks-top" "quoted" "noperms"; do
   rm -rf "$work/wf-$mut"; mkdir -p "$work/wf-$mut"; cp "$here"/.github/workflows/*.y*ml "$work/wf-$mut/"
   case "$mut" in
-    name) printf 'name: x\non: push\njobs:\n  zz:\n    name: allowlist-persona\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
-    id) printf 'name: x\non: push\njobs:\n  allowlist-chain:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
-    expr) printf 'name: x\non: push\njobs:\n  zz:\n    name: ${{ matrix.n }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    name) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    name: allowlist-persona\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    id) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  allowlist-chain:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    expr) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    name: ${{ matrix.n }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
     garbage) printf 'jobs: [\n' > "$work/wf-$mut/zz.yml" ;;
-    checks) printf 'name: x\\non: push\\njobs:\\n  zz:\\n    runs-on: ubuntu-latest\\n    permissions:\\n      checks: write\\n    steps:\\n      - run: "true"\\n' > "$work/wf-$mut/zz.yml" ;;
-    checks-top) printf 'name: x\\non: push\\npermissions: write-all\\njobs:\\n  zz:\\n    runs-on: ubuntu-latest\\n    steps:\\n      - run: "true"\\n' > "$work/wf-$mut/zz.yml" ;;
+    checks) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    runs-on: ubuntu-latest\n    permissions:\n      checks: write\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    checks-top) printf 'name: x\non: push\npermissions: write-all\njobs:\n  zz:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    noperms) printf 'name: x\non: push\njobs:\n  zz:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
     quoted) cat > "$work/wf-$mut/zz.yml" <<'WF'
 name: x
 on: push
+permissions:
+  contents: read
 jobs:
   zz:
     name: "${{ 'allowlist-persona' || '}} ' }}"
@@ -767,7 +772,7 @@ jobs:
       - run: "true"
 WF
       ;;
-    okexpr) printf 'name: x\non: push\njobs:\n  zz:\n    name: scan (${{ matrix.n }})\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    okexpr) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    name: scan (${{ matrix.n }})\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
   esac
   want=bad; [ "$mut" = okexpr ] && want=ok
   if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/wf-$mut" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
