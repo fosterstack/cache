@@ -40,14 +40,28 @@ else
     sed -i -E "s/^go ${CURRENT//./\\.}$/go ${LATEST}/" "$f"
     grep -q "^go ${LATEST}$" "$f" || { echo "::error::failed to bump go directive in $f" >&2; exit 1; }
   done
-  # the auditor App's bot when go-freshness.yml runs it with the App's token (owner, Oct 2), else the Actions bot
-  slug="${AUDITOR_APP_SLUG:-github-actions}"
-  git config user.name  "${slug}[bot]"
-  git config user.email "${slug}[bot]@users.noreply.github.com"
-  git checkout -b "$branch"
-  git add go.mod tools/requirements/go.mod
-  git commit -q -m "chore(go): bump toolchain ${CURRENT} -> ${LATEST}"
-  git push -u origin "$branch"
+  # No `git commit` here: main requires signed commits and a commit made in the runner is unsigned (cache#464 sat BLOCKED on one). The branch
+  # is pushed at the commit this job started from (nothing new to sign) and the one commit is made through the API, which GitHub signs for the
+  # App's token (the same mechanism as bin/refresh-inputs.sh; REQ-REL-004-AC8). Any failure removes the branch and opens no pull request.
+  base="$(git rev-parse HEAD)"
+  case "$base" in *[!0-9a-f]*|'') echo "::error::could not read the commit the job started from" >&2; exit 1;; esac
+  [ "${#base}" -eq 40 ] || { echo "::error::could not read the commit the job started from" >&2; exit 1; }
+  input="$(mktemp)"
+  jq -n --arg repo "${GITHUB_REPOSITORY:-fosterstack/cache}" --arg b "$branch" --arg base "$base" \
+        --arg head "chore(go): bump toolchain ${CURRENT} -> ${LATEST}" \
+        --arg r "$(base64 < go.mod | tr -d '\n')" --arg t "$(base64 < tools/requirements/go.mod | tr -d '\n')" \
+    '{query: "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",
+      variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $b}, message: {headline: $head}, expectedHeadOid: $base,
+                          fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}]}}}}' > "$input"
+  git push origin "${base}:refs/heads/${branch}"
+  refuse() { echo "::error::$1; removing ${branch} and opening no pull request" >&2; git push origin --delete "$branch" >&2 || true; rm -f "$input"; exit 1; }
+  oid="$(gh api graphql --input "$input" -q '.data.createCommitOnBranch.commit.oid')" || refuse "the API could not create the commit"
+  case "$oid" in *[!0-9a-f]*|'') refuse "the API returned no commit id";; esac
+  [ "${#oid}" -eq 40 ] || refuse "the API returned no commit id"
+  ver="$(gh api "repos/{owner}/{repo}/commits/${oid}" -q '.commit.verification.verified')" || refuse "could not ask whether commit ${oid} is verified"
+  [ "$ver" = true ] || refuse "commit ${oid} is not verified by GitHub (main requires signed commits)"
+  rm -f "$input"
+  echo "signed commit ${oid} on ${branch} (verified by GitHub)"
 fi
 
 body="$(cat <<EOF
