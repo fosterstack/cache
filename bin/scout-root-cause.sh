@@ -34,6 +34,7 @@ children() { skopeo inspect --raw "docker://$1" | jq -r '[.manifests[]? | "\(.di
 docker pull -q "$FIXTURE" >/dev/null
 docker tag "$FIXTURE" scoutcontrol/app:v1
 docker tag "$FIXTURE" ghcr.io/fosterstack/cache:selfcheck
+[ "${STAGE_ONLY:-}" = 1 ] && exit 0   # bin/scout-older-versions.sh (advisor 0520) stages the same pinned fixture through the lines above, one pull in the repo, and stops here
 
 {
   echo "# Docker Scout root-cause round"

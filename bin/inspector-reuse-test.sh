@@ -1238,7 +1238,7 @@ else:
              "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read"},
              "scout-root-cause": {"contents": "read", "packages": "write"}, "panel-inspector": {"contents": "read", "id-token": "write"},
              "panel-google": {"contents": "read", "id-token": "write"}, "panel": {"contents": "read", "issues": "write"},
-             "manifests": None, "rescan": {"contents": "read", "issues": "write", "packages": "read"}}
+             "scout-older-versions": {"contents": "read"}, "manifests": None, "rescan": {"contents": "read", "issues": "write", "packages": "read"}}
 # the triggers, exactly: a PR's saved entry is never restored by a main or tag run (the cache scope is the ref)
 if d.get("on") != triggers:
     bad.append("the workflow triggers changed: %s" % json.dumps(d.get("on")))

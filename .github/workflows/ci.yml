@@ -496,6 +496,9 @@ jobs:
       - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
         run: bash bin/scout-root-cause-test.sh
 
+      - name: the Docker Scout older-versions sweep (advisor 0520) — table logic with docker stubbed, installer pins, dispatch-only job
+        run: bash bin/scout-older-versions-test.sh
+
       - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
         run: bash bin/go-bump-open-pr-test.sh
 
