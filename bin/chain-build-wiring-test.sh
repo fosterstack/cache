@@ -2298,6 +2298,7 @@ BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "b
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
         "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
+PINWIRE, STEP = ".github/agent/tests/pin-wiring-test.sh", "bash bin/vex-index-test.sh </dev/null"      # the pin-wiring judge quotes ci.yml's step (the test script, never the tool); only that exact string is admitted, only there
 RUN_CALL = 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1'
 VI_RESULT_LINES = ('check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", vi_run.returncode == 0, vi_run.stderr[-300:])',
                    'check("scout-vex: the attached document passes the attestation tool\'s own OpenVEX check (the tool is run, never loaded into this process)", vi_run.returncode == 0, vi_run.stderr[-300:])')
@@ -2319,7 +2320,10 @@ def stray(root):
                 continue
             if not os.path.isfile(path):
                 continue
-            if "vex-index" in open(path, errors="replace").read():
+            text = open(path, errors="replace").read()
+            if os.path.relpath(path, root) == PINWIRE:
+                text = text.replace(STEP, "")      # the exact quoted step string is admitted; any other mention left in the file still names the tool or the test
+            if "vex-index" in text:
                 named.add(os.path.relpath(path, root))
     for d, dirs, files in os.walk(root):      # a link to the tool is the tool: looked for in every folder, the skipped prose ones too
         dirs[:] = [x for x in dirs if x not in (".git", "__pycache__")]
@@ -2472,7 +2476,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=842
+EXPECT=846
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
