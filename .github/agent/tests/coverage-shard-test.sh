@@ -109,7 +109,7 @@ cat > "$w/stub.sh" <<'STUB'
 echo "${PINS_SHARD:-none}${PINS_DRY:+ dry}" >> "${FAKE_CALLS:-/dev/null}"
 i=0 n=1
 [ -z "${PINS_SHARD:-}" ] || { i=${PINS_SHARD%/*}; n=${PINS_SHARD#*/}; }
-[ -z "${FAKE_CRASH:-}" ] || exit 1
+[ -z "${FAKE_CRASH:-}" ] || [ -n "${PINS_DRY:-}" ] || exit 1   # a real shard dies; the dry listing (the manifest) still works
 pass=0 failn=0 ran=0
 for k in 1 2 3 4 5 6; do
   u=u$k
@@ -125,6 +125,7 @@ done
 echo "PASS pm-case-count → 6"; echo "PASS pm-case-names → abc"; pass=$((pass+2))
 echo "check-action-pins: shard $i/$n units=6 ran=$ran"
 echo "check-action-pins: $pass passed, $failn failed"
+[ -z "${FAKE_LATE_EXIT:-}" ] || [ -n "${PINS_DRY:-}" ] || exit 3   # complete, successful output, then a non-zero exit
 [ "$failn" -eq 0 ]
 STUB
 fan() { env PINS_SELF="$w/stub.sh" PINS_JOBS=2 FAKE_CALLS="$w/calls" "$@" bash "$pins" > "$w/fan.out" 2>&1; }
@@ -137,7 +138,10 @@ fan FAKE_FAIL=u3; [ $? -ne 0 ] && ok "fan-out: a failing case in one shard fails
 grep -q '^FAIL u3' "$w/fan.out" && ok "fan-out: the FAIL line is shown" || no "the FAIL line was not printed"
 fan FAKE_DROP=u4; [ $? -ne 0 ] && ok "fan-out: a case silently not run fails the step (the sum)" || no "a dropped case passed"
 fan FAKE_DUP=u5; [ $? -ne 0 ] && ok "fan-out: a case completed twice fails the step (the sum)" || no "a duplicated case passed"
-fan FAKE_CRASH=1; [ $? -ne 0 ] && ok "fan-out: shards that die before any summary fail the step" || no "crashed shards passed"
+: > "$w/calls"; fan FAKE_CRASH=1; crc=$?
+[ "$crc" -ne 0 ] && ok "fan-out: shards that die before any summary fail the step" || no "crashed shards passed"
+[ "$(grep -c '^[01]/2$' "$w/calls")" = 2 ] && ok "fan-out: the crash test really launched both shards (the manifest listing survived)" || no "the crash test did not launch the shards: $(sort "$w/calls" | tr '\n' ,)"
+fan FAKE_LATE_EXIT=1; [ $? -ne 0 ] && ok "fan-out: a shard with complete, passing output that exits non-zero fails the step (child status is checked)" || no "a late non-zero shard exit passed"
 : > "$w/calls"; PINS_SERIAL=1 PINS_SELF="$w/stub.sh" FAKE_CALLS="$w/calls" timeout 4 bash "$pins" > "$w/ser.out" 2>&1; src=$?   # the real cases run for minutes: four seconds show it did not fan out
 [ "$(wc -l < "$w/calls" | tr -d ' ')" = 0 ] && ok "PINS_SERIAL=1 runs the real script in this process (no fan-out)" || no "PINS_SERIAL=1 still fanned out: $(cat "$w/calls")"
 : > "$w/calls"; PINS_SHARD=0/4 PINS_DRY=1 PINS_SELF="$w/stub.sh" FAKE_CALLS="$w/calls" bash "$pins" > /dev/null 2>&1
