@@ -104,8 +104,8 @@ findings it prints and do not rely on its exit code alone (the same advice as
 in the exit-codes section above). It also does not run OSV-Scanner, and it uses
 whatever vulnerability database your Grype has, where the gate refuses a
 database more than 48 hours old, so a result can differ from ours on a
-different day. Other scanners, Trivy among them, are useful cross-checks but
-are not part of the release gate.
+different day. Scanners outside the release gate, such as Trivy, are useful
+cross-checks.
 
 Run without `--vex` to see raw findings including the ones we have
 publicly dispositioned — the difference between the two runs is exactly
