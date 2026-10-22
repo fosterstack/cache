@@ -48,6 +48,7 @@ GO_VER=1.27.2
 # release's checksums.txt and to the downloaded files (Oct 11 2026). The version is written only in the two literal release URLs of the crane arm below (no version variable): the pin-age scan measures those URLs.
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
+die() { pipeline_fail "$@"; }   # the plain-text failure word of the pinned Go fetch line (pin-age honours that line shape, REQ-SUP-001-AC23)
 
 case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|docker-scout-1.0.9|docker-scout-1.2.2|docker-scout-1.3.0|docker-scout-1.4.1|docker-scout-1.5.2|docker-scout-1.6.4|docker-scout-1.7.0|docker-scout-1.8.0|docker-scout-1.9.3|docker-scout-1.10.0|docker-scout-1.11.0|docker-scout-1.12.0|docker-scout-1.14.0|docker-scout-1.15.1|docker-scout-1.16.3|docker-scout-1.17.1|docker-scout-1.18.4|docker-scout-1.19.0|docker-scout-1.20.4|docker-scout-1.21.0|docker-scout-1.22.0|docker-scout-1.23.1|gitsign|cosign|witness|go|crane|govulncheck|kind) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|go|crane|govulncheck|kind)" ;; esac
 
@@ -236,7 +237,8 @@ case "$TOOL" in
     done < go.mod
     [ -n "$want" ] || want="$gline"
     [ "$want" = "$GO_VER" ] || pipeline_fail "go.mod names go '${want}' but the pinned toolchain is ${GO_VER} (go.mod and GO_VER in bin/install-scanner.sh must agree)"
-    curl -fsSL -o "$tmp/go.tgz" "https://go.dev/dl/go${GO_VER}.${A_GO}.tar.gz" || pipeline_fail "download failed: go ${GO_VER}"
+    gofile="go${GO_VER}.${A_GO}.tar.gz"
+    curl -q -fsSL -g -o "$tmp/go.tgz" "https://go.dev/dl/${gofile}" || die "download failed: go toolchain"
     verify "$tmp/go.tgz"
     mkdir -p "$tmp/x" && tar -xzf "$tmp/go.tgz" -C "$tmp/x" || pipeline_fail "extract failed for go"
     gobin="$tmp/x/go/bin"; [ -x "${gobin}/go" ] || pipeline_fail "the toolchain archive holds no go program"
