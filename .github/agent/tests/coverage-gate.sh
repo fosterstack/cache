@@ -40,7 +40,7 @@ bash .github/agent/tests/coverage-shard-test.sh > "$W/shardtest.log" 2>&1 \
 tail -1 "$W/shardtest.log"
 PINS_DRY=1 bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.manifest" 2>/dev/null \
   || { echo "::error::could not list the action-pin units" >&2; exit 1; }
-python3 -m coverage run -m unittest discover -s .github/agent/bin/tests -p 'test_*.py' 2> "$W/unit.log" & p_unit=$!
+bash .github/agent/tests/unit-shards.sh "$W/unit" > "$W/unit.log" 2>&1 & p_unit=$!   # the parser unit tests as UNIT_SHARDS (4) parallel shards under coverage; every shard's exit status is checked and unit-shard-sum.py proves every test finished once
 bash .github/agent/tests/auditor-matrix-test.sh > "$W/matrix.log" 2>&1 & p_matrix=$!
 p_pins=()
 for i in $(seq 0 $((PINS_SHARDS-1))); do   # row 78: the action-pin checker's fixture cases (it lives here so its changes need the independent second review)
