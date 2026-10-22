@@ -33,6 +33,8 @@ jobs:
         run: bash bin/build-stage-refuse-mode.sh "$MODE"
       - name: install Witness (pinned by checksum)
         run: bash bin/install-scanner.sh witness
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
       - name: install melange (pinned by checksum)
         run: bash bin/install-build-tools.sh melange
       - name: install crane (pinned by checksum)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-BUILDAPK-001-AC1, REQ-BUILDAPK-001-AC2, REQ-BUILDAPK-001-AC3, REQ-BUILDAPK-001-AC4, REQ-BUILDAPK-001-AC5, REQ-BUILDAPK-001-AC6, REQ-BUILDAPK-001-AC7, REQ-BUILDAPK-001-AC8, REQ-BUILDAPK-001-AC9
+# proves: REQ-BUILDAPK-001-AC1, REQ-BUILDAPK-001-AC2, REQ-BUILDAPK-001-AC3, REQ-BUILDAPK-001-AC4, REQ-BUILDAPK-001-AC5, REQ-BUILDAPK-001-AC6, REQ-BUILDAPK-001-AC7, REQ-BUILDAPK-001-AC8, REQ-BUILDAPK-001-AC9, REQ-CHAIN-005-AC4
 # Tests of the PR: melange recipes, the apk build driver, release signing and the key files.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -266,11 +266,73 @@ mkrsa "$work/release.rsa"
 # release signing compares the key's public half with build/keys/release.rsa.pub: tests use a fixture keys dir (test mode only; recorded in the script's own test-mode gate)
 mkdir -p "$work/keysfx"; cp "$root/build/keys/assembly.rsa" "$root/build/keys/assembly.rsa.pub" "$work/keysfx/"; openssl rsa -in "$work/release.rsa" -pubout -out "$work/keysfx/release.rsa.pub" 2>/dev/null
 RS_REAL=$RS; RS="$work/rs-copy.sh"
-sd "rule 22" "release signing: same contents in Build and Rebuild -> melange sign with the release key" "^melange sign .*--signing-key [^ ]*/key/release\.rsa .*fscache-0\.3\.0-r0\.apk" "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"   # pkg/cli/sign.go:159-174
-run_s "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsC" --key "$work/release.rsa"
-if [ "$(rc)" != 0 ] && [ "$(rc)" != 127 ] && ! grep -Eq '^melange sign' "$CALLS" && grep -q 'fscache-0.3.0-r0.apk' "$work/log"; then ok; else bad "rule 22" "release signing: contents differ between Build and Rebuild -> refused, nothing signed, apk named"; fi
-mkdir -p "$work/rsD"; sr "rule 22" "release signing: a Rebuild directory with no counterpart apk is refused" 'rebuild|missing|counterpart' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsD" --key "$work/release.rsa"
-sr "rule 22" "release signing refuses the assembly key (nothing a customer trusts is signed with it)" 'assembly' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$root/build/keys/assembly.rsa"
+sd "rule 22" "release signing: same contents in Build and Rebuild -> melange sign with the release key" "^melange sign .*--signing-key [^ ]*/key/release\.rsa .*fscache-0\.3\.0-r0\.apk" "$RS" --build-dir "$work/rsA" --key "$work/release.rsa"   # pkg/cli/sign.go:159-174
+sr "rule 22" "release signing refuses the assembly key (nothing a customer trusts is signed with it)" 'assembly' "$RS" --build-dir "$work/rsA" --key "$root/build/keys/assembly.rsa"
+# The ratified rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the job that holds the signing key never receives Rebuild's apks, so the
+# signer no longer takes --rebuild-dir (an old call is an unknown argument, exit 2) and the comparison lives only in bin/release-compare.sh, which runs in a job without a key
+sr "rule 22" "release signing has no --rebuild-dir any more: the old call is refused as an unknown argument (the comparison is release-compare.sh's, in a job without the key)" 'unknown argument' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"
+cmpmk() { # <dir>: a repo-shaped tree around the script, with four identical Build/Rebuild pairs under apks/ and rapks/
+  rm -rf "$1"; mkdir -p "$1/bin" "$1/build/keys"; cp "$root/bin/apk-tool.py" "$1/bin/"; cp "$root/build/keys/assembly.rsa.pub" "$1/build/keys/"
+  [ -f "$root/bin/release-compare.sh" ] && cp "$root/bin/release-compare.sh" "$1/bin/"; [ -f "$root/bin/release-compare.py" ] && cp "$root/bin/release-compare.py" "$1/bin/"
+  for top in apks rapks; do for rn in ubuntu-24.04:x86_64 ubuntu-24.04-arm:aarch64; do d="$1/$top/${rn%%:*}/${rn##*:}"; mkdir -p "$d"; for n in fscache fscache-fips; do cp "$fx/pair/a.apk" "$d/$n-0.3.0-r0.apk"; done; done; done; }
+cmprun() { (cd "$1" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C "$(command -v bash)" bin/release-compare.sh) >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }
+cmpexpect() { # <desc> <rc> <regex of the message> <dir>: this exit status, the message names the reason, and no pass record exists
+  local d=$1 want=$2 kw=$3 dir=$4; cmprun "$dir"
+  if [ "$(rc)" = "$want" ] && grep -Eqi -- "$kw" "$work/log" && ! grep -q '"verdict": *"pass"' "$dir/apk-compare/apk-compare.json" 2>/dev/null; then ok; else bad "rule 22" "release-compare: $d (exit $(rc), wanted $want naming '$kw')"; fi; }
+cmpmk "$work/cm1"; cmprun "$work/cm1"
+t "rule 22" "release-compare: four identical pairs -> exit 0 and apk-compare/apk-compare.json says pass with four pairs" bash -c "test \"\$(cat '$work/rc')\" = 0 && python3 - '$work/cm1/apk-compare/apk-compare.json' <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d['verdict'] == 'pass' and len(d['pairs']) == 4, d
+assert sorted((p['arch'], p['variant']) for p in d['pairs']) == [('amd64', 'fips'), ('amd64', 'standard'), ('arm64', 'fips'), ('arm64', 'standard')], d
+P"
+t "rule 22" "release-compare: every pair carries the whole-file sha256 and the apk-tool digest of both the Build apk and the Rebuild apk, and they are the real values" bash -c "python3 - '$work/cm1' <<'P'
+import hashlib, json, os, subprocess, sys
+r = sys.argv[1]; d = json.load(open(r + '/apk-compare/apk-compare.json'))
+for p in d['pairs']:
+    assert set(p) == {'arch', 'variant', 'name', 'build_sha256', 'rebuild_sha256', 'build_digest', 'rebuild_digest'}, sorted(p)
+    short = {'amd64': ('ubuntu-24.04', 'x86_64'), 'arm64': ('ubuntu-24.04-arm', 'aarch64')}[p['arch']]
+    for side, top in (('build', 'apks'), ('rebuild', 'rapks')):
+        f = '%s/%s/%s/%s/%s' % (r, top, short[0], short[1], p['name'])
+        assert p[side + '_sha256'] == hashlib.sha256(open(f, 'rb').read()).hexdigest(), (side, p)
+        dg = subprocess.run(['python3', '-I', '-B', r + '/bin/apk-tool.py', 'digest', f], capture_output=True, text=True, check=True).stdout.strip()
+        assert p[side + '_digest'] == dg, (side, p, dg)
+    assert p['build_digest'] == p['rebuild_digest']
+P"
+cmpmk "$work/cm2"; cp "$fx/pair/ctrl-post-install.apk" "$work/cm2/rapks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"
+cmpexpect "Rebuild's apk differs in the control section (an extra .post-install, same data) -> exit 1, the apk is named, no pass record" 1 'fscache-fips-0.3.0-r0.apk' "$work/cm2"
+cmpmk "$work/cm3"; cp "$fx/pair/ctrl-post-install.apk" "$work/cm3/apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
+cmpexpect "the same difference the other way round (Build has the extra script) is refused too" 1 'fscache-0.3.0-r0.apk' "$work/cm3"
+cmpmk "$work/cm4"; cp "$fx/pair/c.apk" "$work/cm4/rapks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
+cmpexpect "Rebuild's apk has other contents (data) -> exit 1" 1 'differs' "$work/cm4"
+cmpmk "$work/cm5"; rm "$work/cm5/rapks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"
+cmpexpect "an apk Build made and Rebuild did not -> refused (exit 2), named" 2 'counterpart|missing' "$work/cm5"
+cmpmk "$work/cm6"; cp "$fx/pair/a.apk" "$work/cm6/rapks/ubuntu-24.04/x86_64/fscache-extra-0.3.0-r0.apk"
+cmpexpect "an apk only Rebuild has -> refused (exit 2), named" 2 'extra|counterpart' "$work/cm6"
+cmpmk "$work/cm7"; rm "$work/cm7/apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"; ln -s "$fx/pair/a.apk" "$work/cm7/apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
+cmpexpect "a symlinked apk in Build -> refused (exit 2), the symlink is named" 2 'symlink|not a regular file' "$work/cm7"
+cmpmk "$work/cm8"; rm "$work/cm8/rapks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"; ln -s "$fx/pair/a.apk" "$work/cm8/rapks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
+cmpexpect "a symlinked apk in Rebuild -> refused (exit 2)" 2 'symlink|not a regular file' "$work/cm8"
+cmpmk "$work/cm9"; : >"$work/cm9/apks/ubuntu-24.04/x86_64/$(printf 'evil\nname.apk')"; : >"$work/cm9/rapks/ubuntu-24.04/x86_64/$(printf 'evil\nname.apk')"
+cmpexpect "an apk whose NAME holds a newline -> refused (exit 2), never split into two names" 2 'control|newline|name' "$work/cm9"
+cmpmk "$work/cm10"; cp "$pr/b.apk" "$work/cm10/apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
+cmpexpect "a Build apk already signed by anything but assembly.rsa.pub -> refused (exit 2), naming the signer" 2 'assembly\.rsa\.pub' "$work/cm10"
+cmpmk "$work/cm11"; cp "$pr/b.apk" "$work/cm11/rapks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
+cmpexpect "a Rebuild apk signed by anything but assembly.rsa.pub -> refused (exit 2)" 2 'assembly\.rsa\.pub' "$work/cm11"
+cmpmk "$work/cm12"; rm -rf "$work/cm12/apks" "$work/cm12/rapks"; mkdir -p "$work/cm12/apks" "$work/cm12/rapks"
+cmpexpect "no apk at all -> refused (exit 2), never an empty pass" 2 'no apk' "$work/cm12"
+# two refusals the first release-compare lacked (review of cache#514, both Codex seats): a symlink AT the root of apks/ or rapks/ (a rapks -> apks link would compare Build with itself), and a directory named like an apk
+cmpmk "$work/cm14"; mv "$work/cm14/apks" "$work/cm14/apks-real"; ln -s apks-real "$work/cm14/apks"
+cmpexpect "apks/ itself a symlink -> refused (exit 2), the symlink is named" 2 'symlink' "$work/cm14"
+cmpmk "$work/cm15"; rm -rf "$work/cm15/rapks"; ln -s apks "$work/cm15/rapks"
+cmpexpect "rapks/ a symlink to apks/ (Build compared with itself) -> refused (exit 2)" 2 'symlink' "$work/cm15"
+cmpmk "$work/cm16"; mkdir "$work/cm16/apks/ubuntu-24.04/x86_64/unexpected.apk"
+cmpexpect "a directory named unexpected.apk in Build -> refused (exit 2), not a regular file" 2 'not a regular file' "$work/cm16"
+cmpmk "$work/cm17"; mkdir "$work/cm17/rapks/ubuntu-24.04-arm/aarch64/unexpected.apk"
+cmpexpect "a directory named unexpected.apk in Rebuild -> refused (exit 2), not a regular file" 2 'not a regular file' "$work/cm17"
+cmpmk "$work/cm13"; mkdir -p "$work/cm13/elsewhere"; (cd "$work/cm13/elsewhere" && env -i PATH="$PATH" HOME=/nonexistent "$(command -v bash)" ../bin/release-compare.sh) >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"
+t "rule 22" "release-compare: a run from another directory is refused (exit 2) naming the repository root" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -qi 'repository root' '$work/log'"
+t "rule 22" "release-compare reads no key, no secret and no signing tool: it names none of melange, openssl, a key file, a credential, a download tool or a network library" bash -c "test -f '$root/bin/release-compare.py' && ! cat '$root/bin/release-compare.sh' '$root/bin/release-compare.py' | grep -v '^ *#' | grep -Eqi 'melange|openssl|release\.rsa\b|APK_RELEASE|DOCKERHUB|GH_TOKEN|cu''rl|wg''et|\bnc\b|socket|urllib|requests|crane'"
 
 # ===== rule 17 18: key policy ===========================================================================================
 t "rule 17" "build-apk.sh names the committed assembly key (build/keys/assembly.rsa) as the only key it signs with" bash -c "test -f '$BA_PROD' && grep -q 'build/keys/assembly.rsa' '$BA_PROD'"
@@ -301,31 +363,21 @@ sx "rule 40" "[advisor reading] build-apk.sh: network text but the probe says th
 run_s env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
 if [ "$(rc)" = 0 ] && ! grep -q 'net-probe' "$CALLS"; then ok; else bad "rule 40" "build-apk.sh: a tool that succeeds -> exit 0 and no probe"; fi
 # ---- P4 review round 1 (Opus): B1-B4 and residuals R2, R7, R8, plus the rc versions (tests first) -----------------------------------
-# B1 (rule 22): the apk Build made and the apk Rebuild made must agree in the CONTROL section too (melange sign signs the whole control)
-mkdir -p "$work/rsE/x86_64" "$work/rsF/x86_64"
-cp "$fx/pair/ctrl-post-install.apk" "$work/rsE/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/a.apk" "$work/rsF/x86_64/fscache-0.3.0-r0.apk"
-run_s "$RS" --build-dir "$work/rsE" --rebuild-dir "$work/rsF" --key "$work/release.rsa"
-t "rule 22" "release signing: Build's apk has an extra .post-install (same data) -> refused, apk named, nothing signed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'fscache-0.3.0-r0.apk' '$work/log' && ! grep -q '^melange sign' '$CALLS'"
-run_s "$RS" --build-dir "$work/rsF" --rebuild-dir "$work/rsE" --key "$work/release.rsa"
-t "rule 22" "release signing: the same difference the other way round (Rebuild has the extra script) is refused too" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^melange sign' '$CALLS'"
 # R7: a symlinked apk, or an apk only one side has, is refused (fail closed), nothing signed
-mkdir -p "$work/rsG/x86_64" "$work/rsH/x86_64"; cp "$fx/pair/a.apk" "$work/rsG/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/b.apk" "$work/rsH/x86_64/fscache-0.3.0-r0.apk"
-cp "$fx/pair/a.apk" "$work/rsH/x86_64/fscache-extra-0.3.0-r0.apk"
-sr "rule 22" "release signing: an apk only Rebuild has is refused (exit 2, named)" 'extra|counterpart' "$RS" --build-dir "$work/rsG" --rebuild-dir "$work/rsH" --key "$work/release.rsa"
 mkdir -p "$work/rsI/x86_64" "$work/rsJ/x86_64"; cp "$fx/pair/a.apk" "$work/rsJ/x86_64/fscache-0.3.0-r0.apk"; ln -s "$fx/pair/a.apk" "$work/rsI/x86_64/fscache-0.3.0-r0.apk"
-sr "rule 22" "release signing: a symlinked apk in Build is refused (exit 2, names the symlink)" 'symlink|not a regular file' "$RS" --build-dir "$work/rsI" --rebuild-dir "$work/rsJ" --key "$work/release.rsa"
+sr "rule 22" "release signing: a symlinked apk in Build is refused (exit 2, names the symlink)" 'symlink|not a regular file' "$RS" --build-dir "$work/rsI" --key "$work/release.rsa"
 mkdir -p "$work/rsN1/x86_64" "$work/rsN2/x86_64"; cp "$fx/pair/a.apk" "$work/rsN1/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/a.apk" "$work/rsN2/x86_64/fscache-0.3.0-r0.apk"
 nlname=$(printf 'x86_64/evil\nname.apk'); mkdir -p "$work/rsN1/x86_64"; : >"$work/rsN1/$nlname"; : >"$work/rsN2/$nlname"
-sr "rule 22" "release signing: an apk whose NAME holds a newline is refused (exit 2, names the control character), never split into two names" 'control|newline|name' "$RS" --build-dir "$work/rsN1" --rebuild-dir "$work/rsN2" --key "$work/release.rsa"
+sr "rule 22" "release signing: an apk whose NAME holds a newline is refused (exit 2, names the control character), never split into two names" 'control|newline|name' "$RS" --build-dir "$work/rsN1" --key "$work/release.rsa"
 # B3 (rules 22, 17): the assembly key is recognised by its PUBLIC half, not by its bytes or its file name
 cp "$root/build/keys/assembly.rsa" "$work/asm-newline.rsa"; printf '\n' >>"$work/asm-newline.rsa"
 sed 1d "$root/build/keys/assembly.rsa" >"$work/asm-noheader.rsa"
 cp "$root/build/keys/assembly.rsa" "$work/release.rsa.looks-innocent"
-sr "rule 22" "release signing refuses the assembly key plus a trailing newline" 'assembly' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/asm-newline.rsa"
-sr "rule 22" "release signing refuses the assembly key without its NON-SECRET header line" 'assembly' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/asm-noheader.rsa"
-sr "rule 22" "release signing refuses the assembly key under an innocent file name" 'assembly' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa.looks-innocent"
+sr "rule 22" "release signing refuses the assembly key plus a trailing newline" 'assembly' "$RS" --build-dir "$work/rsA" --key "$work/asm-newline.rsa"
+sr "rule 22" "release signing refuses the assembly key without its NON-SECRET header line" 'assembly' "$RS" --build-dir "$work/rsA" --key "$work/asm-noheader.rsa"
+sr "rule 22" "release signing refuses the assembly key under an innocent file name" 'assembly' "$RS" --build-dir "$work/rsA" --key "$work/release.rsa.looks-innocent"
 echo "not a key at all" >"$work/notakey.rsa"
-sr "rule 22" "release signing refuses a file that is not an RSA private key (cannot compare, so it does not sign)" 'key' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/notakey.rsa"
+sr "rule 22" "release signing refuses a file that is not an RSA private key (cannot compare, so it does not sign)" 'key' "$RS" --build-dir "$work/rsA" --key "$work/notakey.rsa"
 # B4 (AC8): the third key file is public only
 t "rule 22" "no file under build/keys holds a private key except the committed non-secret assembly.rsa" bash -c "test \"\$(grep -rl 'PRIVATE KEY' '$root/build/keys' | sort)\" = '$root/build/keys/assembly.rsa'"
 # B2 (rule 24): the Go stamp must say exactly v<version> for the main module and the source HEAD as the revision
@@ -371,28 +423,19 @@ sd "rule 38a" "GOPROXY=off exactly is accepted" '^melange build ' "${bae[@]}" GO
 # ---- P4 review round 1 (Sonnet): AC7 with four apks (two variants x two architectures): every pair is compared and every apk is signed ------------
 mk4() { rm -rf "$1"; for a in x86_64 aarch64; do mkdir -p "$1/$a"; for n in fscache fscache-fips; do cp "$fx/pair/a.apk" "$1/$a/$n-0.3.0-r0.apk"; done; done; }
 mk4 "$work/r4A"; mk4 "$work/r4B"
-run_s "$RS" --build-dir "$work/r4A" --rebuild-dir "$work/r4B" --key "$work/release.rsa"
+run_s "$RS" --build-dir "$work/r4A" --key "$work/release.rsa"
 t "rule 22" "release signing: four identical pairs -> exit 0 and melange sign runs for each of the four apks" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c '^melange sign' '$CALLS')\" = 4"
-mk4 "$work/r4A"; mk4 "$work/r4B"; cp "$fx/pair/ctrl-post-install.apk" "$work/r4B/aarch64/fscache-fips-0.3.0-r0.apk"
-run_s "$RS" --build-dir "$work/r4A" --rebuild-dir "$work/r4B" --key "$work/release.rsa"
-t "rule 22" "release signing: only the SECOND apk in order differs (control) -> exit 1 naming it, and not one of the four is signed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'fscache-fips-0.3.0-r0.apk' '$work/log' && ! grep -q '^melange sign' '$CALLS'"
-mk4 "$work/r4A"; mk4 "$work/r4B"; cp "$fx/pair/ctrl-post-install.apk" "$work/r4B/x86_64/fscache-fips-0.3.0-r0.apk"
-run_s "$RS" --build-dir "$work/r4A" --rebuild-dir "$work/r4B" --key "$work/release.rsa"
-t "rule 22" "release signing: only the LAST apk differs -> exit 1, nothing signed" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -q '^melange sign' '$CALLS'"
-mk4 "$work/r4A"; mk4 "$work/r4B"; rm "$work/r4B/aarch64/fscache-fips-0.3.0-r0.apk"
-run_s "$RS" --build-dir "$work/r4A" --rebuild-dir "$work/r4B" --key "$work/release.rsa"
-t "rule 22" "release signing: the second apk is missing in Rebuild -> refused (exit 2), nothing signed (not just the first)" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -q '^melange sign' '$CALLS'"
 
 # a symlink that is not itself an apk (a directory link next to the real directory) is refused too
 mkdir -p "$work/rsK/x86_64" "$work/rsL/x86_64"; cp "$fx/pair/a.apk" "$work/rsK/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/b.apk" "$work/rsL/x86_64/fscache-0.3.0-r0.apk"; ln -s x86_64 "$work/rsK/aarch64"
-sr "rule 22" "release signing: a directory symlink inside Build is refused (exit 2, names the symlink), nothing signed" 'symlink' "$RS" --build-dir "$work/rsK" --rebuild-dir "$work/rsL" --key "$work/release.rsa"
+sr "rule 22" "release signing: a directory symlink inside Build is refused (exit 2, names the symlink), nothing signed" 'symlink' "$RS" --build-dir "$work/rsK" --key "$work/release.rsa"
 
 # ---- P4 round 2 (Opus + Sonnet): the key guard reads the key the way melange does, and more (tests first) -----------------------------------------
 rsa_der() { sed -n '/-----BEGIN RSA PRIVATE KEY-----/,/-----END RSA PRIVATE KEY-----/p' "$1" | sed '1d;$d' | tr -d '\n'; }
 cp "$work/release.rsa" "$work/fresh.rsa"; asm_b64=$(sed -n '/-----BEGIN RSA PRIVATE KEY-----/,/-----END RSA PRIVATE KEY-----/p' "$root/build/keys/assembly.rsa" | sed '1d;$d')
-rk="$RS --build-dir $work/rsA --rebuild-dir $work/rsB"
+rk="$RS --build-dir $work/rsA"
 keyrefuse() { # <desc> <keyword> <key file>
-  sr "rule 22" "release signing: $1" "$2" "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$3"; }
+  sr "rule 22" "release signing: $1" "$2" "$RS" --build-dir "$work/rsA" --key "$3"; }
 { printf -- '-----BEGIN X KEY-----\n%s\n-----END X KEY-----\n' "$asm_b64"; cat "$work/fresh.rsa"; } >"$work/key-dual.rsa"
 keyrefuse "a file with two PEM blocks (the assembly key under another label, then a fresh key) is refused: melange would read the FIRST block" 'block|label|exactly one' "$work/key-dual.rsa"
 { cat "$work/fresh.rsa"; cat "$root/build/keys/assembly.rsa"; } >"$work/key-trailing.rsa"
@@ -407,23 +450,23 @@ openssl genrsa -aes256 -passout pass:secret -out "$work/key-enc.rsa" 2048 2>/dev
 keyrefuse "an encrypted key is refused (it fails, it does not prompt)" 'label|encrypted|header' "$work/key-enc.rsa"
 mkdir -p "$work/lead"; { echo "this line is not PEM"; cat "$work/fresh.rsa"; } >"$work/lead/release.rsa"
 cp "$pr/a.apk" "$work/rsA/x86_64/fscache-0.3.0-r0.apk"; cp "$pr/a.apk" "$work/rsB/x86_64/fscache-0.3.0-r0.apk"   # rsA was signed in place by an earlier test
-sd "rule 22" "a leading text line before the single RSA PRIVATE KEY block is fine (the assembly key itself has one) and the fresh key signs" '^melange sign' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/lead/release.rsa"
+sd "rule 22" "a leading text line before the single RSA PRIVATE KEY block is fine (the assembly key itself has one) and the fresh key signs" '^melange sign' "$RS" --build-dir "$work/rsA" --key "$work/lead/release.rsa"
 { echo "# header"; cat "$root/build/keys/assembly.rsa" | sed 1d; } >"$work/key-asm-lead.rsa"
 keyrefuse "the assembly key behind a different leading line is still the assembly key" 'assembly' "$work/key-asm-lead.rsa"
 # the signature name decides which public key verifies the apk: the key file must be named release.rsa, and the signed apk is checked
 mkrsa "$work/other-name.rsa"
 keyrefuse "a key file not named release.rsa is refused (melange would name the signature after the file; the committed public key is release.rsa.pub)" 'release\.rsa' "$work/other-name.rsa"
 mk4 "$work/r4A"; mk4 "$work/r4B"
-run_s "$RS" --build-dir "$work/r4A" --rebuild-dir "$work/r4B" --key "$work/release.rsa"
+run_s "$RS" --build-dir "$work/r4A" --key "$work/release.rsa"
 t "rule 22" "release signing: after signing, every apk's signer is release.rsa.pub" bash -c "test \"\$(cat '$work/rc')\" = 0 && cd '$work/r4A' && for f in \$(find . -name '*.apk' | sort); do test \"\$(python3 '$AT' signer \$f)\" = release.rsa.pub || exit 1; done"
 mk4 "$work/r4A"; mk4 "$work/r4B"
-run_s env STUB_SIGN_FAIL_AT=3 "$RS" --build-dir "$work/r4A" --rebuild-dir "$work/r4B" --key "$work/release.rsa"
+run_s env STUB_SIGN_FAIL_AT=3 "$RS" --build-dir "$work/r4A" --key "$work/release.rsa"
 t "rule 22" "release signing: when the third of four signatures fails the run fails (exit 1) and NO apk in Build was changed (no mixed directory)" bash -c "test \"\$(cat '$work/rc')\" = 1 && cd '$work/r4A' && for f in \$(find . -name '*.apk' | sort); do test \"\$(python3 '$AT' signer \$f)\" = assembly.rsa.pub || exit 1; done"
 # a directory or a FIFO named *.apk is not skipped silently
 mkdir -p "$work/rsM/x86_64" "$work/rsN/x86_64"; cp "$fx/pair/a.apk" "$work/rsM/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/b.apk" "$work/rsN/x86_64/fscache-0.3.0-r0.apk"; mkdir "$work/rsM/x86_64/dir.apk"
-sr "rule 22" "release signing: a directory named x.apk in Build is refused (exit 2)" 'regular file' "$RS" --build-dir "$work/rsM" --rebuild-dir "$work/rsN" --key "$work/release.rsa"
+sr "rule 22" "release signing: a directory named x.apk in Build is refused (exit 2)" 'regular file' "$RS" --build-dir "$work/rsM" --key "$work/release.rsa"
 rm -rf "$work/rsM/x86_64/dir.apk"; mkfifo "$work/rsM/x86_64/fifo.apk"
-sr "rule 22" "release signing: a FIFO named x.apk in Build is refused (exit 2)" 'regular file' "$RS" --build-dir "$work/rsM" --rebuild-dir "$work/rsN" --key "$work/release.rsa"
+sr "rule 22" "release signing: a FIFO named x.apk in Build is refused (exit 2)" 'regular file' "$RS" --build-dir "$work/rsM" --key "$work/release.rsa"
 # every proxy variable, lower and upper case
 for pv in http_proxy https_proxy all_proxy ALL_PROXY HTTP_PROXY; do
   sr "rule 38a" "refuses $pv in the environment" proxy "${bae[@]}" "$pv=http://127.0.0.1:3128" "$BA" "${ba_args[@]}" --out "$(mo)"; done
@@ -463,13 +506,13 @@ for pos in 1 2 4; do
   mk4 "$work/r5A"; mk4 "$work/r5B"; before=$(cd "$work/r5A" && find . -type f | sort | xargs shasum -a 256 | shasum -a 256)
   first=$(cd "$work/r5A" && find . -name '*.apk' | sort | sed -n "${pos}p")
   : >"$work/r5A/$first.new"; chmod 400 "$work/r5A/$first.new"
-  run_s "$RS" --build-dir "$work/r5A" --rebuild-dir "$work/r5B" --key "$work/release.rsa"
+  run_s "$RS" --build-dir "$work/r5A" --key "$work/release.rsa"
   chmod 600 "$work/r5A/$first.new"; rm -f "$work/r5A/$first.new"
   t "rule 22" "release signing: the replace phase failing at apk $pos of 4 (a read-only .new file) exits non-zero and says so, never 'signed 4'" bash -c "test \"\$(cat '$work/rc')\" != 0 && ! grep -q '^signed 4' '$work/log'"
   t "rule 22" "...apk $pos: Build's directory is byte-identical to before (not one apk was replaced)" bash -c "test \"\$(cd '$work/r5A' && find . -type f | sort | xargs shasum -a 256 | shasum -a 256)\" = '$before'"
 done
 mk4 "$work/r5A"; mk4 "$work/r5B"
-run_s env STUB_SIGN_AS=assembly.rsa.pub "$RS" --build-dir "$work/r5A" --rebuild-dir "$work/r5B" --key "$work/release.rsa"
+run_s env STUB_SIGN_AS=assembly.rsa.pub "$RS" --build-dir "$work/r5A" --key "$work/release.rsa"
 t "rule 22" "release signing: if melange signs with the wrong key name the post-sign signer check refuses (exit 1) and nothing in Build changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'not release.rsa.pub' '$work/log' && cd '$work/r5A' && for f in \$(find . -name '*.apk'); do test \"\$(python3 '$AT' signer \$f)\" = assembly.rsa.pub || exit 1; done"
 # a go on PATH that FAILS is not 'no toolchain': the check cannot be done, so the build is refused
 sf "rule 20" "a go on PATH that fails on the packaged binary refuses the build (it is not 'no toolchain'), naming go" 'go version' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_GO_FAILS=1 "$BA" "${ba_args[@]}" --out "$(mo)"
@@ -484,12 +527,12 @@ t "rule 40" "build-apk: a failure WITHOUT any network text is exit 1 even though
 # ---- P4 round 3 (Opus + Sonnet): the key must be THE release key, the inputs are copied before any check, signers are checked early ---------------------
 freshrs() { cp "$pr/a.apk" "$work/rsA/x86_64/fscache-0.3.0-r0.apk"; cp "$pr/a.apk" "$work/rsB/x86_64/fscache-0.3.0-r0.apk"; }   # earlier tests signed rsA in place
 freshrs
-sr "rule 22" "release signing with the committed placeholder public key refuses every key (no release until a human commits the real public half), saying the committed release public key is not a readable key yet" 'not a readable public key' "$RS_REAL" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"
-sr "rule 22" "release-sign-apks.sh has no --keys-dir: another keys directory cannot be named by any call, test mode or not" 'unknown argument' "$RS_REAL" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa" --keys-dir "$work/keysfx"
+sr "rule 22" "release signing with the committed placeholder public key refuses every key (no release until a human commits the real public half), saying the committed release public key is not a readable key yet" 'not a readable public key' "$RS_REAL" --build-dir "$work/rsA" --key "$work/release.rsa"
+sr "rule 22" "release-sign-apks.sh has no --keys-dir: another keys directory cannot be named by any call, test mode or not" 'unknown argument' "$RS_REAL" --build-dir "$work/rsA" --key "$work/release.rsa" --keys-dir "$work/keysfx"
 mkdir -p "$work/other"; mkrsa "$work/other/release.rsa"
 freshrs
-sr "rule 22" "a valid RSA key named release.rsa whose public half is not build/keys/release.rsa.pub is refused (it is not the stored key)" 'does not match' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/other/release.rsa"
-run_s "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"
+sr "rule 22" "a valid RSA key named release.rsa whose public half is not build/keys/release.rsa.pub is refused (it is not the stored key)" 'does not match' "$RS" --build-dir "$work/rsA" --key "$work/other/release.rsa"
+run_s "$RS" --build-dir "$work/rsA" --key "$work/release.rsa"
 t "rule 22" "melange is given a PRIVATE COPY of the key and of the apks (nothing read twice from a path another process could swap): a signing call exists, its key is not the original path, it is the copy under a private key/ directory, its apk is not Build's path" bash -c "
   l=\$(grep '^melange sign' '$CALLS' | head -n 1)
   [ -n \"\$l\" ] \
@@ -497,8 +540,7 @@ t "rule 22" "melange is given a PRIVATE COPY of the key and of the apks (nothing
     && printf '%s' \"\$l\" | grep -Eq -- '--signing-key [^ ]*/key/release.rsa ' \
     && ! printf '%s' \"\$l\" | grep -q '$work/rsA'"
 mkdir -p "$work/rsR1/x86_64" "$work/rsR2/x86_64"; cp "$pr/b.apk" "$work/rsR1/x86_64/fscache-0.3.0-r0.apk"; cp "$pr/a.apk" "$work/rsR2/x86_64/fscache-0.3.0-r0.apk"
-sr "rule 22" "release signing: a Build apk already signed by anything but assembly.rsa.pub is refused early, naming the signer" 'assembly\.rsa\.pub' "$RS" --build-dir "$work/rsR1" --rebuild-dir "$work/rsR2" --key "$work/release.rsa"
-sr "rule 22" "release signing: a Rebuild apk signed by anything but assembly.rsa.pub is refused early" 'assembly\.rsa\.pub' "$RS" --build-dir "$work/rsR2" --rebuild-dir "$work/rsR1" --key "$work/release.rsa"
+sr "rule 22" "release signing: a Build apk already signed by anything but assembly.rsa.pub is refused early, naming the signer" 'assembly\.rsa\.pub' "$RS" --build-dir "$work/rsR1" --key "$work/release.rsa"
 # a go on PATH is run with the toolchain pinned to local and the user's go env ignored
 run_s env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_GOVM_FILE="$work/govm.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 t "rule 20" "go version -m is run with GOTOOLCHAIN=local, GOFLAGS empty and GOENV=off" bash -c "grep -q 'GOTOOLCHAIN=local GOFLAGS= GOENV=off' '$CALLS.goenv'"
@@ -513,7 +555,7 @@ if [ "$(id -u)" != 0 ]; then
   for d in aarch64 x86_64; do
     mk4 "$work/r6A"; mk4 "$work/r6B"; before=$(cd "$work/r6A" && find . -type f | sort | xargs shasum -a 256 | shasum -a 256)
     chmod 500 "$work/r6A/$d"
-    run_s "$RS" --build-dir "$work/r6A" --rebuild-dir "$work/r6B" --key "$work/release.rsa"
+    run_s "$RS" --build-dir "$work/r6A" --key "$work/release.rsa"
     chmod 700 "$work/r6A/$d"
     t "rule 22" "release signing: the $d directory of Build cannot be written (staging fails) -> non-zero, never 'signed 4'" bash -c "test \"\$(cat '$work/rc')\" != 0 && ! grep -q '^signed 4' '$work/log'"
     t "rule 22" "...$d: Build's directory is byte-identical and no .new file is left behind" bash -c "test \"\$(cd '$work/r6A' && find . -type f | sort | xargs shasum -a 256 | shasum -a 256)\" = '$before' && test -z \"\$(find '$work/r6A' -name '*.new')\""
@@ -528,7 +570,7 @@ t "rule 15" "a package in the apk's build environment that is not in the melange
 sf "rule 20" "the Go toolchain version in buildinfo.txt must equal the one go version -m reports for the packaged binary (the first line, minus the file path)" 'toolchain|go1' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$fx/sbom/ok.txt" STUB_GOVM_FILE="$work/govm-toolchain.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 # many symlinks in Build: a named refusal (exit 2), never a silent SIGPIPE exit 141
 mk4 "$work/r7A"; mk4 "$work/r7B"; python3 -c "import os,sys; [os.symlink('x', '%s/link%d' % (sys.argv[1], i)) for i in range(30000)]" "$work/r7A"
-run_s "$RS" --build-dir "$work/r7A" --rebuild-dir "$work/r7B" --key "$work/release.rsa"
+run_s "$RS" --build-dir "$work/r7A" --key "$work/release.rsa"
 t "rule 22" "release signing: many symlinks in Build give exit 2 and a message naming a symlink (not exit 141 with no message)" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -qi symlink '$work/log'"
 # the committed assembly key pair matches, and the release public key file is deliberately NOT a key until a human commits the real one
 t "rule 22" "build/keys/assembly.rsa.pub is the public half of build/keys/assembly.rsa (a matching pair; both outputs non-empty)" bash -c "a=\$(openssl rsa -in '$root/build/keys/assembly.rsa' -pubout 2>/dev/null); b=\$(openssl rsa -pubin -in '$root/build/keys/assembly.rsa.pub' -pubout 2>/dev/null); test -n \"\$a\" && test \"\$a\" = \"\$b\""
@@ -683,10 +725,10 @@ fails "rule 22" "key scan: assembly.rsa without its NON-SECRET header line is re
 # the signer's key reader: the same probes as --key
 for pr in two-private pkcs8-relabelled trailing-private; do
   mkdir -p "$work/dk-$pr"; cp "$work/der/$pr.pem" "$work/dk-$pr/release.rsa"
-  sr "rule 22" "release signing: --key as '$pr' is refused (exactly one complete PKCS#1 key)" 'exactly one PKCS#1|not a readable|PEM label' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsC" --key "$work/dk-$pr/release.rsa"
+  sr "rule 22" "release signing: --key as '$pr' is refused (exactly one complete PKCS#1 key)" 'exactly one PKCS#1|not a readable|PEM label' "$RS" --build-dir "$work/rsA" --key "$work/dk-$pr/release.rsa"
 done
 ln -s "$work/release.rsa" "$work/dk-link-release.rsa"; mkdir -p "$work/dk-link"; ln -s "$work/release.rsa" "$work/dk-link/release.rsa"
-sr "rule 22" "release signing: a --key that is a symlink named release.rsa is refused before any copy" 'symlink' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsC" --key "$work/dk-link/release.rsa"
+sr "rule 22" "release signing: a --key that is a symlink named release.rsa is refused before any copy" 'symlink' "$RS" --build-dir "$work/rsA" --key "$work/dk-link/release.rsa"
 
 # ---- Codex security-final on P4: no echoed credential, network text beyond DNS, an explicit environment for the privileged call ---------------------------------
 run_s env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 GOPROXY=https://user:CANARY-9f3a@proxy.example "$BA" "${ba_args[@]}" --out "$(mo)"
@@ -871,8 +913,8 @@ lib.mkapk(w + "/fkB/x86_64/fscache-0.3.0-r0.apk", "fscache", "0.3.0-r0", {"usr/b
 for side in ("fkC", "fkD"):   # a good pair, for the release-signing run whose signing tool leaves a bad signature
     lib.mkapk("%s/%s/x86_64/fscache-0.3.0-r0.apk" % (w, side), "fscache", "0.3.0-r0", {"usr/bin/fscache": b"bin"})
 P
-sr "rule 22" "release signing: a Build apk with the assembly NAME over a fake signature is refused (exit 2, nothing signed): the name is not a signature" 'does not verify' "$RS" --build-dir "$work/fkA" --rebuild-dir "$work/fkB" --key "$work/release.rsa"
-run_s env STUB_FAKE_SIG=1 "$RS" --build-dir "$work/fkC" --rebuild-dir "$work/fkD" --key "$work/release.rsa"
+sr "rule 22" "release signing: a Build apk with the assembly NAME over a fake signature is refused (exit 2, nothing signed): the name is not a signature" 'does not verify' "$RS" --build-dir "$work/fkA" --key "$work/release.rsa"
+run_s env STUB_FAKE_SIG=1 "$RS" --build-dir "$work/fkC" --key "$work/release.rsa"
 t "rule 22" "release signing: a signing tool that leaves a signature that does not verify against release.rsa.pub is refused after signing (exit 1), nothing replaced" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'does not verify' '$work/log'"
 # no test hook in the production scripts, and the test copies differ from them only on the TEST-SUBST lines
 t "rule 11" "production bin/build-apk.sh, bin/release-sign-apks.sh and bin/build-apk-helper.py hold no test hook: no FSCACHE_TEST_MODE, no --recipe, no --keys-dir, no STUB_/FAKE_ name, no test_mode" bash -c "! grep -En 'FSCACHE_TEST_MODE|--recipe|--keys-dir|STUB_|FAKE_|test_mode' '$BA_PROD' '$RS_REAL' '$HP' | grep -v '^[^:]*:[0-9]*:#'"
@@ -1104,7 +1146,7 @@ rp_build() { rp_ba "$1" "${rp_args[@]}" --out "$2"; }
 # rp_sign SCRIPT BUILD REBUILD: the release-sign copy likewise
 rp_sign() { : >"$CALLS"
   env -i PATH="$rp" HOME=/nonexistent LC_ALL=C CALLS="$CALLS" STUB_LIB="$work/lib.py" TEST_MELANGE="$rpw/melange" "${rp_extra[@]}" \
-    "$BASH_BIN" "$1" --build-dir "$2" --rebuild-dir "$3" --key "$work/release.rsa" >"$work/rp.log" 2>&1 </dev/null
+    "$BASH_BIN" "$1" --build-dir "$2" --key "$work/release.rsa" >"$work/rp.log" 2>&1 </dev/null
   echo $? >"$work/rp.rc"; }
 tools_called() { sed -n 's/^\([a-z0-9]*\) .*/\1/p' "$CALLS" | grep -E '^(sudo|unshare|sysctl|melange|go|apko)$' | tr '\n' ' '; }
 # --- build-apk.sh: the control ---------------------------------------------------------------------------------------
@@ -1273,7 +1315,7 @@ t "AC9" "build-apk.sh: the control prints no sysctl warning and does call sysctl
 # --- release-sign-apks.sh -------------------------------------------------------------------------------------------
 rp_sign_dirs() { rm -rf "$work/$1" "$work/$2"; mkdir -p "$work/$1/x86_64" "$work/$2/x86_64"; cp "$fx/pair/a.apk" "$work/$1/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/a.apk" "$work/$2/x86_64/fscache-0.3.0-r0.apk"; }
 rp_sign_dirs rpA rpB; rp_extra=(); rp_sign "$work/rs-copy.sh" "$work/rpA" "$work/rpB"; rps_rc=$(cat "$work/rp.rc"); rps_calls=$(tools_called)
-rp_sign_dirs ruA ruB; run_s "$work/rs-copy.sh" --build-dir "$work/ruA" --rebuild-dir "$work/ruB" --key "$work/release.rsa"; rus_calls=$(tools_called)
+rp_sign_dirs ruA ruB; run_s "$work/rs-copy.sh" --build-dir "$work/ruA" --key "$work/release.rsa"; rus_calls=$(tools_called)
 t "AC9" "release-sign-apks.sh: the control run with PATH holding only the coreutils completes and says it signed" bash -c "[ '$rps_rc' = 0 ] && grep -q '^signed 1 apk' '$work/rp.log'"
 t "AC9" "release-sign-apks.sh: it completes exactly as the unrestricted control: the same tool calls, the same signed apk" bash -c "[ '$rps_calls' = '$rus_calls' ] && [ -n '$rps_calls' ] && cmp '$work/rpA/x86_64/fscache-0.3.0-r0.apk' '$work/ruA/x86_64/fscache-0.3.0-r0.apk'"
 python3 - "$work/rs-copy.sh" "$rpm" <<'PY'
@@ -1337,7 +1379,7 @@ t "AC7" "release-sign-apks.sh: no command names a script through a variable path
 t "AC7" "release-sign-apks.sh: bin/apk-tool.py is named by its literal repo-root path at every call (six or more sites, none other)" bash -c "n=\$(grep -c -- '-I -B bin/apk-tool.py' '$RS_REAL'); [ \"\$n\" -ge 6 ] && ! grep 'PY3.*apk-tool.py' '$RS_REAL' | grep -qv -- '\"\$PY3\" -I -B bin/apk-tool.py'"
 t "AC7" "release-sign-apks.sh: no comment names bin/install-build-tools.sh" bash -c "! grep -q '#.*install-build-tools' '$RS_REAL'"
 rp_sign_dirs fcA fcB
-( cd "$work" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C "$BASH_BIN" "$work/rs-copy.sh" --build-dir "$work/fcA" --rebuild-dir "$work/fcB" --key "$work/release.rsa" ) >"$work/fc.log" 2>&1; fc=$?
+( cd "$work" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C "$BASH_BIN" "$work/rs-copy.sh" --build-dir "$work/fcA" --key "$work/release.rsa" ) >"$work/fc.log" 2>&1; fc=$?
 t "AC7" "release-sign-apks.sh: a run from another directory is refused (exit 2) with a message naming the repository root, and signs nothing" bash -c "[ '$fc' = 2 ] && grep -qi 'repository root' '$work/fc.log' && ! grep -q 'signed' '$work/fc.log'"
 
 echo "build-apk-test: $pass passed, $failn failed"

@@ -1874,6 +1874,13 @@
       "key": "9216ecefa744f0521f512c89a19f3fa14fc754f16b31bd010d0fcc4d523121ce",
       "line": "33cb527c703c825a14170872548ce54e176df30ca86f7e86eac54a823e885320",
       "ruling": "pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): the Go toolchain fetch in the Go shape, pinned byte for byte"
+    },
+    {
+      "file": "bin/acceptance-egress.sh",
+      "form": "a system package install",
+      "key": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
+      "line": "eded5f3db207afcfd2e650f2024c7738c9984b0d1d7cc67c79a76bcea9fdcea4",
+      "ruling": "build-container install, advisor reading Oct 19: test-only build container, never shipped; base image pinned by digest; the only thing built (strace) comes from a checksum-verified tarball; packages are build tools"
     }
   ]
 }
