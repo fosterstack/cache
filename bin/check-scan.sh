@@ -96,8 +96,13 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
   [[ "$idx" =~ ^sha256:[0-9a-f]{64}$ ]] || return 0
   blob="$1/blobs/sha256/${idx#sha256:}"; [ -f "$blob" ] || return 0
   # unknown/unknown is buildkit's descriptor for one of the two children: annotations vnd.docker.reference.type (a string) and
-  # vnd.docker.reference.digest (a string equal to a linux/amd64 or linux/arm64 child digest), AND its own manifest holds layers of no
-  # filesystem (tar) kind (an ordinary image manifest carrying the annotations is a third image nobody scanned). Anything else is named and fails.
+  # vnd.docker.reference.digest (a string equal to a linux/amd64 or linux/arm64 child digest), AND its own manifest holds only JSON layers
+  # (application/...+json, no filesystem layer) (an ordinary image manifest carrying the annotations is a third image nobody scanned). Anything else is named and fails.
+  # Go's decoders (containerd, go-containerregistry, stereoscope) match JSON keys without regard to case, jq does not: an object whose keys collide once
+  # lower-cased reads one way here and another way there, so it is refused.
+  if ! jq -e '[.. | objects | keys | map(ascii_downcase) | (length != (unique | length))] | any | not' "$blob" > /dev/null 2>&1; then
+    echo "index descriptors with keys that differ only in case or that cannot be read"; return 0
+  fi
   out=$(jq -r 'def obj: if type == "object" then . else {} end;
          ([.manifests[]? | select((.platform | obj).os == "linux" and ((.platform | obj).architecture == "amd64" or (.platform | obj).architecture == "arm64")) | .digest]) as $kids
          | .manifests[]? | (((.platform | obj) as $q | "\($q.os // "none")/\($q.architecture // "none")")) as $p
@@ -112,8 +117,9 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
       "@@check "*)
         d=${line#@@check }
         if [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] && [ -f "$1/blobs/sha256/${d#sha256:}" ] \
-           && jq -e '.mediaType == "application/vnd.oci.image.manifest.v1+json" and (.layers | type) == "array" and (.layers | length) > 0
-                     and all(.layers[]; (.mediaType | type) == "string" and (.mediaType | test("tar") | not))' "$1/blobs/sha256/${d#sha256:}" > /dev/null 2>&1; then :
+           && jq -e '([.. | objects | keys | map(ascii_downcase) | (length != (unique | length))] | any | not)
+                     and .mediaType == "application/vnd.oci.image.manifest.v1+json" and (.layers | type) == "array" and (.layers | length) > 0
+                     and all(.layers[]; (.mediaType | type) == "string" and (.mediaType | test("^application/[a-z0-9.+-]+[+]json$")))' "$1/blobs/sha256/${d#sha256:}" > /dev/null 2>&1; then :
         else echo "unknown/unknown (its own manifest is not a provenance manifest)"; fi ;;
       "") ;;
       *) echo "$line" ;;

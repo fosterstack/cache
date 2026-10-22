@@ -108,6 +108,9 @@ for p in plats:
     kid = {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": man, "size": ms, "platform": {"os": os_, "architecture": arch}}
     if p == "unknown/unknown" and os.environ.get("ATT_ODD") == "array-digest":
         kid["annotations"] = {"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": [kids[0]["digest"]]}
+    elif p == "unknown/unknown" and os.environ.get("ATT_ODD") == "case-variant-keys":
+        kid["annotations"] = {"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": kids[0]["digest"]}
+        kid["Platform"] = {"os": "linux", "architecture": "s390x"}           # Go's decoders read this one, jq the lowercase one
     elif p == "unknown/unknown" and os.environ.get("ATT_ODD") == "annotations-list":
         kid["annotations"] = []
     elif p == "unknown/unknown" and not os.environ.get("NO_ATT_ANNOTATION"):   # (ATT_ODD=plain-image keeps the annotations on an ordinary image manifest)
@@ -343,6 +346,8 @@ rm -rf "$fx/images/production"; ATT_ODD=array-digest python3 "$work/mkoci.py" "$
 want_fail "AC4 S1 an unknown/unknown descriptor whose reference digest is a list holding a child digest fails" "unknown/unknown" "${SCAN[@]}"
 rm -rf "$fx/images/production"; ATT_ODD=plain-image python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
 want_fail "AC4 S1 an ordinary image manifest carrying the reference annotations as unknown/unknown is not exempt (its own manifest is not a provenance manifest)" "provenance manifest" "${SCAN[@]}"
+rm -rf "$fx/images/production"; ATT_ODD=case-variant-keys python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 an index descriptor with keys that differ only in case (Platform next to platform) is refused" "differ only in case" "${SCAN[@]}"
 rm -rf "$fx/images/production"; ATT_ODD=annotations-list python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown linux/s390x > /dev/null; mkdig "$fx"
 want_fail "AC4 S1 an unreadable annotations value does not hide a later linux/s390x descriptor" "linux/s390x" "${SCAN[@]}"
 restore_prod
@@ -1058,7 +1063,7 @@ else bad "G bin/check-govulncheck.py is missing or names a signing tool or crede
 # the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
 sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
 if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
-EXPECT=334
+EXPECT=335
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
