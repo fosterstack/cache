@@ -39,7 +39,9 @@ vulnerability); this page is what we do.
   the pull request otherwise ([pin checker](../.github/agent/bin/check-action-pins.py)).
 - **A new version waits seven days.** A pull request that moves a pinned version is
   held until that version has been public for seven days, by a server-side time
-  ([supply-chain workflow](../.github/workflows/supply-chain.yml)).
+  ([supply-chain workflow](../.github/workflows/supply-chain.yml)). Two exceptions,
+  both still checked against published advisories: Go's own releases from go.dev,
+  verified against their published checksum, and Wolfi packages.
 - **Everything we pin is checked daily.** The inventory of pinned actions and
   packages is checked once a day against published advisories and malicious-package
   reports ([supply-chain workflow](../.github/workflows/supply-chain.yml)).
@@ -117,7 +119,11 @@ vulnerability); this page is what we do.
   ([RELEASING.md](../RELEASING.md#vex-statements)).
 - **One authorization before anything goes public.** A single stage verifies the
   whole graph, fails closed on anything missing, and signs the approval that
-  promotion requires ([authorization stage](../.github/workflows/stage-authorize.yml)).
+  promotion requires ([promotion workflow](../.github/workflows/stage-promote.yml)).
+- **Builds and signing are kept apart.** Every build is its own job on its own
+  virtual machine, the apk signing key reaches one step of one job, and the
+  comparison of the rebuilt files runs in a job with no secrets
+  ([build and signing-key isolation](build-and-signing-isolation.md)).
 - **The release is checked as a customer would.** After promotion the public digests
   are verified and pulled anonymously, and only then is the release published
   ([promotion stage](../.github/workflows/stage-promote.yml)).
