@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 90 |
-| Acceptance criteria | 370 |
+| Acceptance criteria | 372 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 350 |
+| ACs with mapped evidence | 352 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
@@ -694,6 +694,7 @@ A Dependabot major version bump shall be judged by the Dependabot reviewer, not 
 | REQ-DEP-001-AC7 | Given the reviewer's readers failing three hourly runs in a row; when the third run ends; then it opens one issue for the ccode queue and posts nothing else | unit |  | approved | 1 item(s) |
 | REQ-DEP-001-AC8 | Given a reviewer run that is cancelled or superseded; when it ends; then it never posts a verdict over a newer one | unit |  | approved | 2 item(s) |
 | REQ-DEP-001-AC9 | Given a merge verdict on a Dependabot major; when auto-merge is armed, and when a new commit is pushed to the PR; then auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh | unit |  | approved | 2 item(s) |
+| REQ-DEP-001-AC10 | Given a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case; when the reviewer picks its candidates and gathers its evidence; then it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it; a bump whose notes say neither is left to the patch and minor lane | unit |  | approved | 2 item(s) |
 
 ### REQ-DEP-002 — The required-check guard runs everywhere
 
@@ -715,6 +716,7 @@ A Dependabot patch or minor bump shall merge on its own once every required chec
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-DEP-003-AC1 | Given a Dependabot patch or minor pull request; when the auto-merge lane runs; then it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer | ci-workflow |  | approved | 1 item(s) |
+| REQ-DEP-003-AC2 | Given a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case; when the auto-merge lane runs; then it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing | ci-workflow |  | approved | 2 item(s) |
 
 ### REQ-DEP-004 — A held bump or drift dispatches the fixer
 

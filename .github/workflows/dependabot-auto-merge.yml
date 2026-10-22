@@ -5,6 +5,9 @@ name: Dependabot auto-merge
 # the owner. This file arms patch and minor. A major is an API-break risk, so
 # it gets a READER instead of a human: the hourly dependabot-reviewer.yml
 # (register row 75) judges it against upstream release notes and our usage.
+# So does a patch/minor whose release notes say "breaking" or "deprecat"
+# (REQ-DEP-003-AC2, advisor tighten-only reading, Oct 22): the `screen` step applies the
+# reviewer's own rule, so a flagged bump is treated here as a major.
 #
 # Two deliberate safety properties:
 #
@@ -46,8 +49,100 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The same rule as bin/dependabot-reviewer.py `is_flagged` (the reviewer's candidate step), as a
+      # heredoc because this workflow checks out nothing and fetches no script; bin/dependency-lanes-test.sh
+      # runs this very code against the reviewer's on a corpus, so the two lanes cannot disagree about
+      # who arms what. The PR body arrives by env, never interpolated into the script. No
+      # `continue-on-error`: if the screen cannot run, nothing below arms.
+      - name: screen — do the release notes say breaking or deprecated (REQ-DEP-003-AC2)
+        id: screen
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
+          import html, os, re
+          from html.parser import HTMLParser
+          _FLAG = re.compile(r"breaking|deprecat", re.I)
+          _MDADJ = re.compile(r"[A-Za-z0-9]\[|\][A-Za-z0-9]|\]\([^\n]*\)[A-Za-z0-9]|\]\[[^\]\n]*\][A-Za-z0-9]")
+          _MDEXOTIC = re.compile(r"\\[\[\]]|\]\(\s*<|&(?:#0*(?:91|93)|#x0*(?:5b|5d)|lbrack|rbrack|lsqb|rsqb);", re.I)
+          _MDLINK = re.compile(r"\]\(|\]\[|\]:")
+          _CHARREF = re.compile(r"&(?:#|[A-Za-z][A-Za-z0-9]*;)")
+          _MDLABEL = re.compile(r"\]\[[^\]]*\]")
+          _MDDEF = re.compile(r"(?m)^ {0,3}\[[^\]\n]+\]:.*$")
+          class _Text(HTMLParser):
+              def __init__(self):
+                  super().__init__(convert_charrefs=True)
+                  self.parts = []
+
+              def handle_data(self, data):
+                  self.parts.append(data)
+          def _drop_targets(v, quotes):
+              # Markdown inline link/image targets `](...)`, parentheses balanced, over lines; quotes=True also honours a quoted title that holds a ')'.
+              # An unterminated target is unresolvable: None.
+              out, i, n = [], 0, len(v)
+              while i < n:
+                  if v.startswith("](", i):
+                      j, depth, inq = i + 2, 1, None
+                      while j < n and depth > 0:
+                          c = v[j]
+                          if c == "\\":
+                              j += 2
+                              continue
+                          if quotes and inq is None and c in "\"'" and v[j - 1] in " \t\n":
+                              inq = c
+                          elif quotes and inq == c:
+                              inq = None
+                          elif inq is None:
+                              depth += 1 if c == "(" else -1 if c == ")" else 0
+                          j += 1
+                      if depth > 0:
+                          return None
+                      i = j
+                      continue
+                  out.append(v[i])
+                  i += 1
+              return "".join(out)
+          def is_flagged(body):
+              """True when a Dependabot PR body says "breaking" or "deprecat" (any case) as a reader would see it. The release notes and commit
+              list between old and new are the body's <details> blocks, but markup makes block boundaries unreliable, so the WHOLE body is read and any
+              hit counts: over-flagging only sends a bump to the two readers, never toward auto-merge (tighten-only). Views, any one of which counts:
+              the raw body; with character references decoded; the HTML-rendered text (tags and comments dropped, nothing put in their place); and for
+              each of those the letters and digits only, also with Markdown link targets (balanced parentheses, with and without a quoted title),
+              reference labels and reference definitions removed first, so formatting, links and references between a word's pieces vanish. A body
+              the parser cannot read, an unterminated link target, a word character touching link syntax, an escaped or encoded bracket, an <angle> destination,
+              any character reference in a body that has link syntax, or link syntax left over after every reduction is flagged (fail toward the readers: the class is closed, not enumerated).
+              A non-major so flagged is judged like a major (REQ-DEP-001-AC10)."""
+              raw = str(body or "")
+              try:
+                  p = _Text()
+                  p.feed(raw)
+                  p.close()
+                  views = (raw, html.unescape(raw), "".join(p.parts))
+                  if _MDADJ.search(raw) or _MDEXOTIC.search(raw):   # link syntax this check does not resolve: an escaped bracket, an <angle> destination, an encoded bracket
+                      return True
+                  if _MDLINK.search(raw) and _CHARREF.search(raw):   # a character reference (numeric in any spelling, or named with ';'; a URL's &key=value is not one) in a body that has
+                      return True                                    # link syntax can spell a bracket or parenthesis of the destination: not resolved here, the readers decide
+                  more = []
+                  for v in views:
+                      more.append(v)
+                      for q in (False, True):
+                          t = _drop_targets(v, q)
+                          if t is None:
+                              return True
+                          t = _MDDEF.sub("", _MDLABEL.sub("", t))
+                          if "](" in t or "][" in t:   # link syntax that survives every reduction is unresolved
+                              return True
+                          more.append(t)
+                  views += tuple(re.sub(r"[^A-Za-z0-9]", "", v) for v in more)
+                  return any(_FLAG.search(v) for v in views + tuple(more))
+              except Exception:
+                  return True
+          print("flagged=" + str(is_flagged(os.environ["PR_BODY"])).lower())
+          PY
+
       - name: majors are the hourly reviewer's, not a human's (register row 75)
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        if: steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'
         run: |
           {
             echo "### Major bump — judged by the Dependabot reviewer"
@@ -64,8 +159,10 @@ jobs:
       # (a Dependabot rebase or a new version) voids it: unless the reviewer has already approved THIS
       # head (its success check is on it — the reviewer may have got there first), auto-merge comes off
       # here at once and the hourly reviewer judges the new head afresh. Fails loudly if it cannot.
+      # Also when the screen itself failed: its answer is unknown, so an arm without a verdict on the current head
+      # still comes off (arming stays off: the arm step needs the screen to have succeeded).
       - name: a new head voids the reviewer's verdict on a major — turn auto-merge off
-        if: steps.meta.outputs.update-type == 'version-update:semver-major'
+        if: ${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -76,15 +173,17 @@ jobs:
           # newer head the reviewer has already approved
           head=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
           [ "$head" = "$HEAD_SHA" ] || echo "this run's head ${HEAD_SHA:0:7} is stale; judging the current head ${head:0:7}"
-          verdict=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
-                      --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last | .conclusion // "none"')
+          lookup() { gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
+                       --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last | .conclusion // "none"'; }
+          verdict=$(lookup)
           armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
           if [ "$verdict" = success ]; then echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
-          elif [ "$armed" = true ]; then gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
+          elif [ "$armed" = true ]; then
+            gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
           else echo "auto-merge is not armed; nothing to void"; fi
 
       - name: require that main enforces the exact expected check set
-        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        if: steps.meta.outputs.update-type != 'version-update:semver-major' && steps.screen.outputs.flagged != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -123,7 +222,7 @@ jobs:
       # added to main, this step starts mattering again and its failure
       # will be visible in the run rather than silently absent.
       - name: approve (best effort — see note above)
-        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        if: steps.meta.outputs.update-type != 'version-update:semver-major' && steps.screen.outputs.flagged != 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -134,8 +233,10 @@ jobs:
           an upstream-published version. Merging once every required check is green."
 
       - name: enable auto-merge
-        if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        if: steps.meta.outputs.update-type != 'version-update:semver-major' && steps.screen.outputs.flagged != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # Bound to the head this run screened: an older run (an older body) cannot arm a newer head.
+        run: gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"
