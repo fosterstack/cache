@@ -817,6 +817,9 @@ for g in "floors-vs-base" "suite-guard-run.py"; do
   case_ "guard-$g-if"       bad "$gs['if'] = 'false'"
   case_ "guard-$g-env"      bad "$gs['env'] = {'CHAIN_TEST_REQUIRE_NETCUT': '0'}"
   case_ "guard-$g-or-true"  bad "$gs['run'] = $gs['run'] + ' || true'"
+  case_ "guard-$g-renamed"  bad "$gs['name'] = 'guard'"
+  case_ "guard-$g-shell"    bad "$gs['shell'] = \"bash -c 'true' {0}\""
+  case_ "guard-$g-continue" bad "$gs['continue-on-error'] = 'true'"
   case_ "guard-$g-in-allowlist" bad "x = $gs; $csteps.remove(x); $steps.append(x)"
 done
 case_ chain-verify-no-netcut bad "[s for s in $csteps if 'chain-verify-test.sh' in (s.get('run') or '')][0]['run'] = 'bash bin/chain-verify-test.sh'"
