@@ -110,7 +110,7 @@ MOVED = {   # job id -> (name, permissions, environment, needs, if) exactly as i
     "drift-fixer-dispatch": ("dispatch the fixer for required-check drift", {"contents": "read"}, "agent", "required-check-guard",
                              "${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.required-check-guard.outputs.drift_issue != '' }}"),
     "requirements": ("requirements", None, None, None, None),
-    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' }}"),
+    "dependency-review": (None, {"contents": "read", "pull-requests": "write"}, None, None, "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}"),
 }
 jobs = d.get("jobs") or {}
 for jid, (name, perms, env, needs, cond) in MOVED.items():
@@ -126,7 +126,7 @@ if d.get("permissions") != {"contents": "read"}:
     bad.append("ci.yml's top-level permissions changed: %s" % d.get("permissions"))
 if d.get("concurrency") or any(j.get("concurrency") for j in jobs.values()):
     bad.append("ci.yml gained a concurrency setting")
-if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": ""}:
+if d.get("on") != {"push": {"branches": ["main"]}, "pull_request": "", "merge_group": ""}:
     bad.append("ci.yml's events changed: %s" % d.get("on"))
 for gone in ("hygiene.yml", "requirements.yml", "dependency-review.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
@@ -338,8 +338,8 @@ root = sys.argv[2]
 bad = []
 on = d.get("on") or {}
 # exactly: an unfiltered pull_request (no types, branches, paths filter), pushes to main and v* tags (Codex #162 pin, R78-B1)
-if on != {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
-    bad.append("scan.yml's events changed (pull requests, pushes to main and v* tags, unchanged): %s" % on)
+if on != {"pull_request": "", "merge_group": "", "push": {"branches": ["main"], "tags": ["v*"]}}:
+    bad.append("scan.yml's events changed (pull requests, the merge queue, pushes to main and v* tags): %s" % on)
 jobs = d.get("jobs") or {}
 builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/stage-build.yml"]
 if builds != ["build"]:

@@ -19,7 +19,7 @@ tree = sys.argv[1]
 # The only triggers each guarded file may have. Anything else (workflow_call in any spelling or case, a merge key,
 # a missing `on`) fails: the allowlist is the rule, workflow_call is just the case we care about most.
 ALLOWED = {
-    "scan.yml": {"pull_request", "push"},
+    "scan.yml": {"pull_request", "merge_group", "push"},
     "main-candidate-rescan.yml": {"schedule", "workflow_dispatch"},
 }
 GUARDED_STEMS = ("scan", "main-candidate-rescan")

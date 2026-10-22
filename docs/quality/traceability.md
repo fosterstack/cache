@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 90 |
-| Acceptance criteria | 370 |
+| Active requirements | 91 |
+| Acceptance criteria | 372 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 350 |
+| ACs with mapped evidence | 352 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 44 |
+| Confidence: implementation-only | 45 |
 
 ## Cache protocol
 
@@ -715,6 +715,17 @@ A Dependabot patch or minor bump shall merge on its own once every required chec
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-DEP-003-AC1 | Given a Dependabot patch or minor pull request; when the auto-merge lane runs; then it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer | ci-workflow |  | approved | 1 item(s) |
+
+### REQ-DEP-005 — Every required check runs in the merge queue
+
+Every check the main branch requires shall also run in the merge queue, on the queue's own commit, with the same pass bar. A check that reads the pull request (pin age, dependency review, the review gate) shall read the queue's commits instead and fail if it cannot. No required check shall be skipped in the queue.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/ci.yml; .github/workflows/codeql.yml; .github/workflows/acceptance.yml; .github/workflows/scan.yml; .github/workflows/supply-chain.yml; .github/policy/required-checks.json*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-DEP-005-AC1 | Given any context in .github/policy/required-checks.json; when the merge queue tests a group; then the workflow job that produces it runs on the merge_group event on the queue's commit, with no condition that skips the job or any of its steps on that event, and a context the wiring test does not know fails the test, so a required check added later cannot be missed | ci-workflow |  | approved | 1 item(s) |
+| REQ-DEP-005-AC2 | Given a required check that reads the pull request (pin age and dependency review); when it runs on the merge_group event; then it reads the queue's base and head commits instead of the pull request's, and it fails, never passes, when either is empty or the difference cannot be read; every step that names the pull request's base branch names the queue's too | ci-workflow |  | approved | 1 item(s) |
 
 ### REQ-DEP-004 — A held bump or drift dispatches the fixer
 

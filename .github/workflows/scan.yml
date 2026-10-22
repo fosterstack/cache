@@ -32,6 +32,7 @@ name: scan
 
 on:
   pull_request:
+  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
   push:
     branches: [main]
     tags: ['v*']

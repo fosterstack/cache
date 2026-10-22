@@ -2615,6 +2615,22 @@ case_ a-base-checkout-dot-slash-ok ok "$head
 $(co "          ref: $BASE_REF
           path: trusted")
       - run: python3 ./trusted/bin/tool.py" "$mk_trusted"
+QUEUE_BASE_REF='${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}'
+case_ a-queue-base-checkout-python-ok ok "$head
+    steps:
+$(co "          ref: $QUEUE_BASE_REF
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-queue-head-checkout-bad bad "$head
+    steps:
+$(co "          ref: \${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
+case_ a-queue-base-only-checkout-bad bad "$head
+    steps:
+$(co "          ref: \${{ github.event.merge_group.base_sha }}
+          path: trusted")
+      - run: python3 trusted/bin/tool.py" "$mk_trusted"
 case_ a-other-ref-bad bad "$head
     steps:
 $(co "          ref: \${{ github.event.pull_request.head.sha }}

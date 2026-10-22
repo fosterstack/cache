@@ -7,6 +7,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:      # REQ-DEP-005: the merge queue runs every required check on its own commit
 
 permissions:
   contents: read
@@ -261,8 +262,9 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
         run: |
+          BASE="${BASE#refs/heads/}"
           # empty on a push (nothing to compare against); on a pull request refuse an odd base name before the fetch
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
@@ -395,8 +397,9 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -438,8 +441,9 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -521,8 +525,9 @@ jobs:
 
       - name: make sure the base branch ref exists
         env:
-          BASE: ${{ github.base_ref }}
+          BASE: ${{ github.base_ref || github.event.merge_group.base_ref }}   # the queue names its base as refs/heads/<branch>
         run: |
+          BASE="${BASE#refs/heads/}"
           if [ -n "${BASE}" ]; then
             [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
             [[ "${BASE}" != *..* ]] || exit 1
@@ -730,11 +735,22 @@ jobs:
         run: bash bin/rescan-statement-test.sh
 
   dependency-review:
-    if: ${{ github.event_name == 'pull_request' }}   # required on pull requests only; the action needs a PR
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' }}   # required on pull requests and in the merge queue; never on a push (nothing to compare)
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     steps:
+      - name: the merge queue's base and head are named (REQ-DEP-005-AC2)
+        if: github.event_name == 'merge_group'
+        env:
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          QUEUE_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          [ -n "$QUEUE_BASE" ] && [ -n "$QUEUE_HEAD" ] || { echo "::error::the merge queue named no base or head commit: nothing to compare, so this check fails"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # a pull request leaves both empty (the action reads the PR); the queue's two commits are read in its place
+          base-ref: ${{ github.event.merge_group.base_sha }}
+          head-ref: ${{ github.event.merge_group.head_sha }}

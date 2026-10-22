@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-002-AC1, REQ-DEP-002-AC2
+# proves: REQ-DEP-002-AC1, REQ-DEP-002-AC2, REQ-DEP-005-AC1, REQ-DEP-005-AC2
 # Offline suite for bin/required-check-guard.sh (register row 75). Fixtures stand
 # in for the ruleset API response; the list side uses the committed file and
 # edited copies. What must hold: an exact match passes; a missing check, an extra
@@ -85,6 +85,60 @@ grep -qx "issue=7" "$w/out" 2>/dev/null && { echo "ok: the updated issue's numbe
 step "no required checks on main opens the issue"     "$w/none.json"    "$w/no-issues.json"  '^gh issue create'
 step "match opens nothing"                            "$w/match.json"   "$w/no-issues.json"  '^gh api ' '^gh issue (create|edit)'
 
+# REQ-DEP-005 (merge queue, owner ratified Oct 22): every required context runs on the merge_group event on the queue's commit, and none of its jobs or steps is skipped there.
+# The table names, for each context in .github/policy/required-checks.json, the workflow and job that produces it; a context the table does not know fails, so a required
+# check added later cannot be missed. The review gate's check is published by the App from agent-review-gate.yml (its own rule, REQ-DEP-005-AC3, a later change): it is the one
+# listed exception, and the exception list is exactly that one context.
+mq="$(python3 -I - "$repo" <<'PY'
+import glob, json, os, re, sys
+import yaml
+repo = sys.argv[1]
+wf = {os.path.basename(f): yaml.safe_load(open(f)) for f in glob.glob(repo + "/.github/workflows/*.yml")}
+req = [c["context"] for c in json.load(open(repo + "/.github/policy/required-checks.json"))["required_checks"]]
+TABLE = {"analyze (go)": ("codeql.yml", "analyze"), "acceptance-gradle": ("acceptance.yml", "acceptance-gradle"),
+         "acceptance-maven (1.2.0)": ("acceptance.yml", "acceptance-maven"), "acceptance-maven (1.2.3)": ("acceptance.yml", "acceptance-maven"),
+         "reproducibility": ("scan.yml", "reproducibility"), "scan": ("scan.yml", "scan"), "pin-age": ("supply-chain.yml", "pin-age")}
+for c in ("test", "lint", "gosec", "govulncheck", "allowlist", "allowlist-persona", "allowlist-chain", "allowlist-pins-auditor", "dependency-review", "fips140-only", "requirements", "coverage"):
+    TABLE[c] = ("ci.yml", c)
+EXCEPT = {"auditor-review-gate"}
+out = []
+def res(ok, label): out.append(("ok   " if ok else "FAIL ") + label)
+res(set(req) - set(TABLE) == EXCEPT, "every required context is known to the merge-queue table (unknown: %s)" % sorted(set(req) - set(TABLE) - EXCEPT))
+res(EXCEPT == {"auditor-review-gate"}, "the merge-queue exceptions are exactly the review gate's check (published by the App, its own change)")
+def has_event(d, name):
+    on = d.get(True) if True in d else d.get("on")
+    return (isinstance(on, dict) and name in on) or on == name or (isinstance(on, list) and name in on)
+def skips(txt):
+    return isinstance(txt, str) and "github.event_name" in txt and "merge_group" not in txt
+for c in req:
+    if c in EXCEPT or c not in TABLE: continue
+    f, j = TABLE[c]; d = wf.get(f)
+    job = ((d or {}).get("jobs") or {}).get(j)
+    res(job is not None and has_event(d, "merge_group"), "%s: %s job %s runs on merge_group (the workflow lists the event)" % (c, f, j))
+    if not job: continue
+    res(not skips(job.get("if")), "%s: the job has no condition that names an event without merge_group (%r)" % (c, job.get("if")))
+    for st in job.get("steps") or []:
+        res(not skips(st.get("if")) and not ("github.base_ref" in str(st.get("if")) and "merge_group" not in str(st.get("if"))), "%s: step %r is not skipped on merge_group (%r)" % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30], st.get("if")))
+        blob = json.dumps(st)
+        res("github.event.pull_request" not in blob or "github.event.merge_group" in blob or re.search(r"pull_request\.head\.repo\.(fork|full_name)", blob) is not None,
+            "%s: step %r reads the pull request only where the queue's commits are read too" % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30]))
+        res("github.base_ref" not in blob or "merge_group.base_ref" in blob, "%s: step %r names the queue's base wherever it names the pull request's base" % (c, st.get("name") or st.get("uses") or st.get("run", "")[:30]))
+# pin age and dependency review read the queue's two commits and refuse an empty one
+sc = json.dumps(wf["supply-chain.yml"]["jobs"]["pin-age"]); dr = json.dumps(wf["ci.yml"]["jobs"]["dependency-review"])
+res("merge_group.base_sha" in sc and "merge_group.head_sha" in sc, "pin-age reads the queue's base_sha and head_sha")
+res("merge_group.base_sha" in dr and "merge_group.head_sha" in dr, "dependency-review reads the queue's base_sha and head_sha")
+for nm, blob in (("pin-age", sc), ("dependency-review", dr)):
+    res("merge_group" in blob and re.search(r"_SHA:\?|QUEUE_BASE.*QUEUE_HEAD|\[ -n ", blob) is not None, "%s: a queue run with an empty base or head fails (a refusal step names it)" % nm)
+print("\n".join(out))
+PY
+)"
+while IFS= read -r l; do
+  case "$l" in
+    "ok   "*) echo "ok: ${l#ok   }"; pass=$((pass+1));;
+    FAIL*)    echo "FAIL: ${l#FAIL }"; fail=$((fail+1));;
+    *) echo "FAIL: merge-queue suite did not run: $l"; fail=$((fail+1));;
+  esac
+done <<<"${mq:-FAIL the merge-queue python block printed nothing}"
 echo "----"
 echo "required-check-guard: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
