@@ -216,6 +216,9 @@ jobs:
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [rebuild, check, sign]
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     uses: ./.github/workflows/stage-promote.yml
   decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
@@ -239,6 +242,7 @@ jobs:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
     needs: [build, sign, rebuild, check, release]
+    if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -826,6 +830,15 @@ gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)
        "release must carry exactly the if"
 gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: build' \
        '  rebuild:\n    continue-on-error: true\n    needs: build' "keys outside"
+gr g13 "R3 release without its concurrency group (two publications could interleave and roll :X/:latest back)" '    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' '    uses: ./.github/workflows/stage-promote.yml' "release must hold exactly the concurrency"
+gr g14 "R3 the release concurrency group cancels in progress (a running publication would be killed half way)" 'cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' 'cancel-in-progress: true\n    uses: ./.github/workflows/stage-promote.yml' "release must hold exactly the concurrency"
+gr g15 "R3 the release concurrency group is shared with something else, or not constant" 'group: release-publish' 'group: ${{ github.ref }}' "release must hold exactly the concurrency"
+gr g16 "R3 a concurrency key on any other chain job is outside the allowed keys" '  rebuild:\n    needs: build' '  rebuild:\n    concurrency: x\n    needs: build' "keys outside"
+PF_IF="\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+PF_OLD="\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+gr r3a "R3 audit: patch-failed with the old failure()-only if (a cancelled/replaced pending release would open no issue)" "if: $PF_IF" "if: $PF_OLD" "patch-failed must carry exactly the if"
+gr r3b "R3 audit: patch-failed without any if" "    if: $PF_IF\n    runs-on: ubuntu-latest" "    runs-on: ubuntu-latest" "patch-failed must carry exactly the if"
+gr r3c "R3 audit: cancel-in-progress written as the quoted string (actionlint rejects it; the loader cannot tell it from the boolean)" 'cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' 'cancel-in-progress: "false"\n    uses: ./.github/workflows/stage-promote.yml' "unquoted line"
 gr g9 "005-AC5 check calls another stage file" 'uses: ./.github/workflows/stage-verify.yml' 'uses: ./.github/workflows/stage-promote.yml' \
        "check must call exactly"
 gr g10 "005-AC5 secrets: inherit on a stage call" 'uses: ./.github/workflows/stage-reproducibility.yml' \
@@ -2497,7 +2510,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=853
+EXPECT=860
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
