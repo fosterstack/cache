@@ -3,6 +3,35 @@
 # Proves .github/agent/bin/check-action-pins.py (row 78): one throwaway repo per case, each with one fixture workflow.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+# Fan-out (CI speed, advisor 0643): an UNSHARDED real run (no PINS_SHARD, no PINS_DRY, no PINS_SERIAL) re-runs this file as PINS_JOBS (default 4)
+# parallel PINS_SHARD shards, prints their logs in order, proves with coverage-shard-sum.py (the coverage gate's check, against a dry listing as the
+# manifest) that the shards together completed every unit exactly once, and exits non-zero if any shard failed, died, dropped or doubled a case.
+# The CI step's command is unchanged. PINS_SERIAL=1 runs everything in this process; PINS_SELF names the script to fan out to (the self-test uses a
+# stub; unset, it is this file).
+if [ -z "${PINS_SHARD:-}" ] && [ -z "${PINS_DRY:-}" ] && [ -z "${PINS_SERIAL:-}" ]; then
+  jobs_n=${PINS_JOBS:-4}
+  [[ "$jobs_n" =~ ^[1-9][0-9]*$ ]] || { echo "PINS_JOBS must be a positive integer, got '$jobs_n'" >&2; exit 2; }
+  self=${PINS_SELF:-$0}
+  fan=$(mktemp -d); trap 'rm -rf "$fan"' EXIT
+  PINS_DRY=1 bash "$self" > "$fan/manifest" 2>/dev/null || { echo "FAIL fan-out → could not list the units (dry run failed)"; exit 1; }
+  pids=() logs=()
+  for i in $(seq 0 $((jobs_n-1))); do
+    PINS_SHARD=$i/$jobs_n bash "$self" > "$fan/shard.$i.log" 2>&1 & pids+=($!); logs+=("$fan/shard.$i.log")
+  done
+  bad=0
+  for i in "${!pids[@]}"; do wait "${pids[$i]}" || bad=1; done
+  total_pass=0 total_fail=0
+  for l in "${logs[@]}"; do
+    cat "$l"
+    p=$(sed -n 's/^check-action-pins: \([0-9][0-9]*\) passed, \([0-9][0-9]*\) failed$/\1/p' "$l" | tail -1); f=$(sed -n 's/^check-action-pins: \([0-9][0-9]*\) passed, \([0-9][0-9]*\) failed$/\2/p' "$l" | tail -1)
+    total_pass=$((total_pass+${p:-0})); total_fail=$((total_fail+${f:-0}))
+  done
+  python3 "$here/coverage-shard-sum.py" "$fan/manifest" "${logs[@]}" || bad=1
+  [ "$bad" -eq 0 ] || total_fail=$((total_fail+1))
+  echo "check-action-pins: $total_pass passed, $total_fail failed"
+  [ "$bad" -eq 0 ] && [ "$total_fail" -eq 0 ]
+  exit $?
+fi
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 # Sharding (advisor 0618; coverage-gate.sh runs the cases as parallel shards under coverage): PINS_SHARD=<i>/<n> runs only every n-th UNIT

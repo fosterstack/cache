@@ -97,5 +97,55 @@ grep -q "^check-action-pins: 2 passed, 0 failed\$" "$w/all.out" && ok "the real 
 PINS_SHARD=0/5000 bash "$pins" > "$w/zero.out" 2>&1; zrc=$?
 [ "$zrc" -ne 0 ] && ok "a real (non-dry) shard that runs no unit exits non-zero" || no "an empty shard exited 0"
 
+# --- an UNSHARDED real run of check-action-pins-test.sh fans out into parallel shards (CI speed, advisor 0643): it runs the
+# same shards, in parallel, and proves their sum with coverage-shard-sum.py, so the CI step is unchanged (`bash check-action-pins-test.sh`)
+# and every case still runs exactly once. The fan-out runs PINS_SELF (default: itself); here a stub stands in for the 1000-case
+# script so each refusal can be provoked in a second. The stub speaks the real protocol (UNIT/RUN dry lines; PASS lines; the two
+# bookkeeping records; the shard and closing lines) over six units u1..u6.
+cat > "$w/stub.sh" <<'STUB'
+#!/usr/bin/env bash
+# env: FAKE_FAIL=<unit> prints FAIL for it; FAKE_DROP=<unit> silently completes nothing for it; FAKE_DUP=<unit> completes it twice;
+#      FAKE_CRASH=1 exits 1 before any summary; FAKE_CALLS=<file> gets one line per invocation
+echo "${PINS_SHARD:-none}${PINS_DRY:+ dry}" >> "${FAKE_CALLS:-/dev/null}"
+i=0 n=1
+[ -z "${PINS_SHARD:-}" ] || { i=${PINS_SHARD%/*}; n=${PINS_SHARD#*/}; }
+[ -z "${FAKE_CRASH:-}" ] || exit 1
+pass=0 failn=0 ran=0
+for k in 1 2 3 4 5 6; do
+  u=u$k
+  [ -z "${PINS_DRY:-}" ] || echo "UNIT $k $u"
+  if [ $((k % n)) -eq "$i" ]; then
+    ran=$((ran+1))
+    [ -z "${PINS_DRY:-}" ] || { echo "RUN $u"; continue; }
+    [ "${FAKE_DROP:-}" = "$u" ] && { ran=$((ran-1)); continue; }
+    if [ "${FAKE_FAIL:-}" = "$u" ]; then echo "FAIL $u → bad (want ok)"; failn=$((failn+1)); else echo "PASS $u → ok"; pass=$((pass+1)); fi
+    [ "${FAKE_DUP:-}" = "$u" ] && { echo "PASS $u → ok"; pass=$((pass+1)); }
+  fi
+done
+echo "PASS pm-case-count → 6"; echo "PASS pm-case-names → abc"; pass=$((pass+2))
+echo "check-action-pins: shard $i/$n units=6 ran=$ran"
+echo "check-action-pins: $pass passed, $failn failed"
+[ "$failn" -eq 0 ]
+STUB
+fan() { env PINS_SELF="$w/stub.sh" PINS_JOBS=2 FAKE_CALLS="$w/calls" "$@" bash "$pins" > "$w/fan.out" 2>&1; }
+: > "$w/calls"; fan; frc=$?
+[ "$frc" -eq 0 ] && ok "fan-out: every shard passes, the sum holds -> exit 0" || no "fan-out refused a good run: $(tail -3 "$w/fan.out")"
+[ "$(grep -c '^PASS u[0-9] ' "$w/fan.out")" = 6 ] && ok "fan-out: all six units' PASS lines are printed" || no "fan-out printed $(grep -c '^PASS u' "$w/fan.out") unit lines"
+grep -q "^check-action-pins: 10 passed, 0 failed\$" "$w/fan.out" && ok "fan-out: one closing line with the total (6 units + 2 bookkeeping per shard = 10)" || no "fan-out closing line: $(tail -1 "$w/fan.out")"
+[ "$(sort "$w/calls" | tr '\n' ,)" = "0/2,1/2,dry," ] || [ "$(sort "$w/calls" | tr '\n' ,)" = "0/2,1/2,none dry," ] && ok "fan-out: one dry listing and exactly shards 0/2 and 1/2 were launched" || no "fan-out launched: $(sort "$w/calls" | tr '\n' ,)"
+fan FAKE_FAIL=u3; [ $? -ne 0 ] && ok "fan-out: a failing case in one shard fails the step" || no "a failing case passed"
+grep -q '^FAIL u3' "$w/fan.out" && ok "fan-out: the FAIL line is shown" || no "the FAIL line was not printed"
+fan FAKE_DROP=u4; [ $? -ne 0 ] && ok "fan-out: a case silently not run fails the step (the sum)" || no "a dropped case passed"
+fan FAKE_DUP=u5; [ $? -ne 0 ] && ok "fan-out: a case completed twice fails the step (the sum)" || no "a duplicated case passed"
+fan FAKE_CRASH=1; [ $? -ne 0 ] && ok "fan-out: shards that die before any summary fail the step" || no "crashed shards passed"
+: > "$w/calls"; PINS_SERIAL=1 PINS_SELF="$w/stub.sh" FAKE_CALLS="$w/calls" timeout 4 bash "$pins" > "$w/ser.out" 2>&1; src=$?   # the real cases run for minutes: four seconds show it did not fan out
+[ "$(wc -l < "$w/calls" | tr -d ' ')" = 0 ] && ok "PINS_SERIAL=1 runs the real script in this process (no fan-out)" || no "PINS_SERIAL=1 still fanned out: $(cat "$w/calls")"
+: > "$w/calls"; PINS_SHARD=0/4 PINS_DRY=1 PINS_SELF="$w/stub.sh" FAKE_CALLS="$w/calls" bash "$pins" > /dev/null 2>&1
+[ "$(wc -l < "$w/calls" | tr -d ' ')" = 0 ] && ok "an explicit PINS_SHARD (coverage gate, this test) never fans out" || no "a sharded run fanned out"
+: > "$w/calls"; PINS_DRY=1 PINS_SELF="$w/stub.sh" FAKE_CALLS="$w/calls" bash "$pins" > /dev/null 2>&1
+[ "$(wc -l < "$w/calls" | tr -d ' ')" = 0 ] && ok "a dry listing never fans out" || no "a dry listing fanned out"
+# a nonsense job count is refused, not run as one shard
+PINS_JOBS=0 PINS_SELF="$w/stub.sh" bash "$pins" > "$w/j0.out" 2>&1 && no "PINS_JOBS=0 passed" || ok "PINS_JOBS=0 is refused"
+
 echo "coverage-shard: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
