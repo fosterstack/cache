@@ -192,7 +192,7 @@ exit 0
         if "vex-index" in att[0].get("run", ""):
             bad.append("the push step runs the attestation tool again on Build's layouts (they are already attested; the tool refuses a second run)")
         # every plain assignment form of `tag` in the whole job (cache#561 ruling A1: tag=, tag+=, declare/local/export/readonly/typeset ... tag, read ... tag, printf -v tag, after ; & | ( { do then else): exactly one, the approved one. Regex count only, no shell parser; a deliberately hidden form is for the reviewers (owner, Oct 3)
-        TAG_ASSIGN = r"(?:^|[;&|({]|\b(?:do|then|else)\b)[ \t]*(?:(?:declare|local|export|readonly|typeset)[ \t]+(?:-[A-Za-z]+[ \t]+)*)?tag\+?=|\b(?:read|mapfile|readarray)\b[^\n;|&]*\btag\b|\bprintf[ \t]+-v[ \t]+tag\b|\b(?:declare|local|export|readonly|typeset)[ \t]+(?:-[A-Za-z]+[ \t]+)*tag(?![\w=])"
+        TAG_ASSIGN = r"(?:^|[;&|(){!]|\b(?:do|then|else|if|elif|while|until|time)\b|\b\w+\+?=\S*[ \t])[ \t]*(?:(?:declare|local|export|readonly|typeset)[ \t]+(?:-[A-Za-z]+[ \t]+)*)?tag\+?=|\b(?:read|mapfile|readarray)\b[^\n;|&]*\btag\b|\bprintf[ \t]+-v[ \t]+tag\b|\b(?:declare|local|export|readonly|typeset)[ \t]+(?:-[A-Za-z]+[ \t]+)*tag(?![\w=])"
         if len(re.findall(TAG_ASSIGN, vt, re.M)) != 1 or not re.search(r'^\s*tag="cand-\$\{GITHUB_RUN_ID\}-\$\{v\}"$', att[0].get("run", ""), re.M):
             bad.append("the job assigns a tag in any way but the one candidate tag cand-${GITHUB_RUN_ID}-${v}")
         if len(re.findall(r"\bskopeo copy\b", att[0].get("run", ""))) != 1:
@@ -477,6 +477,12 @@ case_ attach-tag-printf       bad "s = $(step_of vex-attach 'release-layout.py')
 case_ attach-tag-read         bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'read -r tag < /tmp/t\\nskopeo copy', 1)"
 case_ attach-tag-local        bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'local -r tag=latest\\nskopeo copy', 1)"
 case_ attach-tag-semicolon    bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'true; tag=\\\"x\\\" skopeo copy', 1)"
+case_ attach-tag-case-arm         bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'case x in x) tag=latest;; esac\\nskopeo copy', 1)"
+case_ attach-tag-negated          bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', '! tag=latest\\nskopeo copy', 1)"
+case_ attach-tag-if               bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'if tag=latest; then :; fi\\nskopeo copy', 1)"
+case_ attach-tag-while            bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'while tag=latest; do break; done\\nskopeo copy', 1)"
+case_ attach-tag-prefix-assign    bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'a=1 tag=latest\\nskopeo copy', 1)"
+case_ attach-tag-lookalike-ok     ok "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('skopeo copy', 'a=btag=x\\nskopeo copy', 1)"
 case_ attach-two-copies       bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'] + '\\nskopeo copy --all oci:\"\${d}\" docker://ghcr.io/fosterstack/cache-scout-probe:other'"
 case_ attach-no-layout-check  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('python3 bin/release-layout.py', 'true')"
 case_ attach-no-digest-check  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('[ \"\${pushed}\" = \"\${final}\" ]', 'true')"
