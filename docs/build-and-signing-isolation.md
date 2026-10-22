@@ -32,14 +32,14 @@ Jobs pass files as workflow artifacts. Build writes a digest list and a signed W
 
 ## 4. What these practices serve
 
-"Serves" means the practice is designed to meet part of that requirement; it is not a statement that the whole control is met. The baseline column is NIST's own: whether the control is in the Moderate baseline of [SP 800-53B](https://csrc.nist.gov/pubs/sp/800/53/b/upd1/final) (OSCAL profile version 5.2.0). FedRAMP publishes its own baselines, which this page does not restate.
+"Serves" means the practice is designed to meet part of that requirement; it is not a statement that the whole control is met. The baseline column is NIST's own: whether the control is in the Moderate baseline of [SP 800-53B](https://csrc.nist.gov/pubs/sp/800/53/b/upd1/final) (OSCAL profile version 5.2.0). FedRAMP publishes its own baselines, which this page does not restate. <!-- pinned: upstream -->
 
 | Requirement | In NIST's Moderate baseline | Practice that serves it |
 |---|---|---|
 | SLSA v1.2 Build L3, [Isolated](https://slsa.dev/spec/v1.2/build-requirements): builds run "free of unintended external influence", including builds of the same project; no build can reach the platform's secrets; overlapping builds cannot influence one another; the build environment is ephemeral | n/a | each build is its own fresh VM (section 1); builds hold no stored secret |
 | SLSA v1.2 Build L3, [Provenance is Unforgeable](https://slsa.dev/spec/v1.2/build-requirements): secret material for authenticating provenance "MUST NOT be accessible to the environment running the user-defined build steps" | n/a | provenance is signed in the Sign stage's own job with its own identity; no signing key exists in any build job (section 3) |
-| NIST [SP 800-204D](https://doi.org/10.6028/NIST.SP.800-204D) 3.2.1: "isolated CI/CD environment" | n/a | section 1 |
-| NIST SP 800-204D 5.1.1: build policy that includes "a secure isolated platform"; evidence generated and verified as the build occurs | n/a | sections 1 and 2 (Witness records, verified by the next stage) |
+| NIST [SP 800-204D](https://doi.org/10.6028/NIST.SP.800-204D) 3.2.1: "isolated CI/CD environment" | n/a | section 1 | <!-- pinned: upstream -->
+| NIST SP 800-204D 5.1.1: build policy that includes "a secure isolated platform"; evidence generated and verified as the build occurs | n/a | sections 1 and 2 (Witness records, verified by the next stage) | <!-- pinned: upstream -->
 | NIST [SP 800-53 Rev. 5](https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final) SC-39 Process Isolation ("a separate execution domain for each executing system process") | yes | one VM per job (virtualization, which the control's discussion names) |
 | SC-39(1) Hardware Separation | not in any baseline | not shown on hosted runners: see section 5 |
 | SA-15 Development Process, Standards, and Tools | yes | the release chain is a documented, tested process: this page, the workflows, their wiring tests |
