@@ -3353,7 +3353,7 @@ requirements:
       - id: REQ-CHAIN-004-AC11
         given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
         when: "they are read"
-        then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; the configs are locked and built from the fixed relative paths build/apko.yaml (production) and build/apko-fips.yaml (fips), never from an absolute path or a temporary copy"
+        then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC12
