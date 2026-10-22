@@ -9,9 +9,10 @@ is across the gap.
 FosterStack Cache is a single static binary with zero runtime dependencies
 (`CGO_ENABLED=0`, `FROM scratch`/distroless — nothing to `apt-get` on the
 host, nothing the binary reaches out for at startup), so an air-gapped
-install is cheap: move the artifact across, verify it, run it. There are no
-build-time downloads and the dependencies are pre-staged — the product ships
-that way by construction, not as a special disconnected-mode build.
+install is cheap: move the artifact across, verify it, run it. Once the
+release files are across the gap, installing and running need no further
+downloads — the product ships that way by construction, not as a special
+disconnected-mode build.
 
 ## What to bring across the gap
 
