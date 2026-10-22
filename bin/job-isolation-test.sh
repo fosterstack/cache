@@ -15,7 +15,7 @@ judge() { python3 - "$1" <<'PY'
 import glob, os, re, sys, yaml
 wf = sys.argv[1]
 # a step that builds or compiles (commands and actions; comment lines never count)
-COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|\bgoreleaser\b|\bdocker\s+(?:buildx\s+)?build\b|\bbuildx\s+(?:build|bake)\b|docker/build-push-action|docker/bake-action"
+COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|goreleaser/goreleaser-action|\bgoreleaser\s+(?:build|release)\b|\bdocker\s+(?:buildx\s+)?build\b|\bbuildx\s+(?:build|bake)\b|docker/build-push-action|docker/bake-action"
                      r"|\bmelange\s+build\b|\bapko\s+(?:build|publish)\b|\bcargo\s+(?:build|install)\b|\bmake\b|\bnpm\s+(?:run\s+)?build\b")
 # the release-chain jobs on main that the chain-v030 landing replaces (handoffs 0634/0637, cache#514): listed with the reason, gone at the landing
 EXCLUDED_AC1 = {
@@ -25,7 +25,9 @@ EXCLUDED_AC1 = {
     ("stage-reproducibility.yml", "reproduce"): "rebuild next to id-token: replaced at the chain-v030 landing",
 }
 EXCLUDED_AC2 = {
-    ("stage-build.yml", "build"): "one goreleaser build; the second step only names goreleaser to read its output",
+    ("stage-acceptance-artifacts.yml", "artifacts"): "three local test images built in a loop in a credential-free acceptance job, exercised then discarded (a test workload, not a release artifact)",
+    ("stage-image.yml", "assemble"): "three image builds in a loop: replaced at the chain-v030 landing",
+    ("stage-reproducibility.yml", "reproduce"): "three rebuilds in a loop: replaced at the chain-v030 landing",
 }
 def steps_text(s):
     t = (s.get("run") or "") + " " + (s.get("uses") or "") + " " + yaml.safe_dump(s.get("env") or {})
@@ -34,7 +36,7 @@ def holds(d, j):
     perms = j.get("permissions", d.get("permissions"))
     why = []
     wf_level = yaml.safe_dump({k: v for k, v in d.items() if k not in ("jobs", "on", True)})   # workflow-level env/defaults every job inherits
-    if re.search(r"\bsecrets\.|secrets:\s*inherit", yaml.safe_dump(j) + wf_level):
+    if re.search(r"\bsecrets\s*(?:\.|\[)|secrets:\s*inherit", yaml.safe_dump(j) + wf_level):
         why.append("a secret")
     if perms == "write-all":
         why.append("write-all")
@@ -54,8 +56,11 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
         jobs_seen[key] = j
         comp = []                                                  # one entry per build invocation (a step with two `go build` counts twice)
         for s in (j.get("steps") or []):
-            for _ in COMPILE.findall(steps_text(s)):
-                comp.append(s.get("name") or s.get("uses") or "?")
+            txt = steps_text(s)
+            n = len(COMPILE.findall(txt))
+            for body in re.findall(r"\b(?:for|while|until)\b[^\n]*?;?\s*\bdo\b(.*?)\bdone\b", txt, re.S):
+                n += len(COMPILE.findall(body))              # a build inside a loop runs more than once
+            comp += [s.get("name") or s.get("uses") or "?"] * n
         w = holds(d, j)
         if w and comp and key not in EXCLUDED_AC1:
             bad.append("%s/%s holds %s and builds in the step %r" % (key[0], jn, ", ".join(w), comp[0]))
@@ -88,6 +93,11 @@ if "needs.govulncheck-build.outputs.sha256" not in atxt or "sha256sum" not in at
 GATE = (r'if \[ -n "\$\{GOVULNCHECK_SHA256\}" \] && \[ -f "[^"]*govulncheck-dl/govulncheck" \]\s*\\\n\s*&& \[ "\$\(sha256sum "[^"]*govulncheck-dl/govulncheck" \| cut -d\' \' -f1\)" = "\$\{GOVULNCHECK_SHA256\}" \]; then\n\s+install -m 0755 "[^"]*govulncheck-dl/govulncheck"')
 if not re.search(GATE, atxt):
     bad.append("the audit job's install of govulncheck is not gated by an equality of the downloaded file's sha256 with the build job's output")
+g = re.search(GATE, atxt)
+if g:
+    allowed = len(re.findall(r"govulncheck-dl", g.group(0))) + sum(l.count("govulncheck-dl") for l in atxt.split("\n") if "gh run download" in l)
+    if atxt.count("govulncheck-dl") > allowed:
+        bad.append("the downloaded govulncheck is referenced outside the digest-gated install")
 if re.search(r"go\s+install\s+golang\.org/x/vuln", atxt):
     bad.append("the audit job still builds govulncheck itself")
 print("\n".join(bad)); sys.exit(1 if bad else 0)
@@ -141,6 +151,12 @@ mutate "write-all on a job that builds (ci.yml gosec)" '
 edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?)    permissions:\n", lambda m: m.group(1) + "    permissions: write-all\n    xperm:\n", s, count=1, flags=re.S))'
 mutate "a workflow-level secret next to the govulncheck build" '
 edit("auditor.yml", lambda s: re.sub(r"(\njobs:\n)", lambda m: "\nenv:\n  K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" + m.group(1), s, count=1))'
+mutate "an ungated copy of the install after the gate" '
+edit("auditor.yml", lambda s: s.replace("          # syft: a pinned, checksum-verified", "          install -m 0755 \"${RUNNER_TEMP}/govulncheck-dl/govulncheck\" \"${RUNNER_TEMP}/gobin/govulncheck\"\n          # syft: a pinned, checksum-verified", 1))'
+mutate "a go build loop in one job (ci.yml gosec)" '
+edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant loop\n        run: |\n          for t in ./a ./b; do go build \"$t\"; done\n", s, count=1, flags=re.S))'
+mutate "a bracket-form secret in the govulncheck build" '
+edit("auditor.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets[\x27AUDITOR_APP_PRIVATE_KEY\x27] }}\n        run: echo x\n", s, count=1, flags=re.S))'
 mutate "the audit job stops needing the build job" '
 edit("auditor.yml", lambda s: s.replace("needs: [govulncheck-build]", "needs: []"))'
 mutate "an excluded job is deleted (stale exclusion)" '
