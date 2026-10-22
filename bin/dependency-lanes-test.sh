@@ -53,6 +53,8 @@ if kind == "reviewer":
     cand = [r for st, r in runs(job) if st.get("id") == "candidates"]
     if len(cand) != 1 or "select(.major or .flagged)" not in cand[0] or "select(.major)" in cand[0]:
         bad.append("the candidate step does not select a flagged non-major beside a major")
+    if len(cand) == 1 and ("lane-disarmed:" not in cand[0] or "reviewer-rearmed:" not in cand[0] or '--match-head-commit "$sha"' not in cand[0]):
+        bad.append("the candidate step does not put back an arm the lane turned off after the reviewer approved the head")
     if len(cand) == 1 and "if .flagged then .major = true" not in cand[0]:
         bad.append("the candidate step does not hand a flagged update to the (hash-pinned) act step as a major")
     # AC9: auto-merge is armed only for the reviewed head
@@ -178,6 +180,8 @@ elif kind == "automerge":
     disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
     if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
         bad.append("a push to a major PR does not turn its auto-merge off (the reviewed head's verdict is void)")
+    elif "<!-- lane-disarmed:%s -->" not in disarm[0][1]:
+        bad.append("the disarm leaves no marker for the head it turned off (the reviewer cannot tell it from a person's disarm)")
     elif "check-runs?check_name=dependabot-reviewer" not in disarm[0][1] or "headRefOid" not in disarm[0][1]:
         bad.append("the disarm does not judge the PR's CURRENT head by its reviewer check (a stale push job must not disarm a newer approved head)")
     if (job.get("permissions") or {}).get("checks") != "read":
@@ -264,6 +268,8 @@ case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'g
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('select(.major or .flagged)', 'select(.major)')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-flagged-unnamed bad "[s.__setitem__('run', s['run'].replace('if .flagged then .major = true', 'if .flagged then .major = false')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-no-put-back     bad "[s.__setitem__('run', s['run'].replace('reviewer-rearmed:', 'reviewer-x:')) for s in $rs if s.get('id') == 'candidates']"
+case_ automerge $A automerge-no-marker      bad "[s.__setitem__('run', s['run'].replace('lane-disarmed:', 'x:')) for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ reviewer $R reviewer-no-mask         bad "$rs[:] = [s for s in $rs if s.get('id') != 'mask']"
 case_ automerge $A automerge-event-head    bad "[s.__setitem__('run', s['run'].replace('headRefOid', 'title')) for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-disarm-blind  bad "[s.__setitem__('run', 'gh pr merge --disable-auto \"\$PR_URL\"') for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
@@ -279,43 +285,42 @@ case_ automerge $A automerge-failed-screen-keeps-arm bad "[s.__setitem__('if', \
 case_ automerge $A automerge-flagged-no-void bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
 
-# REQ-DEP-003-AC2: the disarm step, run for real against a stub gh. The reviewer arms and then publishes success
-# between the step's two reads: the step must put the arm back for exactly that head, and must not when no success appears.
+# REQ-DEP-003-AC2: the disarm step, run for real against a stub gh. When it turns an arm off it leaves a marker comment for exactly
+# that head (the reviewer's next pass puts the arm back if it had approved the head: the reviewer's own test covers that side); when the
+# reviewer's success is already on the head, auto-merge stands and nothing is written.
 if python3 - "$root" "$work" <<'PY'
 import os, subprocess, sys, yaml
 root, work = sys.argv[1], sys.argv[2]
 d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
 run = [s["run"] for s in d["jobs"]["auto-merge"]["steps"] if "gh pr merge --disable-auto" in (s.get("run") or "")][0]
-def go(verdicts):
+def go(verdict, armed="true"):
     bd = os.path.join(work, "disarm-stub"); os.makedirs(bd, exist_ok=True)
-    log, cnt = os.path.join(bd, "log"), os.path.join(bd, "n")
-    open(log, "w").close(); open(cnt, "w").write("0")
+    log = os.path.join(bd, "log"); open(log, "w").close()
     open(os.path.join(bd, "gh"), "w").write("""#!/usr/bin/env bash
 echo "gh $*" >> %s
 case "$1 $2" in
-  "pr view") case "$*" in *headRefOid*) echo HEAD1 ;; *autoMergeRequest*) echo true ;; esac ;;
-  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer") n=$(cat %s); echo $((n+1)) > %s
-      v="%s"; set -- $v; shift $n 2>/dev/null; echo "${1:-${@: -1}}" ;;
+  "pr view") case "$*" in *headRefOid*) echo HEAD1 ;; *autoMergeRequest*) echo %s ;; esac ;;
+  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer") echo %s ;;
 esac
-""" % (log, cnt, cnt, " ".join(verdicts)))
+""" % (log, armed, verdict))
     os.chmod(os.path.join(bd, "gh"), 0o755)
     env = {**os.environ, "PATH": bd + ":" + os.environ["PATH"], "GH_TOKEN": "x", "PR_URL": "https://example.invalid/pr/1", "HEAD_SHA": "HEAD1", "GITHUB_REPOSITORY": "o/r"}
     p = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", run], env=env, capture_output=True, text=True)
     return p.returncode, open(log).read()
 bad = []
-rc, log = go(["none", "success"])
-if rc != 0 or "pr merge --disable-auto" not in log or "pr merge --auto --squash --match-head-commit HEAD1" not in log:
-    bad.append("success landing between the reads: the arm is not put back for HEAD1 (rc %s)\n%s" % (rc, log))
-rc, log = go(["none", "none"])
-if rc != 0 or "pr merge --disable-auto" not in log or "--match-head-commit" in log:
-    bad.append("no success: it must only disarm (rc %s)\n%s" % (rc, log))
-rc, log = go(["success"])
-if rc != 0 or "--disable-auto" in log:
-    bad.append("success at the first read: auto-merge must stand (rc %s)\n%s" % (rc, log))
-print("disarm interleaving: " + ("ok" if not bad else "; ".join(bad)))
+rc, log = go("none")
+if rc != 0 or "pr merge --disable-auto" not in log or "<!-- lane-disarmed:HEAD1 -->" not in log:
+    bad.append("armed with no verdict: it must disarm and leave the marker for HEAD1 (rc %s)\n%s" % (rc, log))
+rc, log = go("none", armed="false")
+if rc != 0 or "--disable-auto" in log or "pr comment" in log:
+    bad.append("not armed: nothing to do (rc %s)\n%s" % (rc, log))
+rc, log = go("success")
+if rc != 0 or "--disable-auto" in log or "pr comment" in log:
+    bad.append("success on the head: auto-merge must stand and nothing be written (rc %s)\n%s" % (rc, log))
+print("disarm marker: " + ("ok" if not bad else "; ".join(bad)))
 sys.exit(1 if bad else 0)
 PY
-then pass=$((pass+1)); echo "PASS disarm-puts-back-a-meanwhile-approved-arm"; else failn=$((failn+1)); echo "FAIL disarm-puts-back-a-meanwhile-approved-arm"; fi
+then pass=$((pass+1)); echo "PASS disarm-leaves-a-marker-for-its-head"; else failn=$((failn+1)); echo "FAIL disarm-leaves-a-marker-for-its-head"; fi
 
 # REQ-DEP-003-AC2: the screen's heredoc and the reviewer's is_flagged are the same rule. Run the workflow's
 # own code against a corpus (the real Dependabot bodies and written edge cases) and compare.
@@ -329,7 +334,7 @@ r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
 corpus = [json.load(open(os.path.join(root, "test-evidence/dependabot-reviewer", "pr-%d.json" % n)))["body"] for n in (99, 91, 124, 90, 400)]
 corpus += ["", "Bumps a from 1.0.0 to 1.1.0.", "x <details>Breaking</details>", "breaking <details>fine</details>",
            "<DETAILS>DEPRECATED</DETAILS>", "<details><summary>a</summary><details>nested deprecates</details></details>",
-           "<details>unclosed breaking", "<details>break<!-- > -->ing</details>", "<details>depre<span title=\">\">cat</span>ed</details>", "<code>&lt;breaking&gt;</code>", "<details><!-- </details> -->Breaking change<!-- <details> --></details>", "```\n<details>deprecated</details>\n```", "plain text, nothing", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>break<b>ing</b> change</details>", "<details>depre&#99;ated</details>", "<details>break&lt;b&gt;ing</details>", "<details>&lt;p&gt;Deprecated&lt;/p&gt;</details>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
+           "<details>unclosed breaking", "<details>break<!-- > -->ing</details>", "<details>depre<span title=\">\">cat</span>ed</details>", "<code>&lt;breaking&gt;</code>", "<details><!-- </details> -->Breaking change<!-- <details> --></details>", "```\n<details>deprecated</details>\n```", "plain text, nothing", "**Break**ing change", "Depre*cat*ed", "[Break](https://example.invalid)ing", "![break*ing*](https://e.invalid/i.png)", "**Fixes** a [typo](https://e.invalid)", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>break<b>ing</b> change</details>", "<details>depre&#99;ated</details>", "<details>break&lt;b&gt;ing</details>", "<details>&lt;p&gt;Deprecated&lt;/p&gt;</details>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
 bad = []
 for body in corpus:
     p = subprocess.run(["bash", "-c", run], env={**os.environ, "PR_BODY": body, "GITHUB_OUTPUT": "/dev/stdout"}, capture_output=True, text=True)

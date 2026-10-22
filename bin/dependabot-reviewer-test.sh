@@ -103,6 +103,13 @@ RENDERED = ["break<b>ing</b> change", "depre&#99;ated", "&lt;breaking change&gt;
 check("flagged: every shape of the words a reader sees (tags/comments splitting a word, references, entity-escaped code, fences, case)",
       all(one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>%s</details>" % w)[0]["flagged"] is True for w in RENDERED),
       [w for w in RENDERED if not one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>%s</details>" % w)[0]["flagged"]])
+MDSPLIT = ["**Break**ing change", "Depre*cat*ed API", "[Break](https://example.invalid)ing change", "break**ing** change", "![break*ing*](https://example.invalid/i.png)",
+           "break_ing_ change", "~~brea~~king", "`break`ing"]
+check("flagged: Markdown formatting, links and image alt text splitting the words (round 3)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDSPLIT),
+      [w for w in MDSPLIT if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
+check("not flagged: ordinary Markdown with links and emphasis",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n**Fixes** a [typo](https://example.invalid/typo) and `speeds` up *parsing*.\n\n</details>")[0]["flagged"] is False, "")
 check("not flagged: tags, comments and references around ordinary words",
       one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><p>Fixes &amp; <b>speed</b><!-- note --></p></details>")[0]["flagged"] is False, "")
 _T = r._Text
@@ -574,8 +581,9 @@ case "$1 $2" in
   "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
   "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer") echo "${PRIOR400:-none}" ;;
   "api repos/o/r/check-runs") [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;;
-  "pr view") echo "${ARMED99:-false}" ;;
-  "pr merge") [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;;
+  "pr view") case "$*" in *comments*) if [ -n "${PRVIEW_JSON:-}" ]; then echo "$PRVIEW_JSON"; else echo '{"autoMergeRequest":null,"comments":[]}'; fi ;; *) echo "${ARMED99:-false}" ;; esac ;;
+  "pr merge") case "$*" in *--auto*) [ "${REARMFAIL:-}" = 1 ] && exit 1; : ;; *) [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
+  "pr comment") : ;;
   "run list") [ "${RUNLIST:-}" = fail ] && exit 1
               f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
               jq -c "${f:-.}" <<<"${HISTORY:-[]}" ;;
@@ -622,6 +630,26 @@ ONLY=400 PRSFILE="$w/prs-flagged.json" cand "400 none," 0 "pr=400 (flagged) sele
 ONLY=99 cand "99 none," 0 "pr=99 selects the plain major"
 [ "$(jq -r '[.[]|select(.major and (.flagged|not))]|length' "$w/cand/work/updates-99.json")" = 1 ] \
   && { echo "ok: candidates: a plain major is left as it was (major, not flagged)"; pass=$((pass+1)); } || { echo "FAIL: candidates: plain major changed"; fail=$((fail+1)); }
+
+# the lane turned an arm off just as the reviewer approved the head (the reviewer arms, then publishes): a success verdict on the
+# head, no arm, and the lane's marker for exactly that head means put the arm back, once; a person's disarm has no marker and stays
+LANE='{"author":{"login":"github-actions"},"body":"<!-- lane-disarmed:sha99 -->\nAuto-merge was turned off"}'
+BACK='{"author":{"login":"fosterstack-automation"},"body":"<!-- reviewer-rearmed:sha99 -->"}'
+heal() { # <view json> <rc> <expect-armed yes|no> <name>   (PRIOR99=success, REARMFAIL from the environment)
+  PRIOR99=success PRVIEW_JSON="$1" cand "91 none," "$2" "$4"
+  if grep -q "pr merge --auto --squash --match-head-commit sha99 99" "$w/gh.log"; then got=yes; else got=no; fi
+  [ "$got" = "$3" ] && { echo "ok: candidates: $4 (re-arm: $got)"; pass=$((pass+1)); } || { echo "FAIL: candidates: $4 (re-arm: $got, want $3)"; fail=$((fail+1)); }
+}
+heal '{"autoMergeRequest":null,"comments":['"$LANE"']}' 0 yes "lane marker + success on the head + not armed -> the arm is put back for exactly that head"
+grep -q "pr comment 99 --body.*reviewer-rearmed:sha99" "$w/gh.log" && { echo "ok: candidates: the re-arm leaves its own marker"; pass=$((pass+1)); } || { echo "FAIL: candidates: no re-arm marker"; fail=$((fail+1)); }
+heal '{"autoMergeRequest":null,"comments":['"$LANE"','"$BACK"']}' 0 no "already put back once -> a person's later disarm is left alone"
+heal '{"autoMergeRequest":{"enabledBy":{"login":"x"}},"comments":['"$LANE"']}' 0 no "already armed -> nothing to do"
+heal '{"autoMergeRequest":null,"comments":[]}' 0 no "no marker (a person's disarm) -> left alone"
+heal '{"autoMergeRequest":null,"comments":[{"author":{"login":"someone"},"body":"<!-- lane-disarmed:sha99 -->"}]}' 0 no "a marker not written by the lane (github-actions) is ignored"
+heal '{"autoMergeRequest":null,"comments":[{"author":{"login":"github-actions"},"body":"<!-- lane-disarmed:othersha -->"}]}' 0 no "a marker for another head is ignored"
+REARMFAIL=1 heal '{"autoMergeRequest":null,"comments":['"$LANE"']}' 1 yes "the re-arm cannot be made -> the step fails (retry next hour), the PR is not silently dropped"
+PRIOR99=failure PRVIEW_JSON='{"autoMergeRequest":null,"comments":['"$LANE"']}' cand "91 none," 0 "a FAILURE verdict is never re-armed"
+grep -q "pr merge --auto" "$w/gh.log" && { echo "FAIL: candidates: a failure verdict was armed"; fail=$((fail+1)); } || { echo "ok: candidates: no arm for a failure verdict"; pass=$((pass+1)); }
 
 # ============================================================================ streak step
 streak() { # history rc-expect want-issue name

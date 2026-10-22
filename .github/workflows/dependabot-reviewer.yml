@@ -134,7 +134,27 @@ jobs:
               echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — skipped this hour"; lookup_failed=1; continue
             fi
             if [ "$FORCE" != "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
-              echo "PR #$n ${sha:0:7}: verdict already $prior"; continue
+              echo "PR #$n ${sha:0:7}: verdict already $prior"
+              if [ "$prior" = success ]; then
+                # The auto-merge lane can turn an arm off between the reviewer's arm and its success check (REQ-DEP-003-AC2); it leaves a
+                # marker for that exact head. A success verdict, no arm, and more lane markers than re-arm markers for this head means that
+                # happened: put the arm back (once per disarm; a person's disarm leaves no lane marker and is left alone).
+                if ! view=$(gh pr view "$n" --json autoMergeRequest,comments); then
+                  echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
+                fi
+                if ! counts=$(jq -r --arg sha "$sha" '[(.autoMergeRequest != null), ([.comments[] | select(.author.login == "github-actions" and (.body | contains("<!-- lane-disarmed:" + $sha + " -->")))] | length), ([.comments[] | select(.body | contains("<!-- reviewer-rearmed:" + $sha + " -->"))] | length)] | @tsv' <<<"$view"); then
+                  echo "::error::PR #$n ${sha:0:7}: could not read its comments — skipped this hour"; lookup_failed=1; continue
+                fi
+                read -r is_armed lane_off put_back <<<"$counts"
+                if [ "$is_armed" = false ] && [ "$lane_off" -gt "$put_back" ]; then
+                  if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
+                    echo "PR #$n ${sha:0:7}: the lane turned the approved arm off meanwhile — put back"
+                    GH_TOKEN="$MERGE_TOKEN" gh pr comment "$n" --body "$(printf '<!-- reviewer-rearmed:%s -->\nThe Dependabot reviewer put auto-merge back on %s: its success verdict is on this head.' "$sha" "${sha:0:7}")" >/dev/null \
+                      || { echo "::error::PR #$n: the re-arm marker could not be written"; lookup_failed=1; }
+                  else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi
+                fi
+              fi
+              continue
             elif [ "$prior" = none ] || [ "$prior" = neutral ]; then
               # no verdict supports an armed merge on this head: turn it off before anything else
               if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then

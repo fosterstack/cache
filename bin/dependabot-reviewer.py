@@ -162,6 +162,10 @@ def is_flagged(body):
         views = (raw, html.unescape(raw), "".join(p.parts))
     except Exception:
         return True
+    # Markdown formatting can split a word the reader sees whole (`break**ing**`, `Depre*cat*ed`, `[Break](u)ing`, image alt text):
+    # one more view keeps only the letters and digits of each, so punctuation and link targets between the pieces vanish.
+    # (a second pass also drops a link's or image's target, `](...)`, which would sit between the pieces)
+    views += tuple(re.sub(r"[^A-Za-z0-9]", "", v) for v in views) + tuple(re.sub(r"[^A-Za-z0-9]", "", re.sub(r"\]\([^)]*\)", "", v)) for v in views)
     return any(_FLAG.search(v) for v in views)
 
 
