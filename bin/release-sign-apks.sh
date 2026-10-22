@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # Sign the released apks with the stored release key (v0.3.0 rules 17, 22).
 #
-#   release-sign-apks.sh --build-dir A --rebuild-dir B --key K        (K must be the key whose public half is build/keys/release.rsa.pub)
+#   release-sign-apks.sh --build-dir A --key K        (K must be the key whose public half is build/keys/release.rsa.pub)
 #
-# A and B are the output directories of Build and Rebuild (<dir>/<arch>/<name>-<version>.apk, both signed with the
-# non-secret assembly key). For every apk in A, B must hold the same file with the same package contents digest
-# (bin/apk-tool.py same: the data section; signatures are ignored). Only if ALL pairs agree is anything signed: each apk in
-# A is then re-signed in place with `melange sign --signing-key K`, so the released apk carries the release key and nothing
-# a customer trusts is ever signed with the assembly key. K must not be the committed assembly key.
+# A is the output directory of Build (<dir>/<arch>/<name>-<version>.apk, signed with the non-secret assembly key). Each apk in A is
+# re-signed in place with `melange sign --signing-key K`, so the released apk carries the release key and nothing a customer trusts is
+# ever signed with the assembly key. K must not be the committed assembly key.
+# Rebuild's apks never reach this file's job (owner's rule of Oct 21 2026, ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md: the job that
+# holds the signing key receives no build output but the artifacts it signs): the comparison of Build's and Rebuild's apks is the compare job's,
+# which runs without a key, and the release job needs that job.
 #
 # Only files named *.apk are signed. An APKINDEX.tar.gz in Build keeps its assembly-key signature: the release workflow must not ship it as it is.
-# Exit codes: 0 all signed | 1 Build and Rebuild differ for some apk in their control or data section (it is named; nothing was signed) |
-# 2 refused: a missing argument or file, a symlink or an apk only one side has, a key that is not a readable RSA private key, the key is
+# Exit codes: 0 all signed | 1 a signing step failed (nothing in Build's directory was changed) |
+# 2 refused: a missing argument or file, a symlink, a key that is not a readable RSA private key, the key is
 # the assembly key (recognised by its public half), build/keys/release.rsa.pub is not a readable public key (the committed placeholder, until a
-# human commits the real half: every release is refused), the public half of --key does not match release.rsa.pub, or Build/Rebuild carry a
+# human commits the real half: every release is refused), the public half of --key does not match release.rsa.pub, or Build carries a
 # signature other than the assembly key's (no tool run).
 set -euo pipefail
 
@@ -27,30 +28,28 @@ OPENSSL=/usr/bin/openssl        # TEST-SUBST
 MELANGE=/usr/local/bin/melange  # TEST-SUBST
 KEYS_DIR=$PWD/build/keys        # TEST-SUBST
 
-a= b= key=
+a= key=
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || die "missing value for $1"
   case $1 in
-    --build-dir) a=$2;; --rebuild-dir) b=$2;; --key) key=$2;;
+    --build-dir) a=$2;; --key) key=$2;;
     *) die "unknown argument: $1";;
   esac
   shift 2
 done
 keysdir=$KEYS_DIR
 [ -d "$a" ] || die "--build-dir is not a directory: $a"
-[ -d "$b" ] || die "--rebuild-dir is not a directory: $b"
 [ ! -L "$key" ] || die "--key is a symlink; refusing (the key is read from a regular file, never through a link)"
 [ -f "$key" ] || die "--key is not a file: $key"
-# Everything below reads PRIVATE COPIES (a 0700 temp directory): the key, Build's apks and Rebuild's apks are copied once, and the guard, the
-# comparison and melange all use those copies, so nothing can be swapped between a check and its use. Only the final replace touches Build.
+# Everything below reads PRIVATE COPIES (a 0700 temp directory): the key and Build's apks are copied once, and the guard and melange both use those
+# copies, so nothing can be swapped between a check and its use. Only the final replace touches Build.
 tmp=$(mktemp -d)
 staged=()
 cleanup() { local rc=$?; set +e; for f in "${staged[@]}"; do rm -f "$f"; done; rm -rf "$tmp" 2>/dev/null || true; exit $rc; }
 trap cleanup EXIT
 mkdir "$tmp/key" && cp "$key" "$tmp/key/release.rsa" || die "cannot copy --key to the private area"
 cp -RP "$a" "$tmp/build" || die "cannot copy --build-dir to the private area"
-cp -RP "$b" "$tmp/rebuild" || die "cannot copy --rebuild-dir to the private area"
-orig_a=$a; ca=$tmp/build; cb=$tmp/rebuild; keyfile=$key; key=$tmp/key/release.rsa
+orig_a=$a; ca=$tmp/build; keyfile=$key; key=$tmp/key/release.rsa
 # The key is read the way melange reads it (apko pkg/apk/signature: the FIRST PEM block of any label, then PKCS#1): the file must hold exactly
 # ONE PEM block, labelled exactly RSA PRIVATE KEY, with no headers (so not encrypted), no CR, and its public half is derived from that one block.
 # The assembly key is recognised by its public half (not by its bytes or file name), derived the same way from the committed files.
@@ -130,8 +129,8 @@ if [ "$keypub" = "$asmpub" ] || [ "$keypub" = "$asmpub2" ]; then die "refusing t
 relpub=$("$OPENSSL" rsa -pubin -in "$keysdir/release.rsa.pub" -pubout 2>/dev/null) || die "$keysdir/release.rsa.pub is not a readable public key (the committed placeholder, until a human commits the real public half of the release key); no release can be signed yet"
 [ "$keypub" = "$relpub" ] || die "the public half of --key does not match $keysdir/release.rsa.pub: this is not the stored release key"
 
-# fail closed on anything but plain files: a symlink anywhere, an apk that is not a regular file, and an apk only one side has
-for d in "$ca" "$cb"; do
+# fail closed on anything but plain files: a symlink anywhere, and an apk that is not a regular file
+for d in "$ca"; do
   link=$(find "$d" -type l -print -quit)
   [ -z "$link" ] || die "$link is a symlink; refusing (only regular files are signed or compared)"
   ctl=$(LC_ALL=C find "$d" -name '*[[:cntrl:]]*' -print -quit | LC_ALL=C tr '\001-\037\177' '?')
@@ -142,24 +141,11 @@ done
 apks=()
 while read -r f; do apks+=("$f"); done < <(cd "$ca" && LC_ALL=C find . -name '*.apk' -type f | sort)
 [ ${#apks[@]} -gt 0 ] || die "no apk in $orig_a"
-for rel in "${apks[@]}"; do
-  [ -f "$cb/$rel" ] || die "the Rebuild directory has no counterpart for ${rel#./}; Build and Rebuild must produce the same apks"
+for rel in "${apks[@]}"; do   # Build's apks come from the assembly-key build: anything else was signed by somebody else
+  sg=$("$PY3" -I -B bin/apk-tool.py signer "$ca/$rel") || die "cannot read the signer of ${rel#./}"
+  [ "$sg" = assembly.rsa.pub ] || die "${rel#./} is signed by '$sg', not assembly.rsa.pub: Build must carry the assembly key's signature"
+  "$PY3" -I -B bin/apk-tool.py verify "$ca/$rel" "$keysdir/assembly.rsa.pub" >/dev/null || die "the signature of ${rel#./} does not verify against the committed assembly.rsa.pub: a signature name is not a signature"
 done
-while read -r rel; do
-  [ -f "$ca/$rel" ] || die "the Rebuild directory has an extra apk ${rel#./} that Build did not make (no counterpart in Build); refusing"
-done < <(cd "$cb" && LC_ALL=C find . -name '*.apk' -type f | sort)
-for rel in "${apks[@]}"; do   # both sides come from the assembly-key build: anything else was signed by somebody else
-  for side in "$ca" "$cb"; do
-    sg=$("$PY3" -I -B bin/apk-tool.py signer "$side/$rel") || die "cannot read the signer of ${rel#./}"
-    [ "$sg" = assembly.rsa.pub ] || die "${rel#./} is signed by '$sg', not assembly.rsa.pub: Build and Rebuild must both carry the assembly key's signature"
-    "$PY3" -I -B bin/apk-tool.py verify "$side/$rel" "$keysdir/assembly.rsa.pub" >/dev/null || die "the signature of ${rel#./} does not verify against the committed assembly.rsa.pub: a signature name is not a signature"
-  done
-done
-bad=0
-for rel in "${apks[@]}"; do
-  "$PY3" -I -B bin/apk-tool.py same "$ca/$rel" "$cb/$rel" || { echo "release-sign-apks.sh: ${rel#./} differs between Build and Rebuild" >&2; bad=1; }
-done
-[ $bad = 0 ] || die "Build and Rebuild disagree; nothing was signed" 1
 melange_bin=$MELANGE; [ -x "$melange_bin" ] || die "melange is not installed at $MELANGE (bin/install-build-tools.sh melange)" 1
 # sign the private copies, check each signer, and only when every one succeeded replace the originals: a failure leaves Build's directory untouched
 for rel in "${apks[@]}"; do
