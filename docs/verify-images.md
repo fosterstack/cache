@@ -241,10 +241,10 @@ the Rekor log indexes.
 
 ## 3. Which tags to verify
 
-| Tag | Base image | Shell | What it is |
+| Tag | Assembled from | Shell | What it is |
 |---|---|---|---|
-| `X.Y.Z` | `gcr.io/distroless/static:nonroot` | none | Production. Deploy this one. |
-| `X.Y.Z-fips` | `gcr.io/distroless/static:nonroot` | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) | <!-- pinned: upstream -->
+| `X.Y.Z` | Wolfi packages by apko, no base image | none | Production. Deploy this one. |
+| `X.Y.Z-fips` | Wolfi packages by apko, no base image | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) | <!-- pinned: upstream -->
 | `X.Y` | — | — | Floating: moves to every final release of that line |
 | `X` / `latest` | — | — | Floating: move only when the release is the highest released version |
 
@@ -260,8 +260,8 @@ certificates and timezone data — no shell, no package manager, no coreutils. `
 fails, by design. What that buys, stated precisely: no shell and no package
 manager means an attacker who gains code execution has no on-image tooling
 to work with — no `sh` for a reverse shell one-liner, nothing to download
-or install helpers with — and there is no OS package surface to patch or
-drift. What it does not prevent: code execution itself, anything an
+or install helpers with — and the few OS packages in the image (base layout, CA
+certificates, timezone data) are pinned by lock files. What it does not prevent: code execution itself, anything an
 attacker can do through the process's own capabilities and syscalls, or
 attacks that bring their own tooling. A minimal image narrows the toolbox;
 it is not a sandbox.

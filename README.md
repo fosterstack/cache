@@ -298,7 +298,8 @@ before implementation. CI fails if the matrix drifts from its sources.
 ## Security
 
 - Static binary, zero CGO, no shell and no package manager in the image; its only OS
-  packages are the base file layout, CA certificates and timezone data.
+  packages are the base file layout, CA certificates and timezone data, besides the
+  `fscache` package itself.
 - Approved-only cryptography is enforced by the validated module itself, not
   by a list: CI runs the full test suite under `GODEBUG=fips140=only`, where
   Go's FIPS 140-3 module refuses any non-approved algorithm at runtime. A
