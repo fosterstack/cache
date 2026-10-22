@@ -224,7 +224,8 @@ class FixtureNet:
 GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
             "osv": "github.com/google/osv-scanner/v2", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint/v2",
             "goreleaser": "github.com/goreleaser/goreleaser/v2", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign/v3",
-            "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3"}
+            "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3",
+            "go": "stdlib"}   # Go's own toolchain: the Go vulnerability database files the standard library under the package stdlib (REQ-SUP-001-AC27: the exempt release is still audited)
 NPM_TOOLS = {"snyk": "snyk"}
 
 # REQ-SUP-001-AC14: Go gives a module of major N >= 2 the path ending in /vN, and majors 0 and 1 the bare path. The table above holds the path of the
@@ -329,8 +330,8 @@ def _decidable(entry):
 
 
 def _go_rule(item, version):
-    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table, other kinds of item, an empty version."""
-    return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and version else None
+    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table (the Go toolchain itself is asked as stdlib and toolchain, not by module path), other kinds of item, an empty version."""
+    return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and item.name != "go" and version else None
 
 
 class LiveNet:
@@ -473,12 +474,20 @@ class LiveNet:
                     gh_all += [tag_(x) for x in g]
                     osv_all += [tag_(x) for x in o]
                 return gh_all, osv_all
+        if item.kind == "tool" and item.name == "go":   # the Go database files the standard library under stdlib and the go command under toolchain: both are asked
+            gh_all, osv_all = [], []
+            for pkg in ("stdlib", "toolchain"):
+                g, o = self._lists_for(item, self._version_of(item), pkg)
+                gh_all, osv_all = gh_all + g, osv_all + o
+            return gh_all, osv_all
         return self._lists_for(item, self._version_of(item))
 
-    def _lists_for(self, item, version):
+    def _lists_for(self, item, version, pkg=None):
         q = self._query(item, version) if version else None
         if q is None or not version:
             return [], []
+        if pkg:
+            q["package"]["name"] = pkg
         osv, ghs = [], []
         rule = _go_rule(item, version)
         paths = rule.paths if rule else [q["package"]["name"]]
