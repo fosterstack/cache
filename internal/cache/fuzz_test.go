@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"flag"
-	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -17,8 +16,8 @@ func FuzzCacheOps(f *testing.F) {
 	f.Add([]byte{0, 0, 10, 0, 1, 20, 1, 0, 0, 2, 1, 0})
 	f.Add([]byte{0, 0, 100, 0, 1, 100, 0, 2, 100, 0, 3, 100, 0, 4, 100, 0, 0, 200})
 	f.Fuzz(func(t *testing.T, ops []byte) {
-		const cap = 600
-		c := newTestCache(t, WithMaxBytes(cap))
+		const maxBytes = 600
+		c := newTestCache(t, WithMaxBytes(maxBytes))
 		ctx := context.Background()
 		content := map[string][]byte{}
 		keys := []string{"aa11", "bb22", "cc33", "dd44", "ee55"}
@@ -34,7 +33,7 @@ func FuzzCacheOps(f *testing.F) {
 				rc, n, err := c.Get(ctx, k)
 				if err == nil {
 					b, _ := io.ReadAll(rc)
-					rc.Close()
+					_ = rc.Close()
 					if want, ok := content[k]; ok && (!bytes.Equal(b, want) || n != int64(len(want))) {
 						t.Fatalf("Get %s returned %d bytes (n=%d), last Put had %d", k, len(b), n, len(want))
 					}
@@ -42,7 +41,7 @@ func FuzzCacheOps(f *testing.F) {
 			case 2:
 				_, _ = c.Stat(k)
 			}
-			checkAccounting(t, c, keys, cap)
+			checkAccounting(t, c, keys, maxBytes)
 		}
 		if fl := flag.Lookup("test.fuzz"); fl == nil || fl.Value.String() == "" {
 			return // plain `go test`: the sequential invariants above are the whole test
@@ -60,11 +59,11 @@ func FuzzCacheOps(f *testing.F) {
 			}(g)
 		}
 		wg.Wait()
-		checkAccounting(t, c, keys, cap)
+		checkAccounting(t, c, keys, maxBytes)
 	})
 }
 
-func checkAccounting(t *testing.T, c *Cache, keys []string, cap int64) {
+func checkAccounting(t *testing.T, c *Cache, keys []string, maxBytes int64) {
 	t.Helper()
 	total, err := c.TotalSize()
 	if err != nil {
@@ -77,9 +76,9 @@ func checkAccounting(t *testing.T, c *Cache, keys []string, cap int64) {
 		}
 	}
 	if total != sum {
-		t.Fatal(fmt.Sprintf("accounting: TotalSize %d != sum of Stat %d", total, sum))
+		t.Fatalf("accounting: TotalSize %d != sum of Stat %d", total, sum)
 	}
-	if total > cap {
-		t.Fatal(fmt.Sprintf("over the cap: %d > %d", total, cap))
+	if total > maxBytes {
+		t.Fatalf("over the cap: %d > %d", total, maxBytes)
 	}
 }
