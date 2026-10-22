@@ -39,7 +39,7 @@ Verify before the transfer, while you still have a network. Both steps matter:
 # 1. Prove the checksums file is ours
 cosign verify-blob \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}$" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
 
@@ -106,11 +106,11 @@ for on the disconnected side too:
 ```sh
 cosign verify-blob \
   --bundle checksums.txt.bundle \
-  --certificate-identity-regexp='^https://github.com/fosterstack/cache/' \
+  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VERSION}$" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
 
-sha256sum -c checksums.txt   # confirms the archive(s) you're about to move
+sha256sum -c <(grep "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt)   # confirms the archive(s) you're about to move
 ```
 
 For a container tarball, verify the pulled image before exporting it (same
@@ -165,7 +165,7 @@ It announces itself at startup, which matters in an air gap where you cannot
 check anything against a registry after the fact:
 
 ```json
-{"msg":"fscache: starting","fips140":"active (Go validated module, CMVP cert #5247)", ...}
+{"msg":"fscache: starting","fips140":"active (Go validated module ..., CMVP cert #5247)", ...}
 ```
 
 The Compliance tier sells the authored analysis that pairs with this build for
