@@ -133,6 +133,7 @@ def dependabot_summary(body):
 
 _FLAG = re.compile(r"breaking|deprecat", re.I)
 _MDADJ = re.compile(r"[A-Za-z0-9]\[|\][A-Za-z0-9]|\]\([^\n]*\)[A-Za-z0-9]|\]\[[^\]\n]*\][A-Za-z0-9]")
+_MDEXOTIC = re.compile(r"\\[\[\]]|\]\(\s*<|&(?:#0*(?:91|93)|#x0*(?:5b|5d)|lbrack|rbrack|lsqb|rsqb);", re.I)
 _MDLABEL = re.compile(r"\]\[[^\]]*\]")
 _MDDEF = re.compile(r"(?m)^ {0,3}\[[^\]\n]+\]:.*$")
 
@@ -181,7 +182,8 @@ def is_flagged(body):
     the raw body; with character references decoded; the HTML-rendered text (tags and comments dropped, nothing put in their place); and for
     each of those the letters and digits only, also with Markdown link targets (balanced parentheses, with and without a quoted title),
     reference labels and reference definitions removed first, so formatting, links and references between a word's pieces vanish. A body
-    the parser cannot read, an unterminated link target, or a word character touching link syntax is flagged (fail toward the readers).
+    the parser cannot read, an unterminated link target, a word character touching link syntax, an escaped or encoded bracket, an <angle> destination,
+    or link syntax left over after every reduction is flagged (fail toward the readers: the class is closed, not enumerated).
     A non-major so flagged is judged like a major (REQ-DEP-001-AC10)."""
     raw = str(body or "")
     try:
@@ -189,7 +191,7 @@ def is_flagged(body):
         p.feed(raw)
         p.close()
         views = (raw, html.unescape(raw), "".join(p.parts))
-        if _MDADJ.search(raw):
+        if _MDADJ.search(raw) or _MDEXOTIC.search(raw):   # link syntax this check does not resolve: an escaped bracket, an <angle> destination, an encoded bracket
             return True
         more = []
         for v in views:
@@ -198,7 +200,10 @@ def is_flagged(body):
                 t = _drop_targets(v, q)
                 if t is None:
                     return True
-                more.append(_MDDEF.sub("", _MDLABEL.sub("", t)))
+                t = _MDDEF.sub("", _MDLABEL.sub("", t))
+                if "](" in t or "][" in t:   # link syntax that survives every reduction is unresolved
+                    return True
+                more.append(t)
         views += tuple(re.sub(r"[^A-Za-z0-9]", "", v) for v in more)
         return any(_FLAG.search(v) for v in views + tuple(more))
     except Exception:
