@@ -8,6 +8,8 @@ This is a draft for the owner to read rendered. Nothing here is a release, a tag
 
 This release is rebuilt with **Go 1.27.3**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: crypto/x509 now distrusts compromised intermediate certificates. The fix ships in this release; there is no separate patch release for it. [TO ADD from pkg.go.dev/vuln/GO-2026-6809 on the day: the affected functions and a one-line description of the defect. TO ADD from this release's own VEX statement: whether the previous release is affected.]
 
+The CA certificate bundle is also updated, to Wolfi's `ca-certificates-bundle` 20260909-r3, which removes three eMudhra roots: emSign Root CA C1, emSign ECC Root CA C3 and emSign ECC Root CA G3. This ships in this release too.
+
 ### What changes for Gradle and Maven users
 
 - **Optional HTTPS.** Set `FSCACHE_TLS_CERT` and `FSCACHE_TLS_KEY` and the cache serves HTTPS, with TLS 1.2 as the minimum.
@@ -42,6 +44,7 @@ See `release-manifest.json` for the evidence bundle: image digests, archive chec
 2. The "building and signing" section is true only after the release chain's landing pull request (cache#359) merges. Nothing in the pipeline has been proven end to end by a real release yet: the first release candidate is the proof. Do not describe the chain as having run a release before then. (When this draft was written, the hosted build jobs were red on every chain pull request; that is the pipeline lane's work.)
 3. The docs this section quotes: `docs/build-and-signing-isolation.md` is a draft pull request (cache#516) and is not merged.
 4. The version and tag names are the owner's; the heading above is a placeholder.
+5. The CA bundle line (the three eMudhra roots removed by `ca-certificates-bundle` 20260909-r3) is the owner's decision that all the eMudhra fixes ship in this release (Oct 22, relayed by the advisor). Check the bundle version in the image's package list on the day.
 
 **Where each claim comes from** (pipeline lane, read from the repository)
 - Optional HTTPS and TLS 1.2: REQ-TLS-001 (cache#296). Start-up order, unknown-variable warning, upload count: cache#257. Unclean marker kept: cache#295 and REQ-STORE-005-AC4/AC5. Temp-file and `..` key fixes: cache#292, cache#291. Disk metrics: cache#258; gauges seeded at start-up: cache#254.
