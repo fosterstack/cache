@@ -513,6 +513,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/workflow-consolidation-test.sh"
   },
   {
+   "name": "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)",
+   "run": "bash bin/job-isolation-test.sh"
+  },
+  {
    "name": "the daily rescan covers the current release only (REQ-REL-004-AC5)",
    "run": "bash bin/rescan-current-only-test.sh"
   },

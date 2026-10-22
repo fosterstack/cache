@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 88 |
-| Acceptance criteria | 362 |
+| Active requirements | 89 |
+| Acceptance criteria | 364 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 346 |
+| ACs with mapped evidence | 348 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 42 |
+| Confidence: implementation-only | 43 |
 
 ## Cache protocol
 
@@ -765,6 +765,19 @@ Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at o
 | REQ-REL-009-AC12 | Given a PR the lane labels patch-fix; when the label is applied; then both reviewers' step-8 records for that PR say no behavior change; otherwise only the owner applies it, or the change waits for a minor release | ci-workflow |  | approved | none mapped |
 | REQ-REL-009-AC13 | Given a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses); when decide considers cutting it, and source admission admits it; then it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline | unit |  | approved | 2 item(s) |
 | REQ-REL-009-AC14 | Given the notes sources of a patch release: the fix records the release scans and go.mod give, the entries of docs/next-release-notes.md, and the changelog inputs (the notes file the changelog step is handed and the existing docs/quality/releases/CHANGELOG.md); when the notes are generated (patch-decide notes) or the changelog is written (patch-decide changelog); then a source is refused outright, never decoded, escaped or rewritten, when any line of it holds (1) a '<' followed by a letter, '/', '!' or '?'; (2) the shape of a Markdown link reference definition: up to three spaces, '[', a label, ']' and ':'; (3) a character reference: '&#' digits ';', '&#x' or '&#X' hex digits ';', or '&' a letter, letters or digits and ';'; or (4) the text '-----BEGIN '; and (5) two entries whose published lines are the same line are refused before any entry is dropped as already published or cleared from docs/next-release-notes.md; the refusal message names the file and line of each offending source line (both, for a collision); on a refusal the command exits 2 and writes nothing, so no patch tag is cut (notes) or no changelog PR is opened (changelog) | unit |  | approved | 1 item(s) |
+
+### REQ-REL-011 — A job that holds a credential never compiles, and each build is its own job
+
+A workflow job that holds a credential (a secret, an environment, an id-token or packages write grant) shall not build or compile anything, and no job shall run two builds: on GitHub-hosted runners the separate job is the isolation unit, each job a fresh virtual machine. Owner, Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): "the signer and the builder need hardware isolation and the builds in general need hardware isolation ... the best github actions can do for that, assuming we use github hosted runers, is to use separate jobs in the workflow." The rule: a job that holds the signing key or any publish credential never receives a build output other than the exact artifacts it signs or publishes; the Rebuild comparison runs in a job with no secrets and no publish permission; builds are isolated from each other the same way, each build its own job.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/auditor.yml; .github/workflows/go-freshness.yml; bin/job-isolation-test.sh*
+
+> Four jobs of the release chain on main (stage-build, stage-image, stage-promote, stage-reproducibility) still break AC1 and are listed exclusions in bin/job-isolation-test.sh with their reason: the chain-v030 landing (handoff 0634, cache#514) replaces those files. The exclusion list shrinks to nothing then. A tool that publishes no release binary (govulncheck) is built in its own job that holds no credential and reaches the credential-holding job as an artifact whose sha256 equals the build job's output.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-011-AC1 | Given any workflow job in the repository that holds a credential: a secrets.* reference, an environment, a permissions grant of id-token: write or packages: write; when bin/job-isolation-test.sh judges every workflow file; then none of the job's steps compiles or builds (go install, go build, goreleaser, docker build or buildx build, melange or apko build, make, cargo, npm run build); a tool the job needs is installed through bin/install-scanner.sh as a checksum-pinned release binary, and govulncheck, which has no release binary, is built in its own job with no credential and handed to auditor.yml's audit job as an artifact whose sha256 the audit job compares with the build job's output before it runs; the only jobs that may break this are the four listed release-chain exclusions, each with its reason, and a mutated copy of a workflow that adds a build to a credential-holding job fails the test | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-011-AC2 | Given any workflow job in the repository; when bin/job-isolation-test.sh judges every workflow file; then the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job | ci-workflow |  | approved | 2 item(s) |
 
 ## SCAN
 
