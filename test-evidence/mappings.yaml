@@ -504,6 +504,14 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-003-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
   - ac: REQ-SCAN-007-AC2
     evidence:
       - { type: inspection, ref: ".github/policy/scanner-profiles.json changes only through a pull request into main, which every required check gates; the auditor proposes entries only through its own PR lane, and a day that proposes one never auto-merges" }
@@ -1198,6 +1206,18 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
   - ac: REQ-REFRESH-001-AC34
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC35
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC36
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC37
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC38
     evidence:
       - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
   - ac: REQ-ARCHIVE-001-AC1
