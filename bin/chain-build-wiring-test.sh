@@ -2293,12 +2293,20 @@ expect ok "AC3 the five real scripts are rows of .github/policy/chain-scripts.js
 # other mention in them, every other file in the whole tree (the prose directories docs/, requirements/ and test-evidence/ at its top excepted) and every link to the tool is
 # refused; a comment is no exemption (a #-led line can be live code to bash).
 cat > "$work/vi-named.py" <<'PY'
-import glob, os, re
+import glob, hashlib, os, re
 BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
         "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
-PINWIRE, STEPS = ".github/agent/tests/pin-wiring-test.sh", ('"bash bin/vex-index-test.sh </dev/null"', "'bash bin/vex-index-test.sh </dev/null'")      # the pin-wiring judge quotes ci.yml's step (the test script, never the tool); only that exact string is admitted, only there
+PINWIRE = ".github/agent/tests/pin-wiring-test.sh"      # the pin-wiring judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new, changed or reused-in-code line is refused until a reviewed change updates the list
+PIN_LINES = frozenset((
+    "76dd2d9e0ddeb935a8e2715fe26fe325cbb168b0c63656a16a0e0f9588029091",
+    "b7827728ad4015e730527cbbad9ff10f27f0e01b578d263b4aafac79b2638630",
+    "ed9b7baf50c1a06493904a32858062357734918badcf226bc41eb6ecf4033be8",
+    "5f4193699f8e6bedd7a747039a4fcbb14e010e653fbdd24c3640a83538e8008c",
+    "7461149042047fd8d64d6d06d7f4f374f16b54a7151a0ea456525e0d80176cb8",
+    "9ca61104b6e4518e5faca29e6733bfc150f90f2cdf5708258d192c44ee244f4f",
+))
 RUN_CALL = 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1'
 VI_RESULT_LINES = ('check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", vi_run.returncode == 0, vi_run.stderr[-300:])',
                    'check("scout-vex: the attached document passes the attestation tool\'s own OpenVEX check (the tool is run, never loaded into this process)", vi_run.returncode == 0, vi_run.stderr[-300:])')
@@ -2322,8 +2330,9 @@ def stray(root):
                 continue
             text = open(path, errors="replace").read()
             if os.path.relpath(path, root) == PINWIRE:
-                for q in STEPS:
-                    text = text.replace(q, "")      # the exact step string between its own quotes (double, or single inside a shell string) is admitted; any other mention left in the file (more words inside the quotes, an unquoted form) still names the tool or the test
+                if any("vex-index" in ln and hashlib.sha256(ln.strip().encode()).hexdigest() not in PIN_LINES for ln in text.splitlines()):
+                    named.add(os.path.relpath(path, root))
+                continue
             if "vex-index" in text:
                 named.add(os.path.relpath(path, root))
     for d, dirs, files in os.walk(root):      # a link to the tool is the tool: looked for in every folder, the skipped prose ones too
@@ -2413,8 +2422,9 @@ vim k4 "REQ-REL-010-AC4 a Go file under tools/requirements (a skipped name below
 vim k5 "REQ-REL-010-AC4 a script under bin/docs (a skipped name below the top level) running the tool is refused" bin/docs/attach.sh '' $'python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
 vim k6 "REQ-REL-010-AC4 loading the tool in the live-test test file from the path the allowed subprocess line holds (r.args[1]) is refused" bin/vex-live-test-test.sh '' $'\nM = load("m", r.args[1])\n'
 vim k7 "REQ-REL-010-AC4 an importlib spec on a path variable in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nsp = importlib.util.spec_from_file_location("z", os.path.join(root, "bin", NAME))\n'
-# the pin-wiring judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool): that exact quoted string (double quotes, or single quotes inside a shell string), and nothing else naming vex-index, is
-# admitted in .github/agent/tests/pin-wiring-test.sh and in no other file (advisor, Oct 22: the exact step string, not the whole file)
+# the pin-wiring judge (.github/agent/tests/pin-wiring-test.sh) quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool). In that ONE file a line naming
+# vex-index is admitted only if it is, after strip(), one of the reviewed lines (PIN_LINES, by sha256); anything else naming it, and the same line in any other file, is refused (advisor Oct 22:
+# only the exact quoted step string; both seats of round 2: erasing a substring admitted an executable use, so whole reviewed lines are pinned)
 vimok() { # vimok NAME LABEL FILE NEW   (the scope function must find NOTHING stray)
   local d="$work/vimok-$1"; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/workflows" "$d/.github/policy" "$d/.github/agent/tests"
   cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$d/bin/"
@@ -2422,13 +2432,18 @@ vimok() { # vimok NAME LABEL FILE NEW   (the scope function must find NOTHING st
   if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); print(b, file=sys.stderr); sys.exit(0 if not b else 1)' "$work/vi-named.py" "$d" 2>/dev/null; then ok "$2"; else bad "$2"; fi
 }
 PW=.github/agent/tests/pin-wiring-test.sh
-vimok p1 "REQ-REL-010-AC4 the pin-wiring judge quoting the exact step string bash bin/vex-index-test.sh </dev/null is admitted (it names the test script, runs nothing)" $PW $'VEX = "bash bin/vex-index-test.sh </dev/null"\n   "run": "bash bin/vex-index-test.sh </dev/null"\n'
-vimok p7 "REQ-REL-010-AC4 the same exact step string between single quotes inside a shell string (the judge's PA line) is admitted" $PW $'PA="ps[:] = [x for x in ps if x.get(\'run\') != \'bash bin/vex-index-test.sh </dev/null\']"\n'
-vim p2 "REQ-REL-010-AC4 the pin-wiring judge naming the tool itself (bin/vex-index.py) next to the exact step string is refused" $PW '' $'VEX = "bash bin/vex-index-test.sh </dev/null"\nsubprocess.run(["python3", "bin/vex-index.py", "layout"])\n'
-vim p3 "REQ-REL-010-AC4 the pin-wiring judge naming the test script in any other form than the exact quoted step string is refused" $PW '' $'x = "bash bin/vex-index-test.sh"\n'
-vim p4 "REQ-REL-010-AC4 another test file quoting the exact step string is refused (the admission is for the pin-wiring judge only)" .github/agent/tests/other-test.sh '' $'VEX = "bash bin/vex-index-test.sh </dev/null"\n'
-vim p5 "REQ-REL-010-AC4 the pin-wiring judge with more words after the step string inside the same quotes is refused (the exact quoted string only)" $PW '' $'x = "bash bin/vex-index-test.sh </dev/null; echo more"\n'
+L1=$'  "run": "bash bin/vex-index-test.sh </dev/null"\n'
+L2=$'        _vex = {"name": VEX_NAME, "run": "bash bin/vex-index-test.sh </dev/null"}\n'
+vimok p1 "REQ-REL-010-AC4 the pin-wiring judge's reviewed lines quoting the exact step string bash bin/vex-index-test.sh </dev/null are admitted (they name the test script and run nothing)" $PW "$L1$L2"
+vimok p7 "REQ-REL-010-AC4 a reviewed line is admitted at any indentation (strip) and repeated, as the real judge repeats it" $PW "$L1$L1$L2"
+vim p2 "REQ-REL-010-AC4 the pin-wiring judge naming the tool itself (bin/vex-index.py) next to a reviewed line is refused" $PW '' "$L1"$'subprocess.run(["python3", "bin/vex-index.py", "layout"])\n'
+vim p3 "REQ-REL-010-AC4 the pin-wiring judge naming the test script in any form that is not a reviewed line is refused" $PW '' $'x = "bash bin/vex-index-test.sh"\n'
+vim p4 "REQ-REL-010-AC4 another test file holding a reviewed line is refused (the admission is for the pin-wiring judge only)" .github/agent/tests/other-test.sh '' "$L1"
+vim p5 "REQ-REL-010-AC4 the pin-wiring judge with more words after the step string inside the same quotes is refused" $PW '' $'x = "bash bin/vex-index-test.sh </dev/null; echo more"\n'
 vim p6 "REQ-REL-010-AC4 the pin-wiring judge naming the step string without its own quotes is refused" $PW '' $'x = bash bin/vex-index-test.sh </dev/null\n'
+vim p8 "REQ-REL-010-AC4 adjacent string literals around the quoted step string handed to os.system are refused (round 2, seat A)" $PW '' $'os.system("bash bin/vex-index-test.sh </dev/null" " ")\n'
+vim p9 "REQ-REL-010-AC4 the step string put in a variable that later lines rewrite to the tool and eval is refused (round 2, seat B)" $PW '' $'cmd="bash bin/vex-index-test.sh </dev/null"\ncmd=${cmd/#bash/python3}\neval "$cmd layout --layout /fixture"\n'
+vim p10 "REQ-REL-010-AC4 a reviewed line with anything appended (a comment, a call) is refused" $PW '' "${L1%$'\n'}  # x"$'\n'
 # a link to the tool is the tool: refused wherever it sits
 ld="$work/vim-link"; rm -rf "$ld"; mkdir -p "$ld/bin" "$ld/.github/workflows" "$ld/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld/bin/"
 printf 'x\n' > "$ld/bin/vex-index.py"; ln -s vex-index.py "$ld/bin/attach.py"
@@ -2480,7 +2495,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=849
+EXPECT=852
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
