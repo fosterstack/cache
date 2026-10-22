@@ -6,7 +6,7 @@ This is a draft for the owner to read rendered. Nothing here is a release, a tag
 
 ## Next release: Go 1.27.3<!-- pinned: upstream -->, optional HTTPS, and building and signing kept apart
 
-This release is rebuilt with **Go 1.27.3**<!-- pinned: upstream -->. It fixes **GO-2026-6809** in Go's standard library: crypto/x509 now distrusts compromised intermediate certificates. [TO ADD from pkg.go.dev/vuln/GO-2026-6809 on the day: the CVE id, the affected functions and a one-line description of the defect. TO ADD from this release's own VEX statement: whether the previous release is affected.]
+This release is rebuilt with **Go 1.27.3**<!-- pinned: upstream -->. It fixes **GO-2026-6809** (CVE-2026-111943) in Go's standard library: crypto/x509 now distrusts compromised intermediate certificates. The fix ships in this release; there is no separate patch release for it. [TO ADD from pkg.go.dev/vuln/GO-2026-6809 on the day: the affected functions and a one-line description of the defect. TO ADD from this release's own VEX statement: whether the previous release is affected.]
 
 ### What changes for Gradle and Maven users
 
@@ -38,7 +38,7 @@ See `release-manifest.json` for the evidence bundle: image digests, archive chec
 ## For the owner (delete this section before anything is published)
 
 **Open before this can be posted**
-1. The CVE id, affected functions, defect line and the VEX verdict for the previous release are not in the repository (the id GO-2026-6809 appears only in the Go 1.27.3<!-- pinned: upstream --> commit message). Take them from pkg.go.dev/vuln/GO-2026-6809 and the VEX the release run generates (`docs/using-our-vex.md` describes it).
+1. The affected functions, the defect line and the VEX verdict for the previous release are not in the repository (the id GO-2026-6809 appears only in the Go 1.27.3<!-- pinned: upstream --> commit message). Take them from pkg.go.dev/vuln/GO-2026-6809 and the VEX the release run generates (`docs/using-our-vex.md` describes it). The owner decided (Oct 22, relayed by the advisor) that the fix ships in this release with no separate patch release, and that the notes name CVE-2026-111943 and GO-2026-6809 as fixed here.
 2. The "building and signing" section is true only after the release chain's landing pull request (cache#359) merges. Nothing in the pipeline has been proven end to end by a real release yet: the first release candidate is the proof. Do not describe the chain as having run a release before then. (When this draft was written, the hosted build jobs were red on every chain pull request; that is the pipeline lane's work.)
 3. The docs this section quotes: `docs/build-and-signing-isolation.md` is a draft pull request (cache#516) and is not merged.
 4. The version and tag names are the owner's; the heading above is a placeholder.
