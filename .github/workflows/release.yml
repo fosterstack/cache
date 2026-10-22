@@ -391,8 +391,9 @@ jobs:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [check, rebuild, sign]
     # One publication at a time (release review R3, Oct 22): bin/release-publish.sh decides :X and :latest from the registry's tag list, so two
-    # release runs must not interleave. A queued run waits, never cancelled (GitHub keeps one pending run: a second queued tag run replaces the
-    # first pending one, which is then re-run by hand; releases are rare).
+    # release runs must not interleave. One fixed group for every v* run, release candidates included. A queued run waits and a running one is never
+    # cancelled (cancel-in-progress false). GitHub keeps one pending run per group: a second queued tag run replaces the first pending one, which ends
+    # cancelled; the patch-failed job below then opens an issue saying to publish that tag again (it is not re-run silently or by hand alone).
     concurrency:
       group: release-publish
       cancel-in-progress: false
@@ -749,7 +750,9 @@ jobs:
         run: python3 bin/persona-uat.py --remove-identity "${RUNNER_TEMP}/anthropic-identity-token" || rm -f "${RUNNER_TEMP}/anthropic-identity-token" "${RUNNER_TEMP}/anthropic-identity-token.tmp"
 
   patch-failed:
-    if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
+    # Also when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, so a third queued tag run
+    # replaces the first pending one, which ends as cancelled, not failed. failure() alone would open no issue; the issue below says to publish the tag again.
+    if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     needs: [build, sign, rebuild, check, release]
     runs-on: ubuntu-latest
     permissions:
@@ -761,8 +764,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_RESULT: ${{ needs.release.result }}
         run: |
-          gh issue create --title "auditor: release ${GITHUB_REF_NAME} failed" \
-            --body "The release run for ${GITHUB_REF_NAME} failed and is abandoned (no retry). The next daily run tries again once the cause is fixed. Run: ${RUN_URL}"
+          if [ "$RELEASE_RESULT" = cancelled ]; then
+            gh issue create --title "auditor: release ${GITHUB_REF_NAME} cancelled" \
+              --body "The release run for ${GITHUB_REF_NAME} was cancelled (replaced while pending in the release queue): it did not publish. Publish ${GITHUB_REF_NAME} again. Run: ${RUN_URL}"
+          else
+            gh issue create --title "auditor: release ${GITHUB_REF_NAME} failed" \
+              --body "The release run for ${GITHUB_REF_NAME} failed and is abandoned (no retry). The next daily run tries again once the cause is fixed. Run: ${RUN_URL}"
+          fi
 # edited
 # edited
