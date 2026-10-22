@@ -4,7 +4,7 @@
 # standard apk fscache-<version>-r0.apk and the fips apk fscache-fips-<version>-r0.apk. Each of the
 # four apks must have exactly the digest Build attested (apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64) before anything is signed.
 # The signing is cache's bin/release-sign-apks.sh, which names the key file release.rsa itself. Rebuild's apks are NOT here: the job that holds the signing key receives
-# no build output but Build's own apks (the owner's rule of Oct 21 2026); the comparison with Rebuild is bin/release-compare.sh in the compare job, which this job needs.
+# no build output but Build's own apks (the owner's rule of Oct 21 2026); the comparison with Rebuild is the compare job's, which this job needs.
 # The key is written to a private file named release.rsa (cache's signer refuses any other name) that is removed on every exit; it is never put on an argument list, in the output or in a log.
 set -euo pipefail
 shopt -s nullglob

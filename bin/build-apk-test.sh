@@ -273,7 +273,7 @@ sr "rule 22" "release signing refuses the assembly key (nothing a customer trust
 sr "rule 22" "release signing has no --rebuild-dir any more: the old call is refused as an unknown argument (the comparison is release-compare.sh's, in a job without the key)" 'unknown argument' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"
 cmpmk() { # <dir>: a repo-shaped tree around the script, with four identical Build/Rebuild pairs under apks/ and rapks/
   rm -rf "$1"; mkdir -p "$1/bin" "$1/build/keys"; cp "$root/bin/apk-tool.py" "$1/bin/"; cp "$root/build/keys/assembly.rsa.pub" "$1/build/keys/"
-  [ -f "$root/bin/release-compare.sh" ] && cp "$root/bin/release-compare.sh" "$1/bin/"
+  [ -f "$root/bin/release-compare.sh" ] && cp "$root/bin/release-compare.sh" "$1/bin/"; [ -f "$root/bin/release-compare.py" ] && cp "$root/bin/release-compare.py" "$1/bin/"
   for top in apks rapks; do for rn in ubuntu-24.04:x86_64 ubuntu-24.04-arm:aarch64; do d="$1/$top/${rn%%:*}/${rn##*:}"; mkdir -p "$d"; for n in fscache fscache-fips; do cp "$fx/pair/a.apk" "$d/$n-0.3.0-r0.apk"; done; done; done; }
 cmprun() { (cd "$1" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C "$(command -v bash)" bin/release-compare.sh) >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }
 cmpexpect() { # <desc> <rc> <regex of the message> <dir>: this exit status, the message names the reason, and no pass record exists
@@ -323,7 +323,7 @@ cmpmk "$work/cm12"; rm -rf "$work/cm12/apks" "$work/cm12/rapks"; mkdir -p "$work
 cmpexpect "no apk at all -> refused (exit 2), never an empty pass" 2 'no apk' "$work/cm12"
 cmpmk "$work/cm13"; mkdir -p "$work/cm13/elsewhere"; (cd "$work/cm13/elsewhere" && env -i PATH="$PATH" HOME=/nonexistent "$(command -v bash)" ../bin/release-compare.sh) >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"
 t "rule 22" "release-compare: a run from another directory is refused (exit 2) naming the repository root" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -qi 'repository root' '$work/log'"
-t "rule 22" "release-compare reads no key, no secret and no signing tool: it names none of melange, openssl, a key file, a credential or the network" bash -c "test -f '$root/bin/release-compare.sh' && ! grep -v '^ *#' '$root/bin/release-compare.sh' | grep -Eqi 'melange|openssl|release\.rsa\b|APK_RELEASE|DOCKERHUB|GH_TOKEN|curl|wget|\bnc\b|crane'"
+t "rule 22" "release-compare reads no key, no secret and no signing tool: it names none of melange, openssl, a key file, a credential or the network" bash -c "test -f '$root/bin/release-compare.py' && ! cat '$root/bin/release-compare.sh' '$root/bin/release-compare.py' | grep -v '^ *#' | grep -Eqi 'melange|openssl|release\.rsa\b|APK_RELEASE|DOCKERHUB|GH_TOKEN|curl|wget|\bnc\b|crane'"
 
 # ===== rule 17 18: key policy ===========================================================================================
 t "rule 17" "build-apk.sh names the committed assembly key (build/keys/assembly.rsa) as the only key it signs with" bash -c "test -f '$BA_PROD' && grep -q 'build/keys/assembly.rsa' '$BA_PROD'"

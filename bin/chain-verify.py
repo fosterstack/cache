@@ -953,7 +953,7 @@ def cmd_bind_check(a):
 
 
 def cmd_apk_compare(a):
-    """The comparison job's result (bin/release-compare.sh, run in a job with no key and no token; the owner's rule of Oct 21 2026: the signer and the builder
+    """The comparison job's result (the release stage's comparison step, run in a job with no key and no token; the owner's rule of Oct 21 2026: the signer and the builder
     never share a machine, Rebuild's apks never reach a job that holds a credential) is a small file: verdict pass and exactly the four expected pairs (amd64 and
     arm64, standard and fips) with the whole-file sha256 and the apk-tool digest of Build's apk and of Rebuild's. It is accepted only for Build's attested digests:
     each pair's Build digest is the apk-<variant>-<arch> digest Build attested in witness-build/digests.json, and Rebuild's is the same. Nothing else about the

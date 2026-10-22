@@ -6,9 +6,9 @@
 # A is the output directory of Build (<dir>/<arch>/<name>-<version>.apk, signed with the non-secret assembly key). Each apk in A is
 # re-signed in place with `melange sign --signing-key K`, so the released apk carries the release key and nothing a customer trusts is
 # ever signed with the assembly key. K must not be the committed assembly key.
-# Rebuild's apks never reach this script (owner's rule of Oct 21 2026, ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md: the job that
-# holds the signing key receives no build output but the artifacts it signs): the comparison of Build's and Rebuild's apks is bin/release-compare.sh,
-# which runs in a job without a key, and the release job needs that job.
+# Rebuild's apks never reach this file's job (owner's rule of Oct 21 2026, ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md: the job that
+# holds the signing key receives no build output but the artifacts it signs): the comparison of Build's and Rebuild's apks is the compare job's,
+# which runs without a key, and the release job needs that job.
 #
 # Only files named *.apk are signed. An APKINDEX.tar.gz in Build keeps its assembly-key signature: the release workflow must not ship it as it is.
 # Exit codes: 0 all signed | 1 a signing step failed (nothing in Build's directory was changed) |
