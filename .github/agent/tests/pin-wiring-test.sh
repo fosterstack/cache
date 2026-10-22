@@ -481,6 +481,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/panel-test.sh"
   },
   {
+   "name": "the final image index that carries our OpenVEX for Docker Scout \u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)",
+   "run": "bash bin/vex-index-test.sh </dev/null"
+  },
+  {
    "name": "the auditor's fixtures and tests follow the panel's image set \u2014 the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)",
    "run": "bash .github/agent/tests/auditor-variants-test.sh"
   },
