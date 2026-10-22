@@ -88,8 +88,8 @@ the rest of this section does not describe. Pull requests are scanned by
 [`scan.yml`](../.github/workflows/scan.yml) on the candidate images, with
 Grype and Amazon Inspector.
 
-The gate's policy is every severity, with the published VEX applied, and a
-finding of unknown severity fails it too. The VEX document ships with each
+The per-image gate's policy is every severity, with the published VEX applied,
+and a finding of unknown severity fails it too. The VEX document ships with each
 release as `fosterstack-cache.openvex.json` and lives in-repo at
 [`.vex/`](../.vex/). A Grype scan of a published image with that VEX applied:
 
@@ -108,9 +108,10 @@ different day. Scanners outside the release gate, such as Trivy, are useful
 cross-checks.
 
 Run without `--vex` to see raw findings including the ones we have
-publicly dispositioned — the difference between the two runs is the set of
-findings suppressed by the published VEX statements that apply, which is how
-you audit them.
+publicly dispositioned. Run both scans against the same image and the same
+vulnerability database snapshot (do not update the database between them):
+the difference is then the set of findings suppressed by the published VEX
+statements that apply, which is how you audit them.
 
 ## Marketing claim, with the receipt
 
