@@ -1384,6 +1384,9 @@ _GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]
 _GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die "download failed: go toolchain"[ \t]*$')
 _GO_VERIFY = ["verify() { # file", "  local got", "  got=$(sha256sum \"$1\" | cut -d' ' -f1)",
               '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"', "}"]
+_GO_FAIL = ['pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }']
+_SUM_ROW = re.compile(r"^[ \t]*[A-Za-z0-9_.:|-]+\) SUM=[0-9a-f]{64} ;;[ \t]*$")
+_SUM_MODULE = re.compile(r'^[ \t]*govulncheck:\*\) SUM="" ;;[ \t]*(?:#.*)?$')   # a module pinned by go.sum: its own key, empty sum
 _GO_SUM = {a: re.compile(r"^[ \t]*go:" + a + r"\) SUM=[0-9a-f]{64} ;;[ \t]*$") for a in (r"x86_64\|go:amd64", r"aarch64\|go:arm64")}
 
 
@@ -1398,26 +1401,33 @@ def go_exemption(root, head):
     if not text:
         return None
     lines = text.split("\n")
+    joined = re.sub(r"\\[ \t]*\n", " ", text).split("\n")   # a shell continuation is one command: a download written over two lines is still one
     vers = [m.group(1) for m in (_GO_VER_LINE.match(l) for l in lines) if m]
     if len(vers) != 1 or sum(1 for l in lines if re.match(r"^[ \t]*(?:export[ \t]+)?GO_VER=", l)) != 1:
         return None
-    fetch = [i for i, l in enumerate(lines) if re.search(r"\b(curl|wget)\b", l) and re.search(r"go\.tgz|GO_VER|gofile|go\.dev|golang|go\$\{|go[0-9]+\.[0-9]", l)]
-    if len(fetch) != 1 or not _GO_CURL.match(lines[fetch[0]]):
+    fetch = [i for i, l in enumerate(joined) if re.search(r"\b(curl|wget)\b", l) and re.search(r"go\.tgz|GO_VER|gofile|go\.dev|golang|go\$\{|go[0-9]+\.[0-9]", l)]
+    if len(fetch) != 1 or not _GO_CURL.match(joined[fetch[0]]):
         return None
-    names = [l for l in lines if re.match(r"^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+)?gofile=", l)]
+    names = [l for l in joined if re.match(r"^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+)?gofile=", l)]
     if len(names) != 1 or not _GO_FILE.match(names[0]):
         return None
-    nxt = next((l.strip() for l in lines[fetch[0] + 1:] if l.strip()), "")
+    nxt = next((l.strip() for l in joined[fetch[0] + 1:] if l.strip()), "")
     if nxt != 'verify "$tmp/go.tgz"':
         return None
-    if any(sum(1 for l in lines if rx.match(l)) != 1 for rx in _GO_SUM.values()):
+    if any(sum(1 for l in lines if rx.match(l)) != 1 for rx in _GO_SUM.values()) or sum(1 for l in lines if re.search(r"\bgo:", l) and re.search(r"\bSUM", l)) != 2:
         return None
-    # the verifier is the reviewed one, defined once, and nothing assigns SUM outside the pinned rows (a row is `pattern) SUM=... ;;`, never a line that starts with SUM=)
-    starts = [i for i, l in enumerate(lines) if re.match(r"^[ \t]*verify\(\)", l)]
-    if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(_GO_VERIFY)]] != _GO_VERIFY:
-        return None
-    if any(re.match(r"^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+|declare[ \t]+(?:-\w+[ \t]+)?)?SUM=", l) for l in lines):
-        return None
+    # the verifier and the failure helper are the reviewed ones, each defined once in ANY spelling (verify() / verify () / function verify)
+    for name, want in (("verify", _GO_VERIFY), ("pipeline_fail", _GO_FAIL)):
+        if len(re.findall(r"\bfunction[ \t]+" + name + r"\b|\b" + name + r"[ \t]*\([ \t]*\)", text)) != 1:
+            return None
+        starts = [i for i, l in enumerate(lines) if re.match(r"^" + name + r"\(\)", l)]
+        if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(want)]] != want:
+            return None
+    # every SUM assignment, anywhere on any line, is a pinned row: a literal pattern (no glob), `) SUM=<64 hex> ;;`; any other mention of SUM must only read it
+    for l in joined:
+        rest = re.sub(r"\$\{SUM\}|\$SUM\b", "", l)
+        if re.search(r"\bSUM\b", rest) and not (_SUM_ROW.match(l) or _SUM_MODULE.match(l)):
+            return None
     return vers[0]
 
 

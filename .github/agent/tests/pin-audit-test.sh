@@ -957,6 +957,12 @@ assert net._query(it, "1.27.2") == {"package": {"name": "stdlib", "ecosystem": "
 rec = {"affected": [{"package": {"name": "stdlib", "ecosystem": "Go"}, "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.27.3"}]}]}]}
 assert pa.LiveNet._osv_says(rec, "stdlib", "1.27.2", False) is True
 assert pa.LiveNet._osv_says(rec, "stdlib", "1.27.3", False) is False
+seen = []
+net._osv_records = lambda q, paths, strict=False: seen.append(q["package"]["name"]) or {}
+net._version_of = lambda i: "1.27.2"
+net._gh_json = lambda *a, **k: []
+net.lists(it)
+assert seen == ["stdlib", "toolchain"], seen   # the go command's records are filed under toolchain
 PY
 
 echo "pin-audit: $pass passed, $failn failed"

@@ -474,12 +474,20 @@ class LiveNet:
                     gh_all += [tag_(x) for x in g]
                     osv_all += [tag_(x) for x in o]
                 return gh_all, osv_all
+        if item.kind == "tool" and item.name == "go":   # the Go database files the standard library under stdlib and the go command under toolchain: both are asked
+            gh_all, osv_all = [], []
+            for pkg in ("stdlib", "toolchain"):
+                g, o = self._lists_for(item, self._version_of(item), pkg)
+                gh_all, osv_all = gh_all + g, osv_all + o
+            return gh_all, osv_all
         return self._lists_for(item, self._version_of(item))
 
-    def _lists_for(self, item, version):
+    def _lists_for(self, item, version, pkg=None):
         q = self._query(item, version) if version else None
         if q is None or not version:
             return [], []
+        if pkg:
+            q["package"]["name"] = pkg
         osv, ghs = [], []
         rule = _go_rule(item, version)
         paths = rule.paths if rule else [q["package"]["name"]]
