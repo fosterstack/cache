@@ -92,17 +92,33 @@ child_digest() {   # child_digest LAYOUT ARCH -> sha256:<child manifest digest>,
 }
 PLATFORMS=(amd64 arm64)
 other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every index descriptor that is neither linux/amd64, linux/arm64 nor the unknown/unknown provenance descriptor
-  local idx blob; idx=$(jq -r '.manifests[0].digest // empty' "$1/index.json" 2> /dev/null) || return 0
+  local idx blob d out line; idx=$(jq -r '.manifests[0].digest // empty' "$1/index.json" 2> /dev/null) || return 0
   [[ "$idx" =~ ^sha256:[0-9a-f]{64}$ ]] || return 0
   blob="$1/blobs/sha256/${idx#sha256:}"; [ -f "$blob" ] || return 0
-  # unknown/unknown is the buildkit descriptor that points at one of the two children (annotations vnd.docker.reference.type present and
-  # vnd.docker.reference.digest equal to a linux/amd64 or linux/arm64 child digest); any other unknown/unknown descriptor is a manifest nobody scanned
-  jq -r '([.manifests[]? | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64")) | .digest]) as $kids
-         | .manifests[]? | ((.platform // {}) | "\(.os // "none")/\(.architecture // "none")") as $p
-         | if $p == "unknown/unknown" and ((.annotations // {})["vnd.docker.reference.type"] | type) == "string"
-              and ((.annotations // {})["vnd.docker.reference.digest"] as $d | $kids | index($d)) != null then empty
+  # unknown/unknown is buildkit's descriptor for one of the two children: annotations vnd.docker.reference.type (a string) and
+  # vnd.docker.reference.digest (a string equal to a linux/amd64 or linux/arm64 child digest), AND its own manifest holds nothing but in-toto
+  # layers (an ordinary image manifest carrying the annotations is a third image nobody scanned). Anything else is named and fails.
+  out=$(jq -r 'def obj: if type == "object" then . else {} end;
+         ([.manifests[]? | select((.platform | obj).os == "linux" and ((.platform | obj).architecture == "amd64" or (.platform | obj).architecture == "arm64")) | .digest]) as $kids
+         | .manifests[]? | (((.platform | obj) as $q | "\($q.os // "none")/\($q.architecture // "none")")) as $p
+         | (.annotations | obj) as $a
+         | if $p == "unknown/unknown" and ($a["vnd.docker.reference.type"] | type) == "string"
+              and ($a["vnd.docker.reference.digest"] | type) == "string" and ($kids | index($a["vnd.docker.reference.digest"])) != null
+              and (.digest | type) == "string" then "@@check " + .digest
            elif $p == "unknown/unknown" then "unknown/unknown (not a descriptor of one of the two children)" else $p end
-         | select(. != "linux/amd64" and . != "linux/arm64")' "$blob" 2> /dev/null || true
+         | select(. != "linux/amd64" and . != "linux/arm64")' "$blob" 2> /dev/null) || out="unreadable index descriptors"
+  while IFS= read -r line; do
+    case "$line" in
+      "@@check "*)
+        d=${line#@@check }
+        if [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] && [ -f "$1/blobs/sha256/${d#sha256:}" ] \
+           && jq -e '.mediaType == "application/vnd.oci.image.manifest.v1+json" and (.layers | type) == "array" and (.layers | length) > 0
+                     and all(.layers[]; .mediaType == "application/vnd.in-toto+json")' "$1/blobs/sha256/${d#sha256:}" > /dev/null 2>&1; then :
+        else echo "unknown/unknown (its own manifest is not a provenance manifest)"; fi ;;
+      "") ;;
+      *) echo "$line" ;;
+    esac
+  done <<< "$out"
 }
 failed=0 ran=0
 all="[]"

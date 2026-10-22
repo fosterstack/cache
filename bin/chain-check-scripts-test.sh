@@ -100,12 +100,17 @@ names = {}
 for p in plats:
     os_, arch = p.split("/")
     layer, ls = blob(("layer %s %s" % (seed, p)).encode())
+    lmt = "application/vnd.in-toto+json" if p == "unknown/unknown" and os.environ.get("ATT_ODD") != "plain-image" else "application/vnd.oci.image.layer.v1.tar"
     cfg, cs = blob(json.dumps({"architecture": lie or arch, "os": os_, "rootfs": {"type": "layers", "diff_ids": [layer]}, "seed": seed}, sort_keys=True).encode())
     man, ms = blob(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
         "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cfg, "size": cs},
-        "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": layer, "size": ls}]}, sort_keys=True).encode())
+        "layers": [{"mediaType": lmt, "digest": layer, "size": ls}]}, sort_keys=True).encode())
     kid = {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": man, "size": ms, "platform": {"os": os_, "architecture": arch}}
-    if p == "unknown/unknown" and not os.environ.get("NO_ATT_ANNOTATION"):
+    if p == "unknown/unknown" and os.environ.get("ATT_ODD") == "array-digest":
+        kid["annotations"] = {"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": [kids[0]["digest"]]}
+    elif p == "unknown/unknown" and os.environ.get("ATT_ODD") == "annotations-list":
+        kid["annotations"] = []
+    elif p == "unknown/unknown" and not os.environ.get("NO_ATT_ANNOTATION"):   # (ATT_ODD=plain-image keeps the annotations on an ordinary image manifest)
         kid["annotations"] = {"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": ("sha256:" + "9" * 64) if os.environ.get("ATT_DIGEST_OTHER") else kids[0]["digest"]}      # buildkit's descriptor for the first child
     kids.append(kid)
     names[arch] = {"layer": layer.split(":")[1], "config": cfg.split(":")[1], "manifest": man.split(":")[1]}
@@ -334,6 +339,12 @@ rm -rf "$fx/images/production"; NO_ATT_ANNOTATION=1 python3 "$work/mkoci.py" "$f
 want_fail "AC4 S1 an unknown/unknown descriptor that is not buildkit's (no vnd.docker.reference annotations) fails naming it" "unknown/unknown" "${SCAN[@]}"
 rm -rf "$fx/images/production"; ATT_DIGEST_OTHER=1 python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
 want_fail "AC4 S1 an unknown/unknown descriptor whose reference digest is none of the two children fails" "unknown/unknown" "${SCAN[@]}"
+rm -rf "$fx/images/production"; ATT_ODD=array-digest python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 an unknown/unknown descriptor whose reference digest is a list holding a child digest fails" "unknown/unknown" "${SCAN[@]}"
+rm -rf "$fx/images/production"; ATT_ODD=plain-image python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 an ordinary image manifest carrying the reference annotations as unknown/unknown is not exempt (its own manifest is not a provenance manifest)" "provenance manifest" "${SCAN[@]}"
+rm -rf "$fx/images/production"; ATT_ODD=annotations-list python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown linux/s390x > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 an unreadable annotations value does not hide a later linux/s390x descriptor" "linux/s390x" "${SCAN[@]}"
 restore_prod
 FAKE_GRYPE_MD=mismatch want_fail "AC4 S1 grype reporting another manifest digest than the child recorded fails" "names manifest digest" "${SCAN[@]}"
 FAKE_GRYPE_MD=missing want_fail "AC4 S1 grype reporting no manifest digest fails" "names manifest digest" "${SCAN[@]}"
@@ -1047,7 +1058,7 @@ else bad "G bin/check-govulncheck.py is missing or names a signing tool or crede
 # the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
 sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
 if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
-EXPECT=331
+EXPECT=334
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
