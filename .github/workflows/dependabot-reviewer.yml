@@ -151,7 +151,7 @@ jobs:
                     echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge events — skipped this hour"; lookup_failed=1; continue
                   fi
                   case "$last_event" in
-                    "auto_merge_disabled github-actions"*)
+                    "auto_merge_disabled github-actions[bot]"|"auto_merge_disabled github-actions")
                       if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
                            | base64 -d > "$RUNNER_TEMP/work/heal-required-checks.json" \
                          && bash bin/required-check-guard.sh "$RUNNER_TEMP/work/heal-required-checks.json"; then

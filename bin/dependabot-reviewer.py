@@ -133,12 +133,11 @@ def dependabot_summary(body):
 
 _FLAG = re.compile(r"breaking|deprecat", re.I)
 _MDADJ = re.compile(r"[A-Za-z0-9]\[|\][A-Za-z0-9]|\]\([^\n]*\)[A-Za-z0-9]|\]\[[^\]\n]*\][A-Za-z0-9]")
+_MDLABEL = re.compile(r"\]\[[^\]]*\]")
+_MDDEF = re.compile(r"(?m)^ {0,3}\[[^\]\n]+\]:.*$")
 
 
 class _Text(HTMLParser):
-    """The text a reader sees: character data with references decoded, comments left out, tags
-    dropped with nothing put in their place (so `break<b>ing</b>` and `break<!-- x -->ing` read
-    `breaking`)."""
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.parts = []
@@ -147,30 +146,63 @@ class _Text(HTMLParser):
         self.parts.append(data)
 
 
+def _drop_targets(v, quotes):
+    # Markdown inline link/image targets `](...)`, parentheses balanced, over lines; quotes=True also honours a quoted title that holds a ')'.
+    # An unterminated target is unresolvable: None.
+    out, i, n = [], 0, len(v)
+    while i < n:
+        if v.startswith("](", i):
+            j, depth, inq = i + 2, 1, None
+            while j < n and depth > 0:
+                c = v[j]
+                if c == "\\":
+                    j += 2
+                    continue
+                if quotes and inq is None and c in "\"'" and v[j - 1] in " \t\n":
+                    inq = c
+                elif quotes and inq == c:
+                    inq = None
+                elif inq is None:
+                    depth += 1 if c == "(" else -1 if c == ")" else 0
+                j += 1
+            if depth > 0:
+                return None
+            i = j
+            continue
+        out.append(v[i])
+        i += 1
+    return "".join(out)
+
+
 def is_flagged(body):
-    """True when a Dependabot PR body says "breaking" or "deprecat" (any case) anywhere: in the raw
-    body, in the body with character references decoded, or in the rendered text. The release
-    notes and commit list between old and new are the body's <details> blocks, but markup (comments,
-    quoted attributes, code fences, unclosed tags) makes block boundaries unreliable, so the whole
-    body is read and any hit counts: over-flagging only sends a bump to the two readers, never
-    toward auto-merge (tighten-only). A body the parser cannot read is flagged. A non-major so
-    flagged is judged like a major (REQ-DEP-001-AC10)."""
+    """True when a Dependabot PR body says "breaking" or "deprecat" (any case) as a reader would see it. The release notes and commit
+    list between old and new are the body's <details> blocks, but markup makes block boundaries unreliable, so the WHOLE body is read and any
+    hit counts: over-flagging only sends a bump to the two readers, never toward auto-merge (tighten-only). Views, any one of which counts:
+    the raw body; with character references decoded; the HTML-rendered text (tags and comments dropped, nothing put in their place); and for
+    each of those the letters and digits only, also with Markdown link targets (balanced parentheses, with and without a quoted title),
+    reference labels and reference definitions removed first, so formatting, links and references between a word's pieces vanish. A body
+    the parser cannot read, an unterminated link target, or a word character touching link syntax is flagged (fail toward the readers).
+    A non-major so flagged is judged like a major (REQ-DEP-001-AC10)."""
     raw = str(body or "")
     try:
         p = _Text()
         p.feed(raw)
         p.close()
         views = (raw, html.unescape(raw), "".join(p.parts))
+        if _MDADJ.search(raw):
+            return True
+        more = []
+        for v in views:
+            more.append(v)
+            for q in (False, True):
+                t = _drop_targets(v, q)
+                if t is None:
+                    return True
+                more.append(_MDDEF.sub("", _MDLABEL.sub("", t)))
+        views += tuple(re.sub(r"[^A-Za-z0-9]", "", v) for v in more)
+        return any(_FLAG.search(v) for v in views + tuple(more))
     except Exception:
         return True
-    # Markdown formatting can split a word the reader sees whole (`break**ing**`, `Depre*cat*ed`, `[Break](u)ing`, image alt text):
-    # one more view keeps only the letters and digits of each, so punctuation and link targets between the pieces vanish.
-    # (a second pass also drops a link's or image's target, `](...)`, which would sit between the pieces)
-    views += tuple(re.sub(r"[^A-Za-z0-9]", "", v) for v in views) + tuple(re.sub(r"[^A-Za-z0-9]", "", re.sub(r"\]\([^)]*\)", "", v)) for v in views)
-    # Markdown link, reference and image syntax can hide a word's pieces from every reduction above (reference labels, nested
-    # parentheses, quoted titles): a word character touching link syntax (`[Break][ref]ing`, `[Break](u)ing`, `x[y`, `[y]z`) is unresolvable
-    # here, so it is flagged (fail toward the readers).
-    return any(_FLAG.search(v) for v in views) or bool(_MDADJ.search(raw))
 
 
 def parse_updates(title, body):

@@ -113,6 +113,13 @@ MDLINK = ["[Break][ref]ing change\n\n[ref]: https://example.invalid", "[Break](h
 check("flagged: valid Markdown link/reference forms that hide the word's pieces are unresolvable and flagged (round 4)",
       all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDLINK),
       [w for w in MDLINK if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
+MDCOMBO = ["[Break](https://example.invalid/a(b)/c)**ing** change", "[Depre](u(a)/b)*cat*ed", "[Break][ref]**ing** change\n\n[ref]: https://example.invalid",
+           "[Break][ref]<b>ing</b> change\n\n[ref]: https://example.invalid", "[Break](https://e.invalid/\n(x))ing", "[Break](u \"a)b\")**ing**", "[Break](unterminated"]
+check("flagged: combined link, reference and formatting forms (round 5)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDCOMBO),
+      [w for w in MDCOMBO if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
+check("not flagged: Markdown links with ordinary words, nested parentheses and titles",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\nSee [the docs](https://e.invalid/a(b)/c \"a title\") and [more][ref] for **details**.\n\n[ref]: https://e.invalid\n\n</details>")[0]["flagged"] is False, "")
 check("not flagged: ordinary Markdown with links and emphasis",
       one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n**Fixes** a [typo](https://example.invalid/typo) and `speeds` up *parsing*.\n\n</details>")[0]["flagged"] is False, "")
 check("not flagged: tags, comments and references around ordinary words",
@@ -651,6 +658,9 @@ heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled someone\n' 
 heal 'auto_merge_disabled github-actions[bot]\nauto_merge_enabled fosterstack-automation\nauto_merge_disabled someone\n' 0 no "an earlier lane disable, then a normal arm, then a person's disable -> left alone (round-4 B3)"
 heal 'auto_merge_disabled github-actions[bot]\nauto_merge_enabled fosterstack-automation\n' 0 no "an earlier lane disable followed by an enable (the PR is simply not armed in the stub) -> left alone"
 heal '' 0 no "no auto-merge event at all -> left alone"
+heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions-maintainer\n' 0 no "a login that only STARTS with github-actions (a person or app) is not the workflow token (round 5)"
+heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]x\n' 0 no "github-actions[bot] followed by anything else is not the workflow token"
+heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions\n' 0 yes "the bare login github-actions is accepted too (the API names the bot either way)"
 ARMED99=true heal "$LANE_OFF" 0 no "already armed -> nothing to do"
 RULES="$w/rules-drift.json" heal "$LANE_OFF" 1 no "the required-check guard refuses -> no arm, the step fails (the approved arm stays off, retried next hour)"
 REARMFAIL=1 heal "$LANE_OFF" 1 yes "the re-arm cannot be made -> the step fails (retry next hour)"

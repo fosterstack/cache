@@ -320,6 +320,28 @@ sys.exit(1 if bad else 0)
 PY
 then pass=$((pass+1)); echo "PASS disarm-only-an-unsupported-arm"; else failn=$((failn+1)); echo "FAIL disarm-only-an-unsupported-arm"; fi
 
+# REQ-DEP-003-AC2: the screen's heredoc IS the reviewer's rule, byte for byte: the workflow's code must equal what is generated from
+# bin/dependabot-reviewer.py (imports, the patterns, _Text, _drop_targets, is_flagged), so the two lanes cannot drift apart.
+if python3 - "$root" <<'PY'
+import ast, os, sys, yaml
+root = sys.argv[1]
+def heredoc(py_path):
+    src = open(py_path).read(); lines = src.splitlines(); tree = ast.parse(src); chunks = []
+    for node in tree.body:
+        name = None
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id in {"_FLAG", "_MDADJ", "_MDLABEL", "_MDDEF"}: name = 1
+        elif isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in ("_Text", "_drop_targets", "is_flagged"): name = 1
+        if name: chunks.append("\n".join(lines[node.lineno - 1:node.end_lineno]))
+    return "import html, os, re\nfrom html.parser import HTMLParser\n" + "\n".join(chunks) + '\nprint("flagged=" + str(is_flagged(os.environ["PR_BODY"])).lower())\n'
+d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
+run = [s["run"] for s in d["jobs"]["auto-merge"]["steps"] if s.get("id") == "screen"][0]
+got = run.split("<<'PY'\n", 1)[1].rsplit("PY", 1)[0]
+want = heredoc(os.path.join(root, "bin/dependabot-reviewer.py"))
+print("screen heredoc == generated from the reviewer: " + ("ok" if got == want else "DIFFERS"))
+sys.exit(0 if got == want else 1)
+PY
+then pass=$((pass+1)); echo "PASS screen-is-the-reviewers-code"; else failn=$((failn+1)); echo "FAIL screen-is-the-reviewers-code"; fi
+
 # REQ-DEP-003-AC2: the screen's heredoc and the reviewer's is_flagged are the same rule. Run the workflow's
 # own code against a corpus (the real Dependabot bodies and written edge cases) and compare.
 if python3 - "$root" <<'PY'
@@ -332,7 +354,7 @@ r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
 corpus = [json.load(open(os.path.join(root, "test-evidence/dependabot-reviewer", "pr-%d.json" % n)))["body"] for n in (99, 91, 124, 90, 400)]
 corpus += ["", "Bumps a from 1.0.0 to 1.1.0.", "x <details>Breaking</details>", "breaking <details>fine</details>",
            "<DETAILS>DEPRECATED</DETAILS>", "<details><summary>a</summary><details>nested deprecates</details></details>",
-           "<details>unclosed breaking", "<details>break<!-- > -->ing</details>", "<details>depre<span title=\">\">cat</span>ed</details>", "<code>&lt;breaking&gt;</code>", "<details><!-- </details> -->Breaking change<!-- <details> --></details>", "```\n<details>deprecated</details>\n```", "plain text, nothing", "**Break**ing change", "Depre*cat*ed", "[Break](https://example.invalid)ing", "![break*ing*](https://e.invalid/i.png)", "**Fixes** a [typo](https://e.invalid)", "[Break][ref]ing", "[Break](u (a)b)ing", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>break<b>ing</b> change</details>", "<details>depre&#99;ated</details>", "<details>break&lt;b&gt;ing</details>", "<details>&lt;p&gt;Deprecated&lt;/p&gt;</details>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
+           "<details>unclosed breaking", "<details>break<!-- > -->ing</details>", "<details>depre<span title=\">\">cat</span>ed</details>", "<code>&lt;breaking&gt;</code>", "<details><!-- </details> -->Breaking change<!-- <details> --></details>", "```\n<details>deprecated</details>\n```", "plain text, nothing", "**Break**ing change", "Depre*cat*ed", "[Break](https://example.invalid)ing", "![break*ing*](https://e.invalid/i.png)", "**Fixes** a [typo](https://e.invalid)", "[Break][ref]ing", "[Break](u (a)b)ing", "[Break](https://e.invalid/a(b)/c)**ing**", "[Break][ref]**ing**\n\n[ref]: https://e.invalid", "[Break](u \"a)b\")ing", "[Break](unterminated", "See [the docs](https://e.invalid/a(b)/c \"t\") and (parens)", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>break<b>ing</b> change</details>", "<details>depre&#99;ated</details>", "<details>break&lt;b&gt;ing</details>", "<details>&lt;p&gt;Deprecated&lt;/p&gt;</details>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
 bad = []
 for body in corpus:
     p = subprocess.run(["bash", "-c", run], env={**os.environ, "PR_BODY": body, "GITHUB_OUTPUT": "/dev/stdout"}, capture_output=True, text=True)
