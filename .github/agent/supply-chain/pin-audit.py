@@ -330,8 +330,8 @@ def _decidable(entry):
 
 
 def _go_rule(item, version):
-    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table, other kinds of item, an empty version."""
-    return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and version else None
+    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table (the Go toolchain itself is asked as stdlib and toolchain, not by module path), other kinds of item, an empty version."""
+    return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and item.name != "go" and version else None
 
 
 class LiveNet:

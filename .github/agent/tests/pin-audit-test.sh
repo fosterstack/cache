@@ -958,11 +958,17 @@ rec = {"affected": [{"package": {"name": "stdlib", "ecosystem": "Go"}, "ranges":
 assert pa.LiveNet._osv_says(rec, "stdlib", "1.27.2", False) is True
 assert pa.LiveNet._osv_says(rec, "stdlib", "1.27.3", False) is False
 seen = []
-net._osv_records = lambda q, paths, strict=False: seen.append(q["package"]["name"]) or {}
+def post(q):   # the request that reaches OSV: a record exists only under the go command's own package toolchain
+    seen.append(q["package"]["name"])
+    return [{"id": "GO-T", "affected": [{"package": {"name": "toolchain", "ecosystem": "Go"}, "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.27.3"}]}]}]}] if q["package"]["name"] == "toolchain" else []
+net._osv_post = post
 net._version_of = lambda i: "1.27.2"
 net._gh_json = lambda *a, **k: []
-net.lists(it)
+gh, osv = net.lists(it)
 assert seen == ["stdlib", "toolchain"], seen   # the go command's records are filed under toolchain
+assert [(r["id"], r["affected"]) for r in osv] == [("GO-T", True)], osv
+net._version_of = lambda i: "1.27.3"
+assert [r["affected"] for r in net.lists(it)[1]] == [False]
 PY
 
 echo "pin-audit: $pass passed, $failn failed"

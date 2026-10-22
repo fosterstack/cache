@@ -1423,6 +1423,17 @@ def go_exemption(root, head):
         starts = [i for i, l in enumerate(lines) if re.match(r"^" + name + r"\(\)", l)]
         if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(want)]] != want:
             return None
+    # GO_VER and gofile are written once, by the reviewed lines, anywhere in any form; no other non-comment line may name a Go archive, go.dev or golang
+    # (a mirror URL held in a variable, a second downloader), and every downloader counts
+    for name in ("GO_VER", "gofile"):
+        if len(re.findall(r"\b" + name + r"[ \t]*\+?=|\b(?:read|printf)\b[^\n;|&]*\b" + name + r"\b|\b(?:declare|typeset|export|readonly|local)\b[^\n;|&]*\b" + name + r"\b", "\n".join(joined))) != 1:
+            return None
+    for i, l in enumerate(joined):
+        if i != fetch[0] and not l.lstrip().startswith("#") and not _GO_FILE.match(l) and not _GO_VER_LINE.match(l) \
+                and re.search(r"go\.dev|go\$\{|\bgo[0-9]+\.[0-9]|\bgofile\b|\bGO_VER\b", l) and re.search(r"https?://|ftp://|\b(?:curl|wget|aria2c|axel|fetch)\b", l):
+            return None
+    if any(re.search(r"\b(?:aria2c|axel|lftpget|fetch)\b", l) and re.search(r"https?://", l) for l in joined):
+        return None
     # every SUM assignment, anywhere on any line, is a pinned row: a literal pattern (no glob), `) SUM=<64 hex> ;;`; any other mention of SUM must only read it
     for l in joined:
         rest = re.sub(r"\$\{SUM\}|\$SUM\b", "", l)
