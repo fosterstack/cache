@@ -21,6 +21,7 @@ posted; the next hourly run retries). Readers return RANKED FINDINGS, never a ve
 (row 51). No vendor or model name appears in any output (row 48): model ids are masked.
 """
 import argparse, html, json, os, re, subprocess, sys
+from html.parser import HTMLParser
 
 SEVERITIES = ("breaks-us", "check", "noise")
 # The reader's whole budget: any reasoning it does before answering counts against it too. 2048
@@ -117,7 +118,6 @@ def is_major(old, new):
 
 
 _DETAILS = re.compile(r"<details(?:\s[^>]*)?>(?:(?!<details[\s>]).)*?</details\s*>", re.S | re.I)
-_DETAILS_TAG = re.compile(r"</?details\b", re.I)
 
 
 def dependabot_summary(body):
@@ -134,36 +134,35 @@ def dependabot_summary(body):
 _FLAG = re.compile(r"breaking|deprecat", re.I)
 
 
-def release_notes_text(body):
-    """(notes, unresolved): what sits INSIDE the body's <details> blocks (Dependabot's copy of the
-    release notes and commit list between old and new), at any nesting depth, and whether a
-    <details> or </details> tag is left over that no block accounts for (unclosed, stray, or
-    otherwise unreadable markup). The text around the blocks is not notes."""
-    s, texts = str(body or ""), []
-    while True:
-        found = _DETAILS.findall(s)
-        if not found:
-            return "\n".join(texts), bool(_DETAILS_TAG.search(s))
-        texts += found
-        s = _DETAILS.sub("", s)
+class _Text(HTMLParser):
+    """The text a reader sees: character data with references decoded, comments left out, tags
+    dropped with nothing put in their place (so `break<b>ing</b>` and `break<!-- x -->ing` read
+    `breaking`)."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
 
-
-_TAG = re.compile(r"<[^>]*>")
-
-
-def rendered_text(markup):
-    """The text a reader sees: tags dropped, character references decoded, tags dropped again (a
-    reference can spell a tag), so `break<b>ing</b>` and `depre&#99;ated` say what they say."""
-    return _TAG.sub("", html.unescape(_TAG.sub("", markup)))
+    def handle_data(self, data):
+        self.parts.append(data)
 
 
 def is_flagged(body):
-    """True when the release notes between old and new say "breaking" or "deprecat" (any case), or
-    when the markup around them cannot be read (an unbalanced <details>: fail toward the readers,
-    never toward auto-merge). A non-major bump so flagged is read by the same two readers as a
-    major (REQ-DEP-001-AC10)."""
-    notes, unresolved = release_notes_text(body)
-    return unresolved or bool(_FLAG.search(rendered_text(notes)))
+    """True when a Dependabot PR body says "breaking" or "deprecat" (any case) anywhere: in the raw
+    body, in the body with character references decoded, or in the rendered text. The release
+    notes and commit list between old and new are the body's <details> blocks, but markup (comments,
+    quoted attributes, code fences, unclosed tags) makes block boundaries unreliable, so the whole
+    body is read and any hit counts: over-flagging only sends a bump to the two readers, never
+    toward auto-merge (tighten-only). A body the parser cannot read is flagged. A non-major so
+    flagged is judged like a major (REQ-DEP-001-AC10)."""
+    raw = str(body or "")
+    try:
+        p = _Text()
+        p.feed(raw)
+        p.close()
+        views = (raw, html.unescape(raw), "".join(p.parts))
+    except Exception:
+        return True
+    return any(_FLAG.search(v) for v in views)
 
 
 def parse_updates(title, body):
@@ -184,6 +183,11 @@ def parse_updates(title, body):
                           "flagged": flagged and not major, "review": major or flagged})
         if found:
             break
+    if not found and flagged:
+        # Flagged, but the update lines cannot be read (markup, an odd title): never silently the patch/minor
+        # lane's. One placeholder so the readers judge the diff; it names no repository, so no notes are fetched.
+        found.append({"name": "(unparsed Dependabot update)", "from": "?", "to": "?", "major": False,
+                      "flagged": True, "review": True})
     return found
 
 

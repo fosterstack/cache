@@ -167,7 +167,7 @@ elif kind == "automerge":
         if "github.event.pull_request.body" not in str((st.get("env") or {}).get("PR_BODY", "")):
             bad.append("the screen does not take the PR body from env PR_BODY")
     guard = [i for i, (s, r) in enumerate(runs(job)) if "required-check-guard.sh" in r]
-    arm = [i for i, (s, r) in enumerate(runs(job)) if re.search(r"gh pr merge --auto --squash", r)]
+    arm = [i for i, (s, r) in enumerate(runs(job)) if re.search(r"gh pr merge --auto --squash", r) and "--disable-auto" not in r]
     if len(arm) != 1:
         bad.append("no single squash auto-merge step")
     elif "--match-head-commit \"$HEAD_SHA\"" not in runs(job)[arm[0]][1] or "github.event.pull_request.head.sha" not in str((steps[arm[0]].get("env") or {}).get("HEAD_SHA", "")):
@@ -279,6 +279,44 @@ case_ automerge $A automerge-failed-screen-keeps-arm bad "[s.__setitem__('if', \
 case_ automerge $A automerge-flagged-no-void bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
 
+# REQ-DEP-003-AC2: the disarm step, run for real against a stub gh. The reviewer arms and then publishes success
+# between the step's two reads: the step must put the arm back for exactly that head, and must not when no success appears.
+if python3 - "$root" "$work" <<'PY'
+import os, subprocess, sys, yaml
+root, work = sys.argv[1], sys.argv[2]
+d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
+run = [s["run"] for s in d["jobs"]["auto-merge"]["steps"] if "gh pr merge --disable-auto" in (s.get("run") or "")][0]
+def go(verdicts):
+    bd = os.path.join(work, "disarm-stub"); os.makedirs(bd, exist_ok=True)
+    log, cnt = os.path.join(bd, "log"), os.path.join(bd, "n")
+    open(log, "w").close(); open(cnt, "w").write("0")
+    open(os.path.join(bd, "gh"), "w").write("""#!/usr/bin/env bash
+echo "gh $*" >> %s
+case "$1 $2" in
+  "pr view") case "$*" in *headRefOid*) echo HEAD1 ;; *autoMergeRequest*) echo true ;; esac ;;
+  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer") n=$(cat %s); echo $((n+1)) > %s
+      v="%s"; set -- $v; shift $n 2>/dev/null; echo "${1:-${@: -1}}" ;;
+esac
+""" % (log, cnt, cnt, " ".join(verdicts)))
+    os.chmod(os.path.join(bd, "gh"), 0o755)
+    env = {**os.environ, "PATH": bd + ":" + os.environ["PATH"], "GH_TOKEN": "x", "PR_URL": "https://example.invalid/pr/1", "HEAD_SHA": "HEAD1", "GITHUB_REPOSITORY": "o/r"}
+    p = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", run], env=env, capture_output=True, text=True)
+    return p.returncode, open(log).read()
+bad = []
+rc, log = go(["none", "success"])
+if rc != 0 or "pr merge --disable-auto" not in log or "pr merge --auto --squash --match-head-commit HEAD1" not in log:
+    bad.append("success landing between the reads: the arm is not put back for HEAD1 (rc %s)\n%s" % (rc, log))
+rc, log = go(["none", "none"])
+if rc != 0 or "pr merge --disable-auto" not in log or "--match-head-commit" in log:
+    bad.append("no success: it must only disarm (rc %s)\n%s" % (rc, log))
+rc, log = go(["success"])
+if rc != 0 or "--disable-auto" in log:
+    bad.append("success at the first read: auto-merge must stand (rc %s)\n%s" % (rc, log))
+print("disarm interleaving: " + ("ok" if not bad else "; ".join(bad)))
+sys.exit(1 if bad else 0)
+PY
+then pass=$((pass+1)); echo "PASS disarm-puts-back-a-meanwhile-approved-arm"; else failn=$((failn+1)); echo "FAIL disarm-puts-back-a-meanwhile-approved-arm"; fi
+
 # REQ-DEP-003-AC2: the screen's heredoc and the reviewer's is_flagged are the same rule. Run the workflow's
 # own code against a corpus (the real Dependabot bodies and written edge cases) and compare.
 if python3 - "$root" <<'PY'
@@ -291,7 +329,7 @@ r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
 corpus = [json.load(open(os.path.join(root, "test-evidence/dependabot-reviewer", "pr-%d.json" % n)))["body"] for n in (99, 91, 124, 90, 400)]
 corpus += ["", "Bumps a from 1.0.0 to 1.1.0.", "x <details>Breaking</details>", "breaking <details>fine</details>",
            "<DETAILS>DEPRECATED</DETAILS>", "<details><summary>a</summary><details>nested deprecates</details></details>",
-           "<details>unclosed breaking", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>break<b>ing</b> change</details>", "<details>depre&#99;ated</details>", "<details>break&lt;b&gt;ing</details>", "<details>&lt;p&gt;Deprecated&lt;/p&gt;</details>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
+           "<details>unclosed breaking", "<details>break<!-- > -->ing</details>", "<details>depre<span title=\">\">cat</span>ed</details>", "<code>&lt;breaking&gt;</code>", "<details><!-- </details> -->Breaking change<!-- <details> --></details>", "```\n<details>deprecated</details>\n```", "plain text, nothing", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>break<b>ing</b> change</details>", "<details>depre&#99;ated</details>", "<details>break&lt;b&gt;ing</details>", "<details>&lt;p&gt;Deprecated&lt;/p&gt;</details>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
 bad = []
 for body in corpus:
     p = subprocess.run(["bash", "-c", run], env={**os.environ, "PR_BODY": body, "GITHUB_OUTPUT": "/dev/stdout"}, capture_output=True, text=True)

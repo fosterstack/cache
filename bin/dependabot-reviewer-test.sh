@@ -85,26 +85,37 @@ check("flagged: 'deprecat' in the notes (Deprecated, DEPRECATION, deprecates)",
 check("flagged: the words in the commit list <details> count too",
       one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><summary>Commits</summary><ul><li>deprecate old</li></ul></details>")[0]["flagged"] is True, "")
 check("not flagged: ordinary notes", one(NOTE % "Fixes a typo")[0]["flagged"] is False, "")
-check("not flagged: the words only OUTSIDE the <details> blocks (not release notes)",
-      one("Bumps x/y from 1.2.0 to 1.3.0. This is not a breaking or deprecated thing.\n<details><summary>Release notes</summary>fine</details>")[0]["flagged"] is False, "")
+check("flagged: the words OUTSIDE the <details> blocks count too (the whole body is read; over-flagging only reaches the readers)",
+      one("Bumps x/y from 1.2.0 to 1.3.0. This is a breaking or deprecated thing.\n<details><summary>Release notes</summary>fine</details>")[0]["flagged"] is True, "")
 check("not flagged: no notes at all (a digest bump)",
       one("Bumps golang from `3f3c01a` to `9e8d7c6`.\n", "Build(deps): bump golang from `3f3c01a` to `9e8d7c6`")[0]["flagged"] is False, "")
 check("flagged: a words-in-nested-details body still flags", 
       one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><summary>a</summary><details><summary>b</summary>breaking</details></details>")[0]["flagged"] is True, "")
-check("flagged (fail toward the readers): an unclosed <details> cannot be read",
-      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><summary>Release notes</summary>fine, no words")[0]["flagged"] is True, "")
-check("flagged: an outer block hiding text next to a nested one (upstream markup)",
-      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>Breaking change<details>fine</details>")[0]["flagged"] is True, "")
+check("unclosed / stray <details> tags without those words are not flagged; with them they are",
+      [one("Bumps x/y from 1.2.0 to 1.3.0.\n%s" % b)[0]["flagged"] for b in ("<details><summary>Release notes</summary>fine", "</details> stray", "<details>unclosed breaking")] == [False, False, True], "")
 check("flagged: <details open> is a block like any other, its words count",
       one("Bumps x/y from 1.2.0 to 1.3.0.\n<details open>Breaking change</details>")[0]["flagged"] is True, "")
 check("not flagged: <details open> with ordinary notes, balanced",
       one("Bumps x/y from 1.2.0 to 1.3.0.\n<details open><summary>s</summary>fine</details>")[0]["flagged"] is False, "")
-check("flagged: a stray closing tag is unreadable markup", one("Bumps x/y from 1.2.0 to 1.3.0.\n</details> stray")[0]["flagged"] is True, "")
-check("flagged: a tag inside the word, a character reference, a reference spelling a tag (what the reader sees)",
-      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>%s</details>" % w)[0]["flagged"] is True
-          for w in ("break<b>ing</b> change", "depre&#99;ated", "BREAK&lt;i&gt;ING", "&lt;p&gt;Deprecated&lt;/p&gt;")), "")
-check("not flagged: tags and references around ordinary words",
-      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><p>Fixes &amp; <b>speed</b></p></details>")[0]["flagged"] is False, "")
+# what the reader sees (round 2): comments, quoted attributes, references, code, fences
+RENDERED = ["break<b>ing</b> change", "depre&#99;ated", "&lt;breaking change&gt;", "break<!-- > -->ing", "depre<span title=\">\">cat</span>ed",
+            "<code>&lt;breaking&gt;</code>", "<!-- </details> -->Breaking change<!-- <details> -->", "```\n<details>deprecated</details>\n```", "DEPRECATION", "BrEaKiNg"]
+check("flagged: every shape of the words a reader sees (tags/comments splitting a word, references, entity-escaped code, fences, case)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>%s</details>" % w)[0]["flagged"] is True for w in RENDERED),
+      [w for w in RENDERED if not one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>%s</details>" % w)[0]["flagged"]])
+check("not flagged: tags, comments and references around ordinary words",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><p>Fixes &amp; <b>speed</b><!-- note --></p></details>")[0]["flagged"] is False, "")
+_T = r._Text
+r._Text = None
+_unreadable = r.is_flagged("x")
+r._Text = _T
+check("a body the parser cannot read is flagged (fail toward the readers)", _unreadable is True, "")
+# a flagged body whose update lines cannot be read is never silently the patch/minor lane's (round 2, seat A)
+u = r.parse_updates("Bump the actions group with 1 update",
+    "Bumps the actions group with 1 update.\n<!-- <details> -->\nUpdates `x/y` from 1.0.0 to 1.1.0\n<details><summary>Release notes</summary>Breaking: removed.</details>\n<!-- </details> -->\n<!-- <details> -->\n")
+check("flagged body with unreadable update lines -> one placeholder to review, major false",
+      len(u) == 1 and u[0]["review"] is True and u[0]["flagged"] is True and u[0]["major"] is False and "unparsed" in u[0]["name"], u)
+check("an unflagged body with no update lines stays empty (the patch/minor lane's)", r.parse_updates("t", "nothing to see") == [], "")
 check("title-only fallback (no body) is not flagged", one("", "Build(deps): bump x/y from 1.2.0 to 1.3.0")[0]["flagged"] is False, "")
 check("review = major or flagged",
       [x["review"] for x in r.parse_updates("t", "Updates `a/b` from 1.0.0 to 2.0.0\nUpdates `c/d` from 1.0.0 to 1.1.0\n<details>breaking</details>")] == [True, True]

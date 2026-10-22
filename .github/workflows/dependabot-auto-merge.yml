@@ -62,18 +62,19 @@ jobs:
           set -euo pipefail
           python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
           import html, os, re
-          D = re.compile(r"<details(?:\s[^>]*)?>(?:(?!<details[\s>]).)*?</details\s*>", re.S | re.I)
-          s, notes = os.environ["PR_BODY"], []
-          while True:
-              found = D.findall(s)
-              if not found:
-                  break
-              notes += found
-              s = D.sub("", s)
-          unresolved = re.search(r"</?details\b", s, re.I) is not None
-          T = re.compile(r"<[^>]*>")
-          text = T.sub("", html.unescape(T.sub("", "\n".join(notes))))
-          print("flagged=" + str(unresolved or re.search(r"breaking|deprecat", text, re.I) is not None).lower())
+          from html.parser import HTMLParser
+          class P(HTMLParser):
+              def __init__(self):
+                  super().__init__(convert_charrefs=True)
+                  self.t = []
+              def handle_data(self, d):
+                  self.t.append(d)
+          raw = os.environ["PR_BODY"]
+          p = P()
+          p.feed(raw)
+          p.close()
+          views = (raw, html.unescape(raw), "".join(p.t))
+          print("flagged=" + str(any(re.search(r"breaking|deprecat", v, re.I) for v in views)).lower())
           PY
 
       - name: majors are the hourly reviewer's, not a human's (register row 75)
@@ -108,11 +109,18 @@ jobs:
           # newer head the reviewer has already approved
           head=$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid)
           [ "$head" = "$HEAD_SHA" ] || echo "this run's head ${HEAD_SHA:0:7} is stale; judging the current head ${head:0:7}"
-          verdict=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
-                      --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last | .conclusion // "none"')
+          lookup() { gh api "repos/${GITHUB_REPOSITORY}/commits/${head}/check-runs?check_name=dependabot-reviewer" \
+                       --jq '[.check_runs[] | select(.app.slug == "fosterstack-automation")] | sort_by(.id) | last | .conclusion // "none"'; }
+          verdict=$(lookup)
           armed=$(gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest != null')
           if [ "$verdict" = success ]; then echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
-          elif [ "$armed" = true ]; then gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
+          elif [ "$armed" = true ]; then
+            gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
+            # The reviewer arms, THEN publishes its success: it may have done both between our two reads. Look again, and
+            # put its arm back for exactly this head (a verdict that lands after this look is the reviewer's own next pass).
+            if [ "$(lookup)" = success ]; then
+              gh pr merge --auto --squash --match-head-commit "$head" "$PR_URL"; echo "the reviewer approved ${head:0:7} meanwhile: its arm is back"
+            fi
           else echo "auto-merge is not armed; nothing to void"; fi
 
       - name: require that main enforces the exact expected check set
