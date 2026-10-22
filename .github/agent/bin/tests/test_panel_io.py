@@ -1471,7 +1471,9 @@ class Wiring(unittest.TestCase):                                            # RE
         inputs = on["workflow_dispatch"]["inputs"]
         self.assertEqual((inputs["panel_probe"]["type"], inputs["panel_probe"]["default"]), ("boolean", False))
         jobs = self.wf["jobs"]
-        self.assertEqual(jobs["audit"]["if"].replace(" ", ""), "${{!inputs.panel_probe}}")   # nothing else runs
+        # nothing else runs: the audit job also survives a failed no-credential govulncheck build (reachability is then recorded "did not run"), never a cancelled run
+        self.assertEqual(jobs["audit"]["if"].replace(" ", ""), "${{!cancelled()&&!inputs.panel_probe}}")
+        self.assertEqual(jobs["govulncheck-build"]["if"].replace(" ", ""), "${{!inputs.panel_probe}}")
         p = jobs["panel-probe"]
         self.assertEqual(p["if"].replace(" ", ""), "${{inputs.panel_probe&&github.ref=='refs/heads/main'}}")
         self.assertEqual((p["environment"], p["permissions"]), ("agent", {"contents": "read", "id-token": "write"}))

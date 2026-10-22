@@ -20,6 +20,11 @@ on:
 permissions:
   contents: read
 
+# One rescan at a time, none cancelled: the scratch package's prune and pushes are not safe to interleave.
+concurrency:
+  group: main-candidate-rescan
+  cancel-in-progress: false
+
 jobs:
   # The candidate build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, no tag and no admission; the callers' grants are a static ceiling (no write but id-token).
   build:
@@ -32,6 +37,116 @@ jobs:
       id-token: write
     with:
       mode: snapshot
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Our OpenVEX as the attestation children of each candidate's index (REQ-REL-010 on the rescan; handoff 0521, owner Oct 20: "this is
+  # the preferred path - it gets us knowing our auditor works for a while before launch"). Docker Scout has applied our statements
+  # only this way (probe 0221, run 37555367665: by tag and by exact index digest); every local-file and daemon-loaded form failed.
+  # An attestation survives only in a registry, so the attested candidates go to the SCRATCH package ghcr.io/fosterstack/cache-scout-probe
+  # (the one package bin/scout-root-cause.sh already writes; never the release package, never any other tag than the attested candidates
+  # and the self-check fixtures), and the same run prunes it to the newest 14 days. Releases are unchanged.
+  vex-attach:
+    name: attach our OpenVEX to each candidate index and push the attested candidates (scratch package)
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # the scratch package only; the token cannot be narrower, the steps below name that one package
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+          path: /tmp/oci/
+      - name: skopeo is on the runner image
+        run: command -v skopeo >/dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
+      - name: log in to GHCR (the scratch package)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      # Condition (b) of the approval: the scratch package holds the newest 14 days of versions, pruned in the run that adds to it. It runs
+      # FIRST, so nothing this run pushes can lose its version to it, and it is strict: a listing that fails (other than "no such package
+      # yet") or a delete that fails fails the job, never a green run that kept old versions.
+      - name: prune the scratch package to the newest 14 days
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          cutoff=$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-14d +%Y-%m-%dT%H:%M:%SZ)   # GNU date on the runner, BSD date on a laptop
+          pkg="orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/cache-scout-probe"
+          # Only the package's own lookup may say "none yet" (HTTP 404); once it exists, any listing failure, a 404 included, fails the job.
+          if vis=$(gh api "${pkg}" --jq .visibility 2>"$RUNNER_TEMP/prune.err"); then
+            echo "== the scratch package ghcr.io/fosterstack/cache-scout-probe: visibility ${vis}; keeping versions updated since ${cutoff}" | tee -a "$GITHUB_STEP_SUMMARY"
+            if ! ids=$(gh api --paginate "${pkg}/versions?per_page=100" --jq ".[] | select(.updated_at < \"${cutoff}\") | .id" 2>"$RUNNER_TEMP/prune.err"); then
+              cat "$RUNNER_TEMP/prune.err" >&2; echo "::error::could not list the scratch package's versions, so it could not be pruned"; exit 1
+            fi
+          elif grep -q "HTTP 404" "$RUNNER_TEMP/prune.err"; then
+            ids=""; echo "no scratch package yet; nothing to prune" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            cat "$RUNNER_TEMP/prune.err" >&2; echo "::error::could not look up the scratch package, so it could not be pruned"; exit 1
+          fi
+          n=0; failed=0
+          for id in ${ids}; do
+            if gh api -X DELETE "${pkg}/versions/${id}" >/dev/null 2>"$RUNNER_TEMP/prune.err"; then n=$((n + 1)); else cat "$RUNNER_TEMP/prune.err" >&2; failed=$((failed + 1)); fi
+          done
+          echo "pruned ${n} scratch version(s) older than 14 days; ${failed} could not be deleted" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "${failed}" -eq 0 ] || { echo "::error::${failed} scratch version(s) older than 14 days could not be deleted"; exit 1; }
+      # Each candidate (an OCI layout of one index, from Build's images artifact) is copied, gets one attestation child per
+      # platform carrying .vex/fosterstack-cache.openvex.json (bin/vex-index.py, REQ-REL-010-AC1/AC3: verify-layout checks the children
+      # and that removing them gives back the built index), is checked as a whole layout and pushed by skopeo with its digests kept: the digest
+      # skopeo reports for the pushed index must be the final index's, or the job fails.
+      - name: attach our OpenVEX to each candidate index and push it
+        run: |
+          set -euo pipefail
+          vex=.vex/fosterstack-cache.openvex.json
+          mkdir -p /tmp/layout /tmp/attach
+          jq -n '{}' > /tmp/attach/digests.json
+          for v in production fips; do
+            d="/tmp/layout/${v}"; rm -rf "${d}"; mkdir -p /tmp/layout
+            cp -R "/tmp/oci/${v}" "${d}"
+            chmod -R go-w "${d}"
+            base=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the archive does not hold exactly one index") end' "${d}/index.json")
+            python3 bin/vex-index.py layout --layout "${d}" --vex "${vex}"
+            final=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the layout does not hold exactly one index") end' "${d}/index.json")
+            python3 bin/vex-index.py verify-layout --layout "${d}" --vex "${vex}" --base-digest "${base}"
+            python3 bin/release-layout.py "${d}" "${final}"
+            tag="cand-${GITHUB_RUN_ID}-${v}"
+            skopeo copy --all --digestfile "/tmp/attach/${v}.pushed" "oci:${d}" "docker://ghcr.io/fosterstack/cache-scout-probe:${tag}"
+            pushed=$(cat "/tmp/attach/${v}.pushed")
+            [ "${pushed}" = "${final}" ] || { echo "::error::the registry took ${pushed} for ${v}, not the final index ${final}"; exit 1; }
+            jq --arg v "${v}" --arg d "${final}" --arg b "${base}" '. + {($v): $d, ($v + "-built"): $b}' /tmp/attach/digests.json > /tmp/attach/next.json
+            mv /tmp/attach/next.json /tmp/attach/digests.json
+            echo "${v}: built ${base}, final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
+          done
+      # The Scout self-check fixtures (rule 4): the pinned debian 12.0 index (public image bytes), plain as the control and with an attestation
+      # of OUR author that covers only CVE-2023-4911, in our published product form. Two tags, pruned like the rest.
+      - name: build the Scout self-check fixtures and push them
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/layout/fixture; mkdir -p /tmp/layout
+          skopeo copy --all docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab oci:/tmp/layout/fixture
+          chmod -R go-w /tmp/layout/fixture
+          jq --arg p "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" '.["@id"] = "https://github.com/fosterstack/cache/scout-selfcheck" | .timestamp = "2026-10-03T00:00:00Z" | .version = 1
+            | .statements = [{"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected",
+                              "justification": "vulnerable_code_not_present", "products": [{"@id": $p}]}]' .vex/fosterstack-cache.openvex.json > /tmp/attach/selfcheck-ours.json
+          before=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the fixture is not one index") end' /tmp/layout/fixture/index.json)
+          skopeo copy --all --digestfile /tmp/attach/before.pushed oci:/tmp/layout/fixture "docker://ghcr.io/fosterstack/cache-scout-probe:selfcheck-before-${GITHUB_RUN_ID}"
+          [ "$(cat /tmp/attach/before.pushed)" = "${before}" ] || { echo "::error::the registry took $(cat /tmp/attach/before.pushed) for the plain fixture, not ${before}"; exit 1; }
+          rm -rf /tmp/layout/fixture-ours; cp -R /tmp/layout/fixture /tmp/layout/fixture-ours
+          python3 bin/vex-index.py layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json
+          final=$(jq -er '.manifests | if length == 1 then .[0].digest else error("not one index") end' /tmp/layout/fixture-ours/index.json)
+          python3 bin/vex-index.py verify-layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json --base-digest "${before}"
+          skopeo copy --all --digestfile /tmp/attach/ours.pushed oci:/tmp/layout/fixture-ours "docker://ghcr.io/fosterstack/cache-scout-probe:selfcheck-ours-${GITHUB_RUN_ID}"
+          [ "$(cat /tmp/attach/ours.pushed)" = "${final}" ] || { echo "::error::the registry took $(cat /tmp/attach/ours.pushed) for the attested fixture, not ${final}"; exit 1; }
+          jq --arg b "${before}" --arg o "${final}" '. + {"fixture-before": $b, "fixture-ours": $o}' /tmp/attach/digests.json > /tmp/attach/next.json && mv /tmp/attach/next.json /tmp/attach/digests.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vex-attach
+          path: /tmp/attach/digests.json
+          if-no-files-found: error
+          retention-days: 1
 
   # ---------------------------------------------------------------------------------------------------------
   # The scanner panel (scanner-panel rules 1-9, ratified Oct 2; REQ-SCAN-001..009). Four scanner jobs, each
@@ -78,19 +193,20 @@ jobs:
 
   panel-scout:
     name: panel — Docker Scout (four images)
-    needs: [build]
+    needs: [build, vex-attach]
     runs-on: ubuntu-latest
     environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
     permissions:
       contents: read
+      packages: read   # the attested candidates in the scratch package, read only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: images
-          path: /tmp/oci/
+          name: vex-attach
+          path: ${{ runner.temp }}/attach
       - name: install docker-scout (pinned by checksum)
         run: |
           set -euo pipefail
@@ -101,105 +217,66 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_SCOUT_TOKEN: ${{ secrets.DOCKERHUB_SCOUT_TOKEN }}
         run: printf '%s' "$DOCKERHUB_SCOUT_TOKEN" | docker login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin
-      # Scout applies only statements whose author --vex-author accepts (default Docker's own): the scan and its self-check
-      # both run bin/scout-vex-scan.sh (our author, GitLab format, local://). The self-check scans the pinned debian 12.0
-      # fixture under our image's name with a VEX of our author covering only a CVE it does not have, then with one covering CVE-2023-4911;
-      # bin/scout-selfcheck.py passes only when exactly that CVE drops and every other finding stays (rule 4,
-      # REQ-SCAN-004-AC2), and refuses an empty or malformed report.
-      # Advisor 0106: which product identifiers does Scout match for our image? A diagnostic — one statement per candidate
-      # form, each on a different CVE the fixture has; it prints which forms Scout applied and never decides the job
-      # (the self-check below does, and keeps the rescan red until our published form is applied: fail closed).
-      - name: Scout product-form probe (rule 4 diagnostic, advisor 0106)
-        # manual dispatch only; its own failures are contained (warning, exit 0) — the self-check decides the job
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          set +e
-          (
-            set -euo pipefail
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq skopeo
-            skopeo copy docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab \
-              docker-daemon:ghcr.io/fosterstack/cache:selfcheck
-            mkdir -p "$RUNNER_TEMP/probe"
-            author=$(jq -er .author .vex/fosterstack-cache.openvex.json)
-            jq -n --arg a "$author" '{"@context": "https://openvex.dev/ns/v0.2.0",
-              "@id": "https://github.com/fosterstack/cache/scout-probe-none", "author": $a, "timestamp": "2026-10-03T00:00:00Z",
-              "version": 1, "statements": [{"vulnerability": {"name": "CVE-1999-0001"}, "status": "not_affected",
-              "justification": "vulnerable_code_not_present", "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]}' \
-              > "$RUNNER_TEMP/probe/none.json"
-            ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/probe/none.json" "$RUNNER_TEMP/probe/before.json"
-            python3 bin/scout-selfcheck.py probe-doc "$RUNNER_TEMP/probe/before.json" "$author" "$RUNNER_TEMP/probe/forms.json"
-            ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/probe/forms.json" "$RUNNER_TEMP/probe/after.json"
-            echo "== Scout's default: which forms are applied" | tee -a "$GITHUB_STEP_SUMMARY"
-            python3 bin/scout-selfcheck.py probe-report "$RUNNER_TEMP/probe/before.json" "$RUNNER_TEMP/probe/after.json" \
-              "$RUNNER_TEMP/probe/forms.json.map" | tee -a "$GITHUB_STEP_SUMMARY"
-            # the same document with --only-vex-affected; the report's delta check also says whether the flag hides
-            # findings no statement covers (then: inconclusive, an uncovered finding disappeared)
-            docker scout cves --format gitlab --vex-location "$RUNNER_TEMP/probe/forms.json" --vex-author '^FosterStack LLC$' \
-              --only-vex-affected local://ghcr.io/fosterstack/cache:selfcheck > "$RUNNER_TEMP/probe/after-only.json"
-            echo "== with --only-vex-affected" | tee -a "$GITHUB_STEP_SUMMARY"
-            python3 bin/scout-selfcheck.py probe-report "$RUNNER_TEMP/probe/before.json" "$RUNNER_TEMP/probe/after-only.json" \
-              "$RUNNER_TEMP/probe/forms.json.map" | tee -a "$GITHUB_STEP_SUMMARY"
-            # advisor 0109, probe 3: statements naming the finding's package (a subcomponent from Scout's own SBOM) and
-            # platform-qualified identifiers — on our local image, then on the same fixture as a registry image
-            docker scout sbom --format json local://ghcr.io/fosterstack/cache:selfcheck > "$RUNNER_TEMP/probe/sbom.json"
-            python3 bin/scout-selfcheck.py probe-doc3 "$RUNNER_TEMP/probe/before.json" "$RUNNER_TEMP/probe/sbom.json" "$author" \
-              ghcr.io/fosterstack/cache selfcheck "$RUNNER_TEMP/probe/forms3.json"
-            ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/probe/forms3.json" "$RUNNER_TEMP/probe/after3.json"
-            echo "== probe 3, local image: package subcomponents and platform" | tee -a "$GITHUB_STEP_SUMMARY"
-            python3 bin/scout-selfcheck.py probe-report "$RUNNER_TEMP/probe/before.json" "$RUNNER_TEMP/probe/after3.json" \
-              "$RUNNER_TEMP/probe/forms3.json.map" | tee -a "$GITHUB_STEP_SUMMARY"
-            reg=registry://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab
-            docker scout cves --format gitlab --vex-location "$RUNNER_TEMP/probe/none.json" --vex-author '^FosterStack LLC$' "$reg" \
-              > "$RUNNER_TEMP/probe/before-r.json"
-            docker scout sbom --format json "$reg" > "$RUNNER_TEMP/probe/sbom-r.json"
-            python3 bin/scout-selfcheck.py probe-doc3 "$RUNNER_TEMP/probe/before-r.json" "$RUNNER_TEMP/probe/sbom-r.json" "$author" \
-              docker.io/library/debian sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab "$RUNNER_TEMP/probe/forms3r.json"
-            docker scout cves --format gitlab --vex-location "$RUNNER_TEMP/probe/forms3r.json" --vex-author '^FosterStack LLC$' "$reg" \
-              > "$RUNNER_TEMP/probe/after-r.json"
-            echo "== probe 3, registry image" | tee -a "$GITHUB_STEP_SUMMARY"
-            python3 bin/scout-selfcheck.py probe-report "$RUNNER_TEMP/probe/before-r.json" "$RUNNER_TEMP/probe/after-r.json" \
-              "$RUNNER_TEMP/probe/forms3r.json.map" | tee -a "$GITHUB_STEP_SUMMARY"
-          )
-          rc=$?
-          set -e
-          mkdir -p /tmp/panel && cp -r "$RUNNER_TEMP/probe" /tmp/panel/scout-probe 2>/dev/null || true   # the raw probe files, in the job's artifact
-          [ "$rc" = 0 ] || echo "::warning::the Scout probe could not finish (exit ${rc}); the self-check below decides the job"
-          echo "Until our published form is applied, the self-check keeps this rescan red (fail closed, rule 4)." >> "$GITHUB_STEP_SUMMARY" || true
-          exit 0
-      - name: Scout applies a statement by our author to our image name (rule 4 self-check)
+      - name: log in to GHCR (read only, the scratch package)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+      # Scout applies a statement only when its author matches --vex-author (default Docker's own) AND only through the index's
+      # attestation (every local form failed, Oct 3-6). The self-check scans the pinned debian fixture twice by exact index digest,
+      # plain and with our attestation covering only CVE-2023-4911 (built by the vex-attach job in the registry); bin/scout-selfcheck.py
+      # passes only when exactly that CVE drops and every other finding stays (rule 4, REQ-SCAN-004-AC2), and refuses an empty or
+      # malformed report. A red self-check keeps the rescan red (fail closed): Scout never scans the candidates behind it.
+      - name: Scout applies our attestation to a fixture index (rule 4 self-check)
         run: |
           set -euo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
-          skopeo copy docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab \
-            docker-daemon:ghcr.io/fosterstack/cache:selfcheck
+          before=$(jq -er '."fixture-before"' "$RUNNER_TEMP/attach/digests.json")
+          after=$(jq -er '."fixture-ours"' "$RUNNER_TEMP/attach/digests.json")
           mkdir -p "$RUNNER_TEMP/selfcheck"
-          vex() {   # <statements json> <out>: a VEX document of our author
-            jq -n --arg a "$(jq -er .author .vex/fosterstack-cache.openvex.json)" --argjson s "$1" '{"@context": "https://openvex.dev/ns/v0.2.0",
-              "@id": "https://github.com/fosterstack/cache/scout-selfcheck", "author": $a, "timestamp": "2026-10-03T00:00:00Z",
-              "version": 1, "statements": $s}' > "$2"
-          }
-          # "none": one statement for a CVE the fixture does not have (a VEX file with no statement may not be valid OpenVEX)
-          vex '[{"vulnerability": {"name": "CVE-1999-0001"}, "status": "not_affected", "justification": "vulnerable_code_not_present",
-                 "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]' "$RUNNER_TEMP/selfcheck/none.json"
-          vex '[{"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected", "justification": "vulnerable_code_not_present",
-                 "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}]' "$RUNNER_TEMP/selfcheck/one.json"
-          ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/selfcheck/none.json" "$RUNNER_TEMP/selfcheck/before.json"
-          ./bin/scout-vex-scan.sh ghcr.io/fosterstack/cache:selfcheck "$RUNNER_TEMP/selfcheck/one.json" "$RUNNER_TEMP/selfcheck/after.json"
-          docker image rm ghcr.io/fosterstack/cache:selfcheck >/dev/null
+          docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${before}" > "$RUNNER_TEMP/selfcheck/before.json"
+          docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${after}" > "$RUNNER_TEMP/selfcheck/after.json"
           python3 bin/scout-selfcheck.py "$RUNNER_TEMP/selfcheck/before.json" "$RUNNER_TEMP/selfcheck/after.json" CVE-2023-4911
-      - name: Docker Scout every image, given our VEX (rule 4)
+      - name: Docker Scout every image, given our VEX as the index's attestation (rule 4)
         run: |
           set -uo pipefail
           for v in production fips; do
+            dig=$(jq -er --arg v "${v}" '.[$v]' "$RUNNER_TEMP/attach/digests.json") || { echo "::warning::no attested digest for ${v} (the tally counts both its images as did not run)"; continue; }
             for arch in amd64 arm64; do
-              ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
-              docker scout sbom --format json "local://${ref}" > "${d}/sbom.json" \
-                && ./bin/scout-vex-scan.sh "${ref}" .vex/fosterstack-cache.openvex.json "${d}/cves.json" \
+              d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
+              docker scout sbom --format json --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/sbom.json" \
+                && docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform "linux/${arch}" "registry://ghcr.io/fosterstack/cache-scout-probe@${dig}" > "${d}/cves.json" \
                 || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
             done
           done
+      # What the first runs must tell us (handoff 0521 read-back, 5a and 5b): does Scout honor the attestation per platform of an index
+      # (5a), by tag as well as by digest? Printed to the job summary, never deciding the job.
+      - name: Scout attestation diagnostics (REQ-REL-010-AC6; printed, never decides)
+        run: |
+          set +e
+          (
+            set -uo pipefail
+              before=$(jq -er '."fixture-before"' "$RUNNER_TEMP/attach/digests.json")
+            ours=$(jq -er '."fixture-ours"' "$RUNNER_TEMP/attach/digests.json")
+            mkdir -p "$RUNNER_TEMP/diag"
+            n() { jq '[.vulnerabilities[]?.identifiers[]?.value] | length' "$1"; }
+            has() { jq --arg c CVE-2023-4911 '[.vulnerabilities[]?.identifiers[]?.value] | any(. == $c)' "$1"; }
+            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${before}" > "$RUNNER_TEMP/diag/before.json"
+            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe@${ours}" > "$RUNNER_TEMP/diag/ours-amd64.json"
+            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/arm64 "registry://ghcr.io/fosterstack/cache-scout-probe@${ours}" > "$RUNNER_TEMP/diag/ours-arm64.json"
+            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' "registry://ghcr.io/fosterstack/cache-scout-probe@${ours}" > "$RUNNER_TEMP/diag/ours-noplatform.json"
+            docker scout cves --format gitlab --vex-author '^FosterStack LLC$' --platform linux/amd64 "registry://ghcr.io/fosterstack/cache-scout-probe:selfcheck-ours-${GITHUB_RUN_ID}" > "$RUNNER_TEMP/diag/ours-tag.json"
+            {
+              echo "== 5a/5b: Scout and our attestation on the debian fixture (CVE-2023-4911 present before: $(has "$RUNNER_TEMP/diag/before.json"), $(n "$RUNNER_TEMP/diag/before.json") findings)"
+              echo "- our product form, amd64 platform, exact digest: CVE kept=$(has "$RUNNER_TEMP/diag/ours-amd64.json"), findings $(n "$RUNNER_TEMP/diag/ours-amd64.json")"
+              echo "- our product form, arm64 platform, exact digest: CVE kept=$(has "$RUNNER_TEMP/diag/ours-arm64.json"), findings $(n "$RUNNER_TEMP/diag/ours-arm64.json")"
+              echo "- our product form, no --platform, exact digest: CVE kept=$(has "$RUNNER_TEMP/diag/ours-noplatform.json"), findings $(n "$RUNNER_TEMP/diag/ours-noplatform.json")"
+              echo "- our product form, by tag: CVE kept=$(has "$RUNNER_TEMP/diag/ours-tag.json"), findings $(n "$RUNNER_TEMP/diag/ours-tag.json")"
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          )
+          rc=$?
+          set -e
+          mkdir -p /tmp/panel && cp -r "$RUNNER_TEMP/diag" /tmp/panel/scout-diag 2>/dev/null || true   # the raw reports, in the job's artifact
+          [ "$rc" = 0 ] || echo "::warning::the Scout attestation diagnostics could not finish (exit ${rc}); the self-check above decides the job"
+          exit 0
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
         with:
