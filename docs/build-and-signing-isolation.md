@@ -13,7 +13,7 @@ A GitHub-hosted job runs on its own virtual machine. GitHub documents it this wa
 | Rebuild ([stage-reproducibility.yml](../.github/workflows/stage-reproducibility.yml)) | `apk`, one job per architecture; `assemble` | the same two steps, rebuilt from the same commit | no stored secret; the identity token Witness needs |
 | Sign ([stage-sign.yml](../.github/workflows/stage-sign.yml)) | `sign` | the provenance signature | the identity token cosign needs; builds nothing |
 | Check ([stage-verify.yml](../.github/workflows/stage-verify.yml)) | `check`, `check-arm64` | scanners and acceptance on Build's images | the identity token Witness needs; builds nothing |
-| Release ([stage-promote.yml](../.github/workflows/stage-promote.yml)) | `compare` | the byte comparison of Build's and Rebuild's apks | contents read only: no secret, no environment, no identity token |
+| Release ([stage-promote.yml](../.github/workflows/stage-promote.yml)) | `compare` | the comparison of Build's and Rebuild's apks (their control and data sections; the signature of each is checked against the committed key) | contents read only: no secret, no environment, no identity token |
 | Release | `verify` | verification of every earlier stage's record | the identity token Witness needs |
 | Release | `release` | signing and publishing | the apk signing key, the registry credentials, write permissions (environment `release`) |
 
@@ -25,10 +25,10 @@ Jobs pass files as workflow artifacts. Build writes a digest list and a signed W
 
 ## 3. The signing key and the signing identities
 
-- **The apk signing key** exists only as a secret of the `release` environment. Of the whole workflow, only the step `release-apks` of the job `release` receives it ([stage-promote.yml](../.github/workflows/stage-promote.yml), [release-apks.sh](../bin/release-apks.sh)). The registry credentials reach only the publish and sign steps.
-- **The release job receives only Build's exact artifacts.** It never downloads an apk or image that Rebuild made. Each apk it signs must first have exactly the digest Build attested ([release-apks.sh](../bin/release-apks.sh)).
+- **The apk signing key** is stored as a secret of the `release` environment, and the workflows hand it to exactly one step: `release-apks` of the job `release` ([stage-promote.yml](../.github/workflows/stage-promote.yml), [release-apks.sh](../bin/release-apks.sh)). The registry credentials reach only the publish and sign steps.
+- **The release job receives no apk or image that Rebuild made.** What it signs and publishes is Build's exact artifacts; beside them it receives only the earlier stages' records (Build, Sign, Rebuild, Check), Check's results and the small comparison result. Each apk it signs must first have exactly the digest Build attested ([release-apks.sh](../bin/release-apks.sh)).
 - **The Rebuild comparison runs in a job with no secrets and no identity token** (`compare`, [stage-promote.yml](../.github/workflows/stage-promote.yml), [release-compare.py](../bin/release-compare.py)). The only thing that leaves it is a small result file, which `verify` and `release` read; `verify` accepts it only as a pass for the apk digests Build attested ([chain-verify.py](../bin/chain-verify.py), command `apk-compare`).
-- **Keyless signatures** (provenance, images, the release policy) are made with short-lived certificates bound to the identity of the workflow job that asks for them, and are recorded in a public transparency log. The Sign stage and the release job each have their own identity; a build job cannot mint a certificate that carries either of them.
+- **Keyless signatures** (provenance in [stage-sign.yml](../.github/workflows/stage-sign.yml); images and the release policy in [release-sign.sh](../bin/release-sign.sh), run by the release job) are made with short-lived certificates bound to the identity of the workflow job that asks for them, and are recorded in a public transparency log. The Sign stage and the release job each have their own identity; a build job cannot mint a certificate that carries either of them.
 
 ## 4. What these practices serve
 
