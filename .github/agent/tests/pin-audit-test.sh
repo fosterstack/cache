@@ -1117,5 +1117,34 @@ else:
     raise SystemExit("an unrelated error of a listed revision was swallowed")
 PY
 
+# --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key. A skipped revision must never be remembered under that key (seat A and
+# seat B of cache#520: the cases above never share a tree, so a memo that stored skipped revisions as empty passed them all).
+r="$work/r-oversize-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+oversize_ci "$SHA2" 4100; SH_X=$(commit_at 60 "oversize X")
+oversize_ci "$SHA1" 0;    SH_M=$(commit_at 40 "readable M")
+oversize_ci "$SHA2" 4100; SH_Y=$(commit_at 20 "oversize Y (the same tree as X)")
+oversize_ci "$SHA1" 0;    SH_R1=$(commit_at 10 "readable R1")
+oversize_ci "$SHA4" 0;    SH_Q=$(commit_at 8 "readable Q")
+oversize_ci "$SHA1" 0;    SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
+CASE="oversize history, shared tree: listing one of two revisions that share an unreadable tree never lets the other, unlisted one pass (a skip is not remembered under the tree key), in both orders"
+check python3 - "$aud" "$r" "$SH_X" "$SH_Y" <<PY
+$OVPY
+for listed in (sys.argv[3], sys.argv[4]):
+    items, err = hist({listed: "only one of the pair"})
+    assert items is None and "command line of" in err, (listed, items, err)
+items, err = hist({sys.argv[3]: "x", sys.argv[4]: "y"})
+assert err is None, err
+PY
+CASE="oversize history, shared tree: a listed revision whose tree was already read from a readable revision is read normally, in both orders (the list never hides a readable revision's pins)"
+check python3 - "$aud" "$r" "$SH_M" "$SH_R1" "$SH_R2" "$SH_X" "$SH_Y" "$SHA1" <<PY
+$OVPY
+both = {sys.argv[6]: "x", sys.argv[7]: "y"}
+for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
+    items, err = hist({**both, listed: "readable but listed"})
+    assert err is None, err
+    assert sys.argv[8] in " ".join(repr(k) for k in items)
+PY
+
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
