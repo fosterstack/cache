@@ -120,10 +120,17 @@ check("flagged: combined link, reference and formatting forms (round 5)",
       [w for w in MDCOMBO if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
 MDEXO = ["[Break][ref\\]*x]**ing** change\n\n[ref\\]*x]: https://example.invalid", "[Break][r\\] x]**ing** change\n\n[r\\] x]: https://example.invalid",
          "[Depre][r\\] x]**cated**\n\n[r\\] x]: https://e.invalid", "[Break](<#a)/b>)**ing** change", "[Depre](<../a)/b>)*cat*ed", "[Break][r&#93; x]**ing**\n\n[r&#93; x]: u",
-         "[Break][r&#x5d; x]**ing**", "[Break][r&rbrack; x]**ing**"]
+         "[Break][r&#x5d; x]**ing**", "[Break][r&rbrack; x]**ing**",
+         "[Break](a&#41;b)<em>ing</em>", "[Break](a&#x29;b)<b>ing</b>", "[Break](a&rpar;b)**ing**", "[Depre](a&#0041;b)<i>cat</i>ed", "[Break](a&#40;b)<em>ing</em>", "[Break](a&lpar;b)<em>ing</em>",
+         "[Break](a&#X29;b)<em>ing</em>", "[Break](a&#x0029;b)<em>ing</em>", "[Break](a&#00000041;b)<em>ing</em>", "[Break](a&#41b)<em>ing</em>", "[Break](a&RPAR;b)<em>ing</em>",
+         "[Break](a&Rpar;b)<em>ing</em>", "[Depre](a&#x29;b)*cat*ed", "[Break](a&#9;b)<em>ing</em>", "[Break](a&Tab;b)<em>ing</em>", "[Break](a&amp;b)<em>ing</em>"]
 check("flagged: escaped or encoded brackets and <angle> destinations are unresolved link syntax and flagged (round 6, the class closed)",
       all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDEXO),
       [w for w in MDEXO if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
+check("not flagged: a URL's &key=value (Dependabot's own badge URL) is not a character reference",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n\n[![c](https://example.invalid/badge?dependency-name=x%2Fy&package-manager=github_actions&previous-version=1.2.0&new-version=1.3.0)](https://example.invalid/docs)")[0]["flagged"] is False, "")
+check("a body with a character reference but NO link syntax is judged on its words alone (no blanket flag)",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>Fixes &amp; speeds up &lt;things&gt;</details>")[0]["flagged"] is False, "")
 check("not flagged: real Dependabot bodies #90, #91, #124 still pass the closed class", not any(r.is_flagged(json.load(open(os.path.join(FIX, "pr-%d.json" % n)))["body"]) for n in (90, 91, 124)), "")
 check("not flagged: Markdown links with ordinary words, nested parentheses and titles",
       one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\nSee [the docs](https://e.invalid/a(b)/c \"a title\") and [more][ref] for **details**.\n\n[ref]: https://e.invalid\n\n</details>")[0]["flagged"] is False, "")

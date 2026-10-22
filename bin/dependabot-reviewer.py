@@ -134,6 +134,8 @@ def dependabot_summary(body):
 _FLAG = re.compile(r"breaking|deprecat", re.I)
 _MDADJ = re.compile(r"[A-Za-z0-9]\[|\][A-Za-z0-9]|\]\([^\n]*\)[A-Za-z0-9]|\]\[[^\]\n]*\][A-Za-z0-9]")
 _MDEXOTIC = re.compile(r"\\[\[\]]|\]\(\s*<|&(?:#0*(?:91|93)|#x0*(?:5b|5d)|lbrack|rbrack|lsqb|rsqb);", re.I)
+_MDLINK = re.compile(r"\]\(|\]\[|\]:")
+_CHARREF = re.compile(r"&(?:#|[A-Za-z][A-Za-z0-9]*;)")
 _MDLABEL = re.compile(r"\]\[[^\]]*\]")
 _MDDEF = re.compile(r"(?m)^ {0,3}\[[^\]\n]+\]:.*$")
 
@@ -183,7 +185,7 @@ def is_flagged(body):
     each of those the letters and digits only, also with Markdown link targets (balanced parentheses, with and without a quoted title),
     reference labels and reference definitions removed first, so formatting, links and references between a word's pieces vanish. A body
     the parser cannot read, an unterminated link target, a word character touching link syntax, an escaped or encoded bracket, an <angle> destination,
-    or link syntax left over after every reduction is flagged (fail toward the readers: the class is closed, not enumerated).
+    any character reference in a body that has link syntax, or link syntax left over after every reduction is flagged (fail toward the readers: the class is closed, not enumerated).
     A non-major so flagged is judged like a major (REQ-DEP-001-AC10)."""
     raw = str(body or "")
     try:
@@ -193,6 +195,8 @@ def is_flagged(body):
         views = (raw, html.unescape(raw), "".join(p.parts))
         if _MDADJ.search(raw) or _MDEXOTIC.search(raw):   # link syntax this check does not resolve: an escaped bracket, an <angle> destination, an encoded bracket
             return True
+        if _MDLINK.search(raw) and _CHARREF.search(raw):   # a character reference (numeric in any spelling, or named with ';'; a URL's &key=value is not one) in a body that has
+            return True                                    # link syntax can spell a bracket or parenthesis of the destination: not resolved here, the readers decide
         more = []
         for v in views:
             more.append(v)
