@@ -160,7 +160,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "36562fe16ffe895cb2026ddd641c971f49b46c1b3c2a3118fdb88444f3c2c391"   # take 25: - main's two suppression/set-01 fixture patterns (.snyk and osv-scanner.toml, PR 2b-2c), the only script change against chain-v030; take 20: + main's ^bin/scout-older-versions(\.sh|-test\.sh)$ pattern (advisor 0520), the only script change outside the region; before: the merge of main and chain-v030 (+ the two loopback-get patterns, REQ-SUP-001-AC24): the script text outside the region is the union of both sides' changes (take 12)
+PINNED_SHA256 = "e5a3d0de17d27b38f9d2c4eb082ea625268138a69c1e65e3b9337d2b97d6b751"   # compare job: bin/release-compare.sh and bin/release-compare.py join the existing Release script alternations (no new pattern line); take 25: - main's two suppression/set-01 fixture patterns (.snyk and osv-scanner.toml, PR 2b-2c), the only script change against chain-v030; take 20: + main's ^bin/scout-older-versions(\.sh|-test\.sh)$ pattern (advisor 0520), the only script change outside the region; before: the merge of main and chain-v030 (+ the two loopback-get patterns, REQ-SUP-001-AC24): the script text outside the region is the union of both sides' changes (take 12)
 if rstart and rend:
     import hashlib
     _b = _rawlines
