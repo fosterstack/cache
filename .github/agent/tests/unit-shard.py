@@ -79,7 +79,7 @@ class Result(unittest.TextTestResult):
             return
         # a skip raised by setUpClass / setUpModule: unittest names the class or module and never starts the tests under it, so each
         # of them gets its SKIP line here (else the sum check would see them as missing)
-        m = re.search(r"\((.+)\)$", test.id())
+        m = re.fullmatch(r"setUp(?:Class|Module) \((.+)\)", test.id())   # a tearDown skip comes after the tests finished: they already have their line
         if m:
             for cname, ids in self.groups.items():
                 if cname == m.group(1) or cname.startswith(m.group(1) + "."):
