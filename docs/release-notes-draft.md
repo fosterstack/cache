@@ -1,6 +1,6 @@
 # DRAFT release notes for the next release (not published)
 
-This is a draft for the owner to read rendered. Nothing here is a release, a tag or a claim until he says so. The text between the two rules is what would become the release body; the section after it is for the owner and is deleted before anything is published. Claims about the release chain are written for the case where the chain's landing pull request is merged first.
+This is a draft for the owner to read rendered. Nothing here is a release, a tag or a claim until he says so. The text between the two rules is what would become the release body; the section after it is for the owner and is deleted before anything is published. Claims about the release chain and about the platforms are written for the state after the chain's landing pull request (cache#359) is merged: on `main` today the release definition still lists six archives including macOS, and the chain branch changes it to the four Linux archives (REQ-PLAT-001-AC1 there). If the chain does not land first, the platform bullet and the isolation section do not apply.
 
 ---
 
@@ -23,7 +23,7 @@ Upgrade by pulling the new tag or `:latest`.
 
 ### Building and signing, in plain words
 
-Every build step runs as its own job, and each job runs on a fresh virtual machine that GitHub provides and then discards. The key that signs the packages exists in one place only, the release job's environment, and only one step in it receives the key. That job is handed only the exact files the build made, never the files from the second, independent rebuild. The comparison between the build and the rebuild runs in a job that holds no secrets and has no permission to publish. Signatures on the images and archives use short-lived certificates tied to the workflow that made them.
+Each build (one per architecture, and the assembly of the images) runs as its own job, and each job runs on a fresh virtual machine that GitHub provides and then discards. The key that signs the packages exists in one place only, the release job's environment, and only one step in it receives the key. That job is handed only the exact files the build made, never the files from the second, independent rebuild. The comparison between the build and the rebuild runs in a job that holds no secrets and has no permission to publish. Signatures on the images and archives use short-lived certificates tied to the workflow that made them.
 
 This is designed to meet the build-isolation asks of SLSA, NIST SP 800-53 Rev. 5 and Executive Order 14028 with its NIST guidance; we claim no certification. The page `docs/build-and-signing-isolation.md` names the specific controls and lists the known gaps.
 
