@@ -333,7 +333,9 @@ jobs:
           set -euo pipefail
           sudo ./bin/install-build-tools.sh apko /usr/local/bin
           sudo chown "$(id -un)" /usr/local/bin
-          GOTOOLCHAIN=local GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1
+          # crane is the installer's checksum-pinned release binary: nothing is compiled in this job, which holds the auditor App's key
+          # (REQ-REL-011-AC1)
+          ./bin/install-scanner.sh crane /usr/local/bin
 
       - name: log in to our registry with the job's own token
         env:
