@@ -625,7 +625,7 @@ class Deliver(Tmp):
         vex = json.load(open(os.path.join(self.repo, P.VEX)))
         st = vex["statements"][0]
         self.assertEqual((st["status"], st["justification"], vex["version"]), ("not_affected", "component_not_present", 4))
-        self.assertEqual(st["products"][0]["subcomponents"], [{"@id": "pkg:deb/debian/tzdata@1"}])
+        self.assertEqual(st["products"][0]["subcomponents"], [{"@id": "pkg:generic/tzdata@1"}])   # the form the release generators accept (S3)
         for c in cmds:                                                         # no vendor or model name anywhere
             self.assertIsNone(P.VENDOR_WORDS.search(" ".join(c)))
 
@@ -1358,6 +1358,71 @@ class CarryForward(Tmp):
 
 sys.path.insert(0, os.path.join(BIN, "..", "fixtures", "testlib"))
 import pyyaml as yaml  # noqa: E402  (vendored, test-only)
+
+
+class VexRepresentable(unittest.TestCase):   # REQ-SCAN-009-AC1, REQ-SCAN-010-AC1, REQ-SCAN-010-AC2 (chain-v030 review S3)
+    """What the auditor proposes must be something the release generators (bin/vex-forms.py) accept: a distro package URL is written as the
+    generic package URL of its name and version (qualifiers, distro namespace and type dropped, as the panel and the gate already match), and a
+    package the forms cannot represent is not proposed at all (no blanket statement, no statement that stops release generation)."""
+
+    def forms(self):
+        spec = importlib.util.spec_from_file_location("vex_forms_s3", os.path.join(REPO, "bin", "vex-forms.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def images(self):
+        n = iter(range(1, 99))
+        d = lambda: "sha256:" + ("%064x" % next(n))
+        return {v: {"index": d(), "children": {"linux/amd64": d(), "linux/arm64": d()}} for v in ("production", "fips")}
+
+    def write(self, purls_list):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, ".vex"))
+        json.dump({"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://x/vex", "statements": [], "version": 1},
+                  open(os.path.join(root, P.VEX), "w"))
+        vex = [{"image": "production-amd64", "id": "CVE-2099-%04d" % i, "package": "x", "version": "1.2.3", "status": "not_affected",
+                "purls": purls, "impact_statement": "absent"} for i, purls in enumerate(purls_list, 1)]
+        P.apply_files(root, {"version": 1}, {"vex": vex, "profiles": []}, "2026-10-22")
+        return json.load(open(os.path.join(root, P.VEX)))
+
+    def test_vex_package_turns_a_distro_purl_into_its_generic_name_and_version(self):
+        f = P.vex_package
+        self.assertEqual(f("pkg:apk/wolfi/example@1.2.3?arch=amd64"), "pkg:generic/example@1.2.3")
+        self.assertEqual(f("pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1?distro=debian-12&arch=all"), "pkg:generic/tzdata@2026c-0%2Bdeb12u1")
+        self.assertEqual(f("pkg:rpm/redhat/openssl@3.0.7"), "pkg:generic/openssl@3.0.7")
+        self.assertEqual(f("pkg:generic/busybox@1.37.0"), "pkg:generic/busybox@1.37.0")
+
+    def test_vex_package_refuses_what_the_forms_cannot_represent(self):
+        for bad in ("pkg:golang/github.com/acme/busybox@v1.0.0", "pkg:npm/foo@1.0.0", "pkg:apk/wolfi/example", "pkg:apk/wolfi/example@",
+                    "pkg:apk/wolfi/a/b@1", "pkg:generic/ns/x@1", "pkg:apk/wolfi/example@1#sub", "not a purl", "", None, "pkg:apk//x@1"):
+            self.assertIsNone(P.vex_package(bad), bad)
+
+    def test_a_proposal_with_qualified_distro_purls_passes_the_release_generators(self):
+        doc = self.write([["pkg:apk/wolfi/example@1.2.3?arch=amd64"], ["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1?distro=debian-12"],
+                          ["pkg:apk/wolfi/example@1.2.3?arch=amd64", "pkg:apk/wolfi/example@1.2.3?arch=arm64"]])
+        V = self.forms()
+        subs = [[x["@id"] for x in st["products"][0]["subcomponents"]] for st in doc["statements"]]
+        self.assertEqual(subs, [["pkg:generic/example@1.2.3"], ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"], ["pkg:generic/example@1.2.3"]])
+        out = V.inspector(doc, self.images(), "0.3.0")        # raises ValueError "cannot be represented" before the fix
+        self.assertEqual(len(out["filters"]), 3)
+        V.csaf(doc, self.images(), "0.3.0")
+
+    def test_a_package_the_forms_cannot_represent_is_not_proposed_and_the_owner_hears_of_it(self):
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        f = {"image": "production-amd64", "id": "CVE-2099-0100", "package": "jwt", "version": "v1.0.0",
+             "purls": ["pkg:golang/github.com/acme/jwt@v1.0.0"]}
+        self.assertEqual(P.vex_package(f["purls"][0]), None)
+        self.assertEqual(P.vex_subcomponents(f["purls"]), None)
+        self.assertEqual(P.vex_subcomponents(["pkg:apk/wolfi/example@1.2.3", "pkg:npm/foo@1"]), None)    # one unrepresentable purl refuses the set
+        self.assertEqual(P.vex_subcomponents([]), None)                                                  # never a blanket statement
+
+    def test_the_statement_id_is_stable_across_qualifier_variants_of_one_package(self):
+        a = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.3?arch=amd64"]})
+        b = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.3?arch=arm64"]})
+        c = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.4?arch=amd64"]})
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, c)
 
 
 class Wiring(unittest.TestCase):                                            # REQ-SCAN-008-AC10, REQ-SCAN-009-AC5

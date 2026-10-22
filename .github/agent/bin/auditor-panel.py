@@ -493,7 +493,12 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
             quotes = r["proof"]       # only quotes vote() validated against the image, never an answer's raw text
             elsewhere = [img for img in images if not _not_in_image(bundles, f, img)]
             purls = purls_for(f)
-            if purls and images and not elsewhere:
+            if purls and vex_subcomponents(purls) is None:
+                false_mem[k]["vex"] = False
+                out["owner"].append("Scanner panel: %s on %s (%s %s) was judged not affected with evidence, but its package identity (%s) is not a form "
+                                    "the release's VEX forms can represent, so no VEX statement was written: %s" %
+                                    (f["id"], f["image"], f["package"], f["version"], ", ".join(purls)[:200], "; ".join(quotes)[:300]))
+            elif purls and images and not elsewhere:
                 out["vex"].append(dict(_ident(f), status="not_affected", purls=purls,
                                        impact_statement="Audited from the images: " + "; ".join(quotes)[:500]))
             elif purls:
@@ -1096,10 +1101,32 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
     return 0
 
 
+_DISTRO_PURL = re.compile(r"pkg:(?:deb|rpm|apk|alpm)/[^/@?#]+/([^/@?#]+)@([^?#]+)(?:\?[^#]*)?")
+_GENERIC_PURL = re.compile(r"pkg:generic/([^/@?#]+)@([^?#]+)")
+
+
+def vex_package(purl):
+    """The one package-URL form the release generators (bin/vex-forms.py: Inspector rules and CSAF) accept for a VEX subcomponent: pkg:generic/<name>@<version>,
+    or None when the purl cannot be written that way. A distro package (deb, rpm, apk, alpm) loses its type, its distro namespace and its qualifiers
+    (arch, distro: the scanners and the gate already match a package by name and version alone); the version keeps its encoding. Any other type
+    (a Go module, npm: no distro namespace to drop, so the name would widen), a missing version, a subpath or a nested name is None. chain-v030 review S3."""
+    if not isinstance(purl, str):
+        return None
+    m = _DISTRO_PURL.fullmatch(purl) or _GENERIC_PURL.fullmatch(purl)
+    return "pkg:generic/%s@%s" % (m.group(1), m.group(2)) if m else None
+
+
+def vex_subcomponents(purls):
+    """The sorted, de-duplicated generic subcomponents of a statement, or None when there is none or any purl cannot be written that way:
+    a statement with no subcomponents would cover the whole image, so an empty set is never proposed."""
+    subs = [vex_package(p) for p in purls or []]
+    return sorted(set(subs)) if subs and None not in subs else None
+
+
 def statement_id(v):
     """The statement's scope: the repository's product (every image — written only when every image's evidence shows
-    the package absent at that version) narrowed to the exact package purls (REQ-AUD-13 scope ids)."""
-    return policy.scope_id(v["id"], policy.VEX_PRODUCT, v.get("purls") or [])
+    the package absent at that version) narrowed to the exact package purls (REQ-AUD-13 scope ids), as the VEX writes them."""
+    return policy.scope_id(v["id"], policy.VEX_PRODUCT, vex_subcomponents(v.get("purls")) or v.get("purls") or [])
 
 
 def apply_files(root, st, day, today):
@@ -1117,9 +1144,12 @@ def apply_files(root, st, day, today):
         doc = _load_json(vpath)
         ts = "%sT00:00:00Z" % today
         for v in day["vex"]:
-            subs = [{"@id": p} for p in v.get("purls") or []]
             sid = statement_id(v)
             if v["status"] == "not_affected":
+                names = vex_subcomponents(v.get("purls"))
+                if names is None:
+                    continue                        # not a form the release generators accept: never written (apply_day does not propose it)
+                subs = [{"@id": p} for p in names]
                 if any(stmt.get("@id") == sid for stmt in doc["statements"]):
                     continue                        # the same scope is stated once
                 doc["statements"].append({
