@@ -21,7 +21,7 @@ ADM = os.path.join(root, "bin/admission-tag-signer.py")
 PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 ALLOWED_ACTIONS = ("actions/checkout", "actions/upload-artifact")
 
-CANONICAL_RUNS = {'pin-age': 'set -uo pipefail\nstatus=0\npython3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} || status=1\n# the advisor\'s rulings come from the base branch too: a pull request must not bring its own\nexceptions=trusted/.github/supply-chain-exceptions.json\nif [ ! -f "$exceptions" ]; then\n  exceptions="$RUNNER_TEMP/no-exceptions.json"\n  echo \'{"exceptions": []}\' > "$exceptions"\nfi\npython3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base ${{ github.event.pull_request.base.sha }} --head ${{ github.event.pull_request.head.sha }} --exceptions "$exceptions" --report-only || status=1\nexit $status\n', 'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py --observations-out "$RUNNER_TEMP/tag-observations/state.json"', 'rerun-held': 'python3 .github/agent/supply-chain/pin-audit.py --rerun-held'}
+CANONICAL_RUNS = {'pin-age': 'set -uo pipefail\nstatus=0\n# a pull request is read at its own base and head; the merge queue at the queue\'s (REQ-DEP-005-AC2); an empty one fails\nBASE_SHA="${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"; HEAD_SHA="${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}"\n: "${BASE_SHA:?no base commit to compare: this check fails}" "${HEAD_SHA:?no head commit to compare: this check fails}"\npython3 trusted/.github/agent/supply-chain/pin-age-check.py --root pr --base "$BASE_SHA" --head "$HEAD_SHA" || status=1\n# the advisor\'s rulings come from the base branch too: a pull request must not bring its own\nexceptions=trusted/.github/supply-chain-exceptions.json\nif [ ! -f "$exceptions" ]; then\n  exceptions="$RUNNER_TEMP/no-exceptions.json"\n  echo \'{"exceptions": []}\' > "$exceptions"\nfi\npython3 trusted/.github/agent/supply-chain/pin-audit.py --root pr --base "$BASE_SHA" --head "$HEAD_SHA" --exceptions "$exceptions" --report-only || status=1\nexit $status\n', 'daily-audit': 'python3 .github/agent/supply-chain/pin-audit.py --observations-out "$RUNNER_TEMP/tag-observations/state.json"', 'rerun-held': 'python3 .github/agent/supply-chain/pin-audit.py --rerun-held'}
 
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -70,7 +70,7 @@ def judge_wf(d, real=False):
         bad.append("pin-age does not take the exceptions from the BASE branch (trusted/): a pull request must not bring its own rulings")
     if "set -e" in runs or runs.count("|| status=1") != 2 or "exit $status" not in runs:
         bad.append("pin-age stops at the first failure: the age check and the advisory audit must both run, and the job fails if either did")
-    if "${{ github.event.pull_request.base.sha }}" not in runs or "${{ github.event.pull_request.head.sha }}" not in runs:
+    if "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" not in runs or "${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}" not in runs:
         bad.append("pin-age does not compare the PR's base and head commits")
     # daily-audit
     j = jobs["daily-audit"]
@@ -123,7 +123,7 @@ def judge_wf(d, real=False):
         tw, pw = t.get("with") or {}, pr_.get("with") or {}
         if set(tw) != {"ref", "path", "persist-credentials"} or set(pw) != {"path", "fetch-depth", "persist-credentials"}:
             bad.append("pin-age's checkouts take inputs other than the ratified ones (e.g. sparse-checkout would empty the trusted checker)")
-        if tw.get("ref") != "${{ github.event.pull_request.base.sha }}" or tw.get("path") != "trusted" or str(tw.get("persist-credentials")).lower() != "false":
+        if tw.get("ref") != "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}" or tw.get("path") != "trusted" or str(tw.get("persist-credentials")).lower() != "false":
             bad.append("pin-age's trusted checkout is not the BASE sha at path trusted with persist-credentials false")
         if "ref" in pw or pw.get("path") != "pr" or pw.get("fetch-depth") != "0" or str(pw.get("persist-credentials")).lower() != "false":
             bad.append("pin-age's PR checkout is not the default (merge) ref at path pr, full depth, persist-credentials false")
@@ -136,7 +136,7 @@ def judge_wf(d, real=False):
                 bad.append(f"{jn}: the check step's commands differ from the ratified text (any added flag, assignment or duplicated argument is a change)")
     if re.search(r"secrets\s*\[", text):
         bad.append("the workflow indexes secrets[...]: no secrets anywhere")
-    PR_IF = "github.event_name == 'pull_request'"
+    PR_IF = "github.event_name == 'pull_request' || github.event_name == 'merge_group'"
     for name, jj in jobs.items():
         for st in jj.get("steps", []):
             # a step may not be skipped, tolerated or cut short: the only conditions are the ratified ones

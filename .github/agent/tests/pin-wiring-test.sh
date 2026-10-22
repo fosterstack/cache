@@ -22,7 +22,7 @@ read -r -d '' PIN_WIRING_CHAIN25 <<'JSON' || true
  },
  {
   "env": {
-   "BASE": "${{ github.base_ref }}"
+   "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
   },
   "if": "${{ github.base_ref != '' }}",
   "name": "suite floors only rise (against the merge base on a pull request)",
@@ -231,7 +231,8 @@ for st in job.get("steps", []):
 # first, then exactly the base-ref step and exactly the check step, in that order, nothing redirecting them
 if job.get("name") != "allowlist":
     bad.append("the allowlist job is not named `allowlist` (the required-check context)")
-FETCH_RUN = """if [ -n "${BASE}" ]; then
+FETCH_RUN = """BASE="${BASE#refs/heads/}"
+if [ -n "${BASE}" ]; then
   [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
   [[ "${BASE}" != *..* ]] || exit 1
   git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
@@ -264,7 +265,7 @@ else:
     for k in plain + ("env",):
         if k in steps_[0]:
             bad.append(f"the allowlist checkout has `{k}`")
-for name, want_env in (("fetch", {"BASE": "${{ github.base_ref }}"}),
+for name, want_env in (("fetch", {"BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"}),
                        ("check", {"GITHUB_HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}"})):
     if len(idx[name]) != 1:
         bad.append(f"the allowlist job does not have exactly one {name} step with the exact command")
@@ -304,10 +305,10 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
    },
    "name": "make sure the base branch ref exists",
-   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nif [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
   },
   {
    "name": "set up Python",
@@ -402,10 +403,10 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
    },
    "name": "make sure the base branch ref exists",
-   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nif [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
   },
   {
    "name": "set up Python",
@@ -444,10 +445,10 @@ SPLIT_STEPS = json.loads(r'''{
   },
   {
    "env": {
-    "BASE": "${{ github.base_ref }}"
+    "BASE": "${{ github.base_ref || github.event.merge_group.base_ref }}"
    },
    "name": "make sure the base branch ref exists",
-   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+   "run": "BASE=\"${BASE#refs/heads/}\"\nif [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
   },
   {
    "name": "set up Python",

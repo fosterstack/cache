@@ -2227,7 +2227,8 @@ GENERATED_OK = {
 }
 
 
-BASE_SHA_REF = "${{ github.event.pull_request.base.sha }}"
+# main's copy: the pull request's base sha, or (the merge queue, REQ-DEP-005) the queue's base sha, which is main as the queue found it; the queue's HEAD is never main's copy
+BASE_SHA_REFS = ("${{ github.event.pull_request.base.sha }}", "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}")
 _BASE_WRITE = r"(?<![\w.-])(?:sed\s+-\w*i|perl\s+-\w*i|awk\s+-i|cp|mv|ln|install|tee|dd|rsync|curl|wget|truncate|patch|ed|ex|rm|chmod|tar|unzip|git\s+(?:checkout|apply|restore))(?![\w.-])"
 
 
@@ -2861,7 +2862,7 @@ def run_scripts(doc):
                         wm = {key_of(k): v for k, v in w.value} if isinstance(w, yaml.MappingNode) else {}
                         ref, pth = wm.get("ref"), wm.get("path")
                         pdir = pth.value.strip() if isinstance(pth, yaml.ScalarNode) else "."
-                        if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() == BASE_SHA_REF and "repository" not in wm
+                        if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() in BASE_SHA_REFS and "repository" not in wm
                                 and re.fullmatch(r"[\w][\w-]*", pdir)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)
