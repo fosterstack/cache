@@ -76,13 +76,15 @@ deploy](docker-deploy.md).
 
 ## Reproducing our own gate
 
-The scanners a release must pass are listed in one public file,
+The per-image scanners a release must pass are listed in one public file,
 [`.github/policy/scanners.json`](../.github/policy/scanners.json): Grype and
 OSV-Scanner. The release's Check stage runs
 [`bin/check-scan.sh`](../bin/check-scan.sh), which scans the exact built
 images by digest with both (Grype also scans the four Linux archives,
 OSV-Scanner the Go modules) and fails when either reports anything the
-published VEX does not except. Pull requests are scanned by
+published VEX does not except. The same Check stage also runs `govulncheck`
+once on the tagged source, a separate Go source scan with its own policy that
+the rest of this section does not describe. Pull requests are scanned by
 [`scan.yml`](../.github/workflows/scan.yml) on the candidate images, with
 Grype and Amazon Inspector.
 
