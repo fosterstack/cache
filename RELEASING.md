@@ -87,7 +87,7 @@ from GitHub OIDC, entry in Rekor; no signing key exists to steal, except the
 apk release key, which only Release's `release-apks` step reads):
 
 - Two image variants, `production` and `-fips`, each a `linux/amd64` +
-  `linux/arm64` index assembled by apko from Wolfi packages with no base image,
+  `linux/arm64` index assembled by apko from Wolfi packages and our own `fscache` package, with no base image,
   at `ghcr.io/fosterstack/cache` and mirrored, same digests, at
   `docker.io/fosterstack/cache`. Tags: `:X.Y.Z` and `:X.Y.Z-fips` exactly;
   `:X.Y` moves to every final release of that line; `:X` and `:latest` move
