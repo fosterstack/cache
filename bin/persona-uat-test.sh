@@ -112,6 +112,10 @@
 #       The gradle/maven entrypoint models are the FAKE's (program first; the exact exit status and text of a real digest's failure cannot be checked offline).
 set -euo pipefail
 SEG_SHARDS=3
+# The cases each shard must pass: counted from the unsharded suite (609 in all) and checked by the gate, so a case that is skipped, run twice, moved out of its section or
+# made by another shard fails the step. A case added or removed changes a shard's number: the gate names it, and this line is updated with the case.
+SEG_CASES="201 148 266"
+SEG_DEADLINE=${PERSONA_UAT_SHARD_DEADLINE:-3000}   # seconds one shard may run; a hung shard is killed (its whole process group) and counts as failed (exit 124)
 # SHARDS. Run plain, this script runs the driver suite as SEG_SHARDS shards at once (PERSONA_UAT_SHARD=I/N each, below), prints their outputs one after the other and
 # fails unless every shard passed and the shards together ran every section of this file exactly once (the gate). PERSONA_UAT_SHARD=I/N runs one shard;
 # PERSONA_UAT_SHARD= (set, empty) runs the whole suite in one process. `--gate SCRIPT N OUT1 RC1 ... OUTN RCN` runs only the gate on recorded shard outputs (its tests do).
@@ -124,6 +128,10 @@ if not held or held != list(range(1, len(held) + 1)):
     bad.append("the script does not number its sections 1..n in order: %r" % held)
 if len(rest) != 2 * n:
     bad.append("expected %d shard results, got %d" % (n, len(rest) // 2))
+want = re.search(r"^SEG_CASES=\"([0-9 ]+)\"$", open(script).read(), re.M)
+want = [int(x) for x in want.group(1).split()] if want else []
+if len(want) != n:
+    bad.append("SEG_CASES does not give %d numbers (one per shard): %r" % (n, want))
 seen, total = {}, 0
 for i in range(min(n, len(rest) // 2)):
     out, rcf = rest[2 * i], rest[2 * i + 1]
@@ -138,6 +146,8 @@ for i in range(min(n, len(rest) // 2)):
         bad.append("shard %d printed %d summary lines, expected one" % (i + 1, len(m)))
     else:
         total += int(m[0][0])
+        if len(want) == n and int(m[0][0]) != want[i]:
+            bad.append("shard %d passed %s case(s), SEG_CASES says %d: a case was skipped, run twice, moved out of its shard or added" % (i + 1, m[0][0], want[i]))
         if int(m[0][1]) != 0:
             bad.append("shard %d failed %s case(s)" % (i + 1, m[0][1]))
     for sec, p, f in re.findall(r"^persona-uat-seg: ([0-9]+) ([0-9]+) ([0-9]+)$", text, re.M):
@@ -157,11 +167,24 @@ for k in sorted(set(seen) - set(held)):
 if bad:
     print("persona-uat shards: FAIL"); [print("  " + b) for b in bad]; sys.exit(1)
 print("persona-uat shards: %d shards ran %d sections, each once; %d cases passed" % (n, len(held), total))' "$@"; }
+# shard_run DEADLINE OUT ERR RCFILE CMD...: runs CMD in its own process group with stdout and stderr in OUT and ERR; if it is still running after DEADLINE seconds the whole group is
+# killed; the exit status (124 for the kill) is written to RCFILE
+shard_run() { python3 -I -c '
+import os, subprocess, sys
+dl, out, err, rcf = float(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+with open(out, "wb") as o, open(err, "wb") as e:
+    p = subprocess.Popen(sys.argv[5:], stdout=o, stderr=e, stdin=subprocess.DEVNULL, start_new_session=True)
+    try:
+        rc = p.wait(timeout=dl)
+    except subprocess.TimeoutExpired:
+        os.killpg(p.pid, 9); p.wait(); rc = 124
+open(rcf, "w").write("%d\n" % rc)' "$@"; }
 if [ "${1:-}" = "--gate" ]; then shift; shard_gate "$@"; exit $?; fi
+if [ "${1:-}" = "--run-shard" ]; then shift; shard_run "$@"; exit $?; fi
 if [ -z "${PERSONA_UAT_SHARD+x}" ]; then
   shards_tmp=$(mktemp -d); trap 'rm -rf "$shards_tmp"' EXIT
   for i in $(seq 1 "$SEG_SHARDS"); do
-    ( rc=0; PERSONA_UAT_SHARD="$i/$SEG_SHARDS" bash "$0" "$@" >"$shards_tmp/$i.out" 2>"$shards_tmp/$i.err" || rc=$?; echo "$rc" >"$shards_tmp/$i.rc" ) &
+    PERSONA_UAT_SHARD="$i/$SEG_SHARDS" shard_run "$SEG_DEADLINE" "$shards_tmp/$i.out" "$shards_tmp/$i.err" "$shards_tmp/$i.rc" bash "$0" "$@" &
   done
   wait
   gate_args=(); for i in $(seq 1 "$SEG_SHARDS"); do echo "=== shard $i/$SEG_SHARDS"; cat "$shards_tmp/$i.out"; cat "$shards_tmp/$i.err" >&2; gate_args+=("$shards_tmp/$i.out" "$shards_tmp/$i.rc"); done
@@ -2881,7 +2904,7 @@ sed "s#__LOG__#$work/integ/docker.log#" "$work/docker.tmpl" >"$work/integ/docker
     ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integ/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
     ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 GITHUB_TOKEN=SECRET-GH-TOKEN GH_TOKEN=SECRET-GH2 \
     AWS_SECRET_ACCESS_KEY=SECRET-AWS-KEY SOME_UNKNOWN_SECRET=SECRET-UNK \
-    python3 bin/persona-uat.py --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/integ/out" --tools "$work/tools.json" \
+    python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/integ/out" --tools "$work/tools.json" \
       --docker "$work/integ/docker" --recipient "$work/test.pem" --port 18080 --ready-timeout 5 --agent "python3 bin/persona-uat-agent.py" ) \
   >"$work/integ/stdout" 2>"$work/integ/stderr" || rc=$?
 decout integ
@@ -2940,7 +2963,7 @@ sed "s#__LOG__#$work/integt/docker.log#" "$work/docker.tmpl" >"$work/integt/dock
     PERSONA_UAT_MODEL=INTEG-DEFAULT PERSONA_UAT_COMPLIANCE_MODEL=INTEG-COMPLIANCE ANTHROPIC_FAKE_HANG_AFTER=1 \
     ANTHROPIC_IDENTITY_TOKEN_FILE="$work/integt/token" ANTHROPIC_FEDERATION_RULE_ID=f1 ANTHROPIC_ORGANIZATION_ID=o1 \
     ANTHROPIC_SERVICE_ACCOUNT_ID=s1 ANTHROPIC_WORKSPACE_ID=w1 \
-    python3 bin/persona-uat.py --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/integt/out" --tools "$work/tools.json" \
+    python3 "$driver" --mode rc --proc-net "$work/procnet" --image "$IMG" --repo "$repo" --out "$work/integt/out" --tools "$work/tools.json" \
       --docker "$work/integt/docker" --recipient "$work/test.pem" --port 18080 --ready-timeout 5 --agent-timeout 8 --agent "python3 bin/persona-uat-agent.py" ) \
   >"$work/integt/stdout" 2>"$work/integt/stderr" || rc=$?
 decout integt
@@ -5560,6 +5583,7 @@ done
 dist_end
 CASE="none of the tools' progress text reaches ANY public surface (log, step summary, artifact names) in the noisy runs: no node image, digest, cluster name, container id, warning text"
 check none_match 'kindest|Ensuring node image|control-plane|ab12ab12|Published ports|container-id-noise|created|condition met|NotReady|Deleting cluster' "$work/kindfail/stdout" "$work/kindfail/stderr" "$work/kindhang/stdout" "$work/kindhang/stderr" "$work/kinddelfail/stdout" "$work/kinddelfail/stderr" "$work/kindbothfail/stdout" "$work/kindbothfail/stderr" "$work/kubectlapplyfail/stdout" "$work/kubectlapplyfail/stderr" "$work/clean/stdout" "$work/clean/stderr" "$work/clean/summary.md" "$work/jendead/stderr" "$work/imgdead/stderr" "$work/runnerdead/stderr"
+dist_begin   # every shard scans the runs it made (the scan reads directories, not other sections' results)
 CASE="the driver runs with a PRIVATE TMPDIR and leaves no readable report or transcript anywhere it could write (no plaintext copy outside --out: a temp file, a sandbox leftover, a staging file, the working directory), in EVERY run's TMPDIR and in the driver's working directory; the sandboxes are made under that TMPDIR; --out holds only the encrypted files"
 check python3 - "$work" <<'PY'
 import glob, json, os, sys
@@ -5567,7 +5591,7 @@ w = sys.argv[1]
 n = 0
 MARK = (b"VERDICT", b"TRANSCRIPT for", b"persona: ", b"tokens used", b"Hosts named", b"MODEL-DEFAULT-X", b"PARTIAL-TRANSCRIPT", b"PARTIAL-CIPHERTEXT")
 roots = sorted(t for t in glob.glob(w + "/*/tmp") if os.path.exists(os.path.dirname(t) + "/plan.json")) + [w + "/plain"]       # every run's private TMPDIR, and the directory the driver ran in
-assert len(roots) > 20, roots
+assert len(roots) > 0, roots      # per shard: the runs this shard made (the shards' totals are pinned by SEG_CASES)
 for top in roots:
     for r, _, fs in os.walk(top):
         for f in fs:
@@ -5579,6 +5603,7 @@ assert os.path.isdir(w + "/clean/tmp"), "the run was not given a private TMPDIR"
 mounts = [t.split(":")[0] for l in open(w + "/clean/docker.log") for t in l.split() if ":/work" in t]
 assert mounts and all(m.startswith(w + "/clean/tmp/") for m in mounts), ("a sandbox outside the private TMPDIR", mounts[:3])
 PY
+dist_end
 CASE="the committed recipient certificate (bin/persona-uat-recipient.pem) is a usable CMS recipient: openssl encrypts to it (a certificate, not a key), so a default run is never refused for a bad shipped certificate"
 check sh -c "printf x | openssl cms -encrypt -aes-256-cbc -binary -outform DER -recip '$root/bin/persona-uat-recipient.pem' >/dev/null"
 CASE="a hosts line, the repository-source flag and the findings are in NO public place: not in the log, not in an artifact file name (the hosts run)"
@@ -5604,7 +5629,8 @@ seg_begin 35
 if seg_on; then
 # --- across every case's docker log (these need all the runs above)
 CASE="no credential value (job secrets, the model identity, the owner's model names) appears in ANY docker call of a run, so none reaches a container's environment"
-check none_match 'SECRET-|ALLOWED-MODEL-CRED|MODEL-(DEFAULT|COMPLIANCE)-X|FIXTURE-OIDC' "$work/clean/docker.log" "$work/blocking/docker.log" "$work/weekly/docker.log"
+dist_begin   # every shard checks the docker logs of the runs it made
+check none_match 'SECRET-|ALLOWED-MODEL-CRED|MODEL-(DEFAULT|COMPLIANCE)-X|FIXTURE-OIDC' "$work"/clean/docker.log $(ls "$work"/blocking/docker.log "$work"/weekly/docker.log 2>/dev/null)
 CASE="kind: no docker call the DRIVER or the AGENT makes runs the kind node image, execs into a node, reads admin.conf, is privileged or mounts the docker socket (every case's docker log; kind's own containers are kind's, see the header)"
 check python3 - "$work" <<'PY'
 import glob, sys
@@ -5613,8 +5639,9 @@ for path in glob.glob(sys.argv[1] + "/*/docker.log") + glob.glob(sys.argv[1] + "
     for l in open(path):
         n += 1
         assert "--privileged" not in l and "kindest" not in l and "admin.conf" not in l and "docker.sock" not in l and not l.startswith("exec "), (path, l)
-assert n > 50, n
+assert n > 0, n
 PY
+dist_end
 
 fi
 seg_begin 36
