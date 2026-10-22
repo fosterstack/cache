@@ -194,6 +194,53 @@ exit 0
                      "--digestfile /tmp/attach/before.pushed", "--digestfile /tmp/attach/ours.pushed", '[ "$(cat /tmp/attach/ours.pushed)" = "${final}" ]', '[ "$(cat /tmp/attach/before.pushed)" = "${before}" ]', "selfcheck-before-${GITHUB_RUN_ID}", "selfcheck-ours-${GITHUB_RUN_ID}"):
             if need not in fxs[0].get("run", ""):
                 bad.append("the fixture step lacks %s" % need)
+    # the fixture step, RUN: skopeo lays the pinned digest out as a single IMAGE manifest (it is debian 12.0's linux/amd64 manifest, not its index);
+    # the step must wrap it into a one-child index so that bin/vex-index.py layout (unchanged, strict) accepts it, and then push it by digest
+    if len(fxs) == 1:
+        SKOPEO = r"""#!/usr/bin/env python3
+import hashlib, json, os, sys
+a = sys.argv[1:]
+if a[0] != "copy": sys.exit(0)
+a = a[1:]; df = None
+while a and a[0].startswith("--"):
+    if a[0] == "--digestfile": df = a[1]; a = a[2:]
+    else: a = a[1:]
+src, dst = a[0], a[1]
+def blob(root, data):
+    h = hashlib.sha256(data).hexdigest(); d = os.path.join(root, "blobs", "sha256"); os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, h), "wb").write(data); return "sha256:" + h, len(data)
+if src.startswith("docker://") and dst.startswith("oci:"):
+    root = dst[4:]; os.makedirs(root, exist_ok=True)
+    open(os.path.join(root, "oci-layout"), "w").write('{"imageLayoutVersion":"1.0.0"}')
+    layer, ls = blob(root, b"layer"); cfg, cs = blob(root, json.dumps({"architecture": "amd64", "os": "linux", "rootfs": {"type": "layers", "diff_ids": [layer]}}).encode())
+    man, ms = blob(root, json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cfg, "size": cs},
+        "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": layer, "size": ls}]}).encode())
+    json.dump({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+               "manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": man, "size": ms}]}, open(os.path.join(root, "index.json"), "w"))
+elif dst.startswith("docker://") and df:
+    open(df, "w").write(json.load(open(os.path.join(src[4:], "index.json")))["manifests"][0]["digest"])
+"""
+        with tempfile.TemporaryDirectory() as t0:
+            t = os.path.realpath(t0)      # vex-index.py refuses any path through a symlink (macOS /var)
+            os.makedirs(os.path.join(t, "stub")); os.makedirs(os.path.join(t, "attach"))
+            with open(os.path.join(t, "stub", "skopeo"), "w") as fh:
+                fh.write(SKOPEO)
+            os.chmod(os.path.join(t, "stub", "skopeo"), 0o755)
+            json.dump(DIG, open(os.path.join(t, "attach", "digests.json"), "w"))
+            block = fxs[0]["run"].replace("/tmp/", t + "/")
+            env = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], RUNNER_TEMP=t, GITHUB_RUN_ID="42")
+            r = subprocess.run(["bash", "-e", "-c", block], cwd=ROOT, env=env, capture_output=True, text=True)
+            if r.returncode != 0:
+                bad.append("the fixture step does not run to the end on a single-image layout (rc %d): %s" % (r.returncode, (r.stdout + r.stderr)[-400:]))
+            else:
+                for name in ("fixture", "fixture-ours"):
+                    top = json.load(open(os.path.join(t, "layout", name, "index.json")))["manifests"]
+                    if len(top) != 1 or top[0]["mediaType"] != "application/vnd.oci.image.index.v1+json":
+                        bad.append("the %s layout's one descriptor is not an OCI index after the step: %s" % (name, top))
+                dig = json.load(open(os.path.join(t, "attach", "digests.json")))
+                if dig.get("fixture-before") == dig.get("fixture-ours") or not dig.get("fixture-before", "").startswith("sha256:"):
+                    bad.append("the fixture digests are not two different index digests: %s" % {k: dig.get(k) for k in ("fixture-before", "fixture-ours")})
     for need in ("docker login ghcr.io", "-X DELETE", "14 days ago"):
         if need not in vt:
             bad.append("vex-attach lacks %s" % need)
