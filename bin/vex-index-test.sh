@@ -3594,6 +3594,20 @@ def _j_extra():
     ok(judge_shards(_EXP, _fake_run(_EXP, 4)[:3], 4), "three results for four shards must be reported")
 
 
+@case("AC1", "the shard merge judge refuses a FAIL line even when every ok record and every summary is complete and valid")
+def _j_fail_alone():
+    outs = _fake_run(_EXP, 4)
+    outs[2] = (0, outs[2][1].replace("\n\n", "\nFAIL [AC1] stray: boom\n\n", 1))
+    ok(judge_shards(_EXP, outs, 4), "a FAIL line must be reported on its own")
+
+
+@case("AC1", "the shard merge judge refuses a summary whose counts do not match the class size even when every ok record is complete")
+def _j_summary_alone():
+    outs = _fake_run(_EXP, 4)
+    outs[1] = (0, outs[1][1].replace(" cases", " cases extra") if False else outs[1][1].rsplit("\n", 1)[0] + "\n1 passed, 0 failed, 1 cases")
+    ok(judge_shards(_EXP, outs, 4), "a wrong summary count must be reported on its own")
+
+
 @case("AC1", "the shard merge judge refuses a case that ran in a shard other than its own")
 def _j_wrongshard():
     outs = _fake_run(_EXP, 4)
@@ -3615,14 +3629,20 @@ def main():
     elif not only and not os.environ.get("VEXIDX_SERIAL"):
         # the parent: the whole registry is known here, so every case can be accounted for by name
         procs = []
-        for i in range(SHARDS):
-            env = dict(os.environ, VEXIDX_SHARD="%d/%d" % (i, SHARDS))
-            procs.append(subprocess.Popen([sys.executable, os.path.abspath(__file__)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
         results, errs = [], []
-        for p in procs:
-            out, err = p.communicate()
-            results.append((p.returncode, out))
-            errs.append(err)
+        try:
+            for i in range(SHARDS):
+                env = dict(os.environ, VEXIDX_SHARD="%d/%d" % (i, SHARDS))
+                procs.append(subprocess.Popen([sys.executable, os.path.abspath(__file__)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+            for p in procs:
+                out, err = p.communicate()
+                results.append((p.returncode, out))
+                errs.append(err)
+        finally:
+            for p in procs:           # an error or an interrupt in the parent never leaves a started shard running
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
         for i, (rc, out) in enumerate(results):
             sys.stdout.write(out)       # only the harness's own lines are judged: a tool's stderr never splits an ok line
         for err in errs:
