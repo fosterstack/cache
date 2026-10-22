@@ -952,6 +952,73 @@ def cmd_bind_check(a):
     print("ok")
 
 
+def cmd_apk_compare(a):
+    """The comparison job's result (the release stage's comparison step, run in a job with no key and no token; the owner's rule of Oct 21 2026: the signer and the builder
+    never share a machine, Rebuild's apks never reach a job that holds a credential) is a small file: verdict pass and exactly the four expected pairs (amd64 and
+    arm64, standard and fips) with the whole-file sha256 and the apk-tool digest of Build's apk and of Rebuild's. It is accepted only for Build's attested digests:
+    each pair's Build digest is the apk-<variant>-<arch> digest Build attested in witness-build/digests.json, and Rebuild's is the same. Nothing else about the
+    file is trusted: a verdict other than the word pass, another number of pairs, a repeated or unknown pair, a key that is not in the schema, or a hash that is
+    not 64 lower-case hex is refused."""
+    stage = "rebuild"
+    try:
+        with open(a.digests, "rb") as f:
+            d = parse_digest_bytes(f.read(), stage)
+    except OSError:
+        refuse(stage, "apk-compare: the digest list is missing or unreadable")
+    try:
+        with open(a.file, "rb") as f:
+            raw = f.read(200001)
+    except OSError:
+        refuse(stage, "apk-compare: %s is missing or unreadable" % a.file)
+    if len(raw) > 200000:
+        refuse(stage, "apk-compare: the result file is implausibly large")
+    try:
+        obj = strict_json(raw)
+    except ValueError as ex:
+        refuse(stage, "apk-compare: not UTF-8 JSON, or has a duplicate key (%s)" % ex)
+    if not isinstance(obj, dict):
+        refuse(stage, "apk-compare: the result is not a JSON object")
+    if set(obj) != {"verdict", "pairs"}:
+        refuse(stage, "apk-compare: the result's keys must be exactly verdict and pairs, got %s (an unknown key is refused)" % sorted(obj))
+    if obj["verdict"] != "pass":
+        refuse(stage, "apk-compare: the verdict is %r, only the word pass is accepted" % (obj["verdict"],))
+    pairs = obj["pairs"]
+    if not isinstance(pairs, list):
+        refuse(stage, "apk-compare: pairs is not a list")
+    if len(pairs) != 4:
+        refuse(stage, "apk-compare: %d pairs, exactly four are required (amd64 and arm64, standard and fips)" % len(pairs))
+    want_keys = {"arch", "variant", "name", "build_sha256", "rebuild_sha256", "build_digest", "rebuild_digest"}
+    seen = set()
+    for p in pairs:
+        if not isinstance(p, dict) or set(p) != want_keys:
+            refuse(stage, "apk-compare: a pair's keys must be exactly %s (an unknown key is refused)" % sorted(want_keys))
+        if p["arch"] not in ("amd64", "arm64"):
+            refuse(stage, "apk-compare: arch %r is neither amd64 nor arm64" % (p["arch"],))
+        if p["variant"] not in ("standard", "fips"):
+            refuse(stage, "apk-compare: variant %r is neither standard nor fips" % (p["variant"],))
+        pat = r"fscache-[0-9][0-9A-Za-z.+_~-]*-r0\.apk" if p["variant"] == "standard" else r"fscache-fips-[0-9][0-9A-Za-z.+_~-]*-r0\.apk"
+        if not isinstance(p["name"], str) or not re.fullmatch(pat, p["name"]):
+            refuse(stage, "apk-compare: the name %r is not an apk Build makes for the %s variant" % (p["name"], p["variant"]))
+        key = (p["arch"], p["variant"])
+        if key in seen:
+            refuse(stage, "apk-compare: the pair %s/%s is listed twice (and another of the four is missing)" % key)
+        seen.add(key)
+        for k in ("build_sha256", "rebuild_sha256"):
+            if not isinstance(p[k], str) or not re.fullmatch(r"[0-9a-f]{64}", p[k]):
+                refuse(stage, "apk-compare: %s of %s/%s is not a sha256 (64 lower-case hex)" % (k, p["arch"], p["variant"]))
+        for k in ("build_digest", "rebuild_digest"):
+            if not isinstance(p[k], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", p[k]):
+                refuse(stage, "apk-compare: %s of %s/%s is not sha256:<64 lower-case hex>" % (k, p["arch"], p["variant"]))
+        attested = d.get("apk-%s-%s" % (p["variant"], p["arch"]))
+        if attested is None:
+            refuse(stage, "apk-compare: Build attested no digest apk-%s-%s" % (p["variant"], p["arch"]))
+        if p["build_digest"] != attested:
+            refuse(stage, "apk-compare: the Build apk of %s/%s has digest %s, Build attested %s" % (p["arch"], p["variant"], p["build_digest"], attested))
+        if p["rebuild_digest"] != p["build_digest"]:
+            refuse(stage, "apk-compare: the rebuild digest of %s/%s differs from Build's (%s, %s)" % (p["arch"], p["variant"], p["rebuild_digest"], p["build_digest"]))
+    print("ok")
+
+
 def cmd_check_list(a):
     """Exactly the four Check records, scanners, acceptance, runtime and arm64, each verified under Check's identity at the tag and each tied by its
     material digest list to the digest list Build attested; a missing, extra, duplicated, substituted, unverifiable or wrong-job record is refused."""
@@ -1524,6 +1591,9 @@ def build_parser():
     bc.add_argument("--file", required=True)
     bc.add_argument("--product", required=True)
     bc.add_argument("--now")
+    ap = sub.add_parser("apk-compare")
+    ap.add_argument("--file", required=True)
+    ap.add_argument("--digests", required=True)
     cl = sub.add_parser("check-list")
     cl.add_argument("--policy", required=True)
     cl.add_argument("--digests", required=True)
@@ -1575,6 +1645,8 @@ def main(argv):
             cmd_stage_start(a)
         elif a.cmd == "bind-items":
             cmd_bind_items(a)
+        elif a.cmd == "apk-compare":
+            cmd_apk_compare(a)
         elif a.cmd == "check-list":
             cmd_check_list(a)
         elif a.cmd == "bind-check":

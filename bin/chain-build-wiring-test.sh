@@ -467,6 +467,12 @@ rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its v
              'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
 rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" '    inputs:\n      mode:' \
              '    inputs:\n      hostile:\n        type: boolean\n        default: false\n      mode:'
+# Release review R1 (Oct 21), REQ-CHAIN-005-AC2/AC6: Rebuild's apk job installs the same checksum-pinned Go toolchain as Build's (build-apk.sh refuses to run in CI without it), right after Witness
+rb r_go_gone  "005-AC2 the Go toolchain install is missing from Rebuild's apk job (build-apk.sh would die in CI)" "install-scanner.sh go" "$GOINST" ''
+rb r_go_twice "005-AC2 Rebuild's apk job installs Go twice" "step" "$GOINST" "$GOINST$GOINST"
+rb r_go_first "005-AC2 Go installed BEFORE Witness in Rebuild (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
+rb r_go_asm   "005-AC2 Rebuild's assemble job installs Go too (an assemble job installs apko only)" "install-" "$APKINST" "$GOINST$APKINST"
+rb r_go_other "005-AC2 Rebuild's Go install is another command (not the pinned installer)" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: bash bin/install-scanner.sh go /tmp/go'
 # REQ-CHAIN-005-AC7: Rebuild takes the same mode input and has its own snapshot Witness steps, snapshot-rapk and snapshot-rebuild
 RSNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
 RSNAP_OWN="      - name: snapshot-rapk under Witness\n        $RSNAP_IF\n"
@@ -602,13 +608,6 @@ probe assemble "AC11 a direct apko call" \
        'L[:-3] + ["apko build --lockfile out/production.lock.json build/apko.yaml fscache:x out/production.tar"] + L[-3:]'
 probe assemble "AC11 apko build without the lock (a different image digest per the real run)" \
        'L[:-3] + ["apko build build/apko.yaml fscache:x out/production.tar"] + L[-3:]'
-probe assemble         "AC11 a temp copy of the config"                             'L[:-3] + ["cp build/apko.yaml \"$RUNNER_TEMP/apko.yaml\""] + L[-3:]'
-probe assemble "AC11 --apko-config pointing at an absolute path" \
-       '[l + " --apko-config /work/archive/apko.yaml" if "assemble-image.sh --variant production" in l else l for l in L]'
-probe assemble "AC11 --apko-config even at the fixed relative path (the script default is the path)" \
-       '[l + " --apko-config build/apko.yaml" if "assemble-image.sh --variant production" in l else l for l in L]'
-probe assemble "AC11 --render-dir (a rendered copy of the config)" \
-       '[l + " --render-dir /tmp/r" if "assemble-image.sh --variant production" in l else l for l in L]'
 probe assemble "AC11 --lockfile passed by the stage" \
        '[l + " --lockfile out/production.lock.json" if "assemble-image.sh --variant production" in l else l for l in L]'
 probe assemble         "AC11 a cd away from the repo root"                          'L[:1] + ["cd build"] + L[1:]'
@@ -1926,6 +1925,9 @@ assert "the apk job installs melange only and the assemble job apko only, each b
 assert "its apk job installs melange only and its assemble job apko only, as REQ-CHAIN-004-AC3 says of Build" in t5
 assert "no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock," in t11
 assert "no stage file or stage script names apko, passes a lock," not in t11
+# the owner's cut-down config rule (ratified Oct 21 2026, ops/docs/ratify/2026-10-21-apko-config-rule-simplified.md): the config sentence is exactly this, with no relative-path and no temporary-copy condition
+assert t11.endswith("; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"), t11[-200:]
+assert "relative path" not in t11 and "temporary copy" not in t11 and "absolute path" not in t11
 PY
 # REQ-CHAIN-006-AC10, REQ-REL-009-AC1 and REQ-SUP-001-AC1 say what rules 61 and 65 removed and what replaced it (advisor R61 text, Oct 12; the base inputs are one committed list)
 python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "006-AC10, REL-009-AC1, SUP-001-AC1 text: no Dockerfile, buildx, goreleaser or Dependabot docker entry; the base inputs are one committed list the decide job prints" || bad "006-AC10, REL-009-AC1, SUP-001-AC1 text: the rule 61 wording is missing"
@@ -2457,7 +2459,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=841
+EXPECT=842
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

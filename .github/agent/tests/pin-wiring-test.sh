@@ -11,6 +11,7 @@ here=$(cd "$(dirname "$0")/../../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
+
 judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
@@ -587,6 +588,8 @@ SPLIT_STEPS = json.loads(r'''{
   }
  ]
 }''')
+VEX_NAME = "the final image index that carries our OpenVEX for Docker Scout \u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)"
+ISO_NAME = "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)"
 for jid, want_steps in SPLIT_STEPS.items():
     sj = d.get("jobs", {}).get(jid)
     if not isinstance(sj, dict):
@@ -599,7 +602,18 @@ for jid, want_steps in SPLIT_STEPS.items():
     if sj.get("runs-on") != "ubuntu-latest":
         bad.append(f"the {jid} job does not run on exactly `ubuntu-latest`")
     got = sj.get("steps", [])
-    if got != want_steps:
+    accepted = [want_steps]
+    if jid == "allowlist-pins-auditor":   # the transition (cache#489 and #521's landings): exactly main's list, or it plus either new step, or both, each at its anchor
+        def _after(lst, anchor_run, step):
+            i = [k for k, x in enumerate(lst) if x.get("run") == anchor_run]
+            return lst[:i[0] + 1] + [step] + lst[i[0] + 1:] if len(i) == 1 else None
+        _vex = {"name": VEX_NAME, "run": "bash bin/vex-index-test.sh </dev/null"}
+        _iso = {"name": ISO_NAME, "run": "bash bin/job-isolation-test.sh"}
+        _a = _after(want_steps, "bash bin/panel-test.sh", _vex)
+        _b = _after(want_steps, "bash bin/workflow-consolidation-test.sh", _iso)
+        _ab = _after(_a, "bash bin/workflow-consolidation-test.sh", _iso) if _a else None
+        accepted += [x for x in (_a, _b, _ab) if x]
+    if got not in accepted:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
         why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
@@ -853,6 +867,19 @@ case_ split-suite-deleted     bad "st = d['jobs']['allowlist-persona']['steps'];
 case_ split-suite-or-true     bad "x = [x for x in d['jobs']['allowlist-persona']['steps'] if 'persona-uat-agent-test' in (x.get('run') or '')][0]; x['run'] += ' || true'"
 case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain']['steps']; st[-1], st[-2] = st[-2], st[-1]"
 case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append({'name': 'x', 'run': 'true'})"
+# The transition judge (cache#489 / #521's landings): allowlist-pins-auditor is accepted in EXACTLY four forms: main's list, + the VEX step after panel-test, + the isolation step after workflow-consolidation, or both
+PA="import json; ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; vex = {'name': 'the final image index that carries our OpenVEX for Docker Scout \\u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)', 'run': 'bash bin/vex-index-test.sh </dev/null'}; iso = {'name': 'a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)', 'run': 'bash bin/job-isolation-test.sh'}; "
+case_ pa-vex-form-accepted        ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
+case_ pa-iso-form-accepted        ok  "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-both-forms-accepted      ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-vex-at-end               bad "${PA}ps.append(vex)"
+case_ pa-iso-at-start             bad "${PA}ps.insert(0, iso)"
+case_ pa-iso-twice                bad "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-iso-or-true              bad "${PA}iso['run'] += ' || true'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-iso-renamed              bad "${PA}iso['name'] = 'x'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-iso-continue             bad "${PA}iso['continue-on-error'] = 'true'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-vex-env                  bad "${PA}vex['env'] = {'X': '1'}; ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
+case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"

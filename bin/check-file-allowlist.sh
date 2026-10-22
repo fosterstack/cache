@@ -76,11 +76,13 @@ ALLOW_PATTERNS=(
   '^bin/vex-forms-test\.sh$'
   '^bin/vex-index\.py$'
   '^bin/vex-index-test\.sh$'
+  '^bin/release-layout\.py$'
   '^bin/fips-image-posture\.py$'
   '^bin/branch-sweep\.py$'
   '^bin/branch_sweep_test\.py$'
   '^bin/branch-sweep-test\.sh$'
   '^bin/scan-no-workflow-call-test\.sh$'
+  '^bin/job-isolation-test\.sh$'
   '^bin/local-prune\.sh$'
   '^\.github/branch-keep\.json$'
   '^bin/check-version-literals\.sh$'
@@ -181,8 +183,8 @@ ALLOW_PATTERNS=(
   # The marker-only pull request gate (REQ-CHAIN-001-AC6, slice 4b-6): the script and its suite.
   '^bin/marker-(pr-gate\.py|gate-test\.sh)$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
-  '^bin/release-(verify|apks|publish|sign|assets|postverify)\.sh$'
-  '^bin/release-(postverify|metadata|layout)\.py$'
+  '^bin/release-(verify|apks|compare|publish|sign|assets|postverify)\.sh$'
+  '^bin/release-(postverify|metadata|layout|compare)\.py$'
   '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
   '^bin/chain-release-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the

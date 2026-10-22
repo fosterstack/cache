@@ -224,7 +224,8 @@ class FixtureNet:
 GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
             "osv": "github.com/google/osv-scanner/v2", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint/v2",
             "goreleaser": "github.com/goreleaser/goreleaser/v2", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign/v3",
-            "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3"}
+            "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3",
+            "go": "stdlib"}   # Go's own toolchain: the Go vulnerability database files the standard library under the package stdlib (REQ-SUP-001-AC27: the exempt release is still audited)
 NPM_TOOLS = {"snyk": "snyk"}
 
 # REQ-SUP-001-AC14: Go gives a module of major N >= 2 the path ending in /vN, and majors 0 and 1 the bare path. The table above holds the path of the
@@ -329,8 +330,8 @@ def _decidable(entry):
 
 
 def _go_rule(item, version):
-    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table, other kinds of item, an empty version."""
-    return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and version else None
+    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table (the Go toolchain itself is asked as stdlib and toolchain, not by module path), other kinds of item, an empty version."""
+    return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and item.name != "go" and version else None
 
 
 class LiveNet:
@@ -473,12 +474,20 @@ class LiveNet:
                     gh_all += [tag_(x) for x in g]
                     osv_all += [tag_(x) for x in o]
                 return gh_all, osv_all
+        if item.kind == "tool" and item.name == "go":   # the Go database files the standard library under stdlib and the go command under toolchain: both are asked
+            gh_all, osv_all = [], []
+            for pkg in ("stdlib", "toolchain"):
+                g, o = self._lists_for(item, self._version_of(item), pkg)
+                gh_all, osv_all = gh_all + g, osv_all + o
+            return gh_all, osv_all
         return self._lists_for(item, self._version_of(item))
 
-    def _lists_for(self, item, version):
+    def _lists_for(self, item, version, pkg=None):
         q = self._query(item, version) if version else None
         if q is None or not version:
             return [], []
+        if pkg:
+            q["package"]["name"] = pkg
         osv, ghs = [], []
         rule = _go_rule(item, version)
         paths = rule.paths if rule else [q["package"]["name"]]
@@ -1098,6 +1107,18 @@ def body_of(f, rb, owner, ran, today):
 
 
 # ---------- history: what we ran in the last 90 days ----------
+# The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is never read partially, pin-inventory MAX_LINE). Exactly these revisions
+# are skipped instead, by FULL lowercase 40-hex sha, each for one stated reason (advisor 0637): they are the Oct 20 2026 RED commits of the release-chain branch's PR 459, whose test
+# file bin/chain-sign-wiring-test.sh held a 12000-character fixture line (removed in the later rounds of that PR). They sit in that branch's history, so once it lands every pull request
+# that moves a version would stop at them for the 90-day lookback. Their trees differ from their neighbours' by that one test file, so no pin is lost by skipping them.
+# Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a revision is added to this list only by a reviewed change that names it.
+SKIP_UNREADABLE = {
+    "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
+    "6ff1768c0e63d0f60f6072267817062d53934a08": "PR 459 round 7 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
+    "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b": "PR 459 round 8 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
+}
+
+
 def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
@@ -1111,7 +1132,13 @@ def history_items(root, start, now):
     for r in revs:
         key = inv.tree_key(root, r)
         if key not in memo:
-            memo[key] = inv.load_at(root, r)
+            try:
+                memo[key] = inv.load_at(root, r)
+            except RuntimeError as e:
+                # only the named revisions, and only for the cap's own refusal; never remembered under the tree key (an unlisted revision of the same tree must still refuse)
+                if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
+                    continue
+                raise
         items.update(memo[key])
     return items
 

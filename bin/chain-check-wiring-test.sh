@@ -196,7 +196,9 @@ set -euo pipefail
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 curl -fsSL -o "$tmp/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
-curl -fsSL -o "$tmp/kubectl" https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl
+cid=$(docker create kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5)
+docker cp "$cid:/usr/bin/kubectl" "$tmp/kubectl"
+docker rm "$cid" > /dev/null
 printf '%s  %s\\n' aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d "$tmp/kind" 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f "$tmp/kubectl" | sha256sum -c -
 install -m 0755 "$tmp/kind" "$tmp/kubectl" /usr/local/bin/
 kind version
@@ -391,7 +393,8 @@ hm h_extra   '\|release-postverify\)'                          '|release-postver
 # ---- AC14: the kind install and the cluster ------------------------------------------------------------------------------
 km() { if mutate "$work/install-kind.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" kind "$work/$1.sh"; fi; }
 km k_ver     'v0.33.0/kind-linux-amd64'                         'v0.32.0/kind-linux-amd64'                                'the kind installer' "AC14 another kind version"
-km k_kver    'v1.37.0/bin/linux/amd64'                          'v1.36.0/bin/linux/amd64'                                'the kind installer' "AC14 another kubectl version"
+km k_kver    'docker create kindest/node:v1.37.0@'                  'docker create kindest/node:v1.36.0@'                    'the kind installer' "AC14 another kubectl (node image) version"
+km k_ktag    '@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5\)' ')'                                'the kind installer' "AC14 kubectl from a node image given by tag only"
 km k_sha     'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d' 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0e' 'the kind installer' "AC14 a changed kind sha256"
 km k_ksha    '6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f' '922df28df248cc00a9e025f947704f1d1482de64ece54cfe57e61f19eaf1eef3' 'the kind installer' "AC14 the arm64 kubectl sha256 (the runner is amd64)"
 km k_nocheck ' \| sha256sum -c -'                              ''                                                       'the kind installer' "AC14 the downloads are not checked"
@@ -646,7 +649,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=270
+EXPECT=271
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

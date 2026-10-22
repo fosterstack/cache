@@ -135,7 +135,6 @@ SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase
            "bin/acceptance-egress.sh", "bin/acceptance-k8s.sh", "bin/acceptance-serve.sh", "bin/install-kind.sh"]
 # REQ-CHAIN-006-AC14 (advisor ruling Q8; kind v0.33.0 release notes, https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0, 2026-08-26)
 KIND_URL = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64"
-KUBECTL_URL = "https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl"
 KIND_SHA = "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
 KUBECTL_SHA = "6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f"
 NODE_IMAGE = "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
@@ -145,7 +144,9 @@ KIND_LINES = [
     'tmp=$(mktemp -d)',
     "trap 'rm -rf \"$tmp\"' EXIT",
     'curl -fsSL -o "$tmp/kind" ' + KIND_URL,
-    'curl -fsSL -o "$tmp/kubectl" ' + KUBECTL_URL,
+    'cid=$(docker create ' + NODE_IMAGE + ')',
+    'docker cp "$cid:/usr/bin/kubectl" "$tmp/kubectl"',
+    'docker rm "$cid" > /dev/null',
     'printf \'%%s  %%s\\n\' %s "$tmp/kind" %s "$tmp/kubectl" | sha256sum -c -' % (KIND_SHA, KUBECTL_SHA),
     'install -m 0755 "$tmp/kind" "$tmp/kubectl" /usr/local/bin/',
     "kind version",

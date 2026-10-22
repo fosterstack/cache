@@ -1518,7 +1518,7 @@ requirements:
       - id: REQ-REL-004-AC1
         given: any pull request, push to main, or tag
         when: the required scan check runs
-        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
+        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all four image children and every archive; Inspector scans the four image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-004-AC2
@@ -1845,7 +1845,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 26 ratified files (owner RATIFIED amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, owner ratified Oct 5, new-file amendment Oct 3; stage-sign.yml added by v0.3.0 rule 52, owner ratified Oct 9, the one new workflow file of v0.3.0)"
+        then: "it holds exactly the 19 ratified files, the list fixed by bin/workflow-consolidation-test.sh (the effect of the ratified consolidation and of the v0.3.0 chain's ratified removals of the legacy workflows; dependabot-auto-merge.yml stays its own file, owner RATIFIED Oct 2; supply-chain.yml, REQ-SUP-001, owner ratified Oct 5; stage-sign.yml, v0.3.0 rule 52, owner ratified Oct 9)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -2065,7 +2065,7 @@ requirements:
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >
-      The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all six images, and Google Artifact Analysis on the three variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
+      The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all four images, and Google Artifact Analysis on the two variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
     source: [.github/workflows/main-candidate-rescan.yml]
     tier: community
     introduced: v0.3.0
@@ -2075,13 +2075,13 @@ requirements:
       - id: REQ-SCAN-001-AC1
         given: "the daily main-candidate rescan"
         when: "it runs"
-        then: "Grype, Docker Scout and Amazon Inspector each scan all six images (production, debug and fips, each on linux/amd64 and linux/arm64); the set is fixed in the workflow, not computed at build time"
+        then: "Grype, Docker Scout and Amazon Inspector each scan all four images (production and fips, each on linux/amd64 and linux/arm64; the debug image was dropped for v0.3.0, owner Oct 9); the set is fixed in the workflow, not computed at build time"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-001-AC2
         given: "the daily main-candidate rescan"
         when: "it runs"
-        then: "Google Artifact Analysis scans the three variants on linux/amd64 only, never arm64"
+        then: "Google Artifact Analysis scans the two variants (production and fips) on linux/amd64 only, never arm64"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-001-AC3
@@ -2765,6 +2765,12 @@ requirements:
         then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line (one character, a tab for a space, a carriage return), a second copy of it that differs only in whitespace, a link named like the file, and that ruling prefix on any other line (of the same file or another) rules nothing, so the nineteen lines are the only lines this ruling allows. A new script that names the vendored folder is refused unless its exact path is listed in the checker; six paths that name it legitimately (the govulncheck vendor-mode tests and checks) are listed, and a seventh file still fails"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC27
+        given: "(owner ratified Oct 21 2026: \"yes skip the 7 day hold lets unblock stuff - go.\" - ops/docs/ratify/2026-10-21-go-releases-skip-7-day-hold.md) a pull request that moves the tool item go, Go's own toolchain release, in bin/install-scanner.sh"
+        when: "pin-age runs"
+        then: "that one item is exempt from the 7-day age and from nothing else: the exemption holds only when the head's installer has exactly one GO_VER, exactly one download line naming Go and it is the https://go.dev/dl/go${GO_VER} fetch, a sha256 pin of 64 hex for each of the two architectures, and the verify call on the very next line, and only for the version GO_VER names; a Go download from any other host, an unpinned or unverified one, a second Go download or any other tool at 0 days still fails; the advisory and malware audit and every other check still apply to go"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3353,7 +3359,7 @@ requirements:
       - id: REQ-CHAIN-004-AC11
         given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
         when: "they are read"
-        then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; the configs are locked and built from the fixed relative paths build/apko.yaml (production) and build/apko-fips.yaml (fips), never from an absolute path or a temporary copy"
+        then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC12
@@ -3429,7 +3435,7 @@ requirements:
       - id: REQ-CHAIN-005-AC4
         given: "Rebuild's output"
         when: "the stage's uploads and signed records are listed"
-        then: "the only signed record is Rebuild's Witness record, signed keyless under stage-reproducibility.yml at the tag with release.yml as the top-level workflow, whose product is the verdict witness-rebuild/verdict.json; the only upload that leaves the stage is the witness-rebuild directory holding that record and the verdict (the apk matrix job's per-architecture apks and records are intermediate, read only by the assemble job after verification and binding); no artifact Rebuild built can reach Sign or Release, which publish Build's bytes by digest"
+        then: "the only signed record is Rebuild's Witness record, signed keyless under stage-reproducibility.yml at the tag with release.yml as the top-level workflow, whose product is the verdict witness-rebuild/verdict.json; the uploads that leave the stage are the witness-rebuild directory holding that record and the verdict and the per-architecture apk artifacts rapk-ubuntu-24.04 and rapk-ubuntu-24.04-arm (the apk matrix job's per-architecture records are intermediate, read only by the assemble job after verification and binding); Sign and Release publish Build's bytes by digest. The owner's rule (ratified Oct 21 2026, ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md; \"it can't sit on the same machine ... it violates nist 800-53 ... the signer and the builder need hardware isolation and the builds in general need hardware isolation ... the best github actions can do for that, assuming we use github hosted runners, is to use separate jobs in the workflow\"): (1) a job that holds the signing key or any publish credential never receives a build output other than the exact artifacts it signs or publishes (Build's), so Rebuild's apks never reach it; (2) the byte comparison of Build's and Rebuild's apks runs in the compare job of the Release stage, which holds contents read only (no secret, no publish permission, no environment, no identity token) and runs as one plain step; it passes on only a small result file, which the verify job's release-verify step checks against Build's attested apk digests, and neither the verify nor the release job downloads a rapk; (3) each build (Build, Rebuild, each architecture) is its own job. The ephemeral keyless certificate Witness mints for a build job is outside rule (1): it signs the record of a step, not the artifacts we ship, and its identity is that of the stage workflow that runs the job (for example stage-build.yml called from release.yml), so a job of another stage workflow cannot impersonate it, while the jobs of one stage workflow share that identity (the owner: keep Witness); a step of the same job can request the same token, so a record made inside a build job is not unforgeable by itself, which is why release-verify checks every stage's record against the next stage's inputs"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-005-AC5
