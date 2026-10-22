@@ -54,8 +54,28 @@ PYEOF
   rm -rf "$w"
 }
 
-run_with "production, debug, fips (main)" '("production", "debug", "fips")'
-run_with "production, fips (chain-v030)" '("production", "fips")'
+# The two variant sets are independent (each runs on its own copy of the tree), so they run at the same time (CI speed, advisor 0643). Each run
+# writes its ok:/FAIL: lines to a log; the tally below takes both logs and refuses anything but exactly two judged checks per run (the unit suite
+# and the matrix suite) and no failure, so a run that died, printed nothing, or lost one of its two checks cannot pass.
+tally() {   # tally <log>: 0 only if the log holds exactly two ok: lines (and no FAIL:)
+  local o f; o="$(grep -c '^ok: ' "$1")"; f="$(grep -c '^FAIL: ' "$1")"; [ "$o" -eq 2 ] && [ "$f" -eq 0 ]
+}
+tlog="$(mktemp)"; trap 'rm -f "$tlog"' EXIT
+printf 'ok: a\nok: b\n' > "$tlog";                       tally "$tlog" && ok "the tally accepts two ok lines"            || bad "the tally accepts two ok lines"
+printf 'ok: a\nFAIL: b\n' > "$tlog";                     tally "$tlog" && bad "the tally refuses a FAIL line"            || ok "the tally refuses a FAIL line"
+printf 'ok: a\n' > "$tlog";                               tally "$tlog" && bad "the tally refuses a missing check"        || ok "the tally refuses a missing check"
+: > "$tlog";                                              tally "$tlog" && bad "the tally refuses an empty log"           || ok "the tally refuses an empty log"
+printf 'ok: a\nok: b\nFAIL: c\n' > "$tlog";            tally "$tlog" && bad "the tally refuses ok lines plus a FAIL"   || ok "the tally refuses ok lines plus a FAIL"
+printf 'ok: a\nok: b\nok: c\n' > "$tlog";               tally "$tlog" && bad "the tally refuses an extra check"         || ok "the tally refuses an extra check"
+rm -f "$tlog"
+lg="$(mktemp -d)"; trap 'rm -rf "$lg"' EXIT
+run_with "production, debug, fips (main)" '("production", "debug", "fips")' > "$lg/main.log" 2>&1 & p_main=$!
+run_with "production, fips (chain-v030)" '("production", "fips")' > "$lg/chain.log" 2>&1 & p_chain=$!
+wait "$p_main"; wait "$p_chain"
+for l in main chain; do
+  cat "$lg/$l.log"
+  if tally "$lg/$l.log"; then pass=$((pass+2)); else fail=$((fail+1)); echo "FAIL: the $l variant run did not judge exactly two passing checks"; fi
+done
 
 echo "auditor-variants: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
