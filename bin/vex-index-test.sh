@@ -3479,11 +3479,172 @@ def _(suffix):
 
 
 
+SHARDS = 4   # an unsharded run (no ONLY, no VEXIDX_SHARD, no VEXIDX_SERIAL) runs this many shard processes at the same time
+
+
+def shard_sizes(total, n):
+    return [len([k for k in range(total) if k % n == i]) for i in range(n)]
+
+
+def judge_shards(expected, results, n):
+    """expected: [(tag, name)] in registry order; results: [(rc, text)] one per shard, shard i running the registry indices k with k % n == i.
+    Returns the list of problems; empty only if every shard exited 0, printed its own summary with the size of its class, and the
+    ok lines of all shards together name every registry case exactly once, with no FAIL line and nothing else counted."""
+    bad = []
+    if len(results) != n:
+        return ["%d shard results for %d shards" % (len(results), n)]
+    sizes = shard_sizes(len(expected), n)
+    want = {}
+    for k, (tag, name) in enumerate(expected):
+        want.setdefault("ok   [%s] %s" % (tag, name), []).append(k % n)
+    seen = {}
+    for i, (rc, text) in enumerate(results):
+        lines = text.split("\n")
+        if rc != 0:
+            bad.append("shard %d exited %s" % (i, rc))
+        summ = [l for l in lines if re.fullmatch(r"\d+ passed, \d+ failed, \d+ cases", l)]
+        if len(summ) != 1:
+            bad.append("shard %d printed %d summary lines" % (i, len(summ)))
+        else:
+            p, fl, c = [int(x) for x in re.findall(r"\d+", summ[0])]
+            if fl != 0 or c != sizes[i] or p != sizes[i]:
+                bad.append("shard %d summary %r, want %d passed, 0 failed, %d cases" % (i, summ[0], sizes[i], sizes[i]))
+        for l in lines:
+            if l.startswith("FAIL"):
+                bad.append("shard %d: %s" % (i, l[:200]))
+            if l.startswith("ok   ["):
+                seen.setdefault(l, []).append(i)
+    for line, shards in want.items():
+        got = seen.get(line, [])
+        if sorted(got) != sorted(shards):
+            bad.append("%s: ran in shards %s, want %s" % (line[:150], got, shards))
+    for line in seen:
+        if line not in want:
+            bad.append("an ok line that is not a registry case: %s" % line[:150])
+    return bad
+
+
+def _fake_run(expected, n, drop=None, dup=None, fail=None, rc=None, summary=None, extra=None, empty=None):
+    """What n shards would print for `expected`, with one fault injected."""
+    outs = []
+    for i in range(n):
+        lines, k = [], 0
+        for j, (tag, name) in enumerate(expected):
+            if j % n != i:
+                continue
+            k += 1
+            if drop == j:
+                k -= 1
+                continue
+            if fail == j:
+                lines.append("FAIL [%s] %s: boom" % (tag, name))
+            else:
+                lines.append("ok   [%s] %s" % (tag, name))
+            if dup == j:
+                lines.append("ok   [%s] %s" % (tag, name))
+        size = len([j for j in range(len(expected)) if j % n == i])
+        if empty == i:
+            lines = []
+        if extra == i:
+            lines.append("ok   [AC1] a case nobody registered")
+        lines.append("")
+        if summary is None or summary != i:
+            lines.append("%d passed, %d failed, %d cases" % (size - (1 if fail is not None and fail % n == i else 0), 1 if fail is not None and fail % n == i else 0, size))
+        outs.append((rc[1] if rc and rc[0] == i else 0, "\n".join(lines)))
+    return outs
+
+
+_EXP = [("AC1", "case %d" % k) for k in range(10)]
+
+
+@case("AC1", "the shard merge judge accepts four complete shards (each registry case once, summaries match their class sizes)")
+def _j_ok():
+    eq(judge_shards(_EXP, _fake_run(_EXP, 4), 4), [], "a complete run")
+
+
+@case("AC1", "the shard merge judge refuses a case that no shard ran")
+def _j_drop():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, drop=5), 4), "a dropped case must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a case that ran twice")
+def _j_dup():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, dup=3), 4), "a doubled case must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a FAIL line")
+def _j_fail():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, fail=2), 4), "a failed case must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a shard that exited non-zero after complete output")
+def _j_rc():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, rc=(1, 7)), 4), "a non-zero shard exit must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a shard without its summary line, and an empty shard")
+def _j_summary():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, summary=2), 4), "a missing summary must be reported")
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, empty=1), 4), "an empty shard must be reported")
+
+
+@case("AC1", "the shard merge judge refuses an ok line for a case that is not in the registry, and the wrong number of shards")
+def _j_extra():
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4, extra=0), 4), "an unregistered ok line must be reported")
+    ok(judge_shards(_EXP, _fake_run(_EXP, 4)[:3], 4), "three results for four shards must be reported")
+
+
+@case("AC1", "the shard merge judge refuses a case that ran in a shard other than its own")
+def _j_wrongshard():
+    outs = _fake_run(_EXP, 4)
+    moved = outs[0][1].split("\n")[0]
+    outs[0] = (0, outs[0][1].replace(moved + "\n", "", 1))
+    outs[1] = (0, moved + "\n" + outs[1][1])
+    ok(judge_shards(_EXP, outs, 4), "a case run by the wrong shard must be reported")
+
+
 def main():
     only = os.environ.get("ONLY")
+    shard = os.environ.get("VEXIDX_SHARD")
+    if shard:
+        m = re.fullmatch(r"(\d+)/([1-9]\d*)", shard)
+        if not m or int(m.group(1)) >= int(m.group(2)):
+            print("FAIL: VEXIDX_SHARD must be <i>/<n> with 0 <= i < n, got %r" % shard)
+            sys.exit(2)
+        si, sn = int(m.group(1)), int(m.group(2))
+    elif not only and not os.environ.get("VEXIDX_SERIAL"):
+        # the parent: the whole registry is known here, so every case can be accounted for by name
+        procs = []
+        for i in range(SHARDS):
+            env = dict(os.environ, VEXIDX_SHARD="%d/%d" % (i, SHARDS))
+            procs.append(subprocess.Popen([sys.executable, os.path.abspath(__file__)], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
+        results, errs = [], []
+        for p in procs:
+            out, err = p.communicate()
+            results.append((p.returncode, out))
+            errs.append(err)
+        for i, (rc, out) in enumerate(results):
+            sys.stdout.write(out)       # only the harness's own lines are judged: a tool's stderr never splits an ok line
+        for err in errs:
+            sys.stderr.write(err)
+        problems = judge_shards([(t, nm) for t, nm, _f, _a in CASES], results, SHARDS)
+        by = {}
+        for tag, name, f, arg in CASES:
+            by[tag] = by.get(tag, 0) + 1
+        print("")
+        print("cases by AC: " + ", ".join("%s=%d" % (k, by[k]) for k in sorted(by)))
+        for pr in problems:
+            print("FAIL: " + pr)
+        print("%d shards; %d cases in the registry" % (SHARDS, len(CASES)))
+        print("%d passed, %d failed, %d cases" % (sum(out.count("\nok   [") + out.startswith("ok   [") for _rc, out in results), len(problems), len(CASES)))
+        sys.exit(1 if problems else 0)
+    else:
+        si, sn = 0, 1
     passed, failed, fails, selected = 0, 0, [], 0
-    for tag, name, f, arg in CASES:
+    for k, (tag, name, f, arg) in enumerate(CASES):
         if only and only not in name:
+            continue
+        if k % sn != si:
             continue
         selected += 1
         try:
@@ -3510,7 +3671,6 @@ def main():
         print("FAIL: no case was selected")
         sys.exit(1)
     sys.exit(1 if failed else 0)
-
 
 main()
 PYEOF
