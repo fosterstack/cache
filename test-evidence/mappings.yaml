@@ -402,6 +402,14 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the ac3-* cases for downloads in a job that runs a committed script" }
+  - ac: REQ-REL-011-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/job-isolation-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/job-isolation-test.sh over the real workflows and its mutated copies" }
+  - ac: REQ-REL-011-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/job-isolation-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/job-isolation-test.sh over the real workflows and its mutated copies" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
@@ -686,6 +694,14 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/admission-tag-signer-test.sh" }
       - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
+  - ac: REQ-REL-010-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/vex-index-test.sh" }
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+  - ac: REQ-REL-010-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vex-index-test.sh" }
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
   - ac: REQ-UAT-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/persona-uat-agent-test.sh" }

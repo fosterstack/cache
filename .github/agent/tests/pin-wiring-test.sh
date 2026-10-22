@@ -189,7 +189,7 @@ for st in job.get("steps", []):
     run = (st.get("run") or "").strip()
     if run in want:
         seen.add(run)
-        for k in ("if", "continue-on-error", "shell", "working-directory"):
+        for k in ("if", "continue-on-error", "shell", "working-directory") + (("env",) if run == "bash .github/agent/tests/check-action-pins-test.sh" else ()):   # env on the cases step: the PINS_* controls (shard, dry, serial, self, jobs) are never set from the workflow
             if k in st:
                 bad.append(f"the step `{run}` has `{k}`")
 # nothing may redirect how those steps execute (step 8 r3, residual 2): a shell startup file, an
@@ -481,6 +481,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/panel-test.sh"
   },
   {
+   "name": "the final image index that carries our OpenVEX for Docker Scout \u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)",
+   "run": "bash bin/vex-index-test.sh </dev/null"
+  },
+  {
    "name": "the auditor's fixtures and tests follow the panel's image set \u2014 the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)",
    "run": "bash .github/agent/tests/auditor-variants-test.sh"
   },
@@ -511,6 +515,10 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)",
    "run": "bash bin/workflow-consolidation-test.sh"
+  },
+  {
+   "name": "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)",
+   "run": "bash bin/job-isolation-test.sh"
   },
   {
    "name": "the daily rescan covers the current release only (REQ-REL-004-AC5)",
@@ -682,6 +690,8 @@ case_ path-on-workflow      bad "d['env'] = {'PATH': '/tmp/fake:/usr/bin'}"
 case_ github-env-write      bad "$steps.insert(1, {'run': 'echo BASH_ENV=/tmp/x.sh >> \"\$GITHUB_ENV\"'})"
 case_ github-path-write     bad "$steps.insert(1, {'run': 'echo /tmp/fake >> \"\$GITHUB_PATH\"'})"
 case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
+case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
+case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
 case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/check-action-pins-test.sh']"
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
@@ -803,6 +813,18 @@ for i in $(seq 0 24); do
   case_ "chain25-step-$i-continue"  bad "${C25}x = [dict(s) for s in c25]; x[$i]['continue-on-error'] = 'true'; cs.extend(x)"
   case_ "chain25-step-$i-shell"     bad "${C25}x = [dict(s) for s in c25]; x[$i]['shell'] = 'bash -c true {0}'; cs.extend(x)"
 done
+# allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
+PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; "
+case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
+case_ pa-iso-removed              bad "${PA}del ps[ix('bash bin/job-isolation-test.sh')]"
+case_ pa-vex-twice                bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, dict(ps[ix('bash bin/vex-index-test.sh </dev/null')]))"
+case_ pa-iso-twice                bad "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, dict(ps[ix('bash bin/job-isolation-test.sh')]))"
+case_ pa-iso-at-start             bad "${PA}ps.insert(0, ps.pop(ix('bash bin/job-isolation-test.sh')))"
+case_ pa-vex-at-end               bad "${PA}ps.append(ps.pop(ix('bash bin/vex-index-test.sh </dev/null')))"
+case_ pa-iso-or-true              bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['run'] += ' || true'"
+case_ pa-iso-continue             bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['continue-on-error'] = 'true'"
+case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </dev/null')]['env'] = {'X': '1'}"
+case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
