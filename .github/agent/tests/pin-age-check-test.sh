@@ -4128,8 +4128,16 @@ gosc() {   # gosc VER [TRIVY] [mutation: nopin|nohost|noverify|twohosts|arm64onl
   printf '%s\n' "  go:x86_64|go:amd64) SUM=$(printf 'a%.0s' $(seq 64)) ;;"
   [ "$mut" = nopin ] || printf '%s\n' "  go:aarch64|go:arm64) SUM=$(printf 'b%.0s' $(seq 64)) ;;"
   [ "$mut" != nopin ] || printf '%s\n' "  go:aarch64|go:arm64) SUM= ;;"
-  printf '%s\n' 'esac' 'case "$TOOL" in' '  go)'
-  printf '%s\n' "    curl -fsSL -o \"\$tmp/go.tgz\" \"$host/go\${GO_VER}.\${A_GO}.tar.gz\" || pipeline_fail \"download failed: go\""
+  printf '%s\n' 'esac'
+  case $mut in
+    verifyoff) printf '%s\n' 'verify() { # file' '  :' '}' ;;
+    nocompare) printf '%s\n' 'verify() { # file' '  local got' "  got=\$(sha256sum \"\$1\" | cut -d' ' -f1)" '}' ;;
+    sumreset) printf '%s\n' 'SUM=' 'verify() { # file' '  local got' "  got=\$(sha256sum \"\$1\" | cut -d' ' -f1)" '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"' '}' ;;
+    *) printf '%s\n' 'verify() { # file' '  local got' "  got=\$(sha256sum \"\$1\" | cut -d' ' -f1)" '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"' '}' ;;
+  esac
+  printf '%s\n' 'case "$TOOL" in' '  go)'
+  printf '%s\n' '    gofile="go${GO_VER}.${A_GO}.tar.gz"' "    curl -q -fsSL -g -o \"\$tmp/go.tgz\" \"$host/\${gofile}\" || die \"download failed: go toolchain\""
+  [ "$mut" = literal2 ] && printf '%s\n' '    curl -fsSL -o "$tmp/other.tgz" "https://mirror.example.org/go1.27.3.linux-amd64.tar.gz" || pipeline_fail "download failed"'
   [ "$mut" = twohosts ] && printf '%s\n' '    curl -fsSL -o "$tmp/go2.tgz" "https://mirror.example.org/go${GO_VER}.${A_GO}.tar.gz" || pipeline_fail "download failed"'
   [ "$mut" = noverify ] || printf '%s\n' '    verify "$tmp/go.tgz"'
   printf '%s\n' '    ;;' 'esac'
@@ -4158,14 +4166,18 @@ gocase gobothmoved "$GOB" "$(gosc 1.27.3 0.75.0)"
 runck gobothmoved '{"times": {}}'
 CASE="go and trivy moved together: trivy still FAILS (exit 1), go is listed as exempt, not as failing"
 check test "$rc" -eq 1; check grep -q 'FAIL tool:trivy@0.75.0' "$work/gobothmoved.out"; check bash -c "! grep -q 'FAIL tool:go@' '$work/gobothmoved.out'"
-for mut in nohost nopin noverify twohosts; do
-  gocase "gomut-$mut" "$GOB" "$(gosc 1.27.3 0.74.0 $mut)"
+for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2; do
+  if [ "$mut" = literal2 ]; then gocase "gomut-$mut" "$(gosc 1.27.2 0.74.0 literal2)" "$(gosc 1.27.3 0.74.0 literal2)"; else gocase "gomut-$mut" "$GOB" "$(gosc 1.27.3 0.74.0 $mut)"; fi
   runck "gomut-$mut" '{"times": {}}'
   case $mut in
     nohost) CASE="go downloaded from a host that is not go.dev keeps the 7-day hold: FAILS (exit 1)" ;;
     nopin) CASE="go whose arm64 sha256 pin is empty keeps the 7-day hold: FAILS (exit 1)" ;;
     noverify) CASE="go with no verify call on the download keeps the 7-day hold: FAILS (exit 1)" ;;
     twohosts) CASE="go with a second download from another host keeps the 7-day hold: FAILS (exit 1)" ;;
+    verifyoff) CASE="go whose verify() does nothing keeps the 7-day hold: FAILS (exit 1)" ;;
+    nocompare) CASE="go whose verify() computes the hash but never compares it keeps the 7-day hold: FAILS (exit 1)" ;;
+    sumreset) CASE="go whose installer resets SUM outside the pinned rows keeps the 7-day hold: FAILS (exit 1)" ;;
+    literal2) CASE="go with a second download of a literal Go archive name (present in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
   esac
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done

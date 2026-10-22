@@ -1380,7 +1380,10 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
 
 GO_EXEMPT_REASON = "exempt from the 7-day hold: Go's own release, downloaded from go.dev and verified against its pinned sha256 (owner ratified Oct 21 2026, REQ-SUP-001-AC27); the advisory check still applies"
 _GO_VER_LINE = re.compile(r"^GO_VER=(\d+\.\d+\.\d+)$")
-_GO_CURL = re.compile(r'^[ \t]*curl -fsSL -o "\$tmp/go\.tgz" "https://go\.dev/dl/go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz" \|\| pipeline_fail "[^"$`\\]*"[ \t]*$')
+_GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]*$')
+_GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die "download failed: go toolchain"[ \t]*$')
+_GO_VERIFY = ["verify() { # file", "  local got", "  got=$(sha256sum \"$1\" | cut -d' ' -f1)",
+              '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"', "}"]
 _GO_SUM = {a: re.compile(r"^[ \t]*go:" + a + r"\) SUM=[0-9a-f]{64} ;;[ \t]*$") for a in (r"x86_64\|go:amd64", r"aarch64\|go:arm64")}
 
 
@@ -1398,13 +1401,22 @@ def go_exemption(root, head):
     vers = [m.group(1) for m in (_GO_VER_LINE.match(l) for l in lines) if m]
     if len(vers) != 1 or sum(1 for l in lines if re.match(r"^[ \t]*(?:export[ \t]+)?GO_VER=", l)) != 1:
         return None
-    fetch = [i for i, l in enumerate(lines) if re.search(r"\b(curl|wget)\b", l) and re.search(r"go\.tgz|GO_VER|go\.dev|golang|go\$\{", l)]
+    fetch = [i for i, l in enumerate(lines) if re.search(r"\b(curl|wget)\b", l) and re.search(r"go\.tgz|GO_VER|gofile|go\.dev|golang|go\$\{|go[0-9]+\.[0-9]", l)]
     if len(fetch) != 1 or not _GO_CURL.match(lines[fetch[0]]):
+        return None
+    names = [l for l in lines if re.match(r"^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+)?gofile=", l)]
+    if len(names) != 1 or not _GO_FILE.match(names[0]):
         return None
     nxt = next((l.strip() for l in lines[fetch[0] + 1:] if l.strip()), "")
     if nxt != 'verify "$tmp/go.tgz"':
         return None
     if any(sum(1 for l in lines if rx.match(l)) != 1 for rx in _GO_SUM.values()):
+        return None
+    # the verifier is the reviewed one, defined once, and nothing assigns SUM outside the pinned rows (a row is `pattern) SUM=... ;;`, never a line that starts with SUM=)
+    starts = [i for i, l in enumerate(lines) if re.match(r"^[ \t]*verify\(\)", l)]
+    if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(_GO_VERIFY)]] != _GO_VERIFY:
+        return None
+    if any(re.match(r"^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+|declare[ \t]+(?:-\w+[ \t]+)?)?SUM=", l) for l in lines):
         return None
     return vers[0]
 
