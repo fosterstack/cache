@@ -9,9 +9,9 @@ is across the gap.
 FosterStack Cache is a single static binary with zero runtime dependencies
 (`CGO_ENABLED=0`, `FROM scratch`/distroless — nothing to `apt-get` on the
 host, nothing the binary reaches out for at startup), so an air-gapped
-install is cheap: move the artifact across, verify it, run it. Once the
-release files are across the gap, installing and running need no further
-downloads — the product ships that way by construction, not as a special
+install is cheap: move the artifact across, verify it, run it. This page is
+the DISA CHPG §2.1(7) deliverable ("no build-time downloads; dependencies
+pre-staged") — the product ships that way by construction, not as a special
 disconnected-mode build.
 
 ## What to bring across the gap
@@ -169,3 +169,8 @@ check anything against a registry after the fact:
 ```json
 {"msg":"fscache: starting","fips140":"active (Go validated module ..., CMVP cert #5247)", ...}
 ```
+
+The Compliance tier sells the authored analysis that pairs with this build for
+a CMMC or NIST SP 800-171 assessment boundary — the applicability statement,
+a monthly attestation letter signed by FosterStack LLC, and questionnaire
+support. The bytes, the evidence, and this binary are free.
