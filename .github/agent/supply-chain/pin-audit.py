@@ -1107,6 +1107,18 @@ def body_of(f, rb, owner, ran, today):
 
 
 # ---------- history: what we ran in the last 90 days ----------
+# The history reader refuses a revision whose inventory cannot be read (a command line over 4000 characters is never read partially, pin-inventory MAX_LINE). Exactly these revisions
+# are skipped instead, by FULL lowercase 40-hex sha, each for one stated reason (advisor 0637): they are the Oct 20 2026 RED commits of the release-chain branch's PR 459, whose test
+# file bin/chain-sign-wiring-test.sh held a 12000-character fixture line (removed in the later rounds of that PR). They sit in that branch's history, so once it lands every pull request
+# that moves a version would stop at them for the 90-day lookback. Their trees differ from their neighbours' by that one test file, so no pin is lost by skipping them.
+# Anything else unreadable, and any other error of a listed revision, still ends the audit (fail closed): a revision is added to this list only by a reviewed change that names it.
+SKIP_UNREADABLE = {
+    "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
+    "6ff1768c0e63d0f60f6072267817062d53934a08": "PR 459 round 7 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
+    "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b": "PR 459 round 8 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
+}
+
+
 def history_items(root, start, now):
     since = (now - dt.timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
@@ -1117,7 +1129,13 @@ def history_items(root, start, now):
         revs.append(before)
     items = {}
     for r in revs:
-        items.update(inv.load_at(root, r))
+        try:
+            items.update(inv.load_at(root, r))
+        except RuntimeError as e:
+            # only the named revisions, and only for the cap's own refusal; every other error, and every unlisted revision, still ends the audit
+            if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
+                continue
+            raise
     return items
 
 
