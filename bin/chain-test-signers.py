@@ -565,10 +565,7 @@ SIGNS = (False, "provenance", "other")
 # PR 1b: the CLOSED list of rules a per-row `exceptions` entry may waive (extend only by a reviewed edit when a real text needs it)
 # Round 3 (5): the ONE pinned step REQ-CHAIN-004-AC2 ratifies, as an exact tuple (file, job, id) -> run text. An entry for any other tuple or text is
 # an error until a later reviewed change adds it HERE.
-PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"',
-                  # advisor 0522 ruling D (Oct 20): the bubblewrap package melange's runner needs, from the runner's signed Ubuntu repository, in the two apk jobs (the same line in both)
-                  (".github/workflows/stage-build.yml", "apk", "bwrap"): "sudo apt-get install -y -qq --no-install-recommends bubblewrap",
-                  (".github/workflows/stage-reproducibility.yml", "apk", "bwrap"): "sudo apt-get install -y -qq --no-install-recommends bubblewrap"}
+PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'}
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
 # plain literal; never a secret, a glued expression or a substitution

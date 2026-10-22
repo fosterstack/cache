@@ -41,6 +41,17 @@
       "sha256": "55c2c5716053b8b82b0009d6186aba33e1f478e75ebc728b9f7c3714155699ed"
     },
     {
+      "path": "bin/install-host-bwrap.py",
+      "tools": [
+        "at",
+        "tar"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the apk jobs' host-tools step: unpacks bubblewrap and what it needs from the archive just pulled (the packages build/locks/host-tools.lock names, checked against the datahash of each apk) into host-tools/ and writes the bwrap wrapper melange's bubblewrap runner calls; no network, no package manager, no sudo, no other program (REQ-CHAIN-004-AC17); the listed tools are words in its messages and comments that the text scan over-reports (the script starts no program: the archive format is read with the Python library)",
+      "sha256": "2d6ce2edab56ce07684a27da28709045600f6f71a08f0fadf5ec467237962385"
+    },
+    {
       "path": "bin/chain-verify.py",
       "sha256": "b621d8943fe985c86663c00ac1eb82c957eca981a590f94021fe9efa0efad693",
       "tools": [
@@ -2796,20 +2807,6 @@
       "id": "digests",
       "run": "echo \"digests=$(jq -c . digests.json)\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-004-AC2: the stage output Sign reads (the digests.json text); the one reviewed write into the job outputs"
-    },
-    {
-      "file": ".github/workflows/stage-build.yml",
-      "job": "apk",
-      "id": "bwrap",
-      "run": "sudo apt-get install -y -qq --no-install-recommends bubblewrap",
-      "why": "runner-side install of bubblewrap under R7 (a distribution package from the runner's signed Ubuntu repository, the same limit as scan.yml's skopeo install); the sandbox melange's bubblewrap runner needs and the hosted images do not ship; never an input of the built bytes (Rebuild compares digests); REQ-CHAIN-004-AC3, rule 38a; advisor ruling D, Oct 20"
-    },
-    {
-      "file": ".github/workflows/stage-reproducibility.yml",
-      "job": "apk",
-      "id": "bwrap",
-      "run": "sudo apt-get install -y -qq --no-install-recommends bubblewrap",
-      "why": "runner-side install of bubblewrap under R7 (a distribution package from the runner's signed Ubuntu repository, the same limit as scan.yml's skopeo install); the sandbox melange's bubblewrap runner needs and the hosted images do not ship; never an input of the built bytes (Rebuild compares digests); REQ-CHAIN-004-AC3, rule 38a; advisor ruling D, Oct 20"
     }
   ]
 }

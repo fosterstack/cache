@@ -53,13 +53,12 @@ jobs:
         run: bash bin/install-scanner.sh go
       - name: install melange (pinned by checksum)
         run: bash bin/install-build-tools.sh melange
-      - id: bwrap
-        name: install bubblewrap (the sandbox of the sealed build, from the runner's signed Ubuntu repository)
-        run: sudo apt-get install -y -qq --no-install-recommends bubblewrap
       - name: install crane (pinned by checksum)
         run: bash bin/install-scanner.sh crane
       - name: pull the archive by its committed digest
         run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - name: unpack the host tools from the archive (bubblewrap for melange's runner)
+        run: python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools
       - name: apk under Witness
         if: ${{ inputs.mode == 'release' }}
         env:
