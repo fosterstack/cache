@@ -11,121 +11,6 @@ here=$(cd "$(dirname "$0")/../../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
-# The chain's 25 suite steps (REQ-CHAIN-001..003 and the suites that followed), exactly as they stand in allowlist-chain on the release-chain branch. The judge below
-# accepts the allowlist-chain job in EXACTLY TWO forms: main's own steps, or main's steps followed by these 25, each exact and in order (the transition judge,
-# cache#508's landing: the strict single form arrives with the landing and replaces this file). The cases read the same data.
-read -r -d '' PIN_WIRING_CHAIN25 <<'JSON' || true
-[
- {
-  "name": "suite guard (no tracked test file is empty; the guard's own regressions)",
-  "run": "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh"
- },
- {
-  "env": {
-   "BASE": "${{ github.base_ref }}"
-  },
-  "if": "${{ github.base_ref != '' }}",
-  "name": "suite floors only rise (against the merge base on a pull request)",
-  "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
- },
- {
-  "name": "same-day reuse of Amazon Inspector results \u2014 keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)",
-  "run": "bash bin/inspector-reuse-test.sh"
- },
- {
-  "name": "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)",
-  "run": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"
- },
- {
-  "name": "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)",
-  "run": "bash bin/chain-hostile-test.sh"
- },
- {
-  "name": "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)",
-  "run": "bash bin/chain-sign-wiring-test.sh"
- },
- {
-  "name": "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)",
-  "run": "bash bin/chain-records-test.sh"
- },
- {
-  "name": "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)",
-  "run": "bash bin/chain-build-wiring-test.sh"
- },
- {
-  "name": "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)",
-  "run": "bash bin/vex-index-test.sh </dev/null"
- },
- {
-  "name": "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)",
-  "run": "bash bin/chain-build-admit-test.sh"
- },
- {
-  "name": "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)",
-  "run": "bash bin/chain-bind-test.sh"
- },
- {
-  "name": "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)",
-  "run": "bash bin/chain-rebuild-test.sh"
- },
- {
-  "name": "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)",
-  "run": "bash bin/chain-snapshot-test.sh"
- },
- {
-  "name": "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)",
-  "run": "bash bin/chain-install-witness-test.sh"
- },
- {
-  "name": "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)",
-  "run": "bash bin/chain-check-scripts-test.sh"
- },
- {
-  "name": "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)",
-  "run": "bash bin/chain-check-wiring-test.sh"
- },
- {
-  "name": "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)",
-  "run": "bash bin/verify-release-guide-test.sh </dev/null"
- },
- {
-  "name": "the pinned crane install (REQ-CHAIN-007-AC7)",
-  "run": "bash bin/chain-install-crane-test.sh"
- },
- {
-  "name": "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)",
-  "run": "bash bin/chain-release-wiring-test.sh"
- },
- {
-  "name": "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)",
-  "run": "bash bin/chain-release-scripts-test.sh"
- },
- {
-  "name": "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)",
-  "run": "bash bin/chain-release-metadata-test.sh"
- },
- {
-  "name": "the customer guide \u2014 every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)",
-  "run": "bash bin/vex-guide-test.sh"
- },
- {
-  "name": "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)",
-  "run": "bash bin/vex-live-test-test.sh"
- },
- {
-  "name": "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)",
-  "run": "bash .github/agent/tests/vex-live-pins-test.sh"
- },
- {
-  "env": {
-   "CHAIN_TEST_REQUIRE_NETCUT": "1"
-  },
-  "name": "every suite runs at or above its committed floor (real counts)",
-  "run": "python3 -I bin/suite-guard-run.py all --count-only test-evidence/suite-floors.json ."
- }
-]
-JSON
-export PIN_WIRING_CHAIN25
 
 judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
@@ -279,28 +164,64 @@ if idx["fetch"] != [1] or idx["check"] != [2]:
     bad.append("the allowlist job's first three steps are not exactly: checkout, base-ref fetch, check (nothing before or between)")
 for w in sorted(want - seen):
     bad.append(f"no step runs `{w}`")
-# the release chain's four suites (REQ-CHAIN-001..003, Codex #249 r2 blocker; the #251 lesson): each is ONE step of the allowlist job with
+# the release chain's suites (REQ-CHAIN-001..003, Codex #249 r2 blocker; the #251 lesson; moved from `allowlist` to `allowlist-chain` so `allowlist` stays fast): each is ONE step of the allowlist-chain job with
 # exactly this name and this run line and nothing else (no if, continue-on-error, env, shell, working-directory, timeout-minutes), so a
 # pull request cannot remove, skip, rename, weaken or move them
 CHAIN_STEPS = {
+    "suite guard (no tracked test file is empty; the guard's own regressions)": "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh",
+    "same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)": "bash bin/inspector-reuse-test.sh",
     "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
     "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)": "bash bin/chain-records-test.sh",
     "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)": "bash bin/chain-build-wiring-test.sh",
+    "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)": "bash bin/vex-index-test.sh </dev/null",
     "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)": "bash bin/chain-build-admit-test.sh",
     "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)": "bash bin/chain-bind-test.sh",
     "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)": "bash bin/chain-rebuild-test.sh",
     "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)": "bash bin/chain-snapshot-test.sh",
     "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)": "bash bin/chain-install-witness-test.sh",
+    "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)": "bash bin/chain-check-scripts-test.sh",
+    "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)": "bash bin/chain-check-wiring-test.sh",
+    "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)": "bash bin/verify-release-guide-test.sh </dev/null",
+    "the pinned crane install (REQ-CHAIN-007-AC7)": "bash bin/chain-install-crane-test.sh",
+    "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)": "bash bin/chain-release-wiring-test.sh",
+    "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)": "bash bin/chain-release-scripts-test.sh",
+    "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)": "bash bin/chain-release-metadata-test.sh",
+    "the customer guide — every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)": "bash bin/vex-guide-test.sh",
+    "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)": "bash bin/vex-live-test-test.sh",
+    "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)": "bash .github/agent/tests/vex-live-pins-test.sh",
 }
+# the two guard steps of the suite floors carry an `if` or an `env` on purpose: judged as whole steps, every key and value
+GUARD_STEPS = [
+    {
+        "name": "suite floors only rise (against the merge base on a pull request)",
+        "if": "${{ github.base_ref != '' }}",
+        "env": {
+            "BASE": "${{ github.base_ref }}"
+        },
+        "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+    },
+    {
+        "name": "every suite runs at or above its committed floor (real counts)",
+        "env": {
+            "CHAIN_TEST_REQUIRE_NETCUT": "1"
+        },
+        "run": "python3 -I bin/suite-guard-run.py all --count-only test-evidence/suite-floors.json ."
+    }
+]
+chain_steps = ((d.get("jobs") or {}).get("allowlist-chain") or {}).get("steps", [])
 for name, run in CHAIN_STEPS.items():
-    hits = [st for st in steps_ if (st.get("run") or "").strip(" \t\n") == run]
+    hits = [st for st in chain_steps if (st.get("run") or "").strip(" \t\n") == run]
     if len(hits) != 1:
-        bad.append(f"the allowlist job does not have exactly one step running `{run}`")
+        bad.append(f"the allowlist-chain job does not have exactly one step running `{run}`")
         continue
     if hits[0] != {"name": name, "run": hits[0].get("run")} or "\n" in hits[0]["run"].strip("\n"):
         bad.append(f"the step running `{run}` is not exactly name {name!r} and that one run line (keys: {sorted(hits[0])})")
+for want in GUARD_STEPS:
+    hits = [st for st in chain_steps if st.get("name") == want["name"]]
+    if hits != [want]:
+        bad.append(f"the allowlist-chain job does not have exactly the guard step {want['name']!r} as judged (every key and value)")
 # REQ-SCAN-015-AC2: exactly one step runs the scanner guard, and it is exactly this name and run and nothing else
 # (no if, continue-on-error, env, shell, working-directory, timeout); its place after the PyYAML install is not
 # judged, since the guard run without PyYAML fails, which is red, not a bypass
@@ -413,6 +334,113 @@ SPLIT_STEPS = json.loads(r'''{
   {
    "name": "Go-bump PR recovery regressions (audit R03 \u2014 orphaned branch / closed-merged)",
    "run": "bash bin/go-bump-open-pr-test.sh"
+  },
+  {
+   "name": "suite guard (no tracked test file is empty; the guard's own regressions)",
+   "run": "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh"
+  },
+  {
+   "env": {
+    "BASE": "${{ github.base_ref }}"
+   },
+   "if": "${{ github.base_ref != '' }}",
+   "name": "suite floors only rise (against the merge base on a pull request)",
+   "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+  },
+  {
+   "name": "same-day reuse of Amazon Inspector results \u2014 keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)",
+   "run": "bash bin/inspector-reuse-test.sh"
+  },
+  {
+   "name": "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)",
+   "run": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"
+  },
+  {
+   "name": "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)",
+   "run": "bash bin/chain-hostile-test.sh"
+  },
+  {
+   "name": "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)",
+   "run": "bash bin/chain-sign-wiring-test.sh"
+  },
+  {
+   "name": "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)",
+   "run": "bash bin/chain-records-test.sh"
+  },
+  {
+   "name": "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)",
+   "run": "bash bin/chain-build-wiring-test.sh"
+  },
+  {
+   "name": "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)",
+   "run": "bash bin/vex-index-test.sh </dev/null"
+  },
+  {
+   "name": "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)",
+   "run": "bash bin/chain-build-admit-test.sh"
+  },
+  {
+   "name": "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)",
+   "run": "bash bin/chain-bind-test.sh"
+  },
+  {
+   "name": "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)",
+   "run": "bash bin/chain-rebuild-test.sh"
+  },
+  {
+   "name": "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)",
+   "run": "bash bin/chain-snapshot-test.sh"
+  },
+  {
+   "name": "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)",
+   "run": "bash bin/chain-install-witness-test.sh"
+  },
+  {
+   "name": "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)",
+   "run": "bash bin/chain-check-scripts-test.sh"
+  },
+  {
+   "name": "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)",
+   "run": "bash bin/chain-check-wiring-test.sh"
+  },
+  {
+   "name": "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)",
+   "run": "bash bin/verify-release-guide-test.sh </dev/null"
+  },
+  {
+   "name": "the pinned crane install (REQ-CHAIN-007-AC7)",
+   "run": "bash bin/chain-install-crane-test.sh"
+  },
+  {
+   "name": "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)",
+   "run": "bash bin/chain-release-wiring-test.sh"
+  },
+  {
+   "name": "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)",
+   "run": "bash bin/chain-release-scripts-test.sh"
+  },
+  {
+   "name": "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)",
+   "run": "bash bin/chain-release-metadata-test.sh"
+  },
+  {
+   "name": "the customer guide \u2014 every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)",
+   "run": "bash bin/vex-guide-test.sh"
+  },
+  {
+   "name": "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)",
+   "run": "bash bin/vex-live-test-test.sh"
+  },
+  {
+   "name": "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)",
+   "run": "bash .github/agent/tests/vex-live-pins-test.sh"
+  },
+  {
+   "env": {
+    "CHAIN_TEST_REQUIRE_NETCUT": "1"
+   },
+   "name": "every suite runs at or above its committed floor (real counts)",
+   "run": "python3 -I bin/suite-guard-run.py all --count-only test-evidence/suite-floors.json ."
   }
  ],
  "allowlist-persona": [
@@ -583,8 +611,6 @@ for jid, want_steps in SPLIT_STEPS.items():
         bad.append(f"the {jid} job does not run on exactly `ubuntu-latest`")
     got = sj.get("steps", [])
     accepted = [want_steps]
-    if jid == "allowlist-chain":      # the transition: the second exact form carries the chain's 25 suites (nothing between, nothing after)
-        accepted.append(want_steps + json.loads(os.environ["PIN_WIRING_CHAIN25"]))
     if jid == "allowlist-pins-auditor":   # the transition (cache#489 and #521's landings): exactly main's list, or it plus either new step, or both, each at its anchor
         def _after(lst, anchor_run, step):
             i = [k for k, x in enumerate(lst) if x.get("run") == anchor_run]
@@ -778,10 +804,11 @@ case_ job-defaults-run          bad "d['jobs']['allowlist']['defaults'] = {'run'
 case_ ps4-ifs-prompt            bad "d['jobs']['allowlist']['env'] = {'IFS': 'x'}"
 case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.so'}"
 
-# the release chain's ten required steps (four of PR 1, six of PR 2) (REQ-CHAIN-001..003): each mutation of each step is caught
-for r in "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh"; do
-  n=$(basename "${r##* }" .sh); cs="[s for s in $steps if (s.get('run') or '').strip() == '$r'][0]"
-  case_ "$n-removed"     bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != '$r']"
+# the release chain's required steps (REQ-CHAIN-001..003 and the suites that followed), all in the allowlist-chain job: each mutation of each step is caught
+csteps='d["jobs"]["allowlist-chain"]["steps"]'
+for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/vex-index-test.sh </dev/null" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
+  n=$(basename "${r##* }" .sh); cs="[s for s in $csteps if (s.get('run') or '').strip() == '$r'][0]"
+  case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$r']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
   case_ "$n-continue"    bad "$cs['continue-on-error'] = 'true'"
   case_ "$n-or-true"     bad "$cs['run'] = '$r || true'"
@@ -790,10 +817,23 @@ for r in "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/c
   case_ "$n-shell"       bad "$cs['shell'] = \"bash -c 'true' {0}\""
   case_ "$n-workdir"     bad "$cs['working-directory'] = 'bin'"
   case_ "$n-timeout"     bad "$cs['timeout-minutes'] = '1'"
-  case_ "$n-other-job"   bad "x = $cs; $steps.remove(x); d['jobs']['test']['steps'].append(x)"
-  case_ "$n-twice"       bad "$steps.append(dict($cs))"
+  case_ "$n-other-job"   bad "x = $cs; $csteps.remove(x); d['jobs']['test']['steps'].append(x)"
+  case_ "$n-back-in-allowlist" bad "x = $cs; $csteps.remove(x); $steps.append(x)"
+  case_ "$n-twice"       bad "$csteps.append(dict($cs))"
 done
-case_ chain-verify-no-netcut bad "[s for s in $steps if 'chain-verify-test.sh' in (s.get('run') or '')][0]['run'] = 'bash bin/chain-verify-test.sh'"
+# the two suite-floor guard steps (an `if` or an `env` on purpose): every key and value is judged
+for g in "floors-vs-base" "suite-guard-run.py"; do
+  gs="[s for s in $csteps if '$g' in (s.get('run') or '')][0]"
+  case_ "guard-$g-removed"  bad "$csteps[:] = [s for s in $csteps if '$g' not in (s.get('run') or '')]"
+  case_ "guard-$g-if"       bad "$gs['if'] = 'false'"
+  case_ "guard-$g-env"      bad "$gs['env'] = {'CHAIN_TEST_REQUIRE_NETCUT': '0'}"
+  case_ "guard-$g-or-true"  bad "$gs['run'] = $gs['run'] + ' || true'"
+  case_ "guard-$g-renamed"  bad "$gs['name'] = 'guard'"
+  case_ "guard-$g-shell"    bad "$gs['shell'] = \"bash -c 'true' {0}\""
+  case_ "guard-$g-continue" bad "$gs['continue-on-error'] = 'true'"
+  case_ "guard-$g-in-allowlist" bad "x = $gs; $csteps.remove(x); $steps.append(x)"
+done
+case_ chain-verify-no-netcut bad "[s for s in $csteps if 'chain-verify-test.sh' in (s.get('run') or '')][0]['run'] = 'bash bin/chain-verify-test.sh'"
 
 # judge mode (the trusted gate, .github/workflows/agent-review-gate.yml): PIN_WIRING_JUDGE_GIT=<commit> judges THAT
 # commit's .github/workflows/ci.yml, read as a git object from the current repo (nothing checked out or run), and
@@ -841,31 +881,6 @@ case_ split-suite-deleted     bad "st = d['jobs']['allowlist-persona']['steps'];
 case_ split-suite-or-true     bad "x = [x for x in d['jobs']['allowlist-persona']['steps'] if 'persona-uat-agent-test' in (x.get('run') or '')][0]; x['run'] += ' || true'"
 case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain']['steps']; st[-1], st[-2] = st[-2], st[-1]"
 case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append({'name': 'x', 'run': 'true'})"
-# The transition judge (cache#508's landing): allowlist-chain is accepted in EXACTLY two forms, main's steps, or main's steps + the chain's 25 suites (the data of
-# PIN_WIRING_CHAIN25), each exact and in order. Every other shape is refused.
-C25="import os, json; c25 = json.loads(os.environ['PIN_WIRING_CHAIN25']); cs = d['jobs']['allowlist-chain']['steps']; "
-case_ chain25-form-accepted        ok  "${C25}cs.extend(c25)"
-case_ chain25-last-missing         bad "${C25}cs.extend(c25[:-1])"
-case_ chain25-first-missing        bad "${C25}cs.extend(c25[1:])"
-case_ chain25-half                 bad "${C25}cs.extend(c25[:12])"
-case_ chain25-one-extra            bad "${C25}cs.extend(c25); cs.append({'name': 'x', 'run': 'true'})"
-case_ chain25-twice                bad "${C25}cs.extend(c25); cs.extend(c25)"
-case_ chain25-swapped-first-two    bad "${C25}cs.extend(c25[1::-1] + c25[2:])"
-case_ chain25-reversed             bad "${C25}cs.extend(reversed(c25))"
-case_ chain25-before-main-steps    bad "${C25}cs[:] = c25 + cs"
-case_ chain25-inserted-in-middle   bad "${C25}cs[10:10] = c25"
-case_ chain25-one-moved-to-allowlist bad "${C25}cs.extend(c25[1:]); d['jobs']['allowlist']['steps'].append(c25[0])"
-# the first form (main's own 22 steps in allowlist-chain) with the suites elsewhere: allowlist is not an exact list (the release-chain branch's form before its move)
-case_ chain25-first-form-suites-in-allowlist ok "${C25}d['jobs']['allowlist']['steps'].extend(c25)"
-case_ chain25-guard-if-changed     bad "${C25}x = [dict(s) for s in c25]; [s.__setitem__('if', 'true') for s in x if 'if' in s]; cs.extend(x)"
-case_ chain25-guard-env-changed    bad "${C25}x = [dict(s) for s in c25]; [s.__setitem__('env', {'CHAIN_TEST_REQUIRE_NETCUT': '0'}) for s in x if 'env' in s]; cs.extend(x)"
-for i in $(seq 0 24); do
-  case_ "chain25-step-$i-removed"   bad "${C25}cs.extend(c25[:$i] + c25[$i+1:])"
-  case_ "chain25-step-$i-or-true"   bad "${C25}x = [dict(s) for s in c25]; x[$i]['run'] = x[$i]['run'] + ' || true'; cs.extend(x)"
-  case_ "chain25-step-$i-renamed"   bad "${C25}x = [dict(s) for s in c25]; x[$i]['name'] = 'renamed'; cs.extend(x)"
-  case_ "chain25-step-$i-continue"  bad "${C25}x = [dict(s) for s in c25]; x[$i]['continue-on-error'] = 'true'; cs.extend(x)"
-  case_ "chain25-step-$i-shell"     bad "${C25}x = [dict(s) for s in c25]; x[$i]['shell'] = 'bash -c true {0}'; cs.extend(x)"
-done
 # The transition judge (cache#489 / #521's landings): allowlist-pins-auditor is accepted in EXACTLY four forms: main's list, + the VEX step after panel-test, + the isolation step after workflow-consolidation, or both
 PA="import json; ps = d['jobs']['allowlist-pins-auditor']['steps']; ps[:] = [x for x in ps if x.get('run') != 'bash bin/vex-index-test.sh </dev/null']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; vex = {'name': 'the final image index that carries our OpenVEX for Docker Scout \\u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)', 'run': 'bash bin/vex-index-test.sh </dev/null'}; iso = {'name': 'a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)', 'run': 'bash bin/job-isolation-test.sh'}; "
 case_ pa-vex-form-accepted        ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
