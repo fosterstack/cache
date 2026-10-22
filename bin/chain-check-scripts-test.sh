@@ -188,6 +188,7 @@ PZ
   ;; esac
 fi
 if [ "\$name" = grype ]; then
+  case " \$* " in *" --platform linux/arm64 "*) export FAKE_GRYPE_MATCHES="\${FAKE_GRYPE_ARM64_MATCHES-\${FAKE_GRYPE_MATCHES:-[]}}";; esac
   python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({"matches":json.loads(os.environ.get("FAKE_GRYPE_MATCHES","[]")),"source":{"type":"image","target":{}},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
 else
   eco=Debian:12; case " \$* " in *go.mod*) eco=Go;; esac
@@ -278,6 +279,28 @@ want_fail "AC4 an image directory without oci-layout is not a layout and is refu
 rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" fips > /dev/null
 want_ok "AC4 grype scans each image layout directory by oci-dir: and osv-scanner a tar made of it" "${SCAN[@]}"
 if grep -Eq '^grype oci-dir:images/(production|fips) ' "$work/log" && ! grep -q 'oci-archive' "$work/log" && grep -Eq '^osv-scanner scan image --archive .*\.tar$' "$work/log" 2> /dev/null; then ok "AC4 the scanner argv carries the layout: oci-dir for grype, an archive made of the layout for osv"; else bad "AC4 layout argv: $(grep -E '^(grype|osv)' "$work/log" | head -4 | cut -c1-160 | tr '\n' '|')"; fi
+# ---- chain-v030 review S1 (REQ-CHAIN-006-AC4): grype scans each platform child of the multi-platform index, both required --------------
+# `grype oci-dir:` on the index with no platform scans only the runner's own platform (linux/amd64): the arm64 child's packages were never scanned while the
+# verdict was recorded for the index digest. Each variant is now scanned once per child (--platform linux/amd64, linux/arm64), each child's own manifest
+# digest is recorded, and an index that lacks either child fails.
+mkfake grype 0 120; mkfake osv-scanner 0 80; : > "$work/log"
+want_ok "AC4 S1 the layouts with both children pass" "${SCAN[@]}"
+for v in production fips; do for a in amd64 arm64; do
+  if grep -Eq "^grype oci-dir:images/$v .*--platform linux/$a( |\$)" "$work/log"; then ok "AC4 S1 grype scanned the $v image's linux/$a child explicitly"; else bad "AC4 S1 no grype call with --platform linux/$a on the $v image"; fi
+done; done
+if grep -E '^grype oci-dir:' "$work/log" | grep -qv -- '--platform linux/'; then bad "AC4 S1 a grype image scan ran without a platform"; else ok "AC4 S1 no grype image scan runs without a platform"; fi
+for v in production fips; do for a in amd64 arm64; do
+  cd_=$(jq -r ".$a.manifest" "$fx/images/$v.map")
+  if jq -e --arg n "$v/linux/$a" --arg d "sha256:$cd_" '.scanners[] | select(.name == "grype") | .subjects | map(select(.name == $n and .digest == $d and .packages > 0 and .verdict == "pass")) | length == 1' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 S1 the results record the $v linux/$a child by its own manifest digest"; else bad "AC4 S1 no grype subject $v/linux/$a with digest sha256:$cd_"; fi
+done; done
+GA='[{"vulnerability":{"id":"CVE-2099-0777","severity":"High"},"artifact":{"name":"arm-only","version":"1"}}]'
+FAKE_GRYPE_ARM64_MATCHES="$GA" FAKE_GRYPE_MATCHES='[]' want_fail "AC4 S1 a vulnerability only in the arm64 child blocks the scan" "does not except" "${SCAN[@]}"
+FAKE_GRYPE_ARM64_MATCHES='[]' FAKE_GRYPE_MATCHES="$GA" want_fail "AC4 S1 a vulnerability only in the amd64 child still blocks" "does not except" "${SCAN[@]}"
+keepp="$work/keep-prod"; rm -rf "$keepp"; cp -R "$fx/images/production" "$keepp"; cp "$fx/images/production.map" "$work/keep-prod.map"; cp "$fx/digests.json" "$work/dig.s1"
+rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 an index with no linux/arm64 child fails naming the platform" "linux/arm64" "${SCAN[@]}"
+rm -rf "$fx/images/production"; cp -R "$keepp" "$fx/images/production"; cp "$work/keep-prod.map" "$fx/images/production.map"; cp "$work/dig.s1" "$fx/digests.json"
+want_ok "AC4 S1 both children again: the scan passes" "${SCAN[@]}"
 # ---- round 1 F1 (Codex A1, B1): the bytes Check reads are the bytes Build recorded -------------------------------------------------------------
 # stage-start authenticates digests.json; the layouts and archives it downloads must be bound to it before any scan, load or run (an index.json that
 # merely exists is no binding): the layout is re-derived from the digest (index, child manifests, every blob re-hashed) and each archive re-hashed.
@@ -987,7 +1010,7 @@ else bad "G bin/check-govulncheck.py is missing or names a signing tool or crede
 # the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
 sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
 if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
-EXPECT=310
+EXPECT=324
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

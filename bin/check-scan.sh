@@ -79,7 +79,17 @@ GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (th
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-add_target() { tname+=("$1"); tdigest+=("$2"); tpath+=("$3"); }   # one scan target: its name, its digest and the file the scanner reads
+add_target() { tname+=("$1"); tdigest+=("$2"); tpath+=("$3"); tplat+=("${4:-}"); }   # one scan target: its name, its digest, the file the scanner reads and (grype on an image) the platform it must scan
+# The platform children of an image layout (S1, chain-v030 review): grype on the multi-platform index with no platform scans only the runner's own
+# platform, so each variant is scanned once per child, by the child's own manifest digest, and an index that lacks a child is a failure.
+# Layout is already bound to digests.json by check-bind (index, child manifests, every blob re-hashed), so the index it reads here is Build's.
+child_digest() {   # child_digest LAYOUT ARCH -> sha256:<child manifest digest>, or nothing when the index does not hold exactly one linux/ARCH child
+  local idx blob; idx=$(jq -r '.manifests[0].digest // empty' "$1/index.json" 2> /dev/null) || return 0
+  [[ "$idx" =~ ^sha256:[0-9a-f]{64}$ ]] || return 0
+  blob="$1/blobs/sha256/${idx#sha256:}"; [ -f "$blob" ] || return 0
+  jq -r --arg a "$2" '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == $a)] | if length == 1 then .[0].digest else empty end' "$blob" 2> /dev/null || true
+}
+PLATFORMS=(amd64 arm64)
 failed=0 ran=0
 all="[]"
 for s in "${scanners[@]}"; do
@@ -114,20 +124,34 @@ for s in "${scanners[@]}"; do
   verdict=pass
   [ -n "$version" ] || { echo "check-scan: $s reports no version" >&2; verdict=fail; }
   subjects="[]"
-  tname=() tdigest=() tpath=()
-  for v in production fips; do add_target "$v" "$(jq -r --arg k "image-$v" '.[$k]' "$digests")" "$images/$v"; done
+  tname=() tdigest=() tpath=() tplat=()
+  for v in production fips; do
+    if [ "$s" = grype ]; then
+      for a in "${PLATFORMS[@]}"; do
+        cd_=$(child_digest "$images/$v" "$a")
+        if [[ "$cd_" =~ ^sha256:[0-9a-f]{64}$ ]]; then add_target "$v/linux/$a" "$cd_" "$images/$v" "linux/$a"
+        else
+          echo "check-scan: grype: the $v image index holds no single linux/$a child: it cannot be scanned for linux/$a, so it is not scanned clean" >&2
+          verdict=fail
+          subjects=$(jq -c --arg n "$v/linux/$a" '. + [{name: $n, digest: null, packages: 0, verdict: "fail"}]' <<< "$subjects")
+        fi
+      done
+    else
+      add_target "$v" "$(jq -r --arg k "image-$v" '.[$k]' "$digests")" "$images/$v"
+    fi
+  done
   if [ "$s" = grype ]; then
     for a in "${tars[@]}"; do add_target "$(basename "$a")" "sha256:$(sha256sum "$a" | cut -d' ' -f1)" "$a"; done
   else
     for m in "${mods[@]}"; do add_target "$m" "sha256:$(sha256sum "$m" | cut -d' ' -f1)" "$m"; done
   fi
   for ti in "${!tname[@]}"; do
-    name=${tname[$ti]} digest=${tdigest[$ti]} path=${tpath[$ti]}
+    name=${tname[$ti]} digest=${tdigest[$ti]} path=${tpath[$ti]} plat=${tplat[$ti]}
     rc=0
     : > "$tmp/out.json"; rm -f "$tmp/sbom.json"
     case "$s:$path" in
       grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
-      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
+      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" ${plat:+--platform "$plat"} --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*) tar -C "$path" -cf "$tmp/img-$name.tar" . && OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$tmp/img-$name.tar" > "$tmp/out.json" || rc=$? ;;
     esac
