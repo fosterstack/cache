@@ -550,7 +550,10 @@ for jid, want_steps in SPLIT_STEPS.items():
     if sj.get("runs-on") != "ubuntu-latest":
         bad.append(f"the {jid} job does not run on exactly `ubuntu-latest`")
     got = sj.get("steps", [])
-    if got != want_steps:
+    accepted = [want_steps]
+    if jid == "allowlist-chain":      # the transition: the second exact form carries the chain's 25 suites (nothing between, nothing after)
+        accepted.append(want_steps + json.loads(os.environ["PIN_WIRING_CHAIN25"]))
+    if got not in accepted:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
         why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
