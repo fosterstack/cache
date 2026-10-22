@@ -189,7 +189,7 @@ for st in job.get("steps", []):
     run = (st.get("run") or "").strip()
     if run in want:
         seen.add(run)
-        for k in ("if", "continue-on-error", "shell", "working-directory"):
+        for k in ("if", "continue-on-error", "shell", "working-directory") + (("env",) if run == "bash .github/agent/tests/check-action-pins-test.sh" else ()):   # env on the cases step: the PINS_* controls (shard, dry, serial, self, jobs) are never set from the workflow
             if k in st:
                 bad.append(f"the step `{run}` has `{k}`")
 # nothing may redirect how those steps execute (step 8 r3, residual 2): a shell startup file, an
@@ -481,6 +481,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/panel-test.sh"
   },
   {
+   "name": "the final image index that carries our OpenVEX for Docker Scout \u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)",
+   "run": "bash bin/vex-index-test.sh </dev/null"
+  },
+  {
    "name": "the auditor's fixtures and tests follow the panel's image set \u2014 the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)",
    "run": "bash .github/agent/tests/auditor-variants-test.sh"
   },
@@ -565,10 +569,11 @@ for jid, want_steps in SPLIT_STEPS.items():
             return lst[:i[0] + 1] + [step] + lst[i[0] + 1:] if len(i) == 1 else None
         _vex = {"name": VEX_NAME, "run": "bash bin/vex-index-test.sh </dev/null"}
         _iso = {"name": ISO_NAME, "run": "bash bin/job-isolation-test.sh"}
-        _a = _after(want_steps, "bash bin/panel-test.sh", _vex)
-        _b = _after(want_steps, "bash bin/workflow-consolidation-test.sh", _iso)
+        _base = [x for x in want_steps if x != _vex]          # main's list without the VEX step, whether or not the branch's own list already carries it
+        _a = _after(_base, "bash bin/panel-test.sh", _vex)
+        _b = _after(_base, "bash bin/workflow-consolidation-test.sh", _iso)
         _ab = _after(_a, "bash bin/workflow-consolidation-test.sh", _iso) if _a else None
-        accepted += [x for x in (_a, _b, _ab) if x]
+        accepted = [x for x in (_base, _a, _b, _ab) if x]
     if got not in accepted:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
@@ -698,6 +703,8 @@ case_ path-on-workflow      bad "d['env'] = {'PATH': '/tmp/fake:/usr/bin'}"
 case_ github-env-write      bad "$steps.insert(1, {'run': 'echo BASH_ENV=/tmp/x.sh >> \"\$GITHUB_ENV\"'})"
 case_ github-path-write     bad "$steps.insert(1, {'run': 'echo /tmp/fake >> \"\$GITHUB_PATH\"'})"
 case_ checkout-other-ref    bad "$steps[0]['with'] = {'ref': 'main'}"
+case_ cases-step-env        bad "[s.__setitem__('env', {'PINS_DRY': '1'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
+case_ cases-step-env-self   bad "[s.__setitem__('env', {'PINS_SELF': '/bin/true'}) for s in $steps if (s.get('run') or '').strip() == 'bash .github/agent/tests/check-action-pins-test.sh']"
 case_ cases-step-removed    bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != 'bash .github/agent/tests/check-action-pins-test.sh']"
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
@@ -820,10 +827,12 @@ for i in $(seq 0 24); do
   case_ "chain25-step-$i-shell"     bad "${C25}x = [dict(s) for s in c25]; x[$i]['shell'] = 'bash -c true {0}'; cs.extend(x)"
 done
 # The transition judge (cache#489 / #521's landings): allowlist-pins-auditor is accepted in EXACTLY four forms: main's list, + the VEX step after panel-test, + the isolation step after workflow-consolidation, or both
-PA="import json; ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; vex = {'name': 'the final image index that carries our OpenVEX for Docker Scout \\u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)', 'run': 'bash bin/vex-index-test.sh </dev/null'}; iso = {'name': 'a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)', 'run': 'bash bin/job-isolation-test.sh'}; "
+PA="import json; ps = d['jobs']['allowlist-pins-auditor']['steps']; ps[:] = [x for x in ps if x.get('run') != 'bash bin/vex-index-test.sh </dev/null']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; vex = {'name': 'the final image index that carries our OpenVEX for Docker Scout \\u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)', 'run': 'bash bin/vex-index-test.sh </dev/null'}; iso = {'name': 'a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)', 'run': 'bash bin/job-isolation-test.sh'}; "
 case_ pa-vex-form-accepted        ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
 case_ pa-iso-form-accepted        ok  "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
 case_ pa-both-forms-accepted      ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-without-vex-accepted     ok  "${PA}pass"
+case_ pa-vex-twice                bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex); ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
 case_ pa-vex-at-end               bad "${PA}ps.append(vex)"
 case_ pa-iso-at-start             bad "${PA}ps.insert(0, iso)"
 case_ pa-iso-twice                bad "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
