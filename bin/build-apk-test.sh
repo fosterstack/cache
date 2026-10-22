@@ -303,7 +303,7 @@ cmpmk "$work/cm2"; cp "$fx/pair/ctrl-post-install.apk" "$work/cm2/rapks/ubuntu-2
 cmpexpect "Rebuild's apk differs in the control section (an extra .post-install, same data) -> exit 1, the apk is named, no pass record" 1 'fscache-fips-0.3.0-r0.apk' "$work/cm2"
 cmpmk "$work/cm3"; cp "$fx/pair/ctrl-post-install.apk" "$work/cm3/apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
 cmpexpect "the same difference the other way round (Build has the extra script) is refused too" 1 'fscache-0.3.0-r0.apk' "$work/cm3"
-cmpmk "$work/cm4"; cp "$fx/pair/b.apk" "$work/cm4/rapks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
+cmpmk "$work/cm4"; cp "$fx/pair/c.apk" "$work/cm4/rapks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
 cmpexpect "Rebuild's apk has other contents (data) -> exit 1" 1 'differs' "$work/cm4"
 cmpmk "$work/cm5"; rm "$work/cm5/rapks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"
 cmpexpect "an apk Build made and Rebuild did not -> refused (exit 2), named" 2 'counterpart|missing' "$work/cm5"
