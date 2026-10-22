@@ -21,7 +21,7 @@
 #      sudo env SOURCE_DATE_EPOCH=.. unshare -n melange build ... --runner bubblewrap: melange runs directly on the VM with the
 #      network cut at the kernel (rule 38a); sudo's own environment reset keeps every token and key out of the build;
 #   5. checks the apk: signed by assembly.rsa.pub, the binary's go version -m is not (devel) and not modified, GOFIPS140=
-#      v1.0.0-c2097c7c is recorded exactly in the fips variant (rules 13, 24);
+#      the module build/locks/fips-module.txt names (v1.0.0-c2097c7c today) is recorded exactly in the fips variant (rules 13, 24);
 #   6. writes OUT/<arch>/<pkg>-<version>-r0.apk (+ APKINDEX.tar.gz, from melange), OUT/fscache-modules.spdx.json (rule 20,
 #      bin/go-module-sbom.py) and OUT/inputs-manifest.json (rule 15, bin/apk-tool.py); the fips variant writes
 #      OUT/fscache-modules-fips.spdx.json and OUT/inputs-manifest-fips.json (the chain builds both variants into one OUT).
@@ -49,6 +49,7 @@ ENVBIN=/usr/bin/env             # TEST-SUBST
 SEALED_ENV=build/sealed-env.json  # TEST-SUBST
 RECIPE_STANDARD=$PWD/build/melange.yaml  # TEST-SUBST
 RECIPE_FIPS=$PWD/build/melange-fips.yaml  # TEST-SUBST
+FIPS_MODULE=$PWD/build/locks/fips-module.txt  # TEST-SUBST (the module the FIPS build uses; the daily refresh rewrites this one file)
 
 [ -f bin/build-apk.sh ] && [ -f bin/build-apk-helper.py ] && [ -f build/sealed-env.json ] || die "run bin/build-apk.sh from the repository root (its helpers are named by repo-relative paths)" 2
 
@@ -202,7 +203,11 @@ headrev=$("$GIT" -C "$src" rev-parse HEAD 2>/dev/null) || die "cannot read the s
 [ -n "$binrev" ] && [ "$binrev" = "$headrev" ] || die "the binary's vcs.revision is '${binrev:-none}', not the source HEAD $headrev: the binary is not tied to this source" 1
 fipsvals=$(awk -F'\t' '$2=="build" && $3 ~ /^GOFIPS140=/{print $3}' "$tmp/buildinfo.txt")
 if [ "$variant" = fips ]; then
-  [ "$fipsvals" = "GOFIPS140=v1.0.0-c2097c7c" ] || die "the fips binary must record exactly one GOFIPS140=v1.0.0-c2097c7c and nothing else (found: ${fipsvals:-none})" 1
+  # REQ-BUILDAPK-001-AC2: the module is the one build/locks/fips-module.txt names, read with the grammar bin/refresh-inputs.sh reads it with (one line
+  # vMAJOR.MINOR.PATCH-<8 lower-case hex>, a plain newline, plain ASCII; a missing file, a symlink or anything else is refused, never guessed)
+  [ -f "$FIPS_MODULE" ] && [ ! -L "$FIPS_MODULE" ] || die "build/locks/fips-module.txt is missing, not a regular file or a symlink: the module the fips binary must record is unknown" 1
+  fipswant=$("$PY3" -I -B bin/build-apk-helper.py fips-module "$FIPS_MODULE") || die "build/locks/fips-module.txt must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain newline; refusing" 1
+  [ "$fipsvals" = "$fipswant" ] || die "the fips binary must record exactly one $fipswant (the module build/locks/fips-module.txt names) and nothing else (found: ${fipsvals:-none})" 1
 else
   [ -z "$fipsvals" ] || die "the standard binary records GOFIPS140 ($fipsvals); only the fips variant may" 1
 fi

@@ -2175,7 +2175,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "f589caa84302a03c3772cb2d315eba0bd53e525da99d67af60e17eaa057a8d0d"
+      "sha256": "2de3f2e046d1de850b90d640fbddd55002932986df378109a85fe82ce5c6bfd5"
     },
     {
       "path": "bin/release-sign-apks.sh",
@@ -2284,7 +2284,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "5136b1ef162888a4637e4f766eeff9a79762d72bf11e7b1f7ad5008a5c68e6d7",
+      "sha256": "bbc1f650b71df3281bc4b8aeb18dac02133cf6531c67bf452e58893e1e3efb05",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2403,8 +2403,8 @@
         },
         {
           "rule": "deny",
-          "line": "  [ \"$fipsvals\" = \"GOFIPS140=v1.0.0-c2097c7c\" ] || die \"the fips binary must record exactly one GOFIPS140=v1.0.0-c2097c7c and nothing else (found: ${fipsvals:-none})\" 1",
-          "line_sha256": "d702c5f2fa63ec57010d630e165a2576ab4b77be29cbaf20885a78a771b5c05b",
+          "line": "  [ \"$fipsvals\" = \"$fipswant\" ] || die \"the fips binary must record exactly one $fipswant (the module build/locks/fips-module.txt names) and nothing else (found: ${fipsvals:-none})\" 1",
+          "line_sha256": "b683d12502b5ba1ff41a702cc87c40c38a0ed7bbe677193a20ecebed8abadec5",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
