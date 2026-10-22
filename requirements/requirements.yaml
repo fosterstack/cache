@@ -2634,6 +2634,12 @@ requirements:
         then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line (one character, a tab for a space, a carriage return), a second copy of it that differs only in whitespace, a link named like the file, and that ruling prefix on any other line (of the same file or another) rules nothing, so the nineteen lines are the only lines this ruling allows. A new script that names the vendored folder is refused unless its exact path is listed in the checker; six paths that name it legitimately (the govulncheck vendor-mode tests and checks) are listed, and a seventh file still fails"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC27
+        given: "(owner ratified Oct 21 2026: \"yes skip the 7 day hold lets unblock stuff - go.\" - ops/docs/ratify/2026-10-21-go-releases-skip-7-day-hold.md) a pull request that moves the tool item go, Go's own toolchain release, in bin/install-scanner.sh"
+        when: "pin-age runs"
+        then: "that one item is exempt from the 7-day age and from nothing else: the exemption holds only when the head's installer has exactly one GO_VER, exactly one download line naming Go and it is the https://go.dev/dl/go${GO_VER} fetch, a sha256 pin of 64 hex for each of the two architectures, and the verify call on the very next line, and only for the version GO_VER names; a Go download from any other host, an unpinned or unverified one, a second Go download or any other tool at 0 days still fails; the advisory and malware audit and every other check still apply to go"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
