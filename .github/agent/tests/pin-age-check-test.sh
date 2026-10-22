@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -4117,6 +4117,58 @@ done
 vfile vl-seventh bin/govulncheck-other-test.sh "ls vendor/"
 CASE="a seventh file that names the vendored folder is still refused (exit 1)"
 check test "$rc" -eq 1
+
+
+# --- Go's own releases skip the 7-day hold (owner ratified Oct 21 2026, REQ-SUP-001-AC27): the tool item `go` only, and only when bin/install-scanner.sh
+# downloads it from https://go.dev/dl/ at its pinned version and pins the sha256 of both architectures and verifies the file; every other check still applies ----
+gosc() {   # gosc VER [TRIVY] [mutation: nopin|nohost|noverify|twohosts|arm64only] -> an installer text
+  local ver=$1 trivy=${2:-0.74.0} mut=${3:-}
+  local host="https://go.dev/dl" ; [ "$mut" = nohost ] && host="https://dl.example.org/dl"
+  printf '%s\n' '#!/usr/bin/env bash' "TRIVY_VER=$trivy" "GO_VER=$ver" 'case "$TOOL:$arch" in'
+  printf '%s\n' "  go:x86_64|go:amd64) SUM=$(printf 'a%.0s' $(seq 64)) ;;"
+  [ "$mut" = nopin ] || printf '%s\n' "  go:aarch64|go:arm64) SUM=$(printf 'b%.0s' $(seq 64)) ;;"
+  [ "$mut" != nopin ] || printf '%s\n' "  go:aarch64|go:arm64) SUM= ;;"
+  printf '%s\n' 'esac' 'case "$TOOL" in' '  go)'
+  printf '%s\n' "    curl -fsSL -o \"\$tmp/go.tgz\" \"$host/go\${GO_VER}.\${A_GO}.tar.gz\" || pipeline_fail \"download failed: go\""
+  [ "$mut" = twohosts ] && printf '%s\n' '    curl -fsSL -o "$tmp/go2.tgz" "https://mirror.example.org/go${GO_VER}.${A_GO}.tar.gz" || pipeline_fail "download failed"'
+  [ "$mut" = noverify ] || printf '%s\n' '    verify "$tmp/go.tgz"'
+  printf '%s\n' '    ;;' 'esac'
+}
+gocase() {   # gocase NAME BASE-TEXT HEAD-TEXT [extra head files via a python edit]
+  local n=$1; rm -rf "$work/$n"; mkdir -p "$work/$n/bin"; printf '%s\n' "$2" >"$work/$n/bin/install-scanner.sh"
+  git -C "$work/$n" init -q; git -C "$work/$n" add -A; git -C "$work/$n" -c user.name=t -c user.email=t@x commit -q -m base
+  printf '%s\n' "$3" >"$work/$n/bin/install-scanner.sh"; git -C "$work/$n" add -A; git -C "$work/$n" -c user.name=t -c user.email=t@x commit -q -m head
+}
+GOB="$(gosc 1.27.2)"
+gocase goage "$GOB" "$(gosc 1.27.3)"
+runck goage '{"times": {}}'
+CASE="Go 1.27.3 moved in the installer, downloaded from go.dev with both sha256 pins and the verify call, passes the age check with NO age data (exit 0) and says it is the ratified exemption"
+check test "$rc" -eq 0; check grep -q 'tool:go@1.27.3' "$work/goage.out"; check grep -qi 'ratified\|exempt' "$work/goage.out"
+runck goage "{\"times\": {\"tool:go@1.27.3\": {\"time\": \"$NOW\", \"source\": \"github-release\"}}, \"first_seen\": {\"tool:go@1.27.3\": \"$NOW\"}}"
+CASE="the same Go move with a release published at the same instant (0 days) still passes (exit 0)"
+check test "$rc" -eq 0
+gocase gotrivy "$GOB" "$(gosc 1.27.2 0.75.0)"
+runck gotrivy '{"times": {}}'
+CASE="another tool (trivy) moved with no age data in a tree that holds the Go exemption still FAILS (exit 1): only go is exempt"
+check test "$rc" -eq 1
+runck gotrivy "{\"times\": {\"tool:trivy@0.75.0\": {\"time\": \"$NOW\", \"source\": \"github-release\"}}}"
+CASE="trivy released at the same instant (0 days) still FAILS (exit 1)"
+check test "$rc" -eq 1
+gocase gobothmoved "$GOB" "$(gosc 1.27.3 0.75.0)"
+runck gobothmoved '{"times": {}}'
+CASE="go and trivy moved together: trivy still FAILS (exit 1), go is listed as exempt, not as failing"
+check test "$rc" -eq 1; check grep -q 'FAIL tool:trivy@0.75.0' "$work/gobothmoved.out"; check bash -c "! grep -q 'FAIL tool:go@' '$work/gobothmoved.out'"
+for mut in nohost nopin noverify twohosts; do
+  gocase "gomut-$mut" "$GOB" "$(gosc 1.27.3 0.74.0 $mut)"
+  runck "gomut-$mut" '{"times": {}}'
+  case $mut in
+    nohost) CASE="go downloaded from a host that is not go.dev keeps the 7-day hold: FAILS (exit 1)" ;;
+    nopin) CASE="go whose arm64 sha256 pin is empty keeps the 7-day hold: FAILS (exit 1)" ;;
+    noverify) CASE="go with no verify call on the download keeps the 7-day hold: FAILS (exit 1)" ;;
+    twohosts) CASE="go with a second download from another host keeps the 7-day hold: FAILS (exit 1)" ;;
+  esac
+  check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
+done
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
