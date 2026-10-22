@@ -34,7 +34,7 @@
  "install-scanner-test.sh": 15,
  "k8s-harness-fence-test.sh": 26,
  "marker-gate-test.sh": 51,
- "panel-test.sh": 65,
+ "panel-test.sh": 74,
  "panel-wiring-test.sh": 63,
  "patch-decide-test.sh": 352,
  "persona-uat-agent-test.sh": 231,
