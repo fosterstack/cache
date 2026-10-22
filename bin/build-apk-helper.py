@@ -88,7 +88,9 @@ def fips_module(path):
         try:
             if not stat.S_ISREG(os.fstat(fd).st_mode):
                 return 1
-            raw = os.read(fd, 4096).decode("ascii")
+            raw = os.read(fd, 4097).decode("ascii")   # one byte over the longest line the grammar could ever allow: a longer file is refused, never cut
+            if len(raw) > 4096:
+                return 1
         finally:
             os.close(fd)
     except (OSError, UnicodeDecodeError):

@@ -2175,7 +2175,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "0bd2e456aa0a19837199d874689287ac31c8dec998a53f6debac8410fc448e4c"
+      "sha256": "6885b20ca04340219a59d92b35d6741aae93b177acb24567ee737fe24027bf2f"
     },
     {
       "path": "bin/release-sign-apks.sh",
