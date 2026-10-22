@@ -8,7 +8,7 @@ secrets, so the federation identity is only reachable from a scheduled run on ma
 
 Subcommands (each one is small and testable on its own; the workflow strings them together):
 
-  updates  --title T --body-file F           -> JSON list of {name, from, to, major}
+  updates  --title T --body-file F           -> JSON list of {name, from, to, major, flagged, review}
   gather   --pr N --updates F --out DIR       -> DIR/bundle.md (diff + release notes + our usage)
   read     --bundle F --prompt F --model-env NAME --out F
                                               -> one reader's ranked findings (JSON)
@@ -130,11 +130,33 @@ def dependabot_summary(body):
     return s
 
 
+_FLAG = re.compile(r"breaking|deprecat", re.I)
+
+
+def release_notes_text(body):
+    """What sits INSIDE the body's <details> blocks (Dependabot's copy of the release notes and
+    commit list between old and new), at any nesting depth; the text around them is not notes."""
+    s, texts = str(body or ""), []
+    while True:
+        found = _DETAILS.findall(s)
+        if not found:
+            return "\n".join(texts)
+        texts += found
+        s = _DETAILS.sub("", s)
+
+
+def is_flagged(body):
+    """True when the release notes between old and new say "breaking" or "deprecat" (any case).
+    A non-major bump so flagged is read by the same two readers as a major (REQ-DEP-001-AC10)."""
+    return bool(_FLAG.search(release_notes_text(body)))
+
+
 def parse_updates(title, body):
     """Every (name, from, to) Dependabot names in the PR body's own summary ("Bumps X from A
     to B." or, for a group, one "Updates `X` from A to B" line per member), falling back to
     the title."""
     found, seen = [], set()
+    flagged = is_flagged(body)
     for src in (dependabot_summary(body), title or ""):
         for m in _BUMPS.finditer(src):
             name, old, new = m.group(1), m.group(2), m.group(3).rstrip(".")
@@ -142,7 +164,9 @@ def parse_updates(title, body):
             if key in seen:
                 continue
             seen.add(key)
-            found.append({"name": name, "from": old, "to": new, "major": is_major(old, new)})
+            major = is_major(old, new)
+            found.append({"name": name, "from": old, "to": new, "major": major,
+                          "flagged": flagged and not major, "review": major or flagged})
         if found:
             break
     return found
@@ -320,12 +344,12 @@ def cmd_gather(a):
         sys.exit(3)
     parts = ["# Bundle for Dependabot PR #%s\n" % a.pr,
              "## Updates in this PR\n",
-             "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "MAJOR" if u["major"] else "not major")
+             "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "MAJOR" if u["major"] else "FLAGGED: its release notes say breaking or deprecated" if u.get("flagged") else "not major")
                        for u in updates) + "\n",
              "## The PR diff\n\n```diff\n%s```\n" % (diff or "(empty diff)\n")]
     notes, unavailable = 0, []
     for u in updates:
-        if not u["major"]:
+        if not u.get("review", u["major"]):
             continue
         text, count = release_notes(u["name"], u["from"], u["to"])
         if count is None:
@@ -341,8 +365,8 @@ def cmd_gather(a):
     if unavailable:  # labeled in the bundle (kept as evidence) and an error: no reader, no verdict, retried
         sys.stderr.write("gather: UNAVAILABLE — %s; no review this hour\n" % "; ".join(unavailable))
         sys.exit(4)
-    print("bundle: %d characters, %d update(s), %d major, %d upstream release note(s)%s"
-          % (len(text), len(updates), sum(1 for u in updates if u["major"]), notes,
+    print("bundle: %d characters, %d update(s), %d to review (major or flagged), %d upstream release note(s)%s"
+          % (len(text), len(updates), sum(1 for u in updates if u.get("review", u["major"])), notes,
              "" if notes else " — NONE found; the readers judge from the diff and our usage only"))
 
 

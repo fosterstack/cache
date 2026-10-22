@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-004-AC1, REQ-DEP-004-AC2
+# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-003-AC2, REQ-DEP-004-AC1, REQ-DEP-004-AC2
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
 # exercised with `_gh_json` stubbed. Real Dependabot PR bodies from this repository are in
@@ -67,6 +67,55 @@ u = r.parse_updates("Build(deps): bump actions/setup-go from 5 to 7", "")
 check("title-only fallback (empty body)", triples(u) == [("actions/setup-go", "5", "7", True)], triples(u))
 u = r.parse_updates("Build(deps): bump actions/setup-go from 5 to 7", None)
 check("title-only fallback (null body)", triples(u) == [("actions/setup-go", "5", "7", True)], triples(u))
+# --- flagged: a non-major whose release notes (the <details> blocks) say "breaking" or "deprecat"
+# goes the major path (REQ-DEP-001-AC10); the real #400 codeql group quotes a "Breaking change" note
+u = real(400)
+check("real #400: four non-major codeql members, all flagged (4.39.0 notes say 'Breaking change')",
+      len(u) == 4 and all(x["major"] is False and x["flagged"] is True for x in u), [(x["name"], x["major"], x.get("flagged")) for x in u])
+check("real #124, #90 (no such words in their notes): not flagged",
+      not any(x["flagged"] for x in real(124) + real(90)), "")
+check("a major is never also 'flagged' (it is already the major path); real #99 and #91",
+      all(x["major"] and not x["flagged"] for x in real(99) + real(91)), "")
+def one(body, title="Build(deps): bump x/y from 1.2.0 to 1.3.0"):
+    return r.parse_updates(title, body)
+NOTE = "Bumps x/y from 1.2.0 to 1.3.0.\n<details>\n<summary>Release notes</summary>\n<p>%s</p>\n</details>\n"
+check("flagged: 'breaking' in the notes", one(NOTE % "Breaking change: drop old API")[0]["flagged"] is True, "")
+check("flagged: 'deprecat' in the notes (Deprecated, DEPRECATION, deprecates)",
+      all(one(NOTE % w)[0]["flagged"] is True for w in ("Deprecated the flag", "DEPRECATION notice", "deprecates foo")), "")
+check("flagged: the words in the commit list <details> count too",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><summary>Commits</summary><ul><li>deprecate old</li></ul></details>")[0]["flagged"] is True, "")
+check("not flagged: ordinary notes", one(NOTE % "Fixes a typo")[0]["flagged"] is False, "")
+check("not flagged: the words only OUTSIDE the <details> blocks (not release notes)",
+      one("Bumps x/y from 1.2.0 to 1.3.0. This is not a breaking or deprecated thing.\n<details><summary>Release notes</summary>fine</details>")[0]["flagged"] is False, "")
+check("not flagged: no notes at all (a digest bump)",
+      one("Bumps golang from `3f3c01a` to `9e8d7c6`.\n", "Build(deps): bump golang from `3f3c01a` to `9e8d7c6`")[0]["flagged"] is False, "")
+check("flagged: a words-in-nested-details body still flags", 
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><summary>a</summary><details><summary>b</summary>breaking</details></details>")[0]["flagged"] is True, "")
+check("title-only fallback (no body) is not flagged", one("", "Build(deps): bump x/y from 1.2.0 to 1.3.0")[0]["flagged"] is False, "")
+check("review = major or flagged",
+      [x["review"] for x in r.parse_updates("t", "Updates `a/b` from 1.0.0 to 2.0.0\nUpdates `c/d` from 1.0.0 to 1.1.0\n<details>breaking</details>")] == [True, True]
+      and [x["review"] for x in one(NOTE % "Fixes a typo")] == [False], "")
+# gather fetches notes and our usage for a flagged non-major and not for a plain one, and says why
+calls = []
+_saved = (r._run, r.release_notes, r.our_usage)
+r._run = lambda cmd, cap=None: ("diff --git a/x b/x\n", 0)
+r.release_notes = lambda n, o, nw: (calls.append(n) or ("notes of " + n + "\n", 1))
+r.our_usage = lambda n: "usage of " + n + "\n"
+import tempfile
+def gathered(updates):
+    del calls[:]
+    d = tempfile.mkdtemp(); p = os.path.join(d, "u.json"); json.dump(updates, open(p, "w"))
+    class A: pass
+    a = A(); a.pr, a.updates, a.out = 7, p, os.path.join(d, "out")
+    r.cmd_gather(a)
+    return open(os.path.join(a.out, "bundle.md")).read()
+b = gathered([{"name": "a/flag", "from": "1.0.0", "to": "1.1.0", "major": False, "flagged": True, "review": True},
+              {"name": "a/plain", "from": "1.0.0", "to": "1.0.1", "major": False, "flagged": False, "review": False},
+              {"name": "a/big", "from": "1.0.0", "to": "2.0.0", "major": True, "flagged": False, "review": True}])
+r._run, r.release_notes, r.our_usage = _saved
+check("gather: notes only for the flagged and the major, never the plain minor", calls == ["a/flag", "a/big"], calls)
+check("gather: the bundle labels the flagged update FLAGGED and the plain one not major",
+      "a/flag: 1.0.0 -> 1.1.0 (FLAGGED" in b and "a/plain: 1.0.0 -> 1.0.1 (not major)" in b and "a/big: 1.0.0 -> 2.0.0 (MAJOR)" in b, b[:400])
 check("is_major: v1.2.3 -> v2.0.0", r.is_major("v1.2.3", "v2.0.0") is True)
 check("is_major: 0.21.0 -> 0.22.0 is not", r.is_major("0.21.0", "0.22.0") is False)
 check("is_major: unparseable is not", r.is_major("latest", "stable") is False)
@@ -272,6 +321,8 @@ assert len(run) == 1, "act step not found"
 open(sys.argv[2], "w").write(run[0])
 PY
 mkdir -p "$w/bin" "$w/py/anthropic"
+jq -n --slurpfile a "$FIX/pr-99.json" --slurpfile b "$FIX/pr-90.json" --slurpfile c "$FIX/pr-91.json" --slurpfile d "$FIX/pr-400.json" \
+  '[($a[0] + {number: 99, headRefOid: "sha99"}), ($b[0] + {number: 90, headRefOid: "sha90"}), ($c[0] + {number: 91, headRefOid: "sha91"}), ($d[0] + {number: 400, headRefOid: "sha400"})]' > "$w/prs-flagged.json"
 cat > "$w/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >> "$GH_LOG"
@@ -496,6 +547,7 @@ case "$1 $2" in
   "pr list") cat "$PRS_JSON" ;;
   "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP99:-}" = fail ] && exit 1; echo "${PRIOR99:-none}" ;;
   "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
+  "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer") echo "${PRIOR400:-none}" ;;
   "api repos/o/r/check-runs") [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;;
   "pr view") echo "${ARMED99:-false}" ;;
   "pr merge") [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;;
@@ -509,7 +561,7 @@ EOF
 chmod +x "$w/bin/gh"
 cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
   local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
-  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="$w/prs.json" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" \
+  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-$w/prs.json}" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" \
      GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m RUN_URL=https://example.invalid/run \
      ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
      bash --noprofile --norc -e -o pipefail "$w/cand.sh") > "$w/cand.out" 2>&1; local rc=$?
@@ -533,6 +585,12 @@ grep -q "disable-auto" "$w/gh.log" && { echo "FAIL: candidates: needless disarm"
 ARMED99=true DISARMFAIL=1 cand "" 1 "armed with no verdict and the disarm fails -> skipped, step fails"
 LOOKUP99=fail cand "91 none," 1 "a failed check lookup skips that PR and FAILS the step (round-2 P2)"
 ONLY=90 cand "" 0 "pr=90 (a patch) selects nothing"
+# REQ-DEP-001-AC10: a flagged non-major (real #400, codeql 4.38.2 -> 4.38.3, notes say 'Breaking change') is a candidate like a major
+PRSFILE="$w/prs-flagged.json" cand "99 none,91 none,400 none," 0 "a flagged non-major (#400) is selected beside the majors; the plain patch #90 is not"
+PRSFILE="$w/prs-flagged.json" PRIOR400=success cand "99 none,91 none," 0 "a flagged non-major with a success verdict is not reviewed again"
+PRSFILE="$w/prs-flagged.json" ARMED99=true cand "99 none,91 none,400 none," 0 "armed flagged non-major with no verdict -> disarmed up front like a major"
+grep -q "pr merge --disable-auto 400" "$w/gh.log" && { echo "ok: candidates: the armed flagged non-major was turned off up front"; pass=$((pass+1)); } || { echo "FAIL: candidates: flagged up-front disarm"; fail=$((fail+1)); }
+ONLY=400 PRSFILE="$w/prs-flagged.json" cand "400 none," 0 "pr=400 (flagged) selects it"
 
 # ============================================================================ streak step
 streak() { # history rc-expect want-issue name
