@@ -81,7 +81,7 @@ def scope_of(product_id):
     unaffected."""
     base, q, query = product_id.partition("?")
     if base.startswith("pkg:golang/"):
-        return {} if not q and "@" not in base and "\n" not in product_id else None   # the Go product: unversioned, no qualifier (a pinned one never applies)
+        return {} if not q and "@" not in base and "\n" not in product_id else None   # the Go product: unversioned, no qualifier (a pinned one never applies). A trailing newline (which OUR_PRODUCTS's $ lets through) is refused here although the rescan reads it as the Go product: the gate only ever blocks more, never suppresses more.
     repo = {"pkg:oci/cache": "ghcr.io/fosterstack/cache", "pkg:oci/cache-candidates": "ghcr.io/fosterstack/cache-candidates"}.get(base)
     if repo is None or not q:
         return None

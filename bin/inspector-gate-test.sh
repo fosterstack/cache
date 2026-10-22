@@ -128,6 +128,8 @@ for pid in "$P@sha256:abc" "pkg:oci/cache-candidates?repository_url=ghcr.io/fost
 done
 scoped "pkg:golang/github.com/fosterstack/cache@v1.0.0" sc-gover.json
 check "a version-pinned Go product covers nothing" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-gover.json"
+scoped 'pkg:golang/github.com/fosterstack/cache\n' sc-gonl.json
+check "a Go product ending in a newline covers nothing (fail closed; the rescan reads it as the Go product)" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-gonl.json"
 scoped "pkg:golang/github.com/fosterstack/cache" sc-go.json
 check "the plain Go product still covers" 0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-go.json"
 scoped "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates" sc-cand.json
