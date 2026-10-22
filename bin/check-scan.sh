@@ -2,7 +2,7 @@
 # bin/check-scan.sh --scanners FILE --digests FILE --images DIR --archives DIR --out DIR
 # Runs every scanner listed in FILE (.github/policy/scanners.json, "scanners") against the exact candidates (v0.3.0 rule 55;
 # REQ-CHAIN-006-AC4; REQ-REL-004-AC1). The candidate image is selected by the index digest in the digest list; grype scans each of its two
-# platform children (linux/amd64 and linux/arm64, named in the results by the child's own manifest digest), osv-scanner scans the layout; grype
+# platform children (linux/amd64 and linux/arm64, named in the results by the child's own manifest digest), osv-scanner scans each child from a docker-save archive built from the layout (osv_archive); grype
 # also scans every release archive (ARCHIVES/*.tar.gz) and osv-scanner the Go
 # modules (go.mod, tools/requirements/go.mod), as scanners.json (row 45) and today's stage-verify.yml have it. No unlisted scanner runs.
 # A scanner exits 0 (clean), 1 (findings the published VEX document does not except) or anything else (could not run). The package
@@ -128,6 +128,22 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
     esac
   done <<< "$out"
 }
+# osv_archive LAYOUT CHILD_DIGEST ARCHIVE: the tar osv-scanner's "scan image --archive" can read. It wants a docker-save style tar (a manifest.json naming the config
+# and layer files) and fails "file manifest.json not found in tar" on a tar of an OCI layout as it is (probed on the pinned 2.6.0, Oct 22). The archive is built from
+# an explicit member list ONLY, in this order: the manifest.json generated here from the child's own manifest, then that child's config blob and its layer blobs.
+# Nothing else of the layout goes in: the reader takes the FIRST member named manifest.json, and check-bind lets a layout carry extra files (a root manifest.json
+# would replace the generated one, a stray tar could be named by it). Every digest must be sha256:<64 hex> and the layer list must not be empty, or no archive is made.
+osv_archive() {
+  local layout=$1 child=$2 arc=$3 abs m prog
+  shift 3
+  abs=$(cd "$layout" && pwd) || return 1
+  mkdir -p "$tmp/osvm" && rm -f "$tmp/osvm/manifest.json" || return 1
+  prog='def ok: type == "string" and test("^sha256:[0-9a-f]{64}$"); if (.config.digest | ok) and (.layers | type) == "array" and (.layers | length) > 0 and all(.layers[]; .digest | ok) then [{Config: ("blobs/sha256/" + (.config.digest | ltrimstr("sha256:"))), RepoTags: null, Layers: [.layers[] | "blobs/sha256/" + (.digest | ltrimstr("sha256:"))]}] else error("not an image with a sha256 config and one or more sha256 layers") end'
+  jq -ce "$prog" "$abs/blobs/sha256/${child#sha256:}" > "$tmp/osvm/manifest.json" || return 1
+  while read -r m; do set -- "$@" "$m"; done < <(jq -r '.[0] | .Config, .Layers[]' "$tmp/osvm/manifest.json")
+  [ $# -ge 2 ] || return 1
+  tar -cf "$arc" -C "$tmp/osvm" manifest.json -C "$abs" "$@"
+}
 failed=0 ran=0
 all="[]"
 for s in "${scanners[@]}"; do
@@ -181,7 +197,15 @@ for s in "${scanners[@]}"; do
         fi
       done
     else
-      add_target "$v" "$(jq -r --arg k "image-$v" '.[$k]' "$digests")" "$images/$v"
+      for a in "${PLATFORMS[@]}"; do   # both scanners read a single image per run: each variant is scanned once per platform child (osv-scanner reads an archive of ONE image)
+        cd_=$(child_digest "$images/$v" "$a")
+        if [[ "$cd_" =~ ^sha256:[0-9a-f]{64}$ ]]; then add_target "$v/linux/$a" "$cd_" "$images/$v" "linux/$a"
+        else
+          echo "check-scan: $s: the $v image index holds no single linux/$a child: it cannot be scanned for linux/$a, so it is not scanned clean" >&2
+          verdict=fail
+          subjects=$(jq -c --arg n "$v/linux/$a" '. + [{name: $n, digest: null, packages: 0, verdict: "fail"}]' <<< "$subjects")
+        fi
+      done
     fi
   done
   if [ "$s" = grype ]; then
@@ -197,7 +221,13 @@ for s in "${scanners[@]}"; do
       grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" ${plat:+--platform "$plat"} --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
-      osv-scanner:*) tar -C "$path" -cf "$tmp/img-$name.tar" . && OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$tmp/img-$name.tar" > "$tmp/out.json" || rc=$? ;;
+      osv-scanner:*)
+        arc="$tmp/img-${name//\//-}.tar"
+        if osv_archive "$path" "$digest" "$arc"; then
+          OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$arc" > "$tmp/out.json" || rc=$?
+        else
+          echo "check-scan: osv-scanner: the archive of $name could not be made from its manifest" >&2; rc=2
+        fi ;;
     esac
     # A tool that failed before writing leaves nothing to read, and anything but a number is 0 packages (did not run).
     if [ "$s" = grype ]; then
@@ -231,7 +261,7 @@ for s in "${scanners[@]}"; do
     if [ "$rc" = 1 ] && [ "$s" = osv-scanner ]; then
       # grype read the VEX itself (--vex); osv-scanner cannot, so its findings are held to the same published document here (round 1 F3): exit 1 stands
       # unless the report holds findings and every one is excepted by a statement (the rescan's product-and-alias-scoped decision)
-      vv=""; case "$name" in production|fips) vv=$name ;; esac
+      vv=""; case "${name%%/*}" in production|fips) vv=${name%%/*} ;; esac
       if python3 bin/check-osv-vex.py --vex "$VEX" --report "$tmp/out.json" --variant "$vv" > "$tmp/vex-out.json"; then
         vexn=$(jq -r '.excepted' "$tmp/vex-out.json"); rc=0
         echo "check-scan: osv-scanner: all $vexn findings in $name ($digest) are excepted by the published VEX document"
