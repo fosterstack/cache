@@ -203,7 +203,7 @@ headrev=$("$GIT" -C "$src" rev-parse HEAD 2>/dev/null) || die "cannot read the s
 [ -n "$binrev" ] && [ "$binrev" = "$headrev" ] || die "the binary's vcs.revision is '${binrev:-none}', not the source HEAD $headrev: the binary is not tied to this source" 1
 fipsvals=$(awk -F'\t' '$2=="build" && $3 ~ /^GOFIPS140=/{print $3}' "$tmp/buildinfo.txt")
 if [ "$variant" = fips ]; then
-  # REQ-BUILDAPK-001-AC2: the module is the one build/locks/fips-module.txt names, read with the grammar bin/refresh-inputs.sh reads it with (one line
+  # REQ-BUILDAPK-001-AC4: the module is the one build/locks/fips-module.txt names, read with the grammar the daily refresh reads it with (one line
   # vMAJOR.MINOR.PATCH-<8 lower-case hex>, a plain newline, plain ASCII; a missing file, a symlink or anything else is refused, never guessed)
   [ -f "$FIPS_MODULE" ] && [ ! -L "$FIPS_MODULE" ] || die "build/locks/fips-module.txt is missing, not a regular file or a symlink: the module the fips binary must record is unknown" 1
   fipswant=$("$PY3" -I -B bin/build-apk-helper.py fips-module "$FIPS_MODULE") || die "build/locks/fips-module.txt must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain newline; refusing" 1

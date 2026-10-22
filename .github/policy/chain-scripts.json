@@ -2175,7 +2175,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "2de3f2e046d1de850b90d640fbddd55002932986df378109a85fe82ce5c6bfd5"
+      "sha256": "0bd2e456aa0a19837199d874689287ac31c8dec998a53f6debac8410fc448e4c"
     },
     {
       "path": "bin/release-sign-apks.sh",
@@ -2284,7 +2284,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "bbc1f650b71df3281bc4b8aeb18dac02133cf6531c67bf452e58893e1e3efb05",
+      "sha256": "0a5bff4d853b6e407eb37c994f5cbb8bf6f078651190268da1b14e9da3169232",
       "exceptions": [
         {
           "rule": "script-name",

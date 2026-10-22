@@ -15,9 +15,9 @@ interpreter run on a variable path).
       closed object: any other key or value type is refused (exit 1).
 
   build-apk-helper.py fips-module FILE
-      prints GOFIPS140=<the module id that FILE (build/locks/fips-module.txt) holds>, read with the grammar bin/refresh-inputs.sh reads it with: plain
+      prints GOFIPS140=<the module id that FILE (build/locks/fips-module.txt) holds>, read with the grammar the daily refresh reads it with: plain
       ASCII, exactly one line vMAJOR.MINOR.PATCH-<8 lower-case hex> (no leading zeros) and a plain newline; exit 1 for anything else
-      (REQ-BUILDAPK-001-AC2).
+      (REQ-BUILDAPK-001-AC4).
 
 Exit codes: 0 ok | 1 failed | 2 usage.
 """
@@ -25,6 +25,7 @@ import datetime
 import json
 import os
 import re
+import stat
 import sys
 
 
@@ -81,7 +82,15 @@ def sealed_env(datafile):
 
 def fips_module(path):
     try:
-        raw = open(path, "rb").read().decode("ascii")
+        # open without following a symlink, take the handle's own word that it is a regular file, and read THAT handle: the shell pre-check of the
+        # path cannot be raced between its test and this open (O_NONBLOCK so a fifo cannot hang the open)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return 1
+            raw = os.read(fd, 4096).decode("ascii")
+        finally:
+            os.close(fd)
     except (OSError, UnicodeDecodeError):
         return 1
     num = r"(?:0|[1-9][0-9]*)"
