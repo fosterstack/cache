@@ -62,7 +62,7 @@ jobs:
           set -euo pipefail
           python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
           import os, re
-          D = re.compile(r"<details>(?:(?!<details>).)*?</details>", re.S | re.I)
+          D = re.compile(r"<details(?:\s[^>]*)?>(?:(?!<details[\s>]).)*?</details\s*>", re.S | re.I)
           s, notes = os.environ["PR_BODY"], []
           while True:
               found = D.findall(s)
@@ -70,7 +70,8 @@ jobs:
                   break
               notes += found
               s = D.sub("", s)
-          print("flagged=" + str(bool(re.search(r"breaking|deprecat", "\n".join(notes), re.I))).lower())
+          unresolved = re.search(r"</?details\b", s, re.I) is not None
+          print("flagged=" + str(unresolved or re.search(r"breaking|deprecat", "\n".join(notes), re.I) is not None).lower())
           PY
 
       - name: majors are the hourly reviewer's, not a human's (register row 75)
@@ -165,4 +166,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # Bound to the head this run screened: an older run (an older body) cannot arm a newer head.
+        run: gh pr merge --auto --squash --match-head-commit "$HEAD_SHA" "$PR_URL"

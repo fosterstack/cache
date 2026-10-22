@@ -125,6 +125,10 @@ jobs:
             fi
             majors=$(jq '[.[]|select(.major or .flagged)]|length' "$RUNNER_TEMP/work/updates-$n.json") || { lookup_failed=1; continue; }
             [ "$majors" != "0" ] || { echo "PR #$n: no major and no breaking/deprecated release notes — the patch/minor lane's"; continue; }
+            # Inside this file "major" means "judged as a major": the act step below (its text is hash-pinned in the pin
+            # checker, so it stays as it is) names a hold by `.major`. A flagged update keeps `.flagged` so the bundle says FLAGGED.
+            jq 'map(if .flagged then .major = true else . end)' "$RUNNER_TEMP/work/updates-$n.json" > "$RUNNER_TEMP/work/updates-$n.tmp" \
+              && mv "$RUNNER_TEMP/work/updates-$n.tmp" "$RUNNER_TEMP/work/updates-$n.json" || { echo "::error::PR #$n: could not mark its flagged updates"; lookup_failed=1; continue; }
             if ! prior=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\"") || [ -z "$prior" ]; then
               echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — skipped this hour"; lookup_failed=1; continue

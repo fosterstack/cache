@@ -91,6 +91,15 @@ check("not flagged: no notes at all (a digest bump)",
       one("Bumps golang from `3f3c01a` to `9e8d7c6`.\n", "Build(deps): bump golang from `3f3c01a` to `9e8d7c6`")[0]["flagged"] is False, "")
 check("flagged: a words-in-nested-details body still flags", 
       one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><summary>a</summary><details><summary>b</summary>breaking</details></details>")[0]["flagged"] is True, "")
+check("flagged (fail toward the readers): an unclosed <details> cannot be read",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><summary>Release notes</summary>fine, no words")[0]["flagged"] is True, "")
+check("flagged: an outer block hiding text next to a nested one (upstream markup)",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>Breaking change<details>fine</details>")[0]["flagged"] is True, "")
+check("flagged: <details open> is a block like any other, its words count",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details open>Breaking change</details>")[0]["flagged"] is True, "")
+check("not flagged: <details open> with ordinary notes, balanced",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details open><summary>s</summary>fine</details>")[0]["flagged"] is False, "")
+check("flagged: a stray closing tag is unreadable markup", one("Bumps x/y from 1.2.0 to 1.3.0.\n</details> stray")[0]["flagged"] is True, "")
 check("title-only fallback (no body) is not flagged", one("", "Build(deps): bump x/y from 1.2.0 to 1.3.0")[0]["flagged"] is False, "")
 check("review = major or flagged",
       [x["review"] for x in r.parse_updates("t", "Updates `a/b` from 1.0.0 to 2.0.0\nUpdates `c/d` from 1.0.0 to 1.1.0\n<details>breaking</details>")] == [True, True]
@@ -115,7 +124,7 @@ b = gathered([{"name": "a/flag", "from": "1.0.0", "to": "1.1.0", "major": False,
 r._run, r.release_notes, r.our_usage = _saved
 check("gather: notes only for the flagged and the major, never the plain minor", calls == ["a/flag", "a/big"], calls)
 check("gather: the bundle labels the flagged update FLAGGED and the plain one not major",
-      "a/flag: 1.0.0 -> 1.1.0 (FLAGGED" in b and "a/plain: 1.0.0 -> 1.0.1 (not major)" in b and "a/big: 1.0.0 -> 2.0.0 (MAJOR)" in b, b[:400])
+      "a/flag: 1.0.0 -> 1.1.0 (FLAGGED" in b and "a/flag: 1.0.0 -> 1.1.0 (MAJOR" not in b and "a/plain: 1.0.0 -> 1.0.1 (not major)" in b and "a/big: 1.0.0 -> 2.0.0 (MAJOR)" in b, b[:400])
 check("is_major: v1.2.3 -> v2.0.0", r.is_major("v1.2.3", "v2.0.0") is True)
 check("is_major: 0.21.0 -> 0.22.0 is not", r.is_major("0.21.0", "0.22.0") is False)
 check("is_major: unparseable is not", r.is_major("latest", "stable") is False)
@@ -591,6 +600,12 @@ PRSFILE="$w/prs-flagged.json" PRIOR400=success cand "99 none,91 none," 0 "a flag
 PRSFILE="$w/prs-flagged.json" ARMED99=true cand "99 none,91 none,400 none," 0 "armed flagged non-major with no verdict -> disarmed up front like a major"
 grep -q "pr merge --disable-auto 400" "$w/gh.log" && { echo "ok: candidates: the armed flagged non-major was turned off up front"; pass=$((pass+1)); } || { echo "FAIL: candidates: flagged up-front disarm"; fail=$((fail+1)); }
 ONLY=400 PRSFILE="$w/prs-flagged.json" cand "400 none," 0 "pr=400 (flagged) selects it"
+# the hash-pinned act step names a hold by .major: a flagged update is written as major there, still flagged; a plain major is untouched
+[ "$(jq -r '[.[]|select(.major and .flagged)]|length' "$w/cand/work/updates-400.json")" = 4 ] \
+  && { echo "ok: candidates: flagged updates reach the act step as major+flagged (4 codeql members)"; pass=$((pass+1)); } || { echo "FAIL: candidates: flagged updates not marked for the act step"; fail=$((fail+1)); }
+ONLY=99 cand "99 none," 0 "pr=99 selects the plain major"
+[ "$(jq -r '[.[]|select(.major and (.flagged|not))]|length' "$w/cand/work/updates-99.json")" = 1 ] \
+  && { echo "ok: candidates: a plain major is left as it was (major, not flagged)"; pass=$((pass+1)); } || { echo "FAIL: candidates: plain major changed"; fail=$((fail+1)); }
 
 # ============================================================================ streak step
 streak() { # history rc-expect want-issue name

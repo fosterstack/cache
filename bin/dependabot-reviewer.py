@@ -116,7 +116,8 @@ def is_major(old, new):
     return a is not None and b is not None and a != b
 
 
-_DETAILS = re.compile(r"<details>(?:(?!<details>).)*?</details>", re.S | re.I)
+_DETAILS = re.compile(r"<details(?:\s[^>]*)?>(?:(?!<details[\s>]).)*?</details\s*>", re.S | re.I)
+_DETAILS_TAG = re.compile(r"</?details\b", re.I)
 
 
 def dependabot_summary(body):
@@ -134,21 +135,26 @@ _FLAG = re.compile(r"breaking|deprecat", re.I)
 
 
 def release_notes_text(body):
-    """What sits INSIDE the body's <details> blocks (Dependabot's copy of the release notes and
-    commit list between old and new), at any nesting depth; the text around them is not notes."""
+    """(notes, unresolved): what sits INSIDE the body's <details> blocks (Dependabot's copy of the
+    release notes and commit list between old and new), at any nesting depth, and whether a
+    <details> or </details> tag is left over that no block accounts for (unclosed, stray, or
+    otherwise unreadable markup). The text around the blocks is not notes."""
     s, texts = str(body or ""), []
     while True:
         found = _DETAILS.findall(s)
         if not found:
-            return "\n".join(texts)
+            return "\n".join(texts), bool(_DETAILS_TAG.search(s))
         texts += found
         s = _DETAILS.sub("", s)
 
 
 def is_flagged(body):
-    """True when the release notes between old and new say "breaking" or "deprecat" (any case).
-    A non-major bump so flagged is read by the same two readers as a major (REQ-DEP-001-AC10)."""
-    return bool(_FLAG.search(release_notes_text(body)))
+    """True when the release notes between old and new say "breaking" or "deprecat" (any case), or
+    when the markup around them cannot be read (an unbalanced <details>: fail toward the readers,
+    never toward auto-merge). A non-major bump so flagged is read by the same two readers as a
+    major (REQ-DEP-001-AC10)."""
+    notes, unresolved = release_notes_text(body)
+    return unresolved or bool(_FLAG.search(notes))
 
 
 def parse_updates(title, body):
@@ -344,7 +350,7 @@ def cmd_gather(a):
         sys.exit(3)
     parts = ["# Bundle for Dependabot PR #%s\n" % a.pr,
              "## Updates in this PR\n",
-             "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "MAJOR" if u["major"] else "FLAGGED: its release notes say breaking or deprecated" if u.get("flagged") else "not major")
+             "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "FLAGGED: its release notes say breaking or deprecated" if u.get("flagged") else "MAJOR" if u["major"] else "not major")
                        for u in updates) + "\n",
              "## The PR diff\n\n```diff\n%s```\n" % (diff or "(empty diff)\n")]
     notes, unavailable = 0, []

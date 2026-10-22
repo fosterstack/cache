@@ -53,6 +53,8 @@ if kind == "reviewer":
     cand = [r for st, r in runs(job) if st.get("id") == "candidates"]
     if len(cand) != 1 or "select(.major or .flagged)" not in cand[0] or "select(.major)" in cand[0]:
         bad.append("the candidate step does not select a flagged non-major beside a major")
+    if len(cand) == 1 and "if .flagged then .major = true" not in cand[0]:
+        bad.append("the candidate step does not hand a flagged update to the (hash-pinned) act step as a major")
     # AC9: auto-merge is armed only for the reviewed head
     arms = re.findall(r"gh pr merge --auto[^\n]*", text)
     if not arms or any('--match-head-commit "$sha"' not in a for a in arms):
@@ -158,7 +160,7 @@ elif kind == "automerge":
             bad.append("the screen step is conditional or can fail silently")
         if "<<'PY'" not in sr or 'os.environ["PR_BODY"]' not in sr or ">> \"$GITHUB_OUTPUT\"" not in sr:
             bad.append("the screen is not a quoted heredoc that reads PR_BODY from env and writes flagged= to GITHUB_OUTPUT")
-        if re.search(r"curl|wget|gh api|contents/", sr):
+        if re.search(r"https?://|\bgh\b|contents/", sr):
             bad.append("the screen downloads something (a downloaded script is refused by the pin checker, handoff 0094)")
         if "${{" in sr:
             bad.append("the screen interpolates an expression into a script (pass it by env)")
@@ -168,6 +170,8 @@ elif kind == "automerge":
     arm = [i for i, (s, r) in enumerate(runs(job)) if re.search(r"gh pr merge --auto --squash", r)]
     if len(arm) != 1:
         bad.append("no single squash auto-merge step")
+    elif "--match-head-commit \"$HEAD_SHA\"" not in runs(job)[arm[0]][1] or "github.event.pull_request.head.sha" not in str((steps[arm[0]].get("env") or {}).get("HEAD_SHA", "")):
+        bad.append("auto-merge is not bound to the head this run screened (--match-head-commit \"$HEAD_SHA\")")
     elif steps[arm[0]].get("if") != nonmajor or "continue-on-error" in steps[arm[0]]:
         bad.append("auto-merge is not limited to non-majors, or can fail silently")
     major = "steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'"
@@ -259,14 +263,16 @@ case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
 case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('select(.major or .flagged)', 'select(.major)')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-flagged-unnamed bad "[s.__setitem__('run', s['run'].replace('if .flagged then .major = true', 'if .flagged then .major = false')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-no-mask         bad "$rs[:] = [s for s in $rs if s.get('id') != 'mask']"
 case_ automerge $A automerge-event-head    bad "[s.__setitem__('run', s['run'].replace('headRefOid', 'title')) for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-disarm-blind  bad "[s.__setitem__('run', 'gh pr merge --disable-auto \"\$PR_URL\"') for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ reviewer $R reviewer-mask-fails-run  bad "[s.pop('continue-on-error', None) for s in $rs if s.get('id') == 'mask']"
 case_ automerge $A automerge-flagged-arms   bad "[s.__setitem__('if', \"steps.meta.outputs.update-type != 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-arm-any-head   bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$HEAD_SHA\" ', '')) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-no-screen      bad "$as_[:] = [s for s in $as_ if s.get('id') != 'screen']"
 case_ automerge $A automerge-screen-soft    bad "[s.__setitem__('continue-on-error', 'true') for s in $as_ if s.get('id') == 'screen']"
-case_ automerge $A automerge-screen-download bad "[s.__setitem__('run', s['run'].replace('set -euo pipefail', 'set -euo pipefail\\ncurl -sSf https://example.invalid/x -o /tmp/x')) for s in $as_ if s.get('id') == 'screen']"
+case_ automerge $A automerge-screen-fetches bad "[s.__setitem__('run', s['run'].replace('set -euo pipefail', 'set -euo pipefail\\necho contents/bin/dependabot-reviewer.py')) for s in $as_ if s.get('id') == 'screen']"
 case_ automerge $A automerge-screen-late    bad "i = [n for n, s in enumerate($as_) if s.get('id') == 'screen'][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-screen-body-inline bad "[s.__setitem__('run', s['run'] + ' echo \${{ github.event.pull_request.body }}') for s in $as_ if s.get('id') == 'screen']"
 case_ automerge $A automerge-flagged-no-void bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
@@ -284,7 +290,7 @@ r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
 corpus = [json.load(open(os.path.join(root, "test-evidence/dependabot-reviewer", "pr-%d.json" % n)))["body"] for n in (99, 91, 124, 90, 400)]
 corpus += ["", "Bumps a from 1.0.0 to 1.1.0.", "x <details>Breaking</details>", "breaking <details>fine</details>",
            "<DETAILS>DEPRECATED</DETAILS>", "<details><summary>a</summary><details>nested deprecates</details></details>",
-           "<details>unclosed breaking", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
+           "<details>unclosed breaking", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
 bad = []
 for body in corpus:
     p = subprocess.run(["bash", "-c", run], env={**os.environ, "PR_BODY": body, "GITHUB_OUTPUT": "/dev/stdout"}, capture_output=True, text=True)
