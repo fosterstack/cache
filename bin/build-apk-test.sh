@@ -6,6 +6,9 @@
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
 cd "$root"   # the driver runs from the repository root only (it names its helpers by literal repo-relative paths)
+# Every fips build below runs against a TEST lock naming the module the stub melange records (v1.0.0-c2097c7c), never against the live build/locks/fips-module.txt:
+# the first daily-refresh PR that moves the module must not turn this suite red (REQ-BUILDAPK-001-AC4; a case that wants another lock sets TEST_FIPS_MODULE itself).
+printf 'v1.0.0-c2097c7c\n' >"$work/fm-cur.txt"; export TEST_FIPS_MODULE="$work/fm-cur.txt"
 unset GITHUB_ACTIONS   # the suite is the same on a runner (where it is set) and on a workstation: a test that needs it sets it on its own call
 # The production scripts have NO test hook (REQ-BUILDAPK-001-AC3): the tests below run COPIES of bin/build-apk.sh and bin/release-sign-apks.sh in
 # which exactly the lines ending in TEST-SUBST are replaced (tool locations, the sealed data file, the recipes, the keys directory) and which are
@@ -35,7 +38,7 @@ python3 "$work/mkcopy.py" "$root/bin/build-apk.sh" "$work/ba-copy.sh" \
   'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'GIT=${TEST_GIT:-'"$(command -v git)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
   'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'SEALED_ENV=$TEST_SEALED_ENV' \
   'GO_TOOL=${TEST_GO:-'"$stubs"'/go}' 'SHA256SUM=${TEST_SHA256SUM:-'"$work"'/sha256sum}' 'ENVBIN='"$(command -v env)" \
-  'RECIPE_STANDARD=${TEST_RECIPE:-$PWD/build/melange.yaml}' 'RECIPE_FIPS=${TEST_RECIPE:-$PWD/build/melange-fips.yaml}' || { echo "FIXTURE SETUP FAILED: build-apk copy"; exit 1; }
+  'RECIPE_STANDARD=${TEST_RECIPE:-$PWD/build/melange.yaml}' 'RECIPE_FIPS=${TEST_RECIPE:-$PWD/build/melange-fips.yaml}' 'FIPS_MODULE=${TEST_FIPS_MODULE:-$PWD/build/locks/fips-module.txt}' || { echo "FIXTURE SETUP FAILED: build-apk copy"; exit 1; }
 cat >"$work/ba.sh" <<EOF
 #!/bin/bash
 # the test wrapper of bin/build-apk.sh: --recipe X becomes TEST_RECIPE, the harness's STUB_/FAKE_ variables become entries of a sealed data file
@@ -488,6 +491,29 @@ for f in rc-for-final dirty; do
 sf "rule 24" "--version 0.3.0-rc1 with a pseudo-version v0.3.0-rc1.0.<date>-<hash> is refused" 'version' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-rc-pseudo.txt" "$BA" "${ba_args[@]}" --version 0.3.0-rc1 --out "$(mo)"
 for f in fips-prefix fips-other fips-two; do
   sf "rule 13" "the fips variant is refused when the binary records another module ($f), the match is exact" 'GOFIPS140' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-$f.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"; done
+# REQ-BUILDAPK-001-AC4: the module the fips variant must record is the one build/locks/fips-module.txt names (the file the daily refresh rewrites), read with the refresh's closed grammar
+PY3_REAL=$(command -v python3); printf 'v1.1.0-deadbeef\n' >"$work/fm-new.txt"; printf 'v1.0.0-c2097c7c\n' >"$work/fm-cur.txt"
+python3 - "$fx/sbom/ok.txt" "$work" <<'P'
+import sys
+ok = open(sys.argv[1]).read(); w = sys.argv[2]
+open(w + "/bi-fips-new.txt", "w").write(ok + "\tbuild\tGOFIPS140=v1.1.0-deadbeef\n")
+open(w + "/bi-fips-cur.txt", "w").write(ok + "\tbuild\tGOFIPS140=v1.0.0-c2097c7c\n")
+for n, t in (("fm-nonl", "v1.1.0-deadbeef"), ("fm-two", "v1.1.0-deadbeef\nv1.0.0-c2097c7c\n"), ("fm-crlf", "v1.1.0-deadbeef\r\n"), ("fm-empty", ""),
+             ("fm-bad", "v1.1.0\n"), ("fm-upper", "v1.1.0-DEADBEEF\n"), ("fm-lead0", "v01.1.0-deadbeef\n"), ("fm-space", " v1.1.0-deadbeef\n")):
+    open(w + "/" + n + ".txt", "w").write(t)
+P
+sd "REQ-BUILDAPK-001-AC4" "the fips variant passes when the binary records the module build/locks/fips-module.txt names (a refreshed module, not the old literal)" '^melange build ' env TEST_FIPS_MODULE="$work/fm-new.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
+sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when the binary records the old module and the file names a newer one" 'GOFIPS140|fips-module' env TEST_FIPS_MODULE="$work/fm-new.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-cur.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
+sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when the binary records the newer module and the file still names the old one" 'GOFIPS140|fips-module' env TEST_FIPS_MODULE="$work/fm-cur.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
+for f in fm-nonl fm-two fm-crlf fm-empty fm-bad fm-upper fm-lead0 fm-space; do
+  sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is malformed ($f: not exactly one line vMAJOR.MINOR.PATCH-<8 lower-case hex> and a plain newline)" 'fips-module' env TEST_FIPS_MODULE="$work/$f.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"; done
+sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is missing" 'fips-module' env TEST_FIPS_MODULE="$work/no-such-file.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
+ln -sf "$work/fm-new.txt" "$work/fm-link.txt"
+sf "REQ-BUILDAPK-001-AC4" "the fips variant is refused when build/locks/fips-module.txt is a symlink" 'fips-module' env TEST_FIPS_MODULE="$work/fm-link.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
+t "REQ-BUILDAPK-001-AC4" "the helper itself refuses a symlinked lock and a directory (it opens with O_NOFOLLOW and reads the handle it checked, whatever the shell tested before)" bash -c '! "$0" -I -B bin/build-apk-helper.py fips-module "$1" && ! "$0" -I -B bin/build-apk-helper.py fips-module "$2"' "$PY3_REAL" "$work/fm-link.txt" "$work"
+sd "REQ-BUILDAPK-001-AC4" "the fips variant passes when the binary records the module a (test) lock names, here the one the committed build used at v0.3.0-rc time" '^melange build ' env TEST_FIPS_MODULE="$work/fm-cur.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-cur.txt" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
+t "REQ-BUILDAPK-001-AC4" "the committed build/locks/fips-module.txt is in the closed grammar the driver reads (format only: the test never depends on which module it names)" "$PY3_REAL" -I -B bin/build-apk-helper.py fips-module build/locks/fips-module.txt
+sf "REQ-BUILDAPK-001-AC4" "the standard variant still refuses a binary that records a GOFIPS140 value, whatever the module file names" 'GOFIPS140' env TEST_FIPS_MODULE="$work/fm-new.txt" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_BUILDINFO="$work/bi-fips-new.txt" "$BA" "${ba_args[@]}" --out "$(mo)"
 # leading zeros: X.Y.Z are plain decimal numbers
 for v in 01.2.3 1.02.3 1.2.03 00.0.0; do
   sr "rule 24" "refuses --version $v (leading zero)" 'version' "${bae[@]}" "$BA" "${ba_args[@]}" --version "$v" --out "$(mo)"; done
