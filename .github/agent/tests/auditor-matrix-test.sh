@@ -1462,8 +1462,11 @@ spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.p
 fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":100001})+\"\\n\")\n    sys.stdout.flush()\n")
 st={"tokens":0,"iters":0}
 R.adjudicate(fa,{"finding_id":"CVE-X"},st)
-print(st["tokens"], st.get("calls"), st.get("stops"))' 2>/dev/null)"
-{ [ "$charged" = "200002 2 1" ]; } && ok || no "refusal usage charged to the budget, and the third attempt is stopped by the budget" "tokens calls stops=$charged"
+R.policy.MAX_ITERATIONS=1   # the iteration stop: only 3 attempts exist, below the real limit of 5, so lower the limit to make the guard decide
+st2={"tokens":0,"iters":0}
+R.adjudicate(fa,{"finding_id":"CVE-X"},st2)
+print(st["tokens"], st.get("calls"), st.get("stops"), st2.get("calls"), st2.get("stops"))' 2>/dev/null)"
+{ [ "$charged" = "200002 2 1 1 1" ]; } && ok || no "refusal usage charged to the budget, and the third attempt is stopped by the budget" "tokens calls stops, then calls stops with the iteration limit at 1 =$charged"
 
 begin "ol2-3-high-outlier-excluded-quorum-holds" "one over-counting scanner is excluded as an outlier; the three agreeing scanners still form the quorum -> AUDIT COMPLETE, osv named excluded not did-not-run"
 o="$WORK/ol23"; rm -rf "$o"; : > "$LEDGER"
