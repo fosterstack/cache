@@ -76,25 +76,31 @@ deploy](docker-deploy.md).
 
 ## Reproducing our own gate
 
-Our scan workflow is public —
-[`.github/workflows/scan.yml`](../.github/workflows/scan.yml) — so the
-way we scan the release images is not a secret:
+The scanners a release must pass are listed in one public file,
+[`.github/policy/scanners.json`](../.github/policy/scanners.json): Grype and
+OSV-Scanner. The release's Check stage runs
+[`bin/check-scan.sh`](../bin/check-scan.sh), which scans the exact built
+images by digest with both (Grype also scans the four Linux archives,
+OSV-Scanner the Go modules) and fails when either reports anything the
+published VEX does not except. Pull requests are scanned by
+[`scan.yml`](../.github/workflows/scan.yml) on the candidate images, with
+Grype and Amazon Inspector.
 
-The gate's policy is every severity, with the published VEX applied — so
-a faithful reproduction uses the same. The VEX document ships with each
-release as `fosterstack-cache.openvex.json` and lives in-repo at
-[`.vex/`](../.vex/):
+The gate's policy is every severity, with the published VEX applied. The VEX
+document ships with each release as `fosterstack-cache.openvex.json` and lives
+in-repo at [`.vex/`](../.vex/). To run the same Grype check on a published
+image yourself:
 
 ```sh
-# Same severity policy and VEX as the release gate:
-trivy image --scanners vuln \
-  --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
-  --vex fosterstack-cache.openvex.json \
-  ghcr.io/fosterstack/cache:X.Y.Z
-
 grype ghcr.io/fosterstack/cache:X.Y.Z \
   --fail-on negligible --vex fosterstack-cache.openvex.json
 ```
+
+This is the Grype half of the gate on the image you pulled. It does not run
+OSV-Scanner, and it uses whatever vulnerability database your Grype has,
+where the gate refuses a database more than 48 hours old, so a result can
+differ from ours on a different day. Other scanners, Trivy among them, are
+useful cross-checks but are not part of the release gate.
 
 Run without `--vex` to see raw findings including the ones we have
 publicly dispositioned — the difference between the two runs is exactly
