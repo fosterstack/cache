@@ -2408,6 +2408,19 @@ vim k4 "REQ-REL-010-AC4 a Go file under tools/requirements (a skipped name below
 vim k5 "REQ-REL-010-AC4 a script under bin/docs (a skipped name below the top level) running the tool is refused" bin/docs/attach.sh '' $'python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
 vim k6 "REQ-REL-010-AC4 loading the tool in the live-test test file from the path the allowed subprocess line holds (r.args[1]) is refused" bin/vex-live-test-test.sh '' $'\nM = load("m", r.args[1])\n'
 vim k7 "REQ-REL-010-AC4 an importlib spec on a path variable in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nsp = importlib.util.spec_from_file_location("z", os.path.join(root, "bin", NAME))\n'
+# the pin-wiring judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool): that exact quoted string, and nothing else naming vex-index, is
+# admitted in .github/agent/tests/pin-wiring-test.sh and in no other file (advisor, Oct 22: the exact step string, not the whole file)
+vimok() { # vimok NAME LABEL FILE NEW   (the scope function must find NOTHING stray)
+  local d="$work/vimok-$1"; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/workflows" "$d/.github/policy" "$d/.github/agent/tests"
+  cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$d/bin/"
+  printf '%s' "$4" > "$d/$3"
+  if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); print(b, file=sys.stderr); sys.exit(0 if not b else 1)' "$work/vi-named.py" "$d" 2>/dev/null; then ok "$2"; else bad "$2"; fi
+}
+PW=.github/agent/tests/pin-wiring-test.sh
+vimok p1 "REQ-REL-010-AC4 the pin-wiring judge quoting the exact step string bash bin/vex-index-test.sh </dev/null is admitted (it names the test script, runs nothing)" $PW $'VEX = "bash bin/vex-index-test.sh </dev/null"\n   "run": "bash bin/vex-index-test.sh </dev/null"\n'
+vim p2 "REQ-REL-010-AC4 the pin-wiring judge naming the tool itself (bin/vex-index.py) next to the exact step string is refused" $PW '' $'VEX = "bash bin/vex-index-test.sh </dev/null"\nsubprocess.run(["python3", "bin/vex-index.py", "layout"])\n'
+vim p3 "REQ-REL-010-AC4 the pin-wiring judge naming the test script in any other form than the exact quoted step string is refused" $PW '' $'x = "bash bin/vex-index-test.sh"\n'
+vim p4 "REQ-REL-010-AC4 another test file quoting the exact step string is refused (the admission is for the pin-wiring judge only)" .github/agent/tests/other-test.sh '' $'VEX = "bash bin/vex-index-test.sh </dev/null"\n'
 # a link to the tool is the tool: refused wherever it sits
 ld="$work/vim-link"; rm -rf "$ld"; mkdir -p "$ld/bin" "$ld/.github/workflows" "$ld/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld/bin/"
 printf 'x\n' > "$ld/bin/vex-index.py"; ln -s vex-index.py "$ld/bin/attach.py"
