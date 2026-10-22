@@ -161,6 +161,19 @@ def unpack(data, stage, owner, owners, what):
         owners[norm] = owner
 
 
+def check_links(stage):
+    """Every symlink of the finished staging tree resolves, with the other symlinks followed in whatever order the packages named them, to a place inside the
+    staging directory (two links that are each inside can together leave it: a -> . ; b -> a/../probe)."""
+    top = os.path.realpath(stage)
+    for dirpath, dirs, files in os.walk(stage):
+        for n in dirs + files:
+            p = os.path.join(dirpath, n)
+            if os.path.islink(p):
+                real = os.path.realpath(p)
+                if real != top and not real.startswith(top + os.sep):
+                    die("the symlink %s leaves the directory once the other links are followed (it resolves to %s)" % (os.path.relpath(p, stage), os.path.relpath(real, top)))
+
+
 def loader_of(root):
     found = []
     for d in ("usr/lib", "lib"):
@@ -223,6 +236,7 @@ def main(argv):
     try:
         for name, ver, what, data in plan:
             unpack(data, stage, "%s-%s" % (name, ver), owners, what)
+        check_links(stage)
         bw = os.path.join(stage, "usr/bin/bwrap")
         if not os.path.isfile(bw) or os.path.islink(bw):
             die("the unpacked packages hold no usr/bin/bwrap")
