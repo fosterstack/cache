@@ -280,7 +280,7 @@ Stored entries shall survive a clean server restart: a key stored before shutdow
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-STORE-001-AC1 | Given a server that stored a key and shut down cleanly; when a new process starts on the same data directory and the key is requested; then the identical bytes return, and store totals reflect the entry | component | yes | approved | 1 item(s) |
-| REQ-STORE-001-AC2 | Given a store where two PUTs of different sizes replace the same key concurrently, in either completion order of their blob write and their index record; when both have completed; then the index records the size of the bytes now retrievable under that key, the store total equals the sum of the indexed sizes, and reconciliation at the next start finds nothing to correct | component | yes | approved | 8 item(s) |
+| REQ-STORE-001-AC2 | Given a store where two PUTs of different sizes replace the same key concurrently, in either completion order of their blob write and their index record; when both have completed; then the index records the size of the bytes now retrievable under that key, the store total equals the sum of the indexed sizes, and reconciliation at the next start finds nothing to correct | component | yes | approved | 9 item(s) |
 
 ### REQ-STORE-002 — Atomic writes
 

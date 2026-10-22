@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -331,4 +332,44 @@ type lookupFails struct{ metaStore }
 
 func (lookupFails) Lookup(string) (metadata.Entry, bool, error) {
 	return metadata.Entry{}, false, errors.New("lookup failed")
+}
+
+// blockingReader blocks its first Read until released: a slow client upload.
+type blockingReader struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingReader) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return 0, io.EOF
+}
+
+// Eviction must never wait on a client's upload: a slow re-PUT of the key eviction selected holds that key's lock for the whole upload, so eviction skips
+// a key whose lock is held (it is being rewritten, hence recent) instead of blocking every capped Put behind evictMu. (Opus on cache#553 round 2.)
+func TestEvictionDoesNotWaitForASlowUploadOfTheSelectedKey(t *testing.T) {
+	c := newTestCache(t, WithMaxBytes(100))
+	ctx := context.Background()
+	put(t, c, "old", strings.Repeat("a", 50))
+	put(t, c, "mid", strings.Repeat("b", 40))
+	slow := &blockingReader{started: make(chan struct{}), release: make(chan struct{})}
+	slowDone := make(chan struct{})
+	go func() { defer close(slowDone); _, _ = c.Put(ctx, "old", slow) }()
+	<-slow.started
+	done := make(chan error, 1)
+	go func() { _, err := c.Put(ctx, "new", strings.NewReader(strings.Repeat("c", 30))); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Put new: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		close(slow.release)
+		<-slowDone
+		t.Fatal("a capped Put is stuck behind the slow upload of the key eviction selected")
+	}
+	close(slow.release)
+	<-slowDone
 }

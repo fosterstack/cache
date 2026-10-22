@@ -106,6 +106,26 @@ func (c *Cache) lockKey(key string) func() {
 	kl.refs++
 	c.keyMu.Unlock()
 	kl.mu.Lock()
+	return c.unlocker(key, kl)
+}
+
+// tryLockKey takes key's lock only if no Put holds it or waits for it; ok is false otherwise. Eviction uses it: a Put holds the lock for the whole upload
+// of its body, and eviction must never wait for a client (a key being rewritten is recent anyway, so skipping it is right).
+func (c *Cache) tryLockKey(key string) (release func(), ok bool) {
+	key = strings.ToLower(key)
+	c.keyMu.Lock()
+	if c.keys[key] != nil {
+		c.keyMu.Unlock()
+		return nil, false
+	}
+	kl := &keyLock{refs: 1}
+	c.keys[key] = kl
+	c.keyMu.Unlock()
+	kl.mu.Lock() // a new entry: nobody else can hold it
+	return c.unlocker(key, kl), true
+}
+
+func (c *Cache) unlocker(key string, kl *keyLock) func() {
 	return func() {
 		kl.mu.Unlock()
 		c.keyMu.Lock()
@@ -415,7 +435,11 @@ var errEntryChanged = errors.New("cache: entry changed since it was selected for
 // record still is the one that was selected: a Put that replaced the key meanwhile made it recent, and its new blob and record are not evicted
 // (REQ-STORE-001-AC2, REQ-EVICT-001-AC1).
 func (c *Cache) evictOne(entry metadata.Entry) error {
-	defer c.lockKey(entry.Key)()
+	release, ok := c.tryLockKey(entry.Key)
+	if !ok {
+		return errEntryChanged // a Put holds the key's lock: it is being rewritten, so it is recent, and eviction never waits for a client's upload
+	}
+	defer release()
 	cur, ok, err := c.meta.Lookup(entry.Key)
 	if err != nil {
 		return fmt.Errorf("lookup record: %w", err)

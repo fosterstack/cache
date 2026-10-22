@@ -216,6 +216,7 @@ mappings:
       - { type: go-test, ref: "internal/cache:TestEvictOneSkipsChangedAndReportsLookupFailure" }
       - { type: go-test, ref: "internal/cache:TestPanickingReaderDoesNotLockTheKey" }
       - { type: go-test, ref: "internal/cache:TestCaseAliasedKeysShareOneLock" }
+      - { type: go-test, ref: "internal/cache:TestEvictionDoesNotWaitForASlowUploadOfTheSelectedKey" }
       - { type: go-test, ref: "internal/metadata:TestLookupFoundMissingAndCorrupt" }
   - ac: REQ-STORE-004-AC1
     evidence:
