@@ -1041,10 +1041,9 @@ for k, why in pa.SKIP_UNREADABLE.items():
     assert isinstance(why, str) and "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)
 PY
 CASE="oversize history: no other error is swallowed: a listed revision that is unreadable for another reason (a broken tree) still stops the read"
-check python3 - "$aud" "$r" "$OV_B" <<PY
+check python3 - "$aud" "$r" "$OV_B" "$OV_D" <<PY
 $OVPY
-import types
-pa.SKIP_UNREADABLE = {sys.argv[3]: "listed"}
+pa.SKIP_UNREADABLE = {sys.argv[3]: "listed", sys.argv[4]: "listed"}
 orig = pa.inv.load_at
 def boom(root, rev):
     if rev == sys.argv[3]:
