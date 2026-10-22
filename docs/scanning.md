@@ -64,21 +64,21 @@ scan can both look like "exit 0" or both look like "exit 1" depending on
 flags, and conflating them ships a green gate that checks nothing. This
 failure mode has been observed in the field.
 
-## The `-debug` variant is different on purpose
+## There is no debug image from v0.3.0 <!-- pinned: historical -->
 
-The `:debug` tag adds a busybox shell for interactive troubleshooting —
-it is not the image you deploy. Scanning it will show more than the
-production image (busybox itself carries a small package surface), and
-our own release pipeline documents any known, unfixable findings there as
-explicit VEX suppressions in [`.grype.yaml`](../.grype.yaml) rather than
-hiding them — see that file for the current reasoning on each entry.
-Production and `-fips` images never include busybox.
+Releases before v0.3.0 also shipped a `:debug` tag with a busybox shell; it <!-- pinned: historical -->
+showed more in a scan than the production image because busybox itself
+carries a package surface. From v0.3.0 the release carries two images, <!-- pinned: historical -->
+production and `-fips`, and neither contains busybox, so there is no
+debug variant to scan or to exclude from a gate. To troubleshoot a running
+container use an ephemeral helper container instead; see [Docker
+deploy](docker-deploy.md).
 
 ## Reproducing our own gate
 
-Our release pipeline's scan step is public —
-[`.github/workflows/release.yml`](../.github/workflows/release.yml) — so
-the exact invocation we gate releases on is not a secret:
+Our scan workflow is public —
+[`.github/workflows/scan.yml`](../.github/workflows/scan.yml) — so the
+way we scan the release images is not a secret:
 
 The gate's policy is every severity, with the published VEX applied — so
 a faithful reproduction uses the same. The VEX document ships with each
