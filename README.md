@@ -148,8 +148,9 @@ run — there is no primary platform.
 | `X.Y.Z` | none | Production |
 | `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module |
 
-Production and `-fips` are distroless: the `fscache` binary and nothing
-else, so there is no shell to exec into and no package manager to patch.
+Production and `-fips` are distroless: the `fscache` binary plus the base file
+layout, CA certificates and timezone data, so there is no shell to exec into
+and no package manager to patch.
 There is no debug image from v0.3.0 <!-- pinned: historical -->; see
 [the images have no shell](docs/verify-images.md#the-images-have-no-shell) and
 [troubleshooting without a shell](docs/docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
@@ -165,7 +166,7 @@ unit: **[docs/install.md](docs/install.md)**.
 
 ## Debugging a running container
 
-The production and `-fips` images contain only the `fscache` binary, with no
+The production and `-fips` images contain the `fscache` binary and no
 shell, so you debug them from the outside by attaching a second container that
 carries the tools. Three ways below. The two Docker ones were run against this
 image on Oct 9 2026; `kubectl debug` was checked against the Kubernetes
@@ -296,7 +297,8 @@ before implementation. CI fails if the matrix drifts from its sources.
 
 ## Security
 
-- Static binary, zero CGO, no OS package surface to patch.
+- Static binary, zero CGO, no shell and no package manager in the image; its only OS
+  packages are the base file layout, CA certificates and timezone data.
 - Approved-only cryptography is enforced by the validated module itself, not
   by a list: CI runs the full test suite under `GODEBUG=fips140=only`, where
   Go's FIPS 140-3 module refuses any non-approved algorithm at runtime. A
