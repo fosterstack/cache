@@ -34,7 +34,6 @@
 import json
 import re
 import sys
-import urllib.parse
 
 OUR_PRODUCTS = re.compile(
     r"^pkg:(oci/cache\?repository_url=ghcr\.io/fosterstack/cache"
@@ -65,23 +64,33 @@ def same_pkg(a, b):
     return an.rsplit("/", 1)[-1] == bn.rsplit("/", 1)[-1]
 
 
-IMAGE = re.compile(r"(?:^|[-_:/])(production|fips)-(amd64|arm64)$")
+IMAGE = re.compile(r"cand-(production|fips)-(amd64|arm64)")   # the tag scan.yml loads every image under: cand-<variant>-<arch>, nothing before or after
+VARIANTS = ("production", "fips")
+ARCHES = ("amd64", "arm64")
 
 
 def image_identity(label):
-    m = IMAGE.search(label or "")
+    m = IMAGE.fullmatch(label or "")
     return {"variant": m.group(1), "arch": m.group(2)} if m else {}
 
 
 def scope_of(product_id):
-    """{'variant': .., 'arch': ..} the product names (only those present); None when a qualifier is repeated (ambiguous)."""
-    q = urllib.parse.parse_qs(urllib.parse.urlsplit(product_id).query, keep_blank_values=True)
-    scope = {}
-    for k in ("variant", "arch"):
-        if k in q:
-            if len(q[k]) != 1:
-                return None
-            scope[k] = q[k][0]
+    """{'variant': .., 'arch': ..} the product names (only those present), read in bin/rescan-statement.py's grammar: the query is split raw on '&' (no
+    percent-decoding), every part is key=value with a non-blank value, the keys are only repository_url, variant and arch, in lower case, each once, variant
+    is production or fips and arch is amd64 or arm64. Anything else is None: that product covers nothing (the finding blocks), the rest of the document is
+    unaffected."""
+    if "?" not in product_id:
+        return {}
+    scope, seen = {}, set()
+    for part in product_id.split("?", 1)[1].split("&"):
+        k, eq, v = part.partition("=")
+        if not eq or not v or k not in ("repository_url", "variant", "arch") or k in seen:
+            return None
+        seen.add(k)
+        if k == "variant" and v not in VARIANTS or k == "arch" and v not in ARCHES:
+            return None
+        if k != "repository_url":
+            scope[k] = v
     return scope
 
 
