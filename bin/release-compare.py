@@ -9,7 +9,7 @@ Out: apk-compare/apk-compare.json  {"verdict": "pass", "pairs": [four rows: arch
      written only when all four pairs agree. The verify and release jobs read only this file; the release-verify step checks it against Build's attested apk digests.
 Each of the four expected pairs (amd64 and arm64, standard and fips) must exist on both sides exactly once. Any other .apk, a symlink, a name with a control character, an apk
 that is not a regular file, a signer other than assembly.rsa.pub, or a signature that does not verify against build/keys/assembly.rsa.pub is refused (exit 2). Apks that differ
-in their control or data section exit 1 and name the apk."""
+in their control or data section exit 1 and name the apk; the signature section is not compared, only checked against the committed key."""
 import hashlib, json, os, re, shutil, stat, subprocess, sys
 
 ROOT_MSG = "run the comparison from the repository root (the helpers are named by their repo-relative paths)"
@@ -31,6 +31,8 @@ def tool(*args):
 def walk(top):
     """every .apk under top (relative path, full path); a symlink, a control character in a name, or an apk that is not a regular file is refused first"""
     found = []
+    if os.path.islink(top):
+        die("%s is a symlink; refusing (a link used as the root would let one side stand in for the other)" % top)
     for dp, dn, fn in os.walk(top, followlinks=False):
         for name in dn + fn:
             full = os.path.join(dp, name)
@@ -38,6 +40,9 @@ def walk(top):
                 die("%s is a symlink; refusing (only regular files are compared)" % full)
             if re.search(r"[\x00-\x1f\x7f]", name):
                 die("a file name under %s holds a control character (newline or other): %r; refusing (a name is never split into two)" % (top, name))
+        for name in dn:
+            if name.endswith(".apk"):
+                die("%s is not a regular file; refusing" % os.path.join(dp, name))
         for name in fn:
             full = os.path.join(dp, name)
             if name.endswith(".apk"):

@@ -2667,7 +2667,7 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "44356f228ef6f87fff882949e2e394d4724220b7b55d1e752054c389d397fb02",
+      "sha256": "561e4059bd2c99dc9af3d4a71361be72a610c687d7e6fcb327f923feaa988589",
       "tools": [],
       "runs": [
         "bin/apk-tool.py"
