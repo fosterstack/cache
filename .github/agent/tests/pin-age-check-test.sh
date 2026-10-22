@@ -4238,29 +4238,41 @@ for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
 
-CASE="a trigger-only edit is no moved version (owner rule 1, Oct 5: no NEW version until 7 days old); a step's own text, env, job env, and a called workflow's or dispatch's input defaults still change its identity"
+CASE="owner rule 1 (Oct 5: no NEW version of what a workflow downloads until 7 days old): a trigger can change what a step fetches, so a changed trigger, schedule, tag filter, added event, input default or output mapping MOVES a variable placeholder, and only a changed paths filter does not"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY2'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
-def wf(on, run='docker run --rm "$IMAGE" true', env="alpine@sha256:" + "a" * 64, jobenv=""):
-    return {".github/workflows/a.yml": "on:\n" + on + "jobs:\n  j:\n" + jobenv + "    steps:\n      - env:\n          IMAGE: " + env + "\n        run: " + run + "\n"}
+def wf(on, run='docker run --rm "$IMAGE" true', env="alpine:3.20", jobenv="", top=""):
+    return {".github/workflows/a.yml": top + "on:\n" + on + "jobs:\n  j:\n" + jobenv + "    steps:\n      - env:\n          IMAGE: " + env + "\n        run: " + run + "\n"}
 base = "  push:\n    branches: [main]\n  pull_request:\n"
-keys = lambda f: set(inv.inventory(f))
-# a trigger-only change moves nothing: a new event, a branch filter, a path filter, a types filter, an event removed
-for label, on in (("merge_group added", base + "  merge_group:\n"), ("branch filter", "  push:\n    branches: [main, dev]\n  pull_request:\n"),
-                  ("paths filter", base.replace("pull_request:\n", "pull_request:\n    paths: [bin/**]\n")), ("types filter", base.replace("pull_request:\n", "pull_request:\n    types: [opened]\n")),
-                  ("pull_request removed", "  push:\n    branches: [main]\n")):
-    assert keys(wf(on)) == keys(wf(base)), (label, keys(wf(on)) ^ keys(wf(base)))
-# a changed image, source or step text still moves it
-assert keys(wf(base)) != keys(wf(base, env="evil/image:latest")), "a changed image value must move the placeholder"
-assert keys(wf(base)) != keys(wf(base, run='docker run --rm "$IMAGE" false')), "a changed step text must move the placeholder"
-assert keys(wf(base)) != keys(wf(base, jobenv="    env:\n      X: y\n")), "a job env change must move the placeholder"
-# a called workflow's and a dispatch's input defaults still count
-call = lambda v: "  workflow_call:\n    inputs:\n      image-ref:\n        default: " + v + "\n"
+def moved(a, b):
+    """the placeholder (variable image) itself is among the items the head adds"""
+    return [i.key for i in inv.moved(inv.inventory(a), inv.inventory(b)) if "(variable)" in i.key]
+def moves(label, a, b): assert moved(a, b), label + ": must move the placeholder"
+def still(label, a, b): assert not moved(a, b), label + ": must move nothing"
+# a changed paths filter chooses whether a run happens, never what it fetches
+still("paths filter added", wf(base), wf(base.replace("pull_request:\n", "pull_request:\n    paths: [bin/**]\n")))
+still("paths-ignore changed", wf(base + "    paths-ignore: [a]\n"), wf(base + "    paths-ignore: [b]\n"))
+# every other trigger change moves it
+moves("merge_group added", wf(base), wf(base + "  merge_group:\n"))
+moves("branch filter", wf(base), wf("  push:\n    branches: [main, dev]\n  pull_request:\n"))
+moves("types filter", wf(base), wf(base.replace("pull_request:\n", "pull_request:\n    types: [opened]\n")))
+moves("event removed", wf(base), wf("  push:\n    branches: [main]\n"))
+moves("cron-only change", wf("  schedule:\n    - cron: '0 1 * * *'\n"), wf("  schedule:\n    - cron: '*/5 * * * *'\n"))
+moves("tags filter read via ref_name", wf("  push:\n    tags: ['v1.*']\n", run='docker run --rm "${{ github.ref_name }}" true'), wf("  push:\n    tags: ['*']\n", run='docker run --rm "${{ github.ref_name }}" true'))
+moves("repository_dispatch added", wf(base), wf(base + "  repository_dispatch:\n    types: [scan]\n"))
+call = lambda v, out="a": "  workflow_call:\n    inputs:\n      image-ref:\n        default: " + v + "\n    outputs:\n      image:\n        value: ${{ jobs.j.outputs." + out + " }}\n"
 disp = lambda v: "  workflow_dispatch:\n    inputs:\n      image-ref:\n        default: " + v + "\n"
-assert keys(wf(call("a"))) != keys(wf(call("b"))), "a workflow_call input default must move the placeholder"
-assert keys(wf(disp("a"))) != keys(wf(disp("b"))), "a workflow_dispatch input default must move the placeholder"
-assert keys(wf(base + call("a"))) == keys(wf(base + call("a") + "  merge_group:\n")), "a trigger beside the inputs moves nothing"
+moves("workflow_call input default", wf(call("a")), wf(call("b")))
+moves("workflow_dispatch input default", wf(disp("a")), wf(disp("b")))
+moves("workflow_call output mapping", wf(call("a", "a")), wf(call("a", "b")))
+# the step's own text, its env value (two tag-only values: the placeholder itself moves), the job env and the workflow env still move it
+moves("env value", wf(base, env="alpine:3.20"), wf(base, env="alpine:3.21"))
+moves("step text", wf(base), wf(base, run='docker run --rm "$IMAGE" false'))
+moves("job env", wf(base), wf(base, jobenv="    env:\n      X: y\n"))
+moves("workflow env", wf(base, top="env:\n  X: y\n"), wf(base, top="env:\n  X: z\n"))
+# a scalar or list `on` is unchanged, and nothing changed moves nothing
+still("nothing changed", wf(base), wf(base))
 PY2
 
 echo "pin-age-check: $pass passed, $failn failed"
