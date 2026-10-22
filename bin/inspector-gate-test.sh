@@ -83,6 +83,68 @@ check "non-object response = did not run"   2 "not a CycloneDX document"        
 check "mismatched name/url purl does not suppress" 1 "1 finding"               t "$w/sbom.json" "$w/novex.json" "$w/mixed-vex.json"
 check "bad usage is did-not-run"           2 "usage"                           t "$w/sbom.json"
 
+# Image scope (REQ-REL-004-AC1, chain-v030 review S2): a statement whose product carries variant= / arch= covers only that image; one with
+# neither covers every image (as before); a scoped statement never covers an image whose identity the label does not give.
+P='pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache'
+scoped() { printf '{"statements":[{"vulnerability":{"name":"CVE-2025-60876"},"status":"not_affected","products":[{"@id":"%s","subcomponents":[{"@id":"pkg:generic/busybox@1.37.0"}]}]}]}' "$1" > "$w/$2"; }
+scoped "$P&variant=production&arch=amd64" sc-prod-amd64.json
+scoped "$P&variant=production" sc-prod.json
+scoped "$P&arch=arm64" sc-arm64.json
+scoped "$P" sc-none.json
+scoped "$P&variant=production&arch=amd64&arch=arm64" sc-dup.json
+check "scoped statement covers its own image"            0 "1 covered"   cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "variant+arch scope does not cover another arch"   1 "1 finding"   cand-production-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "variant+arch scope does not cover another variant" 1 "1 finding"  cand-fips-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "cross variant and arch both differ"               1 "1 finding"   cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "variant-only scope covers both arches of it"      0 "1 covered"   cand-production-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod.json"
+check "variant-only scope does not cover the other variant" 1 "1 finding" cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod.json"
+check "arch-only scope covers its arch in any variant"   0 "1 covered"   cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-arm64.json"
+check "arch-only scope does not cover the other arch"    1 "1 finding"   cand-fips-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-arm64.json"
+check "unscoped statement still covers every image"      0 "1 covered"   cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-none.json"
+check "scoped statement, label without identity: blocks" 1 "1 finding"   t "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "unscoped statement, label without identity: covers" 0 "1 covered" t "$w/sbom.json" "$w/vexed.json" "$w/sc-none.json"
+check "a repeated qualifier is not read as a match"      1 "1 finding"   cand-production-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-dup.json"
+check "the published VEX still covers a real tag label"  0 "1 covered"   cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$vex"
+
+# Round-1 rulings (audit orchestrator, cache#548): the label is exactly cand-<variant>-<arch> (no suffix search), and a product's scope is read in
+# bin/rescan-statement.py's grammar (raw split on &, no percent-decoding, only repository_url/variant/arch, lowercase, once, non-blank, known values);
+# anything else covers nothing, so the finding blocks.
+check "label other-production-amd64 has no identity: scoped statement blocks" 1 "1 finding" other-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "label cand-fips-arm64-production-amd64 has no identity: scoped blocks"  1 "1 finding" cand-fips-arm64-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "label with a trailing newline has no identity: scoped blocks"           1 "1 finding" $'cand-production-amd64\n' "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "label other-production-amd64: an unscoped statement still covers"       0 "1 covered" other-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-none.json"
+check "label cand-fips-arm64-production-amd64: an unscoped statement covers"   0 "1 covered" cand-fips-arm64-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-none.json"
+i=0
+for q in '&VARIANT=production&ARCH=amd64' '&variant=production&ARCH=amd64' '&Arch=amd64' '&architecture=amd64' '&arch=amd64&ARCH=arm64' '&variant=&arch=amd64' '&variant=%70roduction' \
+         '&arch=%61md64' '&%61rch=amd64' '&variant=debug' '&arch=riscv64' '&arch' '&arch=amd64&' '&color=red&arch=amd64' '&variant=production&variant=production'; do
+  i=$((i+1)); scoped "$P$q" "sc-bad$i.json"
+  check "malformed scope $q covers nothing (label cand-production-amd64)" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-bad$i.json"
+  check "malformed scope $q covers nothing (label without identity)"      1 "1 finding" t "$w/sbom.json" "$w/vexed.json" "$w/sc-bad$i.json"
+done
+for pid in "$P@sha256:abc" "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates@x" "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache-candidates" \
+           "pkg:oci/cache?repository_url=ghcr.io/other/cache" "pkg:oci/cache@1?repository_url=ghcr.io/fosterstack/cache" "pkg:oci/cache" 'pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache\n'; do   # (the \n is JSON: the product string ends in a newline)
+  i=$((i+1)); scoped "$pid" "sc-bad$i.json"
+  check "malformed product $pid covers nothing" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-bad$i.json"
+done
+scoped "pkg:golang/github.com/fosterstack/cache@v1.0.0" sc-gover.json
+check "a version-pinned Go product covers nothing" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-gover.json"
+scoped 'pkg:golang/github.com/fosterstack/cache\n' sc-gonl.json
+check "a Go product ending in a newline covers nothing (fail closed; the rescan reads it as the Go product)" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-gonl.json"
+scoped "pkg:golang/github.com/fosterstack/cache" sc-go.json
+check "the plain Go product still covers" 0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-go.json"
+scoped "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates" sc-cand.json
+check "the candidates product still covers" 0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-cand.json"
+scoped "$P&variant=fips&arch=arm64" sc-fips-arm64.json
+check "the exact grammar still scopes: fips/arm64 covers cand-fips-arm64"      0 "1 covered" cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-fips-arm64.json"
+check "the exact grammar still scopes: fips/arm64 does not cover production-amd64" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-fips-arm64.json"
+# one bad statement does not fail the document: a good statement beside it still covers
+python3 - "$w" <<'PYX'
+import json, sys
+w = sys.argv[1]; good = json.load(open(w + "/sc-none.json")); bad = json.load(open(w + "/sc-bad3.json"))
+good["statements"] = bad["statements"] + good["statements"]; json.dump(good, open(w + "/sc-mixed.json", "w"))
+PYX
+check "a malformed statement beside a good one: the good one still covers"     0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-mixed.json"
+
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
