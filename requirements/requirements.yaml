@@ -1984,6 +1984,93 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
 
+  - id: REQ-REL-010
+    title: Our OpenVEX is attached to each published image index for Docker Scout
+    statement: >
+      The final image index that Sign signs and Release publishes shall carry our OpenVEX as attestation children, one per
+      platform, and nothing after Sign shall change any digest. Owner, RATIFIED Oct 3: "Docker main path as attestation!!!!!
+      We want that and we tell users it's the easiest path for seeing scanner omit findings that are just noise." Owner,
+      RATIFIED Oct 7: every change to our published VEX cuts an automatic patch release.
+    source: [bin/vex-index.py, .github/workflows/stage-build.yml]
+    tier: community
+    introduced: v0.3.0
+    origin: ACs accepted by the advisor, step 5, Oct 16 2026, as the advisor's reading of the owner's Oct 3 and Oct 7 rules (the owner's own words are quoted in the statement; the ACs are not his; ops outbox 2026-10-16-ops-v030-scout-vex-plan.md section 3; handoff 0470); the ACs state what it takes to meet his words
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-REL-010-AC1
+        given: "Build's image layouts and the tag's .vex/ OpenVEX file"
+        when: "Build writes digests.json"
+        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content (the same OpenVEX document, which the in-toto statement of the attestation holds as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index) and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC2
+        given: "the same inputs"
+        when: "Build and Rebuild each make the final index"
+        then: "the two are byte-identical (Rebuild's comparison covers it)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC3
+        given: "the final index"
+        when: "its attestation children are removed"
+        then: "every platform image and the index's other entries are byte-identical to what Build made without them"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC4
+        given: "Sign's digest list"
+        when: "Release publishes"
+        then: "the digest customers pull equals the digest the signature, provenance and release manifest name, and no step after Sign attaches, adds or changes an attestation (an attempt is refused)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC5
+        given: "a changed OpenVEX for an already published version"
+        when: "the pipeline runs"
+        then: "it makes no change to that version's image; the change reaches images only through the next automatic patch release"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-010-AC6
+        given: "the published final index"
+        when: "Docker Scout scans it by tag and by exact digest with our author"
+        then: "it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image"
+        verification: { method: acceptance-release-artifact, release_blocking: false }
+        status: approved
+  - id: REQ-REL-011
+    title: A job that holds a credential never compiles, and each build is its own job
+    statement: >
+      A workflow job that holds a credential (a secret, an environment, an
+      id-token or packages write grant) shall not build or compile anything,
+      and no job shall run two builds: on GitHub-hosted runners the separate
+      job is the isolation unit, each job a fresh virtual machine. Owner,
+      Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md):
+      "the signer and the builder need hardware isolation and the builds in
+      general need hardware isolation ... the best github actions can do for
+      that, assuming we use github hosted runers, is to use separate jobs in
+      the workflow." The rule: a job that holds the signing key or any
+      publish credential never receives a build output other than the exact
+      artifacts it signs or publishes; the Rebuild comparison runs in a job
+      with no secrets and no publish permission; builds are isolated from
+      each other the same way, each build its own job.
+    source: [.github/workflows/auditor.yml, .github/workflows/go-freshness.yml, bin/job-isolation-test.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: owner ratification Oct 21 2026 (signer and builder never share a machine); advisor handoff 0637
+    confidence: implementation-only
+    notes: |
+      Four jobs of the release chain on main (stage-build, stage-image, stage-promote, stage-reproducibility) still break AC1 and are listed exclusions in bin/job-isolation-test.sh with their reason: the chain-v030 landing (handoff 0634, cache#514) replaces those files. The exclusion list shrinks to nothing then.
+      A tool that publishes no release binary (govulncheck) is built in its own job that holds no credential and reaches the credential-holding job as an artifact whose sha256 equals the build job's output.
+    acceptance_criteria:
+      - id: REQ-REL-011-AC1
+        given: "any workflow job in the repository that holds a credential: a secrets.* reference, an environment, a permissions grant of id-token: write or packages: write"
+        when: "bin/job-isolation-test.sh judges every workflow file"
+        then: "none of the job's steps compiles or builds (go install, go build, goreleaser, docker build or buildx build, melange or apko build, make, cargo, npm run build); a tool the job needs is installed through bin/install-scanner.sh as a checksum-pinned release binary, and govulncheck, which has no release binary, is built in its own job with no credential and handed to auditor.yml's audit job as an artifact whose sha256 the audit job compares with the build job's output before it runs; the only jobs that may break this are the four listed release-chain exclusions, each with its reason, and a mutated copy of a workflow that adds a build to a credential-holding job fails the test"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-011-AC2
+        given: "any workflow job in the repository"
+        when: "bin/job-isolation-test.sh judges every workflow file"
+        then: "the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >
