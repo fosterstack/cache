@@ -55,7 +55,7 @@ Shipped:
   govulncheck, CodeQL, dependency review on PRs, OpenSSF Scorecard, and a
   public-repo file allowlist.
 - Release pipeline: signed, provenance-attested container images
-  (production, `-debug`, `-fips`) on GHCR, plus bare binaries and a signed
+  (production and `-fips`) on GHCR, plus bare Linux binaries and a signed
   checksums file. Every release is built only by CI, once. The images are assembled
   once, and the scans, the acceptance tests and an independent
   reproducibility rebuild all run on that exact digest; the published
@@ -139,27 +139,23 @@ run — there is no primary platform.
 |---|---|
 | Binaries (`fscache`) | `linux/amd64`, `linux/arm64` |
 | FIPS binaries (`fscache-fips`) | `linux/amd64`, `linux/arm64` |
-| Container images (prod, `-debug`, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
+| Container images (prod, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
 
 ### Image variants
 
 | Tag | Shell | Use |
 |---|---|---|
 | `X.Y.Z` | none | Production |
-| `X.Y.Z-debug` | busybox at `/busybox/sh` | Interactive troubleshooting |
 | `X.Y.Z-fips` | none | Production, FIPS 140-3 validated crypto module |
 
 Production and `-fips` are distroless: the `fscache` binary and nothing
 else, so there is no shell to exec into and no package manager to patch.
-`:debug` adds busybox for troubleshooting, and its shell is at
-**`/busybox/sh`** — distroless has no `/bin/sh`, unlike Debian, Alpine or
-Wolfi. See
-[the variant docs](docs/verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect)
-and [troubleshooting](docs/docker-deploy.md#troubleshooting-with-the-debug-image).
+There is no debug image from v0.3.0 <!-- pinned: historical -->; see
+[the images have no shell](docs/verify-images.md#the-images-have-no-shell) and
+[troubleshooting without a shell](docs/docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
 
-FIPS is Linux-only on purpose: the compliance buyer it serves deploys on
-Linux, so a macOS FIPS build would double CI time for a configuration nobody
-assesses. Container images ship as multi-arch manifests, so `docker pull`
+There are no macOS or Windows binaries: all release archives are Linux, and on
+a Mac you run the container image. Container images ship as multi-arch manifests, so `docker pull`
 resolves the right image by itself on Apple Silicon and Graviton. Windows is
 not built and not planned — this is a server that lives next to your CI
 runners; develop on Windows via WSL2, which is `linux/amd64`.
@@ -214,9 +210,8 @@ Desktop may still need one. See
 
 **Docker without `docker debug`** works on any Docker, with no plan or sign-in:
 start a tools container that shares the cache container's network and process
-namespaces. (This is the no-shell route; the `:debug` image variant and its
-`/busybox/sh` are described in the
-[troubleshooting section](docs/docker-deploy.md#troubleshooting-with-the-debug-image).)
+namespaces. (This is the no-shell route; see also the
+[troubleshooting section](docs/docker-deploy.md#troubleshooting-without-a-shell-in-the-image).)
 
 ```sh
 docker run --rm -it --network=container:<name> --pid=container:<name> \
@@ -295,6 +290,7 @@ before implementation. CI fails if the matrix drifts from its sources.
 - [Install (binaries, systemd, platforms)](docs/install.md)
 - [One-command Docker deploy](docs/docker-deploy.md) · [Deploying on Kubernetes](docs/kubernetes.md)
 - [Installing on disconnected networks](docs/offline-install.md)
+- [Verify a release](docs/verify-release.md) · [Using our VEX](docs/using-our-vex.md)
 - [Verify our images](docs/verify-images.md) · [Scanning FosterStack in your compliance pipeline](docs/scanning.md)
 - [Releasing](RELEASING.md) · [Security policy](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
