@@ -2298,7 +2298,7 @@ BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "b
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
         "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
-PINWIRE, STEP = ".github/agent/tests/pin-wiring-test.sh", "bash bin/vex-index-test.sh </dev/null"      # the pin-wiring judge quotes ci.yml's step (the test script, never the tool); only that exact string is admitted, only there
+PINWIRE, STEPS = ".github/agent/tests/pin-wiring-test.sh", ('"bash bin/vex-index-test.sh </dev/null"', "'bash bin/vex-index-test.sh </dev/null'")      # the pin-wiring judge quotes ci.yml's step (the test script, never the tool); only that exact string is admitted, only there
 RUN_CALL = 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1'
 VI_RESULT_LINES = ('check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", vi_run.returncode == 0, vi_run.stderr[-300:])',
                    'check("scout-vex: the attached document passes the attestation tool\'s own OpenVEX check (the tool is run, never loaded into this process)", vi_run.returncode == 0, vi_run.stderr[-300:])')
@@ -2322,7 +2322,8 @@ def stray(root):
                 continue
             text = open(path, errors="replace").read()
             if os.path.relpath(path, root) == PINWIRE:
-                text = text.replace(STEP, "")      # the exact quoted step string is admitted; any other mention left in the file still names the tool or the test
+                for q in STEPS:
+                    text = text.replace(q, "")      # the exact step string between its own quotes (double, or single inside a shell string) is admitted; any other mention left in the file (more words inside the quotes, an unquoted form) still names the tool or the test
             if "vex-index" in text:
                 named.add(os.path.relpath(path, root))
     for d, dirs, files in os.walk(root):      # a link to the tool is the tool: looked for in every folder, the skipped prose ones too
@@ -2412,7 +2413,7 @@ vim k4 "REQ-REL-010-AC4 a Go file under tools/requirements (a skipped name below
 vim k5 "REQ-REL-010-AC4 a script under bin/docs (a skipped name below the top level) running the tool is refused" bin/docs/attach.sh '' $'python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
 vim k6 "REQ-REL-010-AC4 loading the tool in the live-test test file from the path the allowed subprocess line holds (r.args[1]) is refused" bin/vex-live-test-test.sh '' $'\nM = load("m", r.args[1])\n'
 vim k7 "REQ-REL-010-AC4 an importlib spec on a path variable in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nsp = importlib.util.spec_from_file_location("z", os.path.join(root, "bin", NAME))\n'
-# the pin-wiring judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool): that exact quoted string, and nothing else naming vex-index, is
+# the pin-wiring judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool): that exact quoted string (double quotes, or single quotes inside a shell string), and nothing else naming vex-index, is
 # admitted in .github/agent/tests/pin-wiring-test.sh and in no other file (advisor, Oct 22: the exact step string, not the whole file)
 vimok() { # vimok NAME LABEL FILE NEW   (the scope function must find NOTHING stray)
   local d="$work/vimok-$1"; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/workflows" "$d/.github/policy" "$d/.github/agent/tests"
@@ -2422,9 +2423,12 @@ vimok() { # vimok NAME LABEL FILE NEW   (the scope function must find NOTHING st
 }
 PW=.github/agent/tests/pin-wiring-test.sh
 vimok p1 "REQ-REL-010-AC4 the pin-wiring judge quoting the exact step string bash bin/vex-index-test.sh </dev/null is admitted (it names the test script, runs nothing)" $PW $'VEX = "bash bin/vex-index-test.sh </dev/null"\n   "run": "bash bin/vex-index-test.sh </dev/null"\n'
+vimok p7 "REQ-REL-010-AC4 the same exact step string between single quotes inside a shell string (the judge's PA line) is admitted" $PW $'PA="ps[:] = [x for x in ps if x.get(\'run\') != \'bash bin/vex-index-test.sh </dev/null\']"\n'
 vim p2 "REQ-REL-010-AC4 the pin-wiring judge naming the tool itself (bin/vex-index.py) next to the exact step string is refused" $PW '' $'VEX = "bash bin/vex-index-test.sh </dev/null"\nsubprocess.run(["python3", "bin/vex-index.py", "layout"])\n'
 vim p3 "REQ-REL-010-AC4 the pin-wiring judge naming the test script in any other form than the exact quoted step string is refused" $PW '' $'x = "bash bin/vex-index-test.sh"\n'
 vim p4 "REQ-REL-010-AC4 another test file quoting the exact step string is refused (the admission is for the pin-wiring judge only)" .github/agent/tests/other-test.sh '' $'VEX = "bash bin/vex-index-test.sh </dev/null"\n'
+vim p5 "REQ-REL-010-AC4 the pin-wiring judge with more words after the step string inside the same quotes is refused (the exact quoted string only)" $PW '' $'x = "bash bin/vex-index-test.sh </dev/null; echo more"\n'
+vim p6 "REQ-REL-010-AC4 the pin-wiring judge naming the step string without its own quotes is refused" $PW '' $'x = bash bin/vex-index-test.sh </dev/null\n'
 # a link to the tool is the tool: refused wherever it sits
 ld="$work/vim-link"; rm -rf "$ld"; mkdir -p "$ld/bin" "$ld/.github/workflows" "$ld/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld/bin/"
 printf 'x\n' > "$ld/bin/vex-index.py"; ln -s vex-index.py "$ld/bin/attach.py"
@@ -2476,7 +2480,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=846
+EXPECT=849
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
