@@ -82,8 +82,8 @@ Where a line says "with v0.3", it describes the v0.3 release chain, which is not
   plus the project's own package, which the build job makes. A
   scheduled job refreshes the archive and a committed pointer names its digest; the
   build pulls the archive by that digest and checks every package against its
-  recorded hash, so a package that was not archived and verified cannot reach an
-  image ([build stage](../.github/workflows/stage-build.yml),
+  recorded hash, so a Wolfi package that was not archived and verified cannot
+  reach an image ([build stage](../.github/workflows/stage-build.yml),
   [refresh job](../.github/workflows/go-freshness.yml)).
 - **With v0.3, the build tools are downloaded at a pinned version and checked.** The
   tools that make the packages and the image are fetched from their release pages
