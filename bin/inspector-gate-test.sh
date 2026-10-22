@@ -121,6 +121,17 @@ for q in '&VARIANT=production&ARCH=amd64' '&variant=production&ARCH=amd64' '&Arc
   check "malformed scope $q covers nothing (label cand-production-amd64)" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-bad$i.json"
   check "malformed scope $q covers nothing (label without identity)"      1 "1 finding" t "$w/sbom.json" "$w/vexed.json" "$w/sc-bad$i.json"
 done
+for pid in "$P@sha256:abc" "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates@x" "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache-candidates" \
+           "pkg:oci/cache?repository_url=ghcr.io/other/cache" "pkg:oci/cache@1?repository_url=ghcr.io/fosterstack/cache" "pkg:oci/cache" 'pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache\n'; do   # (the \n is JSON: the product string ends in a newline)
+  i=$((i+1)); scoped "$pid" "sc-bad$i.json"
+  check "malformed product $pid covers nothing" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-bad$i.json"
+done
+scoped "pkg:golang/github.com/fosterstack/cache@v1.0.0" sc-gover.json
+check "a version-pinned Go product covers nothing" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-gover.json"
+scoped "pkg:golang/github.com/fosterstack/cache" sc-go.json
+check "the plain Go product still covers" 0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-go.json"
+scoped "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates" sc-cand.json
+check "the candidates product still covers" 0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-cand.json"
 scoped "$P&variant=fips&arch=arm64" sc-fips-arm64.json
 check "the exact grammar still scopes: fips/arm64 covers cand-fips-arm64"      0 "1 covered" cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-fips-arm64.json"
 check "the exact grammar still scopes: fips/arm64 does not cover production-amd64" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-fips-arm64.json"

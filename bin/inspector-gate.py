@@ -79,19 +79,25 @@ def scope_of(product_id):
     percent-decoding), every part is key=value with a non-blank value, the keys are only repository_url, variant and arch, in lower case, each once, variant
     is production or fips and arch is amd64 or arm64. Anything else is None: that product covers nothing (the finding blocks), the rest of the document is
     unaffected."""
-    if "?" not in product_id:
-        return {}
+    base, q, query = product_id.partition("?")
+    if base.startswith("pkg:golang/"):
+        return {} if not q and "@" not in base and "\n" not in product_id else None   # the Go product: unversioned, no qualifier (a pinned one never applies)
+    repo = {"pkg:oci/cache": "ghcr.io/fosterstack/cache", "pkg:oci/cache-candidates": "ghcr.io/fosterstack/cache-candidates"}.get(base)
+    if repo is None or not q:
+        return None
     scope, seen = {}, set()
-    for part in product_id.split("?", 1)[1].split("&"):
+    for part in query.split("&"):
         k, eq, v = part.partition("=")
         if not eq or not v or k not in ("repository_url", "variant", "arch") or k in seen:
             return None
         seen.add(k)
+        if k == "repository_url" and v != repo:
+            return None
         if k == "variant" and v not in VARIANTS or k == "arch" and v not in ARCHES:
             return None
         if k != "repository_url":
             scope[k] = v
-    return scope
+    return scope if "repository_url" in seen else None
 
 
 def in_scope(scope, image):
