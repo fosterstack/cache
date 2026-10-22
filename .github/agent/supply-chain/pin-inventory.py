@@ -665,7 +665,7 @@ def _walk(node, out, labels, path="", in_step=False):
                         else:
                             out.append(_image_item(svc["image"]))
             if k == "jobs" and isinstance(v, dict):
-                top_env = json.dumps(node.get("env"), sort_keys=True, default=str) + json.dumps(node.get("on"), sort_keys=True, default=str)   # a called workflow's input defaults count
+                top_env = json.dumps(node.get("env"), sort_keys=True, default=str) + json.dumps(_on_inputs(node.get("on")), sort_keys=True, default=str)   # a called workflow's (and a dispatch's) input defaults count; the triggers themselves do not (a new trigger brings in no new version)
                 for job in v.values():
                     _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
                     _ENV_PRESENT[0] = bool(node.get("env")) or (isinstance(job, dict) and bool(job.get("env") or job.get("strategy")))
@@ -800,6 +800,15 @@ def inventory(files):
 def moved(base_items, head_items):
     """Items in the head that the base did not have: a new pin, or a changed version, counts as moved."""
     return [head_items[k] for k in sorted(head_items) if k not in base_items]
+
+
+def _on_inputs(on):
+    """The part of a workflow's `on:` that can select what a step downloads: each event's `inputs` (a called workflow's and a dispatch's defaults).
+    The triggers, their filters and the events listed are not part of a step's identity (owner rule 1, Oct 5: no NEW version of what a workflow downloads
+    until it has been public 7 days; a trigger edit brings in no version)."""
+    if not isinstance(on, dict):
+        return on     # `on: push` or a list of events names no inputs and no filter: unchanged
+    return {str(ev): body.get("inputs") for ev, body in on.items() if isinstance(body, dict) and body.get("inputs") is not None}
 
 
 def load_at(root, rev):

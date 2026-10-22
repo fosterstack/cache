@@ -4238,5 +4238,30 @@ for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
 
+CASE="a trigger-only edit is no moved version (owner rule 1, Oct 5: no NEW version until 7 days old); a step's own text, env, job env, and a called workflow's or dispatch's input defaults still change its identity"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY2'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+def wf(on, run='docker run --rm "$IMAGE" true', env="alpine@sha256:" + "a" * 64, jobenv=""):
+    return {".github/workflows/a.yml": "on:\n" + on + "jobs:\n  j:\n" + jobenv + "    steps:\n      - env:\n          IMAGE: " + env + "\n        run: " + run + "\n"}
+base = "  push:\n    branches: [main]\n  pull_request:\n"
+keys = lambda f: set(inv.inventory(f))
+# a trigger-only change moves nothing: a new event, a branch filter, a path filter, a types filter, an event removed
+for label, on in (("merge_group added", base + "  merge_group:\n"), ("branch filter", "  push:\n    branches: [main, dev]\n  pull_request:\n"),
+                  ("paths filter", base.replace("pull_request:\n", "pull_request:\n    paths: [bin/**]\n")), ("types filter", base.replace("pull_request:\n", "pull_request:\n    types: [opened]\n")),
+                  ("pull_request removed", "  push:\n    branches: [main]\n")):
+    assert keys(wf(on)) == keys(wf(base)), (label, keys(wf(on)) ^ keys(wf(base)))
+# a changed image, source or step text still moves it
+assert keys(wf(base)) != keys(wf(base, env="evil/image:latest")), "a changed image value must move the placeholder"
+assert keys(wf(base)) != keys(wf(base, run='docker run --rm "$IMAGE" false')), "a changed step text must move the placeholder"
+assert keys(wf(base)) != keys(wf(base, jobenv="    env:\n      X: y\n")), "a job env change must move the placeholder"
+# a called workflow's and a dispatch's input defaults still count
+call = lambda v: "  workflow_call:\n    inputs:\n      image-ref:\n        default: " + v + "\n"
+disp = lambda v: "  workflow_dispatch:\n    inputs:\n      image-ref:\n        default: " + v + "\n"
+assert keys(wf(call("a"))) != keys(wf(call("b"))), "a workflow_call input default must move the placeholder"
+assert keys(wf(disp("a"))) != keys(wf(disp("b"))), "a workflow_dispatch input default must move the placeholder"
+assert keys(wf(base + call("a"))) == keys(wf(base + call("a") + "  merge_group:\n")), "a trigger beside the inputs moves nothing"
+PY2
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
