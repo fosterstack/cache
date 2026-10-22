@@ -687,7 +687,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "ff28939bc293f498968880832fdef0715594340f9d3c09e6f8a9f2cb9da4bf5c",
+      "sha256": "4c13b47395ae4335371e32d2ad697c9487c70eece0e234dd386558aa573785dd",
       "tools": [
         "find",
         "python3",
@@ -1245,7 +1245,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "2cb48402757c20362f4b6c3efa4dbbe5332b66e25e6c01c53972cf2206360119",
+      "sha256": "26294f50e61980b026f9439f6395ab0b2a91ed23e049a4580d2d05f06afdf06b",
       "tools": [
         "at",
         "awk",
@@ -1673,7 +1673,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "7562be1b5cbcd9d57a051d309ba07dfad02ccee935e817bb6e645052b29fb8b3",
+      "sha256": "fd081a5031c5579a4b15dce6e0f262ebd1b4afc9387ed974010ecb67599f59f0",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",

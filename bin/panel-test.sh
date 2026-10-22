@@ -116,6 +116,33 @@ check("a per-image statement filters only its own image (Codex r2 B2) and matche
       [f["image"] for f in v["findings"]] == ["fips-amd64"] and [c["image"] for c in v["vex_covered"]] == ["production-amd64", "production-amd64"],
       ([f["image"] for f in v["findings"]], v["vex_covered"]))
 
+# --- the same exact scope grammar as the PR gate (inspector-gate.py::scope_of; cache#548 rulings): a product whose qualifiers are not exactly
+# repository_url/variant/arch, lower-case, once each, non-blank, with known values covers NO image, so the finding stays on every image
+R = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+def scoped_vex(product, name):
+    f = os.path.join(tempfile.mkdtemp(), name)
+    json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0009"}, "status": "not_affected",
+        "products": [{"@id": product, "subcomponents": [{"@id": "pkg:generic/tzdata@2026c"}]}]}]}, open(f, "w"))
+    return f
+def covered_images(product, name):
+    r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
+              if s_ == "inspector" or img.endswith("amd64")})
+    v = P.tally(r, P.load_vex(scoped_vex(product, name)))
+    return sorted({c["image"] for c in v["vex_covered"]})
+check("a well-formed variant+arch scope covers its image only", covered_images(R + "&variant=production&arch=amd64", "ok.json") == ["production-amd64"],
+      covered_images(R + "&variant=production&arch=amd64", "ok.json"))
+check("a variant-only scope covers both arches of that variant", covered_images(R + "&variant=fips", "v.json") == ["fips-amd64", "fips-arm64"],
+      covered_images(R + "&variant=fips", "v.json"))
+check("an unscoped repository product still covers every image", len(covered_images(R, "u.json")) == 4, covered_images(R, "u.json"))
+for i, q in enumerate(["&VARIANT=production&ARCH=amd64", "&variant=production&ARCH=amd64", "&Arch=amd64", "&architecture=amd64", "&arch=amd64&arch=arm64",
+                       "&arch=amd64&ARCH=arm64", "&variant=&arch=amd64", "&variant=%70roduction", "&arch=%61md64", "&variant=debug", "&arch=riscv64", "&arch",
+                       "&color=red&arch=amd64", "&variant=production&variant=production"]):
+    got = covered_images(R + q, "bad%d.json" % i)
+    check("a malformed scope (%s) covers no image" % q, got == [], got)
+for i, pid in enumerate([R + "@sha256:abc", "pkg:oci/cache?repository_url=ghcr.io/other/cache", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache-candidates&arch=amd64"]):
+    got = covered_images(pid, "pin%d.json" % i)
+    check("a pinned or foreign product (%s) covers no image" % pid, got == [], got)
+
 # --- rules 5 and 6: merge, seen by N of M, report at two or more
 r = tree({("inspector", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")],
           ("google", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")]}); v = judge(r)

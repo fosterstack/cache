@@ -588,6 +588,10 @@ NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"
 # at the merge of PR 1 into chain-v030 they are replaced by these.
 GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
 RELEASE_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
+# patch-failed also fires when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, a third queued tag run replaces it, and
+# the replaced run ends as cancelled, which failure() does not see
+PATCH_FAILED_IF = "${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+RELEASE_CONCURRENCY_LINE = re.compile(r"(?m)^  release:\n(?:    .*\n|\n)*?    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
 GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate G (Build hands it the digests)
 RC_PUSH = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')"
 BUILD_WITH = {"hostile": "${{ %s }}" % RC_PUSH}      # the hostile Build step runs on a push of a release-candidate tag only (advisor 0383)
@@ -668,8 +672,9 @@ class _NoDuplicateKeys(yaml.BaseLoader):
 
 
 def graph(path):
+    raw_text = read_exact(path)
     try:
-        d = yaml.load(read_exact(path), Loader=_NoDuplicateKeys)
+        d = yaml.load(raw_text, Loader=_NoDuplicateKeys)
     except yaml.YAMLError as e:
         return ["%s cannot be read as a workflow: %s" % (path, str(e).replace("\n", " ")[:160])]
     jobs, bad = d.get("jobs") or {}, []
@@ -684,7 +689,13 @@ def graph(path):
         job = jobs.get(name)
         if job is None:
             bad.append("chain job %s is missing (the job id is the stage name, so a failure names it)" % name); continue
-        extra = set(job) - {"uses", "needs", "permissions", "with", "if"}
+        # `concurrency` is allowed on the release job ONLY, and must be exactly the constant group with cancel-in-progress false (release review R3, Oct 22:
+        # bin/release-publish.sh decides :X and :latest from the registry's tag list, so two release runs must not interleave; a cancelling or per-ref group
+        # would kill a publication half way or not serialize at all). On any other chain job it stays outside the allowed keys.
+        extra = set(job) - {"uses", "needs", "permissions", "with", "if"} - ({"concurrency"} if name == "release" else set())
+        if name == "release" and (job.get("concurrency") != {"group": "release-publish", "cancel-in-progress": "false"} or not RELEASE_CONCURRENCY_LINE.search(raw_text)):
+            # this loader keeps every scalar as text, so the quoted string "false" cannot be told from the boolean: the raw file must hold the unquoted line
+            bad.append("release must hold exactly the concurrency {group: release-publish, cancel-in-progress: false} with the unquoted line `cancel-in-progress: false` (two publications must not interleave; actionlint refuses a quoted string), got %r" % (job.get("concurrency"),))
         if extra:
             bad.append("%s: keys outside {uses, needs, permissions, with} and build's one if: %s (no continue-on-error, secrets, strategy, env)"
                        % (name, sorted(extra)))
@@ -720,6 +731,8 @@ def graph(path):
         granted = job.get("permissions", d.get("permissions"))
         if "uses" in job:
             bad.append("job %s has a job-level uses (%s): only the five chain jobs call a workflow" % (name, job["uses"]))
+        if name == "patch-failed" and job.get("if") != PATCH_FAILED_IF:
+            bad.append("patch-failed must carry exactly the if %s (a cancelled, replaced release opens an issue too), got %r" % (PATCH_FAILED_IF, job.get("if")))
         spec = HOSTILE if name.startswith("hostile-") else NON_CHAIN.get(name)
         if spec is None:
             bad.append("job %s is not one of the five chain jobs or the allowed non-chain jobs %s plus hostile-*" % (name, sorted(NON_CHAIN)))
