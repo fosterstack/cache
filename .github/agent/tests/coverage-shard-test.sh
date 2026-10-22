@@ -272,6 +272,20 @@ class T1(unittest.TestCase):
 PY
 rm -rf "$w/ur"; UNIT_SHARD_DIR="$w/fxtd" UNIT_SHARD_RUNNER=python3 UNIT_SHARDS=1 bash "$ushs" "$w/ur" > "$w/ur.out" 2>&1; td=$?
 { [ "$td" -eq 0 ] && grep -q '^unit-shard-sum: ok: 1 shards finished all 2 tests' "$w/ur.out"; } && ok "unit-shards: a SkipTest from tearDownClass does not double the finished tests, and the run passes" || no "tearDownClass skip: rc=$td $(tail -3 "$w/ur.out")"
+mkdir -p "$w/fxcl"
+cat > "$w/fxcl/test_u.py" <<'PY'
+import unittest
+class U1(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        def clean(): raise unittest.SkipTest("cleanup skip")
+        cls.addClassCleanup(clean)
+        raise unittest.SkipTest("setup skip")
+    def test_a(self): pass
+    def test_b(self): pass
+PY
+rm -rf "$w/ur"; UNIT_SHARD_DIR="$w/fxcl" UNIT_SHARD_RUNNER=python3 UNIT_SHARDS=1 bash "$ushs" "$w/ur" > "$w/ur.out" 2>&1; cl=$?
+{ [ "$cl" -eq 0 ] && grep -q '^unit-shard-sum: ok: 1 shards finished all 2 tests' "$w/ur.out"; } && ok "unit-shards: a setUpClass skip plus a skipping class cleanup gives each test one SKIP line, and the run passes" || no "setup+cleanup skip: rc=$cl $(tail -3 "$w/ur.out")"
 # the gate boundary: the self-test overrides must not reach the real unit shards, and the helpers are measured or excluded with a reason
 grep -q '^unset UNIT_SHARD_DIR UNIT_SHARD_RUNNER UNIT_SHARDS UNIT_SHARD_TIMEOUT' "$here/coverage-gate.sh" && ok "coverage-gate.sh clears the four UNIT_SHARD* overrides before it launches the unit shards" || no "coverage-gate.sh does not clear the UNIT_SHARD* overrides"
 ex="$here/../coverage-exclusions.txt"

@@ -83,7 +83,8 @@ class Result(unittest.TextTestResult):
         if m:
             for cname, ids in self.groups.items():
                 if cname == m.group(1) or cname.startswith(m.group(1) + "."):
-                    self.lines.extend("SKIP " + i for i in ids)
+                    have = {x.split(" ", 1)[1] for x in self.lines}   # unittest can name one holder twice (a cleanup that also skips): once per test
+                    self.lines.extend("SKIP " + i for i in ids if i not in have)
 
     def addSubTest(self, test, subtest, err):
         super().addSubTest(test, subtest, err)
