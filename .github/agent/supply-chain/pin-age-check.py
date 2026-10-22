@@ -1427,6 +1427,28 @@ def go_exemption(root, head):
         starts = [i for i, l in enumerate(lines) if re.match(r"^" + name + r"\(\)", l)]
         if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(want)]] != want:
             return None
+    # the installer defines only the reviewed helpers (a redefined sha256sum, cut or echo would change what verify() computes) and aliases nothing
+    defs = set()
+    for l in joined:
+        if not l.lstrip().startswith("#"):
+            defs.update(re.findall(r"(?:^|[;&|{(])[ \t]*([A-Za-z_][\w.-]*)[ \t]*\(\)", l) + re.findall(r"\bfunction[ \t]+([\w.-]+)", l))
+            if re.search(r"(?:^|[;&|{(])[ \t]*(?:alias|enable|builtin|unalias)\b", l):
+                return None
+    if defs - {"verify", "pipeline_fail", "die"}:
+        return None
+    # the download and its verify call sit at the top level of the go arm: not inside a group, loop, condition or subshell whose failure is ignored
+    arm = [i for i, l in enumerate(joined[:fetch[0]]) if re.match(r"^[ \t]*go\)[ \t]*$", l)]
+    if len(arm) != 1:
+        return None
+    depth = 0
+    for l in joined[arm[0] + 1:fetch[0]]:
+        t = re.sub(r"'[^']*'|\"[^\"]*\"", '""', l.strip())
+        if t.startswith("#"):
+            continue
+        depth += len(re.findall(r"(?:^|[;&|)][ \t]*|\bthen[ \t]+|\bdo[ \t]+)(?:if|while|until|for|select|case)\b", t)) + (1 if t[:1] in "({" else 0)
+        depth -= len(re.findall(r"(?:^|[;&|)][ \t]*)(?:fi|done|esac)\b", t)) + (1 if t[:1] in ")}" else 0)
+    if depth != 0:
+        return None
     # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and the installed-version grep, each ending in a
     # pipeline_fail whose message holds no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or a Go archive name (go<N>.<N>) in a
     # non-comment line voids the exemption: a write in any form, a second transfer by any command, a URL variable, a read in another command

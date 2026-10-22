@@ -4151,14 +4151,19 @@ gosc() {   # gosc VER [TRIVY] [mutation: nopin|nohost|noverify|twohosts|arm64onl
   [ "$mut" != printfv ] || printf '%s\n' 'printf -v "GO_VER" %s 1.27.4'
   [ "$mut" != declq ] || printf '%s\n' 'declare "GO_VER=1.27.4"'
   [ "$mut" != rsyncver ] || printf '%s\n' 'rsync "mirror.example.org:/r/go${GO_VER}.tar.gz" "$tmp/o.tgz"'
+  [ "$mut" != shasum ] || printf '%s\n' 'sha256sum() { printf "%s  %s\n" "$SUM" "$1"; }'
+  [ "$mut" != cutfn ] || printf '%s\n' 'cut() { cat; }'
+  [ "$mut" != aliasmut ] || printf '%s\n' 'alias sha256sum=true'
   [ "$mut" != fn2 ] || printf '%s\n' 'function verify { :; }'
   [ "$mut" != ifsum ] || printf '%s\n' 'if [ "$TOOL" = go ]; then SUM="$GO_SHA256"; fi'
   printf '%s\n' 'case "$TOOL" in' '  go)'
+  [ "$mut" != subshell ] || printf '%s\n' '    ('
   printf '%s\n' '    gofile="go${GO_VER}.${A_GO}.tar.gz"' "    curl -q -fsSL -g -o \"\$tmp/go.tgz\" \"$host/\${gofile}\" || die \"download failed: go toolchain\""
   [ "$mut" = literal2 ] && printf '%s\n' '    curl -fsSL -o "$tmp/other.tgz" "https://mirror.example.org/go1.27.3.linux-amd64.tar.gz" || pipeline_fail "download failed"'
   [ "$mut" != multiline ] || printf '%s\n' '    curl -fsSL -o "$tmp/other.tgz" \' '      "https://mirror.example.org/go1.27.3.linux-amd64.tar.gz" || pipeline_fail "download failed"'
   [ "$mut" = twohosts ] && printf '%s\n' '    curl -fsSL -o "$tmp/go2.tgz" "https://mirror.example.org/go${GO_VER}.${A_GO}.tar.gz" || pipeline_fail "download failed"'
   [ "$mut" = noverify ] || printf '%s\n' '    verify "$tmp/go.tgz"'
+  [ "$mut" != subshell ] || printf '%s\n' '    ) || :'
   printf '%s\n' '    ;;' 'esac'
 }
 gocase() {   # gocase NAME BASE-TEXT HEAD-TEXT [extra head files via a python edit]
@@ -4185,7 +4190,7 @@ gocase gobothmoved "$GOB" "$(gosc 1.27.3 0.75.0)"
 runck gobothmoved '{"times": {}}'
 CASE="go and trivy moved together: trivy still FAILS (exit 1), go is listed as exempt, not as failing"
 check test "$rc" -eq 1; check grep -q 'FAIL tool:trivy@0.75.0' "$work/gobothmoved.out"; check bash -c "! grep -q 'FAIL tool:go@' '$work/gobothmoved.out'"
-for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 fn2 failoff caseglob ifsum multiline gover2 gofile2 urlvar aria forloop mapfile scp tgzvar scpvar urlgofile printfv declq rsyncver; do
+for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 fn2 failoff caseglob ifsum multiline gover2 gofile2 urlvar aria forloop mapfile scp tgzvar scpvar urlgofile printfv declq rsyncver shasum cutfn aliasmut subshell; do
   if [ "$mut" = scpvar ] || [ "$mut" = urlgofile ] || [ "$mut" = rsyncver ] || [ "$mut" = literal2 ] || [ "$mut" = multiline ] || [ "$mut" = urlvar ] || [ "$mut" = aria ] || [ "$mut" = scp ] || [ "$mut" = tgzvar ]; then gocase "gomut-$mut" "$(gosc 1.27.2 0.74.0 $mut)" "$(gosc 1.27.3 0.74.0 $mut)"; else gocase "gomut-$mut" "$GOB" "$(gosc 1.27.3 0.74.0 $mut)"; fi
   runck "gomut-$mut" '{"times": {}}'
   case $mut in
@@ -4215,6 +4220,10 @@ for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 
     printfv) CASE="go with printf -v \"GO_VER\" keeps the 7-day hold: FAILS (exit 1)" ;;
     declq) CASE="go with declare \"GO_VER=...\" keeps the 7-day hold: FAILS (exit 1)" ;;
     rsyncver) CASE="go with an rsync that reads GO_VER (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    shasum) CASE="go with a redefined sha256sum function keeps the 7-day hold: FAILS (exit 1)" ;;
+    cutfn) CASE="go with a redefined cut function keeps the 7-day hold: FAILS (exit 1)" ;;
+    aliasmut) CASE="go with an alias for sha256sum keeps the 7-day hold: FAILS (exit 1)" ;;
+    subshell) CASE="go with the download and verify wrapped in a subshell whose failure is ignored keeps the 7-day hold: FAILS (exit 1)" ;;
   esac
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
