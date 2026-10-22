@@ -113,7 +113,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 154, 6   # 154: + ^bin/release-layout\.py$ (the rescan checks its attested layouts with the chain's own layout check, handoff 0521); 153: + ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$ (REQ-REFRESH-001-AC35); 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: + ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 155, 6   # 155: + ^bin/job-isolation-test\.sh$ (REQ-REL-011, owner Oct 21 isolation rule); 154: + ^bin/release-layout\.py$ (the rescan checks its attested layouts with the chain's own layout check, handoff 0521); 153: + ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$ (REQ-REFRESH-001-AC35); 151: - the two suppression/set-01 .snyk and osv-scanner.toml fixtures (PR 2b-2c); 153: + ^bin/scout-older-versions(\.sh|-test\.sh)$ (advisor 0520); 152: + ^build/archive\.json$ (the refresh PR's pointer); 151: + the six bin/persona-uat* patterns (REQ-UAT-001); 145: + ^bin/vendor-provenance-test\.sh$ (REQ-VEND-001); 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -160,7 +160,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "f8555581c88f03a0c0c968c77b517d20c2e9b301c32dbc23456f99292fab4bfb"   # + the bin/release-layout.py pattern (handoff 0521); - the two suppression/set-01 .snyk and osv-scanner.toml fixture patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
+PINNED_SHA256 = "71c3fb9805d63e3d26577328d70cf970b29bc66aa859b4d6162d4d3cf6b76857"   # + the bin/job-isolation-test.sh pattern (REQ-REL-011); + the bin/release-layout.py pattern (handoff 0521); - the two suppression/set-01 .snyk and osv-scanner.toml fixture patterns (PR 2b-2c); + the scout-older-versions pattern (advisor 0520); + the six bin/persona-uat* patterns (REQ-UAT-001); ruling D: the ^vendor/ pattern admits a dot-leading final file name; + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
 if rstart and rend:
     import hashlib
     _b = _rawlines
