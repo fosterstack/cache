@@ -95,7 +95,7 @@ if not re.search(GATE, atxt):
     bad.append("the audit job's install of govulncheck is not gated by an equality of the downloaded file's sha256 with the build job's output")
 g = re.search(GATE, atxt)
 if g:
-    allowed = len(re.findall(r"govulncheck-dl", g.group(0))) + sum(l.count("govulncheck-dl") for l in atxt.split("\n") if "gh run download" in l)
+    allowed = len(re.findall(r"govulncheck-dl", g.group(0))) + sum(1 for l in atxt.split("\n") if re.fullmatch(r'\s*gh run download "\$\{GITHUB_RUN_ID\}" -n govulncheck -D "\$\{RUNNER_TEMP\}/govulncheck-dl" \\', l))
     if atxt.count("govulncheck-dl") > allowed:
         bad.append("the downloaded govulncheck is referenced outside the digest-gated install")
 if re.search(r"go\s+install\s+golang\.org/x/vuln", atxt):
@@ -157,6 +157,8 @@ mutate "a go build loop in one job (ci.yml gosec)" '
 edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant loop\n        run: |\n          for t in ./a ./b; do go build \"$t\"; done\n", s, count=1, flags=re.S))'
 mutate "a bracket-form secret in the govulncheck build" '
 edit("auditor.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets[\x27AUDITOR_APP_PRIVATE_KEY\x27] }}\n        run: echo x\n", s, count=1, flags=re.S))'
+mutate "an ungated install appended to the download line" '
+edit("auditor.yml", lambda s: s.replace("-D \"${RUNNER_TEMP}/govulncheck-dl\" \\\n", "-D \"${RUNNER_TEMP}/govulncheck-dl\"; install -m 0755 \"${RUNNER_TEMP}/govulncheck-dl/govulncheck\" \"${RUNNER_TEMP}/gobin/govulncheck\" \\\n", 1))'
 mutate "the audit job stops needing the build job" '
 edit("auditor.yml", lambda s: s.replace("needs: [govulncheck-build]", "needs: []"))'
 mutate "an excluded job is deleted (stale exclusion)" '
