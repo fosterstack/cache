@@ -119,7 +119,7 @@ vulnerability); this page is what we do.
   ([RELEASING.md](../RELEASING.md#vex-statements)).
 - **One authorization before anything goes public.** A single stage verifies the
   whole graph, fails closed on anything missing, and signs the approval that
-  promotion requires ([promotion workflow](../.github/workflows/stage-promote.yml)).
+  promotion requires ([authorization stage](../.github/workflows/stage-authorize.yml)).
 - **Builds and signing are kept apart.** Every build is its own job on its own
   virtual machine, the apk signing key reaches one step of one job, and the
   comparison of the rebuilt files runs in a job with no secrets
