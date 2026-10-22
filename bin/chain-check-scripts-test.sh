@@ -104,7 +104,10 @@ for p in plats:
     man, ms = blob(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
         "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cfg, "size": cs},
         "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": layer, "size": ls}]}, sort_keys=True).encode())
-    kids.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": man, "size": ms, "platform": {"os": os_, "architecture": arch}})
+    kid = {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": man, "size": ms, "platform": {"os": os_, "architecture": arch}}
+    if p == "unknown/unknown" and not os.environ.get("NO_ATT_ANNOTATION"):
+        kid["annotations"] = {"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": ("sha256:" + "9" * 64) if os.environ.get("ATT_DIGEST_OTHER") else kids[0]["digest"]}      # buildkit's descriptor for the first child
+    kids.append(kid)
     names[arch] = {"layer": layer.split(":")[1], "config": cfg.split(":")[1], "manifest": man.split(":")[1]}
 idx, isz = blob(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": kids}, sort_keys=True).encode())
 with open(os.path.join(root, "index.json"), "w") as f:
@@ -327,6 +330,10 @@ rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production"
 want_fail "AC4 S1 an index with amd64, arm64 and s390x fails naming linux/s390x" "linux/s390x" "${SCAN[@]}"
 rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
 want_ok "AC4 S1 an index with amd64, arm64 and an unknown/unknown attestation passes" "${SCAN[@]}"
+rm -rf "$fx/images/production"; NO_ATT_ANNOTATION=1 python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 an unknown/unknown descriptor that is not buildkit's (no vnd.docker.reference annotations) fails naming it" "unknown/unknown" "${SCAN[@]}"
+rm -rf "$fx/images/production"; ATT_DIGEST_OTHER=1 python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 an unknown/unknown descriptor whose reference digest is none of the two children fails" "unknown/unknown" "${SCAN[@]}"
 restore_prod
 FAKE_GRYPE_MD=mismatch want_fail "AC4 S1 grype reporting another manifest digest than the child recorded fails" "names manifest digest" "${SCAN[@]}"
 FAKE_GRYPE_MD=missing want_fail "AC4 S1 grype reporting no manifest digest fails" "names manifest digest" "${SCAN[@]}"
@@ -1040,7 +1047,7 @@ else bad "G bin/check-govulncheck.py is missing or names a signing tool or crede
 # the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
 sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
 if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
-EXPECT=329
+EXPECT=331
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

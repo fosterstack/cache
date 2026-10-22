@@ -687,7 +687,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "2052229b0afa649362f9423b2225c698c25466085b602bf3ccc85534f79fedb1",
+      "sha256": "a712bd5e2a5cc2cb657938173f2983dfcff9662371ed543d1eda22916e3c0a89",
       "tools": [
         "find",
         "python3",

@@ -95,7 +95,14 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
   local idx blob; idx=$(jq -r '.manifests[0].digest // empty' "$1/index.json" 2> /dev/null) || return 0
   [[ "$idx" =~ ^sha256:[0-9a-f]{64}$ ]] || return 0
   blob="$1/blobs/sha256/${idx#sha256:}"; [ -f "$blob" ] || return 0
-  jq -r '.manifests[]? | (.platform // {}) | "\(.os // "none")/\(.architecture // "none")" | select(. != "linux/amd64" and . != "linux/arm64" and . != "unknown/unknown")' "$blob" 2> /dev/null || true
+  # unknown/unknown is the buildkit descriptor that points at one of the two children (annotations vnd.docker.reference.type present and
+  # vnd.docker.reference.digest equal to a linux/amd64 or linux/arm64 child digest); any other unknown/unknown descriptor is a manifest nobody scanned
+  jq -r '([.manifests[]? | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64")) | .digest]) as $kids
+         | .manifests[]? | ((.platform // {}) | "\(.os // "none")/\(.architecture // "none")") as $p
+         | if $p == "unknown/unknown" and ((.annotations // {})["vnd.docker.reference.type"] | type) == "string"
+              and ((.annotations // {})["vnd.docker.reference.digest"] as $d | $kids | index($d)) != null then empty
+           elif $p == "unknown/unknown" then "unknown/unknown (not a descriptor of one of the two children)" else $p end
+         | select(. != "linux/amd64" and . != "linux/arm64")' "$blob" 2> /dev/null || true
 }
 failed=0 ran=0
 all="[]"
@@ -134,11 +141,12 @@ for s in "${scanners[@]}"; do
   tname=() tdigest=() tpath=() tplat=()
   for v in production fips; do
     if [ "$s" = grype ]; then
-      for o in $(other_platforms "$images/$v"); do
+      while IFS= read -r o; do
+        [ -n "$o" ] || continue
         echo "check-scan: grype: the $v image index lists a platform other than linux/amd64 and linux/arm64 ($o): it would go unscanned, so it is not scanned clean" >&2
         verdict=fail
         subjects=$(jq -c --arg n "$v/$o" '. + [{name: $n, digest: null, packages: 0, verdict: "fail"}]' <<< "$subjects")
-      done
+      done < <(other_platforms "$images/$v")
       for a in "${PLATFORMS[@]}"; do
         cd_=$(child_digest "$images/$v" "$a")
         if [[ "$cd_" =~ ^sha256:[0-9a-f]{64}$ ]]; then add_target "$v/linux/$a" "$cd_" "$images/$v" "linux/$a"
