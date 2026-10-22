@@ -174,7 +174,7 @@ elif kind == "automerge":
         bad.append("auto-merge is not bound to the head this run screened (--match-head-commit \"$HEAD_SHA\")")
     elif steps[arm[0]].get("if") != nonmajor or "continue-on-error" in steps[arm[0]]:
         bad.append("auto-merge is not limited to non-majors, or can fail silently")
-    major = "steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'"
+    major = "${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}"
     disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
     if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
         bad.append("a push to a major PR does not turn its auto-merge off (the reviewed head's verdict is void)")
@@ -275,6 +275,7 @@ case_ automerge $A automerge-screen-soft    bad "[s.__setitem__('continue-on-err
 case_ automerge $A automerge-screen-fetches bad "[s.__setitem__('run', s['run'].replace('set -euo pipefail', 'set -euo pipefail\\necho contents/bin/dependabot-reviewer.py')) for s in $as_ if s.get('id') == 'screen']"
 case_ automerge $A automerge-screen-late    bad "i = [n for n, s in enumerate($as_) if s.get('id') == 'screen'][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-screen-body-inline bad "[s.__setitem__('run', s['run'] + ' echo \${{ github.event.pull_request.body }}') for s in $as_ if s.get('id') == 'screen']"
+case_ automerge $A automerge-failed-screen-keeps-arm bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-flagged-no-void bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
 
@@ -290,7 +291,7 @@ r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
 corpus = [json.load(open(os.path.join(root, "test-evidence/dependabot-reviewer", "pr-%d.json" % n)))["body"] for n in (99, 91, 124, 90, 400)]
 corpus += ["", "Bumps a from 1.0.0 to 1.1.0.", "x <details>Breaking</details>", "breaking <details>fine</details>",
            "<DETAILS>DEPRECATED</DETAILS>", "<details><summary>a</summary><details>nested deprecates</details></details>",
-           "<details>unclosed breaking", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
+           "<details>unclosed breaking", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>break<b>ing</b> change</details>", "<details>depre&#99;ated</details>", "<details>break&lt;b&gt;ing</details>", "<details>&lt;p&gt;Deprecated&lt;/p&gt;</details>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
 bad = []
 for body in corpus:
     p = subprocess.run(["bash", "-c", run], env={**os.environ, "PR_BODY": body, "GITHUB_OUTPUT": "/dev/stdout"}, capture_output=True, text=True)

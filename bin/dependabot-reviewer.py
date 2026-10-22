@@ -20,7 +20,7 @@ any `breaks-us` => hold; a reader that failed or answered unparseably => error (
 posted; the next hourly run retries). Readers return RANKED FINDINGS, never a verdict
 (row 51). No vendor or model name appears in any output (row 48): model ids are masked.
 """
-import argparse, json, os, re, subprocess, sys
+import argparse, html, json, os, re, subprocess, sys
 
 SEVERITIES = ("breaks-us", "check", "noise")
 # The reader's whole budget: any reasoning it does before answering counts against it too. 2048
@@ -148,13 +148,22 @@ def release_notes_text(body):
         s = _DETAILS.sub("", s)
 
 
+_TAG = re.compile(r"<[^>]*>")
+
+
+def rendered_text(markup):
+    """The text a reader sees: tags dropped, character references decoded, tags dropped again (a
+    reference can spell a tag), so `break<b>ing</b>` and `depre&#99;ated` say what they say."""
+    return _TAG.sub("", html.unescape(_TAG.sub("", markup)))
+
+
 def is_flagged(body):
     """True when the release notes between old and new say "breaking" or "deprecat" (any case), or
     when the markup around them cannot be read (an unbalanced <details>: fail toward the readers,
     never toward auto-merge). A non-major bump so flagged is read by the same two readers as a
     major (REQ-DEP-001-AC10)."""
     notes, unresolved = release_notes_text(body)
-    return unresolved or bool(_FLAG.search(notes))
+    return unresolved or bool(_FLAG.search(rendered_text(notes)))
 
 
 def parse_updates(title, body):

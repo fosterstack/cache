@@ -61,7 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -I - >> "$GITHUB_OUTPUT" <<'PY'
-          import os, re
+          import html, os, re
           D = re.compile(r"<details(?:\s[^>]*)?>(?:(?!<details[\s>]).)*?</details\s*>", re.S | re.I)
           s, notes = os.environ["PR_BODY"], []
           while True:
@@ -71,7 +71,9 @@ jobs:
               notes += found
               s = D.sub("", s)
           unresolved = re.search(r"</?details\b", s, re.I) is not None
-          print("flagged=" + str(unresolved or re.search(r"breaking|deprecat", "\n".join(notes), re.I) is not None).lower())
+          T = re.compile(r"<[^>]*>")
+          text = T.sub("", html.unescape(T.sub("", "\n".join(notes))))
+          print("flagged=" + str(unresolved or re.search(r"breaking|deprecat", text, re.I) is not None).lower())
           PY
 
       - name: majors are the hourly reviewer's, not a human's (register row 75)
@@ -92,8 +94,10 @@ jobs:
       # (a Dependabot rebase or a new version) voids it: unless the reviewer has already approved THIS
       # head (its success check is on it — the reviewer may have got there first), auto-merge comes off
       # here at once and the hourly reviewer judges the new head afresh. Fails loudly if it cannot.
+      # Also when the screen itself failed: its answer is unknown, so an arm without a verdict on the current head
+      # still comes off (arming stays off: the arm step needs the screen to have succeeded).
       - name: a new head voids the reviewer's verdict on a major — turn auto-merge off
-        if: steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'
+        if: ${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_URL: ${{ github.event.pull_request.html_url }}

@@ -100,6 +100,11 @@ check("flagged: <details open> is a block like any other, its words count",
 check("not flagged: <details open> with ordinary notes, balanced",
       one("Bumps x/y from 1.2.0 to 1.3.0.\n<details open><summary>s</summary>fine</details>")[0]["flagged"] is False, "")
 check("flagged: a stray closing tag is unreadable markup", one("Bumps x/y from 1.2.0 to 1.3.0.\n</details> stray")[0]["flagged"] is True, "")
+check("flagged: a tag inside the word, a character reference, a reference spelling a tag (what the reader sees)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>%s</details>" % w)[0]["flagged"] is True
+          for w in ("break<b>ing</b> change", "depre&#99;ated", "BREAK&lt;i&gt;ING", "&lt;p&gt;Deprecated&lt;/p&gt;")), "")
+check("not flagged: tags and references around ordinary words",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><p>Fixes &amp; <b>speed</b></p></details>")[0]["flagged"] is False, "")
 check("title-only fallback (no body) is not flagged", one("", "Build(deps): bump x/y from 1.2.0 to 1.3.0")[0]["flagged"] is False, "")
 check("review = major or flagged",
       [x["review"] for x in r.parse_updates("t", "Updates `a/b` from 1.0.0 to 2.0.0\nUpdates `c/d` from 1.0.0 to 1.1.0\n<details>breaking</details>")] == [True, True]
