@@ -1077,7 +1077,19 @@ else bad "G bin/check-govulncheck.py is missing or names a signing tool or crede
 # the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
 sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
 if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
-EXPECT=337
+# the egress suite's strace target is the image's real entrypoint (release review V1, Oct 22: it pointed at /usr/local/bin/fscache while the recipes install and
+# apko runs /usr/bin/fscache, so the tracer could not start the cache): the path in the script equals both apko entrypoints and the path the recipes install to
+ce_=$(sed -n 's/^CANDIDATE_ENTRYPOINT=\(.*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
+ae_=$(sed -n '/^entrypoint:/,/^[a-z]/s/^  command: \(.*\)$/\1/p' "$root/build/apko.yaml" | head -1)
+af_=$(sed -n '/^entrypoint:/,/^[a-z]/s/^  command: \(.*\)$/\1/p' "$root/build/apko-fips.yaml" | head -1)
+if [ -n "$ce_" ] && [ "$ce_" = "$ae_" ] && [ "$ce_" = "$af_" ]; then ok "acceptance-egress.sh: the strace target $ce_ is the entrypoint of both apko images"; else bad "acceptance-egress.sh: CANDIDATE_ENTRYPOINT '$ce_' != apko.yaml '$ae_' / apko-fips.yaml '$af_'"; fi
+if [ -n "$ce_" ] && grep -q "go build -trimpath -o \${{targets.destdir}}${ce_} " "$root/build/melange.yaml" && grep -q "go build -trimpath -o \${{targets.destdir}}${ce_} " "$root/build/melange-fips.yaml"; then ok "acceptance-egress.sh: both recipes install the binary at the strace target $ce_"; else bad "acceptance-egress.sh: a recipe does not install the binary at '$ce_'"; fi
+# (audit ruling, Oct 22) the tracer target is assigned ONCE and the strace command line really ends with it: a literal path in the strace launch line, or a second assignment
+# after the first, would leave the value above checked but not used
+if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 ]; then ok "acceptance-egress.sh: CANDIDATE_ENTRYPOINT is assigned exactly once"; else bad "acceptance-egress.sh: CANDIDATE_ENTRYPOINT is assigned $(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh") times (the first one is the one checked, the last one is the one used)"; fi
+cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
+if [ "$(printf '%s\n' "$cl_" | grep -c .)" = 1 ] && printf '%s\n' "$cl_" | grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$'; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
+EXPECT=341
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -1245,7 +1245,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "2cb48402757c20362f4b6c3efa4dbbe5332b66e25e6c01c53972cf2206360119",
+      "sha256": "26294f50e61980b026f9439f6395ab0b2a91ed23e049a4580d2d05f06afdf06b",
       "tools": [
         "at",
         "awk",
