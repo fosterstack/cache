@@ -54,10 +54,12 @@ def _load(path):
 
 def _covers(product, image):
     """Does a statement's product cover this image? The repository-wide product covers every image; a product scoped
-    with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names."""
-    q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(str(product)).query))
+    with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names. The product is
+    read by the PR gate's own grammar (inspector-gate.py::scope_of, the rescan's _parse_product): a product it does not
+    accept (a repeated, upper-case, blank, encoded or unknown qualifier, a pinned or foreign product) covers NO image."""
+    scope = _gate.scope_of(str(product))
     variant, _, arch = image.rpartition("-")
-    return q.get("variant", variant) == variant and q.get("arch", arch) == arch
+    return scope is not None and scope.get("variant", variant) == variant and scope.get("arch", arch) == arch
 
 
 def load_vex(path):
