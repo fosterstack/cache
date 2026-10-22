@@ -3,8 +3,59 @@
 # Proves .github/agent/bin/check-action-pins.py (row 78): one throwaway repo per case, each with one fixture workflow.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
+# Fan-out (CI speed, advisor 0643): an UNSHARDED real run (no PINS_SHARD, no PINS_DRY, no PINS_SERIAL) re-runs this file as PINS_JOBS (default 4)
+# parallel PINS_SHARD shards, prints their logs in order, proves with coverage-shard-sum.py (the coverage gate's check, against a dry listing as the
+# manifest) that the shards together completed every unit exactly once, and exits non-zero if any shard failed, died, dropped or doubled a case.
+# The CI step's command is unchanged. PINS_SERIAL=1 runs everything in this process; PINS_SELF names the script to fan out to (the self-test uses a
+# stub; unset, it is this file).
+if [ -z "${PINS_SHARD:-}" ] && [ -z "${PINS_DRY:-}" ] && [ -z "${PINS_SERIAL:-}" ]; then
+  jobs_n=${PINS_JOBS:-4}
+  [[ "$jobs_n" =~ ^[1-9][0-9]*$ ]] || { echo "PINS_JOBS must be a positive integer, got '$jobs_n'" >&2; exit 2; }
+  self=${PINS_SELF:-$0}
+  fan=$(mktemp -d); trap 'rm -rf "$fan"' EXIT
+  PINS_DRY=1 bash "$self" > "$fan/manifest" 2>/dev/null || { echo "FAIL fan-out → could not list the units (dry run failed)"; exit 1; }
+  pids=() logs=()
+  for i in $(seq 0 $((jobs_n-1))); do
+    PINS_SHARD=$i/$jobs_n bash "$self" > "$fan/shard.$i.log" 2>&1 & pids+=($!); logs+=("$fan/shard.$i.log")
+  done
+  bad=0
+  for i in "${!pids[@]}"; do wait "${pids[$i]}" || bad=1; done
+  total_pass=0 total_fail=0
+  for l in "${logs[@]}"; do
+    cat "$l"
+    p=$(sed -n 's/^check-action-pins: \([0-9][0-9]*\) passed, \([0-9][0-9]*\) failed$/\1/p' "$l" | tail -1); f=$(sed -n 's/^check-action-pins: \([0-9][0-9]*\) passed, \([0-9][0-9]*\) failed$/\2/p' "$l" | tail -1)
+    total_pass=$((total_pass+${p:-0})); total_fail=$((total_fail+${f:-0}))
+  done
+  python3 "$here/coverage-shard-sum.py" "$fan/manifest" "${logs[@]}" || bad=1
+  [ "$bad" -eq 0 ] || total_fail=$((total_fail+1))
+  echo "check-action-pins: $total_pass passed, $total_fail failed"
+  [ "$bad" -eq 0 ] && [ "$total_fail" -eq 0 ]
+  exit $?
+fi
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
+# Sharding (advisor 0618; coverage-gate.sh runs the cases as parallel shards under coverage): PINS_SHARD=<i>/<n> runs only every n-th UNIT
+# (a unit is one case_, gitcase, case_out, case3_ call or one of the two stand-alone checks, numbered in file order); PINS_DRY=1 lists every
+# unit as `UNIT <index> <name>` and, for the units this shard would run, `RUN <name>` (counted in ran=), without executing anything. Unset, every unit runs.
+# The last lines say which shard this was and how many units the file has and how many it ran, so coverage-shard-sum.py can prove the
+# shards together ran the whole list exactly once. The pm-case checks below count every case_out call, run or not, so they hold in a shard.
+shard_i=0 shard_n=1
+if [ -n "${PINS_SHARD:-}" ]; then
+  [[ "$PINS_SHARD" =~ ^([0-9]+)/([1-9][0-9]*)$ ]] && [ "${BASH_REMATCH[1]}" -lt "${BASH_REMATCH[2]}" ] \
+    || { echo "PINS_SHARD must be <i>/<n> with 0 <= i < n, got '$PINS_SHARD'" >&2; exit 2; }
+  shard_i=${BASH_REMATCH[1]} shard_n=${BASH_REMATCH[2]}
+fi
+unit_n=0 unit_run=0
+take() {
+  unit_n=$((unit_n+1))
+  [ -z "${PINS_DRY:-}" ] || echo "UNIT $unit_n $1"
+  if [ $((unit_n % shard_n)) -eq "$shard_i" ]; then
+    unit_run=$((unit_run+1))
+    [ -z "${PINS_DRY:-}" ] || { echo "RUN $1"; return 1; }
+    return 0
+  fi
+  return 1
+}
 gate="$here/../../workflows/agent-review-gate.yml"
 # the vendored pure-Python PyYAML (fixtures/testlib/pyyaml) as `yaml`, so every CI job — with or
 # without a PyYAML of its own — runs these cases against the same parser
@@ -16,6 +67,7 @@ DIG=sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 # case_ <name> <expect ok|bad> <workflow text> [setup commands, run in the fixture root]
 case_() {
   local name=$1 expect=$2 d="$work/$1"
+  take "$name" || return 0
   # an empty workflow is no fixture: a helper that failed to run (or a command substitution that printed nothing) would
   # otherwise be judged "ok" and make an `ok` case pass without testing anything
   if [ -z "${3//[[:space:]]/}" ]; then failn=$((failn+1)); echo "FAIL $name → empty fixture (the helper that builds it produced nothing)"; return; fi
@@ -609,6 +661,7 @@ case_ service-name-inject  bad "$head
 # --- the gate's mode: a commit read as git objects (--git), never checked out
 gitcase() {
   local name=$1 expect=$2 d="$work/git-$1"
+  take "git-$1" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
   mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
@@ -1025,6 +1078,7 @@ pm_run=0 pm_names=""
 case_out() {
   local name=$1 expect=$2 d="$work/$1" out got n
   pm_run=$((pm_run+1)); pm_names+="$1"$'\n'
+  take "$1" || return 0
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
@@ -1814,6 +1868,7 @@ case_ r4b1-trap-harmless-cleanup-still-bad bad "$(rb "trap -- '
 # synthetic minimal fixture) must still be caught -- root-caused as main never having had run: scanning at all
 # (the docstring overclaimed it; this checker adds it for the first time), not a gap in this scanner's current
 # logic. This locks the real file in as a permanent regression case, not just the synthetic r()/rb() ones above.
+if take real-auditor-plain-run-bad; then
 real_repo=$(cd "$here/../../.." && pwd)
 realcase="$work/real-auditor-plain-run"
 mkdir -p "$realcase/.github/workflows" "$realcase/.github/agent/bin"
@@ -1832,6 +1887,7 @@ if echo "$out" | grep -q "docker run\` names an image not pinned by digest: 'alp
   pass=$((pass+1)); echo "PASS real-auditor-plain-run-bad → bad"
 else
   failn=$((failn+1)); echo "FAIL real-auditor-plain-run-bad → ok (want bad)"
+fi
 fi
 
 # Codex #164 r11/r12: an ordinary bash array-append (arr+=(...), building a flag list -- release.yml's own
@@ -2767,6 +2823,7 @@ case_ r33-b1-ampersand-append-redirect-to-a-quoted-name-bad bad "$(rb 'curl -fsS
 # case3_ NAME WORKFLOW SETUP: the check must FAIL and one of its findings must be the REQ-REL-005-AC3 one (an older rule rejecting the fixture does not prove AC3)
 case3_() {
   local name=$1 d="$work/$1"
+  take "$name" || return 0
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; printf '%s\n' "$2" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"
   if [ -n "${3:-}" ]; then (cd "$d" && eval "$3"); fi
@@ -2835,6 +2892,7 @@ case3_ ac3-unreadable-bad "$(dlj "bash bin/x-test.sh
 curl -fsSL \"unterminated $U")" "$DLS"
 
 # the one exact exclusion (auditor.yml, job audit, step 9, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
+if take ac3-exclusion-is-exact; then
 python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
@@ -2875,6 +2933,10 @@ for idx in (4, 8):
     assert judge(D, "review", idx, drun, {D: dwf + "\n          ACTIONS_ID_TOKEN_REQUEST_URL: file:///x\n"}), "an assignment of the URL variable is a finding"
 assert judge(D, "review", 4, dsteps[8]["run"], {D: dwf}), "one excluded step's key does not exclude the other's text"
 PY
+fi
 
+# a real shard that selected no unit is not a successful run (PINS_SHARD=0/5000 would otherwise exit 0 having tested nothing)
+if [ -z "${PINS_DRY:-}" ] && [ "$unit_run" -eq 0 ]; then failn=$((failn+1)); echo "FAIL shard-selected-no-unit → shard $shard_i/$shard_n ran no unit of $unit_n"; fi
+echo "check-action-pins: shard $shard_i/$shard_n units=$unit_n ran=$unit_run"
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

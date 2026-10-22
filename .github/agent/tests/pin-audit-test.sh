@@ -943,5 +943,120 @@ fi
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
+# REQ-SUP-001-AC27: Go's own toolchain release skips the 7-day AGE hold only; the advisory audit still covers it (the Go vulnerability database files the standard
+# library under the package stdlib): the item go is covered, queried as Go/stdlib at its version, and a stdlib record affecting the pin is a hit.
+CASE="AC27: the audit covers tool:go (queried as the Go package stdlib) and an affected stdlib record is a hit, the fixed one is not"
+check python3 - "$here/../supply-chain/pin-audit.py" <<'PY'
+import importlib.util, sys
+sys.path.insert(0, sys.argv[1].rsplit("/", 1)[0])
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+net = pa.LiveNet.__new__(pa.LiveNet)
+it = pa.inv.Item("tool", "go", "1.27.2")
+assert net.covered(it) is True
+assert net._query(it, "1.27.2") == {"package": {"name": "stdlib", "ecosystem": "Go"}, "version": "1.27.2"}
+rec = {"affected": [{"package": {"name": "stdlib", "ecosystem": "Go"}, "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.27.3"}]}]}]}
+assert pa.LiveNet._osv_says(rec, "stdlib", "1.27.2", False) is True
+assert pa.LiveNet._osv_says(rec, "stdlib", "1.27.3", False) is False
+seen = []
+def post(q):   # the request that reaches OSV: a record exists only under the go command's own package toolchain
+    seen.append(q["package"]["name"])
+    return [{"id": "GO-T", "affected": [{"package": {"name": "toolchain", "ecosystem": "Go"}, "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.27.3"}]}]}]}] if q["package"]["name"] == "toolchain" else []
+net._osv_post = post
+net._version_of = lambda i: "1.27.2"
+net._gh_json = lambda *a, **k: []
+gh, osv = net.lists(it)
+assert seen == ["stdlib", "toolchain"], seen   # the go command's records are filed under toolchain
+assert [(r["id"], r["affected"]) for r in osv] == [("GO-T", True)], osv
+net._version_of = lambda i: "1.27.3"
+assert [r["affected"] for r in net.lists(it)[1]] == [False]
+PY
+
+# --- the history reader skips exactly three named unreadable revisions (advisor 0637): the Oct 20 RED commits of the release-chain branch's PR 459 held a 12000-character fixture line in
+# bin/chain-sign-wiring-test.sh, which the inventory refuses (a command line over 4000 characters is never read partially); they are in that branch's history, so once it lands every
+# version-moving pull request would stop in the 90-day history read. The skip is by FULL sha, from a reviewed list in the script; anything else unreadable still ends the audit.
+r="$work/r-oversize"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+oversize_ci() { # <checkout sha> <extra>: a workflow pinning actions/checkout at that sha, with one step whose run line is $2 long
+  printf 'on: pull_request\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@%s # v4\n' "$1" >"$r/.github/workflows/ci.yml"
+  [ "$2" -eq 0 ] || printf '      - name: long\n        run: echo %s\n' "$(python3 -c "print('x'*$2)")" >>"$r/.github/workflows/ci.yml"
+}
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+commit_at() { git -C "$r" add -A; GIT_AUTHOR_DATE="$(dago "$1")" GIT_COMMITTER_DATE="$(dago "$1")" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "$2"; git -C "$r" rev-parse HEAD; }
+oversize_ci "$SHA1" 0;    OV_A=$(commit_at 60 "readable A")
+oversize_ci "$SHA2" 4100; OV_B=$(commit_at 40 "oversize B")
+oversize_ci "$SHA4" 0;    OV_C=$(commit_at 20 "readable C")
+oversize_ci "$SHA4" 4300; OV_D=$(commit_at 10 "oversize D (a fourth, never listed)")
+oversize_ci "$SHA4" 0;    OV_E=$(commit_at 5 "readable E")
+OVPY='import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+NOW = dt.datetime(2026, 10, 5, 12, tzinfo=dt.timezone.utc)
+def hist(skip):
+    pa.SKIP_UNREADABLE = skip
+    try:
+        return pa.history_items(sys.argv[2], "HEAD", NOW), None
+    except RuntimeError as e:
+        return None, str(e)
+'
+CASE="oversize history: a revision with a command line over 4000 characters that is NOT on the list stops the history read with the cap's own message (fail closed)"
+check python3 - "$aud" "$r" "$OV_B" "$OV_D" <<PY
+$OVPY
+items, err = hist({})
+assert items is None and "command line of" in err and "refusing to read it partially" in err, (items, err)
+PY
+CASE="oversize history: with the only two oversize revisions listed (full shas, a reason each) the read completes and still holds the readable neighbours' pins"
+check python3 - "$aud" "$r" "$OV_B" "$OV_D" "$SHA1" "$SHA4" <<PY
+$OVPY
+items, err = hist({sys.argv[3]: "fixture B: a 4100-character run line", sys.argv[4]: "fixture D: a 4300-character run line"})
+assert err is None, err
+blob = " ".join(repr(k) for k in items)
+assert sys.argv[5] in blob and sys.argv[6] in blob, blob[:600]
+PY
+CASE="oversize history: a fourth oversize revision that is not on the list still refuses although the others are listed (fail closed for anything unnamed)"
+check python3 - "$aud" "$r" "$OV_B" <<PY
+$OVPY
+items, err = hist({sys.argv[3]: "fixture B only"})
+assert items is None and "command line of" in err, (items, err)
+PY
+CASE="oversize history: an abbreviated sha (8 characters), an uppercase sha and a sha with a space never match: only the full lowercase 40-hex revision name does"
+check python3 - "$aud" "$r" "$OV_B" "$OV_D" <<PY
+$OVPY
+for bad in (sys.argv[3][:8], sys.argv[3].upper(), sys.argv[3] + " ", " " + sys.argv[3]):
+    items, err = hist({bad: "x", sys.argv[4]: "d"})
+    assert items is None and "command line of" in err, (bad, items, err)
+PY
+CASE="oversize history: a listed revision that is READABLE is read normally (the list never hides a readable revision's pins)"
+check python3 - "$aud" "$r" "$OV_A" "$OV_B" "$OV_D" "$SHA1" <<PY
+$OVPY
+items, err = hist({sys.argv[3]: "readable A listed by mistake", sys.argv[4]: "B", sys.argv[5]: "D"})
+assert err is None, err
+assert sys.argv[6] in " ".join(repr(k) for k in items)
+PY
+CASE="oversize history: the list holds exactly the three Oct 20 RED commits of PR 459 (full lowercase 40-hex shas), each with a reason that names bin/chain-sign-wiring-test.sh"
+check python3 - "$aud" <<'PY'
+import importlib.util, re, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+want = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b"}
+assert set(pa.SKIP_UNREADABLE) == want, sorted(pa.SKIP_UNREADABLE)
+for k, why in pa.SKIP_UNREADABLE.items():
+    assert re.fullmatch(r"[0-9a-f]{40}", k), k
+    assert isinstance(why, str) and "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)
+PY
+CASE="oversize history: no other error is swallowed: a listed revision that is unreadable for another reason (a broken tree) still stops the read"
+check python3 - "$aud" "$r" "$OV_B" "$OV_D" <<PY
+$OVPY
+pa.SKIP_UNREADABLE = {sys.argv[3]: "listed", sys.argv[4]: "listed"}
+orig = pa.inv.load_at
+def boom(root, rev):
+    if rev == sys.argv[3]:
+        raise RuntimeError("some other failure of the reader")
+    return orig(root, rev)
+pa.inv.load_at = boom
+try:
+    pa.history_items(sys.argv[2], "HEAD", NOW)
+except RuntimeError as e:
+    assert "some other failure" in str(e)
+else:
+    raise SystemExit("an unrelated error of a listed revision was swallowed")
+PY
+
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
