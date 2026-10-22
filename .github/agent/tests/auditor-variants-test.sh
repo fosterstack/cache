@@ -29,7 +29,7 @@ matrix_passes 1 'auditor-matrix: 239 passed, 0 failed' && bad "the matrix judge 
 matrix_passes 0 'auditor-matrix: 200 passed, 3 failed' && bad "the matrix judge refuses failures" || ok "the matrix judge refuses failures"
 
 run_with() {   # run_with <label> <tuple literal>
-  local label="$1" tuple="$2" w out rc; w="$(mktemp -d)"
+  local label="$1" tuple="$2" w out rc; w="$(mktemp -d "${WORKROOT:-${TMPDIR:-/tmp}}/av.XXXXXX")"
   # the working tree (tracked and new files), not the index: a change under review is what must pass. A copy that cannot be made is a failure.
   if ! { git ls-files -z --cached --others --exclude-standard | tar --null -T - -cf - | tar -xf - -C "$w"; } 2>/dev/null; then
     bad "the working tree copies for VARIANTS = $label"; rm -rf "$w"; return
@@ -57,24 +57,27 @@ PYEOF
 # The two variant sets are independent (each runs on its own copy of the tree), so they run at the same time (CI speed, advisor 0643). Each run
 # writes its ok:/FAIL: lines to a log; the tally below takes both logs and refuses anything but exactly two judged checks per run (the unit suite
 # and the matrix suite) and no failure, so a run that died, printed nothing, or lost one of its two checks cannot pass.
-tally() {   # tally <log>: 0 only if the log holds exactly two ok: lines (and no FAIL:)
-  local o f; o="$(grep -c '^ok: ' "$1")"; f="$(grep -c '^FAIL: ' "$1")"; [ "$o" -eq 2 ] && [ "$f" -eq 0 ]
+tally() {   # tally <log> <worker exit status>: 0 only if the worker exited 0 AND its log holds exactly two ok: lines (and no FAIL:)
+  local o f; o="$(grep -c '^ok: ' "$1")"; f="$(grep -c '^FAIL: ' "$1")"; [ "${2:-1}" -eq 0 ] && [ "$o" -eq 2 ] && [ "$f" -eq 0 ]
 }
 tlog="$(mktemp)"; trap 'rm -f "$tlog"' EXIT
-printf 'ok: a\nok: b\n' > "$tlog";                       tally "$tlog" && ok "the tally accepts two ok lines"            || bad "the tally accepts two ok lines"
-printf 'ok: a\nFAIL: b\n' > "$tlog";                     tally "$tlog" && bad "the tally refuses a FAIL line"            || ok "the tally refuses a FAIL line"
-printf 'ok: a\n' > "$tlog";                               tally "$tlog" && bad "the tally refuses a missing check"        || ok "the tally refuses a missing check"
-: > "$tlog";                                              tally "$tlog" && bad "the tally refuses an empty log"           || ok "the tally refuses an empty log"
-printf 'ok: a\nok: b\nFAIL: c\n' > "$tlog";            tally "$tlog" && bad "the tally refuses ok lines plus a FAIL"   || ok "the tally refuses ok lines plus a FAIL"
-printf 'ok: a\nok: b\nok: c\n' > "$tlog";               tally "$tlog" && bad "the tally refuses an extra check"         || ok "the tally refuses an extra check"
+printf 'ok: a\nok: b\n' > "$tlog";                       tally "$tlog" 0 && ok "the tally accepts two ok lines and exit 0"        || bad "the tally accepts two ok lines and exit 0"
+tally "$tlog" 1 && bad "the tally refuses two ok lines and exit 1"      || ok "the tally refuses two ok lines and exit 1 (a worker that failed after its checks)"
+tally "$tlog" 143 && bad "the tally refuses two ok lines and a kill"    || ok "the tally refuses two ok lines and exit 143 (a worker killed during cleanup)"
+tally "$tlog" && bad "the tally refuses a missing exit status"          || ok "the tally refuses a missing exit status"
+printf 'ok: a\nFAIL: b\n' > "$tlog";                     tally "$tlog" 0 && bad "the tally refuses a FAIL line"            || ok "the tally refuses a FAIL line"
+printf 'ok: a\n' > "$tlog";                               tally "$tlog" 0 && bad "the tally refuses a missing check"        || ok "the tally refuses a missing check"
+: > "$tlog";                                              tally "$tlog" 0 && bad "the tally refuses an empty log"           || ok "the tally refuses an empty log"
+printf 'ok: a\nok: b\nFAIL: c\n' > "$tlog";            tally "$tlog" 0 && bad "the tally refuses ok lines plus a FAIL"   || ok "the tally refuses ok lines plus a FAIL"
+printf 'ok: a\nok: b\nok: c\n' > "$tlog";               tally "$tlog" 0 && bad "the tally refuses an extra check"         || ok "the tally refuses an extra check"
 rm -f "$tlog"
-lg="$(mktemp -d)"; trap 'rm -rf "$lg"' EXIT
+lg="$(mktemp -d)"; trap 'rm -rf "$lg"' EXIT; WORKROOT="$lg"   # each worker's tree of the working copy lives under $lg: a killed worker's tree goes with it
 run_with "production, debug, fips (main)" '("production", "debug", "fips")' > "$lg/main.log" 2>&1 & p_main=$!
 run_with "production, fips (chain-v030)" '("production", "fips")' > "$lg/chain.log" 2>&1 & p_chain=$!
-wait "$p_main"; wait "$p_chain"
+wait "$p_main"; rc_main=$?; wait "$p_chain"; rc_chain=$?
 for l in main chain; do
-  cat "$lg/$l.log"
-  if tally "$lg/$l.log"; then pass=$((pass+2)); else fail=$((fail+1)); echo "FAIL: the $l variant run did not judge exactly two passing checks"; fi
+  cat "$lg/$l.log"; eval "rc=\$rc_$l"
+  if tally "$lg/$l.log" "$rc"; then pass=$((pass+2)); else fail=$((fail+1)); echo "FAIL: the $l variant run (exit $rc) did not exit 0 and judge exactly two passing checks"; fi
 done
 
 echo "auditor-variants: ${pass} passed, ${fail} failed"
