@@ -62,9 +62,10 @@ highest_now() {
 # X.Y.Z on ghcr.io exists on each registry with ghcr.io's digest; :latest and :<its major> and :<its X.Y> carry that same digest; and :<this version's X.Y> carries the
 # digest of that line's highest release (so the rollback of :X.Y by a resumed older patch, which is pushed on purpose, is never silent). Digests are only read: nothing is retagged.
 verify_end_state() {
-  local hi line hl gd gl host t d bad=0
+  local hi hl gd gl host t d xy bad=0
+  xy=${ver%.*}
   hi=$(highest_now) || return 1
-  hl=$(highest_now "${ver%.*}.") || return 1
+  hl=$(highest_now "$xy.") || return 1
   gd=$(digest_of "ghcr.io/$repo:$hi") || return 1
   gl=$(digest_of "ghcr.io/$repo:$hl") || return 1
   if [ "$gd" = none ]; then echo "release-publish: end state: ghcr.io/$repo:$hi, the highest release, does not exist; publish $hi again" >&2; return 1; fi
@@ -73,8 +74,8 @@ verify_end_state() {
       d=$(digest_of "$host/$repo:$t") || return 1
       if [ "$d" != "$gd" ]; then echo "release-publish: end state: $host/$repo:$t shows $d, the highest release $hi shows $gd on ghcr.io; publish $hi again to restore it" >&2; bad=1; fi
     done
-    d=$(digest_of "$host/$repo:${ver%.*}") || return 1
-    if [ "$d" != "$gl" ]; then echo "release-publish: end state: $host/$repo:${ver%.*} shows $d, the highest release of that line, $hl, shows $gl on ghcr.io; publish $hl again to restore it" >&2; bad=1; fi
+    d=$(digest_of "$host/$repo:$xy") || return 1
+    if [ "$d" != "$gl" ]; then echo "release-publish: end state: $host/$repo:$xy shows $d, the highest release of that line, $hl, shows $gl on ghcr.io; publish $hl again to restore it" >&2; bad=1; fi
   done
   return $bad
 }

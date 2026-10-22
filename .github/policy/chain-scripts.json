@@ -1673,7 +1673,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "fd081a5031c5579a4b15dce6e0f262ebd1b4afc9387ed974010ecb67599f59f0",
+      "sha256": "2aaf3d0aebb74f8d79e2217825fa0d57d0757a8dfc956d7f4fb2dab315baee04",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1707,13 +1707,6 @@
           "line_sha256": "1ef923e0855bd10ef7f6ad6275a077edae3c38f8a0fe88aabd831c065b0a679e",
           "count": 2,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  if [ \"$highest\" = \"$ver\" ]; then plan+=(\"production:${ver%%.*}\" \"production:latest\"); fi",
-          "line_sha256": "28601330ec12bb7daf5fe62e79a6cf8390227cc8b80121dfdf862ca888e98398",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
