@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/fosterstack/cache/internal/blobstore"
@@ -45,6 +46,7 @@ type blobStore interface {
 type metaStore interface {
 	Record(key string, size int64) error
 	Touch(key string) error
+	Lookup(key string) (metadata.Entry, bool, error)
 	Delete(key string) error
 	TotalSize() (int64, error)
 	LeastRecentlyUsed(n int) ([]metadata.Entry, error)
@@ -88,8 +90,13 @@ type keyLock struct {
 	refs int
 }
 
-// lockKey takes key's lock and returns the function that releases it.
+// lockKey takes key's lock and returns the function that releases it. The lock
+// is named by the key folded to lower case: keys that differ only in case can
+// name one blob on a case-insensitive filesystem (REQ-PROTO-003-AC4), so their
+// replace-and-record steps must exclude each other too. (On a case-sensitive
+// filesystem this only serializes Puts of two distinct blobs, which is harmless.)
 func (c *Cache) lockKey(key string) func() {
+	key = strings.ToLower(key)
 	c.keyMu.Lock()
 	kl := c.keys[key]
 	if kl == nil {
@@ -266,28 +273,42 @@ func (c *Cache) Put(ctx context.Context, key string, r io.Reader) (int64, error)
 	if c.maxBytes > 0 {
 		r = &capReader{r: r, limit: c.maxBytes}
 	}
-	unlock := c.lockKey(key)
+	n, err := c.putLocked(key, r)
+	if err != nil {
+		return 0, err
+	}
+	if c.maxBytes > 0 {
+		c.evictToFit(ctx)
+	}
+	return n, nil
+}
+
+// putLocked is the replace-and-record step of Put under the key's lock; the
+// deferred unlock releases it on every return, a panicking reader included.
+func (c *Cache) putLocked(key string, r io.Reader) (int64, error) {
+	defer c.lockKey(key)()
 	n, err := c.blobs.Put(key, r)
 	if err != nil {
-		unlock()
 		return 0, err
 	}
 	if err := c.meta.Record(key, n); err != nil {
-		defer unlock() // the undo below is part of this key's replace-and-record: another Put of the key waits for it
 		// REQ-STORE-004: a cache that says "stored" has stored it. An
 		// unindexed blob is invisible to eviction and totals, so the write
-		// is undone and the client told the truth. The delete is
-		// best-effort — if it also fails, startup reconciliation adopts
-		// the orphan later, which is the recovery path for exactly this.
+		// is undone and the client told the truth: the blob AND the record
+		// the key had before this overwrite (the blob it described is gone).
+		// The deletes are best-effort — if one also fails, startup
+		// reconciliation adopts the orphan blob or drops the dangling record
+		// later, which is the recovery path for exactly this. The undo is part
+		// of this key's replace-and-record: another Put of the key waits for it.
 		if delErr := c.blobs.Delete(key); delErr != nil {
 			c.log.Error("cache: blob cleanup after metadata failure also failed; startup reconciliation will adopt it",
 				"key", key, "record_error", err, "delete_error", delErr)
 		}
+		if delErr := c.meta.Delete(key); delErr != nil {
+			c.log.Error("cache: record cleanup after metadata failure also failed; startup reconciliation will drop it",
+				"key", key, "record_error", err, "delete_error", delErr)
+		}
 		return 0, fmt.Errorf("cache: metadata record for %q failed, entry not stored: %w", key, err)
-	}
-	unlock()
-	if c.maxBytes > 0 {
-		c.evictToFit(ctx)
 	}
 	return n, nil
 }
@@ -357,7 +378,10 @@ func (c *Cache) evictToFit(ctx context.Context) {
 			if total <= c.maxBytes {
 				break
 			}
-			if err := c.evictOne(entry.Key); err != nil {
+			if err := c.evictOne(entry); err != nil {
+				if errors.Is(err, errEntryChanged) {
+					continue // a Put of the key replaced it after it was selected: it is recent now, not evicted
+				}
 				c.log.Error("cache: eviction: failed", "key", entry.Key, "error", err)
 				continue
 			}
@@ -384,11 +408,25 @@ func (c *Cache) evictToFit(ctx context.Context) {
 	}
 }
 
-func (c *Cache) evictOne(key string) error {
-	if err := c.blobs.Delete(key); err != nil {
+// errEntryChanged reports that the entry selected for eviction no longer is what was selected (replaced by a Put, or already gone).
+var errEntryChanged = errors.New("cache: entry changed since it was selected for eviction")
+
+// evictOne removes entry's blob and record under the key's lock, the one a Put of the key holds between its blob replace and its record, and only if the
+// record still is the one that was selected: a Put that replaced the key meanwhile made it recent, and its new blob and record are not evicted
+// (REQ-STORE-001-AC2, REQ-EVICT-001-AC1).
+func (c *Cache) evictOne(entry metadata.Entry) error {
+	defer c.lockKey(entry.Key)()
+	cur, ok, err := c.meta.Lookup(entry.Key)
+	if err != nil {
+		return fmt.Errorf("lookup record: %w", err)
+	}
+	if !ok || cur.Size != entry.Size || !cur.LastAccess.Equal(entry.LastAccess) {
+		return errEntryChanged
+	}
+	if err := c.blobs.Delete(entry.Key); err != nil {
 		return fmt.Errorf("delete blob: %w", err)
 	}
-	if err := c.meta.Delete(key); err != nil {
+	if err := c.meta.Delete(entry.Key); err != nil {
 		return fmt.Errorf("delete metadata: %w", err)
 	}
 	return nil
