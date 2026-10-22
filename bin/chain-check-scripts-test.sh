@@ -139,6 +139,21 @@ mkdig "$fx"
 mkdir -p "$fx/tools/requirements"; printf 'module example.com/a\n' > "$fx/go.mod"; printf 'module example.com/b\n' > "$fx/tools/requirements/go.mod"
 printf '{"scanners":["grype","osv-scanner"],"pr_gate":["grype","inspector"]}\n' > "$fx/.github/policy/scanners.json"
 fake="$work/fake"; mkdir -p "$fake"
+cat > "$work/childdigest.py" <<'PYC'
+import json, os, sys
+# the fake grype's manifestDigest: the digest of the platform child of the oci-dir index it was asked to scan (FAKE_GRYPE_MD=mismatch|missing break it)
+mode = os.environ.get("FAKE_GRYPE_MD", "")
+if mode == "missing":
+    sys.exit(0)
+if mode == "mismatch":
+    print("sha256:" + "0" * 64); sys.exit(0)
+path, plat = sys.argv[1], sys.argv[2]
+idx = json.load(open(os.path.join(path, "index.json")))["manifests"][0]["digest"].split(":")[1]
+for m in json.load(open(os.path.join(path, "blobs", "sha256", idx)))["manifests"]:
+    pl = m.get("platform") or {}
+    if "%s/%s" % (pl.get("os"), pl.get("architecture")) == plat:
+        print(m["digest"]); break
+PYC
 cat > "$work/osvout.py" <<'PYO2'
 import json, os, sys
 # osv-scanner 2.6.0 --format json --all-packages: results[].packages[] of {package, vulnerabilities[{id, aliases}], groups}; FAKE_OSV_VULNS (a JSON list of
@@ -188,8 +203,11 @@ PZ
   ;; esac
 fi
 if [ "\$name" = grype ]; then
+  gpath=""; gplat=""; gprev=""
+  for ga in "\$@"; do case "\$ga" in oci-dir:*) gpath=\${ga#oci-dir:};; esac; [ "\$gprev" != --platform ] || gplat=\$ga; gprev=\$ga; done
+  FAKE_MD=""; [ -z "\$gpath" ] || FAKE_MD=\$(python3 "$work/childdigest.py" "\$gpath" "\$gplat"); export FAKE_MD
   case " \$* " in *" --platform linux/arm64 "*) export FAKE_GRYPE_MATCHES="\${FAKE_GRYPE_ARM64_MATCHES-\${FAKE_GRYPE_MATCHES:-[]}}";; esac
-  python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({"matches":json.loads(os.environ.get("FAKE_GRYPE_MATCHES","[]")),"source":{"type":"image","target":{}},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
+  python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({"matches":json.loads(os.environ.get("FAKE_GRYPE_MATCHES","[]")),"source":{"type":"image","target":({"manifestDigest":os.environ["FAKE_MD"]} if os.environ.get("FAKE_MD") else {})},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
 else
   eco=Debian:12; case " \$* " in *go.mod*) eco=Go;; esac
   python3 "$work/osvout.py" "\$n" "\$eco"
@@ -301,6 +319,18 @@ rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production"
 want_fail "AC4 S1 an index with no linux/arm64 child fails naming the platform" "linux/arm64" "${SCAN[@]}"
 rm -rf "$fx/images/production"; cp -R "$keepp" "$fx/images/production"; cp "$work/keep-prod.map" "$fx/images/production.map"; cp "$work/dig.s1" "$fx/digests.json"
 want_ok "AC4 S1 both children again: the scan passes" "${SCAN[@]}"
+# S1 rulings (cache#550): the index holds exactly one linux/amd64 and one linux/arm64 image descriptor, another real platform fails and is named,
+# the attestation (unknown/unknown) is allowed; and grype's own report of the manifest it scanned must equal the child digest recorded.
+keepq="$work/keep-prod2"; rm -rf "$keepq"; cp -R "$fx/images/production" "$keepq"; cp "$fx/images/production.map" "$work/keep-prod2.map"; cp "$fx/digests.json" "$work/dig.s1b"
+restore_prod() { rm -rf "$fx/images/production"; cp -R "$keepq" "$fx/images/production"; cp "$work/keep-prod2.map" "$fx/images/production.map"; cp "$work/dig.s1b" "$fx/digests.json"; }
+rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 linux/s390x > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 an index with amd64, arm64 and s390x fails naming linux/s390x" "linux/s390x" "${SCAN[@]}"
+rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+want_ok "AC4 S1 an index with amd64, arm64 and an unknown/unknown attestation passes" "${SCAN[@]}"
+restore_prod
+FAKE_GRYPE_MD=mismatch want_fail "AC4 S1 grype reporting another manifest digest than the child recorded fails" "names manifest digest" "${SCAN[@]}"
+FAKE_GRYPE_MD=missing want_fail "AC4 S1 grype reporting no manifest digest fails" "names manifest digest" "${SCAN[@]}"
+want_ok "AC4 S1 grype reporting each child's own digest passes" "${SCAN[@]}"
 # ---- round 1 F1 (Codex A1, B1): the bytes Check reads are the bytes Build recorded -------------------------------------------------------------
 # stage-start authenticates digests.json; the layouts and archives it downloads must be bound to it before any scan, load or run (an index.json that
 # merely exists is no binding): the layout is re-derived from the digest (index, child manifests, every blob re-hashed) and each archive re-hashed.
@@ -1010,7 +1040,7 @@ else bad "G bin/check-govulncheck.py is missing or names a signing tool or crede
 # the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
 sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
 if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
-EXPECT=324
+EXPECT=329
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

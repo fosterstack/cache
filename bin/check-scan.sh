@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # bin/check-scan.sh --scanners FILE --digests FILE --images DIR --archives DIR --out DIR
 # Runs every scanner listed in FILE (.github/policy/scanners.json, "scanners") against the exact candidates (v0.3.0 rule 55;
-# REQ-CHAIN-006-AC4; REQ-REL-004-AC1). Each listed scanner scans both candidate images (DIR/production.tar and DIR/fips.tar, named in
-# the results by the digest in the digest list); grype also scans every release archive (ARCHIVES/*.tar.gz) and osv-scanner the Go
+# REQ-CHAIN-006-AC4; REQ-REL-004-AC1). The candidate image is selected by the index digest in the digest list; grype scans each of its two
+# platform children (linux/amd64 and linux/arm64, named in the results by the child's own manifest digest), osv-scanner scans the layout; grype
+# also scans every release archive (ARCHIVES/*.tar.gz) and osv-scanner the Go
 # modules (go.mod, tools/requirements/go.mod), as scanners.json (row 45) and today's stage-verify.yml have it. No unlisted scanner runs.
 # A scanner exits 0 (clean), 1 (findings the published VEX document does not except) or anything else (could not run). The package
 # count is read from the tool's own machine output: the components of the CycloneDX SBOM grype writes (-o cyclonedx-json=FILE, as
@@ -90,6 +91,12 @@ child_digest() {   # child_digest LAYOUT ARCH -> sha256:<child manifest digest>,
   jq -r --arg a "$2" '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == $a)] | if length == 1 then .[0].digest else empty end' "$blob" 2> /dev/null || true
 }
 PLATFORMS=(amd64 arm64)
+other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every index descriptor that is neither linux/amd64, linux/arm64 nor the attestation unknown/unknown
+  local idx blob; idx=$(jq -r '.manifests[0].digest // empty' "$1/index.json" 2> /dev/null) || return 0
+  [[ "$idx" =~ ^sha256:[0-9a-f]{64}$ ]] || return 0
+  blob="$1/blobs/sha256/${idx#sha256:}"; [ -f "$blob" ] || return 0
+  jq -r '.manifests[]? | (.platform // {}) | "\(.os // "none")/\(.architecture // "none")" | select(. != "linux/amd64" and . != "linux/arm64" and . != "unknown/unknown")' "$blob" 2> /dev/null || true
+}
 failed=0 ran=0
 all="[]"
 for s in "${scanners[@]}"; do
@@ -127,6 +134,11 @@ for s in "${scanners[@]}"; do
   tname=() tdigest=() tpath=() tplat=()
   for v in production fips; do
     if [ "$s" = grype ]; then
+      for o in $(other_platforms "$images/$v"); do
+        echo "check-scan: grype: the $v image index lists a platform other than linux/amd64 and linux/arm64 ($o): it would go unscanned, so it is not scanned clean" >&2
+        verdict=fail
+        subjects=$(jq -c --arg n "$v/$o" '. + [{name: $n, digest: null, packages: 0, verdict: "fail"}]' <<< "$subjects")
+      done
       for a in "${PLATFORMS[@]}"; do
         cd_=$(child_digest "$images/$v" "$a")
         if [[ "$cd_" =~ ^sha256:[0-9a-f]{64}$ ]]; then add_target "$v/linux/$a" "$cd_" "$images/$v" "linux/$a"
@@ -175,6 +187,13 @@ for s in "${scanners[@]}"; do
         echo "check-scan: grype's result for $name has no readable matches list: nothing is judged behind a result that cannot be read" >&2; rc=2
       elif [ "$um" -gt 0 ]; then
         echo "check-scan: grype reported $um finding(s) in $name ($digest) of any severity, UNKNOWN included, that the VEX document does not except" >&2; rc=1
+      fi
+    fi
+    if [ "$s" = grype ] && [ -n "$plat" ] && [ "$rc" = 0 ]; then
+      # the image grype reports it scanned is the child recorded for this subject (--platform alone could select another descriptor)
+      md=$(jq -r '.source.target.manifestDigest // empty' "$tmp/out.json" 2> /dev/null) || md=""
+      if [ "$md" != "$digest" ]; then
+        echo "check-scan: grype's report for $name names manifest digest '${md:-none}', not the child $digest it was asked to scan: the recorded digest is not the one scanned" >&2; rc=2
       fi
     fi
     if [ "$rc" = 1 ] && [ "$s" = osv-scanner ]; then
