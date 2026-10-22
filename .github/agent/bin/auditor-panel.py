@@ -493,7 +493,8 @@ def apply_day(verdict, state, bundles, profiles, auditors, today, scoring, advis
             quotes = r["proof"]       # only quotes vote() validated against the image, never an answer's raw text
             elsewhere = [img for img in images if not _not_in_image(bundles, f, img)]
             purls = purls_for(f)
-            if purls and vex_subcomponents(purls) is None:
+            false_mem[k]["purls"] = list(purls)      # what is judged NOW replaces what an earlier, rejected day remembered (turnover finds the statement by it)
+            if purls and vex_subcomponents(purls, f.get("package"), f.get("version")) is None:
                 false_mem[k]["vex"] = False
                 out["owner"].append("Scanner panel: %s on %s (%s %s) was judged not affected with evidence, but its package identity (%s) is not a form "
                                     "the release's VEX forms can represent, so no VEX statement was written: %s" %
@@ -1105,22 +1106,37 @@ _DISTRO_PURL = re.compile(r"pkg:(?:deb|rpm|apk|alpm)/[^/@?#]+/([^/@?#]+)@([^?#]+
 _GENERIC_PURL = re.compile(r"pkg:generic/([^/@?#]+)@([^?#]+)")
 
 
-def vex_package(purl):
-    """The one package-URL form the release generators (bin/vex-forms.py: Inspector rules and CSAF) accept for a VEX subcomponent: pkg:generic/<name>@<version>,
-    or None when the purl cannot be written that way. A distro package (deb, rpm, apk, alpm) loses its type, its distro namespace and its qualifiers
-    (arch, distro: the scanners and the gate already match a package by name and version alone); the version keeps its encoding. Any other type
-    (a Go module, npm: no distro namespace to drop, so the name would widen), a missing version, a subpath or a nested name is None. chain-v030 review S3."""
+def _purl_identity(purl):
+    """(name, version) of a distro or generic package URL, percent-DECODED (the release generators decode them), or None when the purl cannot be written
+    as a generic one: any other type (a Go module, npm: no distro namespace to drop, so the name would widen), a missing version, a subpath or a nested name."""
     if not isinstance(purl, str):
         return None
     m = _DISTRO_PURL.fullmatch(purl) or _GENERIC_PURL.fullmatch(purl)
-    return "pkg:generic/%s@%s" % (m.group(1), m.group(2)) if m else None
+    if not m:
+        return None
+    name, ver = urllib.parse.unquote(m.group(1)), urllib.parse.unquote(m.group(2))
+    return (name, ver) if name and ver and "/" not in name and "\n" not in name + ver else None
 
 
-def vex_subcomponents(purls):
-    """The sorted, de-duplicated generic subcomponents of a statement, or None when there is none or any purl cannot be written that way:
-    a statement with no subcomponents would cover the whole image, so an empty set is never proposed."""
-    subs = [vex_package(p) for p in purls or []]
-    return sorted(set(subs)) if subs and None not in subs else None
+def vex_package(purl):
+    """The one package-URL form the release generators (bin/vex-forms.py: Inspector rules and CSAF) accept for a VEX subcomponent: pkg:generic/<name>@<version>
+    with the DECODED name and version encoded again, or None when the purl cannot be written that way. A distro package (deb, rpm, apk, alpm) loses its type,
+    its distro namespace and its qualifiers (arch, distro: the scanners and the gate already match a package by name and version alone). chain-v030 review S3."""
+    ident = _purl_identity(purl)
+    return "pkg:generic/%s@%s" % (urllib.parse.quote(ident[0], safe=""), urllib.parse.quote(ident[1], safe="")) if ident else None
+
+
+def vex_subcomponents(purls, package=None, version=None):
+    """The sorted, de-duplicated generic subcomponents of a statement, or None when there is none or any purl cannot be written that way: a statement with no
+    subcomponents would cover the whole image, so an empty set is never proposed. With package and version (the finding's own, which the audits judged), every
+    purl's DECODED name and version must equal them: the generators decode the written purl, so a purl naming another package (libstdc%2B%2B6 against a finding
+    for libstdc%2B%2B6 that the bundle never matched) would suppress a package the evidence did not cover."""
+    idents = [_purl_identity(p) for p in purls or []]
+    if not idents or None in idents:
+        return None
+    if package is not None and any(n != package or _ver(v).lower() != _ver(version).lower() for n, v in idents):
+        return None
+    return sorted({vex_package(p) for p in purls})
 
 
 def statement_id(v):
@@ -1146,7 +1162,7 @@ def apply_files(root, st, day, today):
         for v in day["vex"]:
             sid = statement_id(v)
             if v["status"] == "not_affected":
-                names = vex_subcomponents(v.get("purls"))
+                names = vex_subcomponents(v.get("purls"), v.get("package"), v.get("version"))
                 if names is None:
                     continue                        # not a form the release generators accept: never written (apply_day does not propose it)
                 subs = [{"@id": p} for p in names]

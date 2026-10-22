@@ -1376,13 +1376,14 @@ class VexRepresentable(unittest.TestCase):   # REQ-SCAN-009-AC1, REQ-SCAN-010-AC
         d = lambda: "sha256:" + ("%064x" % next(n))
         return {v: {"index": d(), "children": {"linux/amd64": d(), "linux/arm64": d()}} for v in ("production", "fips")}
 
-    def write(self, purls_list):
+    def write(self, purls_list, packages=None):
         root = tempfile.mkdtemp()
         os.makedirs(os.path.join(root, ".vex"))
         json.dump({"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://x/vex", "statements": [], "version": 1},
                   open(os.path.join(root, P.VEX), "w"))
-        vex = [{"image": "production-amd64", "id": "CVE-2099-%04d" % i, "package": "x", "version": "1.2.3", "status": "not_affected",
-                "purls": purls, "impact_statement": "absent"} for i, purls in enumerate(purls_list, 1)]
+        packages = packages or [("example", "1.2.3")] * len(purls_list)
+        vex = [{"image": "production-amd64", "id": "CVE-2099-%04d" % i, "package": pkg, "version": ver, "status": "not_affected",
+                "purls": purls, "impact_statement": "absent"} for i, (purls, (pkg, ver)) in enumerate(zip(purls_list, packages), 1)]
         P.apply_files(root, {"version": 1}, {"vex": vex, "profiles": []}, "2026-10-22")
         return json.load(open(os.path.join(root, P.VEX)))
 
@@ -1400,7 +1401,8 @@ class VexRepresentable(unittest.TestCase):   # REQ-SCAN-009-AC1, REQ-SCAN-010-AC
 
     def test_a_proposal_with_qualified_distro_purls_passes_the_release_generators(self):
         doc = self.write([["pkg:apk/wolfi/example@1.2.3?arch=amd64"], ["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1?distro=debian-12"],
-                          ["pkg:apk/wolfi/example@1.2.3?arch=amd64", "pkg:apk/wolfi/example@1.2.3?arch=arm64"]])
+                          ["pkg:apk/wolfi/example@1.2.3?arch=amd64", "pkg:apk/wolfi/example@1.2.3?arch=arm64"]],
+                         [("example", "1.2.3"), ("tzdata", "2026c-0+deb12u1"), ("example", "1.2.3")])
         V = self.forms()
         subs = [[x["@id"] for x in st["products"][0]["subcomponents"]] for st in doc["statements"]]
         self.assertEqual(subs, [["pkg:generic/example@1.2.3"], ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"], ["pkg:generic/example@1.2.3"]])
@@ -1416,6 +1418,21 @@ class VexRepresentable(unittest.TestCase):   # REQ-SCAN-009-AC1, REQ-SCAN-010-AC
         self.assertEqual(P.vex_subcomponents(f["purls"]), None)
         self.assertEqual(P.vex_subcomponents(["pkg:apk/wolfi/example@1.2.3", "pkg:npm/foo@1"]), None)    # one unrepresentable purl refuses the set
         self.assertEqual(P.vex_subcomponents([]), None)                                                  # never a blanket statement
+
+    def test_the_decoded_name_and_version_must_be_the_findings_own(self):    # S3 ruling (1): the generators decode what is written
+        v = P.vex_subcomponents
+        self.assertEqual(v(["pkg:deb/debian/libstdc%2B%2B6@1"], "libstdc++6", "1"), ["pkg:generic/libstdc%2B%2B6@1"])
+        self.assertIsNone(v(["pkg:deb/debian/libstdc%2B%2B6@1"], "libstdc%2B%2B6", "1"))      # the finding's name left encoded: it never matched the bundle
+        self.assertIsNone(v(["pkg:deb/debian/libstdc%2B%2B6@1"], "libstdc", "1"))
+        self.assertEqual(v(["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb12u1"), ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"])
+        self.assertIsNone(v(["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb13u1"))
+        self.assertIsNone(v(["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1", "pkg:deb/debian/other@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb12u1"))
+        self.assertEqual(P.vex_package("pkg:deb/debian/libstdc%2B%2B6@1"), "pkg:generic/libstdc%2B%2B6@1")
+        doc = self.write([["pkg:deb/debian/libstdc%2B%2B6@1"]], [("libstdc%2B%2B6", "1")])      # an encoded finding name is not proposed at all
+        self.assertEqual(doc["statements"], [])
+        doc = self.write([["pkg:deb/debian/libstdc%2B%2B6@1"]], [("libstdc++6", "1")])
+        self.assertEqual(doc["statements"][0]["products"][0]["subcomponents"], [{"@id": "pkg:generic/libstdc%2B%2B6@1"}])
+        self.forms().inspector(doc, self.images(), "0.3.0")
 
     def test_the_statement_id_is_stable_across_qualifier_variants_of_one_package(self):
         a = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.3?arch=amd64"]})
