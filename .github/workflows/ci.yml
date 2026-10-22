@@ -279,14 +279,7 @@ jobs:
       - name: allowlist branch-scoping regressions (auditor suppression lane)
         run: bash bin/check-file-allowlist-test.sh
 
-      - name: suite guard (no tracked test file is empty; the guard's own regressions)
-        run: bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh
 
-      - name: suite floors only rise (against the merge base on a pull request)
-        if: ${{ github.base_ref != '' }}
-        env:
-          BASE: ${{ github.base_ref }}
-        run: bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
 
       - name: branch sweep and local prune regressions
         run: bash bin/branch-sweep-test.sh
@@ -314,28 +307,6 @@ jobs:
       # `allowlist` job, so a violation blocks the merge; it reads the checked-out workflow files with the PyYAML installed above.
       - name: scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)
         run: bash bin/scan-no-workflow-call-test.sh
-
-      - name: build helper tools regressions (apk tool, recipe generator, lock tool, module SBOM)
-        run: bash bin/build-helpers-test.sh
-
-      - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
-        run: bash bin/vendoring-test.sh </dev/null
-      - name: apk build driver and release signing regressions
-        run: bash bin/build-apk-test.sh
-
-      - name: input refresh script regressions
-        run: bash bin/refresh-inputs-test.sh
-
-      - name: archive push, pull and verify regressions
-        run: bash bin/archive-test.sh
-
-      - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
-        run: python3 bin/gen-recipes.py --check
-
-      - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
-        run: bash bin/vendor-provenance-test.sh </dev/null
-      - name: image assembly, lock proof and sealed proof regressions
-        run: bash bin/assemble-image-test.sh
 
       # Row 78: every action reference is a full commit digest with its version in
       # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.
@@ -385,134 +356,6 @@ jobs:
           "$RUNNER_TEMP/panel-sdk/bin/pip" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt
           PANEL_SDK_TEST_REQUIRED=1 "$RUNNER_TEMP/panel-sdk/bin/python" .github/agent/bin/tests/test_panel_sdk_probe.py -v
 
-      - name: privacy candidate-trace analyzer regressions (B03)
-        run: bash bin/analyze-egress-trace-test.sh
-
-      - name: scanner installer failure-path regressions (pinned-checksum contract)
-        run: bash bin/install-scanner-test.sh
-
-      # The v0.3.0 release chain's four suites (REQ-CHAIN-001..003). The pin-wiring judge requires each step exactly as written here.
-      # The verifier's cases run with the network cut and must prove the cut (CHAIN_TEST_REQUIRE_NETCUT=1).
-      - name: "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)"
-        run: CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh
-      - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
-        run: bash bin/chain-hostile-test.sh
-      - name: "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)"
-        run: bash bin/chain-sign-wiring-test.sh
-      - name: "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)"
-        run: bash bin/chain-records-test.sh
-      - name: "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)"
-        run: bash bin/chain-build-wiring-test.sh
-      - name: "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)"
-        run: bash bin/vex-index-test.sh </dev/null
-      - name: "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)"
-        run: bash bin/chain-build-admit-test.sh
-      - name: "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)"
-        run: bash bin/chain-bind-test.sh
-      - name: "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)"
-        run: bash bin/chain-rebuild-test.sh
-      - name: "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)"
-        run: bash bin/chain-snapshot-test.sh
-      - name: "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)"
-        run: bash bin/chain-install-witness-test.sh
-      - name: "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)"
-        run: bash bin/chain-check-scripts-test.sh
-      - name: "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)"
-        run: bash bin/chain-check-wiring-test.sh
-      - name: "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)"
-        run: bash bin/verify-release-guide-test.sh </dev/null
-      - name: "the pinned crane install (REQ-CHAIN-007-AC7)"
-        run: bash bin/chain-install-crane-test.sh
-      - name: "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)"
-        run: bash bin/chain-release-wiring-test.sh
-      - name: "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)"
-        run: bash bin/chain-release-scripts-test.sh
-      - name: "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)"
-        run: bash bin/chain-release-metadata-test.sh
-
-      - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
-        run: bash bin/dependabot-reviewer-test.sh
-      - name: dependency lanes wiring — reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)
-        run: bash bin/dependency-lanes-test.sh
-      - name: the Dependabot reviewer's bundle carries the diff, every in-range release note and our usage (row 75 b)
-        run: bash bin/dependabot-reviewer-gather-test.sh
-      - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)
-        run: bash bin/panel-test.sh
-      - name: the auditor's fixtures and tests follow the panel's image set — the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)
-        run: bash .github/agent/tests/auditor-variants-test.sh
-      - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)
-        run: bash bin/patch-decide-test.sh
-      - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
-        run: bash bin/admission-tag-signer-test.sh
-
-      - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
-        run: bash bin/release-patch-wiring-test.sh
-      - name: the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)
-        run: bash bin/acceptance-maven-413-test.sh
-      - name: release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)
-        run: bash .github/agent/tests/release-notes-signed-test.sh
-      - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)
-        run: bash bin/go-freshness-wiring-test.sh
-      - name: the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)
-        run: bash bin/workflow-consolidation-test.sh
-      - name: the daily rescan covers the current release only (REQ-REL-004-AC5)
-        run: bash bin/rescan-current-only-test.sh
-      - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
-        run: bash bin/panel-wiring-test.sh
-      - name: same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)
-        run: bash bin/inspector-reuse-test.sh
-      - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
-        run: bash .github/agent/tests/k8s-harness-fence-test.sh
-      - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)
-        run: bash .github/agent/tests/pin-age-check-test.sh
-      - name: the daily supply-chain audit — advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)
-        run: bash .github/agent/tests/pin-audit-test.sh
-      - name: where the supply-chain checks run — Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)
-        run: bash .github/agent/tests/supply-chain-wiring-test.sh
-
-      - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
-        run: bash bin/inspector-gate-test.sh
-
-      - name: VEX product-scope regressions (audit R01 — exception bound to the FosterStack product)
-        run: |
-          ./bin/install-scanner.sh grype
-          bash bin/vex-scope-test.sh
-
-      - name: VEX applied by both gate scanners (REQ-REL-004-AC1 — covered suppressed, uncovered blocks, zero packages fails)
-        run: bash bin/vex-both-scanners-test.sh
-
-      - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
-        run: bash bin/vex-forms-test.sh
-
-      - name: the customer guide — every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)
-        run: bash bin/vex-guide-test.sh
-
-      - name: the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)
-        run: bash bin/vex-live-test-test.sh
-
-      - name: the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)
-        run: bash .github/agent/tests/vex-live-pins-test.sh
-
-      - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
-        run: bash bin/scout-root-cause-test.sh
-
-      - name: the Docker Scout older-versions sweep (advisor 0520) — table logic with docker stubbed, installer pins, dispatch-only job
-        run: bash bin/scout-older-versions-test.sh
-
-      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
-        run: bash bin/go-bump-open-pr-test.sh
-
-      # The persona UAT (REQ-UAT-001): its three suites run here like their neighbours. Their fixtures pick free ports per run, so they never collide with
-      # each other or with a developer's machine. The driver suite is the long one (it runs the real driver through hundreds of cases).
-      - name: persona UAT — agent and provider suite
-        run: bash bin/persona-uat-agent-test.sh
-
-      - name: persona UAT — wiring suite (workflows, tools file, installer, identity refresher)
-        run: bash bin/persona-uat-wiring-test.sh
-
-      - name: persona UAT — driver suite
-        run: bash bin/persona-uat-test.sh
-
       # VEX tripwire (punch list #4b). A dependency we answered with a VEX
       # statement is answered on the facts as they were: golang-jwt is not
       # in the build at all, which is why CVE-2024-51744 does not apply to
@@ -543,6 +386,232 @@ jobs:
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  # persona UAT suites (split out of the allowlist job; the driver suite is the long one)
+  allowlist-persona:
+    name: allowlist-persona
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
+
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
+
+
+      # The persona UAT (REQ-UAT-001): its three suites run here like their neighbours. Their fixtures pick free ports per run, so they never collide with
+      # each other or with a developer's machine. The driver suite is the long one (it runs the real driver through hundreds of cases).
+      - name: persona UAT — agent and provider suite
+        run: bash bin/persona-uat-agent-test.sh
+
+      - name: persona UAT — wiring suite (workflows, tools file, installer, identity refresher)
+        run: bash bin/persona-uat-wiring-test.sh
+
+      - name: persona UAT — driver suite
+        run: bash bin/persona-uat-test.sh
+
+  # build, archive, assembly, VEX and scanner-gate regression suites (split out of the allowlist job)
+  allowlist-chain:
+    name: allowlist-chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
+
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
+
+
+      - name: build helper tools regressions (apk tool, recipe generator, lock tool, module SBOM)
+        run: bash bin/build-helpers-test.sh
+
+      - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
+        run: bash bin/vendoring-test.sh </dev/null
+      - name: apk build driver and release signing regressions
+        run: bash bin/build-apk-test.sh
+
+      - name: input refresh script regressions
+        run: bash bin/refresh-inputs-test.sh
+
+      - name: archive push, pull and verify regressions
+        run: bash bin/archive-test.sh
+
+      - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
+        run: python3 bin/gen-recipes.py --check
+
+      - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
+        run: bash bin/vendor-provenance-test.sh </dev/null
+      - name: image assembly, lock proof and sealed proof regressions
+        run: bash bin/assemble-image-test.sh
+
+      - name: privacy candidate-trace analyzer regressions (B03)
+        run: bash bin/analyze-egress-trace-test.sh
+
+      - name: scanner installer failure-path regressions (pinned-checksum contract)
+        run: bash bin/install-scanner-test.sh
+
+      - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
+        run: bash bin/inspector-gate-test.sh
+
+      - name: VEX product-scope regressions (audit R01 — exception bound to the FosterStack product)
+        run: |
+          ./bin/install-scanner.sh grype
+          bash bin/vex-scope-test.sh
+
+      - name: VEX applied by both gate scanners (REQ-REL-004-AC1 — covered suppressed, uncovered blocks, zero packages fails)
+        run: bash bin/vex-both-scanners-test.sh
+
+      - name: our VEX in three forms — the same statements, generated before the signed manifest (scanner-panel rule 10)
+        run: bash bin/vex-forms-test.sh
+
+      - name: the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)
+        run: bash bin/scout-root-cause-test.sh
+
+      - name: the Docker Scout older-versions sweep (advisor 0520) — table logic with docker stubbed, installer pins, dispatch-only job
+        run: bash bin/scout-older-versions-test.sh
+
+      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
+        run: bash bin/go-bump-open-pr-test.sh
+
+      - name: suite guard (no tracked test file is empty; the guard's own regressions)
+        run: bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh
+
+      - name: suite floors only rise (against the merge base on a pull request)
+        if: ${{ github.base_ref != '' }}
+        env:
+          BASE: ${{ github.base_ref }}
+        run: bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
+
+      - name: same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)
+        run: bash bin/inspector-reuse-test.sh
+
+      # The v0.3.0 release chain's four suites (REQ-CHAIN-001..003). The pin-wiring judge requires each step exactly as written here.
+      # The verifier's cases run with the network cut and must prove the cut (CHAIN_TEST_REQUIRE_NETCUT=1).
+      - name: "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)"
+        run: CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh
+
+      - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
+        run: bash bin/chain-hostile-test.sh
+
+      - name: "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)"
+        run: bash bin/chain-sign-wiring-test.sh
+
+      - name: "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)"
+        run: bash bin/chain-records-test.sh
+
+      - name: "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)"
+        run: bash bin/chain-build-wiring-test.sh
+
+      - name: "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)"
+        run: bash bin/vex-index-test.sh </dev/null
+
+      - name: "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)"
+        run: bash bin/chain-build-admit-test.sh
+
+      - name: "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)"
+        run: bash bin/chain-bind-test.sh
+
+      - name: "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)"
+        run: bash bin/chain-rebuild-test.sh
+
+      - name: "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)"
+        run: bash bin/chain-snapshot-test.sh
+
+      - name: "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)"
+        run: bash bin/chain-install-witness-test.sh
+
+      - name: "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)"
+        run: bash bin/chain-check-scripts-test.sh
+
+      - name: "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)"
+        run: bash bin/chain-check-wiring-test.sh
+
+      - name: "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)"
+        run: bash bin/verify-release-guide-test.sh </dev/null
+
+      - name: "the pinned crane install (REQ-CHAIN-007-AC7)"
+        run: bash bin/chain-install-crane-test.sh
+
+      - name: "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)"
+        run: bash bin/chain-release-wiring-test.sh
+
+      - name: "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)"
+        run: bash bin/chain-release-scripts-test.sh
+
+      - name: "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)"
+        run: bash bin/chain-release-metadata-test.sh
+
+      - name: the customer guide — every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)
+        run: bash bin/vex-guide-test.sh
+
+      - name: the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)
+        run: bash bin/vex-live-test-test.sh
+
+      - name: the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)
+        run: bash .github/agent/tests/vex-live-pins-test.sh
+
       # Round 1 F7: the floors of test-evidence/suite-floors.json are held at REAL counts. Every suite the file names runs again through the guard (stdin closed,
       # its case count read from its own output, at or above its floor); --count-only because suites with known reds (known-red.json) exit non-zero by design:
       # their reds are judged by their own steps above, here only that they still run and still count.
@@ -550,6 +619,76 @@ jobs:
         env:
           CHAIN_TEST_REQUIRE_NETCUT: '1'
         run: python3 -I bin/suite-guard-run.py all --count-only test-evidence/suite-floors.json .
+
+  # supply-chain, panel, release-wiring and dependency-lane suites (split out of the allowlist job)
+  allowlist-pins-auditor:
+    name: allowlist-pins-auditor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: make sure the base branch ref exists
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          if [ -n "${BASE}" ]; then
+            [[ "${BASE}" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1
+            [[ "${BASE}" != *..* ]] || exit 1
+            git fetch --no-tags origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
+          fi
+
+      - name: set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+      - name: the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
+
+
+      - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
+        run: bash bin/dependabot-reviewer-test.sh
+      - name: dependency lanes wiring — reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)
+        run: bash bin/dependency-lanes-test.sh
+      - name: the Dependabot reviewer's bundle carries the diff, every in-range release note and our usage (row 75 b)
+        run: bash bin/dependabot-reviewer-gather-test.sh
+      - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)
+        run: bash bin/panel-test.sh
+      - name: the auditor's fixtures and tests follow the panel's image set — the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)
+        run: bash .github/agent/tests/auditor-variants-test.sh
+      - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)
+        run: bash bin/patch-decide-test.sh
+      - name: admission's tag signer — the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)
+        run: bash bin/admission-tag-signer-test.sh
+
+      - name: release.yml's automatic patch wiring — decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)
+        run: bash bin/release-patch-wiring-test.sh
+      - name: the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)
+        run: bash bin/acceptance-maven-413-test.sh
+      - name: release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)
+        run: bash .github/agent/tests/release-notes-signed-test.sh
+      - name: go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)
+        run: bash bin/go-freshness-wiring-test.sh
+      - name: the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)
+        run: bash bin/workflow-consolidation-test.sh
+      - name: the daily rescan covers the current release only (REQ-REL-004-AC5)
+        run: bash bin/rescan-current-only-test.sh
+      - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
+        run: bash bin/panel-wiring-test.sh
+      - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
+        run: bash .github/agent/tests/k8s-harness-fence-test.sh
+      - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)
+        run: bash .github/agent/tests/pin-age-check-test.sh
+      - name: the daily supply-chain audit — advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)
+        run: bash .github/agent/tests/pin-audit-test.sh
+      - name: where the supply-chain checks run — Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)
+        run: bash .github/agent/tests/supply-chain-wiring-test.sh
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must
