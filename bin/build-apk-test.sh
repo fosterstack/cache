@@ -91,8 +91,16 @@ t "rule 12" "melange-fips.yaml: the same" y mel-fetch-dir "$MF"
 t "rule 24" "melange.yaml: the fetched Go tarball is deleted (it would leave the tree modified)" y mel-fetch-delete "$M"
 t "rule 24" "melange-fips.yaml: the same" y mel-fetch-delete "$MF"
 t "rule 13" "melange.yaml has no GOFIPS140 anywhere" y mel-fips "$M" standard
-t "rule 13" "melange-fips.yaml sets GOFIPS140=v1.0.0" y mel-fips "$MF" fips
-t "rule 13" "melange-fips.yaml proves the built binary records GOFIPS140=v1.0.0-c2097c7c (go version -m)" y mel-fipsproof "$MF"   # melange pkg/sca/sca.go:732 recognises exactly v1.0.0-c2097c7c
+t "REQ-BUILDAPK-001-AC1" "melange-fips.yaml sets GOFIPS140 to the version of the module build/locks/fips-module.txt names" y mel-fips "$MF" fips
+t "REQ-BUILDAPK-001-AC1" "melange-fips.yaml proves the built binary records GOFIPS140=<the module id build/locks/fips-module.txt names> (go version -m)" y mel-fipsproof "$MF"   # melange pkg/sca/sca.go:732 recognises exactly the certified module's id
+# a data-only refresh stays green: the recipe the generator makes for another module (fixture v1.1.0-deadbeef, its own test lock) satisfies the same checks against that lock, and not against the old one
+printf 'v1.1.0-deadbeef\n' >"$work/lib-lock-new.txt"; printf 'v1.0.0-c2097c7c\n' >"$work/lib-lock-cur.txt"; rm -rf "$work/gen-new"; mkdir -p "$work/gen-new"
+t "REQ-REFRESH-001-AC11" "gen-recipes.py makes the FIPS recipe for the fixture module v1.1.0-deadbeef" python3 -I -B "$root/bin/gen-recipes.py" --fips-module "$work/lib-lock-new.txt" --emit "$work/gen-new"
+t "REQ-BUILDAPK-001-AC1" "the generated recipe for v1.1.0-deadbeef sets GOFIPS140=v1.1.0 against its own lock" env FIPS_LOCK="$work/lib-lock-new.txt" ROOT="$root" python3 "$work/chk.py" mel-fips "$work/gen-new/melange-fips.yaml" fips
+t "REQ-BUILDAPK-001-AC1" "the generated recipe for v1.1.0-deadbeef proves GOFIPS140=v1.1.0-deadbeef against its own lock" env FIPS_LOCK="$work/lib-lock-new.txt" ROOT="$root" python3 "$work/chk.py" mel-fipsproof "$work/gen-new/melange-fips.yaml"
+t "REQ-BUILDAPK-001-AC1" "the generated recipe for v1.1.0-deadbeef is refused against the old lock (a recipe and a lock that disagree fail)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fips "$4" fips && ! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fipsproof "$4"' _ "$work/lib-lock-cur.txt" "$root" "$work/chk.py" "$work/gen-new/melange-fips.yaml"
+printf 'v1.1.0-DEADBEEF\n' >"$work/lib-lock-bad.txt"
+t "REQ-BUILDAPK-001-AC1" "a malformed lock file fails the recipe checks (closed grammar, fail closed)" bash -c '! env FIPS_LOCK="$1" ROOT="$2" python3 "$3" mel-fips "$4" fips' _ "$work/lib-lock-bad.txt" "$root" "$work/chk.py" "$MF"
 t "rule 21" "bin/gen-recipes.py --check passes on the committed pair: both recipes are exactly the generator's output from build/melange.yaml.tmpl, so they differ only in name, description and the two FIPS lines" python3 "$root/bin/gen-recipes.py" --check
 rm -rf "$work/pin"; mkdir -p "$work/pin"; cp "$root/build/melange.yaml.tmpl" "$work/pin/t.tmpl"; cp "$root/build/melange.yaml" "$work/pin/a.yaml"; cp "$root/build/melange-fips.yaml" "$work/pin/b.yaml"; printf '#' >>"$work/pin/t.tmpl"
 fails "rule 21" "bin/gen-recipes.py: a ONE-BYTE edit of a copy of the REAL template fails --check naming the pin (the constant TEMPLATE_SHA256 in the generator)" 'update TEMPLATE_SHA256 in the same reviewed change' python3 "$root/bin/gen-recipes.py" --template "$work/pin/t.tmpl" --regular "$work/pin/a.yaml" --fips "$work/pin/b.yaml" --check
