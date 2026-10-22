@@ -100,8 +100,9 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
   # (application/...+json, no filesystem layer) (an ordinary image manifest carrying the annotations is a third image nobody scanned). Anything else is named and fails.
   # Go's decoders (containerd, go-containerregistry, stereoscope) match JSON keys without regard to case, jq does not: an object whose keys collide once
   # lower-cased reads one way here and another way there, so it is refused; so is any key outside printable ASCII (Go also folds U+017F and U+212A to s and k).
-  if ! jq -e '[.. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not' "$blob" > /dev/null 2>&1 \
-     || ! jq -e '[.. | objects | keys | any(.[]; test("^[ -~]+$") | not)] | any | not' "$1/index.json" > /dev/null 2>&1; then
+  # Each file is exactly ONE JSON value (jq reads them all and answers for the last; Go's decoders read the first and ignore the rest).
+  if ! jq -s -e 'length == 1 and ([.[0] | .. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not)' "$blob" > /dev/null 2>&1 \
+     || ! jq -s -e 'length == 1 and ([.[0] | .. | objects | keys | any(.[]; test("^[ -~]+$") | not)] | any | not)' "$1/index.json" > /dev/null 2>&1; then
     echo "index descriptors with keys that differ only in case, with a key outside printable ASCII, or that cannot be read"; return 0
   fi
   out=$(jq -r 'def obj: if type == "object" then . else {} end;
@@ -118,9 +119,9 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
       "@@check "*)
         d=${line#@@check }
         if [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] && [ -f "$1/blobs/sha256/${d#sha256:}" ] \
-           && jq -e '([.. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not)
+           && jq -s -e 'length == 1 and (.[0] | ([.. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not)
                      and .mediaType == "application/vnd.oci.image.manifest.v1+json" and (.layers | type) == "array" and (.layers | length) > 0
-                     and all(.layers[]; (.mediaType | type) == "string" and (.mediaType | test("^application/[a-z0-9.+-]+[+]json\\z")))' "$1/blobs/sha256/${d#sha256:}" > /dev/null 2>&1; then :
+                     and all(.layers[]; (.mediaType | type) == "string" and (.mediaType | test("^application/[a-z0-9.+-]+[+]json\\z"))))' "$1/blobs/sha256/${d#sha256:}" > /dev/null 2>&1; then :
         else echo "unknown/unknown (its own manifest is not a provenance manifest)"; fi ;;
       "") ;;
       *) echo "$line" ;;

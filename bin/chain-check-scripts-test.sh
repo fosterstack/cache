@@ -102,9 +102,14 @@ for p in plats:
     layer, ls = blob(("layer %s %s" % (seed, p)).encode())
     lmt = "application/vnd.in-toto+json" if p == "unknown/unknown" and os.environ.get("ATT_ODD") != "plain-image" else "application/vnd.oci.image.layer.v1.tar"
     cfg, cs = blob(json.dumps({"architecture": lie or arch, "os": os_, "rootfs": {"type": "layers", "diff_ids": [layer]}, "seed": seed}, sort_keys=True).encode())
-    man, ms = blob(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+    man_doc = (json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
         "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cfg, "size": cs},
         "layers": [{"mediaType": lmt, "digest": layer, "size": ls}]}, sort_keys=True).encode())
+    man_bytes = man_doc.encode() if isinstance(man_doc, str) else man_doc
+    if p == "unknown/unknown" and os.environ.get("ATT_ODD") == "two-values":
+        first = json.loads(man_bytes); first["layers"][0]["mediaType"] = "application/vnd.oci.image.layer.v1.tar+gzip"
+        man_bytes = (json.dumps(first, sort_keys=True) + "\n").encode() + man_bytes
+    man, ms = blob(man_bytes)
     kid = {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": man, "size": ms, "platform": {"os": os_, "architecture": arch}}
     if p == "unknown/unknown" and os.environ.get("ATT_ODD") == "array-digest":
         kid["annotations"] = {"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": [kids[0]["digest"]]}
@@ -114,6 +119,8 @@ for p in plats:
     elif p == "unknown/unknown" and os.environ.get("ATT_ODD") == "unicode-key":
         kid["annotations"] = {"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": kids[0]["digest"]}
         kid["o\u017f"] = "linux"                                              # Go folds U+017F to s: its decoder reads this as os
+    elif p == "unknown/unknown" and os.environ.get("ATT_ODD") == "two-values":
+        kid["annotations"] = {"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": kids[0]["digest"]}
     elif p == "unknown/unknown" and os.environ.get("ATT_ODD") == "annotations-list":
         kid["annotations"] = []
     elif p == "unknown/unknown" and not os.environ.get("NO_ATT_ANNOTATION"):   # (ATT_ODD=plain-image keeps the annotations on an ordinary image manifest)
@@ -353,6 +360,8 @@ rm -rf "$fx/images/production"; ATT_ODD=case-variant-keys python3 "$work/mkoci.p
 want_fail "AC4 S1 an index descriptor with keys that differ only in case (Platform next to platform) is refused" "differ only in case" "${SCAN[@]}"
 rm -rf "$fx/images/production"; ATT_ODD=unicode-key python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
 want_fail "AC4 S1 an index descriptor with a key outside printable ASCII (a case-folding twin of os) is refused" "outside printable ASCII" "${SCAN[@]}"
+rm -rf "$fx/images/production"; ATT_ODD=two-values python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 a provenance manifest blob holding two JSON values (an image, then a JSON-only manifest) is not exempt" "provenance manifest" "${SCAN[@]}"
 rm -rf "$fx/images/production"; ATT_ODD=annotations-list python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown linux/s390x > /dev/null; mkdig "$fx"
 want_fail "AC4 S1 an unreadable annotations value does not hide a later linux/s390x descriptor" "linux/s390x" "${SCAN[@]}"
 restore_prod
@@ -1068,7 +1077,7 @@ else bad "G bin/check-govulncheck.py is missing or names a signing tool or crede
 # the static strace of the egress suite is fetched from its GitHub release (a literal URL the pin-age check dates): the URL names the pinned STRACE_VER
 sv_=$(sed -n 's/^STRACE_VER=\([0-9.]*\)$/\1/p' "$root/bin/acceptance-egress.sh" | head -1)
 if [ -n "$sv_" ] && grep -q "releases/download/v${sv_}/strace-${sv_}.tar.xz" "$root/bin/acceptance-egress.sh"; then ok "acceptance-egress.sh: the strace release URL names the pinned version $sv_"; else bad "acceptance-egress.sh: the strace release URL does not name the pinned version '${sv_}'"; fi
-EXPECT=336
+EXPECT=337
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
