@@ -57,7 +57,7 @@ if "secrets." in str(gj) or "GOOGLE_APPLICATION_CREDENTIALS" in tg:
 if "--vex .vex/fosterstack-cache.openvex.json" not in text("panel-grype"):
     bad.append("Grype is not given the VEX file")
 # REQ-REL-010 on the rescan (handoff 0521): Scout applies our statements only through an attestation in the image index, and an
-# attestation lives in a registry. The vex-attach job gives each candidate index its attestation children (bin/vex-index.py) and
+# attestation lives in a registry. Build gave each candidate index its attestation children; the vex-attach job pushes them as built and
 # pushes it to the SCRATCH package only; panel-scout scans those registry refs by exact index digest with our author.
 import json, os, subprocess, tempfile
 ROOT = os.environ.get("PANEL_ROOT", ".")
@@ -114,7 +114,7 @@ else:
         bad.append("vex-attach does not wait for exactly the build (the chain's candidate images are Build's snapshot artifact)")
     vt = text("vex-attach")
     vsteps = va.get("steps", [])
-    att = [x for x in vsteps if "attach our OpenVEX to each candidate index" in (x.get("name") or "")]
+    att = [x for x in vsteps if "push each candidate index as Build attested it" in (x.get("name") or "")]
     fxs = [x for x in vsteps if "self-check fixtures" in (x.get("name") or "")]
     prn = [x for x in vsteps if "prune the scratch package" in (x.get("name") or "")]
     if len(att) != 1 or len(fxs) != 1 or len(prn) != 1:
@@ -183,17 +183,26 @@ exit 0
         rc, calls = run_prune("del-5000-then-fail")
         if rc == 0 or len([l for l in calls if "-X DELETE" in l]) != 2:
             bad.append("the prune goes green when another delete fails beside a kept 5000-download version (rc=%s)" % rc)
-        for need in ("vex=.vex/fosterstack-cache.openvex.json", 'python3 bin/vex-index.py layout --layout "${d}" --vex "${vex}"',
-                     'python3 bin/vex-index.py verify-layout --layout "${d}" --vex "${vex}" --base-digest "${base}"',
+        # Build's assemble already gave each layout its attestation children (ruling, cache#561 B1): the candidates are pushed as built, checked against Build's own digest file, and the tool is NOT run on them again (it refuses a second run)
+        for need in ('final=$(jq -er', '[ "$(cat "/tmp/oci/${v}.digest")" = "${final}" ]',
                      'python3 bin/release-layout.py "${d}" "${final}"', 'tag="cand-${GITHUB_RUN_ID}-${v}"', "chmod -R go-w", "skopeo copy --all",
                      '--digestfile "/tmp/attach/${v}.pushed"', '[ "${pushed}" = "${final}" ]', "for v in production fips", 'cp -R "/tmp/oci/${v}" "${d}"'):
             if need not in att[0].get("run", ""):
                 bad.append("the attach step lacks %s" % need)
+        if "vex-index" in att[0].get("run", ""):
+            bad.append("the push step runs the attestation tool again on Build's layouts (they are already attested; the tool refuses a second run)")
+        if len(re.findall(r"^\s*tag=", vt, re.M)) != 1 or not re.search(r'^\s*tag="cand-\$\{GITHUB_RUN_ID\}-\$\{v\}"$', att[0].get("run", ""), re.M):
+            bad.append("the job assigns a tag in any way but the one candidate tag cand-${GITHUB_RUN_ID}-${v}")
+        if len(re.findall(r"\bskopeo copy\b", att[0].get("run", ""))) != 1:
+            bad.append("the push step is not exactly one skopeo copy")
         for need in ("python3 bin/vex-index.py layout --layout", "python3 bin/vex-index.py verify-layout --layout", "--base-digest",
                      ".vex/fosterstack-cache.openvex.json", "CVE-2023-4911", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "chmod -R go-w",
                      "--digestfile /tmp/attach/before.pushed", "--digestfile /tmp/attach/ours.pushed", '[ "$(cat /tmp/attach/ours.pushed)" = "${final}" ]', '[ "$(cat /tmp/attach/before.pushed)" = "${before}" ]', "selfcheck-before-${GITHUB_RUN_ID}", "selfcheck-ours-${GITHUB_RUN_ID}"):
             if need not in fxs[0].get("run", ""):
                 bad.append("the fixture step lacks %s" % need)
+    # no other push tool in the job: the scratch package is written by skopeo copy to docker://<scratch>:<tag> and nothing else
+    if re.search(r"\b(crane|oras|regctl|cosign|buildx)\b|\bdocker\s+(push|buildx|image\s+push)\b|\bgh\s+api\b[^\n]*(-X|--method)\s+(PUT|POST|PATCH)|\bcurl\b[^\n]*(-X\s*(PUT|POST|PATCH)|--upload)", vt):
+        bad.append("vex-attach carries a push tool other than skopeo copy to the scratch package")
     for need in ("docker login ghcr.io", "-X DELETE", "14 days ago"):
         if need not in vt:
             bad.append("vex-attach lacks %s" % need)
@@ -452,14 +461,17 @@ case_ attach-environment      bad "$J['vex-attach']['environment'] = 'agent'"
 case_ attach-conditional      bad "$J['vex-attach']['if'] = \"github.ref == 'refs/heads/main'\""
 case_ attach-needs-more       bad "$J['vex-attach']['needs'] = ['build', 'panel-grype']"
 case_ attach-needs-none       bad "$J['vex-attach']['needs'] = []"
-case_ attach-release-package  bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache:')"
-case_ attach-candidates-package bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache-candidates:')"
-case_ attach-other-tag        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('tag=\"cand-\${GITHUB_RUN_ID}-\${v}\"', 'tag=\"latest\"')"
-case_ attach-no-verify        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('python3 bin/vex-index.py verify-layout', 'true')"
-case_ attach-no-layout-check  bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('python3 bin/release-layout.py', 'true')"
-case_ attach-no-digest-check  bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('[ \"\${pushed}\" = \"\${final}\" ]', 'true')"
-case_ attach-other-vex        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['run'] = s['run'].replace('vex=.vex/fosterstack-cache.openvex.json', 'vex=/dev/null')"
-case_ attach-step-soft        bad "s = $(step_of vex-attach 'vex-index.py layout'); s['continue-on-error'] = 'true'"
+case_ attach-release-package  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache:')"
+case_ attach-candidates-package bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('docker://ghcr.io/fosterstack/cache-scout-probe:', 'docker://ghcr.io/fosterstack/cache-candidates:')"
+case_ attach-other-tag        bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('tag=\"cand-\${GITHUB_RUN_ID}-\${v}\"', 'tag=\"latest\"')"
+case_ attach-reattests        bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('python3 bin/release-layout.py', 'python3 bin/vex-index.py layout --layout \"\${d}\" --vex .vex/fosterstack-cache.openvex.json\\npython3 bin/release-layout.py')"
+case_ attach-no-build-digest  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('[ \"\$(cat \"/tmp/oci/\${v}.digest\")\" = \"\${final}\" ]', 'true')"
+case_ attach-push-tool        bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'] + '\\ncrane push \"\${d}\" ghcr.io/fosterstack/cache-scout-probe:x'"
+case_ attach-second-tag       bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'] + '\\ntag=latest'"
+case_ attach-two-copies       bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'] + '\\nskopeo copy --all oci:\"\${d}\" docker://ghcr.io/fosterstack/cache-scout-probe:other'"
+case_ attach-no-layout-check  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('python3 bin/release-layout.py', 'true')"
+case_ attach-no-digest-check  bad "s = $(step_of vex-attach 'release-layout.py'); s['run'] = s['run'].replace('[ \"\${pushed}\" = \"\${final}\" ]', 'true')"
+case_ attach-step-soft        bad "s = $(step_of vex-attach 'release-layout.py'); s['continue-on-error'] = 'true'"
 case_ prune-gone              bad "$J['vex-attach']['steps'] = [s for s in $J['vex-attach']['steps'] if 'prune' not in (s.get('name') or '')]"
 case_ prune-other-package     bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('packages/container/cache-scout-probe', 'packages/container/cache')"
 case_ prune-forever           bad "s = $(step_of vex-attach 'DELETE'); s['run'] = s['run'].replace('14 days ago', '3650 days ago')"

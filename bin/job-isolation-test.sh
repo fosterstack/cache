@@ -17,18 +17,11 @@ wf = sys.argv[1]
 # a step that builds or compiles (commands and actions; comment lines never count)
 COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|goreleaser/goreleaser-action|\bgoreleaser\s+(?:build|release)\b|\bdocker\s+(?:buildx\s+)?build\b|\bbuildx\s+(?:build|bake)\b|docker/build-push-action|docker/bake-action"
                      r"|\bmelange\s+build\b|\bapko\s+(?:build|publish)\b|\bcargo\s+(?:build|install)\b|\bmake\b|\bnpm\s+(?:run\s+)?build\b")
-# the release-chain jobs on main that the chain-v030 landing replaces (handoffs 0634/0637, cache#514): listed with the reason, gone at the landing
-EXCLUDED_AC1 = {
-    ("stage-build.yml", "build"): "goreleaser build next to id-token: replaced at the chain-v030 landing",
-    ("stage-image.yml", "assemble"): "buildx assemble next to packages/id-token: replaced at the chain-v030 landing",
-    ("stage-promote.yml", "promote"): "go install crane in the release job: replaced at the chain-v030 landing (checksum-pinned crane)",
-    ("stage-reproducibility.yml", "reproduce"): "rebuild next to id-token: replaced at the chain-v030 landing",
-}
-EXCLUDED_AC2 = {
-    ("stage-acceptance-artifacts.yml", "artifacts"): "three local test images built in a loop in a credential-free acceptance job, exercised then discarded (a test workload, not a release artifact)",
-    ("stage-image.yml", "assemble"): "three image builds in a loop: replaced at the chain-v030 landing",
-    ("stage-reproducibility.yml", "reproduce"): "three rebuilds in a loop: replaced at the chain-v030 landing",
-}
+# Exclusions: none on the release-chain branch (cache#561 ruling B2). On main the table named the old release-chain jobs (stage-build build, stage-image assemble, stage-promote promote,
+# stage-reproducibility reproduce, stage-acceptance-artifacts artifacts) that the chain landing replaces; those jobs do not exist here, so the rows are gone (the requirement's own note
+# says the list shrinks to nothing at the landing). The stale-row check below stays: a row added later must name a job that exists.
+EXCLUDED_AC1 = {}
+EXCLUDED_AC2 = {}
 def steps_text(s):
     t = (s.get("run") or "") + " " + (s.get("uses") or "") + " " + yaml.safe_dump(s.get("env") or {})
     return "\n".join(l for l in t.split("\n") if not l.strip().startswith("#"))
@@ -125,8 +118,8 @@ edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n
 mutate "go build added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: s.replace("  panel-probe:\n", "  panel-probe:\n", 1).replace("    environment: agent\n", "    environment: agent\n    # mutated\n", 1))
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: go build ./...\n", s, count=1, flags=re.S))'
-mutate "make added to a job with id-token: write (stage-verify scan)" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  scan:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: make all\n", s, count=1, flags=re.S))'
+mutate "make added to a job with id-token: write (stage-verify check)" '
+edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: make all\n", s, count=1, flags=re.S))'
 mutate "docker build added to a job that reads a secret (release.yml decide)" '
 edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: docker build -t x .\n", s, count=1, flags=re.S))'
 mutate "id-token: write granted to a job that builds (ci.yml gosec)" '
@@ -161,8 +154,7 @@ mutate "an ungated install appended to the download line" '
 edit("auditor.yml", lambda s: s.replace("-D \"${RUNNER_TEMP}/govulncheck-dl\" \\\n", "-D \"${RUNNER_TEMP}/govulncheck-dl\"; install -m 0755 \"${RUNNER_TEMP}/govulncheck-dl/govulncheck\" \"${RUNNER_TEMP}/gobin/govulncheck\" \\\n", 1))'
 mutate "the audit job stops needing the build job" '
 edit("auditor.yml", lambda s: s.replace("needs: [govulncheck-build]", "needs: []"))'
-mutate "an excluded job is deleted (stale exclusion)" '
-edit("stage-reproducibility.yml", lambda s: s.replace("  reproduce:", "  reproduce-renamed:", 1))'
+
 
 echo "job-isolation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

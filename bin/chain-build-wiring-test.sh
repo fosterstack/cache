@@ -1793,11 +1793,13 @@ import re, sys, yaml
 text = open(sys.argv[1]).read()
 d = yaml.load(text, Loader=yaml.BaseLoader)
 bad = []
-own = {(s.get("with") or {}).get("name") for jn, j in (d.get("jobs") or {}).items() for s in (j.get("steps") or []) if jn == "vex-attach" and str(s.get("uses", "")).startswith("actions/upload-artifact@")}      # what the rescan's own vex-attach job uploads (the digests of its scratch attestations), nothing else
+own = {(s.get("with") or {}).get("name") for jn, j in (d.get("jobs") or {}).items() for s in (j.get("steps") or []) if jn == "vex-attach" and str(s.get("uses", "")).startswith("actions/upload-artifact@")} & {"vex-attach"}      # what the rescan's own vex-attach job uploads (the digests of its scratch attestations), nothing else
 for jn, j in (d.get("jobs") or {}).items():
     for s in (j.get("steps") or []):
         if str(s.get("uses", "")).startswith("actions/download-artifact@") and "pattern" not in (s.get("with") or {}) and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items") + tuple(own):
             bad.append("%s downloads %r, which neither Build nor this workflow's own vex-attach job uploads" % (jn, (s.get("with") or {}).get("name")))
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") in own and jn != "panel-scout":
+            bad.append("%s downloads %r, which only panel-scout may download" % (jn, (s.get("with") or {}).get("name")))
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
@@ -1812,6 +1814,7 @@ f1() { # f1 ok|caught LABEL FILE [sed-expr]
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC14/F1 $2${out:+ ($out)}"; else bad "AC14/F1 $2 -> $out"; fi; }
 for w in scan main-candidate-rescan; do f1 ok "the real $w.yml consumes only Build's artifacts, no debug, no .oci, no checksums output" "$root/.github/workflows/$w.yml"; done
 f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: oci-candidate/'
+f1 caught "the vex-attach artifact downloaded by a job other than panel-scout (here vex-attach itself) is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/name: vex-attach/'
 f1 caught "a download of vex-attach in a workflow whose own vex-attach job does not upload it (scan.yml) is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: vex-attach/'
 f1 caught "an old artifact name dist-snapshot is caught" "$root/.github/workflows/scan.yml" 's/name: dist$/name: dist-snapshot/'
 f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/scan.yml" 's/needs.build.outputs.digests }}$/needs.build.outputs.checksums }}/'
@@ -2308,7 +2311,7 @@ expect ok "AC3 the five real scripts are rows of .github/policy/chain-scripts.js
 # other mention in them, every other file in the whole tree (the prose directories docs/, requirements/ and test-evidence/ at its top excepted) and every link to the tool is
 # refused; a comment is no exemption (a #-led line can be live code to bash).
 cat > "$work/vi-named.py" <<'PY'
-import glob, hashlib, os, re
+import glob, hashlib, os, re, yaml
 BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
         "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
@@ -2328,26 +2331,14 @@ PIN_LINES = frozenset((
 ))
 RESCAN = ".github/workflows/main-candidate-rescan.yml"      # the daily rescan (cache#489, handoff 0521) attaches our OpenVEX to its own SCRATCH copies of the candidates (never a published version; its vex-attach job pushes only candidate and fixture tags to the scratch package, judged by bin/panel-wiring-test.sh): in that one file a line naming vex-index must be, after strip(), one of these reviewed lines (sha256), the call lines of that job and the comment above them
 RESCAN_LINES = frozenset((
-    "89a380ed517bfddf981a4ce14f284253ff423b6479dcc6629543550fccf08e9d",
-    "2d6535c509e1c123af7212b1474a23dc31e619987b87219b1cbed1178ad74420",
-    "f7098894dbc874f1ca91b3af46e2304bfec5c9872fd6a92b2a454b4be4e4ece1",
     "238f1cc11ed234ed6ed4396dac82934ef001e1193bd8891934c557fbf21b9ba4",
     "2766fae27cbf871666460813d629a451a4b861a63f18bd64a55ca2d9e6c53bdf",
 ))
 PANEL = "bin/panel-wiring-test.sh"      # the test that judges the rescan's vex-attach job quotes its calls as needles and mutation fixtures (data, never run as the tool): reviewed lines only, by sha256, in that one file
 PANEL_LINES = frozenset((
-    "9f0ed86ba65a17fd4eefd33ffa06c9622f7a0ed39b72d65dad2c23beef48dbb8",
-    "98f7dba6a94a7a55784861452eebb8a3be09c99354c4c70143a469a42c0ae3fd",
-    "83108694d986f3f3e48b0cebdfafae23cc4766b7a85ad24e5f997fec92f3947a",
+    "0c58c87305a5593dd87bbbe04da7ef0dd1621782ed4cade1063828f7a875fd55",
     "acf37cefa743a26b69d9172508b2ce2852040cff3570050effb1ad7cfaefbc8f",
-    "54e7c3f0eda4a64bc0cf5f21c7c17dc6f433b1f7840fbae22e0f919ed417967b",
-    "44e94290356db5cd0ab05b4b5fb1b0ee53fd348158946cf313b640b538ccbc35",
-    "4c2a4e71c7261d09c5b9da31e07bb4ad4423e0ca30e69887bc13e14af315719b",
-    "ecd69149b753ecccb8f21e769dee4f0a473ca2c2bf082e4f22f1c4d33f0d6617",
-    "e0f53b45dba7b92d2824852273dbcac7eaa75f780cb9886b8e1b4d5581510bb6",
-    "819ef872e8fdd9ed14e36d60b651797aa7f14edea7821385a30b973fa1ad64ec",
-    "86a2c41dc7164f1e8759e3d4b34cfabcefe80ff9249ffc7ab4e5d3c4af6b8fc9",
-    "269f7066fe21d3edfd7f547b3759e6dfc6dcdd490ac67145d0099fc167227958",
+    "02370c2e7ed26850785448f26236801560e51c8a79aab599cacf3e2af66f9b57",
 ))
 LINE_PINS = {RESCAN: RESCAN_LINES, PANEL: PANEL_LINES}
 RUN_CALL = 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1'
@@ -2379,7 +2370,16 @@ def stray(root):
                 continue
             pins = LINE_PINS.get(os.path.relpath(path, root))
             if pins is not None:
-                if any("vex-index" in ln and hashlib.sha256(ln.strip().encode()).hexdigest() not in pins for ln in text.splitlines()):
+                nl = [ln.strip() for ln in text.splitlines() if "vex-index" in ln]
+                ok = all(hashlib.sha256(ln.encode()).hexdigest() in pins for ln in nl)
+                if ok and os.path.relpath(path, root) == RESCAN:      # cache#561 ruling: every admitted line exactly once, and the calls only inside jobs.vex-attach
+                    try:
+                        va = ((yaml.safe_load(text) or {}).get("jobs") or {}).get("vex-attach") or {}
+                        inside = {l.strip() for st in (va.get("steps") or []) for l in (st.get("run") or "").splitlines()}
+                    except (yaml.YAMLError, AttributeError):
+                        inside = None
+                    ok = inside is not None and len(nl) == len(set(nl)) and all(ln.startswith("#") or ln in inside for ln in nl)
+                if not ok:
                     named.add(os.path.relpath(path, root))
                 continue
             if "vex-index" in text:
@@ -2497,15 +2497,18 @@ vim p11 "REQ-REL-010-AC4 a reviewed line with a call appended after it on the sa
 # the daily rescan (main-candidate-rescan.yml, cache#489, handoff 0521) attaches our OpenVEX to its own scratch copies of the candidates (never a published version): in THAT file, and only there, a line naming
 # vex-index is admitted only if it is one of the reviewed lines (RESCAN_LINES, by sha256 of the stripped line)
 RS=.github/workflows/main-candidate-rescan.yml
-R1=$'            python3 bin/vex-index.py layout --layout "${d}" --vex "${vex}"\n'
+RSHEAD=$'jobs:\n  vex-attach:\n    steps:\n      - run: |\n'
 R2=$'          python3 bin/vex-index.py layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json\n'
-vimok r1 "REQ-REL-010-AC4 the daily rescan's reviewed vex-index lines (the candidate and fixture calls on scratch layouts) are admitted in main-candidate-rescan.yml only" $RS "$R1$R2"
-vim r2 "REQ-REL-010-AC5 the daily rescan naming vex-index in a line that is not a reviewed line (an attach to a published reference) is refused" $RS '' "$R1"$'          python3 bin/vex-index.py attach ghcr.io/fosterstack/cache@sha256:0000000000000000000000000000000000000000000000000000000000000000\n'
-vim r3 "REQ-REL-010-AC4 a reviewed rescan line with the layout changed to Build's images is refused" $RS '' $'            python3 bin/vex-index.py layout --layout "/tmp/oci/production" --vex "${vex}"\n'
-vim r4 "REQ-REL-010-AC4 a reviewed rescan line in another workflow file is refused" .github/workflows/other.yml '' "$R1"
+R1=$'          python3 bin/vex-index.py verify-layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json --base-digest "${before}"\n'
+vimok r1 "REQ-REL-010-AC4 the daily rescan's reviewed vex-index lines (the fixture calls on a scratch layout), once each inside jobs.vex-attach, are admitted in main-candidate-rescan.yml only" $RS "$RSHEAD$R1$R2"
+vim r2 "REQ-REL-010-AC5 the daily rescan naming vex-index in a line that is not a reviewed line (an attach to a published reference) is refused" $RS '' "$RSHEAD$R2"$'          python3 bin/vex-index.py attach ghcr.io/fosterstack/cache@sha256:0000000000000000000000000000000000000000000000000000000000000000\n'
+vim r3 "REQ-REL-010-AC4 a reviewed rescan line with the layout changed to Build's images is refused" $RS '' "$RSHEAD"$'          python3 bin/vex-index.py layout --layout /tmp/oci/production --vex /tmp/attach/selfcheck-ours.json\n'
+vim r4 "REQ-REL-010-AC4 a reviewed rescan line in another workflow file is refused" .github/workflows/other.yml '' "$RSHEAD$R2"
+vim r8 "REQ-REL-010-AC5 a reviewed rescan line twice (once more than reviewed) is refused (cache#561 ruling: each admitted line exactly once)" $RS '' "$RSHEAD$R2$R2"
+vim r9 "REQ-REL-010-AC5 a reviewed rescan line inside a job other than vex-attach is refused (R2 probe: the line steered at a published copy in scout-root-cause)" $RS '' "$RSHEAD$R2"$'  scout-root-cause:\n    steps:\n      - run: |\n'"$R1"
 PT=bin/panel-wiring-test.sh
-R3=$(printf '%s\n' "                     'python3 bin/vex-index.py verify-layout --layout \"\${d}\" --vex \"\${vex}\" --base-digest \"\${base}\"',"); R3="$R3"$'\n'
-vimok r5 "REQ-REL-010-AC4 the panel wiring test's reviewed lines that quote the rescan's vex-index calls as needles are admitted in bin/panel-wiring-test.sh only" $PT "$R3"
+R3=$(printf '%s\n' '        if "vex-index" in att[0].get("run", ""):'); R3="$R3"$'\n'
+vimok r5 "REQ-REL-010-AC4 the panel wiring test's reviewed lines that name the tool (its checks and one mutation fixture) are admitted in bin/panel-wiring-test.sh only" $PT "$R3"
 vim r6 "REQ-REL-010-AC5 bin/panel-wiring-test.sh naming vex-index in a line that is not a reviewed line is refused" $PT '' "$R3"$'subprocess.run(["python3", "bin/vex-index.py", "attach", "ghcr.io/fosterstack/cache"])\n'
 vim r7 "REQ-REL-010-AC4 the panel wiring test's reviewed needle line in another test file is refused" bin/other-wiring-test.sh '' "$R3"
 # a link to the tool is the tool: refused wherever it sits
@@ -2559,7 +2562,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=868
+EXPECT=871
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

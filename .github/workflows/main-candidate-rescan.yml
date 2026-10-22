@@ -96,32 +96,29 @@ jobs:
           done
           echo "pruned ${n} scratch version(s) older than 14 days; ${kept} kept (public, over 5000 downloads, GitHub will not delete them); ${failed} could not be deleted" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "${failed}" -eq 0 ] || { echo "::error::${failed} scratch version(s) older than 14 days could not be deleted"; exit 1; }
-      # Each candidate (an OCI layout of one index, from Build's images artifact) is copied, gets one attestation child per
-      # platform carrying .vex/fosterstack-cache.openvex.json (bin/vex-index.py, REQ-REL-010-AC1/AC3: verify-layout checks the children
-      # and that removing them gives back the built index), is checked as a whole layout and pushed by skopeo with its digests kept: the digest
-      # skopeo reports for the pushed index must be the final index's, or the job fails.
-      - name: attach our OpenVEX to each candidate index and push it
+      # Build's assemble has already given each candidate layout its attestation children (our OpenVEX, one per platform: REQ-REL-010-AC1) and
+      # moved the layout's digest file to the final index. Each candidate is therefore copied, checked against Build's own digest file and as a whole
+      # layout, and pushed AS BUILT by skopeo with its digests kept; the digest skopeo reports for the pushed index must be the final index's, or the job
+      # fails. The attestation tool is not run on these layouts again (it refuses a second run); it runs only on the unattested self-check fixture below.
+      - name: push each candidate index as Build attested it
         run: |
           set -euo pipefail
-          vex=.vex/fosterstack-cache.openvex.json
           mkdir -p /tmp/layout /tmp/attach
           jq -n '{}' > /tmp/attach/digests.json
           for v in production fips; do
             d="/tmp/layout/${v}"; rm -rf "${d}"; mkdir -p /tmp/layout
             cp -R "/tmp/oci/${v}" "${d}"
             chmod -R go-w "${d}"
-            base=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the archive does not hold exactly one index") end' "${d}/index.json")
-            python3 bin/vex-index.py layout --layout "${d}" --vex "${vex}"
             final=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the layout does not hold exactly one index") end' "${d}/index.json")
-            python3 bin/vex-index.py verify-layout --layout "${d}" --vex "${vex}" --base-digest "${base}"
+            [ "$(cat "/tmp/oci/${v}.digest")" = "${final}" ] || { echo "::error::the ${v} layout names ${final}, not the digest Build recorded"; exit 1; }
             python3 bin/release-layout.py "${d}" "${final}"
             tag="cand-${GITHUB_RUN_ID}-${v}"
             skopeo copy --all --digestfile "/tmp/attach/${v}.pushed" "oci:${d}" "docker://ghcr.io/fosterstack/cache-scout-probe:${tag}"
             pushed=$(cat "/tmp/attach/${v}.pushed")
             [ "${pushed}" = "${final}" ] || { echo "::error::the registry took ${pushed} for ${v}, not the final index ${final}"; exit 1; }
-            jq --arg v "${v}" --arg d "${final}" --arg b "${base}" '. + {($v): $d, ($v + "-built"): $b}' /tmp/attach/digests.json > /tmp/attach/next.json
+            jq --arg v "${v}" --arg d "${final}" '. + {($v): $d}' /tmp/attach/digests.json > /tmp/attach/next.json
             mv /tmp/attach/next.json /tmp/attach/digests.json
-            echo "${v}: built ${base}, final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
+            echo "${v}: final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
           done
       # The Scout self-check fixtures (rule 4): the pinned debian 12.0 index (public image bytes), plain as the control and with an attestation
       # of OUR author that covers only CVE-2023-4911, in our published product form. Two tags, pruned like the rest.
