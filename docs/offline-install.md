@@ -44,11 +44,13 @@ cosign verify-blob \
   checksums.txt
 
 # 2. Prove your archive matches it — just the one line you care about
-sha256sum -c <(grep "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt)
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -
 ```
 
 `sha256sum -c checksums.txt` on its own fails on the archives you did not
-download. The `grep` form checks only what you have.
+download. The `grep` form checks only what you have, and stops with no output
+if `checksums.txt` has no line for your archive, so a wrong `BIN`, `VERSION` or
+`PLATFORM` cannot pass as a successful check.
 
 **Bring `cosign` too.** It is a single static binary, and it will not be on a
 fresh air-gapped box — download it from
@@ -110,7 +112,7 @@ cosign verify-blob \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   checksums.txt
 
-sha256sum -c <(grep "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt)   # confirms the archive(s) you're about to move
+LINE=$(grep -F "${BIN}_${VERSION}_${PLATFORM}.tar.gz" checksums.txt) && echo "$LINE" | sha256sum -c -   # confirms the archive(s) you're about to move
 ```
 
 For a container tarball, verify the pulled image before exporting it (same
