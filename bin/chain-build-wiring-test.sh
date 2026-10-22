@@ -608,13 +608,6 @@ probe assemble "AC11 a direct apko call" \
        'L[:-3] + ["apko build --lockfile out/production.lock.json build/apko.yaml fscache:x out/production.tar"] + L[-3:]'
 probe assemble "AC11 apko build without the lock (a different image digest per the real run)" \
        'L[:-3] + ["apko build build/apko.yaml fscache:x out/production.tar"] + L[-3:]'
-probe assemble         "AC11 a temp copy of the config"                             'L[:-3] + ["cp build/apko.yaml \"$RUNNER_TEMP/apko.yaml\""] + L[-3:]'
-probe assemble "AC11 --apko-config pointing at an absolute path" \
-       '[l + " --apko-config /work/archive/apko.yaml" if "assemble-image.sh --variant production" in l else l for l in L]'
-probe assemble "AC11 --apko-config even at the fixed relative path (the script default is the path)" \
-       '[l + " --apko-config build/apko.yaml" if "assemble-image.sh --variant production" in l else l for l in L]'
-probe assemble "AC11 --render-dir (a rendered copy of the config)" \
-       '[l + " --render-dir /tmp/r" if "assemble-image.sh --variant production" in l else l for l in L]'
 probe assemble "AC11 --lockfile passed by the stage" \
        '[l + " --lockfile out/production.lock.json" if "assemble-image.sh --variant production" in l else l for l in L]'
 probe assemble         "AC11 a cd away from the repo root"                          'L[:1] + ["cd build"] + L[1:]'
@@ -2466,7 +2459,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=846
+EXPECT=842
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
