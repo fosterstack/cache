@@ -1385,6 +1385,9 @@ _GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.
 _GO_VERIFY = ["verify() { # file", "  local got", "  got=$(sha256sum \"$1\" | cut -d' ' -f1)",
               '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"', "}"]
 _GO_EXTRACT = re.compile(r'^[ \t]*mkdir -p "\$tmp/x" && tar -xzf "\$tmp/go\.tgz" -C "\$tmp/x" \|\| pipeline_fail "extract failed for go"[ \t]*$')
+_GO_MSG = r'"(?:[^"$`\\]|\$\{[A-Za-z_]+\})*"'
+_GO_WANT = re.compile(r'^[ \t]*\[ "\$want" = "\$GO_VER" \] \|\| pipeline_fail ' + _GO_MSG + r'[ \t]*$')
+_GO_SHOW = re.compile(r'^[ \t]*"\$\{DEST\}/fscache-go/bin/go" version \| grep -q "go\$\{GO_VER\} " \|\| pipeline_fail ' + _GO_MSG + r'[ \t]*$')
 _GO_FAIL = ['pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }']
 _SUM_ROW = re.compile(r"^[ \t]*[A-Za-z0-9_.:|-]+\) SUM=[0-9a-f]{64} ;;[ \t]*$")
 _SUM_MODULE = re.compile(r'^[ \t]*govulncheck:\*\) SUM="" ;;[ \t]*(?:#.*)?$')   # a module pinned by go.sum: its own key, empty sum
@@ -1424,14 +1427,14 @@ def go_exemption(root, head):
         starts = [i for i, l in enumerate(lines) if re.match(r"^" + name + r"\(\)", l)]
         if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(want)]] != want:
             return None
-    # the Go names are only READ outside the reviewed lines: with the read forms (${GO_VER} $GO_VER ${gofile} "$gofile") taken out, no non-comment line may still hold the
-    # bare words GO_VER or gofile (a write in ANY form: assignment, for/select, read/mapfile, declare), go.tgz outside the reviewed verify/extract lines, go.dev,
-    # or a Go archive name (go<N>.<N>): so a second transfer by any command (scp, rsync, a URL variable, another downloader) cannot name the Go archive
+    # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and the installed-version grep, each ending in a
+    # pipeline_fail whose message holds no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or a Go archive name (go<N>.<N>) in a
+    # non-comment line voids the exemption: a write in any form, a second transfer by any command, a URL variable, a read in another command
     for i, l in enumerate(joined):
-        if i == fetch[0] or l.lstrip().startswith("#") or _GO_FILE.match(l) or _GO_VER_LINE.match(l) or l.strip() == 'verify "$tmp/go.tgz"' or _GO_EXTRACT.match(l):
+        if i == fetch[0] or l.lstrip().startswith("#") or _GO_FILE.match(l) or _GO_VER_LINE.match(l) or l.strip() == 'verify "$tmp/go.tgz"' or _GO_EXTRACT.match(l) \
+                or _GO_WANT.match(l) or _GO_SHOW.match(l):
             continue
-        rest = re.sub(r"\$\{(?:GO_VER|gofile)\}|\$(?:GO_VER|gofile)\b", "", l)
-        if re.search(r"go\.tgz|go\.dev|\bgo[0-9]+\.[0-9]", rest) or re.search(r"\b(?:GO_VER|gofile)\b", re.sub(r'"[^"]*"', '""', rest)):   # prose in a message may name them; a write is outside quotes
+        if re.search(r"GO_VER|gofile|go\.tgz|go\.dev|\bgo[0-9]+\.[0-9]", l):
             return None
     # every SUM assignment, anywhere on any line, is a pinned row: a literal pattern (no glob), `) SUM=<64 hex> ;;`; any other mention of SUM must only read it
     for l in joined:
