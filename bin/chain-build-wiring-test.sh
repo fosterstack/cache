@@ -2298,7 +2298,7 @@ BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "b
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
         "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
-PINWIRE = ".github/agent/tests/pin-wiring-test.sh"      # the pin-wiring judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new, changed or reused-in-code line is refused until a reviewed change updates the list
+PINWIRE = ".github/agent/tests/pin-wiring-test.sh"      # the pin-wiring judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new or changed line is refused until a reviewed change updates the list. KNOWN LIMITS (round 3, both seats; stated, not hidden): a reviewed line can still be consumed by LATER lines of the same file that do not name vex-index (for example os.system on the dictionary's run value), which the two live-test files' alias checks do not allow for themselves, and the whole naming check is lexical (a spelling that never puts vex-index on one line is not seen, in every file, as before this change); the judge file is itself a reviewed, pinned security file, so a change to it is a reviewed change
 PIN_LINES = frozenset((
     "76dd2d9e0ddeb935a8e2715fe26fe325cbb168b0c63656a16a0e0f9588029091",
     "b7827728ad4015e730527cbbad9ff10f27f0e01b578d263b4aafac79b2638630",
@@ -2435,15 +2435,16 @@ PW=.github/agent/tests/pin-wiring-test.sh
 L1=$'  "run": "bash bin/vex-index-test.sh </dev/null"\n'
 L2=$'        _vex = {"name": VEX_NAME, "run": "bash bin/vex-index-test.sh </dev/null"}\n'
 vimok p1 "REQ-REL-010-AC4 the pin-wiring judge's reviewed lines quoting the exact step string bash bin/vex-index-test.sh </dev/null are admitted (they name the test script and run nothing)" $PW "$L1$L2"
-vimok p7 "REQ-REL-010-AC4 a reviewed line is admitted at any indentation (strip) and repeated, as the real judge repeats it" $PW "$L1$L1$L2"
+vimok p7 "REQ-REL-010-AC4 a reviewed line is admitted at any indentation (strip) and repeated, as the real judge repeats it" $PW "$L1"$'\t\t"run": "bash bin/vex-index-test.sh </dev/null"\n'"$L2"
 vim p2 "REQ-REL-010-AC4 the pin-wiring judge naming the tool itself (bin/vex-index.py) next to a reviewed line is refused" $PW '' "$L1"$'subprocess.run(["python3", "bin/vex-index.py", "layout"])\n'
 vim p3 "REQ-REL-010-AC4 the pin-wiring judge naming the test script in any form that is not a reviewed line is refused" $PW '' $'x = "bash bin/vex-index-test.sh"\n'
 vim p4 "REQ-REL-010-AC4 another test file holding a reviewed line is refused (the admission is for the pin-wiring judge only)" .github/agent/tests/other-test.sh '' "$L1"
 vim p5 "REQ-REL-010-AC4 the pin-wiring judge with more words after the step string inside the same quotes is refused" $PW '' $'x = "bash bin/vex-index-test.sh </dev/null; echo more"\n'
 vim p6 "REQ-REL-010-AC4 the pin-wiring judge naming the step string without its own quotes is refused" $PW '' $'x = bash bin/vex-index-test.sh </dev/null\n'
 vim p8 "REQ-REL-010-AC4 adjacent string literals around the quoted step string handed to os.system are refused (round 2, seat A)" $PW '' $'os.system("bash bin/vex-index-test.sh </dev/null" " ")\n'
-vim p9 "REQ-REL-010-AC4 the step string put in a variable that later lines rewrite to the tool and eval is refused (round 2, seat B)" $PW '' $'cmd="bash bin/vex-index-test.sh </dev/null"\ncmd=${cmd/#bash/python3}\neval "$cmd layout --layout /fixture"\n'
+vim p9 "REQ-REL-010-AC4 the step string put in a variable that later lines rewrite to the tool and eval is refused (round 2, seat B)" $PW '' $'cmd="bash bin/vex-index-test.sh </dev/null"\ncmd=${cmd/#bash/python3}\ncmd=${cmd/-test.sh/.py}\neval "$cmd layout --layout /fixture"\n'
 vim p10 "REQ-REL-010-AC4 a reviewed line with anything appended (a comment, a call) is refused" $PW '' "${L1%$'\n'}  # x"$'\n'
+vim p11 "REQ-REL-010-AC4 a reviewed line with a call appended after it on the same line is refused" $PW '' "${L1%$'\n'}; os.system(x)"$'\n'
 # a link to the tool is the tool: refused wherever it sits
 ld="$work/vim-link"; rm -rf "$ld"; mkdir -p "$ld/bin" "$ld/.github/workflows" "$ld/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld/bin/"
 printf 'x\n' > "$ld/bin/vex-index.py"; ln -s vex-index.py "$ld/bin/attach.py"
@@ -2495,7 +2496,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=852
+EXPECT=853
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
