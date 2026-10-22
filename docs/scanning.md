@@ -86,21 +86,24 @@ published VEX does not except. Pull requests are scanned by
 [`scan.yml`](../.github/workflows/scan.yml) on the candidate images, with
 Grype and Amazon Inspector.
 
-The gate's policy is every severity, with the published VEX applied. The VEX
-document ships with each release as `fosterstack-cache.openvex.json` and lives
-in-repo at [`.vex/`](../.vex/). To run the same Grype check on a published
-image yourself:
+The gate's policy is every severity, with the published VEX applied, and a
+finding of unknown severity fails it too. The VEX document ships with each
+release as `fosterstack-cache.openvex.json` and lives in-repo at
+[`.vex/`](../.vex/). A Grype scan of a published image with that VEX applied:
 
 ```sh
 grype ghcr.io/fosterstack/cache:X.Y.Z \
   --fail-on negligible --vex fosterstack-cache.openvex.json
 ```
 
-This is the Grype half of the gate on the image you pulled. It does not run
-OSV-Scanner, and it uses whatever vulnerability database your Grype has,
-where the gate refuses a database more than 48 hours old, so a result can
-differ from ours on a different day. Other scanners, Trivy among them, are
-useful cross-checks but are not part of the release gate.
+This is a partial reproduction, not the gate itself. Grype's `--fail-on` does
+not fail on a finding of unknown severity, which the gate does, so read the
+findings it prints and do not rely on its exit code alone (the same advice as
+in the exit-codes section above). It also does not run OSV-Scanner, and it uses
+whatever vulnerability database your Grype has, where the gate refuses a
+database more than 48 hours old, so a result can differ from ours on a
+different day. Other scanners, Trivy among them, are useful cross-checks but
+are not part of the release gate.
 
 Run without `--vex` to see raw findings including the ones we have
 publicly dispositioned — the difference between the two runs is exactly
