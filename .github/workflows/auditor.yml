@@ -166,17 +166,11 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Download the govulncheck the no-credential job built
-        continue-on-error: true
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: govulncheck
-          path: ${{ runner.temp }}/govulncheck-dl
-
       - name: Install syft and govulncheck and build the validated run manifest
         id: manifest
         env:
           GOVULNCHECK_SHA256: ${{ needs.govulncheck-build.outputs.sha256 }}
+          GH_TOKEN: ${{ github.token }}
           GITHUB_SHA: ${{ github.sha }}
           TEST_IMAGE: ${{ inputs.test_image }}
           KNOWN_DEFECT_LOG: ${{ inputs.known_defect_log }}
@@ -187,6 +181,8 @@ jobs:
           # that job's output; syft a pinned, checksummed release binary (below). Both best-effort: syft catalogues the image's
           # carriers and base OS (it reads distroless status.d)
           mkdir -p "${RUNNER_TEMP}/gobin"
+          gh run download "${GITHUB_RUN_ID}" -n govulncheck -D "${RUNNER_TEMP}/govulncheck-dl" \
+            || echo "::warning::could not download the govulncheck artifact"
           if [ -n "${GOVULNCHECK_SHA256}" ] && [ -f "${RUNNER_TEMP}/govulncheck-dl/govulncheck" ] \
              && [ "$(sha256sum "${RUNNER_TEMP}/govulncheck-dl/govulncheck" | cut -d' ' -f1)" = "${GOVULNCHECK_SHA256}" ]; then
             install -m 0755 "${RUNNER_TEMP}/govulncheck-dl/govulncheck" "${RUNNER_TEMP}/gobin/govulncheck"

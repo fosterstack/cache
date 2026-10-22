@@ -4,7 +4,8 @@
 # the separate job is the isolation unit. AC1: a job that holds a credential (a secrets.* reference, an environment, id-token: write or
 # packages: write) never compiles or builds; govulncheck, which publishes no release binary, is built in a job with no credential and
 # reaches auditor.yml's audit job as an artifact whose sha256 the audit job compares first. AC2: no job runs two builds.
-# The real workflows must pass (the four release-chain jobs the chain-v030 landing replaces are listed exclusions with their reason);
+# AC2 scope: builds of what we ship or run as a tool. The acceptance/bench jobs that run a sample project's own Gradle/Maven build as the
+# workload under test are not release builds and are outside it. The real workflows must pass (the four release-chain jobs the chain-v030 landing replaces are listed exclusions with their reason);
 # each mutated copy must be caught.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -32,8 +33,11 @@ def steps_text(s):
 def holds(d, j):
     perms = j.get("permissions", d.get("permissions"))
     why = []
-    if re.search(r"\bsecrets\.|secrets:\s*inherit", yaml.safe_dump(j)):
+    wf_level = yaml.safe_dump({k: v for k, v in d.items() if k not in ("jobs", "on", True)})   # workflow-level env/defaults every job inherits
+    if re.search(r"\bsecrets\.|secrets:\s*inherit", yaml.safe_dump(j) + wf_level):
         why.append("a secret")
+    if perms == "write-all":
+        why.append("write-all")
     if j.get("environment"):
         why.append("an environment")
     if isinstance(perms, dict):
@@ -48,7 +52,10 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
             continue
         key = (os.path.basename(f), jn)
         jobs_seen[key] = j
-        comp = [(s.get("name") or s.get("uses") or "?") for s in (j.get("steps") or []) if COMPILE.search(steps_text(s))]
+        comp = []                                                  # one entry per build invocation (a step with two `go build` counts twice)
+        for s in (j.get("steps") or []):
+            for _ in COMPILE.findall(steps_text(s)):
+                comp.append(s.get("name") or s.get("uses") or "?")
         w = holds(d, j)
         if w and comp and key not in EXCLUDED_AC1:
             bad.append("%s/%s holds %s and builds in the step %r" % (key[0], jn, ", ".join(w), comp[0]))
@@ -78,6 +85,9 @@ if "govulncheck-build" not in needs:
 atxt = "\n".join(steps_text(s) for s in audit.get("steps") or [])
 if "needs.govulncheck-build.outputs.sha256" not in atxt or "sha256sum" not in atxt:
     bad.append("the audit job does not compare the downloaded govulncheck with the build job's sha256 output")
+GATE = (r'if \[ -n "\$\{GOVULNCHECK_SHA256\}" \] && \[ -f "[^"]*govulncheck-dl/govulncheck" \]\s*\\\n\s*&& \[ "\$\(sha256sum "[^"]*govulncheck-dl/govulncheck" \| cut -d\' \' -f1\)" = "\$\{GOVULNCHECK_SHA256\}" \]; then\n\s+install -m 0755 "[^"]*govulncheck-dl/govulncheck"')
+if not re.search(GATE, atxt):
+    bad.append("the audit job's install of govulncheck is not gated by an equality of the downloaded file's sha256 with the build job's output")
 if re.search(r"go\s+install\s+golang\.org/x/vuln", atxt):
     bad.append("the audit job still builds govulncheck itself")
 print("\n".join(bad)); sys.exit(1 if bad else 0)
@@ -117,12 +127,20 @@ edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    steps:\n)", lambda m: m.group(
 # the govulncheck hand-over
 mutate "audit job builds govulncheck itself again" '
 edit("auditor.yml", lambda s: s.replace("      - name: Install syft and govulncheck and build the validated run manifest\n", "      - name: mutant\n        run: GOBIN=x go install golang.org/x/vuln/cmd/govulncheck@v1.1.4\n      - name: Install syft and govulncheck and build the validated run manifest\n", 1))'
+mutate "digest comparison inverted (!= instead of =)" '
+edit("auditor.yml", lambda s: s.replace("cut -d\x27 \x27 -f1)\" = \"${GOVULNCHECK_SHA256}\"", "cut -d\x27 \x27 -f1)\" != \"${GOVULNCHECK_SHA256}\""))'
+mutate "install no longer gated by the digest" '
+edit("auditor.yml", lambda s: re.sub(r"if \[ -n \"\$\{GOVULNCHECK_SHA256\}\" \].*?; then\n(\s+install -m 0755 \"\$\{RUNNER_TEMP\}/govulncheck-dl)", lambda m: "if true; then\n" + m.group(1), s, count=1, flags=re.S))'
 mutate "audit job no longer compares the sha256" '
 edit("auditor.yml", lambda s: s.replace("needs.govulncheck-build.outputs.sha256", "needs.govulncheck-build.outputs.other"))'
 mutate "govulncheck-build gets a secret" '
 edit("auditor.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}\n        run: echo x\n", s, count=1, flags=re.S))'
 mutate "govulncheck-build gets an environment" '
 edit("auditor.yml", lambda s: re.sub(r"(  govulncheck-build:\n)", lambda m: m.group(1) + "    environment: agent\n", s, count=1))'
+mutate "write-all on a job that builds (ci.yml gosec)" '
+edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?)    permissions:\n", lambda m: m.group(1) + "    permissions: write-all\n    xperm:\n", s, count=1, flags=re.S))'
+mutate "a workflow-level secret next to the govulncheck build" '
+edit("auditor.yml", lambda s: re.sub(r"(\njobs:\n)", lambda m: "\nenv:\n  K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" + m.group(1), s, count=1))'
 mutate "the audit job stops needing the build job" '
 edit("auditor.yml", lambda s: s.replace("needs: [govulncheck-build]", "needs: []"))'
 mutate "an excluded job is deleted (stale exclusion)" '

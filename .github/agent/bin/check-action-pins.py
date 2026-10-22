@@ -2618,7 +2618,7 @@ def _unsafe_downloads(text):
 # exact exclusions: (workflow file, job, step index, sha256 of the step's run text) -> why this download is not a way to change a committed script. A copy of an
 # excluded step anywhere else (another step, job or file), or an edit of it, is a finding again.
 DOWNLOAD_EXCLUSIONS = {
-    (".github/workflows/auditor.yml", "audit", 10, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
+    (".github/workflows/auditor.yml", "audit", 9, "ec6b56ab920e50d88208a5c553521658f5eab8c32cff1cc0d56404e1b27de643"): (
         "the CISA KEV catalog is fetched to ${AUDITOR_KEV_CATALOG}, a file under runner.temp that the step's env names and nothing else assigns (this exclusion "
         "holds only while the file assigns that variable exactly once, as `AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json`); it is read as data by the auditor and never run",
         "AUDITOR_KEV_CATALOG", "AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json"),
