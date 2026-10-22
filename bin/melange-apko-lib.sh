@@ -82,7 +82,7 @@
 #  11  recipes build fscache from source (the recipes are the only build input), native arch only (driver refuses a foreign arch)
 #  12  Go from go.dev: fetch steps with checksums, no Wolfi go apk, GOTOOLCHAIN=local, go.mod go line <= archived Go, tarball
 #      pre-seeded from the archive into the cache dir, tamper/missing refused
-#  13  FIPS recipe: GOFIPS140=v1.0.0 and a proof that the binary records v1.0.0-c2097c7c; standard recipe has no GOFIPS140
+#  13  FIPS recipe: GOFIPS140 set to the version of the id build/locks/fips-module.txt names, and a proof that the binary records that id; standard recipe has no GOFIPS140
 #  14  binary in the archive == binary in the apk (apk-tool binary-check)
 #  15  inputs manifest = our melange lock + the .melange.yaml environment read back from the apk; recipe pinned == lock
 #  16  melange/apko installer: checksum pin per tool and arch, verified before extraction, no container digest
@@ -504,7 +504,7 @@ elif mode == "mel-fips":
         assert kv(b, "GOFIPS140", v), "fips recipe does not set GOFIPS140=%s (the version of the module build/locks/fips-module.txt names)" % v
     else: assert "GOFIPS140" not in b, "standard recipe mentions GOFIPS140"
 elif mode == "mel-fipsproof":
-    m = fipsmod(); p = pipe(load()); assert "go version -m" in p and "GOFIPS140=" + m in p, "no proof of the recorded %s" % m
+    m = fipsmod(); p = pipe(load()); assert "go version -m" in p and re.search(r"GOFIPS140=%s(['\"\s]|$)" % re.escape(m), p), "no proof of the recorded %s" % m   # the id ends at a quote, whitespace or the end: a longer id with this one as its prefix is another module
 elif mode == "mel-go":
     d = load(); ps = pk(d["environment"])
     assert not any(re.match(r"go([-=.]|$)", p) for p in ps), "a Wolfi go package is installed"
