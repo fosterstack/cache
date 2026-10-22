@@ -80,6 +80,11 @@ STATUS = b"Package: tzdata\nVersion: 2026c-0+deb13u1\nStatus: install ok install
 
 class Tmp(unittest.TestCase):
     def setUp(self):
+        # git starts `maintenance run --auto --detach` after commit/fetch/push; that background process can still be writing into .git/objects when the
+        # temp dir is removed (OSError ENOTEMPTY in cleanup), so scratch repos and the code under test run git with auto-maintenance and gc off
+        patch = mock.patch.dict(os.environ, {"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "maintenance.auto", "GIT_CONFIG_VALUE_0": "false",
+                                             "GIT_CONFIG_KEY_1": "gc.auto", "GIT_CONFIG_VALUE_1": "0"})
+        patch.start(); self.addCleanup(patch.stop)
         self._td = tempfile.TemporaryDirectory()
         self.d = self._td.name
         self.addCleanup(self._td.cleanup)
@@ -744,8 +749,10 @@ class RebuildReal(Tmp):
         self.work = os.path.join(self.d, "work")
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.origin], check=True)
         subprocess.run(["git", "clone", "-q", "file://" + self.origin, self.work], check=True, capture_output=True)
-        for k, v in (("user.name", "t"), ("user.email", "t@x"), ("commit.gpgsign", "false")):
+        for k, v in (("user.name", "t"), ("user.email", "t@x"), ("commit.gpgsign", "false"), ("maintenance.auto", "false"), ("gc.auto", "0")):
             self.git("config", k, v)
+        for k, v in (("receive.autogc", "false"), ("maintenance.auto", "false"), ("gc.auto", "0")):         # a push runs receive-pack in the origin, which drops the environment's config
+            subprocess.run(["git", "--git-dir", self.origin, "config", k, v], check=True)
         self.write(P.VEX, dict(self.VEXDOC, statements=[self.stmt("CVE-0-BASE")]))
         self.write(P.PROFILES, {"entries": []})
         self.write(P.STATE, {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"})
@@ -863,6 +870,13 @@ class RebuildReal(Tmp):
         self.git("fetch", "-q", "origin")
         self.assertEqual(self.git("rev-parse", "origin/auditor/panel^"), self.m1)                      # parent = today's main, not yesterday's
         self.assertEqual(self.git("rev-list", "--count", self.m1 + "..origin/auditor/panel"), "1")
+
+    def test_a_scratch_repo_never_spawns_a_detached_git_maintenance(self):         # git's auto-maintenance detaches and writes into .git/objects while the temp dir is removed (ENOTEMPTY flake)
+        trace = os.path.join(self.d, "trace")
+        for args in (("commit", "-q", "--allow-empty", "-m", "x"), ("push", "-q", "origin", "main"), ("fetch", "-q", "origin")):
+            r = subprocess.run(["git", *args], cwd=self.work, capture_output=True, text=True, env=dict(os.environ, GIT_TRACE=trace))
+            self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("maintenance run", open(trace).read())
 
     def commands(self, calls):
         return [" ".join(c) for c in calls]

@@ -1394,7 +1394,7 @@ print("sec5" if 5 in r else "-", "sec2" if 2 in r else "-")' "$o/classification.
 
 begin "ol4-refusal-after-fallback-escalates-to-owner-issue" "a finding refused through the fallback chain (real adjudicator) opens an owner-decision issue, not a silent §4"
 o="$WORK/ol4"; shim="$WORK/ol4.shim"; rm -rf "$o"; rm -f "$shim"; fa="$WORK/ol4-refuse.py"
-printf '#!/usr/bin/env python3\nimport json,sys\njson.dump({"refused":True},sys.stdout)\n' > "$fa"
+printf '#!/usr/bin/env python3\nimport json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({"refused":True})+"\\n")\n    sys.stdout.flush()\n' > "$fa"
 env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-ownerissue.json" --kev "$F/kev/kev.json" --adjudicator "$fa" --today 2026-09-24 --out "$o" >/dev/null 2>&1
 sec4esc="$("$PY" -c 'import json,sys
 r=[x for x in json.load(open(sys.argv[1]))["findings"] if x["section"]==4]
@@ -1459,11 +1459,14 @@ begin "ol2-2-refusal-usage-charged-to-budget" "adjudicate charges token usage ev
 charged="$("$PY" -c '
 import sys,importlib.util,tempfile,os
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\njson.dump({\"refused\":True,\"token_usage\":100001},sys.stdout)\n")
+fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":100001})+\"\\n\")\n    sys.stdout.flush()\n")
 st={"tokens":0,"iters":0}
 R.adjudicate(fa,{"finding_id":"CVE-X"},st)
-print(st["tokens"])' 2>/dev/null)"
-{ [ "$charged" -ge 100001 ] 2>/dev/null; } && ok || no "refusal usage charged to the budget" "tokens=$charged"
+R.policy.MAX_ITERATIONS=1   # the iteration stop: only 3 attempts exist, below the real limit of 5, so lower the limit to make the guard decide
+st2={"tokens":0,"iters":0}
+R.adjudicate(fa,{"finding_id":"CVE-X"},st2)
+print(st["tokens"], st.get("calls"), st.get("stops"), st2.get("calls"), st2.get("stops"))' 2>/dev/null)"
+{ [ "$charged" = "200002 2 1 1 1" ]; } && ok || no "refusal usage charged to the budget, and the third attempt is stopped by the budget" "tokens calls stops, then calls stops with the iteration limit at 1 =$charged"
 
 begin "ol2-3-high-outlier-excluded-quorum-holds" "one over-counting scanner is excluded as an outlier; the three agreeing scanners still form the quorum -> AUDIT COMPLETE, osv named excluded not did-not-run"
 o="$WORK/ol23"; rm -rf "$o"; : > "$LEDGER"

@@ -11,8 +11,9 @@ here=$(cd "$(dirname "$0")/../../.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
-judge() { python3 - "$1" <<'PY'
-import sys, yaml
+
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
+import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
 _text = open(sys.argv[1]).read()
@@ -163,28 +164,64 @@ if idx["fetch"] != [1] or idx["check"] != [2]:
     bad.append("the allowlist job's first three steps are not exactly: checkout, base-ref fetch, check (nothing before or between)")
 for w in sorted(want - seen):
     bad.append(f"no step runs `{w}`")
-# the release chain's four suites (REQ-CHAIN-001..003, Codex #249 r2 blocker; the #251 lesson): each is ONE step of the allowlist job with
+# the release chain's suites (REQ-CHAIN-001..003, Codex #249 r2 blocker; the #251 lesson; moved from `allowlist` to `allowlist-chain` so `allowlist` stays fast): each is ONE step of the allowlist-chain job with
 # exactly this name and this run line and nothing else (no if, continue-on-error, env, shell, working-directory, timeout-minutes), so a
 # pull request cannot remove, skip, rename, weaken or move them
 CHAIN_STEPS = {
+    "suite guard (no tracked test file is empty; the guard's own regressions)": "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh",
+    "same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)": "bash bin/inspector-reuse-test.sh",
     "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
     "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)": "bash bin/chain-records-test.sh",
     "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)": "bash bin/chain-build-wiring-test.sh",
+    "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)": "bash bin/vex-index-test.sh </dev/null",
     "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)": "bash bin/chain-build-admit-test.sh",
     "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)": "bash bin/chain-bind-test.sh",
     "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)": "bash bin/chain-rebuild-test.sh",
     "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)": "bash bin/chain-snapshot-test.sh",
     "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)": "bash bin/chain-install-witness-test.sh",
+    "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)": "bash bin/chain-check-scripts-test.sh",
+    "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)": "bash bin/chain-check-wiring-test.sh",
+    "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)": "bash bin/verify-release-guide-test.sh </dev/null",
+    "the pinned crane install (REQ-CHAIN-007-AC7)": "bash bin/chain-install-crane-test.sh",
+    "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)": "bash bin/chain-release-wiring-test.sh",
+    "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)": "bash bin/chain-release-scripts-test.sh",
+    "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)": "bash bin/chain-release-metadata-test.sh",
+    "the customer guide — every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)": "bash bin/vex-guide-test.sh",
+    "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)": "bash bin/vex-live-test-test.sh",
+    "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)": "bash .github/agent/tests/vex-live-pins-test.sh",
 }
+# the two guard steps of the suite floors carry an `if` or an `env` on purpose: judged as whole steps, every key and value
+GUARD_STEPS = [
+    {
+        "name": "suite floors only rise (against the merge base on a pull request)",
+        "if": "${{ github.base_ref != '' }}",
+        "env": {
+            "BASE": "${{ github.base_ref }}"
+        },
+        "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+    },
+    {
+        "name": "every suite runs at or above its committed floor (real counts)",
+        "env": {
+            "CHAIN_TEST_REQUIRE_NETCUT": "1"
+        },
+        "run": "python3 -I bin/suite-guard-run.py all --count-only test-evidence/suite-floors.json ."
+    }
+]
+chain_steps = ((d.get("jobs") or {}).get("allowlist-chain") or {}).get("steps", [])
 for name, run in CHAIN_STEPS.items():
-    hits = [st for st in steps_ if (st.get("run") or "").strip(" \t\n") == run]
+    hits = [st for st in chain_steps if (st.get("run") or "").strip(" \t\n") == run]
     if len(hits) != 1:
-        bad.append(f"the allowlist job does not have exactly one step running `{run}`")
+        bad.append(f"the allowlist-chain job does not have exactly one step running `{run}`")
         continue
     if hits[0] != {"name": name, "run": hits[0].get("run")} or "\n" in hits[0]["run"].strip("\n"):
         bad.append(f"the step running `{run}` is not exactly name {name!r} and that one run line (keys: {sorted(hits[0])})")
+for want in GUARD_STEPS:
+    hits = [st for st in chain_steps if st.get("name") == want["name"]]
+    if hits != [want]:
+        bad.append(f"the allowlist-chain job does not have exactly the guard step {want['name']!r} as judged (every key and value)")
 # REQ-SCAN-015-AC2: exactly one step runs the scanner guard, and it is exactly this name and run and nothing else
 # (no if, continue-on-error, env, shell, working-directory, timeout); its place after the PyYAML install is not
 # judged, since the guard run without PyYAML fails, which is red, not a bypass
@@ -195,6 +232,458 @@ if len(sg) != 1:
     bad.append(f"the allowlist job has {len(sg)} scanner guard steps, not exactly one (REQ-SCAN-015-AC2)")
 elif sg[0] != SCAN_STEP:
     bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC2)")
+# The three jobs that took the slow suites out of `allowlist` (cache#499; REQ-SCAN-015-AC2's reasoning applies to each: a required job that is skipped,
+# or whose step is skipped, disabled through its environment, or whose failure is ignored, passes while the suites never ran). Each is exactly
+# name / runs-on / steps, named as its id, on ubuntu-latest, and its steps are EXACTLY the list below (name, uses, with, env and run text, in order):
+# a suite cannot be deleted, edited, wrapped (|| true), reordered or given an environment (BASH_ENV, SHELLOPTS ...) without this judge, which a PR
+# cannot change for itself (the gate runs main's copy), being changed first. Adding a suite to a split job means adding its step here.
+SPLIT_STEPS = json.loads(r'''{
+ "allowlist-chain": [
+  {
+   "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+   "with": {
+    "fetch-depth": "0"
+   }
+  },
+  {
+   "env": {
+    "BASE": "${{ github.base_ref }}"
+   },
+   "name": "make sure the base branch ref exists",
+   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+  },
+  {
+   "name": "set up Python",
+   "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+   "with": {
+    "python-version": "3.12"
+   }
+  },
+  {
+   "name": "pin pip (hash-checked)",
+   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt\npython3 -m pip --version\n"
+  },
+  {
+   "name": "the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)",
+   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt\n"
+  },
+  {
+   "name": "build helper tools regressions (apk tool, recipe generator, lock tool, module SBOM)",
+   "run": "bash bin/build-helpers-test.sh"
+  },
+  {
+   "name": "vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)",
+   "run": "bash bin/vendoring-test.sh </dev/null"
+  },
+  {
+   "name": "apk build driver and release signing regressions",
+   "run": "bash bin/build-apk-test.sh"
+  },
+  {
+   "name": "input refresh script regressions",
+   "run": "bash bin/refresh-inputs-test.sh"
+  },
+  {
+   "name": "archive push, pull and verify regressions",
+   "run": "bash bin/archive-test.sh"
+  },
+  {
+   "name": "the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)",
+   "run": "python3 bin/gen-recipes.py --check"
+  },
+  {
+   "name": "vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)",
+   "run": "bash bin/vendor-provenance-test.sh </dev/null"
+  },
+  {
+   "name": "image assembly, lock proof and sealed proof regressions",
+   "run": "bash bin/assemble-image-test.sh"
+  },
+  {
+   "name": "privacy candidate-trace analyzer regressions (B03)",
+   "run": "bash bin/analyze-egress-trace-test.sh"
+  },
+  {
+   "name": "scanner installer failure-path regressions (pinned-checksum contract)",
+   "run": "bash bin/install-scanner-test.sh"
+  },
+  {
+   "name": "PR-gate image verdict regressions (row 57 \u2014 counts, did-not-run, VEX coverage)",
+   "run": "bash bin/inspector-gate-test.sh"
+  },
+  {
+   "name": "VEX product-scope regressions (audit R01 \u2014 exception bound to the FosterStack product)",
+   "run": "./bin/install-scanner.sh grype\nbash bin/vex-scope-test.sh\n"
+  },
+  {
+   "name": "VEX applied by both gate scanners (REQ-REL-004-AC1 \u2014 covered suppressed, uncovered blocks, zero packages fails)",
+   "run": "bash bin/vex-both-scanners-test.sh"
+  },
+  {
+   "name": "our VEX in three forms \u2014 the same statements, generated before the signed manifest (scanner-panel rule 10)",
+   "run": "bash bin/vex-forms-test.sh"
+  },
+  {
+   "name": "the Docker Scout root-cause round's documents, matrix and judge (advisor 0120/0122)",
+   "run": "bash bin/scout-root-cause-test.sh"
+  },
+  {
+   "name": "the Docker Scout older-versions sweep (advisor 0520) \u2014 table logic with docker stubbed, installer pins, dispatch-only job",
+   "run": "bash bin/scout-older-versions-test.sh"
+  },
+  {
+   "name": "Go-bump PR recovery regressions (audit R03 \u2014 orphaned branch / closed-merged)",
+   "run": "bash bin/go-bump-open-pr-test.sh"
+  },
+  {
+   "name": "suite guard (no tracked test file is empty; the guard's own regressions)",
+   "run": "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh"
+  },
+  {
+   "env": {
+    "BASE": "${{ github.base_ref }}"
+   },
+   "if": "${{ github.base_ref != '' }}",
+   "name": "suite floors only rise (against the merge base on a pull request)",
+   "run": "bash bin/suite-guard.sh floors-vs-base \"$(git merge-base HEAD \"origin/${BASE}\")\" test-evidence/suite-floors.json"
+  },
+  {
+   "name": "same-day reuse of Amazon Inspector results \u2014 keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)",
+   "run": "bash bin/inspector-reuse-test.sh"
+  },
+  {
+   "name": "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)",
+   "run": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"
+  },
+  {
+   "name": "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)",
+   "run": "bash bin/chain-hostile-test.sh"
+  },
+  {
+   "name": "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)",
+   "run": "bash bin/chain-sign-wiring-test.sh"
+  },
+  {
+   "name": "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)",
+   "run": "bash bin/chain-records-test.sh"
+  },
+  {
+   "name": "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)",
+   "run": "bash bin/chain-build-wiring-test.sh"
+  },
+  {
+   "name": "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)",
+   "run": "bash bin/vex-index-test.sh </dev/null"
+  },
+  {
+   "name": "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)",
+   "run": "bash bin/chain-build-admit-test.sh"
+  },
+  {
+   "name": "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)",
+   "run": "bash bin/chain-bind-test.sh"
+  },
+  {
+   "name": "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)",
+   "run": "bash bin/chain-rebuild-test.sh"
+  },
+  {
+   "name": "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)",
+   "run": "bash bin/chain-snapshot-test.sh"
+  },
+  {
+   "name": "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)",
+   "run": "bash bin/chain-install-witness-test.sh"
+  },
+  {
+   "name": "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)",
+   "run": "bash bin/chain-check-scripts-test.sh"
+  },
+  {
+   "name": "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)",
+   "run": "bash bin/chain-check-wiring-test.sh"
+  },
+  {
+   "name": "the customer verification guide: length, commands, coverage, cannot-run list (REQ-GUIDE-001-AC1..AC7)",
+   "run": "bash bin/verify-release-guide-test.sh </dev/null"
+  },
+  {
+   "name": "the pinned crane install (REQ-CHAIN-007-AC7)",
+   "run": "bash bin/chain-install-crane-test.sh"
+  },
+  {
+   "name": "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)",
+   "run": "bash bin/chain-release-wiring-test.sh"
+  },
+  {
+   "name": "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)",
+   "run": "bash bin/chain-release-scripts-test.sh"
+  },
+  {
+   "name": "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)",
+   "run": "bash bin/chain-release-metadata-test.sh"
+  },
+  {
+   "name": "the customer guide \u2014 every scanner's file, check and exact command, no competitor named (scanner-panel rule 11)",
+   "run": "bash bin/vex-guide-test.sh"
+  },
+  {
+   "name": "the live test's plan, test copy, fixture and wiring, offline (scanner-panel rule 12)",
+   "run": "bash bin/vex-live-test-test.sh"
+  },
+  {
+   "name": "the live test's page and orchestrator are read by the action-pin checker (scanner-panel rule 12)",
+   "run": "bash .github/agent/tests/vex-live-pins-test.sh"
+  },
+  {
+   "env": {
+    "CHAIN_TEST_REQUIRE_NETCUT": "1"
+   },
+   "name": "every suite runs at or above its committed floor (real counts)",
+   "run": "python3 -I bin/suite-guard-run.py all --count-only test-evidence/suite-floors.json ."
+  }
+ ],
+ "allowlist-persona": [
+  {
+   "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+   "with": {
+    "fetch-depth": "0"
+   }
+  },
+  {
+   "env": {
+    "BASE": "${{ github.base_ref }}"
+   },
+   "name": "make sure the base branch ref exists",
+   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+  },
+  {
+   "name": "set up Python",
+   "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+   "with": {
+    "python-version": "3.12"
+   }
+  },
+  {
+   "name": "pin pip (hash-checked)",
+   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt\npython3 -m pip --version\n"
+  },
+  {
+   "name": "the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)",
+   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt\n"
+  },
+  {
+   "name": "persona UAT \u2014 agent and provider suite",
+   "run": "bash bin/persona-uat-agent-test.sh"
+  },
+  {
+   "name": "persona UAT \u2014 wiring suite (workflows, tools file, installer, identity refresher)",
+   "run": "bash bin/persona-uat-wiring-test.sh"
+  },
+  {
+   "name": "persona UAT \u2014 driver suite",
+   "run": "bash bin/persona-uat-test.sh"
+  }
+ ],
+ "allowlist-pins-auditor": [
+  {
+   "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+   "with": {
+    "fetch-depth": "0"
+   }
+  },
+  {
+   "env": {
+    "BASE": "${{ github.base_ref }}"
+   },
+   "name": "make sure the base branch ref exists",
+   "run": "if [ -n \"${BASE}\" ]; then\n  [[ \"${BASE}\" =~ ^[A-Za-z0-9._][A-Za-z0-9._/-]*$ ]] || exit 1\n  [[ \"${BASE}\" != *..* ]] || exit 1\n  git fetch --no-tags origin \"+refs/heads/${BASE}:refs/remotes/origin/${BASE}\"\nfi\n"
+  },
+  {
+   "name": "set up Python",
+   "uses": "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+   "with": {
+    "python-version": "3.12"
+   }
+  },
+  {
+   "name": "pin pip (hash-checked)",
+   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt\npython3 -m pip --version\n"
+  },
+  {
+   "name": "the hash-pinned test requirements (PyYAML, which the wiring suites read the workflows with, and the report lint's cmark-gfm)",
+   "run": "python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt\n"
+  },
+  {
+   "name": "Dependabot reviewer regressions (row 75 \u2014 updates parsing, findings validation, mechanical decision)",
+   "run": "bash bin/dependabot-reviewer-test.sh"
+  },
+  {
+   "name": "dependency lanes wiring \u2014 reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)",
+   "run": "bash bin/dependency-lanes-test.sh"
+  },
+  {
+   "name": "the Dependabot reviewer's bundle carries the diff, every in-range release note and our usage (row 75 b)",
+   "run": "bash bin/dependabot-reviewer-gather-test.sh"
+  },
+  {
+   "name": "the scanner panel's judge \u2014 counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)",
+   "run": "bash bin/panel-test.sh"
+  },
+  {
+   "name": "the auditor's fixtures and tests follow the panel's image set \u2014 the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)",
+   "run": "bash .github/agent/tests/auditor-variants-test.sh"
+  },
+  {
+   "name": "the automatic patch-release decision \u2014 fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)",
+   "run": "bash bin/patch-decide-test.sh"
+  },
+  {
+   "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
+   "run": "bash bin/admission-tag-signer-test.sh"
+  },
+  {
+   "name": "release.yml's automatic patch wiring \u2014 decide on main only, keyless gitsign, the App pushes, failures open an issue (owner Oct 2)",
+   "run": "bash bin/release-patch-wiring-test.sh"
+  },
+  {
+   "name": "the Maven capped scenario recognises the server's 413 in either resolver wording (REQ-EVICT-002-AC4)",
+   "run": "bash bin/acceptance-maven-413-test.sh"
+  },
+  {
+   "name": "release.yml's notes commit runs exactly the committed signed-commit CLI (advisor 0210; the literal path is judged under .github/agent/)",
+   "run": "bash .github/agent/tests/release-notes-signed-test.sh"
+  },
+  {
+   "name": "go-freshness opens its bump PR with the auditor App's token, read-only otherwise (owner, Oct 2)",
+   "run": "bash bin/go-freshness-wiring-test.sh"
+  },
+  {
+   "name": "the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)",
+   "run": "bash bin/workflow-consolidation-test.sh"
+  },
+  {
+   "name": "the daily rescan covers the current release only (REQ-REL-004-AC5)",
+   "run": "bash bin/rescan-current-only-test.sh"
+  },
+  {
+   "name": "the scanner panel's wiring \u2014 which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)",
+   "run": "bash bin/panel-wiring-test.sh"
+  },
+  {
+   "name": "the k8s acceptance harness's fenced exclusion \u2014 its two generated scripts come only from docs/kubernetes.md (advisor 0084)",
+   "run": "bash .github/agent/tests/k8s-harness-fence-test.sh"
+  },
+  {
+   "name": "the pin age check \u2014 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)",
+   "run": "bash .github/agent/tests/pin-age-check-test.sh"
+  },
+  {
+   "name": "the daily supply-chain audit \u2014 advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)",
+   "run": "bash .github/agent/tests/pin-audit-test.sh"
+  },
+  {
+   "name": "where the supply-chain checks run \u2014 Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)",
+   "run": "bash .github/agent/tests/supply-chain-wiring-test.sh"
+  }
+ ]
+}''')
+VEX_NAME = "the final image index that carries our OpenVEX for Docker Scout \u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)"
+ISO_NAME = "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)"
+for jid, want_steps in SPLIT_STEPS.items():
+    sj = d.get("jobs", {}).get(jid)
+    if not isinstance(sj, dict):
+        bad.append(f"the job {jid} is missing")
+        continue
+    for k in sorted(set(sj) - {"name", "runs-on", "steps"}):
+        bad.append(f"the {jid} job has `{k}`")
+    if sj.get("name") != jid:
+        bad.append(f"the {jid} job is not named `{jid}` (the required-check context)")
+    if sj.get("runs-on") != "ubuntu-latest":
+        bad.append(f"the {jid} job does not run on exactly `ubuntu-latest`")
+    got = sj.get("steps", [])
+    accepted = [want_steps]
+    if jid == "allowlist-pins-auditor":   # the transition (cache#489 and #521's landings): exactly main's list, or it plus either new step, or both, each at its anchor
+        def _after(lst, anchor_run, step):
+            i = [k for k, x in enumerate(lst) if x.get("run") == anchor_run]
+            return lst[:i[0] + 1] + [step] + lst[i[0] + 1:] if len(i) == 1 else None
+        _vex = {"name": VEX_NAME, "run": "bash bin/vex-index-test.sh </dev/null"}
+        _iso = {"name": ISO_NAME, "run": "bash bin/job-isolation-test.sh"}
+        _a = _after(want_steps, "bash bin/panel-test.sh", _vex)
+        _b = _after(want_steps, "bash bin/workflow-consolidation-test.sh", _iso)
+        _ab = _after(_a, "bash bin/workflow-consolidation-test.sh", _iso) if _a else None
+        accepted += [x for x in (_a, _b, _ab) if x]
+    if got not in accepted:
+        have = [st.get("name") or st.get("uses") for st in got]
+        want_n = [st.get("name") or st.get("uses") for st in want_steps]
+        why = [f"missing {n}" for n in want_n if n not in have] + [f"unexpected {n}" for n in have if n not in want_n]
+        bad.append(f"the {jid} steps are not exactly the judged list ({'; '.join(why) or 'a step differs in its command, env, uses, with or order'})")
+# the required-check policy (release admission reads it): a readable JSON object whose required_checks is a list of objects with unique contexts,
+# and exactly one correct entry (integration 15368, scope push) for each protected job. Anything unreadable or malformed is refused (fail closed).
+PROTECTED = ("allowlist",) + tuple(SPLIT_STEPS)
+try:
+    pol = json.load(open(os.environ["PIN_WIRING_POLICY_FILE"]))["required_checks"]
+    if not isinstance(pol, list) or not all(isinstance(c, dict) for c in pol):
+        raise ValueError("required_checks is not a list of objects")
+except (OSError, ValueError, KeyError, TypeError) as e:
+    pol = None
+    bad.append(f"required-checks.json is unreadable or malformed ({type(e).__name__})")
+if pol is not None:
+    ctxs = [c.get("context") for c in pol]
+    for dup in sorted({c for c in ctxs if ctxs.count(c) > 1}, key=str):
+        bad.append(f"required-checks.json lists the context {dup} more than once")
+    for jid in PROTECTED:
+        if sum(1 for c in pol if c == {"context": jid, "integration_id": 15368, "scope": "push"}) != 1 or ctxs.count(jid) != 1:
+            bad.append(f"required-checks.json does not have exactly one entry {jid} (integration 15368, scope push)")
+# the four protected check names belong to their jobs alone: no other job of this workflow may produce a check run with such a name (a job named
+# `allowlist-persona` that succeeds after the real one failed satisfies admission, which accepts any success with the matching name), and no job
+# name may be an expression or come from a matrix (its rendered name cannot be judged).
+def name_disjoint(nm):   # a literal name is compared as it is; an expression name may hold only plain `${{ matrix.a.b }}` tokens and must keep a
+    nm = str(nm)        # literal space or `(` around them (no protected name has either); any other `${{` is refused, never parsed
+    if "${{" not in nm:
+        return True
+    rest = re.sub(r"\$\{\{ *matrix(\.[A-Za-z_][A-Za-z0-9_]*)+ *\}\}", "", nm)
+    return "${{" not in rest and "}}" not in rest and bool(re.search(r"[ (]", rest))
+def writes_checks(perm):   # GITHUB_TOKEN authenticates as the Actions app (integration 15368): checks: write can publish a check with a protected name
+    return perm == "write-all" or (isinstance(perm, dict) and perm.get("checks") == "write")
+for jid_, j_ in d.get("jobs", {}).items():
+    if not isinstance(j_, dict):
+        continue
+    nm = j_.get("name", jid_)
+    if jid_ not in PROTECTED and (nm in PROTECTED or jid_ in PROTECTED):
+        bad.append(f"the job {jid_} produces the protected check name {nm}")
+    if jid_ not in PROTECTED and not name_disjoint(nm):
+        bad.append(f"the job {jid_} has an expression name that could render as a protected check name")
+    if writes_checks(j_.get("permissions")):
+        bad.append(f"the job {jid_} can write checks with the Actions token (it could publish a check run under a protected name)")
+if writes_checks(d.get("permissions")):
+    bad.append("the workflow can write checks with the Actions token (it could publish a check run under a protected name)")
+# and no other workflow file may carry such a job either (admission accepts any success with the matching name and app); an unreadable or
+# unparseable workflow file is refused, since its job names cannot be judged
+_wdir = os.environ["PIN_WIRING_WORKFLOWS_DIR"]
+for _f in sorted(os.listdir(_wdir)):
+    if not _f.endswith((".yml", ".yaml")) or _f == "ci.yml":
+        continue
+    try:
+        _w = yaml.load(open(os.path.join(_wdir, _f)).read(), Loader=yaml.BaseLoader)
+        _jobs = (_w or {}).get("jobs") or {}
+        if not isinstance(_jobs, dict):
+            raise ValueError("jobs is not a mapping")
+    except Exception as e:
+        bad.append(f"the workflow {_f} cannot be read ({type(e).__name__}), so its job names cannot be judged")
+        continue
+    if "permissions" not in (_w or {}):   # omitted permissions inherit the repository default, which may include checks: write
+        bad.append(f"{_f}: no workflow-level `permissions` (an omitted block inherits repository defaults that may allow writing checks)")
+    for _jid, _j in _jobs.items():
+        _nm = _j.get("name", _jid) if isinstance(_j, dict) else _jid
+        if _jid in PROTECTED or _nm in PROTECTED:
+            bad.append(f"{_f}: the job {_jid} takes the protected check name {_nm if _nm in PROTECTED else _jid}")
+        elif not name_disjoint(_nm):
+            bad.append(f"{_f}: the job {_jid} has an expression name that could render as a protected check name")
+        if isinstance(_j, dict) and writes_checks(_j.get("permissions")):
+            bad.append(f"{_f}: the job {_jid} can write checks with the Actions token")
+    if writes_checks((_w or {}).get("permissions")):
+        bad.append(f"{_f}: the workflow can write checks with the Actions token")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -204,7 +693,12 @@ PY
 # object (never checked out, never run), and nothing else
 if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/ci.yml" > "$work/head-ci.yml" || { echo "pin-wiring: no ci.yml at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
-  judge "$work/head-ci.yml" && exit 0
+  git show "${PIN_WIRING_JUDGE_GIT}:.github/policy/required-checks.json" > "$work/head-policy.json" || { echo "pin-wiring: no required-checks.json at ${PIN_WIRING_JUDGE_GIT}" >&2; exit 1; }
+  mkdir -p "$work/head-wf"
+  for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
+    git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
+  done
+  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" judge "$work/head-ci.yml" && exit 0
   exit 1
 fi
 
@@ -299,10 +793,11 @@ case_ job-defaults-run          bad "d['jobs']['allowlist']['defaults'] = {'run'
 case_ ps4-ifs-prompt            bad "d['jobs']['allowlist']['env'] = {'IFS': 'x'}"
 case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.so'}"
 
-# the release chain's ten required steps (four of PR 1, six of PR 2) (REQ-CHAIN-001..003): each mutation of each step is caught
-for r in "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh"; do
-  n=$(basename "${r##* }" .sh); cs="[s for s in $steps if (s.get('run') or '').strip() == '$r'][0]"
-  case_ "$n-removed"     bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != '$r']"
+# the release chain's required steps (REQ-CHAIN-001..003 and the suites that followed), all in the allowlist-chain job: each mutation of each step is caught
+csteps='d["jobs"]["allowlist-chain"]["steps"]'
+for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/vex-index-test.sh </dev/null" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
+  n=$(basename "${r##* }" .sh); cs="[s for s in $csteps if (s.get('run') or '').strip() == '$r'][0]"
+  case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$r']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
   case_ "$n-continue"    bad "$cs['continue-on-error'] = 'true'"
   case_ "$n-or-true"     bad "$cs['run'] = '$r || true'"
@@ -311,10 +806,23 @@ for r in "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/c
   case_ "$n-shell"       bad "$cs['shell'] = \"bash -c 'true' {0}\""
   case_ "$n-workdir"     bad "$cs['working-directory'] = 'bin'"
   case_ "$n-timeout"     bad "$cs['timeout-minutes'] = '1'"
-  case_ "$n-other-job"   bad "x = $cs; $steps.remove(x); d['jobs']['test']['steps'].append(x)"
-  case_ "$n-twice"       bad "$steps.append(dict($cs))"
+  case_ "$n-other-job"   bad "x = $cs; $csteps.remove(x); d['jobs']['test']['steps'].append(x)"
+  case_ "$n-back-in-allowlist" bad "x = $cs; $csteps.remove(x); $steps.append(x)"
+  case_ "$n-twice"       bad "$csteps.append(dict($cs))"
 done
-case_ chain-verify-no-netcut bad "[s for s in $steps if 'chain-verify-test.sh' in (s.get('run') or '')][0]['run'] = 'bash bin/chain-verify-test.sh'"
+# the two suite-floor guard steps (an `if` or an `env` on purpose): every key and value is judged
+for g in "floors-vs-base" "suite-guard-run.py"; do
+  gs="[s for s in $csteps if '$g' in (s.get('run') or '')][0]"
+  case_ "guard-$g-removed"  bad "$csteps[:] = [s for s in $csteps if '$g' not in (s.get('run') or '')]"
+  case_ "guard-$g-if"       bad "$gs['if'] = 'false'"
+  case_ "guard-$g-env"      bad "$gs['env'] = {'CHAIN_TEST_REQUIRE_NETCUT': '0'}"
+  case_ "guard-$g-or-true"  bad "$gs['run'] = $gs['run'] + ' || true'"
+  case_ "guard-$g-renamed"  bad "$gs['name'] = 'guard'"
+  case_ "guard-$g-shell"    bad "$gs['shell'] = \"bash -c 'true' {0}\""
+  case_ "guard-$g-continue" bad "$gs['continue-on-error'] = 'true'"
+  case_ "guard-$g-in-allowlist" bad "x = $gs; $csteps.remove(x); $steps.append(x)"
+done
+case_ chain-verify-no-netcut bad "[s for s in $csteps if 'chain-verify-test.sh' in (s.get('run') or '')][0]['run'] = 'bash bin/chain-verify-test.sh'"
 
 # judge mode (the trusted gate, .github/workflows/agent-review-gate.yml): PIN_WIRING_JUDGE_GIT=<commit> judges THAT
 # commit's .github/workflows/ci.yml, read as a git object from the current repo (nothing checked out or run), and
@@ -322,6 +830,8 @@ case_ chain-verify-no-netcut bad "[s for s in $steps if 'chain-verify-test.sh' i
 gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
   local r="$work/git-$1"; rm -rf "$r"; mkdir -p "$r/.github/workflows"
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
+  mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
+  cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true; cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   if [ -n "$3" ]; then python3 - "$r/.github/workflows/ci.yml" "$3" <<'PY'
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
@@ -336,11 +846,55 @@ PY
   else failn=$((failn+1)); echo "FAIL git:$1 → $got, want $2 ($out)"; fi
 }
 gitcase the-real-ci-at-a-commit   ok  ""
+# the policy at the commit is read too: a missing split entry is refused (and so is a missing file, above)
+
 gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
 gitcase inserted-step-at-a-commit bad "$steps.insert(2, {'run': 'git update-ref refs/remotes/origin/main HEAD'})"
 gitcase fetch-depth-at-a-commit   bad "$steps[0].pop('with')"
 
 case_ job-needs-skipped          bad "d['jobs']['skip_guard'] = {'runs-on': 'ubuntu-latest', 'if': 'false', 'steps': [{'run': 'true'}]}; d['jobs']['allowlist']['needs'] = 'skip_guard'"
+case_ split-job-if            bad "d['jobs']['allowlist-chain']['if'] = 'false'"
+case_ split-job-missing       bad "d['jobs'].pop('allowlist-persona')"
+case_ split-job-renamed       bad "d['jobs']['allowlist-pins-auditor']['name'] = 'pins'"
+case_ split-job-needs         bad "d['jobs']['allowlist-chain']['needs'] = ['lint']"
+case_ split-job-runs-on       bad "d['jobs']['allowlist-persona']['runs-on'] = 'self-hosted'"
+case_ split-job-continue      bad "d['jobs']['allowlist-chain']['steps'][-1]['continue-on-error'] = 'true'"
+case_ split-step-if           bad "d['jobs']['allowlist-persona']['steps'][-1]['if'] = 'false'"
+case_ split-step-shell        bad "d['jobs']['allowlist-pins-auditor']['steps'][-2]['shell'] = 'bash -c true {0}'"
+case_ split-anchor-gone       bad "st = d['jobs']['allowlist-chain']['steps']; st[:] = [x for x in st if 'assemble-image-test' not in (x.get('run') or '')]"
+case_ split-no-checkout       bad "d['jobs']['allowlist-persona']['steps'].pop(0)"
+case_ split-job-env           bad "d['jobs']['allowlist-chain']['env'] = {'X': '1'}"
+case_ split-env-bash-env      bad "d['jobs']['allowlist-chain']['steps'][-1]['env'] = {'BASH_ENV': '/tmp/x'}"
+case_ split-env-shellopts     bad "d['jobs']['allowlist-persona']['steps'][-1]['env'] = {'SHELLOPTS': 'noexec'}"
+case_ split-suite-deleted     bad "st = d['jobs']['allowlist-persona']['steps']; st[:] = [x for x in st if 'persona-uat-agent-test' not in (x.get('run') or '')]"
+case_ split-suite-or-true     bad "x = [x for x in d['jobs']['allowlist-persona']['steps'] if 'persona-uat-agent-test' in (x.get('run') or '')][0]; x['run'] += ' || true'"
+case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain']['steps']; st[-1], st[-2] = st[-2], st[-1]"
+case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append({'name': 'x', 'run': 'true'})"
+# The transition judge (cache#489 / #521's landings): allowlist-pins-auditor is accepted in EXACTLY four forms: main's list, + the VEX step after panel-test, + the isolation step after workflow-consolidation, or both
+PA="import json; ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; vex = {'name': 'the final image index that carries our OpenVEX for Docker Scout \\u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)', 'run': 'bash bin/vex-index-test.sh </dev/null'}; iso = {'name': 'a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)', 'run': 'bash bin/job-isolation-test.sh'}; "
+case_ pa-vex-form-accepted        ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
+case_ pa-iso-form-accepted        ok  "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-both-forms-accepted      ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-vex-at-end               bad "${PA}ps.append(vex)"
+case_ pa-iso-at-start             bad "${PA}ps.insert(0, iso)"
+case_ pa-iso-twice                bad "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-iso-or-true              bad "${PA}iso['run'] += ' || true'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-iso-renamed              bad "${PA}iso['name'] = 'x'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-iso-continue             bad "${PA}iso['continue-on-error'] = 'true'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
+case_ pa-vex-env                  bad "${PA}vex['env'] = {'X': '1'}; ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
+case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
+case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
+case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
+case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
+case_ job-name-expr-spaced    ok  "d['jobs']['lint']['name'] = 'lint (\${{ matrix.x }})'"
+case_ job-matrix-other        ok  "d['jobs']['lint']['strategy'] = {'matrix': {'x': ['1']}}"
+case_ checks-write-job        bad "d['jobs']['lint']['permissions'] = {'checks': 'write'}"
+case_ checks-write-all        bad "d['permissions'] = 'write-all'"
+case_ checks-write-top        bad "d['permissions'] = {'contents': 'read', 'checks': 'write'}"
+case_ name-expr-quoted        bad "d['jobs']['lint']['name'] = \"\${{ 'allowlist-persona' || '}} ' }}\""
+case_ name-expr-multiline     bad "d['jobs']['lint']['name'] = \"\${{\\n  'allowlist-persona'\\n}}\""
+case_ name-expr-function      bad "d['jobs']['lint']['name'] = \"x \${{ format('{0}', 'a') }}\""
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
@@ -417,6 +971,56 @@ if out=$(gate_timeouts "$here/.github/workflows/agent-review-gate.yml"); then pa
 else failn=$((failn+1)); echo "FAIL gate jobs without timeout-minutes: $out"; fi
 cp "$here/.github/workflows/agent-review-gate.yml" "$work/gate-mut.yml"; sed -i.bak '/^    timeout-minutes:/d' "$work/gate-mut.yml"
 if gate_timeouts "$work/gate-mut.yml" >/dev/null; then failn=$((failn+1)); echo "FAIL gate without timeouts accepted"; else pass=$((pass+1)); echo "PASS gate without timeouts → bad"; fi
+
+# a job in ANOTHER workflow file that takes a protected check name, or can render as one, or a workflow that cannot be read
+for mut in "name" "id" "expr" "garbage" "okexpr" "checks" "checks-top" "quoted" "noperms"; do
+  rm -rf "$work/wf-$mut"; mkdir -p "$work/wf-$mut"; cp "$here"/.github/workflows/*.y*ml "$work/wf-$mut/"
+  case "$mut" in
+    name) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    name: allowlist-persona\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    id) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  allowlist-chain:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    expr) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    name: ${{ matrix.n }}\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    garbage) printf 'jobs: [\n' > "$work/wf-$mut/zz.yml" ;;
+    checks) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    runs-on: ubuntu-latest\n    permissions:\n      checks: write\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    checks-top) printf 'name: x\non: push\npermissions: write-all\njobs:\n  zz:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    noperms) printf 'name: x\non: push\njobs:\n  zz:\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+    quoted) cat > "$work/wf-$mut/zz.yml" <<'WF'
+name: x
+on: push
+permissions:
+  contents: read
+jobs:
+  zz:
+    name: "${{ 'allowlist-persona' || '}} ' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: "true"
+WF
+      ;;
+    okexpr) printf 'name: x\non: push\npermissions:\n  contents: read\njobs:\n  zz:\n    name: scan (${{ matrix.n }})\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' > "$work/wf-$mut/zz.yml" ;;
+  esac
+  want=bad; [ "$mut" = okexpr ] && want=ok
+  if out=$(PIN_WIRING_WORKFLOWS_DIR="$work/wf-$mut" judge "$here/.github/workflows/ci.yml"); then got=ok; else got=bad; fi
+  if [ "$got" = "$want" ]; then pass=$((pass+1)); echo "PASS other-workflow-$mut → $got"; else failn=$((failn+1)); echo "FAIL other-workflow-$mut → $got, want $want ($out)"; fi
+done
+
+# the required-check policy: each split job must stay listed with integration 15368 and scope push (release admission reads them)
+for mut in "drop" "scope" "integration" "null" "empty" "garbage" "dup" "notlist"; do
+  python3 - "$here/.github/policy/required-checks.json" "$work/pol-$mut.json" "$mut" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); rc = d["required_checks"]
+e = [c for c in rc if c["context"] == "allowlist-chain"][0]
+if sys.argv[3] == "drop": rc.remove(e)
+elif sys.argv[3] == "scope": e["scope"] = "pull_request"
+elif sys.argv[3] == "integration": e["integration_id"] = 1
+elif sys.argv[3] == "null": d["required_checks"] = None
+elif sys.argv[3] == "empty": d = {}
+elif sys.argv[3] == "dup": rc.append(dict(e, scope="pull_request"))
+elif sys.argv[3] == "notlist": d["required_checks"] = {"a": 1}
+if sys.argv[3] == "garbage": open(sys.argv[2], "w").write("{not json")
+else: json.dump(d, open(sys.argv[2], "w"))
+PY
+  if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
+done
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
