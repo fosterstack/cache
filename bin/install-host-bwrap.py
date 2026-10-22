@@ -161,17 +161,40 @@ def unpack(data, stage, owner, owners, what):
         owners[norm] = owner
 
 
+def escapes(stage, rel):
+    """Walk the symlink `rel` of the staging tree component by component, following the other links as they are met, and answer whether the walk ever goes above the
+    staging root (even if it would come back in under the staging name: the directory is renamed afterwards, so that way back no longer exists) or loops."""
+    stack = rel.split("/")[:-1]
+    pending = os.readlink(os.path.join(stage, rel)).split("/")
+    hops = 0
+    while pending:
+        part = pending.pop(0)
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not stack:
+                return True
+            stack.pop()
+            continue
+        full = os.path.join(stage, *(stack + [part]))
+        if os.path.islink(full):
+            hops += 1
+            target = os.readlink(full)
+            if hops > 40 or target.startswith("/"):
+                return True
+            pending = target.split("/") + pending
+            continue
+        stack.append(part)
+    return False
+
+
 def check_links(stage):
-    """Every symlink of the finished staging tree resolves, with the other symlinks followed in whatever order the packages named them, to a place inside the
-    staging directory (two links that are each inside can together leave it: a -> . ; b -> a/../probe)."""
-    top = os.path.realpath(stage)
+    """Every symlink of the finished staging tree stays inside the root however the other symlinks are chained, in whatever order the packages named them."""
     for dirpath, dirs, files in os.walk(stage):
         for n in dirs + files:
             p = os.path.join(dirpath, n)
-            if os.path.islink(p):
-                real = os.path.realpath(p)
-                if real != top and not real.startswith(top + os.sep):
-                    die("the symlink %s leaves the directory once the other links are followed (it resolves to %s)" % (os.path.relpath(p, stage), os.path.relpath(real, top)))
+            if os.path.islink(p) and escapes(stage, os.path.relpath(p, stage)):
+                die("the symlink %s leaves the directory once the other links are followed" % os.path.relpath(p, stage))
 
 
 def loader_of(root):

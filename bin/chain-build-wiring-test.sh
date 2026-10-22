@@ -883,6 +883,9 @@ for label, ent in (("an absolute path", [("/etc/evil", "file", b"E", None)]), ("
                    ("a chain of symlinks that writes outside the staging directory (a -> . ; a/b -> .. ; a/b/probe)", [("a", "sym", ".", None), ("a/b", "sym", "..", None), ("a/b/probe", "file", b"P", None)]),
                    ("two symlinks that together leave the directory (a -> . ; b -> a/../probe)", [("a", "sym", ".", None), ("b", "sym", "a/../probe", None)]),
                    ("two symlinks that together leave the directory, the second named first (b -> a/../probe ; a -> .)", [("b", "sym", "a/../probe", None), ("a", "sym", ".", None)]),
+                   ("a link that leaves the root and comes back through the staging name (a -> . ; b -> a/../host-tools.staging/probe)", [("a", "sym", ".", None), ("b", "sym", "a/../host-tools.staging/probe", None)]),
+                   ("the same, the second named first (b -> a/../host-tools.staging/probe ; a -> .)", [("b", "sym", "a/../host-tools.staging/probe", None), ("a", "sym", ".", None)]),
+                   ("a link into a sibling that has the root's own name (up -> .. ; up/host-tools/x as the target of w)", [("up", "sym", "usr/lib/../..", None), ("w", "sym", "up/../host-tools.staging/x", None)]),
                    ("a file written through a symlinked directory over another package's file (alias -> usr/lib ; alias/libc.so.6)", [("alias", "sym", "usr/lib", None), ("alias/libc.so.6", "file", b"OTHER", None)]),
                    ("a regular file that is later used as a directory (saved ; saved/child)", [("saved", "file", b"x", None), ("saved/child", "file", b"y", None)])):
     case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
@@ -2672,7 +2675,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=924
+EXPECT=927
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
