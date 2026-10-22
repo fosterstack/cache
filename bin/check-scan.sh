@@ -96,8 +96,8 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
   [[ "$idx" =~ ^sha256:[0-9a-f]{64}$ ]] || return 0
   blob="$1/blobs/sha256/${idx#sha256:}"; [ -f "$blob" ] || return 0
   # unknown/unknown is buildkit's descriptor for one of the two children: annotations vnd.docker.reference.type (a string) and
-  # vnd.docker.reference.digest (a string equal to a linux/amd64 or linux/arm64 child digest), AND its own manifest holds nothing but in-toto
-  # layers (an ordinary image manifest carrying the annotations is a third image nobody scanned). Anything else is named and fails.
+  # vnd.docker.reference.digest (a string equal to a linux/amd64 or linux/arm64 child digest), AND its own manifest holds layers of no
+  # filesystem (tar) kind (an ordinary image manifest carrying the annotations is a third image nobody scanned). Anything else is named and fails.
   out=$(jq -r 'def obj: if type == "object" then . else {} end;
          ([.manifests[]? | select((.platform | obj).os == "linux" and ((.platform | obj).architecture == "amd64" or (.platform | obj).architecture == "arm64")) | .digest]) as $kids
          | .manifests[]? | (((.platform | obj) as $q | "\($q.os // "none")/\($q.architecture // "none")")) as $p
@@ -113,7 +113,7 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
         d=${line#@@check }
         if [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] && [ -f "$1/blobs/sha256/${d#sha256:}" ] \
            && jq -e '.mediaType == "application/vnd.oci.image.manifest.v1+json" and (.layers | type) == "array" and (.layers | length) > 0
-                     and all(.layers[]; .mediaType == "application/vnd.in-toto+json")' "$1/blobs/sha256/${d#sha256:}" > /dev/null 2>&1; then :
+                     and all(.layers[]; (.mediaType | type) == "string" and (.mediaType | test("tar") | not))' "$1/blobs/sha256/${d#sha256:}" > /dev/null 2>&1; then :
         else echo "unknown/unknown (its own manifest is not a provenance manifest)"; fi ;;
       "") ;;
       *) echo "$line" ;;
