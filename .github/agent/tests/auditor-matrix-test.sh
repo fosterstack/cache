@@ -1459,7 +1459,7 @@ begin "ol2-2-refusal-usage-charged-to-budget" "adjudicate charges token usage ev
 charged="$("$PY" -c '
 import sys,importlib.util,tempfile,os
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\njson.dump({\"refused\":True,\"token_usage\":100001},sys.stdout)\n")
+fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":100001})+\"\\n\")\n    sys.stdout.flush()\n")
 st={"tokens":0,"iters":0}
 R.adjudicate(fa,{"finding_id":"CVE-X"},st)
 print(st["tokens"])' 2>/dev/null)"
