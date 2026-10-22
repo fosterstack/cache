@@ -994,7 +994,12 @@ ae_=$(sed -n '/^entrypoint:/,/^[a-z]/s/^  command: \(.*\)$/\1/p' "$root/build/ap
 af_=$(sed -n '/^entrypoint:/,/^[a-z]/s/^  command: \(.*\)$/\1/p' "$root/build/apko-fips.yaml" | head -1)
 if [ -n "$ce_" ] && [ "$ce_" = "$ae_" ] && [ "$ce_" = "$af_" ]; then ok "acceptance-egress.sh: the strace target $ce_ is the entrypoint of both apko images"; else bad "acceptance-egress.sh: CANDIDATE_ENTRYPOINT '$ce_' != apko.yaml '$ae_' / apko-fips.yaml '$af_'"; fi
 if [ -n "$ce_" ] && grep -q "go build -trimpath -o \${{targets.destdir}}${ce_} " "$root/build/melange.yaml" && grep -q "go build -trimpath -o \${{targets.destdir}}${ce_} " "$root/build/melange-fips.yaml"; then ok "acceptance-egress.sh: both recipes install the binary at the strace target $ce_"; else bad "acceptance-egress.sh: a recipe does not install the binary at '$ce_'"; fi
-EXPECT=312
+# (audit ruling, Oct 22) the tracer target is assigned ONCE and the strace command line really ends with it: a literal path in the docker run line, or a second assignment
+# after the first, would leave the value above checked but not used
+if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 ]; then ok "acceptance-egress.sh: CANDIDATE_ENTRYPOINT is assigned exactly once"; else bad "acceptance-egress.sh: CANDIDATE_ENTRYPOINT is assigned $(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh") times (the first one is the one checked, the last one is the one used)"; fi
+cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
+if [ "$(printf '%s\n' "$cl_" | grep -c .)" = 1 ] && printf '%s\n' "$cl_" | grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$'; then ok "acceptance-egress.sh: the one candidate docker run --entrypoint /trace/strace line ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace docker run is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
+EXPECT=314
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
