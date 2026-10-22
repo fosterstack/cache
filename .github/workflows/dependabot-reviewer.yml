@@ -136,22 +136,30 @@ jobs:
             if [ "$FORCE" != "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
               echo "PR #$n ${sha:0:7}: verdict already $prior"
               if [ "$prior" = success ]; then
-                # The auto-merge lane can turn an arm off between the reviewer's arm and its success check (REQ-DEP-003-AC2); it leaves a
-                # marker for that exact head. A success verdict, no arm, and more lane markers than re-arm markers for this head means that
-                # happened: put the arm back (once per disarm; a person's disarm leaves no lane marker and is left alone).
-                if ! view=$(gh pr view "$n" --json autoMergeRequest,comments); then
+                # The auto-merge lane turns an arm off when a head has no verdict (REQ-DEP-003-AC2); the reviewer arms and THEN publishes
+                # success, so the lane can cut in between and leave an approved head unarmed. GitHub records who turned auto-merge on or off:
+                # a success verdict, no arm, and the LAST auto-merge event being a disable by the workflow token (github-actions) means exactly
+                # that (a person's disarm, or any later enable, is not). Put the arm back for this head, after the same required-check
+                # guard as every other arm; the enable event that follows ends it. Nothing here reads a comment.
+                if ! armed_now=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
                   echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
                 fi
-                if ! counts=$(jq -r --arg sha "$sha" '[(.autoMergeRequest != null), ([.comments[] | select(.author.login == "github-actions" and (.body | contains("<!-- lane-disarmed:" + $sha + " -->")))] | length), ([.comments[] | select(.body | contains("<!-- reviewer-rearmed:" + $sha + " -->"))] | length)] | @tsv' <<<"$view"); then
-                  echo "::error::PR #$n ${sha:0:7}: could not read its comments — skipped this hour"; lookup_failed=1; continue
-                fi
-                read -r is_armed lane_off put_back <<<"$counts"
-                if [ "$is_armed" = false ] && [ "$lane_off" -gt "$put_back" ]; then
-                  if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
-                    echo "PR #$n ${sha:0:7}: the lane turned the approved arm off meanwhile — put back"
-                    GH_TOKEN="$MERGE_TOKEN" gh pr comment "$n" --body "$(printf '<!-- reviewer-rearmed:%s -->\nThe Dependabot reviewer put auto-merge back on %s: its success verdict is on this head.' "$sha" "${sha:0:7}")" >/dev/null \
-                      || { echo "::error::PR #$n: the re-arm marker could not be written"; lookup_failed=1; }
-                  else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi
+                if [ "$armed_now" = false ]; then
+                  if ! last_event=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${n}/events" --paginate \
+                        --jq '.[] | select(.event == "auto_merge_enabled" or .event == "auto_merge_disabled") | "\(.event) \(.actor.login)"' | tail -n 1; \
+                      [ "${PIPESTATUS[0]}" = 0 ]); then
+                    echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge events — skipped this hour"; lookup_failed=1; continue
+                  fi
+                  case "$last_event" in
+                    "auto_merge_disabled github-actions"*)
+                      if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
+                           | base64 -d > "$RUNNER_TEMP/work/heal-required-checks.json" \
+                         && bash bin/required-check-guard.sh "$RUNNER_TEMP/work/heal-required-checks.json"; then
+                        if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
+                          echo "PR #$n ${sha:0:7}: the lane turned the approved arm off meanwhile — put back"
+                        else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi
+                      else echo "::error::PR #$n ${sha:0:7}: required-check guard refused — the approved arm stays off this hour"; lookup_failed=1; fi ;;
+                  esac
                 fi
               fi
               continue

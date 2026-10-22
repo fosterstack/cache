@@ -132,6 +132,7 @@ def dependabot_summary(body):
 
 
 _FLAG = re.compile(r"breaking|deprecat", re.I)
+_MDADJ = re.compile(r"[A-Za-z0-9]\[|\][A-Za-z0-9]|\]\([^\n]*\)[A-Za-z0-9]|\]\[[^\]\n]*\][A-Za-z0-9]")
 
 
 class _Text(HTMLParser):
@@ -166,7 +167,10 @@ def is_flagged(body):
     # one more view keeps only the letters and digits of each, so punctuation and link targets between the pieces vanish.
     # (a second pass also drops a link's or image's target, `](...)`, which would sit between the pieces)
     views += tuple(re.sub(r"[^A-Za-z0-9]", "", v) for v in views) + tuple(re.sub(r"[^A-Za-z0-9]", "", re.sub(r"\]\([^)]*\)", "", v)) for v in views)
-    return any(_FLAG.search(v) for v in views)
+    # Markdown link, reference and image syntax can hide a word's pieces from every reduction above (reference labels, nested
+    # parentheses, quoted titles): a word character touching link syntax (`[Break][ref]ing`, `[Break](u)ing`, `x[y`, `[y]z`) is unresolvable
+    # here, so it is flagged (fail toward the readers).
+    return any(_FLAG.search(v) for v in views) or bool(_MDADJ.search(raw))
 
 
 def parse_updates(title, body):

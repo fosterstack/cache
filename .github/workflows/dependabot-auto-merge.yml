@@ -75,7 +75,8 @@ jobs:
           p.close()
           views = (raw, html.unescape(raw), "".join(p.t))
           views += tuple(re.sub(r"[^A-Za-z0-9]", "", v) for v in views) + tuple(re.sub(r"[^A-Za-z0-9]", "", re.sub(r"\]\([^)]*\)", "", v)) for v in views)
-          print("flagged=" + str(any(re.search(r"breaking|deprecat", v, re.I) for v in views)).lower())
+          adj = re.search(r"[A-Za-z0-9]\[|\][A-Za-z0-9]|\]\([^\n]*\)[A-Za-z0-9]|\]\[[^\]\n]*\][A-Za-z0-9]", raw) is not None
+          print("flagged=" + str(adj or any(re.search(r"breaking|deprecat", v, re.I) for v in views)).lower())
           PY
 
       - name: majors are the hourly reviewer's, not a human's (register row 75)
@@ -117,9 +118,6 @@ jobs:
           if [ "$verdict" = success ]; then echo "the reviewer approved the current head (${head:0:7}); auto-merge stands"
           elif [ "$armed" = true ]; then
             gh pr merge --disable-auto "$PR_URL"; echo "auto-merge turned off: the new head is reviewed afresh"
-            # The reviewer arms, THEN publishes its success: this may have cut in between. Leave a marker for exactly this head so the
-            # reviewer's next pass can tell this lane's disarm from a person's and put the arm back if it did approve the head.
-            gh pr comment "$PR_URL" --body "$(printf '<!-- lane-disarmed:%s -->\nAuto-merge was turned off by the Dependabot auto-merge lane: no reviewer verdict on %s yet. The reviewer judges this head.' "$head" "${head:0:7}")"
           else echo "auto-merge is not armed; nothing to void"; fi
 
       - name: require that main enforces the exact expected check set

@@ -108,6 +108,11 @@ MDSPLIT = ["**Break**ing change", "Depre*cat*ed API", "[Break](https://example.i
 check("flagged: Markdown formatting, links and image alt text splitting the words (round 3)",
       all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDSPLIT),
       [w for w in MDSPLIT if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
+MDLINK = ["[Break][ref]ing change\n\n[ref]: https://example.invalid", "[Break](https://example.invalid/(a)b)ing change", "[Break](https://example.invalid/a(b)c)ing",
+          "[Break](u \"a)b\")ing", "[Break]ing change\n\n[break]: https://e.invalid", "x[Break](u)ing"]
+check("flagged: valid Markdown link/reference forms that hide the word's pieces are unresolvable and flagged (round 4)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDLINK),
+      [w for w in MDLINK if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
 check("not flagged: ordinary Markdown with links and emphasis",
       one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n**Fixes** a [typo](https://example.invalid/typo) and `speeds` up *parsing*.\n\n</details>")[0]["flagged"] is False, "")
 check("not flagged: tags, comments and references around ordinary words",
@@ -580,10 +585,11 @@ case "$1 $2" in
   "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP99:-}" = fail ] && exit 1; echo "${PRIOR99:-none}" ;;
   "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
   "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer") echo "${PRIOR400:-none}" ;;
+  "api repos/o/r/issues/99/events") [ "${EVENTSFAIL:-}" = 1 ] && exit 1; printf '%b' "${EVENTS99:-}" ;;
+  "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
   "api repos/o/r/check-runs") [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;;
-  "pr view") case "$*" in *comments*) if [ -n "${PRVIEW_JSON:-}" ]; then echo "$PRVIEW_JSON"; else echo '{"autoMergeRequest":null,"comments":[]}'; fi ;; *) echo "${ARMED99:-false}" ;; esac ;;
+  "pr view") echo "${ARMED99:-false}" ;;
   "pr merge") case "$*" in *--auto*) [ "${REARMFAIL:-}" = 1 ] && exit 1; : ;; *) [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
-  "pr comment") : ;;
   "run list") [ "${RUNLIST:-}" = fail ] && exit 1
               f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
               jq -c "${f:-.}" <<<"${HISTORY:-[]}" ;;
@@ -594,7 +600,7 @@ EOF
 chmod +x "$w/bin/gh"
 cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
   local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
-  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-$w/prs.json}" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" \
+  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-$w/prs.json}" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" REPO_CHECKS="$repo/.github/policy/required-checks.json" GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" \
      GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m RUN_URL=https://example.invalid/run \
      ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
      bash --noprofile --norc -e -o pipefail "$w/cand.sh") > "$w/cand.out" 2>&1; local rc=$?
@@ -631,24 +637,25 @@ ONLY=99 cand "99 none," 0 "pr=99 selects the plain major"
 [ "$(jq -r '[.[]|select(.major and (.flagged|not))]|length' "$w/cand/work/updates-99.json")" = 1 ] \
   && { echo "ok: candidates: a plain major is left as it was (major, not flagged)"; pass=$((pass+1)); } || { echo "FAIL: candidates: plain major changed"; fail=$((fail+1)); }
 
-# the lane turned an arm off just as the reviewer approved the head (the reviewer arms, then publishes): a success verdict on the
-# head, no arm, and the lane's marker for exactly that head means put the arm back, once; a person's disarm has no marker and stays
-LANE='{"author":{"login":"github-actions"},"body":"<!-- lane-disarmed:sha99 -->\nAuto-merge was turned off"}'
-BACK='{"author":{"login":"fosterstack-automation"},"body":"<!-- reviewer-rearmed:sha99 -->"}'
-heal() { # <view json> <rc> <expect-armed yes|no> <name>   (PRIOR99=success, REARMFAIL from the environment)
-  PRIOR99=success PRVIEW_JSON="$1" cand "91 none," "$2" "$4"
+# The lane turned an arm off just as the reviewer approved the head (the reviewer arms, then publishes): a success verdict on the
+# head, no arm, and the LAST auto-merge event being a disable by github-actions (the workflow token) means put the arm back, after
+# the required-check guard; a person's disarm, an earlier lane disarm followed by a later enable, or no event at all stays.
+LANE_OFF='auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]\n'
+heal() { # <events> <rc> <expect-rearm yes|no> <name>   (PRIOR99=success; ARMED99, RULES, REARMFAIL, EVENTSFAIL from the environment)
+  PRIOR99=success EVENTS99="$1" cand "91 none," "$2" "$4"
   if grep -q "pr merge --auto --squash --match-head-commit sha99 99" "$w/gh.log"; then got=yes; else got=no; fi
   [ "$got" = "$3" ] && { echo "ok: candidates: $4 (re-arm: $got)"; pass=$((pass+1)); } || { echo "FAIL: candidates: $4 (re-arm: $got, want $3)"; fail=$((fail+1)); }
 }
-heal '{"autoMergeRequest":null,"comments":['"$LANE"']}' 0 yes "lane marker + success on the head + not armed -> the arm is put back for exactly that head"
-grep -q "pr comment 99 --body.*reviewer-rearmed:sha99" "$w/gh.log" && { echo "ok: candidates: the re-arm leaves its own marker"; pass=$((pass+1)); } || { echo "FAIL: candidates: no re-arm marker"; fail=$((fail+1)); }
-heal '{"autoMergeRequest":null,"comments":['"$LANE"','"$BACK"']}' 0 no "already put back once -> a person's later disarm is left alone"
-heal '{"autoMergeRequest":{"enabledBy":{"login":"x"}},"comments":['"$LANE"']}' 0 no "already armed -> nothing to do"
-heal '{"autoMergeRequest":null,"comments":[]}' 0 no "no marker (a person's disarm) -> left alone"
-heal '{"autoMergeRequest":null,"comments":[{"author":{"login":"someone"},"body":"<!-- lane-disarmed:sha99 -->"}]}' 0 no "a marker not written by the lane (github-actions) is ignored"
-heal '{"autoMergeRequest":null,"comments":[{"author":{"login":"github-actions"},"body":"<!-- lane-disarmed:othersha -->"}]}' 0 no "a marker for another head is ignored"
-REARMFAIL=1 heal '{"autoMergeRequest":null,"comments":['"$LANE"']}' 1 yes "the re-arm cannot be made -> the step fails (retry next hour), the PR is not silently dropped"
-PRIOR99=failure PRVIEW_JSON='{"autoMergeRequest":null,"comments":['"$LANE"']}' cand "91 none," 0 "a FAILURE verdict is never re-armed"
+heal "$LANE_OFF" 0 yes "success + not armed + last event = disable by github-actions[bot] -> the arm is put back for exactly that head"
+heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled someone\n' 0 no "last event = a person's disable -> left alone"
+heal 'auto_merge_disabled github-actions[bot]\nauto_merge_enabled fosterstack-automation\nauto_merge_disabled someone\n' 0 no "an earlier lane disable, then a normal arm, then a person's disable -> left alone (round-4 B3)"
+heal 'auto_merge_disabled github-actions[bot]\nauto_merge_enabled fosterstack-automation\n' 0 no "an earlier lane disable followed by an enable (the PR is simply not armed in the stub) -> left alone"
+heal '' 0 no "no auto-merge event at all -> left alone"
+ARMED99=true heal "$LANE_OFF" 0 no "already armed -> nothing to do"
+RULES="$w/rules-drift.json" heal "$LANE_OFF" 1 no "the required-check guard refuses -> no arm, the step fails (the approved arm stays off, retried next hour)"
+REARMFAIL=1 heal "$LANE_OFF" 1 yes "the re-arm cannot be made -> the step fails (retry next hour)"
+EVENTSFAIL=1 heal "$LANE_OFF" 1 no "the events cannot be read -> skipped, the step fails"
+PRIOR99=failure EVENTS99="$LANE_OFF" cand "91 none," 0 "a FAILURE verdict is never re-armed"
 grep -q "pr merge --auto" "$w/gh.log" && { echo "FAIL: candidates: a failure verdict was armed"; fail=$((fail+1)); } || { echo "ok: candidates: no arm for a failure verdict"; pass=$((pass+1)); }
 
 # ============================================================================ streak step
