@@ -2426,19 +2426,19 @@ vim k7 "REQ-REL-010-AC4 an importlib spec on a path variable in the live-test te
 # vex-index is admitted only if it is, after strip(), one of the reviewed lines (PIN_LINES, by sha256); anything else naming it, and the same line in any other file, is refused (advisor Oct 22:
 # only the exact quoted step string; both seats of round 2: erasing a substring admitted an executable use, so whole reviewed lines are pinned)
 vimok() { # vimok NAME LABEL FILE NEW   (the scope function must find NOTHING stray)
-  local d="$work/vimok-$1"; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/workflows" "$d/.github/policy" "$d/.github/agent/tests"
+  local d="$work/vimok-$1"; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/workflows" "$d/.github/policy" "$d/.github/judge/tests"
   cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$d/bin/"
   printf '%s' "$4" > "$d/$3"
   if python3 -c 'import sys; exec(open(sys.argv[1]).read()); b = stray(sys.argv[2]); print(b, file=sys.stderr); sys.exit(0 if not b else 1)' "$work/vi-named.py" "$d" 2>/dev/null; then ok "$2"; else bad "$2"; fi
 }
-PW=.github/agent/tests/pin-wiring-test.sh
+PW=.github/judge/tests/pin-wiring-test.sh
 L1=$'  "run": "bash bin/vex-index-test.sh </dev/null"\n'
 L2=$'        _vex = {"name": VEX_NAME, "run": "bash bin/vex-index-test.sh </dev/null"}\n'
 vimok p1 "REQ-REL-010-AC4 the pin-wiring judge's reviewed lines quoting the exact step string bash bin/vex-index-test.sh </dev/null are admitted (they name the test script and run nothing)" $PW "$L1$L2"
 vimok p7 "REQ-REL-010-AC4 a reviewed line is admitted at any indentation (strip) and repeated, as the real judge repeats it" $PW "$L1"$'\t\t"run": "bash bin/vex-index-test.sh </dev/null"\n'"$L2"
 vim p2 "REQ-REL-010-AC4 the pin-wiring judge naming the tool itself (bin/vex-index.py) next to a reviewed line is refused" $PW '' "$L1"$'subprocess.run(["python3", "bin/vex-index.py", "layout"])\n'
 vim p3 "REQ-REL-010-AC4 the pin-wiring judge naming the test script in any form that is not a reviewed line is refused" $PW '' $'x = "bash bin/vex-index-test.sh"\n'
-vim p4 "REQ-REL-010-AC4 another test file holding a reviewed line is refused (the admission is for the pin-wiring judge only)" .github/agent/tests/other-test.sh '' "$L1"
+vim p4 "REQ-REL-010-AC4 another test file holding a reviewed line is refused (the admission is for the pin-wiring judge only)" .github/judge/tests/other-test.sh '' "$L1"
 vim p5 "REQ-REL-010-AC4 the pin-wiring judge with more words after the step string inside the same quotes is refused" $PW '' $'x = "bash bin/vex-index-test.sh </dev/null; echo more"\n'
 vim p6 "REQ-REL-010-AC4 the pin-wiring judge naming the step string without its own quotes is refused" $PW '' $'x = bash bin/vex-index-test.sh </dev/null\n'
 vim p8 "REQ-REL-010-AC4 adjacent string literals around the quoted step string handed to os.system are refused (round 2, seat A)" $PW '' $'os.system("bash bin/vex-index-test.sh </dev/null" " ")\n'
