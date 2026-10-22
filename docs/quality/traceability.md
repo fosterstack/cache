@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 89 |
-| Acceptance criteria | 368 |
+| Active requirements | 90 |
+| Acceptance criteria | 370 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 348 |
+| ACs with mapped evidence | 350 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 43 |
+| Confidence: implementation-only | 44 |
 
 ## Cache protocol
 
@@ -780,6 +780,19 @@ The final image index that Sign signs and Release publishes shall carry our Open
 | REQ-REL-010-AC4 | Given Sign's digest list; when Release publishes; then the digest customers pull equals the digest the signature, provenance and release manifest name, and no step after Sign attaches, adds or changes an attestation (an attempt is refused) | ci-workflow |  | approved | none mapped |
 | REQ-REL-010-AC5 | Given a changed OpenVEX for an already published version; when the pipeline runs; then it makes no change to that version's image; the change reaches images only through the next automatic patch release | unit |  | approved | none mapped |
 | REQ-REL-010-AC6 | Given the published final index; when Docker Scout scans it by tag and by exact digest with our author; then it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image | acceptance-release-artifact |  | approved | none mapped |
+
+### REQ-REL-011 — A job that holds a credential never compiles, and each build is its own job
+
+A workflow job that holds a credential (a secret, an environment, an id-token or packages write grant) shall not build or compile anything, and no job shall run two builds: on GitHub-hosted runners the separate job is the isolation unit, each job a fresh virtual machine. Owner, Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): "the signer and the builder need hardware isolation and the builds in general need hardware isolation ... the best github actions can do for that, assuming we use github hosted runers, is to use separate jobs in the workflow." The rule: a job that holds the signing key or any publish credential never receives a build output other than the exact artifacts it signs or publishes; the Rebuild comparison runs in a job with no secrets and no publish permission; builds are isolated from each other the same way, each build its own job.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/auditor.yml; .github/workflows/go-freshness.yml; bin/job-isolation-test.sh*
+
+> Four jobs of the release chain on main (stage-build, stage-image, stage-promote, stage-reproducibility) still break AC1 and are listed exclusions in bin/job-isolation-test.sh with their reason: the chain-v030 landing (handoff 0634, cache#514) replaces those files. The exclusion list shrinks to nothing then. A tool that publishes no release binary (govulncheck) is built in its own job that holds no credential and reaches the credential-holding job as an artifact whose sha256 equals the build job's output.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-011-AC1 | Given any workflow job in the repository that holds a credential: a secrets.* reference, an environment, a permissions grant of id-token: write or packages: write; when bin/job-isolation-test.sh judges every workflow file; then none of the job's steps compiles or builds (go install, go build, goreleaser, docker build or buildx build, melange or apko build, make, cargo, npm run build); a tool the job needs is installed through bin/install-scanner.sh as a checksum-pinned release binary, and govulncheck, which has no release binary, is built in its own job with no credential and handed to auditor.yml's audit job as an artifact whose sha256 the audit job compares with the build job's output before it runs; the only jobs that may break this are the four listed release-chain exclusions, each with its reason, and a mutated copy of a workflow that adds a build to a credential-holding job fails the test | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-011-AC2 | Given any workflow job in the repository; when bin/job-isolation-test.sh judges every workflow file; then the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job | ci-workflow |  | approved | 2 item(s) |
 
 ## SCAN
 
