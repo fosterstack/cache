@@ -824,7 +824,7 @@ def case(label, setup=None, lock=LOCK, want=0, extra_args=(), arch=ARCH, after=N
     r = subprocess.run(args, capture_output=True, text=True)
     good = r.returncode == want
     if want != 0 and nothing_written is not False:
-        good = good and not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/bin/bwrap")
+        good = good and not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/bin/bwrap") and not os.path.exists(d + "/host-tools.staging") and not os.path.exists(d + "/probe")
     if good and after:
         try: after(d, r)
         except AssertionError as e: good = False; r.stderr += " AFTER: %s" % e
@@ -879,7 +879,10 @@ case("AC17 an apk that is a symlink instead of a file is refused", setup=lambda 
 for label, ent in (("an absolute path", [("/etc/evil", "file", b"E", None)]), ("a .. part", [("usr/../../evil", "file", b"E", None)]),
                    ("an absolute symlink", [("usr/lib/x", "sym", "/etc/passwd", None)]), ("a symlink that leaves the directory", [("usr/lib/x", "sym", "../../../etc/passwd", None)]),
                    ("a hard link", [("usr/lib/x", "hard", "usr/lib/libcap.so.2.78", None)]), ("a device", [("usr/lib/dev", "dev", None, None)]),
-                   ("a path that another package also holds", [("usr/lib/libc.so.6", "file", b"OTHER", None)])):
+                   ("a path that another package also holds", [("usr/lib/libc.so.6", "file", b"OTHER", None)]),
+                   ("a chain of symlinks that writes outside the staging directory (a -> . ; a/b -> .. ; a/b/probe)", [("a", "sym", ".", None), ("a/b", "sym", "..", None), ("a/b/probe", "file", b"P", None)]),
+                   ("a file written through a symlinked directory over another package's file (alias -> usr/lib ; alias/libc.so.6)", [("alias", "sym", "usr/lib", None), ("alias/libc.so.6", "file", b"OTHER", None)]),
+                   ("a regular file that is later used as a directory (saved ; saved/child)", [("saved", "file", b"x", None), ("saved/child", "file", b"y", None)])):
     case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
          setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
 case("AC17 no loader in the unpacked tree is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/other", "file", b"x", None)]), want=1)
@@ -893,6 +896,8 @@ for label, lk in (("an empty lock", ""), ("a lock row with no version", "bubblew
     case("AC17 %s is refused (exit 2), nothing written" % label, lock=lk, want=2)
 case("AC17 an architecture other than x86_64 and aarch64 is refused (exit 2)", arch="riscv64", want=2)
 case("AC17 aarch64 is accepted and reads archive/aarch64/", arch="aarch64", setup=lambda d: (shutil.copytree(d + "/archive/" + ARCH, d + "/archive/aarch64"), [apk(d + "/archive/aarch64/" + f, f.rsplit("-", 2)[0], "-".join(f[:-4].rsplit("-", 2)[1:]), [("usr/bin/bwrap", "file", b"B", 0o755)] if f.startswith("bubblewrap") else [("usr/lib/ld-linux-aarch64.so.1", "file", LOADER, 0o755)] if f.startswith("ld-linux") else [("usr/lib/x%s" % f, "file", b"x", None)], arch="aarch64") for f in os.listdir(d + "/archive/aarch64")]), after=lambda d, r: os.path.exists(d + "/host-tools/usr/lib/ld-linux-aarch64.so.1") or (_ for _ in ()).throw(AssertionError("aarch64 loader")))
+case("AC17 a wrapper that cannot be published (bin/bwrap is a directory) is refused (exit 1) and leaves neither the host-tools directory, a staging directory nor a temporary wrapper", setup=lambda d: os.makedirs(d + "/bin/bwrap"), want=1, nothing_written=False,
+     after=lambda d, r: (not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/host-tools.staging") and not [f for f in os.listdir(d + "/bin") if f.startswith(".bwrap.")]) or (_ for _ in ()).throw(AssertionError("residue")))
 case("AC17 an unknown option is refused (exit 2)", extra_args=("--sudo",), want=2)
 text = open(script).read()
 for word in ("curl", "wget", "apt-get", "apk add", "sudo", "pip install", "urllib", "socket", "http.client", "requests", "subprocess", "os.system", "shutil.which", "dpkg", "yum", "dnf"):
@@ -2627,7 +2632,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=907
+EXPECT=911
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

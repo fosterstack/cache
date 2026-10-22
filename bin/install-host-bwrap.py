@@ -108,6 +108,19 @@ def inside(root_parts_target):
     return True
 
 
+def check_place(stage, norm, what, kind):
+    """Nothing is written through a symlink or over something that is not what the entry is: every directory above the entry must be a real directory inside the
+    staging directory (never a symlink an earlier entry made), and the entry's own place must be free (a directory entry may meet a real directory)."""
+    cur = stage
+    for part in norm.split("/")[:-1]:
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur) or (os.path.lexists(cur) and not os.path.isdir(cur)):
+            die("%s: %s is written below %s, which is a symlink or a file, not a directory" % (what, norm, os.path.relpath(cur, stage)))
+    dest = os.path.join(stage, norm)
+    if os.path.lexists(dest) and not (kind == "dir" and os.path.isdir(dest) and not os.path.islink(dest)):
+        die("%s: the place of %s is already taken" % (what, norm))
+
+
 def unpack(data, stage, owner, owners, what):
     try:
         t = tarfile.open(fileobj=io.BytesIO(data), mode="r:")
@@ -123,6 +136,7 @@ def unpack(data, stage, owner, owners, what):
         if not norm:
             continue
         dest = os.path.join(stage, norm)
+        check_place(stage, norm, what, "dir" if m.isdir() else "other")
         if m.isdir():
             os.makedirs(dest, exist_ok=True)
             continue
@@ -217,10 +231,12 @@ def main(argv):
             die("the unpacked packages hold %d dynamic loaders (usr/lib or lib, ld-linux-*.so.N), expected exactly one" % len(loaders))
         loader = os.path.relpath(loaders[0], stage)
         os.rename(stage, root)
-    except SystemExit:
+    except BaseException as e:
         import shutil
         shutil.rmtree(stage, ignore_errors=True)
-        raise
+        if isinstance(e, SystemExit):
+            raise
+        die("cannot unpack the host tools (%s: %s); nothing was written" % (type(e).__name__, e))
     wrapper = '#!/bin/sh\nexec %s/%s --library-path %s/usr/lib:%s/lib %s/usr/bin/bwrap "$@"\n' % (root, loader, root, root, root)
     try:
         os.makedirs(binary, exist_ok=True)
@@ -232,6 +248,10 @@ def main(argv):
     except OSError as e:
         import shutil
         shutil.rmtree(root, ignore_errors=True)
+        try:
+            os.unlink(tmp)
+        except (OSError, NameError):
+            pass
         die("cannot write the wrapper in %s: %s" % (binary, e))
     print("installed bubblewrap and %d package(s) from the archive (%s) into %s; wrapper %s/bwrap" % (len(plan), arch, root, binary))
 
