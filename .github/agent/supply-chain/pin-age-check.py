@@ -1431,23 +1431,26 @@ def go_exemption(root, head):
     defs = set()
     for l in joined:
         if not l.lstrip().startswith("#"):
-            defs.update(re.findall(r"(?:^|[;&|{(])[ \t]*([A-Za-z_][\w.-]*)[ \t]*\(\)", l) + re.findall(r"\bfunction[ \t]+([\w.-]+)", l))
-            if re.search(r"(?:^|[;&|{(])[ \t]*(?:alias|enable|builtin|unalias)\b", l):
+            q = re.sub(r"'[^']*'|\"[^\"]*\"", '""', l)
+            defs.update(re.findall(r"([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\)", q) + re.findall(r"\bfunction[ \t]+([\w.-]+)", q))
+            if re.search(r"(?:^|[;&|{(]|\bthen|\bdo|\belse)[ \t]*(?:alias|enable|builtin|unalias)\b", q):
                 return None
     if defs - {"verify", "pipeline_fail", "die"}:
         return None
-    # the download and its verify call sit at the top level of the go arm: not inside a group, loop, condition or subshell whose failure is ignored
+    # the download and its verify call sit at the top level of the go arm of the one tool dispatch: counted from the START of the file, the only open construct at the
+    # download is that dispatch `case` (a wrapper around it, a group or loop or condition around the arm, an inline `; (` all raise the depth: refused)
     arm = [i for i, l in enumerate(joined[:fetch[0]]) if re.match(r"^[ \t]*go\)[ \t]*$", l)]
     if len(arm) != 1:
         return None
     depth = 0
-    for l in joined[arm[0] + 1:fetch[0]]:
+    for l in joined[:fetch[0]]:
         t = re.sub(r"'[^']*'|\"[^\"]*\"", '""', l.strip())
         if t.startswith("#"):
             continue
-        depth += len(re.findall(r"(?:^|[;&|)][ \t]*|\bthen[ \t]+|\bdo[ \t]+)(?:if|while|until|for|select|case)\b", t)) + (1 if t[:1] in "({" else 0)
+        depth += (len(re.findall(r"(?:^|[;&|)][ \t]*|\bthen[ \t]+|\bdo[ \t]+|\belse[ \t]+)(?:if|while|until|for|select|case)\b", t)) + (1 if t[:1] in "({" else 0)
+                 + len(re.findall(r"[;&|][ \t]*[({]", t)) + (1 if re.search(r"\)[ \t]*\{[ \t]*(?:#.*)?$", t) else 0))
         depth -= len(re.findall(r"(?:^|[;&|)][ \t]*)(?:fi|done|esac)\b", t)) + (1 if t[:1] in ")}" else 0)
-    if depth != 0:
+    if depth != 1:
         return None
     # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and the installed-version grep, each ending in a
     # pipeline_fail whose message holds no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or a Go archive name (go<N>.<N>) in a
