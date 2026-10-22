@@ -70,6 +70,43 @@ type Cache struct {
 	// itself) keeps writes concurrent while making eviction bookkeeping
 	// exact.
 	evictMu sync.Mutex
+
+	// keyMu guards keys, the per-key locks that order a key's blob replace
+	// and its index record (REQ-STORE-001-AC2): two concurrent Puts of one
+	// key otherwise finish their record steps in either order, and the one
+	// that replaced the blob first can record last, leaving the index with
+	// a size the retrievable bytes do not have. Only same-key Puts wait for
+	// each other; Puts of different keys stay concurrent.
+	keyMu sync.Mutex
+	keys  map[string]*keyLock
+}
+
+// keyLock is one key's lock and the number of Puts holding or waiting for
+// it; the entry leaves the map when the count reaches zero.
+type keyLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+// lockKey takes key's lock and returns the function that releases it.
+func (c *Cache) lockKey(key string) func() {
+	c.keyMu.Lock()
+	kl := c.keys[key]
+	if kl == nil {
+		kl = &keyLock{}
+		c.keys[key] = kl
+	}
+	kl.refs++
+	c.keyMu.Unlock()
+	kl.mu.Lock()
+	return func() {
+		kl.mu.Unlock()
+		c.keyMu.Lock()
+		if kl.refs--; kl.refs == 0 {
+			delete(c.keys, key)
+		}
+		c.keyMu.Unlock()
+	}
 }
 
 // Option configures a Cache.
@@ -95,7 +132,7 @@ func WithOnEvict(f func(key string, size int64)) Option {
 
 // New builds a Cache over an already-open blob store and metadata index.
 func New(blobs *blobstore.Store, meta *metadata.Store, opts ...Option) *Cache {
-	c := &Cache{blobs: blobs, meta: meta, log: slog.Default()}
+	c := &Cache{blobs: blobs, meta: meta, log: slog.Default(), keys: map[string]*keyLock{}}
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -107,24 +144,26 @@ type ReconcileStats struct {
 	AdoptedBlobs     int // blobs with no metadata record, now indexed
 	DroppedRecords   int // records with no blob, now removed
 	RemovedTempFiles int
+	CorrectedSizes   int // records whose size differed from the bytes on disk, now corrected
 }
 
 // Reconcile repairs the metadata index against the blob store after an
 // unclean shutdown (REQ-STORE-005): blobs are truth, the index is
 // rebuildable. Blobs with no record are adopted (size from disk, recency
-// now); records with no blob are dropped; stale temp files from
+// now); records whose size differs from the blob's are corrected; records
+// with no blob are dropped; stale temp files from
 // interrupted writes are removed. Totals correct themselves because
 // Record and Delete maintain them.
 func (c *Cache) Reconcile(ctx context.Context) (ReconcileStats, error) {
 	var stats ReconcileStats
 
-	indexed := map[string]bool{}
+	indexed := map[string]int64{}
 	entries, err := c.meta.All()
 	if err != nil {
 		return stats, fmt.Errorf("cache: reconcile: read index: %w", err)
 	}
 	for _, e := range entries {
-		indexed[e.Key] = true
+		indexed[e.Key] = e.Size
 	}
 
 	onDisk := map[string]bool{}
@@ -133,11 +172,21 @@ func (c *Cache) Reconcile(ctx context.Context) (ReconcileStats, error) {
 			return err
 		}
 		onDisk[key] = true
-		if !indexed[key] {
+		recorded, isIndexed := indexed[key]
+		switch {
+		case !isIndexed:
 			if err := c.meta.Record(key, size); err != nil {
 				return fmt.Errorf("adopt %q: %w", key, err)
 			}
 			stats.AdoptedBlobs++
+		case recorded != size:
+			// The blob is truth (REQ-STORE-001-AC2): a record whose size differs from the
+			// bytes on disk is what a lost same-key race leaves behind; it would skew
+			// totals and the cap for good.
+			if err := c.meta.Record(key, size); err != nil {
+				return fmt.Errorf("correct size of %q: %w", key, err)
+			}
+			stats.CorrectedSizes++
 		}
 		return nil
 	})
@@ -217,11 +266,14 @@ func (c *Cache) Put(ctx context.Context, key string, r io.Reader) (int64, error)
 	if c.maxBytes > 0 {
 		r = &capReader{r: r, limit: c.maxBytes}
 	}
+	unlock := c.lockKey(key)
 	n, err := c.blobs.Put(key, r)
 	if err != nil {
+		unlock()
 		return 0, err
 	}
 	if err := c.meta.Record(key, n); err != nil {
+		defer unlock() // the undo below is part of this key's replace-and-record: another Put of the key waits for it
 		// REQ-STORE-004: a cache that says "stored" has stored it. An
 		// unindexed blob is invisible to eviction and totals, so the write
 		// is undone and the client told the truth. The delete is
@@ -233,6 +285,7 @@ func (c *Cache) Put(ctx context.Context, key string, r io.Reader) (int64, error)
 		}
 		return 0, fmt.Errorf("cache: metadata record for %q failed, entry not stored: %w", key, err)
 	}
+	unlock()
 	if c.maxBytes > 0 {
 		c.evictToFit(ctx)
 	}

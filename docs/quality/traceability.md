@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 90 |
-| Acceptance criteria | 376 |
-| Release-blocking ACs | 53 |
-| ACs with mapped evidence | 356 |
-| Release-blocking ACs with mapped evidence | 53 |
+| Acceptance criteria | 377 |
+| Release-blocking ACs | 54 |
+| ACs with mapped evidence | 357 |
+| Release-blocking ACs with mapped evidence | 54 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
 | Confidence: implementation-only | 44 |
@@ -280,6 +280,7 @@ Stored entries shall survive a clean server restart: a key stored before shutdow
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-STORE-001-AC1 | Given a server that stored a key and shut down cleanly; when a new process starts on the same data directory and the key is requested; then the identical bytes return, and store totals reflect the entry | component | yes | approved | 1 item(s) |
+| REQ-STORE-001-AC2 | Given a store where two PUTs of different sizes replace the same key concurrently, in either completion order of their blob write and their index record; when both have completed; then the index records the size of the bytes now retrievable under that key, the store total equals the sum of the indexed sizes, and reconciliation at the next start finds nothing to correct | component | yes | approved | 3 item(s) |
 
 ### REQ-STORE-002 — Atomic writes
 
@@ -331,7 +332,7 @@ The server shall write a marker file at startup and remove it on clean shutdown.
 
 ### REQ-EVICT-001 — Size-capped LRU eviction
 
-With FSCACHE_MAX_BYTES set, the server shall bound the COMMITTED LIVE-CACHE BLOB BYTES - the total size of indexed, retrievable entries, measured after an operation completes - by evicting least-recently-used entries; with the cap at 0 the store shall be unbounded. This is a bounded live-cache size with documented temporary headroom, not a hard filesystem quota: temporary and in-flight disk usage during writes, and concurrent-write headroom, are outside this requirement and need requirements of their own before any hard disk ceiling is claimed.
+With FSCACHE_MAX_BYTES set, the server shall bound the COMMITTED LIVE-CACHE BLOB BYTES - the total size of indexed, retrievable entries, measured after an operation completes - by evicting least-recently-used entries; with the cap at 0 the store shall be unbounded. This is a bounded live-cache size with documented temporary headroom, not a hard filesystem quota: temporary and in-flight disk usage during writes, and concurrent-write headroom, are outside this requirement and need requirements of their own before any hard disk ceiling is claimed. That exclusion covers in-flight temporary disk usage only, never the accuracy of the index once the operations have completed (REQ-STORE-001-AC2).
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md "Full core"; docs/docker-deploy.md "Sizing"; internal/cache/cache.go*
 

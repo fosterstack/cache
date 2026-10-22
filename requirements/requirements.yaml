@@ -680,6 +680,12 @@ requirements:
         then: the identical bytes return, and store totals reflect the entry
         verification: { method: component, release_blocking: true }
         status: approved
+      - id: REQ-STORE-001-AC2
+        given: a store where two PUTs of different sizes replace the same key concurrently, in either completion order of their blob write and their index record
+        when: both have completed
+        then: the index records the size of the bytes now retrievable under that key, the store total equals the sum of the indexed sizes, and reconciliation at the next start finds nothing to correct
+        verification: { method: component, release_blocking: true }
+        status: approved
 
   - id: REQ-STORE-002
     title: Atomic writes
@@ -813,7 +819,9 @@ requirements:
       temporary headroom, not a hard filesystem quota: temporary and
       in-flight disk usage during writes, and concurrent-write headroom,
       are outside this requirement and need requirements of their own
-      before any hard disk ceiling is claimed.
+      before any hard disk ceiling is claimed. That exclusion covers in-flight
+      temporary disk usage only, never the accuracy of the index once the
+      operations have completed (REQ-STORE-001-AC2).
     source: [README.md "Full core", docs/docker-deploy.md "Sizing", internal/cache/cache.go]
     tier: community
     introduced: v0.1.0

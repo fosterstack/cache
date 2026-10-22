@@ -207,6 +207,11 @@ mappings:
   - ac: REQ-STORE-001-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestRestartPersistence" }
+  - ac: REQ-STORE-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestSameKeyConcurrentPutsKeepIndexEqualToBytes" }
+      - { type: go-test, ref: "internal/cache:TestReconcileCorrectsRecordedSizeMismatch" }
+      - { type: go-test, ref: "internal/cache:TestReconcileReportsSizeCorrectionFailure" }
   - ac: REQ-STORE-004-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestPutFailsAndRemovesBlobWhenMetadataFails" }
