@@ -47,13 +47,21 @@ crane auth login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< 
 crane auth login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"
 
 plan=("production:$ver" "fips:$ver-fips")
-if [[ "$ver" != *-* ]]; then
+# The highest released version: ghcr.io's plain X.Y.Z tags with this version counted as released. It is read again right before the floating tags are
+# pushed and once more after them (release review R3, Oct 22): a higher release published meanwhile must never lose :X and :latest to this older one. The
+# window that remains between a reading and a push is closed by the release job's concurrency group (stage-promote.yml).
+highest_now() {
+  local existing
   if existing=$(crane ls "ghcr.io/$repo" 2>&1); then :
   elif [[ "$existing" == *NAME_UNKNOWN* ]]; then existing=""
-  else echo "release-publish: cannot list the tags of ghcr.io/$repo: $existing" >&2; exit 1; fi
-  highest=$(printf '%s\n' "$existing" | jq -R -s -r --arg cur "$ver" 'split("\n") | map(select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))) + [$cur] | map({s: ., k: (split(".") | map(tonumber))}) | max_by(.k) | .s')
+  else echo "release-publish: cannot list the tags of ghcr.io/$repo: $existing" >&2; return 1; fi
+  printf '%s\n' "$existing" | jq -R -s -r --arg cur "$ver" 'split("\n") | map(select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))) + [$cur] | map({s: ., k: (split(".") | map(tonumber))}) | max_by(.k) | .s'
+}
+final=0
+if [[ "$ver" != *-* ]]; then
+  final=1
+  highest_now > /dev/null || exit 1       # an unreadable tag list stops the release before any push, as before
   plan+=("production:${ver%.*}")
-  if [ "$highest" = "$ver" ]; then plan+=("production:${ver%%.*}" "production:latest"); fi
 fi
 
 for host in ghcr.io docker.io; do
@@ -65,6 +73,7 @@ for host in ghcr.io docker.io; do
   done
 done
 
+moved=0
 for host in ghcr.io docker.io; do
   for entry in "${plan[@]}"; do
     ref="$host/$repo:${entry#*:}"
@@ -73,4 +82,24 @@ for host in ghcr.io docker.io; do
     got=$(digest_of "$ref")
     if [ "$got" != "$want" ]; then echo "release-publish: $ref differs: the registry shows $got, Build attested $want" >&2; exit 1; fi
   done
+  if [ "$final" = 1 ]; then
+    # decided again now, not from the reading made before the exact tags were pushed
+    if ! highest=$(highest_now); then exit 1; fi
+    if [ "$highest" = "$ver" ]; then
+      for fl in "${ver%%.*}" latest; do
+        ref="$host/$repo:$fl"
+        crane push "images/production" "$ref"
+        got=$(digest_of "$ref")
+        if [ "$got" != "$prod" ]; then echo "release-publish: $ref differs: the registry shows $got, Build attested $prod" >&2; exit 1; fi
+      done
+      moved=1
+    fi
+  fi
 done
+if [ "$moved" = 1 ]; then
+  if ! highest=$(highest_now); then exit 1; fi
+  if [ "$highest" != "$ver" ]; then
+    echo "release-publish: a higher release ($highest) was published meanwhile (a concurrent release run): :${ver%%.*} and :latest may now point at $ver instead of it; publish $highest again to restore them" >&2
+    exit 1
+  fi
+fi

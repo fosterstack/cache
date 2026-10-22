@@ -684,7 +684,12 @@ def graph(path):
         job = jobs.get(name)
         if job is None:
             bad.append("chain job %s is missing (the job id is the stage name, so a failure names it)" % name); continue
-        extra = set(job) - {"uses", "needs", "permissions", "with", "if"}
+        # `concurrency` is allowed on the release job ONLY, and must be exactly the constant group with cancel-in-progress false (release review R3, Oct 22:
+        # bin/release-publish.sh decides :X and :latest from the registry's tag list, so two release runs must not interleave; a cancelling or per-ref group
+        # would kill a publication half way or not serialize at all). On any other chain job it stays outside the allowed keys.
+        extra = set(job) - {"uses", "needs", "permissions", "with", "if"} - ({"concurrency"} if name == "release" else set())
+        if name == "release" and job.get("concurrency") not in ({"group": "release-publish", "cancel-in-progress": False}, {"group": "release-publish", "cancel-in-progress": "false"}):   # this loader keeps booleans as text
+            bad.append("release must hold exactly the concurrency {group: release-publish, cancel-in-progress: false} (two publications must not interleave), got %r" % (job.get("concurrency"),))
         if extra:
             bad.append("%s: keys outside {uses, needs, permissions, with} and build's one if: %s (no continue-on-error, secrets, strategy, env)"
                        % (name, sorted(extra)))

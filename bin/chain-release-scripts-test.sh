@@ -47,7 +47,14 @@ case "$1" in
         [ "${REG_CORRUPT:-}" = "$host" ] && d="sha256:$(printf 'f%.0s' $(seq 64))"; echo "$d" > "$p" ;;
   digest) p="$REG/${2/://}"; [ -e "$p" ] && cat "$p" || { echo "NAME_UNKNOWN $2" >&2; exit 1; } ;;
   ls) [ -z "${LS_FAIL:-}" ] || { echo "connection refused" >&2; exit 1; }
-      [ -d "$REG/$2" ] || { echo "NAME_UNKNOWN $2" >&2; exit 1; }; ls "$REG/$2" ;;
+      [ -d "$REG/$2" ] || { echo "NAME_UNKNOWN $2" >&2; exit 1; }
+      # LS_RACE_AFTER=N: after answering the Nth listing, a concurrent publication of the higher release 0.3.1 completes in both registries
+      # (its exact tags, :0 and :latest, all at another digest): the interleaving of release review R3 (Oct 22)
+      n=$(( $(cat "$REG/.lsn" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$REG/.lsn"; out=$(ls "$REG/$2")
+      if [ "${LS_RACE_AFTER:-}" = "$n" ]; then
+        for h in ghcr.io docker.io; do d="$REG/$h/fosterstack/cache"; mkdir -p "$d"; for x in 0.3.1 0.3.1-fips 0 latest; do echo "sha256:$(printf '8%.0s' $(seq 64))" > "$d/$x"; done; done
+      fi
+      printf '%s\n' "$out" ;;
   *) echo "crane: unexpected $1" >&2; exit 2 ;;
 esac''',
  "cosign": r'''#!/usr/bin/env bash
@@ -398,6 +405,21 @@ for tag in ("v0.3.0-rc1", "v10.20.30-rc7"):
 t, rc, so, se = float_run(tag, ["0.2.2"]); x = {y for _, y in tagset(t)}
 t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); L = [l for l in log(t) if l.startswith("crane push")]
 check(L and all(re.search(r" images/(production|fips) ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
+# ---- release review R3 (Oct 22): :0 and :latest were decided once from the first `crane ls`; a concurrent publication of a higher release between that
+# listing and the floating pushes was rolled back (0.3.1 published, then a resumed 0.3.0 moved :0/:latest back to 0.3.0's digest, and the digest read-back passed).
+# The highest version is now decided again right before the floating tags are pushed, and checked once more after them. The remaining window (a publication
+# that completes between that last listing and the push) is closed by the release job's concurrency group, asserted in bin/chain-release-wiring-test.sh.
+HIGHER = "sha256:" + "8" * 64
+def regtag(t, host, tag):
+    p = os.path.join(t, "reg", host, "fosterstack", "cache", tag)
+    return open(p).read().strip() if os.path.exists(p) else None
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "1"})
+check(rc == 0 and all(regtag(t, h, x) == HIGHER for h in ("ghcr.io", "docker.io") for x in ("0", "latest")) and ("ghcr.io", "latest") not in tagset(t) and ("docker.io", "0") not in tagset(t) and ("ghcr.io", "0.3") in tagset(t),
+      "R3 a higher release that appears after the first listing keeps :0 and :latest (neither is moved back to 0.3.0), in both registries; :0.3 still moves", "rc=%s 0=%s latest=%s pushed=%s %s" % (rc, regtag(t, "ghcr.io", "0"), regtag(t, "docker.io", "latest"), sorted(tagset(t)), first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "2"})
+check(rc != 0 and "higher" in se and ("meanwhile" in se or "concurrent" in se), "R3 a higher release that completes after the last listing but before the floating push is DETECTED after the push: the step fails naming it, so the older release does not report success while :0/:latest may point at it", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "9"}); got = tagset(t)
+check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "R3 no concurrent publication: unchanged, the highest release moves :0 and :latest", "rc=%s %s" % (rc, sorted(got)))
 t = tree(); import shutil as _sh; _sh.rmtree(os.path.join(t, "images/production")); open(os.path.join(t, "images/production"), "w").write("a tarball, not a layout directory")
 rc, so, se = run(t, "release-publish", creds=REG); check(rc != 0 and "production" in se and not pushes(t), "AC7 an image that is not an OCI layout directory (a tarball) is refused before any push, naming it", "rc=%s %s" % (rc, first(se)))
 # round 1 (Codex B R1): a signing run that leaves one of the four apks of the attested list missing is refused (no empty glob skips validation)
@@ -812,7 +834,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "387"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "390"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

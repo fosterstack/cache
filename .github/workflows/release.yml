@@ -390,6 +390,12 @@ jobs:
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [check, rebuild, sign]
+    # One publication at a time (release review R3, Oct 22): bin/release-publish.sh decides :X and :latest from the registry's tag list, so two
+    # release runs must not interleave. A queued run waits, never cancelled (GitHub keeps one pending run: a second queued tag run replaces the
+    # first pending one, which is then re-run by hand; releases are rare).
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     permissions:
       contents: write
       packages: write
