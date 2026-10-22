@@ -15,6 +15,7 @@ n=${UNIT_SHARDS:-4}; limit=${UNIT_SHARD_TIMEOUT:-1500}; runner=${UNIT_SHARD_RUNN
 case "$n" in ''|*[!0-9]*|0) echo "::error::UNIT_SHARDS must be a positive number, got '$n'" >&2; exit 1;; esac
 case "$limit" in ''|*[!0-9]*|0) echo "::error::UNIT_SHARD_TIMEOUT must be a positive number of seconds, got '$limit'" >&2; exit 1;; esac
 mkdir -p "$out" || exit 1
+out=$(mktemp -d "$out/shards.XXXXXX") || exit 1   # this run's files live in a fresh directory of their own
 python3 "$here/unit-shard.py" list > "$out/unit.manifest" 2> "$out/unit.manifest.err" \
   || { cat "$out/unit.manifest" "$out/unit.manifest.err" >&2; echo "::error::could not list the unit tests" >&2; exit 1; }
 pids=()

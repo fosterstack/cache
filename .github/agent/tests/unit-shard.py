@@ -14,6 +14,7 @@ shard imports every module (discovery is whole), so test_0000_arm_fs_guard.py st
 UNIT_SHARD_DIR overrides the directory (the tests of this script use a fixture directory); the default is the auditor's .github/agent/bin/tests.
 """
 import os
+import re
 import sys
 import unittest
 
@@ -54,6 +55,7 @@ class Result(unittest.TextTestResult):
     def __init__(self, *a, **k):
         super().__init__(*a, **k)
         self.lines, self._status = [], {}
+        self.groups = {}   # class name -> its selected test ids (set by main), for a skip raised by setUpClass / setUpModule
 
     def _mark(self, test, what):
         i = test.id()
@@ -71,7 +73,17 @@ class Result(unittest.TextTestResult):
         super().addUnexpectedSuccess(test); self._mark(test, "FAIL")
 
     def addSkip(self, test, reason):
-        super().addSkip(test, reason); self._mark(test, "SKIP")
+        super().addSkip(test, reason)
+        if isinstance(test, unittest.TestCase):
+            self._mark(test, "SKIP")
+            return
+        # a skip raised by setUpClass / setUpModule: unittest names the class or module and never starts the tests under it, so each
+        # of them gets its SKIP line here (else the sum check would see them as missing)
+        m = re.search(r"\((.+)\)$", test.id())
+        if m:
+            for cname, ids in self.groups.items():
+                if cname == m.group(1) or cname.startswith(m.group(1) + "."):
+                    self.lines.extend("SKIP " + i for i in ids)
 
     def addSubTest(self, test, subtest, err):
         super().addSubTest(test, subtest, err)
@@ -81,6 +93,21 @@ class Result(unittest.TextTestResult):
     def stopTest(self, test):
         super().stopTest(test)
         self.lines.append("%s %s" % (self._status.pop(test.id(), "PASS"), test.id()))
+
+
+def _run(runner, suite, res):
+    """TextTestRunner.run with our own result object (the runner would build a fresh one), same start/stop/summary behavior."""
+    import time
+    unittest.registerResult(res)
+    res.failfast, res.buffer = runner.failfast, runner.buffer
+    t0 = time.perf_counter()
+    try:
+        suite(res)
+    finally:
+        unittest.removeResult(res)
+    res.printErrors()
+    runner.stream.write("Ran %d tests in %.3fs\n" % (res.testsRun, time.perf_counter() - t0))
+    return res
 
 
 def main(argv):
@@ -97,7 +124,13 @@ def main(argv):
         if not mine:
             refuse("shard %d/%d selects no test" % (i, n))
         suite = unittest.TestSuite(mine)
-        res = unittest.TextTestRunner(stream=sys.stderr, verbosity=1, resultclass=Result).run(suite)
+        runner = unittest.TextTestRunner(stream=sys.stderr, verbosity=1, resultclass=Result)
+        groups = {}
+        for t in mine:
+            groups.setdefault(cls(t), []).append(t.id())
+        res = runner._makeResult()
+        res.groups = groups
+        res = _run(runner, suite, res)
         for line in res.lines:
             print(line)
         passed = sum(1 for x in res.lines if x.startswith("PASS "))

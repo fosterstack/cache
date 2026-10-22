@@ -34,6 +34,7 @@ export COVERAGE_RCFILE="$W/rc" COVERAGE_PROCESS_START="$W/rc"
 # together completed exactly the whole list (the manifest is a dry listing of the file), each unit once, by name, and none failed, and coverage-shard-test.sh proves that
 # partition and that check first.
 PINS_SHARDS=4
+unset UNIT_SHARD_DIR UNIT_SHARD_RUNNER UNIT_SHARDS UNIT_SHARD_TIMEOUT   # the unit shards run the real suite, under coverage, with the gate's own settings, never ones the environment left for a self-test
 unset PINS_DRY PINS_SHARD   # every launch below is a real run (the self-test and the dry listing set PINS_DRY themselves), never one the environment left dry
 bash .github/agent/tests/coverage-shard-test.sh > "$W/shardtest.log" 2>&1 \
   || { tail -25 "$W/shardtest.log" >&2; echo "::error::the shard partition test failed" >&2; exit 1; }

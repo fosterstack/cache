@@ -247,6 +247,24 @@ rm -rf "$w/ur"; ushs_run UNIT_SHARDS=0; [ $? -ne 0 ] && ok "unit-shards: UNIT_SH
 rm -rf "$w/ur"; ushs_run UNIT_SHARD_TIMEOUT=abc; [ $? -ne 0 ] && ok "unit-shards: a non-numeric timeout is refused" || no "a bad timeout passed"
 cp -r "$fx" "$w/fxbad"; printf 'import does_not_exist_anywhere\n' > "$w/fxbad/test_c.py"
 rm -rf "$w/ur"; UNIT_SHARD_DIR="$w/fxbad" UNIT_SHARD_RUNNER=python3 UNIT_SHARDS=2 bash "$ushs" "$w/ur" > "$w/ur.out" 2>&1; [ $? -ne 0 ] && ok "unit-shards: a test module that fails to import fails the run (it would otherwise vanish from the list)" || no "an unimportable module passed"
+# a skip raised by setUpClass never starts the class's tests: each must still get its SKIP line, or the sum check sees them as missing
+mkdir -p "$w/fxskip"
+cat > "$w/fxskip/test_s.py" <<'PY'
+import unittest
+class S1(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls): raise unittest.SkipTest("class fixture skip")
+    def test_a(self): pass
+    def test_b(self): pass
+class S2(unittest.TestCase):
+    def test_c(self): pass
+PY
+rm -rf "$w/ur"; UNIT_SHARD_DIR="$w/fxskip" UNIT_SHARD_RUNNER=python3 UNIT_SHARDS=2 bash "$ushs" "$w/ur" > "$w/ur.out" 2>&1; sk=$?
+{ [ "$sk" -eq 0 ] && grep -q '^unit-shard-sum: ok: 2 shards finished all 3 tests' "$w/ur.out"; } && ok "unit-shards: tests skipped by a setUpClass SkipTest are accounted for as SKIP, and the run passes" || no "setUpClass skip: rc=$sk $(tail -3 "$w/ur.out")"
+# the gate boundary: the self-test overrides must not reach the real unit shards, and the helpers are measured or excluded with a reason
+grep -q '^unset UNIT_SHARD_DIR UNIT_SHARD_RUNNER UNIT_SHARDS UNIT_SHARD_TIMEOUT' "$here/coverage-gate.sh" && ok "coverage-gate.sh clears the four UNIT_SHARD* overrides before it launches the unit shards" || no "coverage-gate.sh does not clear the UNIT_SHARD* overrides"
+ex="$here/../coverage-exclusions.txt"
+{ grep -q '^\.github/agent/tests/unit-shard\.py  ' "$ex" && grep -q '^\.github/agent/tests/unit-shard-sum\.py  ' "$ex"; } && ok "the two unit-shard helpers are excluded from coverage with a reason" || no "the unit-shard helpers are not in coverage-exclusions.txt"
 # the real suite: the listing is read from the files, partitions by class into non-empty shards, and the gate calls the shard script
 UNIT_SHARD_DIR="" python3 "$ush" list > "$w/real.man" 2>"$w/real.err"; rrc=$?
 rt=$(grep -c '^TEST ' "$w/real.man")
