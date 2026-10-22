@@ -67,7 +67,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "dd12ab8422f36a90c75fc454d42fd1ef39c53614fabb8ff9eef22d0adeaa28d4",
+      "sha256": "6bbc34ef5a13ddf74491a87c55b4a554a0ba00c29cdb754abb2120069b9245b2",
       "tools": [
         "at",
         "curl",
@@ -1245,13 +1245,12 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "b5a90d42a2ec4e4f57574e2fa2b4aa6b784d0db59f1d47d674e0077fe7452a54",
+      "sha256": "2cb48402757c20362f4b6c3efa4dbbe5332b66e25e6c01c53972cf2206360119",
       "tools": [
         "at",
         "awk",
         "bash",
         "command",
-        "curl",
         "docker",
         "env",
         "exec",
@@ -1262,7 +1261,8 @@
         "sed",
         "sh",
         "source",
-        "tar"
+        "tar",
+        "wget"
       ],
       "runs": [
         "bin/analyze-egress-trace-test.sh",
@@ -1430,9 +1430,10 @@
     },
     {
       "path": "bin/install-kind.sh",
-      "sha256": "d950a110760079bc22f9130294e5d62c27a923268cc25713dda8deed93269ff6",
+      "sha256": "f4e7f3e861fdcb46086f6118d2ef3dcdc8934d0442c721f22c69cd0f2c30fc18",
       "tools": [
         "curl",
+        "docker",
         "kubectl",
         "node",
         "trap"

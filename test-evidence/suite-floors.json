@@ -8,7 +8,7 @@
  "chain-bind-test.sh": 97,
  "chain-build-admit-test.sh": 135,
  "chain-build-wiring-test.sh": 814,
- "chain-check-scripts-test.sh": 309,
+ "chain-check-scripts-test.sh": 310,
  "chain-check-wiring-test.sh": 269,
  "chain-hostile-test.sh": 253,
  "chain-install-crane-test.sh": 7,
