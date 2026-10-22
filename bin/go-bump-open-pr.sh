@@ -123,20 +123,20 @@ A minor bump can change toolchain behavior (and the FIPS validated-module snapsh
 The required \`scan\` gate must pass on this PR before merge. It is opened as a draft proposal: a minor jump is proposed, never auto-applied.
 EOF
 )"
-url="$(gh pr create --draft --base main --head "$branch" \
+pr_link="$(gh pr create --draft --base main --head "$branch" \
   --title "chore(go): bump toolchain ${CURRENT} -> ${LATEST}" \
   --body "$body" --label dependencies
 )" || exit $?
-echo "$url"
+echo "$pr_link"
 # The branch name is mutable: the pull request must be at the commit that was verified, or it is closed (the verification covers a commit, not a name).
-head_now="$(gh pr view "$url" --json headRefOid -q .headRefOid)" || head_now=""
+head_now="$(gh pr view "$pr_link" --json headRefOid -q .headRefOid)" || head_now=""
 if [ -z "${expected_head:-}" ] || [ "$head_now" != "$expected_head" ]; then
-  echo "::error::${url} is at '${head_now}', not at the verified commit '${expected_head:-}'; closing it" >&2
+  echo "::error::${pr_link} is at '${head_now}', not at the verified commit '${expected_head:-}'; closing it" >&2
   closed=0
   for _ in 1 2 3; do
-    gh pr close "$url" --comment "closed by go-bump-open-pr.sh: the branch moved after its commit was verified" >&2 && { closed=1; break; }
+    gh pr close "$pr_link" --comment "closed by go-bump-open-pr.sh: the branch moved after its commit was verified" >&2 && { closed=1; break; }
     sleep "${GO_BUMP_CLOSE_WAIT:-5}"
   done
-  [ "$closed" = 1 ] || echo "::error::could not close ${url}; it is still open at an unverified commit; close it by hand" >&2
+  [ "$closed" = 1 ] || echo "::error::could not close ${pr_link}; it is still open at an unverified commit; close it by hand" >&2
   exit 1
 fi
