@@ -943,5 +943,33 @@ fi
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
+# REQ-SUP-001-AC27: Go's own toolchain release skips the 7-day AGE hold only; the advisory audit still covers it (the Go vulnerability database files the standard
+# library under the package stdlib): the item go is covered, queried as Go/stdlib at its version, and a stdlib record affecting the pin is a hit.
+CASE="AC27: the audit covers tool:go (queried as the Go package stdlib) and an affected stdlib record is a hit, the fixed one is not"
+check python3 - "$here/../supply-chain/pin-audit.py" <<'PY'
+import importlib.util, sys
+sys.path.insert(0, sys.argv[1].rsplit("/", 1)[0])
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+net = pa.LiveNet.__new__(pa.LiveNet)
+it = pa.inv.Item("tool", "go", "1.27.2")
+assert net.covered(it) is True
+assert net._query(it, "1.27.2") == {"package": {"name": "stdlib", "ecosystem": "Go"}, "version": "1.27.2"}
+rec = {"affected": [{"package": {"name": "stdlib", "ecosystem": "Go"}, "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.27.3"}]}]}]}
+assert pa.LiveNet._osv_says(rec, "stdlib", "1.27.2", False) is True
+assert pa.LiveNet._osv_says(rec, "stdlib", "1.27.3", False) is False
+seen = []
+def post(q):   # the request that reaches OSV: a record exists only under the go command's own package toolchain
+    seen.append(q["package"]["name"])
+    return [{"id": "GO-T", "affected": [{"package": {"name": "toolchain", "ecosystem": "Go"}, "ranges": [{"type": "SEMVER", "events": [{"introduced": "0"}, {"fixed": "1.27.3"}]}]}]}] if q["package"]["name"] == "toolchain" else []
+net._osv_post = post
+net._version_of = lambda i: "1.27.2"
+net._gh_json = lambda *a, **k: []
+gh, osv = net.lists(it)
+assert seen == ["stdlib", "toolchain"], seen   # the go command's records are filed under toolchain
+assert [(r["id"], r["affected"]) for r in osv] == [("GO-T", True)], osv
+net._version_of = lambda i: "1.27.3"
+assert [r["affected"] for r in net.lists(it)[1]] == [False]
+PY
+
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
