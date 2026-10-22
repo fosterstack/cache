@@ -97,10 +97,13 @@ merge-blocking check is set by the repository ruleset, which is listed in
 [.github/policy/required-checks.json](.github/policy/required-checks.json).
 
 Separately, before anything is published, the release's Check stage binds each
-built candidate image to Build's recorded digest, starts it (amd64, and arm64 on
-a hosted arm64 runner), serves traffic from it and reads its `/statusz`: the
-`-fips` image must report the validated-module line and the standard image must
-report it off. This tests the images as built, before publication.
+built candidate image to Build's recorded digest. On amd64 it starts the
+production and `-fips` images and reads their `/statusz`: the standard image must
+report the validated module off and the `-fips` image must report the
+validated-module line. The artifact checks start both images and serve cache
+traffic on amd64 and on a hosted arm64 runner; on arm64 the `/statusz` posture
+is read from the binaries, not from the running images. This tests the images as
+built, before publication.
 
 A `golangci-lint` `depguard` allowlist covers the static side: only
 in-boundary crypto imports are permitted, and third-party cryptographic
