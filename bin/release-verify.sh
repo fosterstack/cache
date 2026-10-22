@@ -11,6 +11,8 @@ python3 bin/chain-verify.py bind-items --policy policy.json --record witness-bui
 python3 bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/admission-baseline.json --product admission-baseline.json
 python3 bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json
 python3 bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json
+# the owner's rule of Oct 21 2026: Rebuild's apks are compared with Build's in the compare job (no key, no token); this step reads only that job's small result file and accepts a pass for Build's attested apk digests
+python3 bin/chain-verify.py apk-compare --file apk-compare/apk-compare.json --digests witness-build/digests.json
 python3 bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check
 # ruling G: the govulncheck stream release-sign hands the evidence step is a product of Check's verified scanners record (bound under Check's identity, for Build's digests)
 python3 bin/chain-verify.py bind-check --policy policy.json --record witness-check/witness-scanners/scanners-collection.json --digests witness-build/digests.json --file check-results/govulncheck.json --product check-results/govulncheck.json
