@@ -79,6 +79,7 @@ ALLOW_PATTERNS=(
   '^bin/vex-forms-test\.sh$'
   '^bin/vex-index\.py$'
   '^bin/vex-index-test\.sh$'
+  '^bin/release-layout\.py$'
   '^bin/fips-image-posture\.py$'
   '^bin/branch-sweep\.py$'
   '^bin/branch_sweep_test\.py$'
@@ -214,6 +215,9 @@ ALLOW_PATTERNS=(
   # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
   '^build/locks/apko(-fips)?\.base\.lock\.json$'
   '^build/locks/melange\.lock$'
+  # The host tools (REQ-REFRESH-001-AC35): the data file naming the packages the Build jobs run on the runner, and the lock of their resolution.
+  '^build/host-tools\.yaml$'
+  '^build/locks/host-tools\.lock$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
   '^build/locks/archive-keys\.sha256$'
   '^build/locks/archive-index\.sha256$'
