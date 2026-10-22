@@ -108,8 +108,9 @@ different day. Scanners outside the release gate, such as Trivy, are useful
 cross-checks.
 
 Run without `--vex` to see raw findings including the ones we have
-publicly dispositioned — the difference between the two runs is exactly
-the set of published VEX statements, which is how you audit them.
+publicly dispositioned — the difference between the two runs is the set of
+findings suppressed by the published VEX statements that apply, which is how
+you audit them.
 
 ## Marketing claim, with the receipt
 
