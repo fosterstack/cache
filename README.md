@@ -100,9 +100,9 @@ Actions history for the CI claims, the commands in
 [`RELEASING.md`](RELEASING.md) for signatures and provenance. What those
 commands prove, and what they do not, is stated in RELEASING.md itself.
 
-Full core (eviction, size limits, metrics) is free forever under MIT — see
-[`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a documented CVE
-SLA, and compliance support on top of the same open core; nothing is
+Full core (eviction, size limits, metrics) is free under MIT — see
+[`LICENSE`](LICENSE). Paid tiers add SSO, HA/replication, a 48-hour CVE
+response target, and compliance support on top of the same open core; nothing is
 withheld from the free tier for security.
 
 The security evidence itself is public and free: SBOMs, SLSA provenance,
@@ -318,7 +318,7 @@ before implementation. CI fails if the matrix drifts from its sources.
   `lsof -nP -a -p <pid> -i` against a running server shows one listening
   socket and accepted inbound connections, nothing else.
 - See [`SECURITY.md`](SECURITY.md) for the vulnerability disclosure process
-  and patch SLA once published.
+  and the 48-hour response target.
 
 ## License
 
