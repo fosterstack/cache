@@ -98,11 +98,14 @@ jobs:
           else
             cat "$RUNNER_TEMP/prune.err" >&2; echo "::error::could not look up the scratch package, so it could not be pruned"; exit 1
           fi
-          n=0; failed=0
+          n=0; kept=0; failed=0
           for id in ${ids}; do
-            if gh api -X DELETE "${pkg}/versions/${id}" >/dev/null 2>"$RUNNER_TEMP/prune.err"; then n=$((n + 1)); else cat "$RUNNER_TEMP/prune.err" >&2; failed=$((failed + 1)); fi
+            if gh api -X DELETE "${pkg}/versions/${id}" >/dev/null 2>"$RUNNER_TEMP/prune.err"; then n=$((n + 1))
+            # GitHub never deletes a public package version with more than 5000 downloads (only its support can); that exact refusal is kept and named, any other failure still fails the job.
+            elif grep -q "Publicly visible package versions with more than 5000 downloads cannot be deleted" "$RUNNER_TEMP/prune.err"; then kept=$((kept + 1)); echo "::warning::scratch version ${id} kept: GitHub does not delete a public package version with more than 5000 downloads"
+            else cat "$RUNNER_TEMP/prune.err" >&2; failed=$((failed + 1)); fi
           done
-          echo "pruned ${n} scratch version(s) older than 14 days; ${failed} could not be deleted" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "pruned ${n} scratch version(s) older than 14 days; ${kept} kept (public, over 5000 downloads, GitHub will not delete them); ${failed} could not be deleted" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "${failed}" -eq 0 ] || { echo "::error::${failed} scratch version(s) older than 14 days could not be deleted"; exit 1; }
       # Each candidate (a buildx OCI archive of one index, provenance and SBOM off) is unpacked to a layout, gets one attestation child per
       # platform carrying .vex/fosterstack-cache.openvex.json (bin/vex-index.py, REQ-REL-010-AC1/AC3: verify-layout checks the children
