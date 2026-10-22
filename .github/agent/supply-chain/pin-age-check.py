@@ -1384,6 +1384,7 @@ _GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]
 _GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die "download failed: go toolchain"[ \t]*$')
 _GO_VERIFY = ["verify() { # file", "  local got", "  got=$(sha256sum \"$1\" | cut -d' ' -f1)",
               '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"', "}"]
+_GO_EXTRACT = re.compile(r'^[ \t]*mkdir -p "\$tmp/x" && tar -xzf "\$tmp/go\.tgz" -C "\$tmp/x" \|\| pipeline_fail "extract failed for go"[ \t]*$')
 _GO_FAIL = ['pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }']
 _SUM_ROW = re.compile(r"^[ \t]*[A-Za-z0-9_.:|-]+\) SUM=[0-9a-f]{64} ;;[ \t]*$")
 _SUM_MODULE = re.compile(r'^[ \t]*govulncheck:\*\) SUM="" ;;[ \t]*(?:#.*)?$')   # a module pinned by go.sum: its own key, empty sum
@@ -1423,17 +1424,15 @@ def go_exemption(root, head):
         starts = [i for i, l in enumerate(lines) if re.match(r"^" + name + r"\(\)", l)]
         if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(want)]] != want:
             return None
-    # GO_VER and gofile are written once, by the reviewed lines, anywhere in any form; no other non-comment line may name a Go archive, go.dev or golang
-    # (a mirror URL held in a variable, a second downloader), and every downloader counts
-    for name in ("GO_VER", "gofile"):
-        if len(re.findall(r"\b" + name + r"[ \t]*\+?=|\b(?:read|printf)\b[^\n;|&]*\b" + name + r"\b|\b(?:declare|typeset|export|readonly|local)\b[^\n;|&]*\b" + name + r"\b", "\n".join(joined))) != 1:
-            return None
+    # the Go names are only READ outside the reviewed lines: with the read forms (${GO_VER} $GO_VER ${gofile} "$gofile") taken out, no non-comment line may still hold the
+    # bare words GO_VER or gofile (a write in ANY form: assignment, for/select, read/mapfile, declare), go.tgz outside the reviewed verify/extract lines, go.dev,
+    # or a Go archive name (go<N>.<N>): so a second transfer by any command (scp, rsync, a URL variable, another downloader) cannot name the Go archive
     for i, l in enumerate(joined):
-        if i != fetch[0] and not l.lstrip().startswith("#") and not _GO_FILE.match(l) and not _GO_VER_LINE.match(l) \
-                and re.search(r"go\.dev|go\$\{|\bgo[0-9]+\.[0-9]|\bgofile\b|\bGO_VER\b", l) and re.search(r"https?://|ftp://|\b(?:curl|wget|aria2c|axel|fetch)\b", l):
+        if i == fetch[0] or l.lstrip().startswith("#") or _GO_FILE.match(l) or _GO_VER_LINE.match(l) or l.strip() == 'verify "$tmp/go.tgz"' or _GO_EXTRACT.match(l):
+            continue
+        rest = re.sub(r"\$\{(?:GO_VER|gofile)\}|\$(?:GO_VER|gofile)\b", "", l)
+        if re.search(r"go\.tgz|go\.dev|\bgo[0-9]+\.[0-9]", rest) or re.search(r"\b(?:GO_VER|gofile)\b", re.sub(r'"[^"]*"', '""', rest)):   # prose in a message may name them; a write is outside quotes
             return None
-    if any(re.search(r"\b(?:aria2c|axel|lftpget|fetch)\b", l) and re.search(r"https?://", l) for l in joined):
-        return None
     # every SUM assignment, anywhere on any line, is a pinned row: a literal pattern (no glob), `) SUM=<64 hex> ;;`; any other mention of SUM must only read it
     for l in joined:
         rest = re.sub(r"\$\{SUM\}|\$SUM\b", "", l)

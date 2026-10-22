@@ -4142,6 +4142,10 @@ gosc() {   # gosc VER [TRIVY] [mutation: nopin|nohost|noverify|twohosts|arm64onl
   [ "$mut" != gofile2 ] || printf '%s\n' 'if [ "$arch" = amd64 ]; then gofile=go1.27.1.linux-amd64.tar.gz; fi'
   [ "$mut" != urlvar ] || printf '%s\n' 'mirror_url="https://mirror.example.org/go1.27.3.linux-amd64.tar.gz"' 'curl -fsSL -o "$tmp/other.tgz" "$mirror_url"'
   [ "$mut" != aria ] || printf '%s\n' 'aria2c -d "$tmp" https://mirror.example.org/go1.27.3.linux-amd64.tar.gz'
+  [ "$mut" != forloop ] || printf '%s\n' 'for GO_VER in 1.27.2; do :; done'
+  [ "$mut" != mapfile ] || printf '%s\n' "mapfile -t gofile <<< 'go1.27.2.linux-amd64.tar.gz'"
+  [ "$mut" != scp ] || printf '%s\n' 'scp mirror.example.org:/releases/go1.27.3.linux-amd64.tar.gz "$tmp/go.tgz"'
+  [ "$mut" != tgzvar ] || printf '%s\n' 'mirror_url="https://mirror.example.org/go.tgz"' 'curl -fsSL -o "$tmp/other.tgz" "$mirror_url"'
   [ "$mut" != fn2 ] || printf '%s\n' 'function verify { :; }'
   [ "$mut" != ifsum ] || printf '%s\n' 'if [ "$TOOL" = go ]; then SUM="$GO_SHA256"; fi'
   printf '%s\n' 'case "$TOOL" in' '  go)'
@@ -4176,8 +4180,8 @@ gocase gobothmoved "$GOB" "$(gosc 1.27.3 0.75.0)"
 runck gobothmoved '{"times": {}}'
 CASE="go and trivy moved together: trivy still FAILS (exit 1), go is listed as exempt, not as failing"
 check test "$rc" -eq 1; check grep -q 'FAIL tool:trivy@0.75.0' "$work/gobothmoved.out"; check bash -c "! grep -q 'FAIL tool:go@' '$work/gobothmoved.out'"
-for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 fn2 failoff caseglob ifsum multiline gover2 gofile2 urlvar aria; do
-  if [ "$mut" = literal2 ] || [ "$mut" = multiline ] || [ "$mut" = urlvar ] || [ "$mut" = aria ]; then gocase "gomut-$mut" "$(gosc 1.27.2 0.74.0 $mut)" "$(gosc 1.27.3 0.74.0 $mut)"; else gocase "gomut-$mut" "$GOB" "$(gosc 1.27.3 0.74.0 $mut)"; fi
+for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 fn2 failoff caseglob ifsum multiline gover2 gofile2 urlvar aria forloop mapfile scp tgzvar; do
+  if [ "$mut" = literal2 ] || [ "$mut" = multiline ] || [ "$mut" = urlvar ] || [ "$mut" = aria ] || [ "$mut" = scp ] || [ "$mut" = tgzvar ]; then gocase "gomut-$mut" "$(gosc 1.27.2 0.74.0 $mut)" "$(gosc 1.27.3 0.74.0 $mut)"; else gocase "gomut-$mut" "$GOB" "$(gosc 1.27.3 0.74.0 $mut)"; fi
   runck "gomut-$mut" '{"times": {}}'
   case $mut in
     nohost) CASE="go downloaded from a host that is not go.dev keeps the 7-day hold: FAILS (exit 1)" ;;
@@ -4197,6 +4201,10 @@ for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 
     gofile2) CASE="go with an inline gofile reassignment keeps the 7-day hold: FAILS (exit 1)" ;;
     urlvar) CASE="go with a second Go download through a URL held in a variable (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
     aria) CASE="go with a second Go download through another downloader (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    forloop) CASE="go with a for GO_VER in ... binding keeps the 7-day hold: FAILS (exit 1)" ;;
+    mapfile) CASE="go with a mapfile write of gofile keeps the 7-day hold: FAILS (exit 1)" ;;
+    scp) CASE="go with an scp transfer of a Go archive (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    tgzvar) CASE="go with a second download of a go.tgz URL held in a variable (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
   esac
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
