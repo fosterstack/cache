@@ -92,13 +92,15 @@ cryptography — ours or a dependency's — fails that commit's `fips140-only`
 check.
 
 Two limits of that claim, stated so it cannot be over-read: the check proves
-the paths the test suite executes, built in FIPS mode. The released
-`fscache-fips` binary is separately run by the release's artifact acceptance,
-which reads its `/statusz` and requires the validated-module line; the release
-also starts each built candidate image by digest before it is published (amd64, and arm64 on a hosted arm64 runner)
-and serves traffic from it, but no test yet reads the `/statusz` posture of
-those running images; and its status as a merge-blocking check is set by the repository ruleset,
-which is listed in [.github/policy/required-checks.json](.github/policy/required-checks.json).
+the paths the test suite executes, built in FIPS mode; and its status as a
+merge-blocking check is set by the repository ruleset, which is listed in
+[.github/policy/required-checks.json](.github/policy/required-checks.json).
+
+Separately, before anything is published, the release's Check stage binds each
+built candidate image to Build's recorded digest, starts it (amd64, and arm64 on
+a hosted arm64 runner), serves traffic from it and reads its `/statusz`: the
+`-fips` image must report the validated-module line and the standard image must
+report it off. This tests the images as built, before publication.
 
 A `golangci-lint` `depguard` allowlist covers the static side: only
 in-boundary crypto imports are permitted, and third-party cryptographic
