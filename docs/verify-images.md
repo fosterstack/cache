@@ -255,8 +255,8 @@ not.
 
 ### The images have no shell
 
-Production and `-fips` contain the `fscache` binary and nothing else — no
-shell, no package manager, no coreutils. `docker exec ... sh` into them
+Production and `-fips` contain the `fscache` binary, the base file layout, CA
+certificates and timezone data — no shell, no package manager, no coreutils. `docker exec ... sh` into them
 fails, by design. What that buys, stated precisely: no shell and no package
 manager means an attacker who gains code execution has no on-image tooling
 to work with — no `sh` for a reverse shell one-liner, nothing to download
