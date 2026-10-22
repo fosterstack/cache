@@ -53,6 +53,10 @@ jobs:
         run: bash bin/install-scanner.sh go
       - name: install melange (pinned by checksum)
         run: bash bin/install-build-tools.sh melange
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: pull the archive by its committed digest
+        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
       - name: apk under Witness
         if: ${{ inputs.mode == 'release' }}
         env:
@@ -95,6 +99,10 @@ jobs:
         run: bash bin/install-scanner.sh witness
       - name: install apko (pinned by checksum)
         run: bash bin/install-build-tools.sh apko
+      - name: install crane (pinned by checksum)
+        run: bash bin/install-scanner.sh crane
+      - name: pull the archive by its committed digest
+        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: apk-ubuntu-24.04

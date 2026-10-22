@@ -4,23 +4,18 @@
 ONE schema, written here and validated by the driver on load. Every key the driver reads
 is produced, or set explicitly to null with a recorded reason in `scanner_status`.
 
-Round 12 — a scanner that inventories ZERO packages DID NOT RUN. The producer reads each
-scanner's OWN package inventory (grype `artifacts`, trivy `Results[].Packages`, osv-scanner
-`results[].packages`); an empty inventory is `ran: false, reason: "0 packages inventoried"`,
-never a clean pass because a file exists. The three image scanners must agree on the OS
-package count within a tolerance, or the outliers are recorded "did not run (inventory
-disagreement)". Each scanner's package count and database build date go into the manifest
-(and thence the report header), and one line per scanner is printed to the job log:
-    grype 0.118.0 db=2026-09-22 packages=18 findings=0
-
-Scanning is off a CONTAINER ARCHIVE, not a daemon ref: the candidate tag lives only in the
-runner's daemon, so `osv-scanner scan image <ref>` pulled from a registry and found nothing,
-and grype catalogued nothing off the daemon-loaded distroless image. We convert the OCI
-archive once to a docker-save tar with skopeo (no daemon) and point all three scanners at it.
+The auditor runs NO scanner of its own (0600 option A, scanner-panel rules): the four panel
+scanners' results are read from the rescan's verdict.json (`--panel-dir`), and a scanner that
+did not run is recorded "did not run" with its reason, never clean. What this program still
+produces itself: the candidate's SBOM carriers and base OS (syft), govulncheck over the source,
+the endoflife.date lookups, and the candidate digest, all taken off a CONTAINER ARCHIVE
+converted once with skopeo (no daemon).
 """
 import hashlib, json, os, re, subprocess, sys, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
+from auditorlib import parsers as P
+from auditorlib.parsers import PANEL_SCANNERS as PARSERS_PANEL_SCANNERS
 
 TAG = "ghcr.io/fosterstack/cache:cand-production"
 DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
@@ -54,60 +49,50 @@ def _module(source_dir):
 
 # ---- per-scanner inventory readers: (total_packages, os_packages, db_date) ----
 
-# An OS-layer package is any distro package manager's package — deb (Debian/Ubuntu), apk
-# (Alpine), or rpm (RHEL/Fedora/SUSE). Counting only "deb" made grype report 0 OS packages on
-# an Alpine image while trivy/snyk saw the apk layer, sinking the quorum on every Alpine base.
-_OS_PKG_TYPES = ("deb", "apk", "rpm")
-_OS_PURL_PREFIXES = ("pkg:deb", "pkg:apk", "pkg:rpm")
-_OS_OSV_ECOSYSTEMS = ("debian", "ubuntu", "alpine", "rhel", "red hat", "rocky", "almalinux", "suse", "opensuse")
+PANEL_SCANNERS = PARSERS_PANEL_SCANNERS
 
 
-def _is_os_pkg(a):
-    """True if a grype/syft artifact is an OS-layer package (deb | apk | rpm), by type or purl."""
-    t = (a.get("type") or "").lower()
-    purl = str(a.get("purl") or "")
-    return t in _OS_PKG_TYPES or purl.startswith(_OS_PURL_PREFIXES)
+def panel_inventory(verdict_path):
+    """(scanner_reports, scanner_status) for the four panel scanners, from a STRICTLY validated verdict (ParseError
+    otherwise). A scanner RAN only if, on every image the rule expects it on (Google: amd64 only), it is listed as ran
+    WITH a package count above zero; an image where it is listed as did-not-run, not listed at all, or has no count
+    makes it 'did not run', named with the image: never clean. The report is the verdict path for a scanner that ran,
+    null for one that did not. The quorum (three scanners per image) is the panel's own decision, not recomputed."""
+    d = P.validate_panel_verdict(P.load_panel_verdict(verdict_path))
+    imgs = d["images"]
+    reports, status = {}, {}
+    for s in PANEL_SCANNERS:
+        want = sorted(i for i in imgs if P.panel_expected(s, i))
+        good = [i for i in want if s in imgs[i]["ran"]]          # the validator guarantees a positive integer count for each
+        missed = [i for i in want if i not in good]
+        ok = bool(want) and not missed
+        reason = "ok" if ok else ("did not run on: %s" % ", ".join(missed) if missed else "no image reported this scanner")
+        status[s] = {"ran": ok, "scan_ok": ok, "quorum_ok": ok, "version": None, "reason": reason,
+                     "images_ran": len(good), "images_expected": len(want),
+                     "package_count": sum(imgs[i]["counts"][s] for i in good)}
+        reports[s] = verdict_path if ok else None
+    return reports, status
 
 
-def _inv_grype(path):
-    # grype 0.118.0 `-o json` emits `matches`, not a full package catalogue, so the package
-    # inventory is the distinct set of matched artifacts (the vulnerable packages). A distro
-    # image with zero matched packages is treated as "did not inventory" (the distroless
-    # status.d case), which is exactly the silent-empty scan Round 12 is guarding against.
-    d = json.load(open(path))
-    matches = d.get("matches") or []
-    seen = set(); osseen = set()
-    for mt in matches:
-        a = mt.get("artifact") or {}
-        key = (a.get("name"), a.get("version"), a.get("type"))
-        seen.add(key)
-        if _is_os_pkg(a):
-            osseen.add(key)
-    dbfrom = ((d.get("descriptor") or {}).get("db") or {}).get("status", {}).get("from", "") or ""
-    m = DATE_RE.search(dbfrom)
-    return len(seen), len(osseen), (m.group(1) if m else None), len(matches)
-
-
-def _inv_trivy(path):
-    d = json.load(open(path))
-    res = d.get("Results") or []
-    total = sum(len(r.get("Packages") or []) for r in res)
-    osp = sum(len(r.get("Packages") or []) for r in res if r.get("Class") == "os-pkgs")
-    findings = sum(len(r.get("Vulnerabilities") or []) for r in res)
-    return total, osp, None, findings
-
-
-def _inv_osv(path):
-    d = json.load(open(path))
-    total = 0; osp = 0; findings = 0
-    for r in d.get("results") or []:
-        for p in r.get("packages") or []:
-            total += 1
-            eco = ((p.get("package") or {}).get("ecosystem") or "").lower()
-            if any(x in eco for x in _OS_OSV_ECOSYSTEMS):
-                osp += 1
-            findings += len(p.get("vulnerabilities") or [])
-    return total, osp, None, findings
+def panel_block(panel_dir):
+    """The manifest's 'panel' block. A missing directory, or one without verdict.json, records all four panel scanners
+    'did not run' with that reason: the panel's audits cannot run, the day is incomplete, and nothing is reported clean
+    because a file is missing."""
+    vp = os.path.join(panel_dir, "verdict.json") if panel_dir else None
+    if vp and os.path.exists(vp) and os.path.getsize(vp) > 0:
+        try:
+            reports, status = panel_inventory(vp)
+            d = P.load_panel_verdict(vp)             # already validated by panel_inventory
+            return {"verdict": vp, "scanner_reports": reports, "scanner_status": status,
+                    "not_counted": d["not_counted"], "scanner_failures": d["scanner_failures"]}
+        except (ValueError, OSError, AttributeError, TypeError, KeyError) as e:
+            why = "panel-evidence verdict.json is unreadable: %s" % e
+    else:
+        why = "panel-evidence has no verdict.json" if panel_dir else "no panel-evidence directory was given"
+    return {"verdict": None, "not_counted": None, "scanner_failures": None,       # unknown, so the day can never be called complete
+            "scanner_reports": {s: None for s in PANEL_SCANNERS},
+            "scanner_status": {s: {"ran": False, "scan_ok": False, "quorum_ok": False, "version": None, "reason": why,
+                                   "images_ran": 0, "images_expected": 0, "package_count": 0} for s in PANEL_SCANNERS}}
 
 
 def _base_os(path):
@@ -116,28 +101,15 @@ def _base_os(path):
     cycle. None if syft did not report a distro."""
     try:
         dist = (json.load(open(path)).get("distro") or {})
-    except Exception:
+        did = (dist.get("id") or "").strip().lower()
+        ver = (dist.get("versionID") or "").strip()
+    except Exception:                          # unreadable, or not an SBOM-shaped document
         return None
-    did = (dist.get("id") or "").strip().lower()
-    ver = (dist.get("versionID") or "").strip()
     if did and ver:
         return "%s %s" % (did, ver)
     return did or None
 
 
-def _inv_syft(path):
-    """syft is grype's own cataloguer; unlike grype's match-JSON it emits the FULL package
-    inventory, including a distroless image's /var/lib/dpkg/status.d packages (R12 (b))."""
-    d = json.load(open(path)); arts = d.get("artifacts") or []
-    total = len(arts); osp = sum(1 for a in arts if _is_os_pkg(a))
-    return total, osp
-
-
-# ONLY the "contains" relationship is a genuine carrier signal — the parent artifact BUNDLES the
-# child (e.g. a binary that embeds a library). syft's "dependency-of" links ordinary,
-# independently-upgradable packages (apt deps, Go stdlib) and is NOT carrying — including it
-# inverted every real relationship (dpkg "carried by" zlib1g); "ownership-by-file-overlap" is
-# likewise not embedding. Both are excluded (Sonnet round-1 blocker 2).
 _CARRY_RELS = {"contains": "bundled"}
 
 
@@ -150,14 +122,14 @@ def _carriers(path):
     authoritative carrier analysis."""
     try:
         d = json.load(open(path))
-    except Exception:
+        by_id = {a.get("id"): a for a in (d.get("artifacts") or []) if a.get("id")}
+        rels = list(d.get("artifactRelationships") or [])
+        rels = [r for r in rels if r.get("type") in _CARRY_RELS]
+    except (OSError, ValueError, AttributeError, TypeError):           # unreadable, or not an SBOM-shaped document: no carriers
         return []
-    by_id = {a.get("id"): a for a in (d.get("artifacts") or []) if a.get("id")}
     out = []; seen = set()
-    for rel in (d.get("artifactRelationships") or []):
-        how = _CARRY_RELS.get(rel.get("type"))
-        if not how:
-            continue
+    for rel in rels:
+        how = _CARRY_RELS[rel["type"]]
         parent = by_id.get(rel.get("parent")); child = by_id.get(rel.get("child"))
         if not parent or not child:
             continue
@@ -273,19 +245,6 @@ def _lifecycle(base_os, carriers, fetch, today):
     return eol, base
 
 
-def _inv_snyk(path):
-    d = json.load(open(path))
-    docs = d if isinstance(d, list) else [d]
-    total = 0; findings = 0
-    for doc in docs:
-        total = max(total, int(doc.get("dependencyCount") or 0))
-        findings += len(doc.get("vulnerabilities") or [])
-    return total, total, None, findings
-
-
-INV = {"grype": _inv_grype, "trivy": _inv_trivy, "osv-scanner": _inv_osv, "osv-scanner-gomod": _inv_osv}
-
-
 def _skopeo(src, dst):
     """skopeo copy, host arch, printing stderr on failure."""
     r = subprocess.run(["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", src, dst],
@@ -308,7 +267,7 @@ def _norm_ref(ref):
 
 def _archives(rescan_dir, test_image, oci, tar):
     """Produce BOTH an oci-archive and a docker-save tar (no daemon). grype reads the
-    oci-archive directly (R12 item 2); trivy/osv read the docker-save tar. Returns
+    oci-archive directly (R12 item 2); the docker-save tar is the digest source. Returns
     (source_desc, err)."""
     if test_image:
         # the input says ref@digest; it is held to it — a tag-only reference could fetch any bytes the tag points at
@@ -336,22 +295,11 @@ def _archives(rescan_dir, test_image, oci, tar):
     except OSError as e:
         return None, "the production layout's blobs cannot be read (%s)" % type(e).__name__
     # production is a multi-arch index; select amd64 into a single-arch OCI archive that
-    # grype can catalogue, and a docker-save tar for trivy/osv.
+    # syft can catalogue, and a docker-save tar for the digest lookup.
     src = "oci:%s" % named[0]
     ok1 = _skopeo(src, "oci-archive:%s:%s" % (oci, TAG))
     ok2 = _skopeo(src, "docker-archive:%s:%s" % (tar, TAG))
     return (os.path.basename(named[0]), None) if (ok1 or ok2) else (None, "skopeo convert failed")
-
-
-def _scan(name, cmd, reports, ok=(0, 1)):
-    path = os.path.join(reports, name + ".json")
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    open(path, "w").write(r.stdout or "")
-    if r.returncode not in ok:
-        print("%s scan rc=%d stderr: %s" % (name, r.returncode, (r.stderr or "").strip().splitlines()[-3:] if r.stderr else ""))
-    elif r.stderr and r.stderr.strip():
-        print("%s stderr: %s" % (name, " | ".join((r.stderr or "").strip().splitlines()[-2:])))
-    return path, r.returncode
 
 
 def main():
@@ -360,7 +308,6 @@ def main():
     commit = cli.opt("--commit", os.environ.get("GITHUB_SHA", "unknown"))
     test_image = cli.opt("--test-image") or os.environ.get("AUDITOR_TEST_IMAGE") or ""
     kdl = cli.opt("--known-defect-log", ".github/agent/known-defect-log.json")
-    tol = float(cli.opt("--os-inventory-tolerance", "0.5"))
     os.makedirs(reports, exist_ok=True)
 
     tar = os.path.join(reports, "candidate.tar"); oci = os.path.join(reports, "candidate.oci")
@@ -371,114 +318,19 @@ def main():
     have_tar = os.path.exists(tar) and os.path.getsize(tar) > 0
     print("archives: oci=%s tar=%s" % (have_oci, have_tar))
 
-    # scan the ARCHIVE (no daemon, no registry pull). grype reads the OCI archive directly
-    # (the review's simplest path); trivy/osv read the docker-save tar.
-    grype_src = ("oci-archive:" + oci) if have_oci else ("docker-archive:" + tar)
-    plans = {
-        "grype": ["grype", grype_src, "-o", "json"],
-        "trivy": ["trivy", "image", "--input", tar, "--quiet", "--format", "json"],
-        "osv-scanner": ["osv-scanner", "scan", "image", "--archive", tar, "--format", "json"],
-    }
-    scanner_reports = {}; status = {}; counts = {}
-    for name, cmd in plans.items():
-        path, rc = _scan(name, cmd, reports)
-        ver = _version(name if name != "osv-scanner" else "osv-scanner")
-        total = osp = findings = 0; db = None
-        try:
-            total, osp, db, findings = INV[name](path)
-        except Exception as e:
-            rc = rc if rc not in (0, 1) else 255
-        scan_ok = rc in (0, 1)
-        ran = scan_ok and total > 0
-        reason = "ok" if ran else ("0 packages inventoried (scanner produced no package inventory)"
-                                   if scan_ok else "scan failed (rc %d)" % rc)
-        scanner_reports[name] = path if ran else None
-        status[name] = {"ran": ran, "scan_ok": scan_ok, "quorum_ok": ran, "version": ver, "reason": reason,
-                        "package_count": total, "os_package_count": osp,
-                        "db_date": db, "findings": findings}
-        counts[name] = osp if ran else None
-        print("%s %s db=%s packages=%s os_packages=%s findings=%s ran=%s"
-              % (name, ver or "-", db or "-", total, osp, findings, ran))
+    panel_dir = cli.opt("--panel-dir")
+    pblock = panel_block(panel_dir)           # 0600 option A: the auditor READS the panel's four scanners and runs none of its own
+    scanner_reports = dict(pblock["scanner_reports"]); status = dict(pblock["scanner_status"])
 
-    # grype's match-JSON has no full catalogue, so take grype's package inventory from syft
-    # (its own cataloguer), which reads distroless status.d. grype still supplies the matches.
     syft_src = ("oci-archive:" + oci) if have_oci else ("docker-archive:" + tar)
     syft_path = os.path.join(reports, "syft.json")
     carriers = []; base_os = "debian"
     rc, _ = _run(["syft", syft_src, "-o", "syft-json"], out_path=syft_path)
     if rc == 0 and os.path.exists(syft_path) and os.path.getsize(syft_path) > 0:
-        try:
-            carriers = _carriers(syft_path)   # REQ-AUD-14: SBOM carrier relationships
-            base_os = _base_os(syft_path) or base_os
-            stot, sos = _inv_syft(syft_path)
-            gfind = status["grype"]["findings"]
-            # syft supplies grype's package INVENTORY, but grype still counts as run only if
-            # grype's OWN vulnerability scan completed (scan_ok) — syft cannot vouch for grype
-            # (R1 outer round-1 #3). A failed grype scan stays not-run even if syft inventoried.
-            gran = bool(status["grype"].get("scan_ok")) and stot > 0
-            status["grype"].update(ran=gran, quorum_ok=gran, package_count=stot, os_package_count=sos,
-                                   reason=("ok" if gran else (status["grype"]["reason"] if not status["grype"].get("scan_ok")
-                                           else "0 packages inventoried")))
-            scanner_reports["grype"] = os.path.join(reports, "grype.json") if gran else None
-            counts["grype"] = sos if gran else None
-            print("grype(syft) packages=%s os_packages=%s findings=%s scan_ok=%s ran=%s"
-                  % (stot, sos, gfind, status["grype"].get("scan_ok"), gran))
-        except Exception as e:
-            print("syft inventory parse failed: %s" % e)
+        carriers = _carriers(syft_path)   # REQ-AUD-14: SBOM carrier relationships (syft supplies the carriers and the base OS only)
+        base_os = _base_os(syft_path) or base_os
     else:
-        print("syft did not run (rc %d); grype inventory falls back to matched packages" % rc)
-
-    # Snyk container test (SNYK_TOKEN is an agent secret; GitHub masks it — never printed).
-    if os.environ.get("SNYK_TOKEN"):
-        snyk_path = os.path.join(reports, "snyk.json")
-        r = subprocess.run(["snyk", "container", "test", "docker-archive:" + tar,
-                            "--json", "--org=fosterstack-admin"], capture_output=True, text=True)
-        open(snyk_path, "w").write(r.stdout or "")
-        blob = (r.stdout or "") + (r.stderr or "")
-        quota = re.search(r"reached your monthly limit|not authori|authentication error", blob, re.I)
-        stot = sos = sfind = 0
-        try:
-            stot, sos, _, sfind = _inv_snyk(snyk_path)
-        except Exception:
-            pass
-        sran = (r.returncode in (0, 1)) and not quota and stot > 0
-        scanner_reports["snyk"] = snyk_path if sran else None
-        status["snyk"] = {"ran": sran, "version": _version("snyk"),
-                          "reason": "ok" if sran else ("quota/auth: could not run" if quota else "0 packages inventoried"),
-                          "package_count": stot, "os_package_count": sos, "db_date": None, "findings": sfind}
-        counts["snyk"] = sos if sran else None
-        print("snyk %s packages=%s findings=%s ran=%s" % (_version("snyk") or "-", stot, sfind, sran))
-    else:
-        scanner_reports["snyk"] = None
-        status["snyk"] = {"ran": False, "version": None, "reason": "no SNYK_TOKEN available; Snyk did not run",
-                          "package_count": None, "db_date": None}
-
-    # OS package inventory AGREEMENT across the image scanners (±Go modules): an outlier
-    # below tolerance*max is excluded from the QUORUM (quorum_ok=False) — but its report is
-    # KEPT so its actual findings are still parsed and dispositioned (R1 outer round-1 #2:
-    # three inventories agreeing does not disprove the fourth scanner's real finding).
-    # Exclude an outlier vs the MEDIAN, not the max (R1 outer round-2 #3): one scanner that
-    # OVER-counts must not disqualify three that agree. A scanner outside [tol*median,
-    # median/tol] is excluded from the quorum (its findings are still assessed).
-    live = {k: v for k, v in counts.items() if v is not None and v > 0}
-    if len(live) >= 2:
-        import statistics
-        med = statistics.median(sorted(live.values()))
-        lo, hi = tol * med, (med / tol if tol else med)
-        for k, v in list(live.items()):
-            if v < lo or v > hi:
-                status[k]["quorum_ok"] = False
-                status[k]["reason"] = "excluded from quorum: inventory outlier (os_packages=%d vs median %g); findings still assessed" % (v, med)
-                print("%s QUORUM-EXCLUDED (findings kept): os_packages=%d outside [%.1f, %.1f]" % (k, v, lo, hi))
-
-    # OSV Go-module source scan of the checked-out tree.
-    gomod = os.path.join(reports, "osv-gomod.json")
-    rc, _ = _run(["osv-scanner", "scan", "source", "--format", "json", os.path.join(source, "go.mod")], out_path=gomod)
-    gomod_ok = rc in (0, 1) and os.path.exists(gomod) and os.path.getsize(gomod) > 0
-    scanner_reports["osv-scanner-gomod"] = gomod if gomod_ok else None
-    status["osv-scanner-gomod"] = {"ran": gomod_ok, "version": _version("osv-scanner"),
-                                   "reason": "ok" if gomod_ok else "did not run (rc %d)" % rc,
-                                   "package_count": None, "db_date": None}
+        print("syft did not run (rc %d); the carriers and base OS stay unknown" % rc)
 
     # govulncheck -json over the checked-out tree, bound to module + commit.
     module = _module(source); gvc = None
@@ -520,16 +372,14 @@ def main():
         # endoflife.date maintenance flags (carriers/base on LTS/EOL lines) and the base pin-lag
         # block. `eol`/`base` are best-effort (empty when endoflife.date is unreachable).
         "carriers": carriers, "eol": _eol_list, "base": _base_block,
+        "panel": pblock,                                  # the scanner panel's four, from the rescan's verdict.json
+        "scanner_set": "panel",
         "provenance": {"source": ("test-image" if test_image else "own-scan"), "candidate": src,
                        "scanned": "docker-archive"},
     }
-    # If three scanners inventoried packages but osv-scanner found none, name the known
-    # cause (osv-scanner reads /var/lib/dpkg/status, not a distroless status.d directory).
-    others = [k for k in ("grype", "trivy", "snyk") if (status.get(k) or {}).get("ran")]
-    if not (status.get("osv-scanner") or {}).get("ran") and len(others) >= 2:
-        status["osv-scanner"]["reason"] = "0 packages (osv-scanner does not read distroless dpkg status.d)"
+    names = PANEL_SCANNERS
     cli.writej(out, manifest)
-    ran = [k for k in ("grype", "trivy", "osv-scanner", "snyk") if (status.get(k) or {}).get("ran")]
+    ran = [k for k in names if (status.get(k) or {}).get("ran")]
     print("auditor-manifest: wrote %s (digest %s; image scanners that ran: %s)" % (out, digest, ran or "NONE"))
 
 

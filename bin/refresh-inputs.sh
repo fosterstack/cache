@@ -10,7 +10,7 @@
 #   stops the job for a human, exit 3, no PR); re-make the image lock files and re-resolve melange's build tools against
 #   live Wolfi; archive each NEW package by digest (verified against the lock's checksums before anything is kept, rule
 #   48: no waiting period, signature and checksum checks still apply); update the base locks (archive paths) and the
-#   melange lock and recipe pins; if anything changed, push a branch and open a PR, never merge it and never push to
+#   melange lock and recipe pins; resolve and lock the host tools too (build/host-tools.yaml -> build/locks/host-tools.lock, REQ-REFRESH-001-AC35); if anything changed, push a branch and open a PR, never merge it and never push to
 #   main (rule 49: the PR goes through every normal check). An old version that disappears from live Wolfi is noted, not
 #   an error: the archive is the source of truth (rule 47). Nothing changed: nothing is committed, pushed or opened.
 # fips-module (daily, rule 73; the daily job runs it after `refresh`): read the Go toolchain's own lib/fips140/certified.txt; if it names a newer certified
@@ -359,14 +359,14 @@ PY
   fi
 
   for f in build/apko.yaml build/apko-fips.yaml build/melange.yaml build/melange-fips.yaml build/locks/apko.base.lock.json \
-           build/locks/apko-fips.base.lock.json build/locks/melange.lock build/melange.yaml.tmpl build/locks/fips-module.txt; do
+           build/locks/apko-fips.base.lock.json build/locks/melange.lock build/melange.yaml.tmpl build/locks/fips-module.txt build/host-tools.yaml build/locks/host-tools.lock; do
     [ -f "$repo/$f" ] || die "missing $f in $repo"
   done
 
   # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
-  /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange"
+  /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange" "$tmp/host"
   /usr/bin/python3 -I -B - "$repo" "$tmp" <<'PY'
-import sys, yaml
+import re, sys, yaml
 repo, tmp = sys.argv[1:3]
 for src, out in (("apko.yaml", "production/apko.yaml"), ("apko-fips.yaml", "fips/apko-fips.yaml")):
     d = yaml.safe_load(open("%s/build/%s" % (repo, src)))
@@ -378,11 +378,51 @@ m = yaml.safe_load(open(repo + "/build/melange.yaml"))
 names = [str(p).split("=")[0] for p in m["environment"]["contents"]["packages"]]
 yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": names}, "archs": ["x86_64", "aarch64"]},
                open(tmp + "/melange/melange-env.yaml", "w"))
+# REQ-REFRESH-001-AC35: the packages the Build jobs run on the runner itself (bubblewrap and its libraries), resolved like melange's build tools
+def refuse(msg):
+    print("refresh-inputs.sh: refused: %s" % msg, file=sys.stderr); sys.exit(2)
+class StrictLoader(yaml.SafeLoader):
+    pass
+def _no_dup(loader, node, deep=False):
+    seen = set()
+    for k, _ in node.value:
+        key = loader.construct_object(k, deep=True)
+        if not isinstance(key, str):
+            refuse("build/host-tools.yaml has a key that is not a plain string: %r" % (key,))
+        if key in seen:
+            refuse("build/host-tools.yaml has the key %r twice" % (key,))
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep)
+StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup)
+try:
+    h = yaml.load(open(repo + "/build/host-tools.yaml"), Loader=StrictLoader)
+except yaml.YAMLError as e:
+    refuse("build/host-tools.yaml is not valid YAML (%s)" % str(e).splitlines()[0])
+# a closed shape: exactly one key, packages, a non-empty list of unique plain package names (no version, no path: the lock pins the versions)
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+if not isinstance(h, dict) or set(h) != {"packages"}:
+    refuse("build/host-tools.yaml must hold exactly one key, packages")
+hnames = h["packages"]
+if not isinstance(hnames, list) or not hnames or not all(isinstance(n, str) and NAME.fullmatch(n) and ".." not in n for n in hnames) or len(set(hnames)) != len(hnames):
+    refuse("build/host-tools.yaml packages must be a non-empty list of unique plain package names (no version, no path)")
+# the committed lock: name=version rows in the closed grammar, each name once
+seen_n = set()
+_lock_text = open(repo + "/build/locks/host-tools.lock", newline="").read()   # no newline translation: a carriage return is a bad row, not a line end
+if _lock_text and not _lock_text.endswith("\n"):
+    refuse("build/locks/host-tools.lock must end with a line end")
+for _row in (_lock_text.split("\n")[:-1] if _lock_text else []):
+    _n, _eq, _v = _row.partition("=")
+    if not _eq or not NAME.fullmatch(_n) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+~-]*", _v) or ".." in _n or ".." in _v or _n in seen_n:
+        refuse("build/locks/host-tools.lock has a row that is not a name=version of the closed grammar, or a name twice: %r" % _row)
+    seen_n.add(_n)
+yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": hnames}, "archs": ["x86_64", "aarch64"]},
+               open(tmp + "/host/host-tools-env.yaml", "w"))
 PY
   lock() { /usr/local/bin/apko lock --arch x86_64,aarch64 --repository-append "$WOLFI" --keyring-append "$archived_key" --output "$2" "$1"; }
   lock "$tmp/production/apko.yaml" "$tmp/production.lock.json"
   lock "$tmp/fips/apko-fips.yaml" "$tmp/fips.lock.json"
   lock "$tmp/melange/melange-env.yaml" "$tmp/melange.lock.json"
+  lock "$tmp/host/host-tools-env.yaml" "$tmp/host-tools.lock.json"
 
   # The embedded program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per line); the shell fetches them with the
   # ruled download lines below and runs the program again (it starts from the same state each time, up to three passes: packages, index, the rest).
@@ -567,9 +607,11 @@ for kind, f in (("production", "apko.base.lock.json"), ("fips", "apko-fips.base.
     path = "%s/build/locks/%s" % (repo, f)
     base[kind] = {"path": path, "doc": json.load(open(path))}
 old_mel = [l for l in open(repo + "/build/locks/melange.lock").read().splitlines() if l]
+old_host = [l for l in open(repo + "/build/locks/host-tools.lock").read().splitlines() if l]
 
 live = {"production": load_live(tmp + "/production.lock.json"), "fips": load_live(tmp + "/fips.lock.json")}
 live_mel = load_live(tmp + "/melange.lock.json")
+live_host = load_live(tmp + "/host-tools.lock.json")
 
 # ---- the archive's index is re-checked on EVERY run against build/locks/archive-index.sha256 ----
 # Damage is unconditional: a stored index that does not hash to its own name, a pointer file that is not the recorded index, or a missing
@@ -700,7 +742,7 @@ if ahead:
 # The archive is checked on EVERY run, for production, FIPS and melange alike: a damaged or truncated file under an unchanged lock is found here
 # (a human stop naming the file), not later at build time. The locks must agree with each other about the same package.
 groups = {}
-for lk in (live["production"], live["fips"], live_mel):
+for lk in (live["production"], live["fips"], live_mel, live_host):
     for e in lk:
         groups.setdefault((e["name"], e["version"], e["architecture"]), []).append(e)
 seen_file = {}
@@ -712,7 +754,7 @@ for (n_, v_, a_) in groups:
 fresh = {}
 for k, es in groups.items():
     if len({ident(e) for e in es}) != 1:
-        fail("the production, FIPS and melange locks disagree about %s-%s (%s): the same package has different checksums; refusing" % k)
+        fail("the production, FIPS, melange and host-tools locks disagree about %s-%s (%s): the same package has different checksums; refusing" % k)
     fresh[k] = es[0]
 
 # the archived inputs the COMMITTED locks (main's) require are checked too: damage to an old version that an upgrade PR leaves behind is found before any guard can return
@@ -741,6 +783,7 @@ def first_fill_state():
 FIRST_FILL = first_fill_state()
 ff_locked = {}   # (name, version, arch) -> the committed lock entry (checksums): verified like any package
 ff_mel = []      # (name, version, arch) named only by the committed melange.lock (name=version): verified against the signed live index
+ff_host = []     # the same for the committed host-tools.lock (REQ-REFRESH-001-AC35, AC36)
 for k, es in sorted(committed.items()):
     if len({ident(e) for e in es}) != 1:
         fail("the committed production and FIPS locks disagree about %s-%s (%s): the same package has different checksums; refusing" % k)
@@ -759,8 +802,9 @@ for k, es in sorted(committed.items()):
     HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again, or find out how it got damaged)" % dest
     verify(dest, es[0])
     HINT = ""
-# the committed melange.lock (name=version, no checksums) names archived packages too: while an upgrade PR waits, the OLD versions it names are still what main builds from
-for _l in old_mel:
+# the committed melange.lock and host-tools.lock (name=version, no checksums) name archived packages too: while an upgrade PR waits, the OLD versions they name are still what main builds from
+for _lockname, _old, _ff in (("melange.lock", old_mel, ff_mel), ("host-tools.lock", old_host, ff_host)):
+  for _l in _old:
     _n, _, _v = _l.partition("=")
     for _a in ARCHS:
         if (_n, _v, _a) in committed or (_n, _v, _a) in fresh:
@@ -768,11 +812,11 @@ for _l in old_mel:
         dest = "%s/%s/%s-%s.apk" % (archive, _a, _n, _v)
         if not os.path.exists(dest) and FIRST_FILL:
             if not NAME_RE.fullmatch(_n) or not VERSION_RE.fullmatch(_v) or ".." in _n or ".." in _v:
-                fail("refused: invalid package name or version %r in the committed melange.lock" % _l, 2)
-            ff_mel.append((_n, _v, _a))
+                fail("refused: invalid package name or version %r in the committed %s" % (_l, _lockname), 2)
+            _ff.append((_n, _v, _a))
             continue
         if not os.path.exists(dest):
-            fail("the committed melange.lock names %s-%s.apk (%s), which the archive does not hold; an older version the archive must keep (restore it from backup): a human must look" % (_n, _v, _a))
+            fail("the committed %s names %s-%s.apk (%s), which the archive does not hold; an older version the archive must keep (restore it from backup): a human must look" % (_lockname, _n, _v, _a))
         HINT = " (%s is in the archive but is wrong or truncated: delete that file and run again, or find out how it got damaged)" % dest
         verify_integrity(dest, "%s-%s.apk (%s)" % (_n, _v, _a))
         HINT = ""
@@ -887,7 +931,7 @@ for (name, ver, arch), e in sorted(list(fresh.items()) + list(ff_locked.items())
     verify(part, e)
     keep.append((part, dest, name, ver, arch))
 ff_mel_parts = []
-for (name, ver, arch) in sorted(ff_mel):
+for (name, ver, arch) in sorted(set(ff_mel) | set(ff_host)):
     part = "%s/%s/%s-%s.apk" % (stage, arch, name, ver)
     os.makedirs(os.path.dirname(part), exist_ok=True)
     if not os.path.exists(part):
@@ -954,6 +998,14 @@ for kind in ("production", "fips"):
 mel_names = {e["name"]: e["version"] for e in live_mel if e["architecture"] == "x86_64"}
 new_mel = sorted("%s=%s" % p for p in mel_names.items())
 mel_path = repo + "/build/locks/melange.lock"
+host_names = {e["name"]: e["version"] for e in live_host if e["architecture"] == "x86_64"}
+new_host = sorted("%s=%s" % p for p in host_names.items())
+host_path = repo + "/build/locks/host-tools.lock"
+if sorted(old_host) != new_host:
+    changed.append(host_path)
+    for n, v in sorted(dict(l.split("=", 1) for l in old_host).items()):
+        if host_names.get(n) != v:
+            notes.append("%s %s is no longer in live Wolfi's resolution (host tools); the archived copy is kept" % (n, v))
 recipes = {}
 if sorted(old_mel) != new_mel:
     changed.append(mel_path)
@@ -1021,7 +1073,7 @@ def verify_index(path, arch):
     for (_n, _v, _a), _e in sorted(ff_locked.items()):   # a committed version fetched by the first fill is backed by the signed index like every locked package
         if _a == arch and (_n, _v, _e["checksum"]) not in listed:
             fail("the signed %s package index does not list the committed package %s-%s (%s); it cannot be checked against the index, a human must look" % (arch, _n, _v, _e["checksum"]))
-    for lockpk in (live["production"], live["fips"], live_mel):
+    for lockpk in (live["production"], live["fips"], live_mel, live_host):
         for e in lockpk:
             if e["architecture"] == arch and (e["name"], e["version"], e["checksum"]) not in listed:
                 fail("the signed %s package index does not list the locked package %s-%s (%s); the lock is not backed by the index, refused" % (arch, e["name"], e["version"], e["checksum"]))
@@ -1046,7 +1098,7 @@ if want_ix:
 for part, dest, name, ver, arch in ff_mel_parts:
     wants = {c_ for (p_, v_, c_) in index_listed[arch] if p_ == name and v_ == ver}
     if not wants:
-        fail("the signed %s package index has no entry for %s-%s, which only the committed melange.lock names; it cannot be checked, a human must look" % (arch, name, ver))
+        fail("the signed %s package index has no entry for %s-%s, which only a committed melange.lock or host-tools.lock names; it cannot be checked, a human must look" % (arch, name, ver))
     raw_ = open(part, "rb").read(); parts_, rest_, budget_ = [], raw_, INFLATE_CAP
     while rest_:
         comp_, data_, rest_ = inflate(rest_, "%s-%s.apk" % (name, ver), budget_)
@@ -1103,6 +1155,8 @@ for kind in ("production", "fips"):
         write_atomic(base[kind]["path"], json.dumps(base[kind]["doc"], indent=2) + "\n")
 if mel_path in changed:
     write_atomic(mel_path, "".join(l + "\n" for l in new_mel))
+if host_path in changed:
+    write_atomic(host_path, "".join(l + "\n" for l in new_host))
 for path, out in recipes.items():
     write_atomic(path, out)
 

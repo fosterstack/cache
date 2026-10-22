@@ -1085,7 +1085,7 @@ requirements:
     acceptance_criteria:
       - id: REQ-OBS-004-AC1
         given: a starting server
-        when: the first log line is emitted
+        when: the startup log record is emitted
         then: it contains version, addr, data_dir, max_bytes, auth, and fips140 fields
         verification: { method: component, release_blocking: false }
         status: approved
@@ -1518,7 +1518,7 @@ requirements:
       - id: REQ-REL-004-AC1
         given: any pull request, push to main, or tag
         when: the required scan check runs
-        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
+        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all four image children and every archive; Inspector scans the four image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-004-AC2
@@ -1845,7 +1845,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 26 ratified files (owner RATIFIED amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, owner ratified Oct 5, new-file amendment Oct 3; stage-sign.yml added by v0.3.0 rule 52, owner ratified Oct 9, the one new workflow file of v0.3.0)"
+        then: "it holds exactly the 19 ratified files, the list fixed by bin/workflow-consolidation-test.sh (the effect of the ratified consolidation and of the v0.3.0 chain's ratified removals of the legacy workflows; dependabot-auto-merge.yml stays its own file, owner RATIFIED Oct 2; supply-chain.yml, REQ-SUP-001, owner ratified Oct 5; stage-sign.yml, v0.3.0 rule 52, owner ratified Oct 9)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -2065,7 +2065,7 @@ requirements:
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >
-      The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all six images, and Google Artifact Analysis on the three variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
+      The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all four images, and Google Artifact Analysis on the two variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
     source: [.github/workflows/main-candidate-rescan.yml]
     tier: community
     introduced: v0.3.0
@@ -2075,13 +2075,13 @@ requirements:
       - id: REQ-SCAN-001-AC1
         given: "the daily main-candidate rescan"
         when: "it runs"
-        then: "Grype, Docker Scout and Amazon Inspector each scan all six images (production, debug and fips, each on linux/amd64 and linux/arm64); the set is fixed in the workflow, not computed at build time"
+        then: "Grype, Docker Scout and Amazon Inspector each scan all four images (production and fips, each on linux/amd64 and linux/arm64; the debug image was dropped for v0.3.0, owner Oct 9); the set is fixed in the workflow, not computed at build time"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-001-AC2
         given: "the daily main-candidate rescan"
         when: "it runs"
-        then: "Google Artifact Analysis scans the three variants on linux/amd64 only, never arm64"
+        then: "Google Artifact Analysis scans the two variants (production and fips) on linux/amd64 only, never arm64"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-001-AC3
@@ -2759,6 +2759,12 @@ requirements:
         then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line in the helper (one character), and that ruling prefix on any other line (of the helper or of another file) rules nothing, so the one line that fetches for a loopback or token request is the only line this ruling allows"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC26
+        given: "(advisor reading, Oct 17) a pull request that adds one of the nineteen script lines the checker pins by file and by the sha256 of the whole line: the line of bin/release-assets.sh that downloads the assets of our own release (verified against our signature, failing closed); the line of bin/acceptance-k8s.sh that pulls and tags the client image pinned by digest (the word curl is the image name, not a download); and the fourteen request lines to the cache under test on localhost in bin/acceptance-gradle.sh, bin/acceptance-gradle-capped.sh, bin/acceptance-maven.sh and bin/acceptance-maven-capped.sh (they fetch no software); and the three fetches of the Go toolchain tarball or of go.dev's published checksum list in bin/install-scanner.sh and bin/go-bump-open-pr.sh (each in the shape the Go ruling of AC23 accepts, the tarball checked against its pinned sum or go.dev's list before use); and a row in the base branch's .github/supply-chain-exceptions.json list unmeasured_text for that line whose ruling text begins \"pinned fetch, advisor reading Oct 17 (REQ-SUP-001-AC26): \""
+        when: "pin-age runs"
+        then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line (one character, a tab for a space, a carriage return), a second copy of it that differs only in whitespace, a link named like the file, and that ruling prefix on any other line (of the same file or another) rules nothing, so the nineteen lines are the only lines this ruling allows. A new script that names the vendored folder is refused unless its exact path is listed in the checker; six paths that name it legitimately (the govulncheck vendor-mode tests and checks) are listed, and a seventh file still fails"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3012,6 +3018,12 @@ requirements:
         given: "a final (v0.3.0) or patch tag, or the patch automation's decide job, on main"
         when: "admission and decide read .github/policy/rc-proof.json (the marker)"
         then: "both refuse (naming the marker) unless the marker names an rc tag, the run id of its green chain run, and the sha256 over the exact bytes of the chain files at the tag's commit (the same file set as AC5), and that sha256 equals the one recomputed from the commit being tagged; the marker is written only by a pull request whose change is exactly two things, the marker file .github/policy/rc-proof.json and the removal of the one KR-CUTOVER entry (that entry and no other change) from test-evidence/known-red.json, and whose CI verifies the named run's records (Build, Sign provenance, Rebuild, Check, the hostile verdict) with bin/chain-verify.py against the rc tag's own identities; a marker for other bytes, an rc tag that is not an ancestor of the commit, an unreadable marker, or a missing one is refused, never skipped"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-001-AC7
+        given: "a listed release-chain script (a row of .github/policy/chain-scripts.json) whose text names a command by a literal path, or runs python3 with isolation flags"
+        when: "the script judge (bin/chain-test-signers.py) scans it"
+        then: "a command word that is exactly /usr/bin/NAME, /bin/NAME or /usr/local/bin/NAME (NAME a plain word: no slash, no .., no $, backquote or glob; a quoted literal is the same word once the shell has parsed it) is judged as the bare NAME and only when NAME is in the row's tools, keeping every operand rule of the bare name (a fixed path cannot be redirected through PATH, so it is stricter than the bare name); a function named by an absolute path (which bash would run in place of the fixed program) is refused; a python interpreter may be handed the isolation flags -I and -B, each at most once and as separate words, before the exact listed script it runs, and the script's own arguments after it are the script's, judged exactly as when no flag is given; python3 with any other option (-c, -m, -S, -E, -u, a combined -IB, a repeated flag, a long option), with stdin, with no script or with an unlisted script is refused as before; /usr/bin/NAME with NAME not in tools, a path outside the three directories, a path with .. or a doubled slash, a variable, a substitution or a glob in the path stay findings; a launcher (env, exec, nohup ...) is refused whatever the path; every exceptions entry that only worked around python3 -I -B is removed (advisor reading Oct 17, to let bin/archive-pull.sh, which cache#345 ratified with fixed absolute paths and python3 -I -B, be a stage script)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
 
@@ -3368,6 +3380,15 @@ requirements:
         then: "the record is refused BEFORE ANY CERTIFICATE is looked at, whatever its collection is called, with the first line `refused at <stage>: snapshot version` (an apk, the fips apk or an archive of the standard or fips variant naming 0.0.0 among its product subjects), and a digests.json given to stage-start, check-build-record or sign --check that NAMES a 0.0.0 file is refused the same way (by name only, never by its values), and the refusal belongs to the VERIFIERS only (verify, stage-start, check-build-record, sign --check, and policy make), never to the shared record reader: bind, items-apk, items-merge and rebuild-compare --snapshot ACCEPT the 0.0.0 files of a real snapshot run; and policy make refuses the tag with `refused at policy: snapshot version` and writes no policy, so no policy, hence no Sign or Release, can exist for a snapshot version; the same record naming 0.3.0 is refused later, for what it is, never as a snapshot version, and versions that merely contain the digits (10.0.0, 0.10.0, 1.0.0_rc1) and the tags v10.0.0, v0.0.1, v0.10.0 and v1.0.0 are not refused as snapshots (cache-3f's finding: a snapshot apk can never be released, even if it were smuggled in under a release name)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
+      # ADVISOR ACs 10-13 of the archive pull (advisor, Oct 15, under the owner's ratified build-script rules 9, "every file is checked against a recorded
+      # list on the way in and out", and 3, "the record names the exact archive index used"), folded into one chain AC because REQ-ARCHIVE-001 is not on this
+      # branch; the number differs from the advisor's AC10-13 on purpose. Needs the owner's ratification like every new English AC.
+      - id: REQ-CHAIN-004-AC16
+        given: "the Build and Rebuild stage files (stage-build.yml, stage-reproducibility.yml): each of their four jobs builds from archive/, and the committed pointer build/archive.json names the archive by digest"
+        when: "a stage job runs"
+        then: "right after the build tool that job installs (melange in an apk job, apko in an assemble job) and before any download or Witness step, it installs the checksum-pinned crane with bin/install-scanner.sh crane and pulls the archive with bin/archive-pull.sh --pointer build/archive.json --out archive, each a step of a name and a run and nothing else (no env, no if, no continue-on-error, no digest of its own, no other directory or pointer), so the build runs only after a pull that exited 0 and verified every file against the committed record, and a failed pull or a missing pointer stops the job with no fallback to Wolfi or any other source; both files the step runs (bin/archive-pull.sh, bin/archive-verify.py) are rows of .github/policy/chain-scripts.json with their sha256; the workflow edit adds no new workflow file and every action stays a commit digest"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
 
   - id: REQ-CHAIN-005
     title: Rebuild repeats the build on a fresh machine and blocks on any difference
@@ -3433,7 +3454,7 @@ requirements:
   - id: REQ-AUD-018
     title: The auditor layout and coverage gate; its second review is enforced outside the repository
     statement: >
-      The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same 100% coverage gate as the Go, and let no change to the auditor merge without the independent second review, which the private review tooling enforces before merge; this repository judges no review record.
+      The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same 100% coverage gate as the Go (except the listed exclusions), and let no change to the auditor merge without the independent second review, which the private review tooling enforces before merge; this repository judges no review record.
     source: [auditor directory bin/auditor-layout-check.py, auditor directory tests/coverage-gate.sh, .github/workflows/agent-review-gate.yml, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
@@ -3454,7 +3475,7 @@ requirements:
       - id: REQ-AUD-018-AC2
         given: "the Python in the auditor directory"
         when: "the required coverage job runs the auditor coverage gate (coverage-gate.sh)"
-        then: "The Python under the auditor directory is held to the 100% coverage gate in CI, the same as the Go."
+        then: "The Python under the auditor directory is held to the 100% coverage gate in CI, except the listed exclusions, the same as the Go."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-AUD-018-AC3
@@ -4121,7 +4142,7 @@ requirements:
     title: Image inputs and the certified FIPS module are kept fresh by jobs that only open pull requests
     statement: >
       Once a day a job shall re-make the image lock files and re-resolve melange's build tools against live Wolfi; if anything changed it archives the new packages by digest, updates the locks and opens a pull request, never pushing to main; otherwise it does nothing. This job is the only updater of image recipes, apk packages and lock files. If Wolfi's signing key changed the job stops, opens no pull request and flags it for a human. If an old upstream version disappears the job notes it and does not fail. New Wolfi packages get no waiting period; signature and checksum checks and archiving still apply. The job's pull requests go through all normal checks and the rebuild-from-archive test. In the same daily run it shall also read Go's own certified-module file and, when a newer Go Cryptographic Module is certified, open a pull request that moves the FIPS build to it. The archive's package index shall be kept as the original Wolfi-signed file, versioned by its sha256, verified against the archived key, and an existing file under a digest name must hash to that name or the run fails closed.
-    source: [bin/refresh-inputs.sh, .github/workflows/go-freshness.yml, .github/dependabot.yml]
+    source: [bin/refresh-inputs.sh, build/host-tools.yaml, build/locks/host-tools.lock, .github/workflows/go-freshness.yml, .github/dependabot.yml]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 32, 44-49 and 73 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md, REFRESH-1..6, APKO-25, FIPS-59; rule 48 "dont do this 7 day hold on wolfi.")
@@ -4327,6 +4348,33 @@ requirements:
         given: "a refresh or FIPS-module pull request that bin/refresh-inputs.sh opens, and a main whose ruleset requires signed commits"
         when: "the pull request is opened (open_pr, directly or from a plan)"
         then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the changed files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token) with exactly the working tree's bytes for the planned paths, and the API is asked whether that commit is verified; only then is the pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; nothing is committed or pushed to main, and no git commit is made (rule: main requires signed commits; advisor reading Oct 17 after cache#404 and cache#422 were found unmergeable with an unsigned job commit)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      # NEW, ADVISOR READING Oct 20 (handoff 0524; the English is in ops/handoffs/outbox/2026-10-20-cache-a7-acs-host-tools-ratify.md): AC35-AC38 are the concrete form of rules the owner
+      # already ratified (15: build tools come from the archive only; 38a: melange's bubblewrap runner; 44-49: the refresh job is the only updater, no waiting period) and of REQ-SUP-001 (no
+      # unpinned install line). Not ratified by the owner until he says so: the status below is "approved" only because the schema allows one status under an approved baseline.
+      - id: REQ-REFRESH-001-AC35
+        given: "build/host-tools.yaml, which names the packages the Build jobs run on the runner itself (bubblewrap), and the committed build/locks/host-tools.lock"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it resolves them with apko lock against https://packages.wolfi.dev/os for both architectures (a fourth lock, like melange's build tools), archives every package the archive lacks under the checks of AC3 (HTTPS, the lock's control and data checksums, the datahash, the signed index) before any lock changes, and writes build/locks/host-tools.lock as sorted name=version lines; when the resolution equals the committed lock nothing is committed, pushed or opened, and a repository without the data file or the lock is refused, as is a data file that is not exactly one packages key holding a non-empty list of unique plain names (duplicate keys, versions, paths) and a lock with a row outside the name=version grammar or a name twice (exit 2, before any lock is made)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC36
+        given: "a host-tools package that fails a checksum, a committed host-tools.lock that names a package version the archive does not hold, or an archived host-tools package that is damaged"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it exits non-zero naming the package and the file, keeps nothing new in the archive, changes no lock and opens no pull request (the archive is the source of truth, as for the melange lock)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC37
+        given: "a version in the committed host-tools.lock that live Wolfi no longer resolves"
+        when: "bin/refresh-inputs.sh refresh runs"
+        then: "it notes in its output that the version is no longer in live Wolfi's resolution (host tools), exits 0 and keeps the archived copy"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REFRESH-001-AC38
+        given: "the refresh changed build/locks/host-tools.lock"
+        when: "bin/refresh-inputs.sh refresh finishes"
+        then: "the lock goes in the same one refresh pull request as the other lock changes and the archive pointer (AC5), never merged by the job, and the host tools carry no waiting period (AC7)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-ARCHIVE-001

@@ -141,12 +141,25 @@ def git(root, *args):
 _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version once, not once per commit
 
 
+def _wanted(n):
+    return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or re.search(r"(^|/)action\.ya?ml$", n)
+            or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
+            or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
+
+
+def tree_key(root, rev):
+    """The identity of what tree_files would read at a revision: the (path, blob) pairs of the files it reads, without reading them. Two revisions with the same key give the same inventory."""
+    pairs = []
+    for line in git(root, "ls-tree", "-r", "-z", rev).split("\0"):
+        meta, _, n = line.partition("\t")
+        if n and _wanted(n):
+            pairs.append((n, meta.split()[2]))
+    return tuple(pairs)
+
+
 def tree_files(root, rev):
     """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
-    def wanted(n):
-        return not n.startswith("vendor/") and (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or n == PERSONA_TOOLS or re.search(r"(^|/)action\.ya?ml$", n)
-                or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
-                or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
+    wanted = _wanted
     out = {}
     if rev is None:
         for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
@@ -900,11 +913,11 @@ bin/vendor-provenance.py
 bin/vendoring-test.sh
 bin/vex-forms-test.sh
 bin/vex-scope-test.sh
-bin/check-govulncheck.py
-bin/install-scanner.sh
 bin/chain-check-scripts-test.sh
 bin/chain-install-witness-test.sh
 bin/chain-release-scripts-test.sh
+bin/check-govulncheck.py
+bin/install-scanner.sh
 bin/release-metadata.py
 """.split())
 _VENDOR_LETTER = lambda c: r"(?:" + c + r"|\[[^\]]*" + c + r"[^\]]*\]|\?|\*)"

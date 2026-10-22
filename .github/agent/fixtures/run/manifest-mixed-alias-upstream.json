@@ -7,65 +7,108 @@
   "production": "sha256:ab"
  },
  "scanner_reports": {
-  "grype": null,
-  "trivy": null,
-  "osv-scanner": ".github/agent/fixtures/scanners/osv-mixed-alias-upstream.json",
-  "osv-scanner-gomod": null,
-  "snyk": null
+  "grype": ".github/agent/fixtures/run/panel-mixed-alias-upstream/verdict.json",
+  "scout": ".github/agent/fixtures/run/panel-mixed-alias-upstream/verdict.json",
+  "inspector": ".github/agent/fixtures/run/panel-mixed-alias-upstream/verdict.json",
+  "google": ".github/agent/fixtures/run/panel-mixed-alias-upstream/verdict.json"
  },
  "scanner_status": {
   "grype": {
    "ran": true,
    "scan_ok": true,
    "quorum_ok": true,
-   "version": "x",
+   "version": null,
    "reason": "ok",
-   "package_count": 10,
-   "os_package_count": 10,
-   "db_date": "2026-09-22",
-   "findings": 1
+   "images_ran": 6,
+   "images_expected": 6,
+   "package_count": 60
   },
-  "trivy": {
+  "scout": {
    "ran": true,
    "scan_ok": true,
    "quorum_ok": true,
-   "version": "x",
+   "version": null,
    "reason": "ok",
-   "package_count": 10,
-   "os_package_count": 10,
-   "db_date": "2026-09-22",
-   "findings": 1
+   "images_ran": 6,
+   "images_expected": 6,
+   "package_count": 60
   },
-  "osv-scanner": {
+  "inspector": {
    "ran": true,
    "scan_ok": true,
    "quorum_ok": true,
-   "version": "x",
+   "version": null,
    "reason": "ok",
-   "package_count": 10,
-   "os_package_count": 10,
-   "db_date": "2026-09-22",
-   "findings": 1
+   "images_ran": 6,
+   "images_expected": 6,
+   "package_count": 60
   },
-  "snyk": {
+  "google": {
    "ran": true,
    "scan_ok": true,
    "quorum_ok": true,
-   "version": "x",
+   "version": null,
    "reason": "ok",
-   "package_count": 10,
-   "os_package_count": 10,
-   "db_date": "2026-09-22",
-   "findings": 1
-  },
-  "osv-scanner-gomod": {
-   "ran": true,
-   "version": "x",
-   "reason": "ok",
-   "package_count": null
+   "images_ran": 3,
+   "images_expected": 3,
+   "package_count": 30
   }
  },
  "govulncheck": null,
  "known_defect_log": null,
- "kev_catalog": null
+ "kev_catalog": null,
+ "scanner_set": "panel",
+ "panel": {
+  "verdict": ".github/agent/fixtures/run/panel-mixed-alias-upstream/verdict.json",
+  "scanner_reports": {
+   "grype": ".github/agent/fixtures/run/panel-mixed-alias-upstream/verdict.json",
+   "scout": ".github/agent/fixtures/run/panel-mixed-alias-upstream/verdict.json",
+   "inspector": ".github/agent/fixtures/run/panel-mixed-alias-upstream/verdict.json",
+   "google": ".github/agent/fixtures/run/panel-mixed-alias-upstream/verdict.json"
+  },
+  "scanner_status": {
+   "grype": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 6,
+    "images_expected": 6,
+    "package_count": 60
+   },
+   "scout": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 6,
+    "images_expected": 6,
+    "package_count": 60
+   },
+   "inspector": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 6,
+    "images_expected": 6,
+    "package_count": 60
+   },
+   "google": {
+    "ran": true,
+    "scan_ok": true,
+    "quorum_ok": true,
+    "version": null,
+    "reason": "ok",
+    "images_ran": 3,
+    "images_expected": 3,
+    "package_count": 30
+   }
+  },
+  "not_counted": [],
+  "scanner_failures": []
+ }
 }

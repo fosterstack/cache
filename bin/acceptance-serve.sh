@@ -16,7 +16,7 @@ case "$suite:$what" in
   gradle:stop|maven:stop) docker rm -f fscache-acc fscache-capped fscache-mvn-acc fscache-mvn-capped > /dev/null 2>&1 || true; exit 0 ;;
   *) echo "acceptance-serve: unknown suite or action: $suite $what" >&2; exit 2 ;;
 esac
-[ -n "${IMAGE_REF:-}" ] || { echo "acceptance-serve: IMAGE_REF is not set" >&2; exit 2; }
+[ -n "${IMAGE_REF:-}" ] || { echo "acceptance-serve: IMAGE_REF is unset" >&2; exit 2; }
 docker tag "$IMAGE_REF" localhost/fscache-serve-candidate
 docker run --pull=never -d --name "$name" --env-file /dev/stdin -p "127.0.0.1:$port:8080" localhost/fscache-serve-candidate <<< "$(printf '%s\n' $envs)"   # the suite's environment (space-separated NAME=value words), one per line
 for _ in $(seq 1 20); do
