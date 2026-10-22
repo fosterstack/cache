@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-002-AC1, REQ-DEP-003-AC1, REQ-DEP-003-AC2
+# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-002-AC1, REQ-DEP-003-AC1, REQ-DEP-003-AC2, REQ-DEP-003-AC3
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
 # event, one run at a time; it arms or holds and posts its check but opens no PR and edits nothing; its
 # evidence upload can never fail a run; the required-check guard runs on every PR and push to main; the
@@ -59,6 +59,14 @@ if kind == "reviewer":
         bad.append("a PR whose file list is at the API's cap of 100 is not held (it cannot be judged: the candidates step must hold >= 100 files)")
     if hold < 0 or "--json number,title,body,headRefOid,files" not in cr or hold > cr.find("dependabot-reviewer.py updates") or "pr merge --disable-auto" not in cr[hold:cr.find("dependabot-reviewer.py updates")]:
         bad.append("a PR that touches tools/govulncheck/ is not held (the candidates step must read the PR's files first, disarm it and skip it, never review or arm it)")
+    # REQ-DEP-001-AC10: the candidate step and the hold issue select major OR flagged, never majors only
+    cand = [r for st, r in runs(job) if st.get("id") == "candidates"]
+    if len(cand) != 1 or "select(.major or .flagged)" not in cand[0] or "select(.major)" in cand[0]:
+        bad.append("the candidate step does not select a flagged non-major beside a major")
+    if len(cand) == 1 and ("auto_merge_disabled github-actions" not in cand[0] or "required-check-guard.sh" not in cand[0] or '--match-head-commit "$sha"' not in cand[0]):
+        bad.append("the candidate step does not put back (guard first, exact head) an arm the lane turned off after the reviewer approved the head")
+    if len(cand) == 1 and "if .flagged then .major = true" not in cand[0]:
+        bad.append("the candidate step does not hand a flagged update to the (hash-pinned) act step as a major")
     # AC9: auto-merge is armed only for the reviewed head
     arms = re.findall(r"gh pr merge --auto[^\n]*", text)
     if not arms or any('--match-head-commit "$sha"' not in a for a in arms):
@@ -152,11 +160,30 @@ elif kind == "automerge":
     steps = job.get("steps", [])
     if any(str(s.get("uses", "")).startswith("actions/checkout@") for s in steps):
         bad.append("checks out the PR")
-    nonmajor = "steps.meta.outputs.update-type != 'version-update:semver-major'"
+    nonmajor = "steps.meta.outputs.update-type != 'version-update:semver-major' && steps.screen.outputs.flagged != 'true'"
+    # REQ-DEP-003-AC2: a non-major whose release notes say breaking/deprecat is screened by main's own
+    # reviewer script (same code that decides who the reviewer reads), before any arming
+    scr = [i for i, s in enumerate(steps) if s.get("id") == "screen"]
+    if len(scr) != 1:
+        bad.append("no single screen step for flagged non-majors")
+    else:
+        st, sr = steps[scr[0]], steps[scr[0]].get("run") or ""
+        if "continue-on-error" in st or "if" in st:
+            bad.append("the screen step is conditional or can fail silently")
+        if "<<'PY'" not in sr or 'os.environ["PR_BODY"]' not in sr or ">> \"$GITHUB_OUTPUT\"" not in sr:
+            bad.append("the screen is not a quoted heredoc that reads PR_BODY from env and writes flagged= to GITHUB_OUTPUT")
+        if re.search(r"https?://|\bgh\b|contents/", sr):
+            bad.append("the screen downloads something (a downloaded script is refused by the pin checker, handoff 0094)")
+        if "${{" in sr:
+            bad.append("the screen interpolates an expression into a script (pass it by env)")
+        if "github.event.pull_request.body" not in str((st.get("env") or {}).get("PR_BODY", "")):
+            bad.append("the screen does not take the PR body from env PR_BODY")
     guard = [i for i, (s, r) in enumerate(runs(job)) if "required-check-guard.sh" in r]
-    arm = [i for i, (s, r) in enumerate(runs(job)) if re.search(r"gh pr merge --auto --squash", r)]
+    arm = [i for i, (s, r) in enumerate(runs(job)) if re.search(r"gh pr merge --auto --squash", r) and "--disable-auto" not in r]
     if len(arm) != 1:
         bad.append("no single squash auto-merge step")
+    elif "--match-head-commit \"$HEAD_SHA\"" not in runs(job)[arm[0]][1] or "github.event.pull_request.head.sha" not in str((steps[arm[0]].get("env") or {}).get("HEAD_SHA", "")):
+        bad.append("auto-merge is not bound to the head this run screened (--match-head-commit \"$HEAD_SHA\")")
     elif steps[arm[0]].get("if") != nonmajor or "continue-on-error" in steps[arm[0]]:
         bad.append("auto-merge is not limited to non-majors, or can fail silently")
     else:
@@ -166,7 +193,7 @@ elif kind == "automerge":
             bad.append("auto-merge is armed for a PR whose file list is at the API's cap of 100 (it cannot be judged: the arming step must hold >= 100 files)")
         if hold < 0 or hold > merge or "--json files" not in ar[:merge] or "exit 0" not in ar[hold:merge]:
             bad.append("auto-merge is armed for a PR that touches tools/govulncheck/ (the arming step must read the PR's files and leave the PR out of auto-merge before it merges: a normal lane PR)")
-    major = "steps.meta.outputs.update-type == 'version-update:semver-major'"
+    major = "${{ !cancelled() && (steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true' || steps.screen.outcome == 'failure') }}"
     disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
     if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
         bad.append("a push to a major PR does not turn its auto-merge off (the reviewed head's verdict is void)")
@@ -178,6 +205,8 @@ elif kind == "automerge":
         bad.append("the guard step is missing, wrongly conditioned, or can fail silently")
     elif arm and guard[0] > arm[0]:
         bad.append("auto-merge is armed before the guard")
+    if scr and arm and scr[0] > arm[0]:
+        bad.append("auto-merge is armed before the screen")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -252,10 +281,23 @@ case_ automerge $A automerge-guard-soft    bad "[s.__setitem__('continue-on-erro
 case_ automerge $A automerge-arm-first     bad "i = [n for n, s in enumerate($as_) if 'required-check-guard.sh' in (s.get('run') or '')][0]; g = $as_.pop(i); $as_.append(g)"
 case_ automerge $A automerge-no-disarm     bad "$as_[:] = [s for s in $as_ if 'gh pr merge --disable-auto' not in (s.get('run') or '')]"
 case_ reviewer $R reviewer-arm-any-head    bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$sha\" ', '')) for s in $rs if s.get('id') == 'act']"
+case_ reviewer $R reviewer-majors-only     bad "[s.__setitem__('run', s['run'].replace('select(.major or .flagged)', 'select(.major)')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-flagged-unnamed bad "[s.__setitem__('run', s['run'].replace('if .flagged then .major = true', 'if .flagged then .major = false')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-put-back-unguarded bad "[s.__setitem__('run', s['run'].replace('bash bin/required-check-guard.sh \"\$RUNNER_TEMP/work/heal-required-checks.json\"', 'true')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer $R reviewer-no-put-back     bad "[s.__setitem__('run', s['run'].replace('auto_merge_disabled github-actions', 'auto_merge_disabled nobody')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer $R reviewer-no-mask         bad "$rs[:] = [s for s in $rs if s.get('id') != 'mask']"
 case_ automerge $A automerge-event-head    bad "[s.__setitem__('run', s['run'].replace('headRefOid', 'title')) for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-disarm-blind  bad "[s.__setitem__('run', 'gh pr merge --disable-auto \"\$PR_URL\"') for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ reviewer $R reviewer-mask-fails-run  bad "[s.pop('continue-on-error', None) for s in $rs if s.get('id') == 'mask']"
+case_ automerge $A automerge-flagged-arms   bad "[s.__setitem__('if', \"steps.meta.outputs.update-type != 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-arm-any-head   bad "[s.__setitem__('run', s['run'].replace('--match-head-commit \"\$HEAD_SHA\" ', '')) for s in $as_ if 'gh pr merge --auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-no-screen      bad "$as_[:] = [s for s in $as_ if s.get('id') != 'screen']"
+case_ automerge $A automerge-screen-soft    bad "[s.__setitem__('continue-on-error', 'true') for s in $as_ if s.get('id') == 'screen']"
+case_ automerge $A automerge-screen-fetches bad "[s.__setitem__('run', s['run'].replace('set -euo pipefail', 'set -euo pipefail\\necho contents/bin/dependabot-reviewer.py')) for s in $as_ if s.get('id') == 'screen']"
+case_ automerge $A automerge-screen-late    bad "i = [n for n, s in enumerate($as_) if s.get('id') == 'screen'][0]; g = $as_.pop(i); $as_.append(g)"
+case_ automerge $A automerge-screen-body-inline bad "[s.__setitem__('run', s['run'] + ' echo \${{ github.event.pull_request.body }}') for s in $as_ if s.get('id') == 'screen']"
+case_ automerge $A automerge-failed-screen-keeps-arm bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major' || steps.screen.outputs.flagged == 'true'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
+case_ automerge $A automerge-flagged-no-void bad "[s.__setitem__('if', \"steps.meta.outputs.update-type == 'version-update:semver-major'\") for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
 
 # the pinned tool module is held out of auto-merge, a normal lane PR (advisor Oct 12); a list at the API's cap of 100 files cannot be judged and is held too
@@ -278,7 +320,7 @@ step = [s for s in d["jobs"]["auto-merge"]["steps"] if s.get("name") == "enable 
 assert len(step) == 1, "no single `enable auto-merge` step"
 run = step[0]["run"]
 HEAD = "a" * 40
-def case(files, view_rc=0, head=HEAD):
+def case(files, view_rc=0, head=HEAD, screened=HEAD):
     t = tempfile.mkdtemp()
     os.makedirs(t + "/bin")
     open(t + "/snap.json", "w").write(json.dumps({"files": [{"path": f} for f in files], "headRefOid": head}))
@@ -286,7 +328,7 @@ def case(files, view_rc=0, head=HEAD):
     os.chmod(t + "/bin/gh", 0o755)
     open(t + "/step.sh", "w").write(run)
     env = dict(os.environ, PATH=t + "/bin:" + os.environ["PATH"], LOGF=t + "/log", SNAP=t + "/snap.json", VIEW_RC=str(view_rc),
-               GITHUB_STEP_SUMMARY=t + "/summary", GH_TOKEN="x", **{"PR_URL": "https://github.com/o/r/pull/7"})
+               GITHUB_STEP_SUMMARY=t + "/summary", GH_TOKEN="x", HEAD_SHA=screened, **{"PR_URL": "https://github.com/o/r/pull/7"})
     r = subprocess.run(["bash", t + "/step.sh"], env=env, capture_output=True, text=True)
     log = open(t + "/log").read().splitlines() if os.path.exists(t + "/log") else []
     return r.returncode, [l for l in log if l.startswith("gh pr merge")]
@@ -306,8 +348,97 @@ rc, m = case(["go.mod"], view_rc=1)
 if rc == 0 or m: bad.append("an unreadable PR did not stop the step or was armed: %s %s" % (rc, m))
 rc, m = case(["go.mod"], head="")
 if rc == 0 or m: bad.append("a PR with no readable head was armed: %s %s" % (rc, m))
+# main's binding (REQ-DEP-001, cache#489 line): the arm is bound to the head THIS RUN SCREENED; a PR that has a newer head by now is not armed, and an unusable screened head stops the step
+rc, m = case(["go.mod"], head="b" * 40)
+if rc != 0 or m: bad.append("a PR with a newer head than the one the run screened was armed: %s %s" % (rc, m))
+rc, m = case(["go.mod"], screened="")
+if rc == 0 or m: bad.append("an empty screened head armed or did not stop the step: %s %s" % (rc, m))
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
+
+# REQ-DEP-003-AC2: the disarm step, run for real against a stub gh: armed with no verdict on the current head -> disarmed (the reviewer's
+# next pass puts the arm back if it had approved the head: its own test covers that side, from GitHub's event record); not armed -> nothing;
+# the reviewer's success already on the head -> auto-merge stands.
+if python3 - "$root" "$work" <<'PY'
+import os, subprocess, sys, yaml
+root, work = sys.argv[1], sys.argv[2]
+d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
+run = [s["run"] for s in d["jobs"]["auto-merge"]["steps"] if "gh pr merge --disable-auto" in (s.get("run") or "")][0]
+def go(verdict, armed="true"):
+    bd = os.path.join(work, "disarm-stub"); os.makedirs(bd, exist_ok=True)
+    log = os.path.join(bd, "log"); open(log, "w").close()
+    open(os.path.join(bd, "gh"), "w").write("""#!/usr/bin/env bash
+echo "gh $*" >> %s
+case "$1 $2" in
+  "pr view") case "$*" in *headRefOid*) echo HEAD1 ;; *autoMergeRequest*) echo %s ;; esac ;;
+  "api repos/o/r/commits/HEAD1/check-runs?check_name=dependabot-reviewer") echo %s ;;
+esac
+""" % (log, armed, verdict))
+    os.chmod(os.path.join(bd, "gh"), 0o755)
+    env = {**os.environ, "PATH": bd + ":" + os.environ["PATH"], "GH_TOKEN": "x", "PR_URL": "https://example.invalid/pr/1", "HEAD_SHA": "HEAD1", "GITHUB_REPOSITORY": "o/r"}
+    p = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", run], env=env, capture_output=True, text=True)
+    return p.returncode, open(log).read()
+bad = []
+rc, log = go("none")
+if rc != 0 or "pr merge --disable-auto" not in log:
+    bad.append("armed with no verdict: it must disarm (rc %s)\n%s" % (rc, log))
+rc, log = go("none", armed="false")
+if rc != 0 or "--disable-auto" in log:
+    bad.append("not armed: nothing to do (rc %s)\n%s" % (rc, log))
+rc, log = go("success")
+if rc != 0 or "--disable-auto" in log:
+    bad.append("success on the head: auto-merge must stand and nothing be written (rc %s)\n%s" % (rc, log))
+print("disarm: " + ("ok" if not bad else "; ".join(bad)))
+sys.exit(1 if bad else 0)
+PY
+then pass=$((pass+1)); echo "PASS disarm-only-an-unsupported-arm"; else failn=$((failn+1)); echo "FAIL disarm-only-an-unsupported-arm"; fi
+
+# REQ-DEP-003-AC2: the screen's heredoc IS the reviewer's rule, byte for byte: the workflow's code must equal what is generated from
+# bin/dependabot-reviewer.py (imports, the patterns, _Text, _drop_targets, is_flagged), so the two lanes cannot drift apart.
+if python3 - "$root" <<'PY'
+import ast, os, sys, yaml
+root = sys.argv[1]
+def heredoc(py_path):
+    src = open(py_path).read(); lines = src.splitlines(); tree = ast.parse(src); chunks = []
+    for node in tree.body:
+        name = None
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id in {"_FLAG", "_MDADJ", "_MDEXOTIC", "_MDLINK", "_CHARREF", "_MDLABEL", "_MDDEF"}: name = 1
+        elif isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in ("_Text", "_drop_targets", "is_flagged"): name = 1
+        if name: chunks.append("\n".join(lines[node.lineno - 1:node.end_lineno]))
+    return "import html, os, re\nfrom html.parser import HTMLParser\n" + "\n".join(chunks) + '\nprint("flagged=" + str(is_flagged(os.environ["PR_BODY"])).lower())\n'
+d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
+run = [s["run"] for s in d["jobs"]["auto-merge"]["steps"] if s.get("id") == "screen"][0]
+got = run.split("<<'PY'\n", 1)[1].rsplit("PY", 1)[0]
+want = heredoc(os.path.join(root, "bin/dependabot-reviewer.py"))
+print("screen heredoc == generated from the reviewer: " + ("ok" if got == want else "DIFFERS"))
+sys.exit(0 if got == want else 1)
+PY
+then pass=$((pass+1)); echo "PASS screen-is-the-reviewers-code"; else failn=$((failn+1)); echo "FAIL screen-is-the-reviewers-code"; fi
+
+# REQ-DEP-003-AC2: the screen's heredoc and the reviewer's is_flagged are the same rule. Run the workflow's
+# own code against a corpus (the real Dependabot bodies and written edge cases) and compare.
+if python3 - "$root" <<'PY'
+import importlib.util, json, os, subprocess, sys, yaml
+root = sys.argv[1]
+d = yaml.safe_load(open(os.path.join(root, ".github/workflows/dependabot-auto-merge.yml")))
+run = [s["run"] for s in d["jobs"]["auto-merge"]["steps"] if s.get("id") == "screen"][0]
+spec = importlib.util.spec_from_file_location("reviewer", os.path.join(root, "bin/dependabot-reviewer.py"))
+r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
+corpus = [json.load(open(os.path.join(root, "test-evidence/dependabot-reviewer", "pr-%d.json" % n)))["body"] for n in (99, 91, 124, 90, 400)]
+corpus += ["", "Bumps a from 1.0.0 to 1.1.0.", "x <details>Breaking</details>", "breaking <details>fine</details>",
+           "<DETAILS>DEPRECATED</DETAILS>", "<details><summary>a</summary><details>nested deprecates</details></details>",
+           "<details>unclosed breaking", "<details>break<!-- > -->ing</details>", "<details>depre<span title=\">\">cat</span>ed</details>", "<code>&lt;breaking&gt;</code>", "<details><!-- </details> -->Breaking change<!-- <details> --></details>", "```\n<details>deprecated</details>\n```", "plain text, nothing", "**Break**ing change", "Depre*cat*ed", "[Break](https://example.invalid)ing", "![break*ing*](https://e.invalid/i.png)", "**Fixes** a [typo](https://e.invalid)", "[Break][ref]ing", "[Break](u (a)b)ing", "[Break](https://e.invalid/a(b)/c)**ing**", "[Break][ref]**ing**\n\n[ref]: https://e.invalid", "[Break](u \"a)b\")ing", "[Break](unterminated", "[Break][ref\\]*x]**ing** change\n\n[ref\\]*x]: https://e.invalid", "[Break](<#a)/b>)**ing** change", "[Break][r&#93; x]**ing**", "[Break][r\\] x]**ing**", "[Break](a&#41;b)<em>ing</em>", "[Break](a&#0041;b)<em>ing</em>", "[Break](a&#X29;b)<em>ing</em>", "[Break](a&#x0029;b)<em>ing</em>", "[Break](a&#41b)<em>ing</em>", "See [the docs](https://e.invalid/a(b)/c \"t\") and (parens)", "<details>Breaking change", "<details>Breaking change<details>fine</details>", "<details open>Breaking change</details>", "<details open>fine</details>", "</details> stray", "<details class=\"x\"><summary>s</summary>ok</details>", "<detailsx>breaking</detailsx>", "<details>break<b>ing</b> change</details>", "<details>depre&#99;ated</details>", "<details>break&lt;b&gt;ing</details>", "<details>&lt;p&gt;Deprecated&lt;/p&gt;</details>", "<details>a</details> deprecat <details>b</details>", "no notes, breaking change outside"]
+bad = []
+for body in corpus:
+    p = subprocess.run(["bash", "-c", run], env={**os.environ, "PR_BODY": body, "GITHUB_OUTPUT": "/dev/stdout"}, capture_output=True, text=True)
+    got = p.stdout.strip() == "flagged=true"
+    if p.returncode != 0 or got != r.is_flagged(body):
+        bad.append((body[:40], p.stdout.strip(), r.is_flagged(body), p.stderr[-80:]))
+print("screen heredoc == reviewer is_flagged on %d bodies" % len(corpus) if not bad else "DISAGREE: %s" % bad)
+sys.exit(1 if bad else 0)
+PY
+then pass=$((pass+1)); echo "PASS screen-agrees-with-reviewer"; else failn=$((failn+1)); echo "FAIL screen-agrees-with-reviewer"; fi
+
 echo "dependency-lanes: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

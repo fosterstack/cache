@@ -596,8 +596,6 @@ SPLIT_STEPS = json.loads(r'''{
   }
  ]
 }''')
-VEX_NAME = "the final image index that carries our OpenVEX for Docker Scout \u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)"
-ISO_NAME = "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)"
 for jid, want_steps in SPLIT_STEPS.items():
     sj = d.get("jobs", {}).get(jid)
     if not isinstance(sj, dict):
@@ -611,17 +609,6 @@ for jid, want_steps in SPLIT_STEPS.items():
         bad.append(f"the {jid} job does not run on exactly `ubuntu-latest`")
     got = sj.get("steps", [])
     accepted = [want_steps]
-    if jid == "allowlist-pins-auditor":   # the transition (cache#489 and #521's landings): exactly main's list, or it plus either new step, or both, each at its anchor
-        def _after(lst, anchor_run, step):
-            i = [k for k, x in enumerate(lst) if x.get("run") == anchor_run]
-            return lst[:i[0] + 1] + [step] + lst[i[0] + 1:] if len(i) == 1 else None
-        _vex = {"name": VEX_NAME, "run": "bash bin/vex-index-test.sh </dev/null"}
-        _iso = {"name": ISO_NAME, "run": "bash bin/job-isolation-test.sh"}
-        _base = [x for x in want_steps if x != _vex]          # main's list without the VEX step, whether or not the branch's own list already carries it
-        _a = _after(_base, "bash bin/panel-test.sh", _vex)
-        _b = _after(_base, "bash bin/workflow-consolidation-test.sh", _iso)
-        _ab = _after(_a, "bash bin/workflow-consolidation-test.sh", _iso) if _a else None
-        accepted = [x for x in (_base, _a, _b, _ab) if x]
     if got not in accepted:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
@@ -881,20 +868,17 @@ case_ split-suite-deleted     bad "st = d['jobs']['allowlist-persona']['steps'];
 case_ split-suite-or-true     bad "x = [x for x in d['jobs']['allowlist-persona']['steps'] if 'persona-uat-agent-test' in (x.get('run') or '')][0]; x['run'] += ' || true'"
 case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain']['steps']; st[-1], st[-2] = st[-2], st[-1]"
 case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append({'name': 'x', 'run': 'true'})"
-# The transition judge (cache#489 / #521's landings): allowlist-pins-auditor is accepted in EXACTLY four forms: main's list, + the VEX step after panel-test, + the isolation step after workflow-consolidation, or both
-PA="import json; ps = d['jobs']['allowlist-pins-auditor']['steps']; ps[:] = [x for x in ps if x.get('run') != 'bash bin/vex-index-test.sh </dev/null']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; vex = {'name': 'the final image index that carries our OpenVEX for Docker Scout \\u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)', 'run': 'bash bin/vex-index-test.sh </dev/null'}; iso = {'name': 'a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)', 'run': 'bash bin/job-isolation-test.sh'}; "
-case_ pa-vex-form-accepted        ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
-case_ pa-iso-form-accepted        ok  "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-both-forms-accepted      ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-without-vex-accepted     ok  "${PA}pass"
-case_ pa-vex-twice                bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex); ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
-case_ pa-vex-at-end               bad "${PA}ps.append(vex)"
-case_ pa-iso-at-start             bad "${PA}ps.insert(0, iso)"
-case_ pa-iso-twice                bad "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-iso-or-true              bad "${PA}iso['run'] += ' || true'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-iso-renamed              bad "${PA}iso['name'] = 'x'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-iso-continue             bad "${PA}iso['continue-on-error'] = 'true'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-vex-env                  bad "${PA}vex['env'] = {'X': '1'}; ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
+# allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
+PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; "
+case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
+case_ pa-iso-removed              bad "${PA}del ps[ix('bash bin/job-isolation-test.sh')]"
+case_ pa-vex-twice                bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, dict(ps[ix('bash bin/vex-index-test.sh </dev/null')]))"
+case_ pa-iso-twice                bad "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, dict(ps[ix('bash bin/job-isolation-test.sh')]))"
+case_ pa-iso-at-start             bad "${PA}ps.insert(0, ps.pop(ix('bash bin/job-isolation-test.sh')))"
+case_ pa-vex-at-end               bad "${PA}ps.append(ps.pop(ix('bash bin/vex-index-test.sh </dev/null')))"
+case_ pa-iso-or-true              bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['run'] += ' || true'"
+case_ pa-iso-continue             bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['continue-on-error'] = 'true'"
+case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </dev/null')]['env'] = {'X': '1'}"
 case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"

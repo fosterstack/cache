@@ -2095,12 +2095,14 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "d587105d92f85da39aa26ce771ebbd343d212ad0a5f85ec811b1c56d1b327b32",
+      "sha256": "2f3eb86cd18806f8b4270ca6b832ffe754841a8c3382a757bab10459ec2b222d",
       "tools": [
         "at",
         "python3"
       ],
-      "runs": [],
+      "runs": [
+        "bin/rescan-statement.py"
+      ],
       "signs": false,
       "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
     },

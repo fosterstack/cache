@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 98 |
-| Acceptance criteria | 469 |
+| Acceptance criteria | 471 |
 | Release-blocking ACs | 128 |
-| ACs with mapped evidence | 458 |
+| ACs with mapped evidence | 460 |
 | Release-blocking ACs with mapped evidence | 128 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
@@ -695,6 +695,7 @@ A Dependabot major version bump shall be judged by the Dependabot reviewer, not 
 | REQ-DEP-001-AC7 | Given the reviewer's readers failing three hourly runs in a row; when the third run ends; then it opens one issue for the ccode queue and posts nothing else | unit |  | approved | 1 item(s) |
 | REQ-DEP-001-AC8 | Given a reviewer run that is cancelled or superseded; when it ends; then it never posts a verdict over a newer one | unit |  | approved | 2 item(s) |
 | REQ-DEP-001-AC9 | Given a merge verdict on a Dependabot major; when auto-merge is armed, and when a new commit is pushed to the PR; then auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh | unit |  | approved | 2 item(s) |
+| REQ-DEP-001-AC10 | Given a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case; when the reviewer picks its candidates and gathers its evidence; then it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it; a bump whose notes say neither is left to the patch and minor lane | unit |  | approved | 2 item(s) |
 
 ### REQ-DEP-002 — The required-check guard runs everywhere
 
@@ -717,7 +718,8 @@ A Dependabot patch or minor bump shall merge on its own once every required chec
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-DEP-003-AC1 | Given a Dependabot patch or minor pull request; when the auto-merge lane runs; then it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer | ci-workflow |  | approved | 1 item(s) |
-| REQ-DEP-003-AC2 | Given a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged); when the auto-merge lane or the hourly reviewer sees it; then the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual | ci-workflow |  | approved | 2 item(s) |
+| REQ-DEP-003-AC2 | Given a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case; when the auto-merge lane runs; then it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing | ci-workflow |  | approved | 2 item(s) |
+| REQ-DEP-003-AC3 | Given a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged); when the auto-merge lane or the hourly reviewer sees it; then the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual | ci-workflow |  | approved | 2 item(s) |
 
 ### REQ-DEP-004 — A held bump or drift dispatches the fixer
 
