@@ -18,6 +18,10 @@
 # ignored — the generator may call busybox pkg:generic or pkg:apk; a
 # namespaced name such as a Go module path must match in full).
 #
+# Image scope (REQ-REL-004-AC1): a product with variant= and/or arch= qualifiers covers only the image whose label ends in
+# <variant>-<arch> (production|fips, amd64|arm64) and agrees on every qualifier it carries; a product with neither covers every
+# image. A scoped product never covers an image whose identity the label does not give, and a repeated qualifier is ambiguous: no cover.
+#
 # ScanSbom answers {"sbom": <CycloneDX document>}; the document is unwrapped
 # here, and a response that is neither that envelope nor a CycloneDX
 # document is "did not run" — never read as zero findings.
@@ -30,6 +34,7 @@
 import json
 import re
 import sys
+import urllib.parse
 
 OUR_PRODUCTS = re.compile(
     r"^pkg:(oci/cache\?repository_url=ghcr\.io/fosterstack/cache"
@@ -60,13 +65,37 @@ def same_pkg(a, b):
     return an.rsplit("/", 1)[-1] == bn.rsplit("/", 1)[-1]
 
 
+IMAGE = re.compile(r"(?:^|[-_:/])(production|fips)-(amd64|arm64)$")
+
+
+def image_identity(label):
+    m = IMAGE.search(label or "")
+    return {"variant": m.group(1), "arch": m.group(2)} if m else {}
+
+
+def scope_of(product_id):
+    """{'variant': .., 'arch': ..} the product names (only those present); None when a qualifier is repeated (ambiguous)."""
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(product_id).query, keep_blank_values=True)
+    scope = {}
+    for k in ("variant", "arch"):
+        if k in q:
+            if len(q[k]) != 1:
+                return None
+            scope[k] = q[k][0]
+    return scope
+
+
+def in_scope(scope, image):
+    return scope is not None and all(image.get(k) == v for k, v in scope.items())
+
+
 def load(path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def vex_index(doc):
-    """vulnerability id → list of subcomponent (name, ver) sets; an empty set
+    """vulnerability id → list of (subcomponent (name, ver) set, product scope); an empty set
     means the statement covers every package of our product."""
     idx = {}
     for st in doc.get("statements") or []:
@@ -81,12 +110,16 @@ def vex_index(doc):
             subs = {name_version(s.get("@id")) for s in p.get("subcomponents") or []}
             for i in ids:
                 if i:
-                    idx.setdefault(i, []).append(subs)
+                    idx.setdefault(i, []).append((subs, scope_of(pid)))
     return idx
 
 
-def covered(idx, vid, pkg):
-    for subs in idx.get(vid, []):
+def covered(idx, vid, pkg, image=None):
+    """image = the scanned image's identity (image_identity(label)); None means the caller has already filtered the statements to
+    this image (bin/panel.py does, per image), so the scope is not applied a second time."""
+    for subs, scope in idx.get(vid, []):
+        if image is not None and not in_scope(scope, image):
+            continue
         if not subs or any(same_pkg(pkg, s) for s in subs):
             return True
     return False
@@ -117,6 +150,7 @@ def main(argv):
         if c.get("bom-ref"):
             by_ref[c["bom-ref"]] = c
     idx = vex_index(vex)
+    image = image_identity(label)
     blocking, suppressed = [], []
     for v in findings.get("vulnerabilities") or []:
         vid = v.get("id") or "?"
@@ -127,7 +161,7 @@ def main(argv):
             if not pkg[0]:
                 pkg = ((c.get("name") or "?").lower(), c.get("version") or "")
             row = f"{vid} {pkg[0]}@{pkg[1]} ({sev})"
-            (suppressed if covered(idx, vid, pkg) else blocking).append(row)
+            (suppressed if covered(idx, vid, pkg, image) else blocking).append(row)
     print(f"inspector {label}: {len(comps)} packages, {len(blocking)} finding(s), "
           f"{len(suppressed)} covered by the published VEX")
     for r in suppressed:

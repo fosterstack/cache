@@ -30,7 +30,7 @@
  "go-bump-open-pr-test.sh": 22,
  "go-freshness-wiring-test.sh": 29,
  "govulncheck-fixtures-test.sh": 4,
- "inspector-gate-test.sh": 17,
+ "inspector-gate-test.sh": 30,
  "install-scanner-test.sh": 15,
  "k8s-harness-fence-test.sh": 26,
  "marker-gate-test.sh": 51,

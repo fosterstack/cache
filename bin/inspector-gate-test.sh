@@ -83,6 +83,29 @@ check "non-object response = did not run"   2 "not a CycloneDX document"        
 check "mismatched name/url purl does not suppress" 1 "1 finding"               t "$w/sbom.json" "$w/novex.json" "$w/mixed-vex.json"
 check "bad usage is did-not-run"           2 "usage"                           t "$w/sbom.json"
 
+# Image scope (REQ-REL-004-AC1, chain-v030 review S2): a statement whose product carries variant= / arch= covers only that image; one with
+# neither covers every image (as before); a scoped statement never covers an image whose identity the label does not give.
+P='pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache'
+scoped() { printf '{"statements":[{"vulnerability":{"name":"CVE-2025-60876"},"status":"not_affected","products":[{"@id":"%s","subcomponents":[{"@id":"pkg:generic/busybox@1.37.0"}]}]}]}' "$1" > "$w/$2"; }
+scoped "$P&variant=production&arch=amd64" sc-prod-amd64.json
+scoped "$P&variant=production" sc-prod.json
+scoped "$P&arch=arm64" sc-arm64.json
+scoped "$P" sc-none.json
+scoped "$P&variant=production&arch=amd64&arch=arm64" sc-dup.json
+check "scoped statement covers its own image"            0 "1 covered"   cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "variant+arch scope does not cover another arch"   1 "1 finding"   cand-production-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "variant+arch scope does not cover another variant" 1 "1 finding"  cand-fips-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "cross variant and arch both differ"               1 "1 finding"   cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "variant-only scope covers both arches of it"      0 "1 covered"   cand-production-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod.json"
+check "variant-only scope does not cover the other variant" 1 "1 finding" cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-prod.json"
+check "arch-only scope covers its arch in any variant"   0 "1 covered"   cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-arm64.json"
+check "arch-only scope does not cover the other arch"    1 "1 finding"   cand-fips-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-arm64.json"
+check "unscoped statement still covers every image"      0 "1 covered"   cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-none.json"
+check "scoped statement, label without identity: blocks" 1 "1 finding"   t "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
+check "unscoped statement, label without identity: covers" 0 "1 covered" t "$w/sbom.json" "$w/vexed.json" "$w/sc-none.json"
+check "a repeated qualifier is not read as a match"      1 "1 finding"   cand-production-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-dup.json"
+check "the published VEX still covers a real tag label"  0 "1 covered"   cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$vex"
+
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
