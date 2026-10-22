@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Release, second witnessed step (rules 17, 22, 56, 64): the apks Build made are signed with the stored release key. Build's names are read through one
 # fixed table (REQ-CHAIN-007-AC17): the artifact apk-ubuntu-24.04 holds x86_64/ (amd64) and apk-ubuntu-24.04-arm holds aarch64/ (arm64), each with the
-# standard apk fscache-<version>-r0.apk and the fips apk fscache-fips-<version>-r0.apk, Rebuild's rapk artifacts being laid out the same. Each of the
+# standard apk fscache-<version>-r0.apk and the fips apk fscache-fips-<version>-r0.apk. Each of the
 # four apks must have exactly the digest Build attested (apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64) before anything is signed.
-# The comparison with Rebuild and the signing are cache's bin/release-sign-apks.sh, which signs only when every apk agrees and names the key file
-# release.rsa itself. The key is written to a private file named release.rsa (cache's signer refuses any other name) that is removed on every exit; it is never put on an argument list, in the output or in a log.
+# The signing is cache's bin/release-sign-apks.sh, which names the key file release.rsa itself. Rebuild's apks are NOT here: the job that holds the signing key receives
+# no build output but Build's own apks (the owner's rule of Oct 21 2026); the comparison with Rebuild is bin/release-compare.sh in the compare job, which this job needs.
+# The key is written to a private file named release.rsa (cache's signer refuses any other name) that is removed on every exit; it is never put on an argument list, in the output or in a log.
 set -euo pipefail
 shopt -s nullglob
 if [ -z "${APK_RELEASE_SIGNING_KEY:-}" ]; then echo "release-apks: APK_RELEASE_SIGNING_KEY is unset" >&2; exit 2; fi
@@ -12,7 +13,7 @@ if [ -z "${APK_RELEASE_SIGNING_KEY:-}" ]; then echo "release-apks: APK_RELEASE_S
 runners="ubuntu-24.04:x86_64:amd64 ubuntu-24.04-arm:aarch64:arm64"
 variants="standard fips"
 pattern() { case "$1" in standard) printf %s 'fscache-[0-9]*-r0.apk' ;; fips) printf %s 'fscache-fips-*-r0.apk' ;; esac; }
-rm -rf release-apks release-apks-build release-apks-rebuild
+rm -rf release-apks release-apks-build
 for row in $runners; do
   runner="${row%%:*}"
   rest="${row#*:}"
@@ -28,9 +29,8 @@ for row in $runners; do
     if [ "${#files[@]}" != 1 ]; then echo "release-apks: ${#files[@]} $variant apks for $arch, Build attested exactly one" >&2; exit 1; fi
     got=$(python3 bin/apk-tool.py digest "${files[0]}")
     if [ "$got" != "$want" ]; then echo "release-apks: ${files[0]} differs from the digest Build attested for $key ($got, attested $want)" >&2; exit 1; fi
-    mkdir -p "release-apks-build/$arch" "release-apks-rebuild/$arch"
+    mkdir -p "release-apks-build/$arch"
     cp "${files[0]}" "release-apks-build/$arch/"
-    if [ -f "rapks/$runner/$arch/${files[0]##*/}" ]; then cp "rapks/$runner/$arch/${files[0]##*/}" "release-apks-rebuild/$arch/"; fi
   done
 done
 umask 077
@@ -38,7 +38,7 @@ keydir=$(mktemp -d)
 keyfile="$keydir/release.rsa"
 trap 'rm -rf "$keydir"' EXIT
 printf %s "$APK_RELEASE_SIGNING_KEY" > "$keyfile"
-bash bin/release-sign-apks.sh --build-dir release-apks-build --rebuild-dir release-apks-rebuild --key "$keyfile"
+bash bin/release-sign-apks.sh --build-dir release-apks-build --key "$keyfile"
 for row in $runners; do
   runner="${row%%:*}"
   rest="${row#*:}"
