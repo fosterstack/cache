@@ -276,7 +276,7 @@ for s in "${scanners[@]}"; do
     fi
     if [ "$s" = grype ] && [ -n "$plat" ] && [ "$rc" = 0 ]; then
       # the image grype reports it scanned is the child recorded for this subject: the archive was made from that child's own blobs, and an archive's image ID is
-      # its config digest, so the report's imageID must be the config the child's manifest names (the manifest digest grype reports for an archive is its own, not the child's)
+      # its config digest, so the report's imageID must be the config the child's manifest names (the manifest digest grype reports for an archive is its own, not the child's). This confirms grype read the archive made here from that child, not an independent view of what was scanned: the layers are bound by check-bind (every blob re-hashed) and by the explicit member list of osv_archive
       want=$(jq -r '.config.digest // empty' "$path/blobs/sha256/${digest#sha256:}" 2> /dev/null) || want=""
       md=$(jq -r '.source.target.imageID // empty' "$tmp/out.json" 2> /dev/null) || md=""
       if [ -z "$want" ] || [ "$md" != "$want" ]; then

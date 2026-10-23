@@ -58,6 +58,6 @@
  "vex-both-scanners-test.sh": 7,
  "vex-forms-test.sh": 64,
  "vex-index-test.sh": 1159,
- "vex-scope-test.sh": 7,
+ "vex-scope-test.sh": 19,
  "workflow-consolidation-test.sh": 80
 }

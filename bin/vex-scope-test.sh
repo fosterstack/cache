@@ -74,7 +74,7 @@ check "missing image identity (no tags, no digests)"      ghcr.io/fosterstack/ca
 # findings are real database matches.
 chk="$work/check-path"; mkdir -p "$chk"
 python3 - "$chk" <<'PY'
-import hashlib, io, json, os, sys, tarfile
+import gzip, hashlib, io, json, os, sys, tarfile
 W = sys.argv[1]
 def mk(variant):
     root = os.path.join(W, "images", variant)
@@ -86,11 +86,12 @@ def mk(variant):
             i = tarfile.TarInfo(n); i.size = len(c); t.addfile(i, io.BytesIO(c))
         add("etc/alpine-release", b"3.21.0\n"); add("etc/os-release", b'NAME="Alpine Linux"\nID=alpine\nVERSION_ID=3.21.0\n')
         add("lib/apk/db/installed", b"C:Q1xxxxxxxxxxxxxxxxxxxxxxxxxxx=\nP:busybox\nV:1.37.0-r0\nA:x86_64\nS:1\nI:1\nT:x\nU:x\nL:GPL-2.0-only\no:busybox\nm:x\nt:0\nc:0\n\n")
-    layer = tb.getvalue(); ld = blob(layer); kids = []
+    layer = tb.getvalue(); ldiff = "sha256:" + hashlib.sha256(layer).hexdigest()
+    layer_gz = gzip.compress(layer, mtime=0); ld = blob(layer_gz); kids = []   # the layer is a gzip blob, as the images apko writes are; diff_ids stay the uncompressed digest
     for arch in ("amd64", "arm64"):
-        cfg = json.dumps({"architecture": arch, "os": "linux", "rootfs": {"type": "layers", "diff_ids": [ld]}, "v": variant}).encode(); cd = blob(cfg)
+        cfg = json.dumps({"architecture": arch, "os": "linux", "rootfs": {"type": "layers", "diff_ids": [ldiff]}, "v": variant}).encode(); cd = blob(cfg)
         man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cd, "size": len(cfg)},
-                          "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": ld, "size": len(layer)}]}, sort_keys=True).encode()
+                          "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": ld, "size": len(layer_gz)}]}, sort_keys=True).encode()
         kids.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": blob(man), "size": len(man), "platform": {"os": "linux", "architecture": arch}})
     idx = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": kids}, sort_keys=True).encode(); ix = blob(idx)
     open(root + "/oci-layout", "w").write('{"imageLayoutVersion":"1.0.0"}')
@@ -112,11 +113,41 @@ st = [{"vulnerability": {"name": c}, "status": "not_affected", "justification": 
 json.dump({"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://example.test/vex", "author": "t", "timestamp": "2026-10-23T00:00:00Z", "version": 1, "statements": st}, open(W + "/.vex/fosterstack-cache.openvex.json", "w"))
 PY
 ln -s "$here" "$chk/bin"
-( cd "$chk" && PATH="$(dirname "$grype"):$PATH" bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests digests.json --images images --archives dist --out out > run.log 2>&1 ) || true
+run_check() {   # run_check VEXFILE: bin/check-scan.sh in the tree with that document as the published VEX
+  cp "$1" "$chk/.vex/fosterstack-cache.openvex.json"; rm -rf "$chk/out"
+  ( cd "$chk" && PATH="$(dirname "$grype"):$PATH" bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests digests.json --images images --archives dist --out out > run.log 2>&1 ) || true
+}
+child_is() {   # child_is production amd64 pass|fail -> 0 when the subject's verdict is that and it inventoried 3 packages
+  [ "$(jq -r --arg n "$1/linux/$2" '[.scanners[0].subjects[]? | select(.name == $n)][0] | [.verdict, .packages] | @csv' "$chk/out/scan-results.json" 2>/dev/null)" = "\"$3\",3" ]
+}
+vex_with() {   # vex_with FILE PRODUCT-ID CVE...: a document excepting those CVEs for that product
+  python3 - "$@" <<'PYV'
+import json, sys
+out, pid = sys.argv[1], sys.argv[2]
+st = [{"vulnerability": {"name": c}, "status": "not_affected", "justification": "vulnerable_code_not_in_execute_path", "products": [{"@id": pid}]} for c in sys.argv[3:]]
+json.dump({"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://example.test/vex", "author": "t", "timestamp": "2026-10-23T00:00:00Z", "version": 1, "statements": st}, open(out, "w"))
+PYV
+}
+CACHE_IMG="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+vex_with "$work/vex-all.json" "$CACHE_IMG" CVE-2025-60876 CVE-2025-46394 CVE-2024-58251
+vex_with "$work/vex-none.json" "$CACHE_IMG" CVE-2099-0001
+vex_with "$work/vex-qual.json" "$CACHE_IMG&variant=production&arch=amd64" CVE-2025-60876 CVE-2025-46394 CVE-2024-58251
+run_check "$work/vex-all.json"
 for v in production fips; do for a in amd64 arm64; do
-  r=$(jq -c --arg n "$v/linux/$a" '[.scanners[0].subjects[]? | select(.name == $n)][0] | {verdict, packages}' "$chk/out/scan-results.json" 2>/dev/null || echo null)
-  if [ "$(jq -r '[.verdict, .packages] | @csv' <<<"$r" 2>/dev/null)" = '"pass",3' ]; then echo "PASS check path: the $v image's linux/$a child is scanned by real grype and the cache VEX applies (its 3 findings are excepted)"; pass=$((pass+1))
-  else echo "FAIL check path: the $v image's linux/$a child (got $r; want pass over 3 packages): $(tail -2 "$chk/run.log" | cut -c1-200 | tr '\n' ' ')"; fail=$((fail+1)); fi
+  if child_is $v $a pass; then echo "PASS check path: the $v image's linux/$a child (gzip layer) is scanned by real grype and the cache VEX applies (3 packages, verdict pass)"; pass=$((pass+1))
+  else echo "FAIL check path: the $v image's linux/$a child (want pass over 3 packages): $(tail -2 "$chk/run.log" | cut -c1-200 | tr '\n' ' ')"; fail=$((fail+1)); fi
+done; done
+# the same layouts under a document that excepts none of their findings must FAIL: otherwise the pass above could be a database that no longer matches (the VEX inert)
+run_check "$work/vex-none.json"
+for v in production fips; do for a in amd64 arm64; do
+  if child_is $v $a fail; then echo "PASS check path control: the $v image's linux/$a child fails when the VEX excepts none of its findings"; pass=$((pass+1))
+  else echo "FAIL check path control: the $v image's linux/$a child did not fail without a covering statement ($(tail -1 "$chk/run.log" | cut -c1-160))"; fail=$((fail+1)); fi
+done; done
+# a statement scoped by variant= / arch= is never applied by grype (it derives no such qualifier from an image): fail-closed, in every child, the documented limit (.vex/README.md)
+run_check "$work/vex-qual.json"
+for v in production fips; do for a in amd64 arm64; do
+  if child_is $v $a fail; then echo "PASS check path: a variant/arch-scoped statement is not applied to the $v image's linux/$a child (grype keeps blocking: fail-closed)"; pass=$((pass+1))
+  else echo "FAIL check path: a variant/arch-scoped statement changed the $v image's linux/$a child's verdict"; fail=$((fail+1)); fi
 done; done
 echo "----"
 echo "vex-scope: ${pass} passed, ${fail} failed"
