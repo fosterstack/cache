@@ -1062,14 +1062,26 @@ def _container_inner(tool, args):
         if unknown or k >= len(rest):
             return None
         entry, j = None, 0
-        while j < k:                       # walk the options: a value of another option (--label '--entrypoint=x') is not the entrypoint
+        while j < k:                       # the same walk _options makes: a value of another option (--label '--entrypoint=x', -il '--entrypoint=x') is not the entrypoint
             a = rest[j]
+            if a == "--":
+                break
             if a == "--entrypoint" and j + 1 < k:
                 entry, j = rest[j + 1], j + 2
             elif a.startswith("--entrypoint="):
                 entry, j = a.split("=", 1)[1], j + 1
-            elif a in RUN_VAL:
-                j += 2
+            elif a.startswith("--"):
+                j += 2 if (a in RUN_VAL) else 1
+            elif a.startswith("-") and a != "-":
+                step = 1
+                for c, ch in enumerate(a[1:], 1):
+                    o = "-" + ch
+                    if o in RUN_BOOL:
+                        continue
+                    if o in RUN_VAL:
+                        step = 1 if c + 1 < len(a) else 2     # the value is attached, or the next word
+                    break
+                j += step
             else:
                 j += 1
         inner = rest[k + 1:]
@@ -1184,8 +1196,8 @@ def _commands(script, depth=0, in_container=False):
                 else:
                     out += _commands(" ".join(shlex.quote(t) for t in inner), depth + 1, True)
     if in_container:
-        # a script path inside a container names the container's file, never the checkout's: it is not bound to a committed file (the bytes are
-        # the image's, which is pinned by digest) and, as before the inner command was read, not read. Kept through every nested -c / eval / $( ).
+        # a script path in the PLAIN inner command of a container names the container's file, never the checkout's: it is not bound to a committed file (the
+        # bytes are the image's, pinned by digest) and, as before, not read. A `sh -c` / eval body on the line keeps the rule it had on main.
         out = [c for c in out if c[0] not in ("__script__", "__exec__", "__globexec__", "__foreign__")]
     return out
 
