@@ -134,13 +134,21 @@ jobs:
             mv /tmp/attach/next.json /tmp/attach/digests.json
             echo "${v}: built ${base}, final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
           done
-      # The Scout self-check fixtures (rule 4): the pinned debian 12.0 index (public image bytes), plain as the control and with an attestation
+      # The Scout self-check fixtures (rule 4): the pinned debian 12.0 linux/amd64 image wrapped in a one-child index (public image bytes), plain as the control and with an attestation
       # of OUR author that covers only CVE-2023-4911, in our published product form. Two tags, pruned like the rest.
       - name: build the Scout self-check fixtures and push them
         run: |
           set -euo pipefail
-          rm -rf /tmp/layout/fixture; mkdir -p /tmp/layout
-          skopeo copy --all docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab oci:/tmp/layout/fixture
+          rm -rf /tmp/layout/fixture /tmp/layout/fixture-image; mkdir -p /tmp/layout
+          # the pinned digest is debian 12.0's linux/amd64 image manifest, not its index: skopeo's layout of it holds one IMAGE descriptor, so it is wrapped
+          # into a one-child OCI index here (the shape of the candidate layouts), and vex-index.py's check of the layout is not loosened
+          skopeo copy --all docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab oci:/tmp/layout/fixture-image
+          cp -R /tmp/layout/fixture-image /tmp/layout/fixture
+          child=$(jq -ec '.manifests | if length == 1 then .[0] | {mediaType, digest, size} + {platform: {architecture: "amd64", os: "linux"}} else error("the fixture image layout is not one manifest") end' /tmp/layout/fixture-image/index.json)
+          jq -nc --argjson c "${child}" '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [$c]}' > /tmp/layout/fixture/index.tmp
+          idx=$(sha256sum /tmp/layout/fixture/index.tmp | cut -d' ' -f1)
+          mv /tmp/layout/fixture/index.tmp "/tmp/layout/fixture/blobs/sha256/${idx}"
+          jq -nc --arg d "sha256:${idx}" --argjson s "$(wc -c < "/tmp/layout/fixture/blobs/sha256/${idx}")" '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [{mediaType: "application/vnd.oci.image.index.v1+json", digest: $d, size: $s}]}' > /tmp/layout/fixture/index.json
           chmod -R go-w /tmp/layout/fixture
           jq --arg p "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" '.["@id"] = "https://github.com/fosterstack/cache/scout-selfcheck" | .timestamp = "2026-10-03T00:00:00Z" | .version = 1
             | .statements = [{"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected",
