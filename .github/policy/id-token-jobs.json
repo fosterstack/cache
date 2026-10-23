@@ -38,6 +38,11 @@
   },
   {
    "workflow": "release.yml",
+   "job": "sign-rebuild",
+   "reason": "calls stage-sign.yml a second time, for the Rebuild records: Sign's second call, which checks and signs them keyless and receives no Rebuild apk or image (REQ-CHAIN-005-AC4)"
+  },
+  {
+   "workflow": "release.yml",
    "job": "check",
    "reason": "calls stage-verify.yml: Check, whose Witness steps mint the keyless signing identity (REQ-CHAIN-006)"
   },

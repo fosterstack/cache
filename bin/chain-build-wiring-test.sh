@@ -549,7 +549,7 @@ hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
 hm fout    "AC2 the record written to another path" '"witness-${step#snapshot-}/$step-collection.json"' 'out/x.json'
-hm fopen   "AC2 the step list is open" 'apk|build|rapk|rebuild' '*'
+hm fopen   "AC2 the step list is open" 'scanners|acceptance|runtime|arm64' '*'
 hm fexec   "AC2 witness not exec'd (its exit status could be lost)" 'exec witness run' 'witness run'
 hm ftee "AC2 the token written elsewhere" '| jq -r .value)' '| jq -r .value | tee /tmp/leak)'
 hm ffile "AC2 the token in a file again (the older form): a file under the runner temp folder while the command runs" \
@@ -569,8 +569,8 @@ hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads w
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
     '"witness-${step#snapshot-}/$step-collection.json"' \
        '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
-hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'snapshot-rapk|snapshot-rebuild|' \
-    'snapshot-rapk|snapshot-rebuild|snapshot-evil|'
+hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in scanners|' \
+    'in snapshot-evil|scanners|'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
@@ -1247,32 +1247,24 @@ for tag in fixture real; do
     done
     continue
   fi
-  d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ -f "$d/witness-apk/apk-collection.json" ] && grep -Fq -- '--step apk' <<< "$calls" \
+  d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && [ -f "$d/witness-scanners/scanners-collection.json" ] && grep -Fq -- '--step scanners' <<< "$calls" \
      && grep -Fq -- '-- timeout -k 20 540 bash bin/wrapped.sh' <<< "$calls" && grep -Fxq 'timeout -k 20 540' <<< "$calls"; then
     ok "AC2 $tag helper: the command runs through witness with timeout -k 20 540 and the record is written"
   else
     bad "AC2 $tag helper: rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk SLEEP=6 FAKE_TIMEOUT_SECONDS=1)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-apk/apk-collection.json" ] && [ ! -e "$d/digests.json" ]; then
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners SLEEP=6 FAKE_TIMEOUT_SECONDS=1)
+  if [ "$rc" != 0 ] && [ ! -e "$d/witness-scanners/scanners-collection.json" ] && [ ! -e "$d/digests.json" ]; then
     ok "AC2 $tag helper: a command that outlives the (test) timeout fails the job and leaves no record and no digests.json"
   else
-    bad "AC2 $tag helper: slow command -> rc=$rc, files left: $(ls "$d/witness-apk" "$d/digests.json" 2> /dev/null | tr '\n' ' ')"
+    bad "AC2 $tag helper: slow command -> rc=$rc, files left: $(ls "$d/witness-scanners" "$d/digests.json" 2> /dev/null | tr '\n' ' ')"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk WRAPPED_RC=3)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-apk/apk-collection.json" ]; then
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners WRAPPED_RC=3)
+  if [ "$rc" != 0 ] && [ ! -e "$d/witness-scanners/scanners-collection.json" ]; then
     ok "AC2 $tag helper: a failing command fails the job and leaves no record"
   else
     bad "AC2 $tag helper: failing command -> rc=$rc"
-  fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" snapshot-apk); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ -f "$d/witness-apk/snapshot-apk-collection.json" ] && [ ! -e "$d/witness-snapshot-apk" ] && grep -Fq -- '--step snapshot-apk' \
-      <<< "$calls";
-  then
-    ok "AC12 $tag helper: a snapshot step writes witness-apk/snapshot-apk-collection.json (the release directory, the snapshot name)"
-  else
-    bad "AC12 $tag helper: snapshot-apk -> rc=$rc, files: $(ls "$d" | tr '\n' ' ')"
   fi
   helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" snapshot-evil); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" = 2 ] && ! grep -q '^witness ' <<< "$calls"; then
@@ -1302,7 +1294,7 @@ for tag in fixture real; do
   else
     bad "AC15 $tag helper: release-sign kept an inherited SIGSTORE_ID_TOKEN (rc=$rc)"
   fi
-  for other in release-publish release-assets apk; do
+  for other in release-publish release-assets scanners; do
     helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" $other)
     if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt"; then
       ok "AC15 $tag helper: the step $other has no identity token and no request variable in its environment"
@@ -1324,14 +1316,14 @@ for tag in fixture real; do
   else
     bad "AC2 $tag helper: unknown step -> rc=$rc calls=$calls"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
   if [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 1 ] && grep -q '^::add-mask::' < <(grep 'FAKE-JWT-TOKEN-VALUE' <<< "$printed") \
      && ! grep -q SENTINEL-BEARER <<< "$printed"; then
     ok "AC2 $tag helper: the identity token appears only in the add-mask line and the bearer value is never printed"
   else
     bad "AC2 $tag helper: the token was printed more than in the add-mask line, or the bearer leaked"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk)
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners)
   if [ "$rc" = 0 ] && [ "$(cat "$d/signer-token.txt" 2> /dev/null)" = FAKE-JWT-TOKEN-VALUE ] && [ -f "$d/tokfiles-while-running.txt" ] \
      && [ ! -s "$d/tokfiles-at-start.txt" ] && [ ! -s "$d/tokfiles-while-running.txt" ] && [ -z "$(ls "$d/tmp" 2> /dev/null)" ] \
      && ! grep -q FAKE-JWT-TOKEN-VALUE "$d/wrapped-env.txt"; then
@@ -2673,7 +2665,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=916
+EXPECT=914
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

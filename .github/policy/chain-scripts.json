@@ -300,7 +300,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "4d7ecb9b7a2ed64e2323b507450f056fdd388aceac8f51fd6f9b3861e6a9d0be",
+      "sha256": "ca54f95c39f8b356e8ca433559f5f138760c45be3ffea17abe5a4c8e9efb3aad",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -308,14 +308,6 @@
         "DOCKERHUB_TOKEN"
       ],
       "arg_map": {
-        "apk": "bin/build-stage-apk.sh",
-        "build": "bin/build-stage-assemble.sh",
-        "rapk": "bin/build-stage-rebuild-apk.sh",
-        "rebuild": "bin/build-stage-rebuild-assemble.sh",
-        "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
-        "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
-        "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
-        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
         "runtime": "bin/check-phase-runtime.sh",
