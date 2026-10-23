@@ -21,7 +21,7 @@ while read -r line; do
   name=${rest%%/*}
   file=${rest#*/}
   step=${file%-collection.payload}
-  case "$name" in ''|*[!A-Za-z0-9._-]*) echo "witness-sign-staged: bad record directory name in the plan: $payload" >&2; exit 1 ;; esac
+  printf '%s' "$name" | grep -Eq '^witness-[A-Za-z0-9.-]+$' || { echo "witness-sign-staged: bad record directory name in the plan: $payload" >&2; exit 1; }
   case "$file" in *[/]*) echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1 ;; esac
   case "$step" in apk|build|rapk|rebuild) ;; *) echo "witness-sign-staged: unknown step in the plan: $payload" >&2; exit 1 ;; esac
   if [ -n "$extra" ] || [ "$final" != "$signed/$name/$step-collection.json" ] || [ ! -f "$payload" ] || [ -L "$payload" ]; then
@@ -55,7 +55,7 @@ while read -r line; do
   base=$(basename "$payload" .payload)
   step=${base%-collection}
   mkdir -p "$signed/$name"
-  for f in "$dir"/*; do case "$f" in *.payload) ;; *) cp "$f" "$signed/$name/" ;; esac; done
+  for f in "$dir"/*; do case "$f" in *.payload) ;; *) cat "$f" > "$signed/$name/$(basename "$f")" ;; esac; done
   witness sign -f "$payload" -t application/vnd.in-toto+json \
     --signer-fulcio-url https://fulcio.sigstore.dev \
     --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com \
