@@ -158,14 +158,15 @@ def grade_key(rest, sign_record):
 def grade_token(rest):
     claims = [line[len("claims: "):] for line in rest if line.startswith("claims: ")]
     if not claims:
-        # no token request address in the job (Build holds no id-token permission): isolated, but only on the step's own proof that the address is absent,
-        # that it looked at /proc environ files (a count above zero), and that no process on the runner held a request address
+        # no token request address in the job: the building jobs hold no id-token permission, and THAT is proven by the static permission judge (the Build wiring judge
+        # refuses an id-token grant on any building job or its caller). The transcript is corroboration only: the step's own claim that the address is absent, a count of
+        # the environ files it read (above zero, none of its own user unreadable) and no process holding an address. It is never the proof, so no enumeration is bound to it.
         absent = any(line.strip() == "request-env: absent" for line in rest)
         reads = [int(m.group(1)) for line in rest for m in [re.fullmatch(r"environ-read: ([0-9]+)", line.strip())] if m]
         bads = [int(m.group(1)) for line in rest for m in [re.fullmatch(r"environ-unreadable-same-user: ([0-9]+)", line.strip())] if m]
         holders = [line for line in rest if "holds a token request address" in line]
         if absent and len(reads) == 1 and len(bads) == 1 and reads[0] > 0 and bads[0] == 0 and not holders:
-            refuse("runner", "nothing usable for Sign: the job has no token request address (ACTIONS_ID_TOKEN_REQUEST_URL and _TOKEN unset), so no token can be obtained")
+            refuse("runner", "nothing usable for Sign: the building job holds no id-token permission (proven by the static permission judge of the Build wiring), so it has no token to get; the transcript corroborates it (no request address, environ files read)")
         if absent and holders:
             print("error: a process on this runner holds a token request address although the job's own environment has none, so it cannot be graded", file=sys.stderr)
             sys.exit(2)

@@ -65,9 +65,9 @@ attempt_read_sign_token() {
     # the claims of the token this job can get (no signature): the verifier reads job_workflow_ref from them. If the request address exists and no token
     # can be fetched there is nothing to grade and the verifier reports an error, so the dry run is red instead of vacuously green.
     if ! compgen -e | grep -q '^ACTIONS_ID_TOKEN_REQUEST_'; then
-      # Build holds no id-token permission since the Witness move: the runner never offers a request address, so there is no token to get. The verifier
-      # accepts this only with the environ search above finding nothing, the number of environ files this step could actually read, and no unreadable
-      # file of its own user (another user's process may be unreadable by design).
+      # Build holds no id-token permission since the Witness move (the static permission judge proves that), so the runner never offers a request address. This
+      # transcript only corroborates it for the verifier: the environ search above finding nothing, the number of environ files this step could read, and no
+      # unreadable file of its own user (another user's process may be unreadable by design).
       : > hostile-work/environ-read.txt
       : > hostile-work/environ-bad.txt
       for f in /proc/[0-9]*/environ; do
