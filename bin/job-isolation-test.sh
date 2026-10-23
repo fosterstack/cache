@@ -140,6 +140,14 @@ if "jq -c '.pr_gate' .github/policy/scanners.json" not in scan_txt:
 sj_ = ((scan_d.get("jobs") or {}).get("scanner") or {})
 if (sj_.get("strategy") or {}).get("matrix") != {"scanner": "${{ fromJSON(needs.scanners.outputs.list) }}"}:
     bad.append("scan.yml scanner: the matrix must be exactly scanner from the scanners job's list (no include, exclude or other axis): %s" % (sj_.get("strategy") or {}).get("matrix"))
+# rc-5a F: a matrix leg whose scanner is not one the job scans with fails before it installs anything (a leg that scans nothing must never read as a pass)
+sst = sj_.get("steps") or []
+refuse = [i for i, st_ in enumerate(sst) if isinstance(st_, dict) and str(st_.get("if", "")).replace(" ", "") == "matrix.scanner!='grype'" and re.search(r"(^|\n)\s*exit 1\s*($|\n)", str(st_.get("run", "")))]
+install_i = [i for i, st_ in enumerate(sst) if isinstance(st_, dict) and "install-scanner.sh" in str(st_.get("run", ""))]
+if not refuse:
+    bad.append("scan.yml scanner: no step `if: matrix.scanner != 'grype'` that runs `exit 1` (a pr_gate name other than grype would scan nothing and the aggregate would pass)")
+elif install_i and refuse[0] > install_i[0]:
+    bad.append("scan.yml scanner: the refusal of a non-grype matrix leg must come before the scanner install step")
 # an exclusion must still name a job that exists (a stale row hides nothing but must not rot)
 for key in list(EXCLUDED_AC1) + list(EXCLUDED_AC2):
     if key not in jobs_seen:
@@ -239,6 +247,10 @@ PY
 export ISO_SCANNERS="$root/.github/policy/scanners.json"   # the policy file the pr_gate check reads (mutated copies of the workflows keep the real one)
 check "the real workflows" ok "$root/.github/workflows"
 # AC1: a build added to a job that holds a credential
+mutate "scan.yml scanner job: the refusal of a non-grype matrix leg removed (rc-5a F)" '
+edit("scan.yml", lambda s: s.replace("        if: matrix.scanner != \"grype\"\n".replace("\"", "\x27"), "        if: matrix.scanner == \x27grype\x27\n", 1))'
+mutate "scan.yml scanner job: the refusal step placed after the installer (rc-5a F)" '
+edit("scan.yml", lambda s: s.replace("      - name: refuse a scanner this job cannot run\n", "      - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can\x27t run is a pipeline failure, not a finding)\n        run: ./bin/install-scanner.sh \x27${{ matrix.scanner }}\x27\n\n      - name: refuse a scanner this job cannot run\n", 1))'
 mutate "go install added to go-freshness refresh (App key, packages: write)" '
 edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1\n\n      - name: log in", 1))'
 mutate "go build added to a job with an environment (auditor panel-probe)" '
