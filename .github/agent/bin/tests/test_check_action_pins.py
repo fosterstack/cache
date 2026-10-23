@@ -873,8 +873,9 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 GATE_A = "adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d"   # main's gate workflow before #316
 GATE_B = "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533"   # the gate workflow of cache PR #316
-# cache PR #316's edits to the gate workflow (old text, new text): the second accepted digest is the gate
-# workflow with these applied; either variant is derived from whichever one the repository carries
+# cache PR #316's edits to the gate workflow (old text, new text): the one accepted digest, GATE_B, is the gate
+# workflow with these applied, and GATE_A (refused) is the text without them; both are derived from whichever
+# variant the repository carries
 PR316_HUNKS = (
     ('          PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure\n',
      '          PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure\n'
@@ -969,10 +970,10 @@ class GateWorkflowDigestSet(unittest.TestCase):
         code, out = run([gate_tree(bumped)])
         self.assertEqual(code, 0, out)
 
-    def test_a_third_digest_is_refused_and_the_message_names_the_accepted_set(self):
-        a, _ = gate_variants()
-        third = a.replace("--verify-tags --git", "--git", 1)
-        self.assertNotEqual(third, a)
+    def test_an_edited_accepted_gate_is_refused_and_the_message_names_the_accepted_digest(self):
+        _, b = gate_variants()
+        third = b.replace("--verify-tags --git", "--git", 1)
+        self.assertNotEqual(third, b)
         d3 = M.gate_digest(third)
         self.assertNotIn(d3, (GATE_A, GATE_B))
         code, out = run([gate_tree(third)])

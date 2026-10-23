@@ -47,8 +47,7 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
   The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
-             frozen set of exactly one digest)
-             (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
+             frozen set of exactly one digest, its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
              until this file is updated — a change under .github/agent/, so it needs the independent
              second review: the enforcement cannot be removed from its caller by an ordinary merge either.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
