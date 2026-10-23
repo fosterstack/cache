@@ -385,13 +385,12 @@ def direct_signers(base, files, frozen, allowed, bad):
     # rc-2 signing review R5: a listed signer must be one the tree can use: its file exists, and a file this judge reads makes that call
     # (a pre-authorisation of a signer that must never return is the opposite of the allowlist; the legacy frozen files are not read, so their rows are not judged)
     for rel, tools in sorted(allowed.items()):
-        # a regular file, spelled the one way the judge keys it: a workflow by its bare name, any other file by its path from the root
-        # (a "./" or ".." spelling, or the workflows directory path of a workflow, would skip the unused-row check below; a directory is no signer file)
+        # a row must name a file this judge READS, spelled the one way it keys it (a workflow by its bare name, any other judged file by its path from the root); a legacy
+        # frozen file is not read, so its row is not judged either way. A path alias, a directory, a file the judge never reads (not YAML, or stage-sign.yml itself) or a
+        # different case on a case-insensitive disk would otherwise skip the unused-row check below (Codex astra on #638)
         rs = str(rel)
-        wf_ok = os.path.isfile(os.path.join(wfdir, rs)) and "/" not in rs and rs not in ("", ".", "..")
-        ot_ok = os.path.isfile(os.path.join(base, rs)) and os.path.normpath(rs) == rs and not rs.startswith(".github/workflows/") and not rs.startswith("/")
-        if not (wf_ok or ot_ok):
-            bad.append("AC1: chain-signers.json lists %s, which is not a regular file of the tree spelled as the judge keys it (a workflow by its bare name, any other file by its path from the root)" % rel); continue
+        if rs not in judged and rs not in frozen and (".github/workflows/" + rs) not in frozen:
+            bad.append("AC1: chain-signers.json lists %s, which is not a file this judge reads (a workflow is named by its bare name, any other file by its path from the root; remove the row)" % rel); continue
         if rel in judged:
             bad += ["AC1: chain-signers.json lists %r for %s, but that file makes no such call (remove the row)" % (t, rel) for t in sorted(tools, key=str) if (rel, t) not in called]
 
@@ -2491,6 +2490,20 @@ f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
 j["signers"].append({"file": "bin", "tool": "gitsign", "reason": "a directory is no signer file"}); json.dump(j, open(f, "w"))
 PY
 expect caught "AC1 a signer row naming a directory" tree "$d"
+d=$(mk t_nonyaml)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "bin/build-stage-apk.sh", "tool": "gitsign", "reason": "a regular file the judge never reads"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a regular file the judge does not read" tree "$d"
+d=$(mk t_signyml)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-sign.yml", "tool": "gitsign", "reason": "stage-sign.yml is left out of this judge"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming stage-sign.yml, which this judge leaves out" tree "$d"
 # 003-AC5: only release.yml calls stage-sign.yml and no stage calls a stage (a stage that calls another stage gets that stage's SAN: spike (b) case 5)
 d=$(mk c_good); printf 'jobs:\n  s:\n    uses: ./.github/workflows/stage-sign.yml\n  b:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/release.yml"
 expect ok "003-AC5 fixture: release.yml calls every stage file" calls "$d"
@@ -2994,7 +3007,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='521f34d6c2205d8fe329617c9c35cebce1d441ac0848884bc41f75b808b28f09'
+FX_PIN='052b525aae9dfe561cd6241a83c2d3545cd1143c9b02f6febaa8eddd398f88c1'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4681,7 +4694,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=2045
+EXPECT=2047
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
