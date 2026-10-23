@@ -1662,3 +1662,15 @@ mappings:
   - ac: REQ-SCAN-012-AC6
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-CI-001-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-001-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-001-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-001-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
