@@ -70,7 +70,7 @@
 #     (SBOM = the modules the binary embeds; every embedded path@version must be in BOTH vendor/modules.txt and
 #     dependency-provenance.json {"modules":[{"path":..,"version":..}]}: SUBSET, not equality; vendored-but-unbuilt modules are in the
 #     dependency list, not the SBOM)
-#     bin/install-build-tools.sh melange|apko [DEST]   bin/release-sign-apks.sh --build-dir A --rebuild-dir B --key K
+#     bin/install-build-tools.sh melange|apko [DEST]   bin/release-sign-apks.sh --build-dir A --key K
 #  I8 bin/sealed-proof.sh and bin/lock-proof.sh (the real-run proofs of rules 36, 39-42; see the groups below)
 #  I9 bin/refresh-inputs.sh refresh --repo-dir D --archive D   |   fips-module --go-root D --repo-dir D
 #     and two jobs in .github/workflows/go-freshness.yml: `refresh` (daily) and `fips-module` (weekly). refresh makes three locks
