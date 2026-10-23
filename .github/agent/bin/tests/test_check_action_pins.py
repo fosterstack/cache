@@ -926,37 +926,48 @@ def bump_first_pin(text):
 
 
 class GateWorkflowDigestSet(unittest.TestCase):
-    """The bootstrap of cache PR #316 (PR A): the pin checker accepts exactly two gate-workflow digests, main's
-    and #316's, both taken by gate_digest (pins masked); a later change removes main's old one."""
+    """The pin checker accepts exactly one gate-workflow digest, #316's, taken by gate_digest (pins masked). Main's
+    old gate (before #316) was a bootstrap digest; it is gone, so a plain revert of the gate workflow is refused
+    (rc-5b B1)."""
 
-    def test_the_constant_is_a_frozen_set_of_exactly_two_digests(self):
+    def test_the_constant_is_a_frozen_set_of_exactly_one_digest(self):
         s = M.GATE_WORKFLOW_SHA256
         self.assertIsInstance(s, frozenset)      # immutable: no code path can add a digest at run time
-        self.assertEqual(len(s), 2)              # not empty, not one, not three (a frozenset has no duplicates)
+        self.assertEqual(len(s), 1)              # not empty, not two (a frozenset has no duplicates)
         for d in s:
             self.assertRegex(d, r"\A[0-9a-f]{64}\Z")
-        self.assertEqual(s, frozenset({GATE_A, GATE_B}))
+        self.assertEqual(s, frozenset({GATE_B}))
+        self.assertNotIn(GATE_A, s)              # the pre-#316 digest is not accepted
 
     def test_both_variants_are_taken_by_gate_digest(self):
         a, b = gate_variants()
         self.assertEqual(M.gate_digest(a), GATE_A)
         self.assertEqual(M.gate_digest(b), GATE_B)
 
-    def test_a_tree_with_either_accepted_gate_workflow_passes(self):
-        for name, text in zip(("main", "pr316"), gate_variants()):
-            with self.subTest(gate=name):
-                code, out = run([gate_tree(text)])
-                self.assertEqual(code, 0, out)
-                self.assertIn(", 0 finding(s)", out)
+    def test_a_tree_with_the_accepted_gate_workflow_passes(self):
+        _, b = gate_variants()
+        code, out = run([gate_tree(b)])
+        self.assertEqual(code, 0, out)
+        self.assertIn(", 0 finding(s)", out)
 
-    def test_a_dependabot_pin_bump_in_either_still_matches(self):
-        for name, text in zip(("main", "pr316"), gate_variants()):
-            with self.subTest(gate=name):
-                bumped = bump_first_pin(text)
-                self.assertNotEqual(bumped, text)
-                self.assertIn(M.gate_digest(bumped), M.GATE_WORKFLOW_SHA256)
-                code, out = run([gate_tree(bumped)])
-                self.assertEqual(code, 0, out)
+    def test_the_gate_workflow_from_before_316_is_refused(self):
+        """A plain revert of agent-review-gate.yml to main's old text drops the scanner guard; it must not pass."""
+        a, _ = gate_variants()
+        code, out = run([gate_tree(a)])
+        self.assertEqual(code, 1, out)
+        (line,) = [ln for ln in out.splitlines() if ln.startswith(".github/workflows/agent-review-gate.yml:")]
+        self.assertIn("changed — update GATE_WORKFLOW_SHA256 in this checker", line)
+        self.assertIn(f"to {GATE_A};", line)                    # the digest it found
+        self.assertIn(f"accepted: {GATE_B}", line)              # the accepted set is the one digest
+        self.assertEqual(line.count(GATE_A), 1)                 # and the old one is not listed as accepted
+
+    def test_a_dependabot_pin_bump_still_matches(self):
+        _, text = gate_variants()
+        bumped = bump_first_pin(text)
+        self.assertNotEqual(bumped, text)
+        self.assertIn(M.gate_digest(bumped), M.GATE_WORKFLOW_SHA256)
+        code, out = run([gate_tree(bumped)])
+        self.assertEqual(code, 0, out)
 
     def test_a_third_digest_is_refused_and_the_message_names_the_accepted_set(self):
         a, _ = gate_variants()
@@ -969,7 +980,7 @@ class GateWorkflowDigestSet(unittest.TestCase):
         (line,) = [ln for ln in out.splitlines() if ln.startswith(".github/workflows/agent-review-gate.yml:")]
         self.assertIn("changed — update GATE_WORKFLOW_SHA256 in this checker", line)
         self.assertIn(d3, line)
-        self.assertIn(GATE_A, line)
+        self.assertNotIn(GATE_A, line)
         self.assertIn(GATE_B, line)
 
     def test_a_missing_gate_workflow_still_fails(self):
