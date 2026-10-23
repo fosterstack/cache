@@ -565,7 +565,13 @@ SIGNS = (False, "provenance", "other")
 # PR 1b: the CLOSED list of rules a per-row `exceptions` entry may waive (extend only by a reviewed edit when a real text needs it)
 # Round 3 (5): the ONE pinned step REQ-CHAIN-004-AC2 ratifies, as an exact tuple (file, job, id) -> run text. An entry for any other tuple or text is
 # an error until a later reviewed change adds it HERE.
-PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'}
+PINNED_IF = {(".github/workflows/stage-reproducibility.yml", "assemble", "records"): "${{ inputs.mode == 'release' }}",
+             (".github/workflows/stage-reproducibility.yml", "rapk", "records"): "${{ inputs.mode == 'release' }}",
+             (".github/workflows/stage-reproducibility.yml", "rapk-arm", "records"): "${{ inputs.mode == 'release' }}"}
+PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"',
+                  (".github/workflows/stage-reproducibility.yml", "assemble", "records"): 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"',
+                  (".github/workflows/stage-reproducibility.yml", "rapk", "records"): 'r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"',
+                  (".github/workflows/stage-reproducibility.yml", "rapk-arm", "records"): 'r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"'}
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
 # plain literal; never a secret, a glued expression or a substitution
@@ -575,9 +581,10 @@ AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|ma
 # or another script is a reviewed edit of this file and nothing else.  name -> {(stage file, job): the listed scripts that may receive it}.  bin/witnessed.sh receives every
 # name at the place it is bound (it is the wrapper), GH_TOKEN being bound at exactly the two places below.
 _SB, _SP, _WIT = ".github/workflows/stage-build.yml", ".github/workflows/stage-promote.yml", "bin/witnessed.sh"
+_WITL = "bin/witnessed-local.sh"      # the Witness wrapper of the BUILDING steps (owner Oct 22): Build's apk job binds the admission token to it; Release binds every name to bin/witnessed.sh
 _HUB = {(_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh"}}
 SECRET_ROWS = {
-    "GH_TOKEN": {(_SB, "apk"): {_WIT, "bin/build-stage-apk.sh", "bin/build-admit.py"},                      # row 1: the run's own token, admission only
+    "GH_TOKEN": {(_SB, "apk"): {_WITL, "bin/build-stage-apk.sh", "bin/build-admit.py"},                      # row 1: the run's own token, admission only
                  (_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}},   # row 5
     "APK_RELEASE_SIGNING_KEY": {(_SP, "release"): {_WIT, "bin/release-apks.sh"}},                          # row 2
     "DOCKERHUB_USERNAME": _HUB,                                                                             # row 3
@@ -585,8 +592,8 @@ SECRET_ROWS = {
 }
 SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}", "APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}",
                 "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}"}
-# the job that holds a named credential holds exactly these permissions (Build's apk job: read-only plus the identity token Witness needs; Release: the three writes)
-PLACE_PERMS = {(_SB, "apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"},
+# the job that holds a named credential holds exactly these permissions (Build's apk job: read-only, no identity token since the Witness record is signed outside the build; Release: the three writes)
+PLACE_PERMS = {(_SB, "apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"},
                (_SP, "release"): {"contents": "write", "packages": "write", "id-token": "write"}}
 CHAIN_STAGE_FILES = {_SB, _SP, ".github/workflows/stage-sign.yml", ".github/workflows/stage-reproducibility.yml", ".github/workflows/stage-verify.yml"}
 CLOSED = "not in the closed secret list"
@@ -966,7 +973,7 @@ def _arg_error(parts, envnames):
                 return "double-quoted argument %r mixes text with a variable or substitution (use a whole \"$NAME\" from env:)" % t
     return None
 
-PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > digests\.json")
+PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > (?:digests|rebuild-records)\.json")
 
 def _literal_value(parts):
     """The shell word a quote-only word stands for (round 3 (1)): lit, single-quoted and double-quoted parts without an expansion, joined (bi'n/x' is
@@ -1001,7 +1008,7 @@ def check_run(run, envnames, rows, reads=None, argpaths=None):
         if line == "set -euo pipefail": continue
         if line.startswith("printf"):                   # the one write: an env var into digests.json; ANYTHING else starting with printf is an error
             m = PRINTF_OK.fullmatch(line)
-            if not m: errs.append("line %d: %s: a printf line must be exactly printf '%%s' \"$NAME\" > digests.json (the one write the Sign job needs)" % (n, line[:90]))
+            if not m: errs.append("line %d: %s: a printf line must be exactly printf '%%s' \"$NAME\" > digests.json or > rebuild-records.json (the two writes the Sign job needs)" % (n, line[:90]))
             elif m.group(1) not in envnames: errs.append("line %d: printf of $%s, which is not in this step's env:" % (n, m.group(1)))
             else: reads.add(m.group(1))
             continue
@@ -1151,7 +1158,9 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                 same_id = sum(1 for x in (j.get("steps") or []) if isinstance(x, dict) and x.get("id") == s.get("id"))
                 if same_id != 1 or run_count.get(pin["run"], 0) != 1:
                     errs.append("%s: pinned step %r occurs %d time(s) in its job and its run text %d time(s) in the file; exactly once each is required" % (pre, s.get("id"), same_id, run_count.get(pin["run"], 0)))
-                if set(s) != {"name", "id", "run"}: errs.append("%s: pinned step %r has keys %s; a pinned step has exactly name, id and run" % (pre, s.get("id"), sorted(s)))
+                want_if = PINNED_IF.get((full, jn, s.get("id")))            # the one reviewed condition of a pinned step (the Rebuild record digests exist in release mode only)
+                if set(s) != {"name", "id", "run"} | ({"if"} if want_if else set()): errs.append("%s: pinned step %r has keys %s; a pinned step has exactly name, id and run%s" % (pre, s.get("id"), sorted(s), " and its reviewed if" if want_if else ""))
+                elif want_if and s.get("if") != want_if: errs.append("%s: pinned step %r has an if that differs from the reviewed one" % (pre, s.get("id")))
                 elif s.get("run") != pin["run"]: errs.append("%s: pinned step %r has a run text that differs from its pinned_steps entry" % (pre, s.get("id")))
                 continue
             nm = s.get("name") or str(s.get("run") or s.get("uses") or "").strip().splitlines()[0][:40]
