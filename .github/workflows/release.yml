@@ -6,7 +6,7 @@ name: Release
 # pushes anything, and Release (the final stage) is the only path that can make anything public, and only after it has verified every earlier
 # stage's record. Releases build ONLY here, by the chain below; nothing else builds or publishes a release.
 #
-# build -> sign ; { build, sign } -> { rebuild, check } ; { build, rebuild } -> sign-rebuild ; { check, sign, sign-rebuild } -> release
+# build -> sign ; { build, sign } -> { rebuild, check } ; { build, rebuild } -> sign-rebuild ; { build, check } -> sign-check ; { check, sign, sign-rebuild, sign-check } -> release
 
 on:
   push:

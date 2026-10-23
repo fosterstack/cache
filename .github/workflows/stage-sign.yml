@@ -1,6 +1,6 @@
 name: 'Stage: sign'
 
-# The Sign stage of the v0.3.0 release chain (rules 50, 50a, 52, 52a, 53, 53b; the one new workflow file of v0.3.0), two jobs of ONE file so that both carry ONE certificate
+# The Sign stage of the v0.3.0 release chain (rules 50, 50a, 52, 52a, 53, 53b; the one new workflow file of v0.3.0), three jobs of ONE file so that all carry ONE certificate
 # identity (the workflow file at the tag, with release.yml as the top-level workflow): no job that builds can obtain a certificate in it, and a second workflow that calls
 # this file still carries its OWN top-level workflow in the certificate's Build Config URI, which the release policy pins to release.yml.
 # The building jobs hold no identity token (owner, Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): their Witness records are made with a throwaway
@@ -10,6 +10,9 @@ name: 'Stage: sign'
 #                 sign-records), signs the records, then checks Build's digest list against the signed record and asks cosign for the provenance signature.
 #   sign-rebuild: receives Rebuild's records (witness-rapk-<runner>, witness-rebuild with its verdict) and NO Rebuild apk or image (the owner's separation rule: Rebuild's
 #                 outputs never reach a job that signs); the Release stage's compare job, which holds both builds' apks, checks the signed rapk records' product digests.
+#   sign-check:   receives the records of the Check jobs (witness-check, witness-check-arm64) and the results they name (check-results, check-results-arm64), nothing else and
+#                 nothing built by them (REQ-REL-011-AC1: the Check jobs build tools and run workloads, so they hold no identity token); checks the records against the results and
+#                 against the lists the Check jobs published as job outputs, and signs them.
 # The identity token is requested inside the signing process (cosign or Witness); no step of this file names it.
 # The shape of this file is judged by bin/chain-sign-wiring-test.sh (an allowlist), the checks by bin/chain-verify.py.
 
