@@ -359,9 +359,21 @@ func withMetrics(m *metrics.Metrics, next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		m.RequestsTotal.WithLabelValues(r.Method, strconv.Itoa(sw.status)).Inc()
-		m.RequestDuration.WithLabelValues(r.Method).Observe(time.Since(start).Seconds())
+		method := methodLabel(r.Method)
+		m.RequestsTotal.WithLabelValues(method, strconv.Itoa(sw.status)).Inc()
+		m.RequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
 	})
+}
+
+// methodLabel bounds the method label to the three methods the server
+// serves plus "other": a client may send any method token, and each distinct
+// value would otherwise live as its own series until the process exits.
+func methodLabel(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut:
+		return method
+	}
+	return "other"
 }
 
 type statusWriter struct {

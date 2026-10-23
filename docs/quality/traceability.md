@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 99 |
-| Acceptance criteria | 478 |
+| Acceptance criteria | 479 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 467 |
+| ACs with mapped evidence | 468 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 47 |
@@ -389,6 +389,7 @@ GET /metrics shall expose, in Prometheus format, at least fscache_http_requests_
 | REQ-OBS-002-AC9 | Given PUTs refused for bad key (400), bad credentials (401), read-only credential (403), upload bound (429), and a successful PUT; when /metrics is scraped; then fscache_put_errors_total did not move | http-integration |  | approved | 1 item(s) |
 | REQ-OBS-002-AC10 | Given a server that started on a healthy directory whose volume later becomes read-only or full, and a server asked to start on a read-only or full directory; when /metrics is scraped; then in the first case fscache_store_writable reads 0 and fscache_store_free_bytes the real free bytes within one refresh, the fscache_put_errors_total series count the failed PUTs by reason, and GETs still work; in the second case the server exits at start with the fatal error naming the failed write and serves nothing, and it never reports writable 1 for a volume it could not write | http-integration |  | approved | 3 item(s) |
 | REQ-OBS-002-AC11 | Given the Gradle and Maven acceptance builds; when run with the new signals present; then results are identical to today (the existing REQ-PROTO and REQ-EVICT acceptance ACs stay green; no new header, status code, or path) | acceptance-gradle |  | approved | 1 item(s) |
+| REQ-OBS-002-AC12 | Given a server that received 500 distinct unknown HTTP method tokens plus one GET, one HEAD and one PUT; when /metrics is scraped; then fscache_http_requests_total and fscache_http_request_duration_seconds carry method label values GET, HEAD, PUT and other only, all four present, and the 500 unknown tokens are counted under other on fscache_http_requests_total | unit |  | approved | 1 item(s) |
 
 ### REQ-OBS-003 — Read-only status page
 

@@ -1013,6 +1013,12 @@ requirements:
         then: results are identical to today (the existing REQ-PROTO and REQ-EVICT acceptance ACs stay green; no new header, status code, or path)
         verification: { method: acceptance-gradle, release_blocking: false }
         status: approved
+      - id: REQ-OBS-002-AC12
+        given: a server that received 500 distinct unknown HTTP method tokens plus one GET, one HEAD and one PUT
+        when: /metrics is scraped
+        then: fscache_http_requests_total and fscache_http_request_duration_seconds carry method label values GET, HEAD, PUT and other only, all four present, and the 500 unknown tokens are counted under other on fscache_http_requests_total
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-OBS-003
     title: Read-only status page
