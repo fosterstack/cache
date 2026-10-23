@@ -135,14 +135,16 @@ def stage_text(family):
         call += "      mode:\n        description: release or snapshot\n        type: string\n        default: release\n"
         call += "    outputs:\n      digests:\n        description: the digests.json text, for Sign\n        value: %s\n" % S.STAGE_OUTPUT
     out = "name: 'Stage: %s'\non:\n  workflow_call:\n%spermissions:\n  contents: read\njobs:\n" % (family, call)
-    for job in ("apk", "assemble"):
+    for job in (("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("apk", "assemble")):
         sp = S.JOBS[(family, job)]
         out += "  %s:\n" % job
         out += ("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"]
+                else "    runs-on: %s\n" % sp["runner"] if sp.get("runner")
+                else "    needs: [rapk, rapk-arm]\n    runs-on: ubuntu-24.04\n" if family == "rebuild"
                 else "    needs: apk\n    runs-on: ubuntu-24.04\n")
         out += "    permissions:\n" + "".join("      %s: %s\n" % kv for kv in sp["perm"].items())
         if sp.get("expose"): out += "    outputs:\n      digests: %s\n" % S.JOB_OUTPUT
-        if sp.get("expose_records"): out += "    outputs:\n      records: %s\n" % S.RECORDS_JOB_OUTPUT
+        if sp.get("expose_records") or sp.get("expose_rapk"): out += "    outputs:\n      records: %s\n" % S.RECORDS_JOB_OUTPUT
         out += "    steps:\n"
         out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
         out += "          persist-credentials: false\n          fetch-depth: 0\n"
@@ -156,7 +158,10 @@ def stage_text(family):
         out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
         if sp.get("hosttools"): out += "      - name: unpack the host tools from the archive (bubblewrap for melange's runner)\n        run: %s\n" % S.INSTALL_HOSTTOOLS
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
+        if sp.get("check_rapk"):
+            out += "      - name: check the rapk records against their jobs' outputs\n        if: %s\n        env:\n" % S.MODE_RELEASE_IF + "".join("          %s: %s\n" % kv for kv in S.RAPK_CHECK_ENV.items()) + "        run: %s\n" % S.RAPK_CHECK_RUN
         out += witness_block(sp)
+        if sp.get("expose_rapk"): out += "      - id: records\n        name: expose the record digests of this apk job as its output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.exposerapk(sp["runner"]))
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
         if sp.get("expose_records"): out += "      - id: records\n        name: expose the record digests as the stage output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.EXPOSE_RECORDS)
         if sp.get("hostile"):
@@ -297,7 +302,7 @@ st s_noid   "AC1 id-token: write on a building job (the building jobs hold no id
 st s_nochk  "AC1 the admission job without checks: read (the required-checks check could not run)" permissions '      checks: read\n' ''
 st s_wfperm "AC1 workflow-level permissions beyond contents: read" permissions 'permissions:\n  contents: read\njobs' 'permissions:\n  contents: write\njobs'
 st s_push   "AC1 an extra trigger" workflow_call 'workflow_call:' 'push:\n  workflow_call:'
-st s_job3 "AC1 a third job (one stage = one file = two jobs)" "exactly two jobs" '  assemble:' \
+st s_job3 "AC1 a third job (one stage = one file = two jobs)" "required (one stage = one file = one identity)" '  assemble:' \
        '  third:\n    runs-on: ubuntu-24.04\n    steps: []\n  assemble:'
 st s_top    "AC1 a top-level env" top-level 'permissions:\n  contents: read\njobs' 'permissions:\n  contents: read\nenv:\n  X: y\njobs'
 st s_unpin  "AC2 checkout not pinned by digest" checkout 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v7'
@@ -547,8 +552,19 @@ rb r_verdict_noif "005-AC7 the verdict upload has no if (a failed comparison wou
        "        with:\n          name: witness-rebuild"
 rb r_verdict_success "005-AC7 the verdict upload runs only on success" "if: always()" "        if: always()\n        with:\n          name: witness-rebuild" \
        "        if: success()\n        with:\n          name: witness-rebuild"
-rb r_other_always "005-AC7 another Rebuild upload under always()" "no if" "        with:\n          name: witness-rapk-\${{ matrix.runner }}" \
-       "        if: always()\n        with:\n          name: witness-rapk-\${{ matrix.runner }}"
+rb r_other_always "005-AC7 another Rebuild upload under always()" "no if" "        with:\n          name: witness-rapk-ubuntu-24.04\n          path: witness-rapk" \
+       "        if: always()\n        with:\n          name: witness-rapk-ubuntu-24.04\n          path: witness-rapk"
+CHK="      - name: check the rapk records against their jobs' outputs\n        if: \${{ inputs.mode == 'release' }}\n        env:\n          RAPK_RECORDS: \${{ needs.rapk.outputs.records }}\n          RAPK_ARM_RECORDS: \${{ needs.rapk-arm.outputs.records }}\n        run: bash bin/rebuild-records-digests.sh --check \"\$RAPK_RECORDS\" \"\$RAPK_ARM_RECORDS\"\n"
+rb r_chk_gone "A1 assemble does not check the rapk records against their jobs' outputs" "rapk records are checked" "$CHK" ''
+rb r_chk_noif "A1 the rapk check runs in snapshot mode too" "rapk records are checked" "      - name: check the rapk records against their jobs' outputs\n        if: \${{ inputs.mode == 'release' }}\n" "      - name: check the rapk records against their jobs' outputs\n"
+rb r_chk_swap "A1 the check hands the arm leg's output to the x86 leg" "rapk records are checked" 'RAPK_RECORDS: ${{ needs.rapk.outputs.records }}' 'RAPK_RECORDS: ${{ needs.rapk-arm.outputs.records }}'
+rb r_chk_late "A1 the rapk check runs after the rebuild Witness step (too late)" "rapk records are checked" "$CHK      - name: rebuild under Witness\n" "      - name: rebuild under Witness\n"
+rb r_needs_one "A1 assemble needs only one apk job" "must need exactly rapk and rapk-arm" 'needs: [rapk, rapk-arm]' 'needs: rapk'
+rb r_rapkrec_gone "A1 the x86 apk job exposes no record digests" "must be exactly id: records" "      - id: records\n        name: expose the record digests of this apk job as its output\n        if: \${{ inputs.mode == 'release' }}\n        run: r=\$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo \"records=\$r\" >> \"\$GITHUB_OUTPUT\"\n" ''
+rb r_rapkrec_leg "A1 the x86 apk job exposes the arm leg's name" "must be exactly id: records" '--rapk ubuntu-24.04 witness-rapk' '--rapk ubuntu-24.04-arm witness-rapk'
+rb r_rapkrec_dir "A1 the x86 apk job lists another folder than the record it uploads" "must be exactly id: records" '--rapk ubuntu-24.04 witness-rapk)' '--rapk ubuntu-24.04 out)'
+rb r_rapkrec_out "A1 the x86 apk job exposes its records through another output" "must expose exactly outputs: records" 'steps.records.outputs.records }}\n    steps' 'steps.other.outputs.records }}\n    steps'
+rb r_rapk_matrix "A1 the apk jobs are a matrix again (a shared output name, the last leg wins)" "must run directly on ubuntu-24.04" '  rapk:\n    runs-on: ubuntu-24.04\n' '  rapk:\n    runs-on: ${{ matrix.runner }}\n'
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      contents: read\n' '      contents: read\n      checks: read\n'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
@@ -2936,7 +2952,7 @@ for f in files:
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
 
-EXPECT=1013
+EXPECT=1023
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

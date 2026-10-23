@@ -3,6 +3,8 @@
   "env_names": [
     "DIGESTS",
     "MODE",
+    "RAPK_ARM_RECORDS",
+    "RAPK_RECORDS",
     "RECORDS"
   ],
   "scripts": [
@@ -2813,6 +2815,20 @@
       "id": "records",
       "run": "r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-005-AC4 (adversarial pass R2): the stage output Sign checks Rebuild's records against (the sha256 of its record, verdict and rapk records); a job output only the Rebuild assemble job can write"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "rapk",
+      "id": "records",
+      "run": "r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-005-AC4 (adversarial pass round 6, A1): this apk job's own record digests, a job output only this job can write, which the assemble job checks what it downloads against"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "rapk-arm",
+      "id": "records",
+      "run": "r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-005-AC4 (adversarial pass round 6, A1): this apk job's own record digests, a job output only this job can write, which the assemble job checks what it downloads against"
     }
   ]
 }
