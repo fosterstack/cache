@@ -109,8 +109,8 @@ def judge_sign(path):
         bad.append("AC1: on: must be exactly workflow_call: %s" % on)
     call = (on or {}).get("workflow_call") or {} if isinstance(on, dict) else {}
     inputs = call.get("inputs") or {}
-    if set(inputs) != {"digests"} or (inputs.get("digests") or {}).get("type") != "string":
-        bad.append("AC2: the only input must be `digests` (string), found %s" % sorted(inputs))
+    if set(inputs) != {"digests", "stage"} or any((inputs.get(k) or {}).get("type") != "string" for k in ("digests", "stage")):
+        bad.append("AC2: the only inputs must be `digests` and `stage` (both string), found %s" % sorted(inputs))
     if call.get("secrets"): bad.append("AC3: the workflow declares secrets")
     if call.get("outputs"): bad.append("AC3 (step output sink): workflow_call outputs are not allowed")
     if d.get("env"): bad.append("AC3: workflow-level env is not allowed")
@@ -121,8 +121,10 @@ def judge_sign(path):
         ro = j.get("runs-on")
         if not isinstance(ro, str) or not _cts.HOSTED.fullmatch(ro):   # the ONE closed runner set, shared with the stage grammar (Sonnet r7 R2)
             bad.append("AC1: job %s must run on a GitHub-hosted ubuntu runner, got %r" % (name, ro))
-        for k in ("container", "services", "uses", "env", "outputs", "strategy", "needs", "environment", "defaults", "if", "secrets"):
+        for k in ("container", "services", "uses", "env", "outputs", "strategy", "needs", "environment", "defaults", "secrets"):
             if k in j: bad.append("AC2/AC3: job %s has `%s`, which Sign's job must not have" % (name, k))
+        if j.get("if") != "${{ inputs.stage == '%s' }}" % ("build" if name == "sign" else "rebuild"):
+            bad.append("AC1: job %s must have exactly `if: ${{ inputs.stage == '%s' }}` (the release graph calls this file once per stage), found %r" % (name, "build" if name == "sign" else "rebuild", j.get("if")))
         perm = j.get("permissions")
         if not isinstance(perm, dict) or perm.get("id-token") != "write" or any(v == "write" for k, v in perm.items() if k != "id-token"):
             bad.append("AC3: Sign's permissions must be id-token: write and no other write: %s" % perm)
@@ -507,10 +509,15 @@ on:
         description: 'JSON of the digests Build produced'
         required: true
         type: string
+      stage:
+        description: 'build or rebuild: which records this call signs'
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
   sign:
+    if: \${{ inputs.stage == 'build' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -576,6 +583,7 @@ jobs:
           name: signed-witness-apk-ubuntu-24.04-arm
           path: signed/witness-apk-ubuntu-24.04-arm
   sign-rebuild:
+    if: \${{ inputs.stage == 'rebuild' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -677,6 +685,9 @@ okmut "control: the Sign judge accepts runs-on ubuntu-latest (the closed set)" '
 okmut "control: the Sign judge accepts runs-on ubuntu-22.04 (the closed set)" 'ubuntu-24.04' 'ubuntu-22.04'
 caught "AC1 two top-level on: keys (the second the benign workflow_call)" '\non:' "\non: push\non:"
 caught "AC1 job runs in a container" 'runs-on: ubuntu-24.04' 'runs-on: ubuntu-24.04\n    container: alpine'
+caught "AC1 sign job without its stage if" "    if: \\\$\\{\\{ inputs.stage == 'build' \\}\\}\\n" ""
+caught "AC1 sign-rebuild runs on the build call" "inputs.stage == 'rebuild'" "inputs.stage == 'build'"
+caught "AC2 no stage input" "      stage:\\n        description: 'build or rebuild: which records this call signs'\\n        required: true\\n        type: string\\n" ""
 caught "AC2 extra input" 'digests:\n        description' 'script:\n        type: string\n      digests:\n        description'
 caught "AC2 downloads another artifact" 'name: witness-build' 'name: dist'
 caught "AC2 downloads into a parent path" 'path: witness-build' 'path: ..'

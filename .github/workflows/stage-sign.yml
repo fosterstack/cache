@@ -20,6 +20,10 @@ on:
         description: 'JSON {name: sha256:<hex>} of the digests Build produced (the only input)'
         required: true
         type: string
+      stage:
+        description: 'build or rebuild: which records this call signs (the release graph calls this file once for each)'
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -27,6 +31,7 @@ permissions:
 jobs:
   sign:
     name: sign
+    if: ${{ inputs.stage == 'build' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -109,6 +114,7 @@ jobs:
 
   sign-rebuild:
     name: sign-rebuild
+    if: ${{ inputs.stage == 'rebuild' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
