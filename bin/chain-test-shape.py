@@ -224,8 +224,10 @@ def script(path, kind):
 # ---- the stage files -----------------------------------------------------------------------------------------------------------
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 CHECKOUT_WITH = {"persist-credentials": "false", "fetch-depth": "0"}      # fetch-depth 0 fetches every tag too (fetch-tags is not a key the final judge allows)
-PERM_PLAIN = {"contents": "read", "id-token": "write"}
-PERM_ADMIT = {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"}
+# the four building jobs hold NO identity token (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): their Witness record is made with a throwaway key and
+# signed outside the build, by Sign
+PERM_PLAIN = {"contents": "read"}
+PERM_ADMIT = {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read"}
 MAT = "${{ matrix.runner }}"
 # Build hands Sign the digests.json text: the stage output reads the assemble job's output, which one pinned step fills from digests.json
 STAGE_OUTPUT = "${{ jobs.assemble.outputs.digests }}"
@@ -310,7 +312,7 @@ def stage(path, family, allowed_path=None):
                       if family == "build" else "the one input mode (string, default release; release or snapshot) and no secrets or outputs", on))
     if d.get("permissions") != {"contents": "read"}:
         bad.append("workflow permissions must be exactly contents: read, got %s" % d.get("permissions"))
-    if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed.sh)")
+    if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed-local.sh)")
     jobs = d.get("jobs") or {}
     if set(jobs) != {"apk", "assemble"}:
         return bad + ["exactly two jobs required, apk and assemble (one stage = one file = one identity), found %s" % sorted(jobs)]
@@ -364,9 +366,9 @@ def job(j, family, name, allowed):
             u_ = (s_.get("uses") or "").split(" ")[0]
             if PIN.match(u_) and u_ not in allowed: bad.append("action %s is not on the allowed-actions list" % u_)
     if spec.get("gh"):       # the admission job: the advisor's reading of rule 51 (admission is the first TRUST decision), made a test
-        first_wit = next((k for k, x in enumerate(steps) if "witnessed.sh" in str(x.get("run", ""))), len(steps))
-        if first_wit < len(steps) and (steps[first_wit].get("if") != MODE_RELEASE_IF or "witnessed.sh apk " not in str(steps[first_wit].get("run", ""))):
-            bad.append("the first step that runs bin/witnessed.sh must be the release admission step `bash bin/witnessed.sh apk ...` under if: %s; another Witness "
+        first_wit = next((k for k, x in enumerate(steps) if "witnessed-local.sh" in str(x.get("run", ""))), len(steps))
+        if first_wit < len(steps) and (steps[first_wit].get("if") != MODE_RELEASE_IF or "witnessed-local.sh apk " not in str(steps[first_wit].get("run", ""))):
+            bad.append("the first step that runs bin/witnessed-local.sh must be the release admission step `bash bin/witnessed-local.sh apk ...` under if: %s; another Witness "
                        "step before it runs before admission" % MODE_RELEASE_IF)
         for k, x in enumerate(steps[:first_wit]):
             run_ = str(x.get("run", "")).strip()
@@ -374,7 +376,7 @@ def job(j, family, name, allowed):
                     else "guard" if set(x) == {"name", "env", "run"} and x.get("env") == MODE_GUARD_ENV and run_ == MODE_GUARD_RUN
                     else "install" if set(x) <= {"name", "run"} and run_ in PRE_INSTALLS else None)
             if kind is None:
-                bad.append("step %d runs before admission (the first step that runs bin/witnessed.sh) and is not the checkout, the mode guard or a checksum-pinned "
+                bad.append("step %d runs before admission (the first step that runs bin/witnessed-local.sh) and is not the checkout, the mode guard or a checksum-pinned "
                            "install line: %s (nothing with an env, a token, a secret, a build command, a download or an upload may come before admission)"
                            % (k + 1, sorted(x)))
     i = 0
@@ -520,7 +522,7 @@ def localhelper(path):
 
 def witness_seam(run, spec, family):
     """1/3: the stage's Witness step is exactly ONE line through the helper, with the step name of its job and the committed script of its kind."""
-    want = "bash bin/witnessed.sh %s bin/build-stage-%s.sh" % (spec["step"], spec["kind"])
+    want = "bash bin/witnessed-local.sh %s bin/build-stage-%s.sh" % (spec["step"], spec["kind"])
     got = str(run).strip()
     return [] if got == want else ["the Witness step must be exactly the one line `%s`, found %r" % (want, got[:120])]
 
@@ -805,11 +807,11 @@ SNAPSHOT_REBUILD_PERMISSIONS = dict(PERM_PLAIN)
 
 
 def ceiling(job_name, perm):
-    """A snapshot caller's grants are a STATIC CEILING: contents read, checks/statuses/pull-requests read, and id-token write (the one write, only because the
+    """A snapshot caller's grants are a STATIC CEILING: contents read, checks/statuses/pull-requests read, and no write at all (the building jobs hold no id-token, only because the
     called stage requests it). Any other write fails here, whatever the stage asks for."""
     if not isinstance(perm, dict):
         return []
-    return ["job %s grants %s: write; the grants of a snapshot caller are a static ceiling (read only, id-token write as the stage requests)" % (job_name, k)
+    return ["job %s grants %s: write; the grants of a snapshot caller are a static ceiling (read only: the building jobs hold no identity token)" % (job_name, k)
             for k, v in sorted(perm.items()) if v == "write" and k != "id-token"]
 
 

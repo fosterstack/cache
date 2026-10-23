@@ -26,7 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # The candidate build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, no tag and no admission; the callers' grants are a static ceiling (no write but id-token).
+  # The candidate build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, no tag and no admission; the callers' grants are a static ceiling (read only: the building jobs hold no identity token).
   build:
     uses: ./.github/workflows/stage-build.yml
     permissions:
@@ -34,7 +34,6 @@ jobs:
       checks: read
       statuses: read
       pull-requests: read
-      id-token: write
     with:
       mode: snapshot
 

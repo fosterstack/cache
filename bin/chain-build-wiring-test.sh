@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
-# Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain_items.py (bind, items-apk,
+# Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed-local.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
 # Build and Rebuild: the shape of the two stage files, the four stage scripts, the one Witness helper, the job graph of release.yml and what the
@@ -18,7 +18,7 @@
 #   bin/build-stage-assemble.sh); stage-reproducibility.yml: the same two jobs (bin/build-stage-rebuild-apk.sh and -rebuild-assemble.sh). Four scripts,
 #   so there is no dispatch to analyse, each a row of .github/policy/chain-scripts.json with its sha256 (PR 1's design).
 #   Each job: checkout -> ./bin/install-scanner.sh witness -> the downloads (exact name and path, each into a fresh directory) -> ONE Witness
-#   step, one line through bin/witnessed.sh -> the uploads (exact name, ONE path each). No witness -d: the command runs from the repo root, so Witness
+#   step, one line through bin/witnessed-local.sh -> the uploads (exact name, ONE path each). No witness -d: the command runs from the repo root, so Witness
 #   names product subjects relative to it.
 # THE ARTIFACT LAYOUT (fix round 2): actions/upload-artifact roots an artifact at the common ancestor of its paths, so every upload names ONE path.
 #   The apk job uploads `out` (apks, indexes, SBOMs and the items fragment out/items-apk.json) and its record directory; the assemble job downloads
@@ -35,7 +35,7 @@
 # THE GH TOKEN: bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env (job permissions contents, checks, statuses, pull-requests
 #   read + id-token write; advisor ruling, confirmed). The script runs `unset GH_TOKEN` right after the admission line, so cache's scripts never see it.
 #
-# THE WITNESS SEAM (advisor ruling; owner's amendment of rule 68): bin/witnessed.sh holds ALL the Witness flags and `timeout 540`; the judge is the
+# THE WITNESS SEAM (advisor ruling; owner's amendment of rule 68): bin/witnessed-local.sh holds ALL the Witness flags and `timeout 540`; the judge is the
 # three functions witness_seam, helper and directwitness in bin/chain-test-shape.py and the fixture side is witness_block and witnessed_text below. If
 # harness spike (d) changes the wrapping, only those change; the script grammar never names Witness.
 #
@@ -102,15 +102,15 @@ json.dump({"actions": [CHECKOUT, UPLOAD, DOWNLOAD]}, open(w + "/allowed-actions.
 
 def witness_block(spec_):       # the stage's Witness step(s): one line through the helper (the fixture side of the seam, 1/2)
     env = "        env:\n          GH_TOKEN: ${{ github.token }}\n" if spec_["gh"] else ""
-    run = "bash bin/witnessed.sh %s bin/build-stage-%s.sh" % (spec_["step"], spec_["kind"])
+    run = "bash bin/witnessed-local.sh %s bin/build-stage-%s.sh" % (spec_["step"], spec_["kind"])
     if not spec_.get("mode"):
         return "      - name: %s under Witness\n%s        run: %s\n" % (spec_["step"], env, run)
     out = "      - name: %s under Witness\n        if: %s\n%s        run: %s\n" % (spec_["step"], S.MODE_RELEASE_IF, env, run)
-    snap = "bash bin/witnessed.sh %s bin/build-stage-snapshot-%s.sh" % (S.SNAPSHOT_STEP[spec_["step"]], spec_["kind"])
+    snap = "bash bin/witnessed-local.sh %s bin/build-stage-snapshot-%s.sh" % (S.SNAPSHOT_STEP[spec_["step"]], spec_["kind"])
     return out + "      - name: %s under Witness\n        if: %s\n        run: %s\n" % (S.SNAPSHOT_STEP[spec_["step"]], S.MODE_SNAPSHOT_IF, snap)
 
 
-def witnessed_text():           # bin/witnessed.sh, the exec line broken at its flag groups (the fixture side of the seam, 2/2)
+def witnessed_text():           # bin/witnessed-local.sh, the exec line broken at its flag groups (the fixture side of the seam, 2/2)
     lines = S.witnessed_lines()
     for flag in (" --signer-fulcio-url", " -t ", " -a ", " -o "):
         lines[-1] = lines[-1].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[-1].replace(flag, " \\\n " + flag, 1)
@@ -278,8 +278,8 @@ st s_incl "AC1 an include entry in the matrix" matrix 'runner: [ubuntu-24.04, ub
        'runner: [ubuntu-24.04, ubuntu-24.04-arm]\n        include:\n          - runner: ubuntu-22.04'
 st s_asmarm "AC1 the assemble job on the arm runner" "assemble job must run directly on" "$ASM" 'needs: apk\n    runs-on: ubuntu-24.04-arm\n'
 st s_noneed "AC1 the assemble job does not need the apk jobs" "must need exactly apk" 'needs: apk' 'needs: []'
-st s_pkg    "AC1 packages: write" permissions 'id-token: write' 'id-token: write\n      packages: write'
-st s_noid   "AC1 no id-token (Witness cannot sign keyless)" permissions '      id-token: write\n    steps' '    steps'
+st s_pkg    "AC1 packages: write" permissions '      checks: read\n' '      checks: read\n      packages: write\n'
+st s_noid   "AC1 id-token: write on a building job (the building jobs hold no identity token: owner Oct 22)" permissions '      checks: read\n' '      checks: read\n      id-token: write\n'
 st s_nochk  "AC1 the admission job without checks: read (the required-checks check could not run)" permissions '      checks: read\n' ''
 st s_wfperm "AC1 workflow-level permissions beyond contents: read" permissions 'permissions:\n  contents: read\njobs' 'permissions:\n  contents: write\njobs'
 st s_push   "AC1 an extra trigger" workflow_call 'workflow_call:' 'push:\n  workflow_call:'
@@ -335,7 +335,7 @@ st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "insta
 st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
 st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        if: always()\n'
 # Codex A r4 #1 (advisor reading of rule 51, a reading and not a reworded rule): admission is the first TRUST decision of Build. Before the step that runs
-# bin/witnessed.sh apk (admission is its first command) the apk job may hold ONLY the checkout, the mode guard (a non-secret input, refuses only) and the two
+# bin/witnessed-local.sh apk (admission is its first command) the apk job may hold ONLY the checkout, the mode guard (a non-secret input, refuses only) and the two
 # checksum-verified install lines; nothing with a token, a secret, a build command, a download, an upload or the identity token may come before it.
 st s_pre_env   "AC4 an env on an install step before admission (a token or secret could reach tagged code)" "before admission" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
 st s_pre_sec   "AC4 a secret on a step before admission" "before admission" 'name: install Witness (pinned by checksum)\n' 'name: install Witness (pinned by checksum)\n        env:\n          K: ${{ secrets.KEY }}\n'
@@ -343,7 +343,7 @@ st s_pre_build "AC4 a build command before admission" "before admission" "$GOINS
 st s_pre_up    "AC4 an upload before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: early\n          path: out\n"
 st s_pre_down  "AC4 a download before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        with:\n          name: x\n          path: x\n"
 st s_pre_tok   "AC4 a step that reads the identity token before admission" "before admission" "$GOINST" "$GOINST      - name: token\n        run: bash bin/x.sh \"\$ACTIONS_ID_TOKEN_REQUEST_TOKEN\"\n"
-st s_pre_wit   "AC4 a Witness step before admission (the helper itself runs admission first, so it is the admission step, but a second early one is not)" "before admission" "$GOINST" "$GOINST      - name: early under Witness\n        run: bash bin/witnessed.sh apk bin/build-stage-apk.sh\n"
+st s_pre_wit   "AC4 a Witness step before admission (the helper itself runs admission first, so it is the admission step, but a second early one is not)" "before admission" "$GOINST" "$GOINST      - name: early under Witness\n        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh\n"
 st s_pre_other "AC4 any other run step before admission" "before admission" "$GOINST" "$GOINST      - name: other\n        run: bash bin/chain-hostile-step.sh\n"
 st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
 st s_install "AC2 Witness installed by an unpinned download" install 'run: bash bin/install-scanner.sh witness' \
@@ -357,12 +357,12 @@ st s_if "AC2 an if: other than the mode on the Witness step" "release Witness st
        '      - name: apk under Witness\n        if: always()\n'
 st s_shell "AC2 a shell: override on the Witness step" "Witness step may carry" '      - name: apk under Witness\n' \
        '      - name: apk under Witness\n        shell: bash -c "{0}"\n'
-st s_two "AC2 a second command in the Witness step" "exactly the one line" 'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: |\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\n          echo second'
-st s_direct "AC2 a direct witness run in a stage file (every stage goes through bin/witnessed.sh)" "witness run" \
-       'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: witness run --step apk -- timeout 540 bash bin/build-stage-apk.sh'
+st s_two "AC2 a second command in the Witness step" "exactly the one line" 'run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh' 'run: |\n          bash bin/witnessed-local.sh apk bin/build-stage-apk.sh\n          echo second'
+st s_direct "AC2 a direct witness run in a stage file (every stage goes through bin/witnessed-local.sh)" "witness run" \
+       'run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh' 'run: witness run --step apk -- timeout 540 bash bin/build-stage-apk.sh'
 st s_kind   "AC2 the apk job running the assemble script" "exactly the one line" 'bin/build-stage-apk.sh' 'bin/build-stage-assemble.sh'
-st s_step "AC2 the Witness step named differently from its job (the step name selects the record path)" "exactly the one line" 'witnessed.sh apk bin' \
-       'witnessed.sh build bin'
+st s_step "AC2 the Witness step named differently from its job (the step name selects the record path)" "exactly the one line" 'witnessed-local.sh apk bin' \
+       'witnessed-local.sh build bin'
 HOSTILE_STEP='      - name: hostile step (dry run only)\n        if: ${{ inputs.hostile }}\n        run: bash bin/chain-hostile-step.sh\n'
 st s_hin_none "AC2 the hostile input is missing from the Build stage" "on: must be" \
               '      hostile:\n        description: dry run only\n        type: boolean\n        default: false\n' ''
@@ -379,8 +379,8 @@ st s_hup_noif   "AC2 the hostile upload has no if" "hostile" '        if: ${{ in
 # closed step names; no admission and no GH_TOKEN in the snapshot step.
 GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
 SNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
-SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
-RSNAP_STEP="      - name: snapshot-rapk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-rapk.sh\n"
+SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
+RSNAP_STEP="      - name: snapshot-rapk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed-local.sh snapshot-rapk bin/build-stage-rapk.sh\n"
 RSNAP_STEP="$RSNAP_STEP      - name: rapk under Witness\n"
 st s_mode_none "AC12 the mode input is missing from the Build stage" "on: must be" \
               '      mode:\n        description: release or snapshot\n        type: string\n        default: release\n' ''
@@ -408,12 +408,12 @@ st s_snap_rel  "AC12 the snapshot Witness step runs the release script (admissio
 st s_snap_name "AC12 the snapshot Witness step uses a step name outside the closed list" "snapshot" \
               'snapshot-apk bin/build-stage-snapshot-apk.sh' 'snapshot bin/build-stage-snapshot-apk.sh'
 st s_snap_relname "AC12 the snapshot script runs under the release step name (its record would not carry the snapshot marker)" "snapshot" \
-              'witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh' 'witnessed.sh apk bin/build-stage-snapshot-apk.sh'
+              'witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh' 'witnessed-local.sh apk bin/build-stage-snapshot-apk.sh'
 st s_snap_gh   "AC12 the snapshot Witness step holds GH_TOKEN" "snapshot" \
               'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n' \
               'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
 st s_snap_asm  "AC12 the assemble job's snapshot step carries another job's snapshot step name" "snapshot" \
-              'witnessed.sh snapshot-build bin/build-stage-snapshot-assemble.sh' 'witnessed.sh snapshot-rebuild bin/build-stage-snapshot-assemble.sh'
+              'witnessed-local.sh snapshot-build bin/build-stage-snapshot-assemble.sh' 'witnessed-local.sh snapshot-rebuild bin/build-stage-snapshot-assemble.sh'
 st s_outapk  "AC2 the stage output reads the apk job's output, not the assemble job's" "on: must be" 'value: ${{ jobs.assemble.outputs.digests }}' \
              'value: ${{ jobs.apk.outputs.digests }}'
 st s_outnone "AC2 the stage has no digests output (Sign would get nothing)" "on: must be" \
@@ -460,8 +460,8 @@ st s_after "AC2 a third-party action after Witness" "step" \
 st s_comp   "AC2 a local composite action step" "step" '      - name: apk under Witness' '      - uses: ./.github/actions/x\n      - name: apk under Witness'
 st s_docker "AC2 a docker:// step" "step" '      - name: apk under Witness' '      - uses: docker://alpine:3\n      - name: apk under Witness'
 rb() { replace "$work/rebuild.yml" "$work/$1.yml" "$4" "$5" && expect caught "$2" "$3" stage "$work/$1.yml" rebuild "$AL"; return 0; }
-rb r_step "005-AC1 Rebuild's assemble Witness step is named build (Build's record path)" "exactly the one line" 'witnessed.sh rebuild bin' \
-       'witnessed.sh build bin'
+rb r_step "005-AC1 Rebuild's assemble Witness step is named build (Build's record path)" "exactly the one line" 'witnessed-local.sh rebuild bin' \
+       'witnessed-local.sh build bin'
 rb r_up   "005-AC4 Rebuild uploads anything but its verdict directory" "upload-artifact" 'name: witness-rebuild' 'name: dist'
 rb r_dl "005-AC4 Rebuild downloads Build's dist (it takes only the record and the lists)" "download-artifact" \
        'name: witness-build\n          path: witness-build' 'name: dist\n          path: witness-build'
@@ -480,7 +480,7 @@ rb r_go_other "005-AC2 Rebuild's Go install is another command (not the pinned i
 # REQ-CHAIN-005-AC7: Rebuild takes the same mode input and has its own snapshot Witness steps, snapshot-rapk and snapshot-rebuild
 RSNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
 RSNAP_OWN="      - name: snapshot-rapk under Witness\n        $RSNAP_IF\n"
-RSNAP_OWN="${RSNAP_OWN}        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh\n"
+RSNAP_OWN="${RSNAP_OWN}        run: bash bin/witnessed-local.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh\n"
 rb r_mode_none "005-AC7 the mode input is missing from the Rebuild stage" "on: must be" \
        '    inputs:\n      mode:\n        description: release or snapshot\n        type: string\n        default: release\n' ''
 rb r_mode_snap "005-AC7 the Rebuild mode defaults to snapshot" "on: must be" 'default: release' 'default: snapshot'
@@ -493,9 +493,9 @@ rb r_snap_none "005-AC7 the snapshot-rapk Witness step is missing" "Witness step
 rb r_snap_rel "005-AC7 the snapshot-rapk step runs the release script (policy and stage-start of a release)" "Witness step" \
        'snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'snapshot-rapk bin/build-stage-rebuild-apk.sh'
 rb r_snap_name "005-AC7 the snapshot-rebuild step uses a name outside the closed list" "Witness step" \
-       'witnessed.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh' 'witnessed.sh snapshot-evil bin/build-stage-snapshot-rebuild-assemble.sh'
+       'witnessed-local.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh' 'witnessed-local.sh snapshot-evil bin/build-stage-snapshot-rebuild-assemble.sh'
 rb r_snap_asmname "005-AC7 the snapshot-rapk step runs under the release step name" "Witness step" \
-       'witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'witnessed.sh rapk bin/build-stage-snapshot-rebuild-apk.sh'
+       'witnessed-local.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'witnessed-local.sh rapk bin/build-stage-snapshot-rebuild-apk.sh'
 # I5 (step-8, Opus): the Rebuild verdict artifact is uploaded under if: always(), so snapshot-verdict.json is readable even when rebuild-compare failed; no other upload is
 VUP="        if: always()\n        with:\n          name: witness-rebuild"
 rb r_verdict_noif "005-AC7 the verdict upload has no if (a failed comparison would leave no artifact for the differences)" "if: always()" "$VUP" \
@@ -504,7 +504,7 @@ rb r_verdict_success "005-AC7 the verdict upload runs only on success" "if: alwa
        "        if: success()\n        with:\n          name: witness-rebuild"
 rb r_other_always "005-AC7 another Rebuild upload under always()" "no if" "        with:\n          name: witness-rapk-\${{ matrix.runner }}" \
        "        if: always()\n        with:\n          name: witness-rapk-\${{ matrix.runner }}"
-rb r_perm "005-AC1 Rebuild with the admission permissions" permissions 'id-token: write' 'id-token: write\n      checks: read'
+rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      contents: read\n' '      contents: read\n      checks: read\n'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
 expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable" stage "$work/build.yml" build "$work/does-not-exist.json"
@@ -803,8 +803,8 @@ replace "$LR" "$work/lf_date.sh" 'assemble-image.sh --variant production' 'assem
        && expect caught "005-AC6 Rebuild passes its own --build-date" "not identical" lockflow "$LA" "$work/lf_date.sh"
 replace "$LR" "$work/lf_ver.sh" '--variant production --version "${GITHUB_REF_NAME#v}"' '--variant production --version "9.9.9"' && expect caught \
        "005-AC6 Rebuild's version differs from Build's" "not identical" lockflow "$LA" "$work/lf_ver.sh"
-replace "$work/build.yml" "$work/lf_apko.yml" 'run: bash bin/witnessed.sh build bin/build-stage-assemble.sh' \
-       'run: bash bin/witnessed.sh build bin/build-stage-assemble.sh && apko build build/apko.yaml fscache:x out.tar' && expect caught \
+replace "$work/build.yml" "$work/lf_apko.yml" 'run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh' \
+       'run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh && apko build build/apko.yaml fscache:x out.tar' && expect caught \
        "AC11 a stage workflow names apko in a run step" apko lockflow "$LA" "$LR" "$work/lf_apko.yml"
 replace "$work/build.yml" "$work/lf_apkoi.yml" 'run: bash bin/install-build-tools.sh apko' 'run: bash bin/install-build-tools.sh apko --version 9' && expect caught \
        "AC11 the apko installer line with an extra argument is not the one admitted line" apko lockflow "$LA" "$LR" "$work/lf_apkoi.yml"
@@ -2251,7 +2251,6 @@ jobs:
       checks: read
       statuses: read
       pull-requests: read
-      id-token: write
     uses: ./.github/workflows/stage-build.yml
     with:
       mode: snapshot
@@ -2282,7 +2281,6 @@ rebuild = """  rebuild:
     needs: build
     permissions:
       contents: read
-      id-token: write
     uses: ./.github/workflows/stage-reproducibility.yml
     with:
       mode: snapshot
@@ -2303,8 +2301,8 @@ cl c3  "AC14 no input at all (the stage's default is release)" "    with:\n     
 cl c4  "AC14 secrets: inherit" "      mode: snapshot" "      mode: snapshot\n    secrets: inherit" "keys outside"
 cl c5 "AC14 an if on the call" "    uses: ./.github/workflows/stage-build.yml" \
     "    if: github.event_name == 'push'\n    uses: ./.github/workflows/stage-build.yml" "keys outside"
-cl c6 "AC14 the old wider grants (packages and attestations write)" "      id-token: write\n    uses" \
-    "      id-token: write\n      packages: write\n      attestations: write\n    uses" \
+cl c6 "AC14 the old wider grants (packages and attestations write)" "      pull-requests: read\n    uses" \
+    "      pull-requests: read\n      packages: write\n      attestations: write\n    uses" \
        "exactly the permissions"
 cl c7  "AC14 narrower grants than the stage requests (a startup_failure with zero jobs)" "      statuses: read\n" "" "exactly the permissions"
 cl c8 "AC14 a call of the deleted stage-image.yml" "  scanners:" \
@@ -2357,7 +2355,7 @@ expect caught "AC14 allowlist: main-candidate-rescan.yml has no artifact-accepta
 expect ok "AC14 fixture scan.yml: build then rebuild, both in snapshot mode" "" callers "$work/scanfx/scan.yml"
 expect ok "AC14 fixture main-candidate-rescan.yml: build only" "" callers "$work/rescanfx/main-candidate-rescan.yml"
 cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing"
-SCAN_REBUILD="  rebuild:\n    needs: build\n    permissions:\n      contents: read\n      id-token: write\n"
+SCAN_REBUILD="  rebuild:\n    needs: build\n    permissions:\n      contents: read\n"
 SCAN_REBUILD="$SCAN_REBUILD    uses: ./.github/workflows/stage-reproducibility.yml\n    with:\n      mode: snapshot\n"
 sc s1 "AC14 scan.yml without the Rebuild call (the PR gate would lose rule 31's two-assembly check)" \
       "$SCAN_REBUILD" "" "must also call Rebuild"
@@ -2365,19 +2363,23 @@ sc s2 "AC14 scan.yml's rebuild in release mode" "      mode: snapshot\n  scanner
 sc s3 "AC14 scan.yml's rebuild with an extra input" "      mode: snapshot\n  scanners:" "      mode: snapshot\n      hostile: true\n  scanners:" \
     "rebuild must pass exactly"
 sc s4 "AC14 scan.yml's rebuild that needs nothing (it could run before Build)" "  rebuild:\n    needs: build\n" "  rebuild:\n" "must need exactly build"
-sc s5 "AC14 scan.yml's rebuild with contents: write" "      contents: read\n      id-token: write\n    uses: ./.github/workflows/stage-reproducibility.yml" \
-      "      contents: write\n      id-token: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
-sc s6 "AC14 scan.yml's rebuild with a packages write grant" "      id-token: write\n    uses: ./.github/workflows/stage-reproducibility.yml" \
-      "      id-token: write\n      packages: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
+sc s5 "AC14 scan.yml's rebuild with contents: write" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
+      "      contents: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
+sc s6 "AC14 scan.yml's rebuild with a packages write grant" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
+      "      contents: read\n      packages: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
 sc s7 "AC14 scan.yml's rebuild with secrets" "      mode: snapshot\n  scanners:" "      mode: snapshot\n    secrets: inherit\n  scanners:" "keys outside"
 mkdir -p "$work/rescanfx2"; cp "$work/scanfx/scan.yml" "$work/rescanfx2/main-candidate-rescan.yml"
 expect caught "AC14 main-candidate-rescan.yml calls Rebuild too (it needs none)" "calls Build only" callers "$work/rescanfx2/main-candidate-rescan.yml"
-# (B) the callers' grants are a STATIC CEILING: no write but id-token, whatever the stage asks for
+# (B) the callers' grants are a STATIC CEILING: read only, whatever the stage asks for (the building jobs hold no identity token)
 cl w1 "AC14 ceiling: contents: write on the build call" "      contents: read\n      checks: read" "      contents: write\n      checks: read" "static ceiling"
-cl w2 "AC14 ceiling: packages: write on the build call" "      id-token: write\n    uses" "      id-token: write\n      packages: write\n    uses" \
+cl w2 "AC14 ceiling: packages: write on the build call" "      pull-requests: read\n    uses" "      pull-requests: read\n      packages: write\n    uses" \
     "static ceiling"
-cl w3 "AC14 ceiling: attestations: write on the build call" "      id-token: write\n    uses" \
-    "      id-token: write\n      attestations: write\n    uses" "static ceiling"
+cl w3 "AC14 ceiling: attestations: write on the build call" "      pull-requests: read\n    uses" \
+    "      pull-requests: read\n      attestations: write\n    uses" "static ceiling"
+cl w6 "AC14 ceiling: id-token: write on the build call (the building jobs hold no identity token, so the caller may not grant one: owner Oct 22)" "      pull-requests: read\n    uses" \
+    "      pull-requests: read\n      id-token: write\n    uses" "exactly the permissions"
+sc s8 "AC14 scan.yml's rebuild with id-token: write (the building jobs hold none)" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
+      "      contents: read\n      id-token: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "exactly the permissions"
 cl w4 "AC14 ceiling: checks: write on the build call" "      checks: read" "      checks: write" "static ceiling"
 cl w5 "AC14 ceiling: statuses: write on the build call" "      statuses: read" "      statuses: write" "static ceiling"
 cl w6 "AC14 ceiling: pull-requests: write on the build call" "      pull-requests: read" "      pull-requests: write" "static ceiling"
@@ -2654,7 +2656,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=909
+EXPECT=911
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
