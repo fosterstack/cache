@@ -38,15 +38,17 @@ else
   echo "creating ${branch}: bumping the go directive in both modules and the installer's Go pin (GO_VER and both checksums)"
   # the installer pin first, so that any doubt fails closed before a file changes or a branch exists: the two linux tarballs are downloaded over HTTPS from
   # go.dev, their sha256 computed here and compared with the checksum go.dev publishes for them (https://go.dev/dl/?mode=json); the computed values are written
-  GO_DL="${GO_BASE_URL:-https://go.dev/dl}"
-  published="$(curl -fsSL "${GO_DL}/?mode=json&include=all")" || { echo "::error::go.dev is unreachable: cannot read the published checksums" >&2; exit 1; }
+  die() { echo "::error::$1" >&2; exit "${2:-1}"; }
   dl="$(mktemp -d)"; trap 'rm -rf "$dl"' EXIT
+  jsonq='?mode=json&include=all'
+  curl -q -fsSL -g -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1
+  published="$(cat "${dl}/published.json")"
   sum_amd64=""; sum_arm64=""
   for arch in amd64 arm64; do
     tarball="go${LATEST}.linux-${arch}.tar.gz"
     want="$(jq -r --arg v "go${LATEST}" --arg f "$tarball" '.[] | select(.version==$v) | .files[] | select(.filename==$f) | .sha256' <<<"$published" 2>/dev/null | head -1)"
     [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::go.dev publishes no valid sha256 for ${tarball}" >&2; exit 1; }
-    curl -fsSL -o "${dl}/${tarball}" "${GO_DL}/${tarball}" || { echo "::error::cannot download ${tarball}" >&2; exit 1; }
+    curl -q -fsSL -g -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" || die "cannot download the Go tarball from go.dev" 1
     got="$(sha256sum "${dl}/${tarball}" | cut -d' ' -f1)"
     [ "$got" = "$want" ] || { echo "::error::${tarball} is ${got}, go.dev publishes ${want}" >&2; exit 1; }
     printf -v "sum_${arch}" '%s' "$got"

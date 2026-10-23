@@ -1518,7 +1518,7 @@ requirements:
       - id: REQ-REL-004-AC1
         given: any pull request, push to main, or tag
         when: the required scan check runs
-        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all six image children and every archive; Inspector scans the six image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
+        then: "The scan check runs Grype and Amazon Inspector on pull requests, pushes to main, and tags. Grype scans all four image children and every archive; Inspector scans the four image children from an SBOM generated on the runner. Each scanner reports its package count; zero packages fails. Both block at any severity. The published VEX document is the only exception for both: Grype applies it natively, and the gate applies it to Inspector's findings itself, since Inspector does not read VEX; no suppression is configured in AWS. A test proves that a VEX-covered finding is suppressed for both scanners and an uncovered one blocks. Go modules are scanned by govulncheck."
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-004-AC2
@@ -1747,6 +1747,12 @@ requirements:
         then: auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-DEP-001-AC10
+        given: a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case
+        when: the reviewer picks its candidates and gathers its evidence
+        then: it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it; a bump whose notes say neither is left to the patch and minor lane
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-DEP-002
     title: The required-check guard runs everywhere
@@ -1799,6 +1805,12 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC2
+        given: a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case
+        when: the auto-merge lane runs
+        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-003-AC3
         given: a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged)
         when: the auto-merge lane or the hourly reviewer sees it
         then: the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual
@@ -1845,7 +1857,7 @@ requirements:
       - id: REQ-REL-008-AC1
         given: "the four consolidation pull requests have landed"
         when: "the workflow directory is listed"
-        then: "it holds exactly the 26 ratified files (owner RATIFIED amendment, Oct 2: dependabot-auto-merge.yml stays its own file; supply-chain.yml added by REQ-SUP-001, owner ratified Oct 5, new-file amendment Oct 3; stage-sign.yml added by v0.3.0 rule 52, owner ratified Oct 9, the one new workflow file of v0.3.0)"
+        then: "it holds exactly the 19 ratified files, the list fixed by bin/workflow-consolidation-test.sh (the effect of the ratified consolidation and of the v0.3.0 chain's ratified removals of the legacy workflows; dependabot-auto-merge.yml stays its own file, owner RATIFIED Oct 2; supply-chain.yml, REQ-SUP-001, owner ratified Oct 5; stage-sign.yml, v0.3.0 rule 52, owner ratified Oct 9)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-008-AC2
@@ -2061,11 +2073,48 @@ requirements:
         then: "it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image"
         verification: { method: acceptance-release-artifact, release_blocking: false }
         status: approved
+  - id: REQ-REL-011
+    title: A job that holds a credential never compiles, and each build is its own job
+    statement: >
+      A workflow job that holds a credential (a secret, an environment, an
+      id-token or packages write grant) shall not build or compile anything,
+      and no job shall run two builds: on GitHub-hosted runners the separate
+      job is the isolation unit, each job a fresh virtual machine. Owner,
+      Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md):
+      "the signer and the builder need hardware isolation and the builds in
+      general need hardware isolation ... the best github actions can do for
+      that, assuming we use github hosted runers, is to use separate jobs in
+      the workflow." The rule: a job that holds the signing key or any
+      publish credential never receives a build output other than the exact
+      artifacts it signs or publishes; the Rebuild comparison runs in a job
+      with no secrets and no publish permission; builds are isolated from
+      each other the same way, each build its own job.
+    source: [.github/workflows/auditor.yml, .github/workflows/go-freshness.yml, .github/workflows/stage-verify.yml, bin/job-isolation-test.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: owner ratification Oct 21 2026 (signer and builder never share a machine); advisor handoff 0637
+    confidence: implementation-only
+    notes: |
+      Four jobs of the release chain on main (stage-build, stage-image, stage-promote, stage-reproducibility) still break AC1 and are listed exclusions in bin/job-isolation-test.sh with their reason: the chain-v030 landing (handoff 0634, cache#514) replaces those files. The exclusion list shrinks to nothing then.
+      A tool that publishes no release binary (govulncheck) is built in its own job that holds no credential and reaches the credential-holding job as an artifact whose sha256 equals the build job's output.
+    acceptance_criteria:
+      - id: REQ-REL-011-AC1
+        given: "any workflow job in the repository that holds a credential: a secrets.* reference, an environment, a permissions grant of id-token: write or packages: write"
+        when: "bin/job-isolation-test.sh judges every workflow file"
+        then: "none of the job's steps compiles or builds (go install, go build, goreleaser, docker build or buildx build, melange or apko build, make, cargo, npm run build); a tool the job needs is installed through bin/install-scanner.sh as a checksum-pinned release binary, and govulncheck, which has no release binary, is built in its own job with no credential and handed to auditor.yml's audit job as an artifact whose sha256 the audit job compares with the build job's output before it runs; the only jobs that may break this are the four listed release-chain exclusions, each with its reason, and a mutated copy of a workflow that adds a build to a credential-holding job fails the test"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-011-AC2
+        given: "any workflow job in the repository"
+        when: "bin/job-isolation-test.sh judges every workflow file"
+        then: "the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
 
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >
-      The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all six images, and Google Artifact Analysis on the three variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
+      The daily main-candidate rescan shall use four scanners: Grype, Docker Scout and Amazon Inspector on all four images, and Google Artifact Analysis on the two variants on linux/amd64 only; Trivy and Snyk shall not be run by it.
     source: [.github/workflows/main-candidate-rescan.yml]
     tier: community
     introduced: v0.3.0
@@ -2075,13 +2124,13 @@ requirements:
       - id: REQ-SCAN-001-AC1
         given: "the daily main-candidate rescan"
         when: "it runs"
-        then: "Grype, Docker Scout and Amazon Inspector each scan all six images (production, debug and fips, each on linux/amd64 and linux/arm64); the set is fixed in the workflow, not computed at build time"
+        then: "Grype, Docker Scout and Amazon Inspector each scan all four images (production and fips, each on linux/amd64 and linux/arm64; the debug image was dropped for v0.3.0, owner Oct 9); the set is fixed in the workflow, not computed at build time"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-001-AC2
         given: "the daily main-candidate rescan"
         when: "it runs"
-        then: "Google Artifact Analysis scans the three variants on linux/amd64 only, never arm64"
+        then: "Google Artifact Analysis scans the two variants (production and fips) on linux/amd64 only, never arm64"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SCAN-001-AC3
@@ -2765,6 +2814,24 @@ requirements:
         then: "the line is ruled text exactly as under AC20 (the row binds file, form, key and the whole line); the same text in any other file, any edit of the line (one character, a tab for a space, a carriage return), a second copy of it that differs only in whitespace, a link named like the file, and that ruling prefix on any other line (of the same file or another) rules nothing, so the nineteen lines are the only lines this ruling allows. A new script that names the vendored folder is refused unless its exact path is listed in the checker; six paths that name it legitimately (the govulncheck vendor-mode tests and checks) are listed, and a seventh file still fails"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC27
+        given: "(owner ratified Oct 21 2026: \"yes skip the 7 day hold lets unblock stuff - go.\" - ops/docs/ratify/2026-10-21-go-releases-skip-7-day-hold.md) a pull request that moves the tool item go, Go's own toolchain release, in bin/install-scanner.sh"
+        when: "pin-age runs"
+        then: "that one item is exempt from the 7-day age and from nothing else: the exemption holds only when the head's installer has exactly one GO_VER, exactly one download line naming Go and it is the https://go.dev/dl/go${GO_VER} fetch, a sha256 pin of 64 hex for each of the two architectures, and the verify call on the very next line, and only for the version GO_VER names; a Go download from any other host, an unpinned or unverified one, a second Go download or any other tool at 0 days still fails; the advisory and malware audit and every other check still apply to go"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC28
+        given: "the sample project's Gradle wrapper (bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties)"
+        when: "the wrapper downloads its Gradle distribution"
+        then: "the properties file carries distributionSha256Sum, the lowercase sha256 of the distribution its distributionUrl names (the sum Gradle publishes for that zip, re-checked against the zip), so the wrapper refuses any other bytes; this is the owner's plain form for a tool download: exact version and checksum"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC29
+        given: "acceptance.yml run with an image-ref (release-chain mode)"
+        when: "the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line)"
+        then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3353,7 +3420,7 @@ requirements:
       - id: REQ-CHAIN-004-AC11
         given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
         when: "they are read"
-        then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; the configs are locked and built from the fixed relative paths build/apko.yaml (production) and build/apko-fips.yaml (fips), never from an absolute path or a temporary copy"
+        then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC12
@@ -3387,6 +3454,16 @@ requirements:
         given: "the Build and Rebuild stage files (stage-build.yml, stage-reproducibility.yml): each of their four jobs builds from archive/, and the committed pointer build/archive.json names the archive by digest"
         when: "a stage job runs"
         then: "right after the build tool that job installs (melange in an apk job, apko in an assemble job) and before any download or Witness step, it installs the checksum-pinned crane with bin/install-scanner.sh crane and pulls the archive with bin/archive-pull.sh --pointer build/archive.json --out archive, each a step of a name and a run and nothing else (no env, no if, no continue-on-error, no digest of its own, no other directory or pointer), so the build runs only after a pull that exited 0 and verified every file against the committed record, and a failed pull or a missing pointer stops the job with no fallback to Wolfi or any other source; both files the step runs (bin/archive-pull.sh, bin/archive-verify.py) are rows of .github/policy/chain-scripts.json with their sha256; the workflow edit adds no new workflow file and every action stays a commit digest"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+      # ADVISOR READING Oct 20 (handoff 0524, rules 15, 38a, 44-49 and REQ-SUP-001 as the owner ratified them): the concrete form of "build tools come from the archive only" for
+      # the sandbox melange's bubblewrap runner needs and the hosted images do not ship. Not ratified by the owner until he says so; the status below is "approved" only because
+      # the schema allows one status under an approved baseline. The script is a Python file (bin/install-host-bwrap.py), not the shell script the first reading named, so that
+      # the archive's packages are read and checked as data (tar and gzip as a library), not through a shell.
+      - id: REQ-CHAIN-004-AC17
+        given: "a Build or Rebuild apk job (the two jobs that run melange), the archive pulled into archive/ by AC16's step, and the committed build/locks/host-tools.lock (REQ-REFRESH-001-AC35)"
+        when: "the job runs"
+        then: "right after the archive pull and before any Witness step, one step runs `python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools` (a name and a run and nothing else: no env, no if, no continue-on-error, no sudo, no other argument), which takes ONLY the packages the lock names, for the job's architecture (x86_64 or aarch64), from archive/<arch>/<name>-<version>.apk, checks each one (the file is present, its control segment names the lock's name, version and this architecture, and the sha256 of its data segment equals the datahash that control segment records), unpacks the data of all of them into the new directory host-tools/ (a path that is absolute, has a .. part, a hard link, a device, or a relative symlink that leaves the directory, or one path from two packages, is refused; an absolute symlink is not created (it is skipped and logged); nothing is placed through a link), and writes /usr/local/bin/bwrap as a small wrapper that runs the extracted loader with --library-path over the extracted libraries and the extracted usr/bin/bwrap; it uses no network, no package manager and no sudo, and a lock that is empty or not closed, a missing file, an extra or colliding file, a checksum mismatch, a missing loader or bubblewrap, or a host-tools directory that already exists fails the job before the build with nothing written; an apk job installs melange, crane and the host tools from the archive, and no system package (this amends AC3 and AC5); the script is a row of .github/policy/chain-scripts.json with its sha256, the workflow edit adds no new workflow file, and the Build and Rebuild jobs run no package manager"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
 
@@ -3429,7 +3506,7 @@ requirements:
       - id: REQ-CHAIN-005-AC4
         given: "Rebuild's output"
         when: "the stage's uploads and signed records are listed"
-        then: "the only signed record is Rebuild's Witness record, signed keyless under stage-reproducibility.yml at the tag with release.yml as the top-level workflow, whose product is the verdict witness-rebuild/verdict.json; the only upload that leaves the stage is the witness-rebuild directory holding that record and the verdict (the apk matrix job's per-architecture apks and records are intermediate, read only by the assemble job after verification and binding); no artifact Rebuild built can reach Sign or Release, which publish Build's bytes by digest"
+        then: "the only signed record is Rebuild's Witness record, signed keyless under stage-reproducibility.yml at the tag with release.yml as the top-level workflow, whose product is the verdict witness-rebuild/verdict.json; the uploads that leave the stage are the witness-rebuild directory holding that record and the verdict and the per-architecture apk artifacts rapk-ubuntu-24.04 and rapk-ubuntu-24.04-arm (the apk matrix job's per-architecture records are intermediate, read only by the assemble job after verification and binding); Sign and Release publish Build's bytes by digest. The owner's rule (ratified Oct 21 2026, ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md; \"it can't sit on the same machine ... it violates nist 800-53 ... the signer and the builder need hardware isolation and the builds in general need hardware isolation ... the best github actions can do for that, assuming we use github hosted runners, is to use separate jobs in the workflow\"): (1) a job that holds the signing key or any publish credential never receives a build output other than the exact artifacts it signs or publishes (Build's), so Rebuild's apks never reach it; (2) the byte comparison of Build's and Rebuild's apks runs in the compare job of the Release stage, which holds contents read only (no secret, no publish permission, no environment, no identity token) and runs as one plain step; it passes on only a small result file, which the verify job's release-verify step checks against Build's attested apk digests, and neither the verify nor the release job downloads a rapk; (3) each build (Build, Rebuild, each architecture) is its own job. The ephemeral keyless certificate Witness mints for a build job is outside rule (1): it signs the record of a step, not the artifacts we ship, and its identity is that of the stage workflow that runs the job (for example stage-build.yml called from release.yml), so a job of another stage workflow cannot impersonate it, while the jobs of one stage workflow share that identity (the owner: keep Witness); a step of the same job can request the same token, so a record made inside a build job is not unforgeable by itself, which is why release-verify checks every stage's record against the next stage's inputs"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-005-AC5
@@ -4084,7 +4161,7 @@ requirements:
       - id: REQ-BUILDAPK-001-AC1
         given: "the two committed recipes build/melange.yaml and build/melange-fips.yaml"
         when: "they are read"
-        then: "each builds ./cmd/fscache from the vendored source with -trimpath and no Dockerfile (rule 11), takes Go 1.27.2 from go.dev through one sha256-pinned fetch step per architecture with GOTOOLCHAIN=local, GOFLAGS=-mod=vendor, GOPROXY=off and CGO_ENABLED=0 (rule 12), uses only local repositories and name=version pins for its build environment (rule 15), writes go version -m to usr/share/fscache/buildinfo.txt (rule 20), stamps the tree and refuses a (devel) or modified binary (rule 24); only the FIPS recipe sets GOFIPS140=v1.0.0 and proves the binary records GOFIPS140=v1.0.0-c2097c7c (rule 13); bin/gen-recipes.py --check passes (both recipes equal the generator's output and the template matches its pin, rule 21)"
+        then: "each builds ./cmd/fscache from the vendored source with -trimpath and no Dockerfile (rule 11), takes Go 1.27.3 from go.dev through one sha256-pinned fetch step per architecture with GOTOOLCHAIN=local, GOFLAGS=-mod=vendor, GOPROXY=off and CGO_ENABLED=0 (rule 12), uses only local repositories and name=version pins for its build environment (rule 15), writes go version -m to usr/share/fscache/buildinfo.txt (rule 20), stamps the tree and refuses a (devel) or modified binary (rule 24); only the FIPS recipe sets GOFIPS140 to the version of the module build/locks/fips-module.txt names (v1.0.0 today) and proves the binary records GOFIPS140=<that module's id> (v1.0.0-c2097c7c today) (rule 13); bin/gen-recipes.py --check passes (both recipes equal the generator's output and the template matches its pin, rule 21)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDAPK-001-AC2
@@ -4102,7 +4179,7 @@ requirements:
       - id: REQ-BUILDAPK-001-AC4
         given: "a finished build"
         when: "the apk is checked"
-        then: "it is accepted only if its signature verifies against the committed build/keys/assembly.rsa.pub (the signature bytes are verified: a signature member's name alone is no signature, and the .PKGINFO datahash the signature covers must equal the sha256 of the data stream) and names assembly.rsa.pub, if its binary says neither (devel) nor vcs.modified=true, if its main module version is exactly v<version> (a pseudo-version or another tag is refused) and its vcs.revision is the source's HEAD (a missing or foreign revision is refused), if the fips variant records exactly one GOFIPS140 value, v1.0.0-c2097c7c, and the standard variant records none, if the buildinfo.txt in the apk equals go version -m of the packaged binary (checked when a Go toolchain is on PATH; otherwise the run says it is not verified), and if bin/go-module-sbom.py accepts the module list; it then writes the apk (version X.Y.Z, X.Y.Z_rcN for X.Y.Z-rcN, or 0.0.0_rc1 for the snapshot version) with an index, fscache-modules.spdx.json and inputs-manifest.json, and two builds of the same inputs give the same bytes (rules 13, 15, 20, 22, 24, 31)"
+        then: "it is accepted only if its signature verifies against the committed build/keys/assembly.rsa.pub (the signature bytes are verified: a signature member's name alone is no signature, and the .PKGINFO datahash the signature covers must equal the sha256 of the data stream) and names assembly.rsa.pub, if its binary says neither (devel) nor vcs.modified=true, if its main module version is exactly v<version> (a pseudo-version or another tag is refused) and its vcs.revision is the source's HEAD (a missing or foreign revision is refused), if the fips variant records exactly one GOFIPS140 value and it is the module build/locks/fips-module.txt names (v1.0.0-c2097c7c today; the file is read as one line vMAJOR.MINOR.PATCH-<8 lower-case hex> and a plain newline, and a missing, symlinked or malformed file is refused), and the standard variant records none, if the buildinfo.txt in the apk equals go version -m of the packaged binary (checked when a Go toolchain is on PATH; otherwise the run says it is not verified), and if bin/go-module-sbom.py accepts the module list; it then writes the apk (version X.Y.Z, X.Y.Z_rcN for X.Y.Z-rcN, or 0.0.0_rc1 for the snapshot version) with an index, fscache-modules.spdx.json and inputs-manifest.json, and two builds of the same inputs give the same bytes (rules 13, 15, 20, 22, 24, 31)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDAPK-001-AC5

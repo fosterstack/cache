@@ -235,6 +235,7 @@ VERDICT_ARTIFACT = "witness-rebuild"
 MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
+# Rebuild's apk job installs the same pinned Go toolchain (release review R1, Oct 21: bin/build-apk.sh refuses to run in CI without the pinned Go at /usr/local/bin/fscache-go, REQ-CHAIN-005-AC2: Rebuild uses the same pinned tools as Build)
 # Build's apk job installs the Go toolchain admission's verify-freeze needs (the old stage-admission did, from go.mod) the way the chain installs Witness: a
 # checksum-pinned `bash bin/install-scanner.sh go` run line, AFTER the Witness install (rule 68: Witness first) and before the downloads and the Witness step
 # (advisor, Codex A r3 F4: no setup-go action; the toolchain bytes are pinned by a committed sha256)
@@ -259,8 +260,11 @@ INSTALL_APKO = "bash bin/install-build-tools.sh apko"
 # steps of their own after the build tools and before the downloads and the Witness step; a failed pull fails the job (no if, no continue-on-error, no env)
 INSTALL_CRANE = "bash bin/install-scanner.sh crane"
 ARCHIVE_PULL = "bash bin/archive-pull.sh --pointer build/archive.json --out archive"
-ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py")      # the files the pull step runs: rows of chain-scripts.json with their sha256
-PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO, INSTALL_CRANE, ARCHIVE_PULL)
+ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py")      # the files the pull step and the host-tools step run: rows of chain-scripts.json with their sha256
+# REQ-CHAIN-004-AC17 (advisor reading Oct 20, rules 15 and 38a): melange's bubblewrap runner needs bwrap, which the hosted images do not ship. An apk job (the jobs that run
+# melange) unpacks it, and what it needs, from the archive just pulled: one step right after the pull, a name and a run and nothing else, never a package manager or sudo.
+INSTALL_HOSTTOOLS = "python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools"
+PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO, INSTALL_CRANE, ARCHIVE_PULL, INSTALL_HOSTTOOLS)
 # The guard step has NO `if` and runs a listed script that judges the raw mode string, case-sensitively: GitHub's `==` and `!=` in an expression compare
 # case-insensitively ('Release' == 'release' is true), so an `if` could not tell a mixed-case mode from the exact one (Codex A r1 F6). The mode reaches the
 # script as a whole "$MODE" argument of a step env (MODE is in env_names of chain-scripts.json).
@@ -273,12 +277,12 @@ HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,),
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
     ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
-    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, tools=(INSTALL_MELANGE,), mode=True,
+    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True,
         down=[("witness-build", "witness-build"), ("digests", "build-in")],
         up=[("rapk-" + MAT, "out"), ("witness-rapk-" + MAT, "witness-rapk")]),
     ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True,
@@ -395,7 +399,7 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
             bad.append("step %d must be exactly: run %s (the checksum-pinned build tool this job uses and no other, right after the Witness and Go installs, before admission; no env, no secret)" % (i, cmd))
-    for cmd in (INSTALL_CRANE, ARCHIVE_PULL):       # REQ-CHAIN-004-AC16: the pinned crane, then the archive pull, each a step of a name and a run and nothing else
+    for cmd in (INSTALL_CRANE, ARCHIVE_PULL) + ((INSTALL_HOSTTOOLS,) if spec.get("hosttools") else ()):       # REQ-CHAIN-004-AC16: the pinned crane, then the archive pull (AC17: and in an apk job the host tools out of it), each a step of a name and a run and nothing else
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
             bad.append("step %d must be exactly: run %s (REQ-CHAIN-004-AC16: the archive is pulled by its committed digest right after the build tools of "
@@ -587,6 +591,10 @@ NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"
 # at the merge of PR 1 into chain-v030 they are replaced by these.
 GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
 RELEASE_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
+# patch-failed also fires when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, a third queued tag run replaces it, and
+# the replaced run ends as cancelled, which failure() does not see
+PATCH_FAILED_IF = "${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+RELEASE_CONCURRENCY_LINE = re.compile(r"(?m)^  release:\n(?:    .*\n|\n)*?    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n")
 GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate G (Build hands it the digests)
 RC_PUSH = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')"
 BUILD_WITH = {"hostile": "${{ %s }}" % RC_PUSH}      # the hostile Build step runs on a push of a release-candidate tag only (advisor 0383)
@@ -667,8 +675,9 @@ class _NoDuplicateKeys(yaml.BaseLoader):
 
 
 def graph(path):
+    raw_text = read_exact(path)
     try:
-        d = yaml.load(read_exact(path), Loader=_NoDuplicateKeys)
+        d = yaml.load(raw_text, Loader=_NoDuplicateKeys)
     except yaml.YAMLError as e:
         return ["%s cannot be read as a workflow: %s" % (path, str(e).replace("\n", " ")[:160])]
     jobs, bad = d.get("jobs") or {}, []
@@ -683,7 +692,13 @@ def graph(path):
         job = jobs.get(name)
         if job is None:
             bad.append("chain job %s is missing (the job id is the stage name, so a failure names it)" % name); continue
-        extra = set(job) - {"uses", "needs", "permissions", "with", "if"}
+        # `concurrency` is allowed on the release job ONLY, and must be exactly the constant group with cancel-in-progress false (release review R3, Oct 22:
+        # bin/release-publish.sh decides :X and :latest from the registry's tag list, so two release runs must not interleave; a cancelling or per-ref group
+        # would kill a publication half way or not serialize at all). On any other chain job it stays outside the allowed keys.
+        extra = set(job) - {"uses", "needs", "permissions", "with", "if"} - ({"concurrency"} if name == "release" else set())
+        if name == "release" and (job.get("concurrency") != {"group": "release-publish", "cancel-in-progress": "false"} or not RELEASE_CONCURRENCY_LINE.search(raw_text)):
+            # this loader keeps every scalar as text, so the quoted string "false" cannot be told from the boolean: the raw file must hold the unquoted line
+            bad.append("release must hold exactly the concurrency {group: release-publish, cancel-in-progress: false} with the unquoted line `cancel-in-progress: false` (two publications must not interleave; actionlint refuses a quoted string), got %r" % (job.get("concurrency"),))
         if extra:
             bad.append("%s: keys outside {uses, needs, permissions, with} and build's one if: %s (no continue-on-error, secrets, strategy, env)"
                        % (name, sorted(extra)))
@@ -719,6 +734,8 @@ def graph(path):
         granted = job.get("permissions", d.get("permissions"))
         if "uses" in job:
             bad.append("job %s has a job-level uses (%s): only the five chain jobs call a workflow" % (name, job["uses"]))
+        if name == "patch-failed" and job.get("if") != PATCH_FAILED_IF:
+            bad.append("patch-failed must carry exactly the if %s (a cancelled, replaced release opens an issue too), got %r" % (PATCH_FAILED_IF, job.get("if")))
         spec = HOSTILE if name.startswith("hostile-") else NON_CHAIN.get(name)
         if spec is None:
             bad.append("job %s is not one of the five chain jobs or the allowed non-chain jobs %s plus hostile-*" % (name, sorted(NON_CHAIN)))

@@ -75,7 +75,8 @@ mksbom "$w/a.json"  urn:uuid:1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36
 mksbom "$w/a2.json" urn:uuid:2 2026-10-07T09:00:00Z v2 np:zlib@1.3 libc6@2.36 busybox@1.37.0   # same inventory, other order
 mksbom "$w/a3.json" urn:uuid:3 2026-10-08T09:00:00Z -  busybox@1.37.0 libc6@2.36 np:zlib@1.3  # no module component at all
 mksbom "$w/b.json"  urn:uuid:1 2026-10-06T01:00:00Z v1 busybox@1.37.1 libc6@2.36 np:zlib@1.3  # a package version differs
-mksbom "$w/c.json"  urn:uuid:1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 np:zlib@1.3 curl@8.0  # a package added
+ADDED_PKG=curl@8.0
+mksbom "$w/c.json"  urn:uuid:1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 np:zlib@1.3 "$ADDED_PKG"  # a package added
 mksbom "$w/d.json"  urn:uuid:1 2026-10-06T01:00:00Z v1 busybox@1.37.0 libc6@2.36 np:zlib@1.4  # name@version fallback differs
 mksbom "$w/only-ours.json" urn:uuid:1 2026-10-06T01:00:00Z v1                                   # nothing but our own module
 
@@ -1235,7 +1236,7 @@ else:
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "panel-inspector", "Amazon Inspector every image", None
     perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"},
-             "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read"},
+             "vex-attach": {"contents": "read", "packages": "write"}, "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read", "packages": "read"},
              "scout-root-cause": {"contents": "read", "packages": "write"}, "panel-inspector": {"contents": "read", "id-token": "write"},
              "panel-google": {"contents": "read", "id-token": "write"}, "panel": {"contents": "read", "issues": "write"},
              "scout-older-versions": {"contents": "read"}, "manifests": None, "rescan": {"contents": "read", "issues": "write", "packages": "read"}}

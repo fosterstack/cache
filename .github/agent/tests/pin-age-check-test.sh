@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21, REQ-SUP-001-AC22, REQ-SUP-001-AC23, REQ-SUP-001-AC25, REQ-SUP-001-AC26, REQ-SUP-001-AC27
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -1924,7 +1924,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b": "printf -v CURL %s /usr/bin/curl # TEST-SUBST",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 (", "loopback fetch, advisor reading Oct 17 (", "pinned fetch, advisor reading Oct 17 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call" and "context" not in r and not r["ruling"].startswith(("live fetch, owner ratified (", "pinned toolchain fetch, advisor reading Oct 16 (", "loopback fetch, advisor reading Oct 17 (", "build-container install, advisor reading Oct 19: ", "pinned fetch, advisor reading Oct 17 ("))]   # those name an item, not a text line (AC19); a row with a context is proved from its file at scan time instead (below); a live fetch row is a command, checked by its own inventory (the next case)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -2090,6 +2090,21 @@ import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 assert os.path.realpath(ac.DEFAULT_EXCEPTIONS) == os.path.realpath(os.path.join(sys.argv[2], ".github", "supply-chain-exceptions.json")), ac.DEFAULT_EXCEPTIONS
 PY
+CASE="the committed build-container install row is exactly the one apk line of bin/acceptance-egress.sh (file, form, key and line equal the hash of the whole line, no count, no context) and there is at most one; the line sits in a container whose image is pinned by digest"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$root/bin/acceptance-egress.sh" <<'PY'
+import hashlib, json, os, re, sys
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["ruling"].startswith("build-container install, advisor reading Oct 19: ")]
+assert len(rows) <= 1, rows
+line = "apk add --no-cache build-base linux-headers xz >/dev/null"
+h = hashlib.sha256(line.encode()).hexdigest()
+for r in rows:
+    assert r["file"] == "bin/acceptance-egress.sh" and r["form"] == "a system package install" and r["key"] == r["line"] == h and "count" not in r and "context" not in r, r
+    if os.path.exists(sys.argv[2]):      # the file arrives with the release chain (not on every branch): where it is present, the line is in it once and the container that runs it is a digest-pinned image
+        src = open(sys.argv[2]).read()
+        assert src.count(line) == 1, "the apk line is not in the file exactly once"
+        pre = src.split(line)[0].rsplit("docker run", 1)[1]
+        assert re.search(r"alpine:[0-9.]+@sha256:[0-9a-f]{64}", pre), "the image of the container is not pinned by digest"
+PY
 CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, form, key and line (16 lowercase hex each) and at most a count, a 'text, not a command:' or 'harness assertion:' ruling and no duplicate"
 check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, re, sys
@@ -2107,7 +2122,7 @@ for r in rows:
     assert ("proof" not in r or "context" in r) and r.get("context", "comment") in ac.CONTEXTS and (r.get("proof", "x").strip() != "" and type(r.get("proof", "x")) is str), r
     assert re.fullmatch(r"[0-9a-f]{64}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
-    pre = next((x for x in ("text, not a command: ", "harness assertion: ", ac.LIVE_RULING, ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING) if r["ruling"].startswith(x)), None)
+    pre = next((x for x in ("text, not a command: ", "harness assertion: ", ac.LIVE_RULING, ac.GO_RULING, ac.LOOPBACK_RULING, ac.PINNED_FETCH_RULING, "build-container install, advisor reading Oct 19: ") if r["ruling"].startswith(x)), None)
     assert re.fullmatch(r"[0-9a-f]{64}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
 
@@ -4105,6 +4120,126 @@ done
 vfile vl-seventh bin/govulncheck-other-test.sh "ls vendor/"
 CASE="a seventh file that names the vendored folder is still refused (exit 1)"
 check test "$rc" -eq 1
+
+
+# --- Go's own releases skip the 7-day hold (owner ratified Oct 21 2026, REQ-SUP-001-AC27): the tool item `go` only, and only when bin/install-scanner.sh
+# downloads it from https://go.dev/dl/ at its pinned version and pins the sha256 of both architectures and verifies the file; every other check still applies ----
+gosc() {   # gosc VER [TRIVY] [mutation: nopin|nohost|noverify|twohosts|arm64only] -> an installer text
+  local ver=$1 trivy=${2:-0.74.0} mut=${3:-}
+  local host="https://go.dev/dl" ; [ "$mut" = nohost ] && host="https://dl.example.org/dl"
+  printf '%s\n' '#!/usr/bin/env bash' "TRIVY_VER=$trivy" "GO_VER=$ver" 'case "$TOOL:$arch" in'
+  [ "$mut" != caseglob ] || printf '%s\n' '  go:*) SUM="$GO_SHA256" ;;'
+  printf '%s\n' "  go:x86_64|go:amd64) SUM=$(printf 'a%.0s' $(seq 64)) ;;"
+  [ "$mut" = nopin ] || printf '%s\n' "  go:aarch64|go:arm64) SUM=$(printf 'b%.0s' $(seq 64)) ;;"
+  [ "$mut" != nopin ] || printf '%s\n' "  go:aarch64|go:arm64) SUM= ;;"
+  printf '%s\n' 'esac'
+  if [ "$mut" = failoff ]; then printf '%s\n' 'pipeline_fail() { echo "::error::scanner installer: $*" >&2; }'
+  else printf '%s\n' 'pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }'; fi
+  case $mut in
+    verifyoff) printf '%s\n' 'verify() { # file' '  :' '}' ;;
+    nocompare) printf '%s\n' 'verify() { # file' '  local got' "  got=\$(sha256sum \"\$1\" | cut -d' ' -f1)" '}' ;;
+    sumreset) printf '%s\n' 'SUM=' 'verify() { # file' '  local got' "  got=\$(sha256sum \"\$1\" | cut -d' ' -f1)" '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"' '}' ;;
+    *) printf '%s\n' 'verify() { # file' '  local got' "  got=\$(sha256sum \"\$1\" | cut -d' ' -f1)" '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"' '}' ;;
+  esac
+  [ "$mut" != gover2 ] || printf '%s\n' 'if [ "$arch" = amd64 ]; then GO_VER=1.27.4; fi'
+  [ "$mut" != gofile2 ] || printf '%s\n' 'if [ "$arch" = amd64 ]; then gofile=go1.27.1.linux-amd64.tar.gz; fi'
+  [ "$mut" != urlvar ] || printf '%s\n' 'mirror_url="https://mirror.example.org/go1.27.3.linux-amd64.tar.gz"' 'curl -fsSL -o "$tmp/other.tgz" "$mirror_url"'
+  [ "$mut" != aria ] || printf '%s\n' 'aria2c -d "$tmp" https://mirror.example.org/go1.27.3.linux-amd64.tar.gz'
+  [ "$mut" != forloop ] || printf '%s\n' 'for GO_VER in 1.27.2; do :; done'
+  [ "$mut" != mapfile ] || printf '%s\n' "mapfile -t gofile <<< 'go1.27.2.linux-amd64.tar.gz'"
+  [ "$mut" != scp ] || printf '%s\n' 'scp mirror.example.org:/releases/go1.27.3.linux-amd64.tar.gz "$tmp/go.tgz"'
+  [ "$mut" != tgzvar ] || printf '%s\n' 'mirror_url="https://mirror.example.org/go.tgz"' 'curl -fsSL -o "$tmp/other.tgz" "$mirror_url"'
+  [ "$mut" != scpvar ] || printf '%s\n' 'scp "mirror.example.org:/releases/${gofile}" "$tmp/other.tgz"'
+  [ "$mut" != urlgofile ] || printf '%s\n' 'mirror_url="https://mirror.example.org/${gofile}"' 'curl -fsSL -o "$tmp/other.tgz" "$mirror_url"'
+  [ "$mut" != printfv ] || printf '%s\n' 'printf -v "GO_VER" %s 1.27.4'
+  [ "$mut" != declq ] || printf '%s\n' 'declare "GO_VER=1.27.4"'
+  [ "$mut" != rsyncver ] || printf '%s\n' 'rsync "mirror.example.org:/r/go${GO_VER}.tar.gz" "$tmp/o.tgz"'
+  [ "$mut" != shasum ] || printf '%s\n' 'sha256sum() { printf "%s  %s\n" "$SUM" "$1"; }'
+  [ "$mut" != cutfn ] || printf '%s\n' 'cut() { cat; }'
+  [ "$mut" != aliasmut ] || printf '%s\n' 'alias sha256sum=true'
+  [ "$mut" != ifdef ] || printf '%s\n' 'if true; then sha256sum() { printf "%s  %s\n" "$SUM" "$1"; }; fi'
+  [ "$mut" != spacedef ] || printf '%s\n' 'sha256sum ( ) { printf "%s  %s\n" "$SUM" "$1"; }'
+  [ "$mut" != wrapall ] || printf '%s\n' '('
+  [ "$mut" != fn2 ] || printf '%s\n' 'function verify { :; }'
+  [ "$mut" != ifsum ] || printf '%s\n' 'if [ "$TOOL" = go ]; then SUM="$GO_SHA256"; fi'
+  printf '%s\n' 'case "$TOOL" in' '  go)'
+  [ "$mut" != inlinesub ] || printf '%s\n' '    :; ('
+  [ "$mut" != subshell ] || printf '%s\n' '    ('
+  printf '%s\n' '    gofile="go${GO_VER}.${A_GO}.tar.gz"' "    curl -q -fsSL -g -o \"\$tmp/go.tgz\" \"$host/\${gofile}\" || die \"download failed: go toolchain\""
+  [ "$mut" = literal2 ] && printf '%s\n' '    curl -fsSL -o "$tmp/other.tgz" "https://mirror.example.org/go1.27.3.linux-amd64.tar.gz" || pipeline_fail "download failed"'
+  [ "$mut" != multiline ] || printf '%s\n' '    curl -fsSL -o "$tmp/other.tgz" \' '      "https://mirror.example.org/go1.27.3.linux-amd64.tar.gz" || pipeline_fail "download failed"'
+  [ "$mut" = twohosts ] && printf '%s\n' '    curl -fsSL -o "$tmp/go2.tgz" "https://mirror.example.org/go${GO_VER}.${A_GO}.tar.gz" || pipeline_fail "download failed"'
+  [ "$mut" = noverify ] || printf '%s\n' '    verify "$tmp/go.tgz"'
+  [ "$mut" != subshell ] || printf '%s\n' '    ) || :'
+  [ "$mut" != inlinesub ] || printf '%s\n' '    ) || :'
+  printf '%s\n' '    ;;' 'esac'
+  [ "$mut" != wrapall ] || printf '%s\n' ') || :'
+}
+gocase() {   # gocase NAME BASE-TEXT HEAD-TEXT [extra head files via a python edit]
+  local n=$1; rm -rf "$work/$n"; mkdir -p "$work/$n/bin"; printf '%s\n' "$2" >"$work/$n/bin/install-scanner.sh"
+  git -C "$work/$n" init -q; git -C "$work/$n" add -A; git -C "$work/$n" -c user.name=t -c user.email=t@x commit -q -m base
+  printf '%s\n' "$3" >"$work/$n/bin/install-scanner.sh"; git -C "$work/$n" add -A; git -C "$work/$n" -c user.name=t -c user.email=t@x commit -q -m head
+}
+GOB="$(gosc 1.27.2)"
+gocase goage "$GOB" "$(gosc 1.27.3)"
+runck goage '{"times": {}}'
+CASE="Go 1.27.3 moved in the installer, downloaded from go.dev with both sha256 pins and the verify call, passes the age check with NO age data (exit 0) and says it is the ratified exemption"
+check test "$rc" -eq 0; check grep -q 'tool:go@1.27.3' "$work/goage.out"; check grep -qi 'ratified\|exempt' "$work/goage.out"
+runck goage "{\"times\": {\"tool:go@1.27.3\": {\"time\": \"$NOW\", \"source\": \"github-release\"}}, \"first_seen\": {\"tool:go@1.27.3\": \"$NOW\"}}"
+CASE="the same Go move with a release published at the same instant (0 days) still passes (exit 0)"
+check test "$rc" -eq 0
+gocase gotrivy "$GOB" "$(gosc 1.27.2 0.75.0)"
+runck gotrivy '{"times": {}}'
+CASE="another tool (trivy) moved with no age data in a tree that holds the Go exemption still FAILS (exit 1): only go is exempt"
+check test "$rc" -eq 1
+runck gotrivy "{\"times\": {\"tool:trivy@0.75.0\": {\"time\": \"$NOW\", \"source\": \"github-release\"}}}"
+CASE="trivy released at the same instant (0 days) still FAILS (exit 1)"
+check test "$rc" -eq 1
+gocase gobothmoved "$GOB" "$(gosc 1.27.3 0.75.0)"
+runck gobothmoved '{"times": {}}'
+CASE="go and trivy moved together: trivy still FAILS (exit 1), go is listed as exempt, not as failing"
+check test "$rc" -eq 1; check grep -q 'FAIL tool:trivy@0.75.0' "$work/gobothmoved.out"; check bash -c "! grep -q 'FAIL tool:go@' '$work/gobothmoved.out'"
+for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 fn2 failoff caseglob ifsum multiline gover2 gofile2 urlvar aria forloop mapfile scp tgzvar scpvar urlgofile printfv declq rsyncver shasum cutfn aliasmut subshell ifdef spacedef wrapall inlinesub; do
+  if [ "$mut" = scpvar ] || [ "$mut" = urlgofile ] || [ "$mut" = rsyncver ] || [ "$mut" = literal2 ] || [ "$mut" = multiline ] || [ "$mut" = urlvar ] || [ "$mut" = aria ] || [ "$mut" = scp ] || [ "$mut" = tgzvar ]; then gocase "gomut-$mut" "$(gosc 1.27.2 0.74.0 $mut)" "$(gosc 1.27.3 0.74.0 $mut)"; else gocase "gomut-$mut" "$GOB" "$(gosc 1.27.3 0.74.0 $mut)"; fi
+  runck "gomut-$mut" '{"times": {}}'
+  case $mut in
+    nohost) CASE="go downloaded from a host that is not go.dev keeps the 7-day hold: FAILS (exit 1)" ;;
+    nopin) CASE="go whose arm64 sha256 pin is empty keeps the 7-day hold: FAILS (exit 1)" ;;
+    noverify) CASE="go with no verify call on the download keeps the 7-day hold: FAILS (exit 1)" ;;
+    twohosts) CASE="go with a second download from another host keeps the 7-day hold: FAILS (exit 1)" ;;
+    verifyoff) CASE="go whose verify() does nothing keeps the 7-day hold: FAILS (exit 1)" ;;
+    nocompare) CASE="go whose verify() computes the hash but never compares it keeps the 7-day hold: FAILS (exit 1)" ;;
+    sumreset) CASE="go whose installer resets SUM outside the pinned rows keeps the 7-day hold: FAILS (exit 1)" ;;
+    literal2) CASE="go with a second download of a literal Go archive name (present in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    fn2) CASE="go with a second verify definition (function verify { :; }) keeps the 7-day hold: FAILS (exit 1)" ;;
+    failoff) CASE="go whose pipeline_fail no longer exits keeps the 7-day hold: FAILS (exit 1)" ;;
+    caseglob) CASE="go with a glob case arm that assigns SUM before the pinned rows keeps the 7-day hold: FAILS (exit 1)" ;;
+    ifsum) CASE="go with an inline if ...; then SUM=...; fi keeps the 7-day hold: FAILS (exit 1)" ;;
+    multiline) CASE="go with a second Go download split over a continuation line (present in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    gover2) CASE="go with an inline GO_VER reassignment before the filename is built keeps the 7-day hold: FAILS (exit 1)" ;;
+    gofile2) CASE="go with an inline gofile reassignment keeps the 7-day hold: FAILS (exit 1)" ;;
+    urlvar) CASE="go with a second Go download through a URL held in a variable (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    aria) CASE="go with a second Go download through another downloader (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    forloop) CASE="go with a for GO_VER in ... binding keeps the 7-day hold: FAILS (exit 1)" ;;
+    mapfile) CASE="go with a mapfile write of gofile keeps the 7-day hold: FAILS (exit 1)" ;;
+    scp) CASE="go with an scp transfer of a Go archive (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    tgzvar) CASE="go with a second download of a go.tgz URL held in a variable (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    scpvar) CASE="go with an scp of \${gofile} to another host (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    urlgofile) CASE="go with a mirror URL variable built from \${gofile} and a second curl (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    printfv) CASE="go with printf -v \"GO_VER\" keeps the 7-day hold: FAILS (exit 1)" ;;
+    declq) CASE="go with declare \"GO_VER=...\" keeps the 7-day hold: FAILS (exit 1)" ;;
+    rsyncver) CASE="go with an rsync that reads GO_VER (in base and head alike) keeps the 7-day hold: FAILS (exit 1)" ;;
+    shasum) CASE="go with a redefined sha256sum function keeps the 7-day hold: FAILS (exit 1)" ;;
+    cutfn) CASE="go with a redefined cut function keeps the 7-day hold: FAILS (exit 1)" ;;
+    aliasmut) CASE="go with an alias for sha256sum keeps the 7-day hold: FAILS (exit 1)" ;;
+    subshell) CASE="go with the download and verify wrapped in a subshell whose failure is ignored keeps the 7-day hold: FAILS (exit 1)" ;;
+    ifdef) CASE="go with a sha256sum function defined after then keeps the 7-day hold: FAILS (exit 1)" ;;
+    spacedef) CASE="go with a function declared as name ( ) keeps the 7-day hold: FAILS (exit 1)" ;;
+    wrapall) CASE="go with the whole tool dispatch wrapped in a subshell whose failure is ignored keeps the 7-day hold: FAILS (exit 1)" ;;
+    inlinesub) CASE="go with an inline ':; (' subshell around the download keeps the 7-day hold: FAILS (exit 1)" ;;
+  esac
+  check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
+done
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

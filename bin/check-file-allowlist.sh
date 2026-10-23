@@ -76,11 +76,13 @@ ALLOW_PATTERNS=(
   '^bin/vex-forms-test\.sh$'
   '^bin/vex-index\.py$'
   '^bin/vex-index-test\.sh$'
+  '^bin/release-layout\.py$'
   '^bin/fips-image-posture\.py$'
   '^bin/branch-sweep\.py$'
   '^bin/branch_sweep_test\.py$'
   '^bin/branch-sweep-test\.sh$'
   '^bin/scan-no-workflow-call-test\.sh$'
+  '^bin/job-isolation-test\.sh$'
   '^bin/local-prune\.sh$'
   '^\.github/branch-keep\.json$'
   '^bin/check-version-literals\.sh$'
@@ -167,6 +169,7 @@ ALLOW_PATTERNS=(
   '^bin/loopback-get-test\.sh$'
   '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
   '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
@@ -181,8 +184,8 @@ ALLOW_PATTERNS=(
   # The marker-only pull request gate (REQ-CHAIN-001-AC6, slice 4b-6): the script and its suite.
   '^bin/marker-(pr-gate\.py|gate-test\.sh)$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
-  '^bin/release-(verify|apks|publish|sign|assets|postverify)\.sh$'
-  '^bin/release-(postverify|metadata|layout)\.py$'
+  '^bin/release-(verify|apks|compare|publish|sign|assets|postverify)\.sh$'
+  '^bin/release-(postverify|metadata|layout|compare)\.py$'
   '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
   '^bin/chain-release-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
@@ -280,7 +283,7 @@ ALLOW_PATTERNS=(
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
-  '^bin/(apk-tool|gen-recipes|go-module-sbom)\.py$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'

@@ -478,6 +478,24 @@ class Reversals(unittest.TestCase):                                         # RE
         self.assertIn("audit miss", out["issue"])
         self.assertEqual((st["false"], [x["id"] for x in st["real"]]), ([], ["CVE-2099-0002"]))
 
+    def test_a_rejected_then_accepted_identity_is_remembered_as_proposed_and_the_reversal_finds_its_statement(self):   # S3 ruling (2)
+        bad = ("pkg:deb/tzdata@2025b-0%2Bdeb13u1",)                      # no distro namespace: not representable, so no statement
+        good = ("pkg:deb/debian/tzdata@2025b-0%2Bdeb13u1?arch=all",)
+        two = {"A": Seat({"audit": false()}), "B": Seat({"audit": false()})}
+        st, out = P.apply_day(verdict(finding(ver=OLD, purls=bad)), P.new_state(), bundles, {"entries": []}, two, "2026-10-03", SCORING)
+        self.assertEqual(out["vex"], [])
+        self.assertEqual(st["false"][0]["purls"], list(bad))
+        two = {"A": Seat({"audit": false()}), "B": Seat({"audit": false()})}
+        st, out = P.apply_day(verdict(finding(ver=OLD, purls=good)), st, bundles, {"entries": []}, two, "2026-10-04", SCORING)
+        self.assertEqual([x["purls"] for x in out["vex"]], [list(good)])
+        self.assertEqual(st["false"][0]["purls"], list(good))            # the proposed purls replace the rejected ones
+        written = P.statement_id(out["vex"][0])
+        v = verdict(images=["fips-arm64"])
+        v["vex_covered"] = [{"image": "fips-arm64", "scanner": "inspector", "id": "CVE-2099-0002", "package": "tzdata", "version": OLD}]
+        st2 = copy.deepcopy(st); st2["false"][0]["vex"] = True              # the day-2 statement was published
+        _, out = P.apply_day(v, st2, bundles, {"entries": []}, {"A": Seat({}), "B": Seat({})}, "2026-10-05", SCORING)
+        self.assertEqual([(x["status"], P.statement_id(x)) for x in out["vex"]], [("affected", written)])
+
     def test_an_advisory_for_a_version_we_now_ship_reverses(self):
         now = BUNDLE.replace("2026c-0+deb13u1", OLD)
         asked = []
