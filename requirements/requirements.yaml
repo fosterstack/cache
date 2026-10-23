@@ -1078,6 +1078,12 @@ requirements:
         then: "/statusz is refused as today; /metrics and /healthz stay open as today (/metrics now exposes the free bytes of the data volume: operational, not secret, the same exposure level as store_bytes)"
         verification: { method: http-integration, release_blocking: false }
         status: approved
+      - id: REQ-OBS-003-AC8
+        given: two uploads that overlap in time, the first upload's gauge refresh held after it read the totals and before it set the gauges
+        when: the second upload completes and then the first refresh continues
+        then: the store_bytes and store_entries gauges end equal to the store's totals (the last refresh to run also read last)
+        verification: { method: component, release_blocking: false }
+        status: approved
 
   - id: REQ-OBS-004
     title: Startup announcement
