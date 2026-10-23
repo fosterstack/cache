@@ -28,7 +28,7 @@ tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
 by_name="^(${host}/)?${part}(/${part})*(:${tag})?@sha256:[0-9a-f]{64}"'$'
 by_id='^sha256:[0-9a-f]{64}$'
 [[ "$IMAGE_REF" =~ $by_id ]] || [[ "$IMAGE_REF" =~ $by_name ]] || { printf 'acceptance-serve: IMAGE_REF must be content-addressed (name@sha256:<64 hex> or an image ID sha256:<64 hex>), got: %q\n' "$IMAGE_REF" >&2; exit 2; }
-# Only the inspected image ID is tagged to the fixed local name (a fixed name, so no variable image is run); right before docker run the name must still resolve to exactly that ID
+# Only the inspected image ID is tagged to the fixed local name (a fixed name, so no variable image is run); right before the container starts the name must still resolve to exactly that ID
 id=$(docker image inspect --format '{{.Id}}' "$IMAGE_REF") || { echo "acceptance-serve: docker could not inspect $IMAGE_REF" >&2; exit 2; }
 [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || { printf 'acceptance-serve: docker named no image ID for %q\n' "$IMAGE_REF" >&2; exit 2; }
 docker tag "$id" localhost/fscache-serve-candidate
