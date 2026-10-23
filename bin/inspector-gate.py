@@ -81,7 +81,7 @@ def scope_of(product_id):
     unaffected."""
     base, q, query = product_id.partition("?")
     if base.startswith("pkg:golang/"):
-        return {} if product_id == "pkg:golang/github.com/fosterstack/cache" else None   # the Go product: unversioned, no qualifier (a pinned one never applies). A trailing newline (which OUR_PRODUCTS's $ lets through) is refused here although the rescan reads it as the Go product: the gate only ever blocks more, never suppresses more.
+        return {} if product_id == "pkg:golang/github.com/fosterstack/cache" else None   # the Go product: unversioned, no qualifier (a pinned one never applies). A trailing newline (which OUR_PRODUCTS's $ lets through) is refused here, and the rescan refuses the document (the exact product only): the gate only ever blocks more, never suppresses more.
     # only this gate's own repository: the images it scans are ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so a statement that names only the
     # candidates repository covers none of them (bin/rescan-statement.py::_vex_match and bin/panel.py::_covers agree; REQ-REL-004-AC1)
     repo = {"pkg:oci/cache": "ghcr.io/fosterstack/cache"}.get(base)

@@ -180,6 +180,9 @@ def _parse_product(pid):
     could parse as unscoped or as another product makes the whole document unreadable. Otherwise ("go",), ("go-versioned",) or ("oci", repository, variant|None, arch|None)."""
     if not isinstance(pid, str):
         raise ValueError("a product identifier that is not a string")
+    go = "pkg:golang/github.com/fosterstack/cache"
+    if pid.startswith(go) and pid[len(go):len(go) + 1] in ("/", "#", "&", "\n"):
+        raise ValueError("the Go product %r has a suffix (another module's name or a part these readers cannot place): the exact product only" % pid)
     if not _gate.OUR_PRODUCTS.match(pid):
         return None
     base, _, query = pid.partition("?")
@@ -230,9 +233,9 @@ def _vex_validate(doc):
             idf = p.get("identifiers", {})
             if not isinstance(idf, dict) or ("purl" in idf and not isinstance(idf["purl"], str)):
                 raise ValueError("product identifiers that are not an object with a string purl")
-            if "@id" in p and "purl" in idf and p["@id"] != idf["purl"]:
+            if p.get("@id") is not None and "purl" in idf and p["@id"] != idf["purl"]:
                 raise ValueError("a product whose @id and identifiers.purl differ")
-            pid = p.get("@id") if "@id" in p else idf.get("purl")
+            pid = p.get("@id") if p.get("@id") is not None else idf.get("purl")
             _parse_product(pid)
             subs = p.get("subcomponents", [])
             if not isinstance(subs, list) or not all(isinstance(x, dict) and isinstance(x.get("@id"), str) for x in subs):
@@ -280,7 +283,7 @@ def _vex_match(doc, finding, variant, image_repo):
             continue
         for p in st["products"]:
             idf = p.get("identifiers", {})
-            pp = _parse_product(p.get("@id") if "@id" in p else idf.get("purl"))
+            pp = _parse_product(p.get("@id") if p.get("@id") is not None else idf.get("purl"))
             if pp is None or pp[0] == "go-versioned":
                 continue
             if pp[0] == "go" and image_repo is None:
