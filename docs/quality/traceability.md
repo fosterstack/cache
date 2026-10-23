@@ -436,7 +436,7 @@ The server shall write no per-request access log; the only per-request logging s
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-006-AC1 | Given the server's logging call sites; when they are inspected; then per-request logging exists only on failure paths and logs only method, key, and error | inspection |  | approved | 1 item(s) |
+| REQ-OBS-006-AC1 | Given the server's logging call sites; when they are inspected; then per-request logging exists only on failure paths and logs only method, key, and error | inspection |  | approved | 7 item(s) |
 
 ## Privacy
 
