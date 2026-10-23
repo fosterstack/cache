@@ -146,7 +146,7 @@ for kind in ("npm", "pypi", "deb", "golang"):
         V.inspector({"statements": [scoped("CVE-2099-50", "not_affected", [{"@id": REPO_P, "subcomponents": [{"@id": "pkg:%s/foo@1" % kind}]}])]}, IMAGES, "v0.3.0"); got = "accepted"
     except ValueError:
         got = "refused"
-    check("OWNER-3 a pkg:%s package is refused before any rule is made (only pkg:generic names a package these forms can carry)" % kind, got == "refused", got)
+    check("OWNER-3 a pkg:%s package is refused before any rule is made (only pkg:generic and a Go module path name a package these forms can carry; foo@1 has neither a namespace nor is generic)" % kind, got == "refused", got)
 # the same CVE in two packages, only one of them not affected: the rule names that package alone
 TWO = {"statements": [scoped("CVE-2099-40", "not_affected", BB), scoped("CVE-2099-40", "affected", TOY)]}
 r2p = V.inspector(TWO, IMAGES, "v0.3.0")["filters"]
@@ -515,9 +515,13 @@ gj = V.inspector({"statements": [scoped("CVE-G4", "not_affected", [{"@id": OURS,
 check("G the Inspector rule names the Go module by its full path", [f["filterCriteria"]["vulnerablePackages"] for f in gj] == [[{"name": {"comparison": "EQUALS", "value": "github.com/golang-jwt/jwt/v4"}}]], gj)
 sts = real["statements"]
 check("G the published document holds exactly one statement, CVE-2024-51744", [s_["vulnerability"]["name"] for s_ in sts] == ["CVE-2024-51744"])
-oci = [p_ for s_ in sts for p_ in s_["products"] if p_["@id"].startswith("pkg:oci/")]
-check("G that statement's image products each name the jwt/v4 module (and nothing else) as their subcomponent",
+oci = [p_ for s_ in sts for p_ in s_["products"]]
+check("G every product of that statement (the image products AND the Go product) names the jwt/v4 module, and nothing else, as its subcomponent",
       oci and all([x["@id"] for x in p_.get("subcomponents", [])] == [JWT] for p_ in oci), oci)
+for sub_ in ("pkg:golang/foo/bar", "pkg:golang/foo/bar@v1", "pkg:generic/github.com%2Fgolang-jwt%2Fjwt%2Fv4"):
+    check("G a subcomponent that is not a Go module path nor a plain generic name stops generation: " + sub_, refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
+check("G the empty version leaves no stray space in the published text",
+      "  " not in V.inspector({"statements": [scoped("CVE-G9", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"][0]["description"])
 check("G the published document no longer describes a :debug image or busybox",
       "busybox" not in json.dumps(real).lower() and ":debug" not in json.dumps(real) and "distroless" not in json.dumps(real).lower())
 check("G the document's version moved past the fixture's (6)", real["version"] > json.load(open(BBVEX))["version"], real["version"])

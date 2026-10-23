@@ -3,7 +3,7 @@
 # REQ-REL-004-AC1 (ratified Sep 29, row 73): "A test proves that a VEX-covered
 # finding is suppressed for both scanners and an uncovered one blocks."
 # One finding — BusyBox CVE-2025-60876 in FosterStack's image — is put through
-# BOTH gate paths against the committed .vex document:
+# BOTH gate paths against the retired-busybox fixture document (test-evidence/vex-scope/busybox.openvex.json; the committed .vex holds one jwt/v4 statement now):
 #   Grype     : bin/grype-scan.sh over a synthetic SBOM (Grype applies VEX natively)
 #   Inspector : bin/inspector-gate.py over a CycloneDX SBOM + a ScanSbom-shaped
 #               response (the gate applies VEX itself; nothing in AWS)

@@ -19,7 +19,12 @@
       "timestamp": "2026-09-07T12:00:00-04:00",
       "products": [
         {
-          "@id": "pkg:golang/github.com/fosterstack/cache"
+          "@id": "pkg:golang/github.com/fosterstack/cache",
+          "subcomponents": [
+            {
+              "@id": "pkg:golang/github.com/golang-jwt/jwt/v4"
+            }
+          ]
         },
         {
           "@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache",

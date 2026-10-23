@@ -176,12 +176,12 @@ def _scopes(statement, digests):
         if not subs:
             out.append((ds, None))
         for sub in subs:
-            # generic packages and Go modules only: Inspector's filter has no ecosystem, so pkg:npm/foo and pkg:pypi/foo would be one rule
-            # (Codex #381 r5/r6). A generic package has no namespace: the forms carry a package's name only, so a namespaced name would
-            # widen to every "busybox" (Codex #165 r3, SEC-165-01). A Go module is named by its FULL module path (Inspector and the SBOMs
-            # name it so: github.com/golang-jwt/jwt/v4), which needs a host-like first segment and at least one more, so it never
-            # widens to a bare last segment. A qualifier or subpath is refused for both.
-            sid = _purl_of(sub, _cve(statement))
+            # generic packages only: Inspector's filter has no ecosystem, so pkg:npm/foo and pkg:pypi/foo would be one rule (Codex #381 r5/r6)
+            # no namespace: the forms carry a package's name only, so pkg:golang/github.com/acme/busybox would widen
+            # to every "busybox" (Codex #165 r3, SEC-165-01) — refused, as is a qualifier or subpath
+            # The one exception (rc-5a G): a Go module is named by its FULL module path (Inspector and the SBOMs name it so), which needs a
+            # host-like first segment and at least one more, so it never widens to a bare last segment.
+            sid = urllib.parse.unquote(_purl_of(sub, _cve(statement)))   # decided on the decoded text, as the product is: an encoded "/" is a "/" (a namespaced generic name stays refused)
             pm = re.fullmatch(r"pkg:generic/([^/@?#]+)(?:@([^?#]+))?", sid)
             if not pm:
                 pm = re.fullmatch(r"pkg:golang/([^/@?#]+(?:/[^/@?#]+)+)(?:@([^?#]+))?", sid)
@@ -233,7 +233,7 @@ def inspector(vex, images, version):
                 "name": ("fosterstack-cache-%s-%s%s" % (version, cve, "" if k == 0 else "-%d" % (k + 1)))[:128],
                 "action": "SUPPRESS",
                 "description": ("FosterStack Cache %s VEX: %s is %s%s (%s)" % (
-                    version, cve, st["status"], " in %s %s" % pkg, why))[:512],
+                    version, cve, st["status"], " in %s" % " ".join(x for x in pkg if x), why))[:512],
                 "reason": "FosterStack Cache published VEX statement",
                 "filterCriteria": crit,
             })
@@ -264,7 +264,7 @@ def csaf(vex, images, version):
                     out.append(pid[d])
                     continue
                 cid = "component-%s@%s" % tuple(urllib.parse.quote(x, safe="") for x in pkg)   # unambiguous (SEC-165-07)
-                components.setdefault(cid, {"name": "%s %s" % pkg, "product_id": cid})
+                components.setdefault(cid, {"name": " ".join(x for x in pkg if x), "product_id": cid})
                 rid = "%s-in-%s" % (cid, pid[d])
                 relationships.setdefault(rid, {"category": "default_component_of", "product_reference": cid,
                                                "relates_to_product_reference": pid[d],

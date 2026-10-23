@@ -55,10 +55,12 @@ def same_pkg(a, b):
     """Names match exactly, or — when one side carries no namespace (busybox
     vs the busybox of another namespace) — by last path segment. Versions must be equal."""
     (an, av), (bn, bv) = a, b
-    if av != bv:
+    if bv and av != bv:                 # a subcomponent that names no version stands for every version of that package (as the generated Inspector rule reads it)
         return False
     if an == bn:
         return True
+    if any("/" in n and "." in n.split("/", 1)[0] for n in (an, bn)):
+        return False                    # a Go module path (host-like first segment) must match in full, never by its last segment
     if "/" in an and "/" in bn:
         return False
     return an.rsplit("/", 1)[-1] == bn.rsplit("/", 1)[-1]

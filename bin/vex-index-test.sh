@@ -426,7 +426,7 @@ VEX_MIN = ('{"@context":"https://openvex.dev/ns/v0.2.0","@id":"https://example.t
 
 def vex_real():
     if VEX_REAL is None:
-        raise Fail("the repository's VEX file .vex/fosterstack-cache.openvex.json is missing")
+        raise Fail("the multi-statement fixture VEX test-evidence/vex-scope/busybox.openvex.json is missing")
     return VEX_REAL
 
 

@@ -3256,7 +3256,7 @@ try:
     was_ = refused(real_scenarios_)
 finally:
     P._lit = real_lit_
-check("r12 R12-4: the real .vex document's notes (%d scenarios) are byte-identical to the pre-cut printer's"
+check("r12 R12-4: the multi-statement fixture document's notes (%d scenarios) are byte-identical to the pre-cut printer's"
       % (len(now_) if isinstance(now_, list) else 0), isinstance(now_, list) and now_ == was_ and len(now_) > 4, (now_, was_))
 # R12-5 the round trip property with marker forms: random documents whose printed values sometimes hold a marker form are
 # refused exactly then (naming the statement or document field); every other one prints and reads back as before
