@@ -21,7 +21,7 @@ The chain starts on a pushed `v*` tag (or a branch dry run, which publishes
 nothing). Rebuild, Check and Release each first verify the signed records of the stages
 before them and tie their work to the digest list Build attested; Sign checks
 the building jobs' records (Build's against the artifacts it receives, Rebuild's
-against Build's attested digest list) and signs them. Release publishes by
+against Build's digest list) and signs them. Release publishes by
 digest the exact bytes Build made and Rebuild and Check judged, and never
 rebuilds. Release is the only job that holds a registry credential, the apk
 signing key or `packages: write`.
