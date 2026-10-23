@@ -1160,6 +1160,11 @@ gvt="$work/gv"; mkdir -p "$gvt/bin" "$gvt/.github/policy" "$gvt/fake" "$gvt/out"
 cp "$root/bin/check-govulncheck.py" "$gvt/bin/" 2> /dev/null || true
 printf 'module example.com/a\n' > "$gvt/go.mod"; mkdir -p "$gvt/vendor"; printf '# example.com/b v1.0.0\n' > "$gvt/vendor/modules.txt"
 printf '{"scanners":["grype","osv-scanner"],"source_scanners":["govulncheck"],"pr_gate":["grype","inspector"]}\n' > "$gvt/.github/policy/scanners.json"
+# the shipped main package is read from the recipes the build compiles from (build/melange.yaml and build/melange-fips.yaml: exactly one `go build`, CGO_ENABLED set), never from `go list`
+mkdir -p "$gvt/build"
+gv_recipe() { printf 'package:\n  name: %s\nenvironment:\n  environment:\n    GOPROXY: "off"\n    CGO_ENABLED: "0"\npipeline:\n  - runs: |\n      export PATH=/usr/local/go/bin:$PATH\n      go build -trimpath -o ${{targets.destdir}}/usr/bin/fscache %s\n' "$1" "$2" > "$3"; }
+gv_recipes() { gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml"; gv_recipe fscache-fips ./cmd/fscache "$gvt/build/melange-fips.yaml"; }
+gv_recipes
 cat > "$gvt/fake/govulncheck" <<'EOF'
 #!/usr/bin/env bash
 # the scan runs with an explicit environment (the caller's variables do not reach it), so the case settings come from a file next to this fake
@@ -1170,7 +1175,11 @@ echo "pkgdriver GOPACKAGESDRIVER=${GOPACKAGESDRIVER-unset}" >> "$GV_LOG"
 echo "goenv GOOS=${GOOS-unset} GOARCH=${GOARCH-unset} CGO_ENABLED=${CGO_ENABLED-unset} GOAMD64=${GOAMD64-unset} GOPATH=${GOPATH-unset} GOCACHE=${GOCACHE-unset} GOMODCACHE=${GOMODCACHE-unset} GOENV=${GOENV-unset}" >> "$GV_LOG"
 case "$1" in -version) printf 'Go: go1.27.2\nScanner: govulncheck@v1.7.0\nDB: https://vuln.go.dev\nDB updated: 2026-10-10 00:00:00 +0000 UTC\n'; exit 0 ;; esac
 [ "${GV_RC:-0}" = 0 ] || { echo "govulncheck: boom" >&2; exit "$GV_RC"; }
-case "${GV_OUT:-clean}" in
+# one fake, three questions: which platform (GOARCH), which target (the last argument), which case. GV_OUT_ARM64 overrides GV_OUT on the arm64 runs, GV_OUT_EXPLICIT on the runs of an explicit package path.
+gv_case="${GV_OUT:-clean}"
+[ "${GOARCH:-}" != arm64 ] || gv_case="${GV_OUT_ARM64:-$gv_case}"
+case "${@: -1}" in ./...) ;; *) gv_case="${GV_OUT_EXPLICIT:-$gv_case}" ;; esac
+case "$gv_case" in
   clean) echo '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.7.0","db":"https://vuln.go.dev","db_last_modified":"2026-10-10T00:00:00Z","go_version":"go1.27.2","scan_level":"symbol"}}'
          echo '{"progress":{"message":"Scanning your code and 12 packages across 3 dependent modules for known vulnerabilities..."}}' ;;
   imported) echo '{"config":{"scanner_name":"govulncheck","scanner_version":"v1.7.0","db":"https://vuln.go.dev"}}'
@@ -1185,6 +1194,18 @@ case "${GV_OUT:-clean}" in
 esac
 EOF
 chmod +x "$gvt/fake/govulncheck"
+cat > "$gvt/fake/go" <<'EOF'
+#!/usr/bin/env bash
+[ ! -f "$(dirname "$0")/env" ] || . "$(dirname "$0")/env"
+echo "go $*" >> "$GV_LOG"
+[ "${GV_GO_RC:-0}" = 0 ] || exit "$GV_GO_RC"
+if [ "$1 $2 $3" = "mod edit -json" ]; then
+  if [ -n "${GV_IGNORE:-}" ]; then printf '{"Module":{"Path":"example.com/a"},"Go":"1.27","Ignore":[{"Path":"%s"}]}\n' "$GV_IGNORE"; else printf '{"Module":{"Path":"example.com/a"},"Go":"1.27"}\n'; fi
+  exit 0
+fi
+exit 3
+EOF
+chmod +x "$gvt/fake/go"
 gvrun() { # gvrun [ENV=V ...] -- ARGS... : runs the script in the throw-away tree with the fake first on PATH
   local envs=(); while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
   rc=0; : > "$work/gvlog"; rm -rf "$gvt/out"
@@ -1192,7 +1213,7 @@ gvrun() { # gvrun [ENV=V ...] -- ARGS... : runs the script in the throw-away tre
   out=$( (cd "$gvt" && env "${envs[@]}" PATH="$gvt/fake:$PATH" python3 -I -B bin/check-govulncheck.py "$@") 2>&1) || rc=$?; }
 GVARGS=(--scanners .github/policy/scanners.json --out out)
 gvrun GV_OUT=clean -- "${GVARGS[@]}"
-if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && grep -q '^govulncheck -json ./\.\.\.$' "$work/gvlog" && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 2 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran once as govulncheck -json ./..."
+if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && [ "$(grep -c '^govulncheck -json ./\.\.\.$' "$work/gvlog")" = 2 ] && [ "$(grep -c '^govulncheck -json ./cmd/fscache$' "$work/gvlog")" = 2 ] && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 5 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran once as govulncheck -json ./..."
 else bad "G a clean source scan -> rc=$rc $out | $(tr '\n' '|' < "$work/gvlog" | cut -c1-200)"; fi
 ( cd "$gvt/fake" && : > env && GV_LOG=/dev/null GV_OUT=clean ./govulncheck -json ./... > "$work/gv-expected.bin" ) 2> /dev/null
 if [ -f "$gvt/out/govulncheck.json" ] && cmp -s "$gvt/out/govulncheck.json" "$work/gv-expected.bin" && [ -s "$work/gv-expected.bin" ] \
@@ -1206,7 +1227,7 @@ else bad "G the caller's Go environment reached the scan: $(grep '^env' "$work/g
 gvrun GOPACKAGESDRIVER=/tmp/evil-driver GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" = 0 ] && grep -q '^pkgdriver GOPACKAGESDRIVER=off$' "$work/gvlog"; then ok "G the scan sets GOPACKAGESDRIVER=off (no external package driver is searched for on PATH or taken from the caller's environment)"; else bad "G the package-driver setting is not off: $(grep '^pkgdriver' "$work/gvlog" | head -1) rc=$rc"; fi
 gvrun GOOS=windows GOARCH=arm64 CGO_ENABLED=0 GOAMD64=v4 GOPATH=/tmp/evil-path GOCACHE=/tmp/evil-cache GOMODCACHE=/tmp/evil-mod GOENV=/tmp/evil-env GV_OUT=clean -- "${GVARGS[@]}"
-if [ "$rc" = 0 ] && grep -q '^goenv GOOS=unset GOARCH=unset CGO_ENABLED=unset GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off$' "$work/gvlog"; then ok "G no Go setting of the caller (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV) reaches the scan and persisted Go configuration is off (GOENV=off)"
+if [ "$rc" = 0 ] && [ "$(grep -c '^goenv ' "$work/gvlog")" = 5 ] && [ "$(grep -c '^goenv GOOS=unset GOARCH=unset CGO_ENABLED=unset GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off$' "$work/gvlog")" = 1 ] && [ "$(grep -c -E '^goenv GOOS=linux GOARCH=(amd64|arm64) CGO_ENABLED=0 GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off$' "$work/gvlog")" = 4 ] && [ "$(grep -c 'GOARCH=arm64' "$work/gvlog")" = 2 ]; then ok "G no Go setting of the caller (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV) reaches the scan and persisted Go configuration is off (GOENV=off)"
 else bad "G the caller's platform or cache settings reached the scan: $(grep '^goenv' "$work/gvlog" | head -1) rc=$rc"; fi
 gvrun GV_OUT=called -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'GO-2099-0002' <<< "$out" && [ -f "$gvt/out/govulncheck.json" ]; then ok "G a finding that reaches a called symbol fails the scan, naming the advisory, and the file is still written"
@@ -1217,6 +1238,35 @@ else bad "G an imported-only finding -> rc=$rc $out"; fi
 for c in noconfig otherscanner otherdb empty notjson; do
   gvrun GV_OUT=$c -- "${GVARGS[@]}"
   if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G an output that is not a govulncheck run on its own database ($c) fails"; else bad "G $c was accepted or the script is missing: rc=$rc $out"; fi
+done
+# The two holes proved on the pinned govulncheck v1.7.0 (panel note, Oct 23): a go.mod `ignore` directive plus a decoy main package hid a called advisory from `./...` (an explicit package path
+# still found it), and a call that exists only in the linux/arm64 build was invisible to the amd64-only scan. The scan now refuses an `ignore` directive, scans the shipped main package(s) by
+# explicit path as well, and runs on linux/amd64 AND linux/arm64 (the build's CGO_ENABLED), each run judged: a called finding in any of the four fails, naming the platform and the target.
+gvrun GV_IGNORE=./cmd GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'ignore' <<< "$out" && grep -q './cmd' <<< "$out" && ! grep -q '^govulncheck ' "$work/gvlog" && [ ! -e "$gvt/out/govulncheck.json" ]; then ok "G a go.mod ignore directive fails before any scan, naming the ignored path"
+else bad "G a go.mod ignore directive -> rc=$rc $out"; fi
+gvrun GV_OUT=clean GV_OUT_EXPLICIT=called -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'GO-2099-0002' <<< "$out" && grep -q 'cmd/fscache' <<< "$out"; then ok "G a called advisory found only by the explicit scan of the shipped main package fails (the decoy-main case), naming the package"
+else bad "G the explicit-path scan finding was not judged: rc=$rc $out"; fi
+gvrun GV_OUT=clean GV_OUT_ARM64=called -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'GO-2099-0002' <<< "$out" && grep -q 'arm64' <<< "$out"; then ok "G a called advisory that only the linux/arm64 scan finds fails, naming arm64"
+else bad "G the arm64 scan finding was not judged: rc=$rc $out"; fi
+gvrun GV_OUT=clean GV_OUT_ARM64=called GV_OUT_EXPLICIT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'arm64' <<< "$out" && [ -f "$gvt/out/govulncheck.json" ] && cmp -s "$gvt/out/govulncheck.json" "$work/gv-expected.bin"; then ok "G the file written is still the amd64 ./... stream, byte for byte, when another run fails (it is the product the Release stage binds)"
+else bad "G govulncheck.json is not the amd64 ./... stream when a later run fails: rc=$rc"; fi
+gvrun GV_OUT=imported GV_OUT_ARM64=imported -- "${GVARGS[@]}"
+if [ "$rc" = 0 ]; then ok "G imported-only findings on both platforms still pass (the reachability rule is unchanged)"; else bad "G imported-only on both platforms failed: rc=$rc $out"; fi
+gvrun GV_GO_RC=1 GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G a go mod edit that fails stops the scan before it starts"; else bad "G a failing go mod edit was accepted: rc=$rc"; fi
+rm -f "$gvt/build/melange.yaml"
+gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog" && grep -q 'melange' <<< "$out"; then ok "G an unreadable build recipe fails closed before any scan, naming it"; else bad "G a missing recipe was accepted: rc=$rc $out"; fi
+gv_recipes
+for rc_ in 'no go build line|printf "package:\n  name: x\nenvironment:\n  environment:\n    CGO_ENABLED: \"0\"\n" > "$gvt/build/melange.yaml"' 'two go build lines|gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml"; echo "      go build -o /x ./cmd/other" >> "$gvt/build/melange.yaml"' 'a package pattern, not a path|gv_recipe fscache ./cmd/... "$gvt/build/melange.yaml"' 'a package that is not a relative path|gv_recipe fscache cmd/fscache "$gvt/build/melange.yaml"' 'a variable as the package|gv_recipe fscache "\$PKG" "$gvt/build/melange.yaml"' 'the two recipes name different packages|gv_recipe fscache ./cmd/other "$gvt/build/melange.yaml"' 'no CGO_ENABLED|sed -i.bak "/CGO_ENABLED/d" "$gvt/build/melange.yaml"; rm -f "$gvt/build/melange.yaml.bak"'; do
+  eval "${rc_#*|}"
+  gvrun GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the build recipe is read strictly, fail closed before any scan: ${rc_%%|*}"; else bad "G recipe case '${rc_%%|*}' accepted: rc=$rc"; fi
+  gv_recipes
 done
 gvrun GV_RC=3 GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G a tool exit other than 0 fails (it could not run: nothing is clean behind it)"; else bad "G a failing tool was accepted"; fi
@@ -1257,7 +1307,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=413
+EXPECT=427
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
