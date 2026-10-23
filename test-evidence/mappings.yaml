@@ -46,7 +46,12 @@ mappings:
       - { type: go-test, ref: "internal/server:TestStatusSurfacesRespectBasicAuth" }
   - ac: REQ-AUTH-002-AC1
     evidence:
-      - { type: inspection, ref: "internal/server/server.go withAuth: crypto/subtle.ConstantTimeCompare on both fields, both always evaluated (re-verified 2026-09-11)" }
+      - { type: inspection, ref: "internal/server/server.go withAuth: crypto/subtle.ConstantTimeCompare (digestEqual) over the per-process-keyed HMAC-SHA256 digests of each field, configured digests computed once; both fields always evaluated (re-verified 2026-10-23)" }
+      - { type: go-test, ref: "internal/server:TestCredentialDigestIsFixedSize" }
+      - { type: go-test, ref: "internal/server:TestDigestEqualDecidesOnContent" }
+      - { type: go-test, ref: "internal/server:TestConfiguredDigestsAreComputedFromTheCredentials" }
+      - { type: go-test, ref: "internal/server:TestCredentialDigestIsKeyedPerHasher" }
+      - { type: go-test, ref: "internal/server:TestEmptySecretAgainstUnset" }
   - ac: REQ-AUTH-003-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestMetricsAndHealthzStayOpenWhenAuthEnabled" }
@@ -75,7 +80,13 @@ mappings:
       - { type: go-test, ref: "internal/server:TestStatuszServesHTMLToBrowsers" }
   - ac: REQ-OBS-006-AC1
     evidence:
-      - { type: inspection, ref: "internal/server/server.go: per-request logging exists at exactly two failure sites (short write, store error), fields method/key/error only (re-verified 2026-09-11)" }
+      - { type: inspection, ref: "internal/server/server.go: per-request logging exists only on failure paths (GET short write, store error); the status and landing template-write failures and the gauge refresh failures are also failure logs; every error that can come from a client connection goes through loggableErr, and Go's own server error lines through NewErrorLog (re-verified 2026-10-23)" }
+      - { type: go-test, ref: "internal/server:TestShortWriteLogCarriesNoClientAddress" }
+      - { type: go-test, ref: "internal/server:TestStoreErrorLogCarriesNoClientAddress" }
+      - { type: go-test, ref: "internal/server:TestErrorLogScrubsPeerAddresses" }
+      - { type: go-test, ref: "internal/server:TestTemplateWriteFailureLogsCarryNoClientAddress" }
+      - { type: go-test, ref: "internal/server:TestLoggableErrScrubsNestedOpErrors" }
+      - { type: go-test, ref: "internal/server:TestLoggableErrWithoutCauseNamesOnlyTheOperation" }
   - ac: REQ-FIPS-003-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml job fips140-only: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
@@ -203,7 +214,7 @@ mappings:
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34711575692/job/103601176857 (same red run — incomplete/unanchored/ambiguous pairs accepted before the implementation commit)" }
   - ac: REQ-AUTH-005-AC4
     evidence:
-      - { type: inspection, ref: "internal/server/server.go withAuth — all four subtle.ConstantTimeCompare calls evaluated unconditionally; pair selection happens after both comparisons complete" }
+      - { type: inspection, ref: "internal/server/server.go withAuth — all four digestEqual calls (ConstantTimeCompare over fixed-size digests) evaluated unconditionally; pair selection happens after all comparisons complete" }
   - ac: REQ-STORE-001-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestRestartPersistence" }
@@ -1112,6 +1123,9 @@ mappings:
   - ac: REQ-OBS-001-AC4
     evidence:
       - { type: go-test, ref: "internal/server:TestDocsSayHealthzIsLivenessOnly" }
+  - ac: REQ-OBS-002-AC12
+    evidence:
+      - { type: go-test, ref: "internal/server:TestMethodLabelIsBounded" }
   - ac: REQ-OBS-002-AC2
     evidence:
       - { type: go-test, ref: "internal/server:TestWritableGaugeHealthyIsOneAndDocumented" }
@@ -1175,6 +1189,9 @@ mappings:
   - ac: REQ-OBS-003-AC7
     evidence:
       - { type: go-test, ref: "internal/server:TestAuthSurfaceUnchangedWithDiskSignals" }
+  - ac: REQ-OBS-003-AC8
+    evidence:
+      - { type: go-test, ref: "internal/server:TestGaugesEndAtTheStoreTotalsWhenUploadsOverlap" }
   - ac: REQ-SBOM-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
