@@ -41,6 +41,11 @@ PY
   mkdir -p "$work/build/locks"; cp "$root_real"/build/locks/* "$work/build/locks/"; cp "$root_real/bin/gen-recipes.py" "$work/bin/"
   sed -E 's#(go\.dev/dl/go)[0-9.]+(\.linux-)#\11.26.6\2#' "$root_real/build/melange.yaml.tmpl" > "$work/build/melange.yaml.tmpl"
   [ "${BUMP_TMPL:-ok}" = drift ] && sed -i.bak -E 's#(go\.dev/dl/go)1\.26\.6#\11.26.5#' "$work/build/melange.yaml.tmpl" && rm -f "$work/build/melange.yaml.tmpl.bak"
+  [ "${BUMP_TMPL:-ok}" = split ] && python3 - "$work/build/melange.yaml.tmpl" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+open(sys.argv[1], "w").write(re.sub(r"(uri: https://go\.dev/dl/go1\.26\.6\.linux-amd64\.tar\.gz\n)", r"\1      # the checksum follows\n", t, count=1))
+PY
   python3 - "$work" <<'PY'
 import hashlib, re, sys
 w = sys.argv[1]
@@ -150,12 +155,14 @@ BUMP_CURL=mismatch run_case "a tarball that is not the published checksum -> fai
 BUMP_CURL=nolist run_case "a version go.dev does not publish -> fails closed" "$SUT" '[]' 0 0 "" 1 "$LIST"$'\n'"$LSR" old
 BUMP_CURL=badhex run_case "a published checksum that is not 64 hex -> fails closed" "$SUT" '[]' 0 0 "" 1 "$LIST"$'\n'"$LSR" old
 BUMP_TMPL=drift run_case "a template not pinned at the current Go -> fails closed, nothing changed or pushed" "$SUT" '[]' 0 0 "" 1 "$LIST"$'\n'"$LSR" old
+BUMP_TMPL=split run_case "a template whose uri and sha256 lines are apart -> fails closed before any file changes" "$SUT" '[]' 0 0 "" 1 "$LIST"$'\n'"$LSR" old
 # a standing consistency check (every run, not only on a bump): go.mod's toolchain version, tools/requirements/go.mod's and the installer's pin agree
 root="$(cd "$here/.." && pwd)"
 gv() { awk '$1 == "toolchain" && $2 ~ /^go[0-9]/ {sub(/^go/, "", $2); t = $2} $1 == "go" && g == "" {g = $2} END {print (t != "" ? t : g)}' "$1"; }
 a=$(gv "$root/go.mod"); b=$(gv "$root/tools/requirements/go.mod"); c=$(sed -n 's/^GO_VER=\([0-9.]*\).*/\1/p' "$root/bin/install-scanner.sh" | head -1)
-if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" = "$c" ]; then echo "ok: go.mod ($a), tools/requirements/go.mod ($b) and the installer's GO_VER ($c) agree"; pass=$((pass+1))
-else echo "FAIL: go.mod '$a', tools/requirements/go.mod '$b' and bin/install-scanner.sh GO_VER '$c' disagree (a Go bump must change all three)"; fail=$((fail+1)); fi
+d=$(sed -n 's#^ *uri: https://go\.dev/dl/go\([0-9.]*\)\.linux-amd64\.tar\.gz$#\1#p' "$root/build/melange.yaml.tmpl" | head -1); e=$(sed -n 's#^ *uri: https://go\.dev/dl/go\([0-9.]*\)\.linux-arm64\.tar\.gz$#\1#p' "$root/build/melange.yaml.tmpl" | head -1)
+if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" = "$c" ] && [ "$a" = "$d" ] && [ "$a" = "$e" ]; then echo "ok: go.mod ($a), tools/requirements/go.mod ($b), the installer's GO_VER ($c) and the recipe template's two go.dev pins ($d, $e) agree"; pass=$((pass+1))
+else echo "FAIL: go.mod '$a', tools/requirements/go.mod '$b', bin/install-scanner.sh GO_VER '$c' and the recipe template's pins '$d'/'$e' disagree (a Go bump must change all of them)"; fail=$((fail+1)); fi
 # the pull request shows the three changes side by side
 if grep -q 'bin/install-scanner.sh' "$SUT" && grep -q 'GO_VER' "$SUT" && grep -q 'sha256' "$SUT" && grep -Eq 'linux-(amd64|\$\{?arch)' "$SUT"; then echo "ok: the bump script names the installer pin and checksums in the PR body"; pass=$((pass+1))
 else echo "FAIL: the bump script does not describe the installer pin in the PR body"; fail=$((fail+1)); fi
@@ -222,7 +229,7 @@ mutant "installer pin left behind" "installer pin left behind" "$mut" '[]' 0 0 "
 
 sed 's#^  bump_template$#  true#' "$SUT" > "$mut"
 mutant "template pins left behind" "template pins left behind" "$mut" '[]' 0 0 "" 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_GIT"$'\n'"$CREATE" new
-sed 's#^  *python3 bin/gen-recipes.py --write.*#  true#' "$SUT" > "$mut"
+sed 's#^  *env -u GH_TOKEN /usr/bin/python3 -I -B bin/gen-recipes.py --write.*#  true#' "$SUT" > "$mut"
 mutant "recipes not regenerated" "recipes not regenerated" "$mut" '[]' 0 0 "" 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_GIT"$'\n'"$CREATE" new
 
 echo "----"
