@@ -150,6 +150,34 @@ echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"; fr
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
 t "rule 73" "fips-module: a newer certified module -> the fips recipe moves to it (GOFIPS140 and the proof value) and a PR is opened" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'v1.1.0' '$work/rp3/build/melange-fips.yaml' && grep -q 'v1.1.0-deadbeef' '$work/rp3/build/melange-fips.yaml' && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1"
 t "rule 73" "fips-module: a PR is opened, not merged, and nothing is pushed to main" bash -c "grep -q '^gh pr create' '$CALLS' && ! grep -Eq '^gh pr merge' '$CALLS' && ! grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -Eq '( |:|/)main( |\$)'"
+t "rule 73" "fips-module: the PR body names every file a human must change for a new certificate, each of them really carries the current module or certificate, and no other file that carries it is missing from the body or from the list of fixtures and generated files (rc-3 item 7)" bash -c "l=\$(grep '^gh pr create' '$CALLS'); python3 -I - \"\$l\" '$root' <<'PY'
+import re, subprocess, sys
+body, root = sys.argv[1], sys.argv[2]
+need = ['bin/check-artifacts.sh', 'bin/check-fips.sh', 'internal/buildinfo/buildinfo.go', 'internal/buildinfo/buildinfo_test.go', '.github/workflows/ci.yml',
+        'docs/install.md', 'SECURITY.md', 'RELEASING.md', 'docs/offline-install.md', 'docs/verify-images.md']
+bad = ['the body does not name ' + f for f in need if f not in body]
+lit = re.compile(r'GOFIPS140=v[0-9]|CMVP cert #[0-9]+|cert #[0-9]+|#[0-9]{4} ')
+for f in need:
+    try:
+        if not lit.search(open(root + '/' + f).read()):
+            bad.append(f + ' no longer carries the module or certificate literal: the list is stale')
+    except OSError:
+        bad.append(f + ' does not exist')
+# a file that carries the literal and is neither named nor a fixture, a generated file, a test of something else or a record is a file the body would have to name
+exempt = ('build/', 'docs/quality/', 'requirements/', 'test-evidence/', 'audits/', 'vendor/')
+exempt_files = {'bin/build-apk.sh', 'bin/melange-apko-lib.sh', 'bin/check-version-literals.sh', 'bin/build-apk-test.sh', 'bin/build-helpers-test.sh', 'bin/chain-check-scripts-test.sh',
+                'bin/chain-check-wiring-test.sh', 'bin/refresh-inputs-test.sh', 'internal/server/tls_test.go'}
+for f in subprocess.run(['git', '-C', root, 'ls-files'], capture_output=True, text=True).stdout.split():
+    if f in need or f in exempt_files or f.startswith(exempt):
+        continue
+    try:
+        if re.search(r'GOFIPS140=v1\.0\.0|CMVP cert #5247|c2097c7c', open(root + '/' + f, errors='replace').read()):
+            bad.append(f + ' carries the module or certificate and is neither named in the body nor an exempt fixture')
+    except OSError:
+        pass
+print(chr(10).join(bad))
+sys.exit(1 if bad else 0)
+PY"
 rm -f "$gr/lib/fips140/certified.txt"; fr
 sf "rule 73" "fips-module: a missing certified.txt fails closed and names the file" 'certified\.txt' "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
 : >"$gr/lib/fips140/certified.txt"
