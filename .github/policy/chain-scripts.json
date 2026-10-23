@@ -2,7 +2,10 @@
   "_note": "The scripts a release-chain stage file may run (rule 66/67 grammar, advisor decision b, Oct 9): by path and sha256. Changing a listed script changes its hash: update the row in the same commit (python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' PATH). The text scan over listed scripts over-reports by design; `tools` lists the denied words a script may contain, `runs` the listed scripts it may start.",
   "env_names": [
     "DIGESTS",
-    "MODE"
+    "MODE",
+    "RAPK_ARM_RECORDS",
+    "RAPK_RECORDS",
+    "RECORDS"
   ],
   "scripts": [
     {
@@ -53,16 +56,17 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "b8af29ebf7c3e60ff8802f9506a33045ca2f4750954ef580070e3eefc01b05c0",
+      "sha256": "0375798509047be2659b53f126c821366c98dd13b5f456526172ae561e21c029",
       "tools": [
         "make",
         "at",
-        "exec"
+        "exec",
+        "git"
       ],
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec",
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs",
       "env_mentions": [
         {
           "name": "PATH",
@@ -152,7 +156,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "2e8a912b886780a91c3981ab02f04c0d886199db6fa79beb8288bfbf687e1750",
+      "sha256": "1f2adc9dffff576748641d93d2321b2b983c4deb77edfea48ba212ee55a11b44",
       "tools": [
         "at",
         "bash",
@@ -165,7 +169,7 @@
         "bin/loopback-get.sh"
       ],
       "signs": "other",
-      "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)",
+      "reason": "the hostile Build step (a release-candidate tag push): signs forged material with a throwaway key made in this job (no token, no cosign) only to prove the verifiers refuse it; runs only when the caller asks (if: inputs.hostile; release.yml sets it on an -rc tag push)",
       "exceptions": [
         {
           "rule": "deny",
@@ -197,8 +201,8 @@
         },
         {
           "rule": "deny",
-          "line": "  jq -n --arg pt \"$pt\" --arg payload \"$(base64 < \"$1\" | tr -d '\\n')\" --arg sig \"$(jq -r '.messageSignature.signature' hostile-work/forged.bundle.json)\" \\",
-          "line_sha256": "a56d256000295c1ddacdf51c37a83398f80b006007366ddc10c6ebae719bfe35",
+          "line": "  jq -n --arg pt \"$pt\" --arg payload \"$(base64 < \"$1\" | tr -d '\\n')\" --arg sig \"$(base64 < hostile-work/forged.sig | tr -d '\\n')\" --arg kid \"$kid\" \\",
+          "line_sha256": "da931bdf2d5804511057f5fbaa354488b2095eaa854c58d6a2db0666e3ebb052",
           "count": 1,
           "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         },
@@ -228,13 +232,13 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "726e3016604e4971aec8e5e69f266cc200e5aed19df11bf567b349c483b94750",
+      "sha256": "6579d4bdd52b9f26e0bafc2474ecd54847b48baf98bc738f0b8198dd6c3578aa",
       "tools": [
         "at"
       ],
       "runs": [],
       "signs": false,
-      "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
+      "reason": "imported by chain-verify.py: the hostile judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
     },
     {
       "path": "bin/chain-bytes-sha.py",
@@ -311,7 +315,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "4d7ecb9b7a2ed64e2323b507450f056fdd388aceac8f51fd6f9b3861e6a9d0be",
+      "sha256": "d64c6697e22ea5a62b857f35f580fea40038ad015669024f3864a19952cc6aaa",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -319,14 +323,6 @@
         "DOCKERHUB_TOKEN"
       ],
       "arg_map": {
-        "apk": "bin/build-stage-apk.sh",
-        "build": "bin/build-stage-assemble.sh",
-        "rapk": "bin/build-stage-rebuild-apk.sh",
-        "rebuild": "bin/build-stage-rebuild-assemble.sh",
-        "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
-        "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
-        "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
-        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
         "runtime": "bin/check-phase-runtime.sh",
@@ -364,6 +360,84 @@
       ]
     },
     {
+      "path": "bin/witnessed-local.sh",
+      "tools": [
+        "bash",
+        "git",
+        "openssl",
+        "script",
+        "timeout",
+        "trap"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
+      "sha256": "d7ab910fb31977158de648b4a352edcfe505dda2fe52f9121d6cd17ab4343a9c",
+      "reads_env": [
+        "GH_TOKEN",
+        "APK_RELEASE_SIGNING_KEY",
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN"
+      ],
+      "arg_map": {
+        "apk": "bin/build-stage-apk.sh",
+        "build": "bin/build-stage-assemble.sh",
+        "rapk": "bin/build-stage-rebuild-apk.sh",
+        "rebuild": "bin/build-stage-rebuild-assemble.sh",
+        "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
+        "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
+        "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
+        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh"
+      },
+      "exceptions": [
+        {
+          "rule": "witness-target",
+          "text": "timeout -k 20 540 bash \"$@\" || rc=$?",
+          "why": "REQ-CHAIN-004-AC2: the wrapped build runs under timeout -k 20 540; the target is one of the arg_map scripts, bound by the stage line"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/chain-test-shape.py",
+          "why": "a comment naming the judge of this file's exact text; it is never run from here"
+        }
+      ]
+    },
+    {
+      "path": "bin/witness-sign-staged.sh",
+      "tools": [
+        "bash",
+        "cp",
+        "make",
+        "mkdir",
+        "python3",
+        "script",
+        "sh"
+      ],
+      "runs": [
+        "bin/loopback-get.sh",
+        "bin/chain-verify.py"
+      ],
+      "signs": "other",
+      "reason": "Sign's signing step for the building jobs' Witness records (REQ-CHAIN-005-AC4): takes the identity token (audience sigstore) into a shell variable, runs witness sign keyless over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record under the stage-sign.yml identity; builds nothing",
+      "sha256": "c4cb2cbecab65bdb3150b24fe939138c29264b6a22f57ef05de5788c3b1d38fb"
+    },
+    {
+      "path": "bin/rebuild-records-digests.sh",
+      "tools": [
+        "basename",
+        "bash",
+        "cut",
+        "grep",
+        "jq",
+        "openssl",
+        "sed"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the lists of the records Rebuild's jobs made (REQ-CHAIN-005-AC4): each apk job prints its own leg after its Witness step (--rapk), the assemble job checks both legs against the folders BEFORE its Witness step (--check: any difference, extra or missing file, empty or invalid output is refused) and prints the whole list after it; the text leaves a job as a job output and Sign refuses any folder that differs; reads and prints, writes nothing, builds nothing",
+      "sha256": "15ec6de48964af3ccb82e97b4beb3e3448dd240781f2b954a9d26a2926bbcf49"
+    },
+    {
       "path": "bin/build-stage-apk.sh",
       "tools": [
         "python3"
@@ -376,7 +450,7 @@
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "8a0dd834bf709677c2d79218ef4ccd2bcf1de6de7c1ab0454b9c936ebb1d5756",
+      "sha256": "def62ef70604658d4bf69113c02577addeedf7797e5da98754bce548fad6b96e",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -397,7 +471,7 @@
       ],
       "signs": false,
       "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "b8204607679e636797bedaeae874a22aa2e3240149101b66814b1b5804a7a370"
+      "sha256": "b07a7d56a6c1c37e6bb86cb5143b16d329cf9e966b25b843fa14d1552758c3c0"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -411,7 +485,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
-      "sha256": "54324ab757e81752da108e53eb4eb9de4a483705b801199f8f1794785d8b9e3d"
+      "sha256": "7a1d4667a1e7e46f02278f6d8b221b062d43aa9d6f03b67ddaa0963004ad2bc5"
     },
     {
       "path": "bin/build-stage-rebuild-assemble.sh",
@@ -428,7 +502,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "2d6917aed16eda8d043c69d66ab16cd41d2a167d577b05940306f3369307ae2e"
+      "sha256": "572adc34d48b285fcb2bb6a884bec99b2377b198a1064efa64565f69e3ad709f"
     },
     {
       "path": "bin/build-admit.py",
@@ -527,7 +601,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "629e13abc2d7b885e631ffaeae089a2609f3d65aeae940d29386cc7529ef2909"
+      "sha256": "5e767c23aa4af0a7d293ca454a429ef2d274aa7382e75518e870ea6dc3bed9eb"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -575,7 +649,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "50c16ff497e10b995d846c5fe7ba74ce5a3e97fd921e0efcd5f256fe64cd62ee"
+      "sha256": "fd57429dcae7f905a50d4ed580066a5b8a52fed0fc765ee2ede38cff43f0ad26"
     },
     {
       "path": "bin/build-stage-snapshot-rebuild-apk.sh",
@@ -624,7 +698,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "64392922a2d944a139c2c585b8e86cff0934bab6203c0e9362f1aa24865d0bd4"
+      "sha256": "45fe2941df5fcadcb111c3fb2279ef4282576671b12db93c5b1c8410268b8d45"
     },
     {
       "path": "bin/admission-tag-signer.py",
@@ -1589,7 +1663,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "2aaf3d0aebb74f8d79e2217825fa0d57d0757a8dfc956d7f4fb2dab315baee04",
+      "sha256": "8f568f99ac6e0a2abe16191bfac624ee88a9aee1835351f2831c0d16771308b8",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -2578,10 +2652,13 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "561e4059bd2c99dc9af3d4a71361be72a610c687d7e6fcb327f923feaa988589",
-      "tools": [],
+      "sha256": "ee65db258704b1a243eb01e9d500ebff5711df460180b7a376aa2e18b0466a38",
+      "tools": [
+        "make"
+      ],
       "runs": [
-        "bin/apk-tool.py"
+        "bin/apk-tool.py",
+        "bin/chain-verify.py"
       ],
       "signs": false,
       "reason": "the work of Release's comparison (the compare job, no key, no secret, no id-token, nothing signed): it checks the layout, the signer and the signature of every apk on both sides with bin/apk-tool.py, compares them, and writes the small result file apk-compare/apk-compare.json"
@@ -2612,8 +2689,8 @@
   "ambient_env": [
     {
       "name": "GH_TOKEN",
-      "script": "bin/witnessed.sh",
-      "why": "the Witness wrapper receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
+      "script": "bin/witnessed-local.sh",
+      "why": "the Witness wrapper of the building steps (bin/witnessed-local.sh) receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
       "file": ".github/workflows/stage-build.yml",
       "job": "apk"
     },
@@ -2731,6 +2808,27 @@
       "id": "digests",
       "run": "echo \"digests=$(jq -c . digests.json)\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-004-AC2: the stage output Sign reads (the digests.json text); the one reviewed write into the job outputs"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "assemble",
+      "id": "records",
+      "run": "r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-005-AC4 (adversarial pass R2): the stage output Sign checks Rebuild's records against (the sha256 of its record, verdict and rapk records); a job output only the Rebuild assemble job can write"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "rapk",
+      "id": "records",
+      "run": "r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-005-AC4 (adversarial pass round 6, A1): this apk job's own record digests, a job output only this job can write, which the assemble job checks what it downloads against"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "rapk-arm",
+      "id": "records",
+      "run": "r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-005-AC4 (adversarial pass round 6, A1): this apk job's own record digests, a job output only this job can write, which the assemble job checks what it downloads against"
     }
   ]
 }

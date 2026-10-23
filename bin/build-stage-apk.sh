@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build stage, job `apk` (one run per architecture, on a native runner; REQ-CHAIN-004-AC3). Run under Witness by bin/witnessed.sh.
+# Build stage, job `apk` (one run per architecture, on a native runner; REQ-CHAIN-004-AC3). Run under Witness by bin/witnessed-local.sh.
 # Admission first (it is the only step that holds GH_TOKEN, and the token is unset right after), then both apks with the date of the
 # tagged commit, the version check on each, and this architecture's items fragment in out/items-apk.json (uploaded with out/).
 set -euo pipefail
