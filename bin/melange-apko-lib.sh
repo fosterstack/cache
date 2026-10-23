@@ -710,7 +710,7 @@ if [ -n "${STUB_LOCKED_CACHE:-}" ] && [ -n "${cachedir:-}" ]; then mkdir -p "$ca
 [ "$sub" = lock ] || [ "$sub" = build ] && { [ -f "$cfg" ] || { echo "stub apko: config $cfg not found from $PWD" >&2; exit 1; }; }
 if grep -Eq 'https?://' "$cfg" 2>/dev/null; then echo "stub apko: network is unreachable" >&2; exit 1; fi
 case $sub in
-  lock) case "$cfg $out" in *melange*) s=${STUB_LOCK_MEL:-};; *fips*) s=${STUB_LOCK_FIPS:-};; *) s=${STUB_LOCK:-};; esac
+  lock) case "$cfg $out" in *host-tools*) s=${STUB_LOCK_HOST:-${STUB_LOCK_MEL:-}}; cp "$cfg" "$CALLS.hostcfg";; *melange*) s=${STUB_LOCK_MEL:-};; *fips*) s=${STUB_LOCK_FIPS:-};; *) s=${STUB_LOCK:-};; esac
         [ -n "$out" ] && [ -f "$s" ] || { echo "stub apko lock: nothing to write" >&2; exit 1; }; cp "$s" "$out";;
   build) [ -f "$lockf" ] || { echo "stub apko build: no lock file" >&2; exit 1; }
         [ -z "${STUB_CAPTURE_LOCK:-}" ] || cp "$lockf" "$STUB_CAPTURE_LOCK"   # what the build was actually given (opt-in: the tests compare it with the generated lock)

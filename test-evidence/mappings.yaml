@@ -207,8 +207,20 @@ mappings:
   - ac: REQ-STORE-001-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestRestartPersistence" }
+  - ac: REQ-STORE-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestSameKeyConcurrentPutsKeepIndexEqualToBytes" }
+      - { type: go-test, ref: "internal/cache:TestReconcileCorrectsRecordedSizeMismatch" }
+      - { type: go-test, ref: "internal/cache:TestReconcileReportsSizeCorrectionFailure" }
+      - { type: go-test, ref: "internal/cache:TestEvictionDoesNotRaceAPutOfTheSameKey" }
+      - { type: go-test, ref: "internal/cache:TestEvictOneSkipsChangedAndReportsLookupFailure" }
+      - { type: go-test, ref: "internal/cache:TestPanickingReaderDoesNotLockTheKey" }
+      - { type: go-test, ref: "internal/cache:TestCaseAliasedKeysShareOneLock" }
+      - { type: go-test, ref: "internal/cache:TestEvictionDoesNotWaitForASlowUploadOfTheSelectedKey" }
+      - { type: go-test, ref: "internal/metadata:TestLookupFoundMissingAndCorrupt" }
   - ac: REQ-STORE-004-AC1
     evidence:
+      - { type: go-test, ref: "internal/cache:TestFailedOverwriteLeavesNoRecord" }
       - { type: go-test, ref: "internal/cache:TestPutFailsAndRemovesBlobWhenMetadataFails" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34638175962/job/103391097048 (test check red on 068d274 — the PUT reporting success on a failed metadata record, before the implementation commit)" }
   - ac: REQ-STORE-005-AC1
@@ -387,6 +399,9 @@ mappings:
   - ac: REQ-REL-004-AC7
     evidence:
       - { type: shell-test, ref: "bin/rescan-statement-test.sh" }
+  - ac: REQ-REL-004-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
   - ac: REQ-REL-005-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
@@ -805,6 +820,12 @@ mappings:
   - ac: REQ-SUP-001-AC27
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC28
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
+  - ac: REQ-SUP-001-AC29
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-REPO-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
@@ -1206,6 +1227,18 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
   - ac: REQ-REFRESH-001-AC34
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC35
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC36
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC37
+    evidence:
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
+  - ac: REQ-REFRESH-001-AC38
     evidence:
       - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
   - ac: REQ-ARCHIVE-001-AC1
