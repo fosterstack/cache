@@ -1056,26 +1056,31 @@ if ! grep -q '^docker' "$work/log"; then ok "AC5 F1 nothing was loaded behind th
 rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
 # ---- REQ-SUP-001-AC30: acceptance-serve.sh starts only a content-addressed image; check-acceptance.sh hands it the loaded image's ID ----------
 srv="$work/srv"; mkdir -p "$srv/bin" "$srv/fakedir"; cp "$root/bin/acceptance-serve.sh" "$srv/bin/"; printf '#!/bin/sh\nexit 0\n' > "$srv/bin/loopback-get.sh"
-H64=$(printf '%064d' 7)
+H64=$(printf '%064d' 7); UP64=$(printf 'A%.0s' $(seq 1 64))
 serve() { # serve REF -> rc, out; the fake docker logs what ran
   : > "$work/log"; rc=0; out=$(cd "$srv" && PATH="$fake:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$srv/fakedir" IMAGE_REF="$1" bash bin/acceptance-serve.sh gradle main 2>&1) || rc=$?
 }
-for ref in "fscache:production" "localhost/fa-production:latest" "sha256:${H64:0:63}" "SHA256:$H64" "sha256:$H64 extra" "name@sha256:${H64:0:63}" "-v/x:/y@sha256:$H64" "/@sha256:$H64" "a..b/x@sha256:$H64" "ghcr.io/o/R@sha256:$H64" "ghcr.io/o/r:t:u@sha256:$H64" "$(printf 'sha256:%s\nfscache:production' "$H64")"; do
+for ref in "fscache:production" "localhost/fa-production:latest" "sha256:${H64:0:63}" "SHA256:$H64" "sha256:$H64 extra" "name@sha256:${H64:0:63}" "-v/x:/y@sha256:$H64" "/@sha256:$H64" "a..b/x@sha256:$H64" "ghcr.io/o/R@sha256:$H64" "ghcr.io/o/r:t:u@sha256:$H64" "sha256:$UP64" "ghcr.io/o/r@sha256:$UP64" "$(printf 'sha256:%s\nfscache:production' "$H64")"; do
   serve "$ref"
-  if [ "$rc" = 2 ] && ! grep -q '^docker tag' "$work/log" && ! grep -q '^docker run' "$work/log" && grep -Fq 'content-addressed' <<< "$out"; then ok "AC30 serve refuses '${ref//$'\n'/\\n}' before docker tag or run (exit 2, message names the rule)"; else bad "AC30 serve took '${ref//$'\n'/\\n}' (rc=$rc): $(head -2 "$work/log" | tr '\n' '|')"; fi
+  if [ "$rc" = 2 ] && ! grep -q '^docker tag' "$work/log" && ! grep -q '^docker run' "$work/log" && grep -Fq 'content-addressed' <<< "$out" && grep -Fq 'got: ' <<< "$out"; then ok "AC30 serve refuses '${ref//$'\n'/\\n}' before docker tag or run (exit 2, message names the rule and the ref)"; else bad "AC30 serve took '${ref//$'\n'/\\n}' (rc=$rc): $(head -2 "$work/log" | tr '\n' '|')"; fi
 done
 for ref in "sha256:$H64" "localhost/fa-production@sha256:$H64" "ghcr.io/fosterstack/cache:v0.3.0@sha256:$H64" "localhost:5000/team/app-x@sha256:$H64"; do
   serve "$ref"
-  if [ "$rc" = 0 ] && grep -Fq "docker tag $ref localhost/fscache-serve-candidate" "$work/log"; then ok "AC30 serve starts the content-addressed image $ref"; else bad "AC30 serve did not start $ref (rc=$rc): $(head -3 "$work/log" | tr '\n' '|') $out"; fi
+  if [ "$rc" = 0 ] && grep -E '^docker run ' "$work/log" | grep -Fq " $ref" && ! grep -q '^docker tag' "$work/log" && ! grep -Fq 'fscache-serve-candidate' "$work/log"; then ok "AC30 serve runs the content-addressed image $ref by that reference (no mutable tag)"; else bad "AC30 serve did not start $ref (rc=$rc): $(head -3 "$work/log" | tr '\n' '|') $out"; fi
 done
+# a caller's nocasematch does not turn uppercase hex into valid hex
+: > "$work/log"; rc=0; out=$(cd "$srv" && PATH="$fake:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$srv/fakedir" IMAGE_REF="sha256:$UP64" bash -O nocasematch bin/acceptance-serve.sh gradle main 2>&1) || rc=$?
+if [ "$rc" = 2 ] && ! grep -q '^docker run' "$work/log"; then ok "AC30 serve refuses uppercase hex even when the caller sets nocasematch"; else bad "AC30 nocasematch let uppercase hex through (rc=$rc)"; fi
 # the wrapper: a tag named by `docker load` is turned into its image ID before serve sees it
 for sc in acceptance-serve acceptance-gradle acceptance-gradle-capped; do
   case "$sc" in
     acceptance-serve) printf '#!/usr/bin/env bash\n[ -z "${IMAGE_REF:-}" ] || printf "%%s\\n" "$IMAGE_REF" >> "$FAKE_DIR/serve-refs"\n' > "$fx/bin/$sc.sh";;
-    *) printf '#!/usr/bin/env bash\necho "results={}" >> "${GITHUB_OUTPUT:-/dev/null}"\n' > "$fx/bin/$sc.sh";;
+    acceptance-gradle) printf '#!/usr/bin/env bash\nexit 0\n' > "$fx/bin/$sc.sh";;   # only the capped script writes the suite's results line
+    *) printf '#!/usr/bin/env bash\necho "results=[{\\"ac\\":\\"AC30\\",\\"result\\":\\"pass\\"}]" >> "${GITHUB_OUTPUT:-/dev/null}"\n' > "$fx/bin/$sc.sh";;
   esac
 done
 mkdir -p "$work/fakedir"; rm -f "$work/fakedir/serve-refs"; run check-acceptance.sh gradle --digests digests.json --images images --out out
+if [ "$rc" = 0 ]; then ok "AC30 check-acceptance finishes (rc=0) with the serve stub and valid results lines"; else bad "AC30 check-acceptance rc=$rc: ${out:0:200}"; fi
 if [ -s "$work/fakedir/serve-refs" ] && [ "$(sort -u "$work/fakedir/serve-refs")" = "sha256:$H64" ]; then ok "AC30 check-acceptance passes serve the inspected image ID, never the tag docker load printed"; else bad "AC30 serve got: $(sort -u "$work/fakedir/serve-refs" 2> /dev/null | tr '\n' '|') (rc=$rc) $out"; fi
 if grep -Eq '^docker image inspect .*--format' "$work/log"; then ok "AC30 the ID comes from docker image inspect of the loaded image"; else bad "AC30 no docker image inspect --format ran: $(grep -c '^docker' "$work/log") docker calls"; fi
 rm -f "$fx/bin/acceptance-serve.sh" "$fx/bin/acceptance-gradle.sh" "$fx/bin/acceptance-gradle-capped.sh"
@@ -1283,7 +1288,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=431
+EXPECT=435
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
