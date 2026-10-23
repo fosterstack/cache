@@ -30,9 +30,11 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   services:  a mapping of plain identifiers (the runner passes the name unquoted to docker); each
              service is an image string or a mapping with an image.
   An action path with a `.`, `..` or empty segment is refused (it could reach another action).
-  container:/service mappings may carry only image, credentials and env (plainly named variables):
-             the runner splices `options`, `ports` and `volumes` unquoted into `docker create` ahead
-             of the image, where any of them can name another image (this repo uses none).
+  container:/service mappings may carry only image, credentials and env (plainly named variables),
+             and a SERVICE may also carry `ports`, each item a plain 127.0.0.1:<host>:<container>
+             string (loopback only, both numbers 1..65535): the runner splices `options`, `ports` and
+             `volumes` unquoted into `docker create` ahead of the image, where any of them can name
+             another image, so every other key, and `ports` on a job container, is refused.
   Every action must be CLASSIFIED (ACTIONS below, or EXECUTOR_ALLOWED): an action we have not
              classified may run an image we hand it through an input, so it fails closed until a
              reviewed change to this file says what it runs.
