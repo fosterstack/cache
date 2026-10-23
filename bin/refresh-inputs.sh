@@ -1232,30 +1232,27 @@ fips-module)
     staged=1
   fi
   modfile=$repo/build/locks/fips-module.txt
-  [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo" "$((2 - staged))"
+  [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
   [ "$staged" = 1 ] || [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
   /usr/bin/python3 -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" "$staged" <<'PY' || exit $?
 import io, json, os, re, secrets, shutil, subprocess, sys
 goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR, STAGED = sys.argv[1:8]
-STAGED = STAGED == "1"   # a plan is already staged: the checks below run, then the answer is only pending / nothing pending (an unreadable file exits 1, as it always did)
+STAGED = STAGED == "1"   # a plan is already staged: the checks below run, then the answer is only pending / nothing pending
 cert = os.path.join(goroot, "lib", "fips140", "certified.txt")
 
 
 def fail(msg, code=2): print("refresh-inputs.sh: " + msg, file=sys.stderr); sys.exit(code)
 
 
-def fail_unreadable(msg): fail(msg, 1 if STAGED else 2)
-
-
 if not os.path.isfile(cert):
-    fail_unreadable("%s is missing; cannot tell which Go Cryptographic Module is certified" % cert)
+    fail("%s is missing; cannot tell which Go Cryptographic Module is certified" % cert)
 NUM = r"(0|[1-9][0-9]*)"   # no leading zeros: v1.0.00 is not another spelling of v1.0.0
 PAT = re.compile(r"^v%s\.%s\.%s-[0-9a-f]{8}$" % (NUM, NUM, NUM))
 mods = []
 try:
     cert_text = open(cert, "rb").read().decode("utf-8")
 except (OSError, UnicodeDecodeError) as e:
-    fail_unreadable("%s is not readable as UTF-8 text (%s); cannot tell which Go Cryptographic Module is certified" % (cert, e))
+    fail("%s is not readable as UTF-8 text (%s); cannot tell which Go Cryptographic Module is certified" % (cert, e))
 for ln in cert_text.splitlines():
     ln = ln.strip()
     if not ln or ln.startswith("#"):
@@ -1265,7 +1262,7 @@ for ln in cert_text.splitlines():
         fail("%s: unreadable module value %r (expected vMAJOR.MINOR.PATCH-<8 hex>)" % (cert, ln))
     mods.append((tuple(int(x) for x in m.groups()), ln))
 if not mods:
-    fail_unreadable("%s is empty; cannot tell which Go Cryptographic Module is certified" % cert)
+    fail("%s is empty; cannot tell which Go Cryptographic Module is certified" % cert)
 if len(mods) != 1:
     fail("%s must hold exactly one module line (found %d); which one counts is a human decision" % (cert, len(mods)))
 newest = mods[0][1]
@@ -1273,7 +1270,7 @@ newest = mods[0][1]
 try:
     raw_cur = open(modfile, "rb").read().decode("ascii")
 except (OSError, UnicodeDecodeError):
-    fail_unreadable("%s is not readable as plain ASCII text" % modfile)
+    fail("%s is not readable as plain ASCII text" % modfile)
 if not raw_cur.endswith("\n") or "\r" in raw_cur or raw_cur.count("\n") != 1 or not PAT.match(raw_cur[:-1]):
     fail("%s must hold exactly one line vMAJOR.MINOR.PATCH-<8 hex> and a plain newline; refusing" % modfile)
 cur = raw_cur[:-1]
