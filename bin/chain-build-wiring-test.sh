@@ -2042,7 +2042,7 @@ for jn, j in (d.get("jobs") or {}).items():
         w_ = s.get("with") or {}
         # the daily rescan's panel job downloads each scanner job's artifact by ARTIFACT ID (cache#602: one artifact can never stand for another); bin/panel-wiring-test.sh judges those four in full
         if str(s.get("uses", "")).startswith("actions/download-artifact@") and "artifact-ids" in w_:
-            if jn != "panel" or not re.fullmatch(r"\$\{\{ needs\.panel-(grype|scout|inspector|google)\.outputs\.artifact-id \}\}", w_.get("artifact-ids", "")) or "name" in w_ or "pattern" in w_:
+            if jn != "panel" or not re.fullmatch(r"\$\{\{ needs\.panel-(grype|scout|inspector|google)\.outputs\.artifact-id \}\}", w_.get("artifact-ids", "")) or set(w_) != {"artifact-ids", "path"}:
                 bad.append("%s downloads by artifact id %r, which only the panel job may do, and only a scanner job's own artifact" % (jn, w_.get("artifact-ids")))
             continue
         if str(s.get("uses", "")).startswith("actions/download-artifact@") and "pattern" not in (s.get("with") or {}) and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items") + tuple(own):
@@ -2072,6 +2072,8 @@ f1 caught "a <variant>.tar archive path is caught" "$root/.github/workflows/main
 f1 caught "a download of an artifact Build never uploads is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: oci-images/'
 f1 caught "a panel download by artifact id of something that is not a scanner job's own artifact is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/artifact-ids: ${{ needs.vex-attach.outputs.artifact-id }}/'
 f1 caught "a download by artifact id outside the panel job is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/'
+f1 caught "a panel download by artifact id with a name beside it is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#name: images#'
+f1 caught "a panel download by artifact id with another key (run-id) in place of the path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#run-id: 123#'
 # Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) runs the REAL `policy make` of bin/chain-verify.py in both assemble scripts (the
 # harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; a near-miss tag stops at the policy, before any build
 for kind in assemble rebuild-assemble; do
@@ -2829,7 +2831,7 @@ for f in files:
             assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
-EXPECT=964
+EXPECT=966
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
