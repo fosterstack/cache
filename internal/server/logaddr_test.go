@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // addrErr is the error a dropped client connection produces: a *net.OpError
@@ -76,3 +77,19 @@ type errWriter struct {
 }
 
 func (w *errWriter) Write([]byte) (int, error) { return 0, w.err }
+
+// REQ-OBS-006-AC1 (never a client address): the status and landing pages
+// write to the client too, so their template-write failures are scrubbed.
+func TestTemplateWriteFailureLogsCarryNoClientAddress(t *testing.T) {
+	log, buf := captureLogger()
+	s := &statusSource{cfg: Config{Log: log}, started: time.Now()}
+	req := httptest.NewRequest(http.MethodGet, "/statusz", nil)
+	req.Header.Set("Accept", "text/html")
+	s.handleStatus(&errWriter{err: addrErr()}, req)
+	s.handleRoot(&errWriter{err: addrErr()}, httptest.NewRequest(http.MethodGet, "/", nil))
+	logged := buf.String()
+	if !strings.Contains(logged, "status template") || !strings.Contains(logged, "landing template") {
+		t.Fatalf("both template failures must be logged:\n%s", logged)
+	}
+	assertNoClientAddr(t, logged)
+}

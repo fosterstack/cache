@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// hostPort matches an IPv4 or bracketed IPv6 socket address, the form Go's
+// hostPort matches an IPv4 or bracketed IPv6 socket address (a zone name such as %eth0 included), the form Go's
 // net and crypto/tls errors print for both ends of a connection.
-var hostPort = regexp.MustCompile(`(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.%]+\]):\d+`)
+var hostPort = regexp.MustCompile(`(?:\d{1,3}(?:\.\d{1,3}){3}|\[[^\]\s]+\]):\d+`)
 
 // scrubAddrs replaces every socket address in a stdlib log line, so the line
 // keeps its reason and loses the peer (REQ-OBS-006).

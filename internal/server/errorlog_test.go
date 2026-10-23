@@ -18,9 +18,11 @@ func TestErrorLogScrubsPeerAddresses(t *testing.T) {
 	l.Printf("http: TLS handshake error from 127.0.0.1:53969: client sent an HTTP request to an HTTPS server")
 	l.Printf("http: TLS handshake error from 203.0.113.55:53973: read tcp 10.9.8.7:8443->203.0.113.55:53973: read: connection reset by peer")
 	l.Printf("http: TLS handshake error from [2001:db8::7]:41000: EOF")
+	zoned := "http: TLS handshake error from [fe80::1%eth0]:41001: EOF" // a variable: vet reads %e in a constant as a verb
+	l.Print(zoned)
 	logged := buf.String()
 
-	for _, leak := range []string{"127.0.0.1", "203.0.113.55", "10.9.8.7", "2001:db8", "53969", "53973", "41000", "8443"} {
+	for _, leak := range []string{"127.0.0.1", "203.0.113.55", "10.9.8.7", "2001:db8", "fe80::1", "eth0", "41001", "53969", "53973", "41000", "8443"} {
 		if strings.Contains(logged, leak) {
 			t.Errorf("log carries an address token %q:\n%s", leak, logged)
 		}
