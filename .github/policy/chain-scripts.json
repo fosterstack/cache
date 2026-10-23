@@ -353,6 +353,46 @@
       ]
     },
     {
+      "path": "bin/witnessed-local.sh",
+      "tools": [
+        "bash",
+        "git",
+        "openssl",
+        "script",
+        "timeout",
+        "trap"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
+      "sha256": "d7ab910fb31977158de648b4a352edcfe505dda2fe52f9121d6cd17ab4343a9c",
+      "reads_env": [
+        "RUNNER_TEMP"
+      ],
+      "arg_map": {
+        "apk": "bin/build-stage-apk.sh",
+        "build": "bin/build-stage-assemble.sh",
+        "rapk": "bin/build-stage-rebuild-apk.sh",
+        "rebuild": "bin/build-stage-rebuild-assemble.sh",
+        "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
+        "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
+        "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
+        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh"
+      },
+      "exceptions": [
+        {
+          "rule": "witness-target",
+          "text": "timeout -k 20 540 bash \"$@\" || rc=$?",
+          "why": "REQ-CHAIN-004-AC2: the wrapped build runs under timeout -k 20 540; the target is one of the arg_map scripts, bound by the stage line"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/chain-test-shape.py",
+          "why": "a comment naming the judge of this file's exact text; it is never run from here"
+        }
+      ]
+    },
+    {
       "path": "bin/build-stage-apk.sh",
       "tools": [
         "python3"

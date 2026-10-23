@@ -626,7 +626,7 @@ done
 cp "$key" "$STUB_KEEP/keycopy"; echo "$key" > "$STUB_KEEP/keypath"; env | grep -E '^(ACTIONS_|SIGSTORE_)' > "$STUB_KEEP/envtokens" || true
 case "${STUB_MODE:-ok}" in
   fail) exit 3 ;;
-  sleep) echo $$ > "$STUB_KEEP/stubpid"; trap 'exit 143' TERM; : > "$STUB_KEEP/started"; sleep 30 & wait; exit 0 ;;
+  sleep) echo $$ > "$STUB_KEEP/stubpid"; echo $PPID > "$STUB_KEEP/helperpid"; trap 'exit 143' TERM; : > "$STUB_KEEP/started"; sleep 30 & wait; exit 0 ;;
 esac
 mkdir -p "$(dirname "$out")"; printf '{"stub":"record"}\n' > "$out"
 STUB
@@ -656,7 +656,10 @@ if [ "$wl_rc" = 0 ] && [ -f "$wl/witness-rebuild/snapshot-rebuild-collection.loc
 wclean
 ( cd "$wl" && env -i PATH="$wl/stub:$PATH" HOME="$wl" RUNNER_TEMP="$wl/tmp" STUB_KEEP="$wl/keep" STUB_MODE=sleep bash bin/witnessed-local.sh apk true > "$wl/sig.log" 2>&1 ) &
 wl_pid=$!; for _ in $(seq 40); do [ -e "$wl/keep/started" ] && break; sleep 0.25; done
-kill -TERM "$wl_pid" 2>/dev/null || true; if [ -s "$wl/keep/stubpid" ]; then kill -TERM "$(cat "$wl/keep/stubpid")" 2>/dev/null || true; fi; wait "$wl_pid" 2>/dev/null || true
+if [ -s "$wl/keep/helperpid" ]; then kill -TERM "$(cat "$wl/keep/helperpid")" 2>/dev/null || true; fi
+if [ -s "$wl/keep/stubpid" ]; then kill -TERM "$(cat "$wl/keep/stubpid")" 2>/dev/null || true; fi
+for _ in $(seq 40); do { [ -s "$wl/keep/helperpid" ] && kill -0 "$(cat "$wl/keep/helperpid")" 2>/dev/null; } || break; sleep 0.25; done
+wait "$wl_pid" 2>/dev/null || true
 if [ -e "$wl/keep/started" ] && [ -z "$(ls -A "$wl/tmp")" ]; then ok "WIT2 a TERM signal while Witness runs still destroys the key directory (trap)"; else bad "WIT2 after TERM the runner temp folder holds: $(ls -A "$wl/tmp" | tr '\n' ' ')"; fi
 # ---- the four stage scripts: an EXACT line grammar (REQ-CHAIN-004-AC3, AC6, AC11; REQ-CHAIN-005-AC2) --------------------------------------
 KINDS="apk assemble rebuild-apk rebuild-assemble snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble"
@@ -2599,7 +2602,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=860
+EXPECT=898
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
