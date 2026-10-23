@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// REQ-AUTH-002-AC1 / REQ-AUTH-005-AC4 (rc-1 ruling, Astra 8): the
+// REQ-AUTH-002-AC1 / REQ-AUTH-005-AC4 (release-candidate review, server area): the
 // comparison runs on fixed-size digests, so crypto/subtle.ConstantTimeCompare
 // never sees inputs of differing length and the credential's byte length is
 // not measurable from its early return.
