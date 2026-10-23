@@ -144,6 +144,11 @@ if (sj_.get("strategy") or {}).get("matrix") != {"scanner": "${{ fromJSON(needs.
 sst = sj_.get("steps") or []
 refuse = [i for i, st_ in enumerate(sst) if isinstance(st_, dict) and str(st_.get("if", "")).replace(" ", "") == "matrix.scanner!='grype'" and re.search(r"(^|\n)\s*exit 1\s*($|\n)", str(st_.get("run", "")))]
 install_i = [i for i, st_ in enumerate(sst) if isinstance(st_, dict) and "install-scanner.sh" in str(st_.get("run", ""))]
+if sj_.get("continue-on-error") is not None and str(sj_.get("continue-on-error")).strip().lower() != "false":
+    bad.append("scan.yml scanner: the job has continue-on-error, so a refused matrix leg would not fail the job")
+for i_ in refuse:
+    if set(sst[i_]) - {"name", "if", "run"}:
+        bad.append("scan.yml scanner: the refusal step holds keys other than name, if and run (%s): continue-on-error or an env could keep it from failing the leg" % sorted(set(sst[i_]) - {"name", "if", "run"}))
 if not refuse:
     bad.append("scan.yml scanner: no step `if: matrix.scanner != 'grype'` that runs `exit 1` (a pr_gate name other than grype would scan nothing and the aggregate would pass)")
 elif install_i and refuse[0] > install_i[0]:
@@ -249,6 +254,10 @@ check "the real workflows" ok "$root/.github/workflows"
 # AC1: a build added to a job that holds a credential
 mutate "scan.yml scanner job: the refusal of a non-grype matrix leg removed (rc-5a F)" '
 edit("scan.yml", lambda s: s.replace("        if: matrix.scanner != \"grype\"\n".replace("\"", "\x27"), "        if: matrix.scanner == \x27grype\x27\n", 1))'
+mutate "scan.yml scanner job: continue-on-error on the refusal step (rc-5a F)" '
+edit("scan.yml", lambda s: s.replace("        if: matrix.scanner != \x27grype\x27\n", "        if: matrix.scanner != \x27grype\x27\n        continue-on-error: true\n", 1))'
+mutate "scan.yml scanner job: continue-on-error on the whole job (rc-5a F)" '
+edit("scan.yml", lambda s: s.replace("    name: scan (${{ matrix.scanner }})\n", "    name: scan (${{ matrix.scanner }})\n    continue-on-error: true\n", 1))'
 mutate "scan.yml scanner job: the refusal step placed after the installer (rc-5a F)" '
 edit("scan.yml", lambda s: s.replace("      - name: refuse a scanner this job cannot run\n", "      - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can\x27t run is a pipeline failure, not a finding)\n        run: ./bin/install-scanner.sh \x27${{ matrix.scanner }}\x27\n\n      - name: refuse a scanner this job cannot run\n", 1))'
 mutate "go install added to go-freshness refresh (App key, packages: write)" '

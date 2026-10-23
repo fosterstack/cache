@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # This job scans with grype only: every scanning step below is `if: matrix.scanner == 'grype'`. A pr_gate name other than grype would install a tool and scan
+      # This job scans with grype only: its three scanning steps below are `if: matrix.scanner == 'grype'`. A pr_gate name other than grype would install a tool and scan
       # nothing, and the `scan` aggregate would read success; a scanner that did not run is a failure, never a pass.
       - name: refuse a scanner this job cannot run
         if: matrix.scanner != 'grype'
