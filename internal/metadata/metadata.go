@@ -62,14 +62,14 @@ func Open(path string) (*Store, error) {
 // Close closes the underlying database.
 func (s *Store) Close() error { return s.db.Close() }
 
+// recordLen is the exact length of a record.
+const recordLen = 16
+
 // record is the fixed-width on-disk value: 8 bytes size, 8 bytes unix nano
 // last-access, both stored as the bit pattern of a non-negative int64.
 // encode/decode bounds-check explicitly rather than trusting the int64/
 // uint64 conversion, so a corrupt or crafted record is rejected instead of
 // silently wrapping into a negative size or a bogus timestamp.
-// recordLen is the exact length of a record.
-const recordLen = 16
-
 func encode(size int64, lastAccess time.Time) ([]byte, error) {
 	if size < 0 {
 		return nil, fmt.Errorf("metadata: negative size %d", size)

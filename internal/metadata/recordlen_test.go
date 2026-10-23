@@ -35,9 +35,6 @@ func TestDecodeSizeRejectsARecordThatIsNot16Bytes(t *testing.T) {
 
 func TestShortRecordIsAnErrorForEveryReader(t *testing.T) {
 	for name, buf := range badLengths {
-		if len(buf) == 0 {
-			continue // bbolt returns an empty value as the zero-length slice a reader cannot tell from an absent key; the decode tests above cover it
-		}
 		s := newTestStore(t)
 		putRaw(t, s, buf)
 		if err := s.Touch("bad"); err == nil {
