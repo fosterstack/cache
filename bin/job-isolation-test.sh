@@ -51,7 +51,7 @@ def builds_govulncheck(a):
 # lines the same step must also carry; a new line outside the grammar needs a new row here, in review.
 ALLOWED = re.compile(r'(?:bash bin/|\./bin/)install-scanner\.sh (?P<tool>[a-z0-9][a-z0-9.-]*|"?[a-z0-9][a-z0-9.-]*-\$\{?[A-Za-z_]\w*\}?"?)(?: "(?:[^"`\\$]|\$(?!\())*")?(?:[ \t]+#.*)?')
 EXCLUDED_INSTALLER = {
-    ("auditor.yml", "audit"): {"lines": ['./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \\'], "needs": [], "why": "the syft install whose failure is a warning (the line continues on the next line)"},
+    ("auditor.yml", "audit"): {"lines": ['./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \\', './bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" || echo "::warning::could not install syft; the package inventory falls back to matched packages"'], "needs": [], "why": "the syft install whose failure is a warning (the line continues on the next line)"},
     ("main-candidate-rescan.yml", "scout-root-cause"): {"lines": ['./bin/install-scanner.sh "$t" "$RUNNER_TEMP/$t"'], "needs": ["for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do"], "forbid": r"(?<![\w$])t=", "why": "a loop over three literal docker-scout names, t assigned nowhere else in the step"},
     ("scan.yml", "scanner"): {"lines": ["./bin/install-scanner.sh '${{ matrix.scanner == 'inspector' && 'inspector-sbomgen' || matrix.scanner }}'"], "needs": [], "why": "the matrix tool comes from the pr_gate list of .github/policy/scanners.json (checked below)"},
 }
@@ -64,7 +64,8 @@ def installer_problems(txt, key):
     """Lines of this step text that name install-scanner but are outside the grammar and the listed exceptions."""
     out = []
     exc = EXCLUDED_INSTALLER.get(key)
-    for raw in txt.split("\n"):
+    joined = re.sub(r"\\\n[ \t]*", "", txt)    # a backslash-newline continuation is one logical line: bin/install-\<newline>scanner.sh is the installer
+    for raw in txt.split("\n") + (joined.split("\n") if joined != txt else []):
         line = raw.strip()
         if not names_installer(line) or line.startswith("#"):
             continue
@@ -314,6 +315,8 @@ gf "install-scanner.sh written with an empty quoted pair in its name" 'bash bin/
 gf "install-scanner.sh written with a backslash in its name" 'bash bin/install\-scanner.sh govulncheck'
 gf "install-scanner.sh name built from a variable (install-\$x.sh)" 'x=scanner; bash "bin/install-$x.sh" govulncheck'
 gf "install-scanner.sh name built from a glob (install-s*.sh)" 'bash bin/install-s*.sh govulncheck'
+gf "install-scanner.sh name split by a backslash-newline continuation with a variable tool word" 'T=govulncheck; bash bin/install-\
+scanner.sh "$T"'
 gf "install-scanner.sh name held in a variable" 'S=install-scanner; bash bin/$S.sh govulncheck'
 mutate "an extra installer line with a quoted name inside the scout-root-cause exception step" '
 edit("main-candidate-rescan.yml", lambda s: s.replace("          for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do\n", "          bash bin/install-\"scanner\".sh govulncheck\n          for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do\n", 1))'
