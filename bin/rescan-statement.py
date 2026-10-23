@@ -188,6 +188,8 @@ def _parse_product(pid):
             raise ValueError("a qualifier on the Go product %r" % pid)
         if "@" in base:
             return ("go-versioned",)   # a version-pinned module cannot be tied to the release being scanned: it never applies
+        if pid != "pkg:golang/github.com/fosterstack/cache":
+            raise ValueError("the Go product %r has a suffix (another module's name, a trailing newline): the exact product only" % pid)
         return ("go",)
     names = {"pkg:oci/cache": OUR_OCI_REPOS[0], "pkg:oci/cache-candidates": OUR_OCI_REPOS[1]}
     if base not in names:

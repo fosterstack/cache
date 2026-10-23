@@ -53,9 +53,9 @@ def _load(path):
 
 
 def _product_id(p):
-    """A product's identifier as the PR gate's vex_index reads it: @id, else identifiers.purl."""
+    """A product's identifier as the PR gate's vex_index reads it: @id when the key is present, else identifiers.purl."""
     ids = p.get("identifiers")
-    return p.get("@id") or (ids.get("purl") if isinstance(ids, dict) else None) or ""
+    return p.get("@id") if p.get("@id") is not None else ((ids.get("purl") if isinstance(ids, dict) else None) or "")   # an @id that is present (even "") is the id, as the rescan reads it
 
 
 def _covers(product, image):

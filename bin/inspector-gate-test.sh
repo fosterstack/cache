@@ -181,9 +181,21 @@ for q in ("&variant=debug", "&arch=riscv64", "&VARIANT=production", "&variant=%7
     row("index: a malformed-scope product %r covers nothing, with an image given" % q, cov(OCI + q, G.image_identity("cand-production-amd64")) is False)
 row("index: a malformed product beside a good one: the good one still covers", G.covered(G.vex_index(doc(OCI + "&variant=debug", OCI, subs=["pkg:generic/busybox@1.37.0"])), "CVE-9999-1", PKG, None) is True)
 row("index: the dropped product leaves no entry at all", G.vex_index(doc(OCI + "&variant=debug")) == {})
+GO = "pkg:golang/github.com/fosterstack/cache"
+for suffix in ("&arch=arm64", "&repository_url=ghcr.io/fosterstack/cache-candidates", "&x", "#sub", "/extra"):
+    row("index: the Go product with the suffix %r covers nothing (it names another module), with no image" % suffix, cov(GO + suffix, subs=()) is False)
+    row("index: the Go product with the suffix %r covers nothing, with an image" % suffix, cov(GO + suffix, G.image_identity("cand-production-amd64"), subs=()) is False)
+row("index: the plain Go product with no subcomponent still covers every package", cov(GO, subs=()) is True)
+# the @id the gate reads is the rescan's: the key when present (an empty @id is NOT replaced by identifiers.purl)
+def idoc(at, purl):
+    return {"statements": [{"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": at, "identifiers": {"purl": purl}, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}
+row("index: an empty @id beside an identifiers.purl of our image covers nothing", G.covered(G.vex_index(idoc("", OCI)), "CVE-9999-1", PKG, None) is False)
+row("index: an @id equal to the identifiers.purl covers", G.covered(G.vex_index(idoc(OCI, OCI)), "CVE-9999-1", PKG, None) is True)
+print("index-cases-run")
 PYI
 )"
 echo "$IDXOUT" | sed 's/^/  /'
+[ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 34 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 34 (a crash or a skipped case)"; fail=$((fail+1)); }
 pass=$((pass + $(grep -c '^ok:' <<<"$IDXOUT"))); fail=$((fail + $(grep -c '^FAIL:' <<<"$IDXOUT")))
 
 echo "----"
