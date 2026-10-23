@@ -53,15 +53,17 @@ class GradleWrapperSum(unittest.TestCase):
         self.assertEqual(p.get("validateDistributionUrl"), "true")
 
 
-@unittest.skipUnless(os.environ.get("GRADLE_SUM_ONLINE") == "1", "set GRADLE_SUM_ONLINE=1 to hash the real distribution")
+@unittest.skipUnless(os.environ.get("GRADLE_SUM_ONLINE") == "1", "set GRADLE_SUM_ONLINE=1 (CI's auditor suites step does) to compare with the published sum")
 class GradleWrapperSumOnline(unittest.TestCase):
-    def test_the_sum_is_the_sha256_of_the_zip_the_url_names(self):
-        import hashlib, urllib.request
+    def test_the_sum_is_the_one_gradle_publishes_for_the_zip_the_url_names(self):
+        import urllib.request
         p = wrapper_props()
         url = p["distributionUrl"].replace("\\:", ":")
         self.assertTrue(url.startswith("https://services.gradle.org/distributions/"))
-        h = hashlib.sha256(urllib.request.urlopen(url, timeout=120).read()).hexdigest()
-        self.assertEqual(p["distributionSha256Sum"], h)
+        with urllib.request.urlopen(url + ".sha256", timeout=60) as r:
+            published = r.read().decode().split()[0].strip().lower()
+        self.assertRegex(published, r"^[0-9a-f]{64}$")
+        self.assertEqual(p["distributionSha256Sum"], published)
 
 
 class ImageRefRefusal(unittest.TestCase):

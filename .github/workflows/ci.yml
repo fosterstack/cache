@@ -337,6 +337,8 @@ jobs:
         run: git ls-files | python3 .github/agent/bin/auditor-layout-check.py
 
       - name: auditor suites — parser unit tests and the requirements-matrix suite
+        env:
+          GRADLE_SUM_ONLINE: "1"   # REQ-SUP-001-AC28: the wrapper's sum equals the one Gradle publishes
         run: |
           # the report lint renders with GitHub's own cmark-gfm (hash-pinned, test-only)
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
