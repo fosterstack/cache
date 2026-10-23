@@ -13,7 +13,7 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
 
-judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_FLOORS_FILE="${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
@@ -43,6 +43,26 @@ _walk(yaml.compose(_text, Loader=yaml.BaseLoader), "")
 if _dups:
     print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
 d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
+# REQ-CI-005: a floored suite may be run by a counting step, `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of
+# PATH, a suite the committed floors file names), which runs it once and holds it to its floor and to exit 0. Every such line (optionally after env assignments, and
+# with a trailing </dev/null) is read back to the plain `bash PATH` line it stands for, so every exact-run check below judges one text for both forms; a line that
+# is not exactly this form is left as written and is judged (and refused) as any other unknown run text.
+import json as _json_, re as _re_
+try:
+    _floored_ = set(_json_.load(open(os.environ["PIN_WIRING_FLOORS_FILE"])))
+except Exception:
+    _floored_ = set()
+_COUNT_ = _re_.compile(r"((?:[A-Z][A-Z0-9_]*=[A-Za-z0-9_.-]+ )*)python3 -I bin/suite-guard-run\.py run test-evidence/suite-floors\.json (\S+) (\S+)( </dev/null)?")
+def _unwrap_(line):
+    m = _COUNT_.fullmatch(line)
+    if not m or m.group(2) not in _floored_ or os.path.basename(m.group(3)) != m.group(2):
+        return line
+    return m.group(1) + "bash " + m.group(3) + (m.group(4) or "")
+if isinstance(d, dict):
+    for _j_ in (d.get("jobs") or {}).values():
+        for _st_ in (_j_.get("steps") or []) if isinstance(_j_, dict) else []:
+            if isinstance(_st_, dict) and isinstance(_st_.get("run"), str):
+                _st_["run"] = "\n".join(_unwrap_(l) for l in _st_["run"].split("\n"))
 bad = []
 for k in sorted(set(d) - {"name", "on", "permissions", "jobs"}):
     bad.append(f"the workflow sets `{k}`")
@@ -794,6 +814,21 @@ PY
 steps='d["jobs"]["allowlist"]["steps"]'
 pick='[s for s in '"$steps"' if (s.get("run") or "").startswith("python3 .github/agent/bin/check-action-pins.py")][0]'
 case_ the-real-hygiene      ok  ""
+# REQ-CI-005: a floored suite's step may call the counting runner instead of `bash PATH`; exactly that form is read back to the plain line, anything else is judged as unknown text
+CW="[s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/inspector-gate-test.sh'][0]"
+CF="python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json"
+case_ count-step-wrapped-ok         ok  "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-wrapped-devnull    ok  "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh </dev/null'"
+case_ count-step-name-not-path      bad "w = $CW; w['run'] = '$CF install-scanner-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-other-path         bad "w = $CW; w['run'] = '$CF install-scanner-test.sh bin/install-scanner-test.sh'"
+case_ count-step-unfloored-name     bad "w = $CW; w['run'] = '$CF zz-not-floored-test.sh bin/zz-not-floored-test.sh'"
+case_ count-step-other-floors       bad "w = $CW; w['run'] = 'python3 -I bin/suite-guard-run.py run /tmp/floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-count-only         bad "w = $CW; w['run'] = 'python3 -I bin/suite-guard-run.py run --count-only test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-or-true            bad "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh || true'"
+case_ count-step-no-isolation       bad "w = $CW; w['run'] = 'python3 bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-twice              bad "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh\n$CF inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-if-false           bad "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh'; w['if'] = 'false'"
+case_ count-step-env-injected       bad "w = $CW; w['run'] = 'BASH_ENV=/tmp/x $CF inspector-gate-test.sh bin/inspector-gate-test.sh'"
 case_ step-removed          bad "$steps[:] = [s for s in $steps if not (s.get('run') or '').startswith('python3 .github/agent/bin/check-action-pins.py')]"
 case_ step-if-false         bad "$pick['if'] = 'false'"
 case_ step-continue         bad "$pick['continue-on-error'] = 'true'"
