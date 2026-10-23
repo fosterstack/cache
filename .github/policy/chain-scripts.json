@@ -486,7 +486,7 @@
       ],
       "signs": false,
       "reason": "the version, revision and clean-tree check of a built binary or apk",
-      "sha256": "a5076da0f33d195946259ded03b3eca4ee9ebb5c9f91acfc86e8afeb4b1200ca",
+      "sha256": "a25d175c03b3076ef2d9fc550de8acf578d6be3cf3ac24b25fdf156d30659c08",
       "env_mentions": [
         {
           "name": "PATH",

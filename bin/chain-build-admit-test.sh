@@ -149,9 +149,9 @@ bi() { printf '%s\n' "$1: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fsca
 # differs from it in that line only and points it at a recording wrapper.
 VCGO="$W/vcgo/go"; mkdir -p "$W/vcgo"
 cat > "$VCGO" <<EOF
-#!/usr/bin/env bash
+#!/bin/bash
 { echo "WHICH-GO pinned \$*"; for v in GOTOOLCHAIN GOFLAGS GOENV GOROOT GOPROXY GOPATH GOMODCACHE GOEXPERIMENT; do echo "ENV \$v=\${!v-unset}"; done; } >> "$W/vcgo.log"
-cat "$W/buildinfo.txt"
+/bin/cat "$W/buildinfo.txt"
 EOF
 chmod +x "$VCGO"
 cat > "$FB/go" <<EOF
@@ -262,7 +262,7 @@ then rc=0;
   fi
 # the fixed path and the closed environment (the cases above ran through the wrapper at the substituted path, with a runner `go` on PATH)
 bi out/fscache v0.3.0 "$SHA" false > "$W/buildinfo.txt"; : > "$W/fscache"; : > "$W/vcgo.log"; rc=0
-hostile env PATH="$FB:/usr/bin:/bin" python3 "$BV" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" > /dev/null 2> "$W/vc.err" || rc=$?
+hostile env PATH="$FB:$PATH" python3 "$BV" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" > /dev/null 2> "$W/vc.err" || rc=$?
 [ "$rc" = 0 ] && grep -q 'WHICH-GO pinned version -m' "$W/vcgo.log" && ! grep -q 'runner-path' "$W/vcgo.log" \
   && ok "AC7 the buildinfo is read by the go at the fixed path, never the runner's go on PATH" \
   || bad "AC7 fixed go path -> exit $rc, log: $(head -c 200 "$W/vcgo.log")"
@@ -270,7 +270,7 @@ for want in GOTOOLCHAIN=local GOFLAGS= GOENV=off GOROOT=unset GOPROXY=unset GOPA
   grep -qxF "ENV $want" "$W/vcgo.log" && ok "AC7 the go call's environment has $want (closed: nothing inherited)" || bad "AC7 the go call's environment lacks $want: $(grep '^ENV' "$W/vcgo.log" | tr '\n' ' ')"
 done
 if mkvcopy "$W/bvc-absent.py" "$W/no-such-go" 2> /dev/null; then rc=0; : > "$W/vcgo.log"
-  PATH="$FB:/usr/bin:/bin" python3 "$W/bvc-absent.py" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" > /dev/null 2> "$W/vc.err" || rc=$?
+  PATH="$FB:$PATH" python3 "$W/bvc-absent.py" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" > /dev/null 2> "$W/vc.err" || rc=$?
   [ "$rc" = 1 ] && grep -Fq "buildinfo" "$W/vc.err" && ! grep -q 'runner-path' "$W/vcgo.log" && ok "AC7 an absent go at the fixed path is a refusal, and PATH is not consulted" \
     || bad "AC7 absent go -> exit $rc, stderr $(head -c 150 "$W/vc.err"), log $(head -c 100 "$W/vcgo.log")"
 else bad "AC7 absent go (RED: no TEST-SUBST line)"; fi

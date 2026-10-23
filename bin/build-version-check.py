@@ -17,9 +17,10 @@ import sys
 import tempfile
 
 
-# the build's own toolchain, installed checksum-pinned by `bash bin/install-scanner.sh go`; never a `go` found on PATH, and the call gets a closed environment
+# the build's own toolchain at its fixed install path (checksum-pinned by the scanner installer), never a go found by name; the call gets a closed
+# environment: only these three variables, nothing inherited
 GO_TOOL = "/usr/local/bin/fscache-go/bin/go"  # TEST-SUBST
-GO_ENV = {"PATH": "/usr/bin:/bin", "GOTOOLCHAIN": "local", "GOFLAGS": "", "GOENV": "off"}
+GO_ENV = {"GOTOOLCHAIN": "local", "GOFLAGS": "", "GOENV": "off"}
 
 
 class Refusal(Exception):
