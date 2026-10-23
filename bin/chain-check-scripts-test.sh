@@ -1066,7 +1066,7 @@ for ref in "fscache:production" "localhost/fa-production:latest" "sha256:${H64:0
 done
 for ref in "sha256:$H64" "localhost/fa-production@sha256:$H64" "ghcr.io/fosterstack/cache:v0.3.0@sha256:$H64" "localhost:5000/team/app-x@sha256:$H64"; do
   serve "$ref"
-  if [ "$rc" = 0 ] && grep -Eq "^docker tag sha256:$H64 localhost/fscache-serve-candidate( |$)" "$work/log" && grep -E '^docker run ' "$work/log" | grep -Fq ' localhost/fscache-serve-candidate' && ! grep -E '^docker run ' "$work/log" | grep -Fq "$ref"; then ok "AC30 serve starts the content-addressed image $ref: its inspected ID is tagged to the fixed local name and that name is run"; else bad "AC30 serve did not start $ref (rc=$rc): $(head -3 "$work/log" | tr '\n' '|') $out"; fi
+  if [ "$rc" = 0 ] && grep -Eq "^docker tag sha256:$H64 localhost/fscache-serve-candidate( |$)" "$work/log" && grep -Eq '^docker run .* localhost/fscache-serve-candidate( |$)' "$work/log" && ! awk -v r="$ref" 'index($0, "docker run ") == 1 && index($0, r) { found = 1 } END { exit !found }' "$work/log"; then ok "AC30 serve starts the content-addressed image $ref: its inspected ID is tagged to the fixed local name and that name is run"; else bad "AC30 serve did not start $ref (rc=$rc): $(head -3 "$work/log" | tr '\n' '|') $out"; fi
 done
 # a re-tag between the tag and the run: the fixed local name must still resolve to the inspected ID right before docker run, or serve refuses and starts nothing
 mkdir -p "$srv/fakedir"; : > "$srv/fakedir/retag"
