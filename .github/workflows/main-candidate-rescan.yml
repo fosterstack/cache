@@ -178,13 +178,13 @@ jobs:
           ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
           # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config here, never the repository's, and a GRYPE_* variable (which can change
           # what it reports) stops the step, as in bin/grype-scan.sh and bin/check-scan.sh. Names only are printed, never values.
-          bad_env=$(compgen -e | grep '^GRYPE_' | tr '\n' ' ' || true)
+          bad_env=$(compgen -e | grep '^GRYPE_' | grep -vx 'GRYPE_DB_CACHE_DIR\|GRYPE_DB_AUTO_UPDATE' | tr '\n' ' ' || true)
           if [ -n "${bad_env}" ]; then
             echo "::error::grype: ${bad_env}set in the environment; only the VEX document may hide a finding, refusing to run" >&2
             exit 2
           fi
           : > "$RUNNER_TEMP/empty-grype.yaml"
-          grype db update >/dev/null 2>&1 || true
+          grype db update -c "$RUNNER_TEMP/empty-grype.yaml" >/dev/null 2>&1 || true
           for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"

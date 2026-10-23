@@ -286,6 +286,10 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
 tg_ = text("panel-grype")
 if not re.search(r'grype "docker:\$\{ref\}" -c "\$RUNNER_TEMP/empty-grype\.yaml"', tg_) or not re.search(r': > "\$RUNNER_TEMP/empty-grype\.yaml"', tg_):
     bad.append("panel-grype does not run grype with -c on an empty file made in the step")
+if "grype db update -c \"$RUNNER_TEMP/empty-grype.yaml\"" not in tg_ or len(re.findall(r"\bgrype (?:db update|\"docker:)", tg_)) != len(re.findall(r"\bgrype (?:db update -c|\"docker:\$\{ref\}\" -c) \"\$RUNNER_TEMP/empty-grype\.yaml\"", tg_)):
+    bad.append("panel-grype runs a grype command (the database update or a scan) without -c on the empty config")
+if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in tg_:
+    bad.append("panel-grype's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
 if not re.search(r"compgen -e \| grep '\^GRYPE_'", tg_) or "exit 2" not in tg_.split("compgen -e", 1)[-1].split("done", 1)[0]:
     bad.append("panel-grype does not refuse a GRYPE_* variable in the environment before it runs")
 if not re.search(r'\|\| \{[^}]*rm -rf "\$\{d\}"', tg_):
@@ -477,6 +481,7 @@ case_ real                    ok  ""
 case_ grype-keeps-partial     bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
 case_ scout-keeps-partial     bad "s=$(step_of panel-scout 'docker scout sbom'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
 case_ grype-repo-config       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(' -c \"\$RUNNER_TEMP/empty-grype.yaml\"', '')"
+case_ grype-update-repo-config bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype db update -c \"\$RUNNER_TEMP/empty-grype.yaml\"', 'grype db update')"
 case_ grype-no-env-refusal    bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
 case_ panel-dl-same-id        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with']['artifact-ids'] = '\${{ needs.panel-grype.outputs.artifact-id }}'"
 case_ panel-dl-by-name        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'name': 'panel-scout', 'path': '/tmp/panel/panel-scout'}"
