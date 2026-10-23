@@ -264,8 +264,8 @@ case_rescan digest-interpolated   bad "s=[x for x in d['jobs']['rescan']['steps'
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 4 of 4: acceptance-gradle.yml + acceptance-maven.yml -> acceptance.yml (REQ-REL-008-AC2). Same events; both jobs
 # keep their check names (acceptance-gradle; acceptance-maven (1.2.0) / (1.2.3) from the matrix), permissions and
-# results outputs; maven's scenario environment moves onto its job unchanged (release.yml called the one file then;
-# it no longer does, see REQ-CHAIN-006-AC10 below).
+# results outputs; maven's scenario environment moves onto its job unchanged; release.yml calls the one file and hands
+# both results to the acceptance predicate.
 judge_acc() { python3 - "$1" "$root" <<'PY'
 import os, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
