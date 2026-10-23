@@ -4,7 +4,7 @@ This page says what the server does when it did not shut down cleanly, and what 
 
 ## The marker
 
-The server writes a marker file (`.unclean-shutdown`) in the data directory when it starts and removes it on a clean shutdown. A clean shutdown is a `SIGTERM` or `SIGINT` that the server finishes handling (it waits up to 10 seconds for requests in flight). A kill, a crash, a power loss or a stop that runs out of grace time leaves the marker in place. A clean restart skips the work below.
+The server writes a marker file (`.unclean-shutdown`) in the data directory when it starts and removes it on a clean shutdown. A clean shutdown is a `SIGTERM` or `SIGINT` after which requests in flight finish within 10 seconds and the stores close without error; anything else (a kill, a crash, a power loss, a slow request, an error) leaves the marker in place. A clean restart skips the work below.
 
 ## What happens at the next start
 
@@ -12,10 +12,9 @@ When the marker is present at startup, the server reconciles its two stores befo
 
 - A blob with no metadata record is adopted (its size is read from the disk and its recency is set to now).
 - A metadata record with no blob is dropped.
-- Stale temporary files are removed.
-- The totals are recomputed.
+- Stale temporary files are removed; one that cannot be removed is logged as a warning.
 
-The server logs a warning when it starts the reconcile and an info line with the counts when it ends (`adopted_blobs`, `dropped_records`, `removed_temp_files`, and the duration). The exact lines are in [logging](logging.md).
+The server logs a warning when it starts the reconcile and two info lines with the counts when it ends (`adopted_blobs`, `dropped_records`, `removed_temp_files`; one also has the duration). The exact lines are in [logging](logging.md).
 
 ## What you see while it runs
 
