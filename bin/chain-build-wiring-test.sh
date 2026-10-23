@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
 # Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
@@ -153,6 +153,7 @@ def stage_text(family):
         # REQ-CHAIN-004-AC16: every job that builds from the archive installs crane (pinned) and pulls the archive by its committed digest, before the downloads
         out += "      - name: install crane (pinned by checksum)\n        run: %s\n" % S.INSTALL_CRANE
         out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
+        if sp.get("hosttools"): out += "      - name: unpack the host tools from the archive (bubblewrap for melange's runner)\n        run: %s\n" % S.INSTALL_HOSTTOOLS
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
@@ -319,6 +320,27 @@ CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash b
 PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'
 PULLRUN='run: bash bin/archive-pull.sh --pointer build/archive.json --out archive'
 st s_ar_gone    "AC16 the archive pull is missing from Build's apk job (build-apk.sh --repo archive would find nothing)" "archive-pull.sh" "$PULLSTEP" ''
+# REQ-CHAIN-004-AC17 (advisor reading Oct 20): an apk job unpacks the host tools (bubblewrap) from the archive it just pulled, in one step of its own right after the pull
+HTRUN=$(python3 -I - "$shape" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shape", sys.argv[1]); S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+print(S.INSTALL_HOSTTOOLS)
+PY
+)
+HTSTEP='      - name: unpack the host tools from the archive (bubblewrap for melange'"'"'s runner)\n        run: '"$HTRUN"'\n'
+st s_ht_gone    "AC17 the host-tools step is missing from Build's apk job (melange's runner would find no bwrap)" "install-host-bwrap" "$HTSTEP" ''
+st s_ht_before  "AC17 the host tools unpacked BEFORE the archive pull (there is no archive yet)" "install-host-bwrap" "$PULLSTEP$HTSTEP" "$HTSTEP$PULLSTEP"
+st s_ht_asm     "AC17 the assemble job unpacks the host tools too (an assemble job runs apko only)" "crane" "$APKINST" "$APKINST$HTSTEP"
+st s_ht_env     "AC17 an env on the host-tools step (a token or secret could reach it before admission)" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'env:\n          K: ${{ secrets.X }}\n        run: '"$HTRUN"'\n'
+st s_ht_if      "AC17 an if on the host-tools step (a skipped step is a build with no sandbox)" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'if: always()\n        run: '"$HTRUN"'\n'
+st s_ht_soft    "AC17 continue-on-error on the host-tools step" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'continue-on-error: true\n        run: '"$HTRUN"'\n'
+st s_ht_sudo    "AC17 the host-tools script run under sudo" "install-host-bwrap" "run: $HTRUN" "run: sudo $HTRUN"
+st s_ht_root    "AC17 the host tools unpacked into another directory than host-tools" "install-host-bwrap" "--root host-tools" "--root /usr/local"
+st s_ht_lock    "AC17 the host tools read another lock than build/locks/host-tools.lock" "install-host-bwrap" "--lock build/locks/host-tools.lock" "--lock host-tools.lock"
+st s_ht_arch    "AC17 the host tools unpacked from another directory than archive" "install-host-bwrap" "--archive archive" "--archive /tmp/archive"
+HT_APT_RUN='run: sudo apt-get install -y bubblewrap'
+st s_ht_apt     "AC17 the host tools taken from the distribution instead of the archive (a package manager line)" "install-host-bwrap" "run: $HTRUN" "$HT_APT_RUN"
+st s_ht_bash    "AC17 the host-tools script started with bash (it is a Python file)" "install-host-bwrap" "run: python3 -I bin/install-host-bwrap.py" "run: bash bin/install-host-bwrap.py"
 st s_ar_crane   "AC16 the crane install is missing (the pull needs the pinned tool)" "install-scanner.sh crane" "$CRANEINST" ''
 st s_ar_order   "AC16 the pull before the crane install" "install-scanner.sh crane" "$CRANEINST$PULLSTEP" "$PULLSTEP$CRANEINST"
 st s_ar_digest  "AC16 the pull names a digest of its own (only the committed one is allowed)" "archive-pull.sh" "$PULLRUN" "$PULLRUN --digest sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -471,6 +493,8 @@ rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" 
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
 rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its verdict artifact)" "on: must be" 'workflow_call:\n' \
              'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
+rb r_ht_gone "005-AC17 the host-tools step is missing from Rebuild's apk job" "install-host-bwrap" "$HTSTEP" ''
+rb r_ht_asm  "005-AC17 Rebuild's assemble job unpacks the host tools too (it runs apko only)" "crane" "$APKINST" "$APKINST$HTSTEP"
 rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" '    inputs:\n      mode:' \
              '    inputs:\n      hostile:\n        type: boolean\n        default: false\n      mode:'
 # Release review R1 (Oct 21), REQ-CHAIN-005-AC2/AC6: Rebuild's apk job installs the same checksum-pinned Go toolchain as Build's (build-apk.sh refuses to run in CI without it), right after Witness
@@ -743,6 +767,215 @@ d["scripts"] = d["scripts"][1:]
 json.dump(d, open(sys.argv[2], "w"))
 PY
 expect caught "AC3 a script that is not a row of chain-scripts.json is refused" "not a row" listed "$work/chain-scripts-short.json" "$work/listed"
+# REQ-CHAIN-004-AC17 (advisor reading Oct 20, handoff 0524; rules 15 and 38a): the host tools (bubblewrap and what it needs) come out of the archive, never a package manager.
+# bin/install-host-bwrap.py is run against FIXTURE apks built here (a gzip control segment with .PKGINFO and a gzip data segment, the datahash being the sha256 of the data segment
+# as in Wolfi's packages), a lock and an archive directory; every refusal leaves NOTHING written (no host-tools directory, no wrapper).
+NOWORDS='curl|wget|apt-get|apk add|sudo|pip install|urllib|socket|http.client|requests|subprocess|os.system|shutil.which|dpkg|yum|dnf'
+python3 -I - "$root" "$work" "$NOWORDS" > "$work/ac17.out" <<'PY'
+import gzip, hashlib, io, os, shutil, subprocess, sys, tarfile
+root, work = sys.argv[1:3]
+script = root + "/bin/install-host-bwrap.py"
+base = work + "/hb"
+shutil.rmtree(base, ignore_errors=True); os.makedirs(base)
+ARCH = "x86_64"
+
+
+def tar_bytes(entries):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as t:
+        for name, kind, data, extra in entries:
+            ti = tarfile.TarInfo(name)
+            if kind == "file":
+                ti.size = len(data); ti.mode = extra or 0o644; t.addfile(ti, io.BytesIO(data))
+            elif kind == "dir":
+                ti.type = tarfile.DIRTYPE; ti.mode = 0o755; t.addfile(ti)
+            elif kind == "sym":
+                ti.type = tarfile.SYMTYPE; ti.linkname = data; t.addfile(ti)
+            elif kind == "hard":
+                ti.type = tarfile.LNKTYPE; ti.linkname = data; t.addfile(ti)
+            elif kind == "dev":
+                ti.type = tarfile.CHRTYPE; ti.devmajor = 1; ti.devminor = 3; t.addfile(ti)
+    return buf.getvalue()
+
+
+def gz(b):
+    return gzip.compress(b, mtime=0)
+
+
+def apk(path, name, ver, files, arch=ARCH, datahash=None, pkgname=None, pkgver=None, sig=False):
+    data = gz(tar_bytes(files))
+    dh = hashlib.sha256(data).hexdigest() if datahash is None else datahash
+    info = "pkgname = %s\npkgver = %s\narch = %s\ndatahash = %s\n" % (pkgname or name, pkgver or ver, arch, dh)
+    ctl = gz(tar_bytes([(".PKGINFO", "file", info.encode(), None)]))
+    sg = gz(tar_bytes([(".SIGN.RSA.x.rsa.pub", "file", b"sig", None)])) if sig else b""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "wb").write(sg + ctl + data)
+
+
+LOADER = b"#!/bin/sh\necho \"LOADER $@\"\n"
+
+
+def good_set(arch_dir, **kw):
+    a = arch_dir
+    apk(a + "/bubblewrap-0.13.0-r0.apk", "bubblewrap", "0.13.0-r0", [("usr", "dir", None, None), ("usr/bin", "dir", None, None), ("usr/bin/bwrap", "file", b"BWRAP", 0o755)], **kw)
+    apk(a + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("usr/lib/libcap.so.2", "sym", "libcap.so.2.78", None)], **kw)
+    apk(a + "/glibc-2.43-r13.apk", "glibc", "2.43-r13", [("usr/lib/libc.so.6", "file", b"LIBC", None), ("usr/bin/ld.so", "sym", "../../lib64/ld-linux-x86-64.so.2", None)], **kw)
+    apk(a + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755)], **kw)
+
+
+LOCK = "bubblewrap=0.13.0-r0\nglibc=2.43-r13\nld-linux=2.43-r13\nlibcap=2.78-r4\n"
+n = [0]
+
+
+def case(label, setup=None, lock=LOCK, want=0, extra_args=(), arch=ARCH, after=None, nothing_written=None):
+    n[0] += 1
+    d = "%s/c%d" % (base, n[0]); os.makedirs(d + "/archive/" + ARCH); os.makedirs(d + "/bin")
+    good_set(d + "/archive/" + ARCH)
+    if setup: setup(d)
+    lp = d + "/host-tools.lock"
+    open(lp, "wb").write(lock.encode() if isinstance(lock, str) else lock)
+    args = ["python3", "-I", script, "--archive", d + "/archive", "--lock", lp, "--root", d + "/host-tools", "--bin", d + "/bin", "--arch", arch] + list(extra_args)
+    r = subprocess.run(args, capture_output=True, text=True)
+    good = r.returncode == want
+    if want != 0 and nothing_written is not False:
+        good = good and not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/bin/bwrap") and not os.path.exists(d + "/host-tools.staging") and not os.path.exists(d + "/probe")
+    if good and after:
+        try: after(d, r)
+        except AssertionError as e: good = False; r.stderr += " AFTER: %s" % e
+    print(("ok   " if good else "FAIL ") + label + ("" if good else " -> rc=%d %s" % (r.returncode, (r.stderr or r.stdout)[-200:].replace("\n", " "))))
+
+
+def a_good(d, r):
+    b = open(d + "/bin/bwrap").read()
+    ld = os.path.abspath(d + "/host-tools") + "/usr/lib/ld-linux-x86-64.so.2"
+    assert os.access(d + "/bin/bwrap", os.X_OK), "wrapper is not executable"
+    assert b.startswith("#!/bin/sh\n") and ("exec %s --library-path %s/usr/lib:%s/lib %s/usr/bin/bwrap \"$@\"\n" % (ld, os.path.abspath(d + "/host-tools"), os.path.abspath(d + "/host-tools"), os.path.abspath(d + "/host-tools"))) in b, b
+    out = subprocess.run([d + "/bin/bwrap", "--unshare-user", "true"], capture_output=True, text=True).stdout
+    assert out.startswith("LOADER --library-path ") and out.rstrip().endswith("/usr/bin/bwrap --unshare-user true"), out
+    assert os.path.islink(d + "/host-tools/usr/lib/libcap.so.2") and os.readlink(d + "/host-tools/usr/lib/libcap.so.2") == "libcap.so.2.78"
+    assert not os.path.exists(d + "/host-tools/.PKGINFO"), "control files are not unpacked"
+
+
+def a_basic(d, r):
+    assert os.access(d + "/bin/bwrap", os.X_OK) and os.path.isfile(d + "/host-tools/usr/bin/bwrap") and os.path.isfile(d + "/host-tools/usr/lib/libcap.so.2.78")
+
+
+def a_only_lock(d, r):
+    assert not os.path.exists(d + "/host-tools/usr/bin/evil"), "a package the lock does not name was unpacked"
+
+
+def s_extra_pkg(d):
+    apk(d + "/archive/" + ARCH + "/evil-1.0-r0.apk", "evil", "1.0-r0", [("usr/bin/evil", "file", b"E", 0o755)])
+
+
+def s_other_arch(d):
+    os.makedirs(d + "/archive/aarch64"); apk(d + "/archive/aarch64/bubblewrap-0.13.0-r0.apk", "bubblewrap", "0.13.0-r0", [("usr/bin/evil", "file", b"E", 0o755)], arch="aarch64")
+
+
+def ro(f):
+    def g(d):
+        f(d)
+    return g
+
+
+case("AC17 the packages the lock names are unpacked into a new directory and a wrapper runs the extracted loader with --library-path over the extracted libraries (a signature segment first is read too)", after=a_good)
+case("AC17 an apk with a signature segment before its control segment is read the same", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], sig=True), after=a_basic)
+case("AC17 only the packages the lock names are unpacked (an apk in the archive that the lock does not name, and one of another architecture, are never opened)", setup=lambda d: (s_extra_pkg(d), s_other_arch(d)), after=a_only_lock)
+case("AC17 a package file that the lock names but archive/<arch>/ does not hold is refused (exit 1), nothing written", setup=lambda d: os.remove(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk"), want=1)
+case("AC17 a package whose data segment does not match the datahash of its control segment is refused (exit 1), nothing written", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], datahash="0" * 64), want=1)
+case("AC17 a data segment changed after the pack (the control segment kept the old datahash) is refused", setup=lambda d: open(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "ab").write(gz(b"x")), want=1)
+case("AC17 a control segment that names another package than the lock row is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], pkgname="libpsx"), want=1)
+case("AC17 a control segment that names another version than the lock row is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], pkgver="2.78-r3"), want=1)
+case("AC17 a package built for another architecture (control segment says aarch64) in the x86_64 directory is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], arch="aarch64"), want=1)
+case("AC17 a noarch package is accepted", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], arch="noarch"), after=a_basic)
+case("AC17 a file that is not an apk (not gzip) is refused", setup=lambda d: open(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "wb").write(b"not an apk"), want=1)
+case("AC17 an apk that is a symlink instead of a file is refused", setup=lambda d: (os.remove(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk"), os.symlink(d + "/archive/" + ARCH + "/glibc-2.43-r13.apk", d + "/archive/" + ARCH + "/libcap-2.78-r4.apk")), want=1)
+for label, ent in (("an absolute path", [("/etc/evil", "file", b"E", None)]), ("a .. part", [("usr/../../evil", "file", b"E", None)]),
+                   ("a symlink with an empty target", [("usr/lib/x", "sym", "", None)]), ("a member placed through an absolute symlink (etc/mtab -> /proc/mounts ; etc/mtab/x)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab/x", "file", b"E", None)]), ("a hard link", [("usr/lib/x", "hard", "usr/lib/libcap.so.2.78", None)]), ("a device", [("usr/lib/dev", "dev", None, None)]),
+                   ("a path that another package also holds", [("usr/lib/libc.so.6", "file", b"OTHER", None)]),
+                   ("a chain of symlinks that writes outside the staging directory (a -> . ; a/b -> .. ; a/b/probe)", [("a", "sym", ".", None), ("a/b", "sym", "..", None), ("a/b/probe", "file", b"P", None)]),
+                   ("two symlinks that together leave the directory (a -> . ; b -> a/../probe)", [("a", "sym", ".", None), ("b", "sym", "a/../probe", None)]),
+                   ("two symlinks that together leave the directory, the second named first (b -> a/../probe ; a -> .)", [("b", "sym", "a/../probe", None), ("a", "sym", ".", None)]),
+                   ("a link that leaves the root and comes back through the staging name (a -> . ; b -> a/../host-tools.staging/probe)", [("a", "sym", ".", None), ("b", "sym", "a/../host-tools.staging/probe", None)]),
+                   ("the same, the second named first (b -> a/../host-tools.staging/probe ; a -> .)", [("b", "sym", "a/../host-tools.staging/probe", None), ("a", "sym", ".", None)]),
+                   ("a link into a sibling that has the root's own name (up -> .. ; up/host-tools/x as the target of w)", [("up", "sym", "usr/lib/../..", None), ("w", "sym", "up/../host-tools.staging/x", None)]),
+                   ("a file written through a symlinked directory over another package's file (alias -> usr/lib ; alias/libc.so.6)", [("alias", "sym", "usr/lib", None), ("alias/libc.so.6", "file", b"OTHER", None)]),
+                   ("a regular file that is later used as a directory (saved ; saved/child)", [("saved", "file", b"x", None), ("saved/child", "file", b"y", None)])):
+    case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
+         setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
+def s_abs_link(d):
+    os.makedirs(d + "/outside")
+    apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("etc/mtab", "sym", d + "/outside", None), ("var/spool/mail", "sym", "/var/mail", None)])
+
+
+def a_abs_link(d, r):
+    a_basic(d, r)
+    for p in ("etc/mtab", "var/spool/mail"):
+        assert not os.path.lexists(d + "/host-tools/" + p), "an absolute link is never created: " + p
+    assert "skipped absolute link etc/mtab -> " + d + "/outside" in r.stdout, r.stdout
+    assert "skipped absolute link var/spool/mail -> /var/mail" in r.stdout, r.stdout
+    assert os.listdir(d + "/outside") == [], "something was written at the target of an absolute link"
+    assert os.path.isfile(d + "/host-tools/usr/lib/libcap.so.2.78"), "the files stay"
+
+
+def a_abs_loader_path(d, r):
+    # an absolute link on a library path of the loader is skipped: the real files stay real and the host is never reached
+    a_basic(d, r)
+    h = d + "/host-tools"
+    assert not os.path.lexists(h + "/usr/lib/libcap.so.2.x") and not os.path.lexists(h + "/lib"), "an absolute link was created"
+    assert "skipped absolute link usr/lib/libcap.so.2.x -> /tmp/x" in r.stdout and "skipped absolute link lib -> /usr/lib" in r.stdout, r.stdout
+
+
+case("AC17 an ABSOLUTE symlink (wolfi-baselayout's etc/mtab -> /proc/mounts, var/spool/mail -> /var/mail) is never created: it is skipped and logged, nothing is written at its target, the relative links stay", setup=s_abs_link, after=a_abs_link)
+case("AC17 an absolute link on the loader's library path (usr/lib/libcap.so.2.x -> /tmp/x, lib -> /usr/lib) is skipped: nothing is created there, so the loader never meets a host path", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("usr/lib/libcap.so.2.x", "sym", "/tmp/x", None), ("lib", "sym", "/usr/lib", None)]), after=a_abs_loader_path)
+for label, ent in (("an absolute link at the place of a real directory (usr -> /external): the place is already taken, the link is not skipped over it", [("usr", "sym", "/external", None)]),
+                   ("an absolute link at the place of the real directory holding bwrap (usr/bin -> /outside/bin): the place is already taken", [("usr/bin", "sym", "/outside/bin", None)])):
+    case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
+         setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
+for label, ent in (("a member placed below an absolute link that was skipped (usr/lib/y -> /tmp ; usr/lib/y/z)", [("usr/lib/y", "sym", "/tmp", None), ("usr/lib/y/z", "file", b"E", None)]),
+                   ("a file at the place of a skipped absolute link in another entry of the same package (etc/mtab -> /proc/mounts ; etc/mtab as a file)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab", "file", b"E", None)]),
+                   ("a relative link that leaves the root next to an absolute link (etc/mtab -> /proc/mounts ; usr/lib/x -> ../../../etc/passwd)", [("etc/mtab", "sym", "/proc/mounts", None), ("usr/lib/x", "sym", "../../../etc/passwd", None)])):
+    case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
+         setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
+case("AC17 a member of a LATER package placed below the path of a skipped absolute link is refused (the path is held by the package that named it)", setup=lambda d: (apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("etc/mtab", "sym", "/proc/mounts", None)]), apk(d + "/archive/" + ARCH + "/libpsx-2.78-r4.apk", "libpsx", "2.78-r4", [("etc/mtab/x", "file", b"E", None)])), lock=LOCK + "libpsx=2.78-r4\n", want=1)
+
+def two_pk(first, second, second_first=False):
+    def setup(d):
+        apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + first)
+        apk(d + "/archive/" + ARCH + "/libpsx-2.78-r4.apk", "libpsx", "2.78-r4", second)
+    return setup
+
+
+SKIP = [("etc/mtab", "sym", "/proc/mounts", None)]
+for label, first, second, rev in (
+        ("a directory entry at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "dir", None, None)], False),
+        ("a directory entry at the path of a skipped absolute link in the same package", SKIP + [("etc/mtab", "dir", None, None)], [("usr/lib/other", "file", b"x", None)], False),
+        ("a file at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "file", b"E", None)], False),
+        ("a relative link at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "sym", "../x", None)], False),
+        ("a second absolute link at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "sym", "/proc/self/mounts", None)], False),
+        ("a symlink at an ANCESTOR of a skipped absolute link in a LATER package (opt/bin -> /external ; opt -> payload)", [("opt/bin", "sym", "/external", None)], [("opt", "sym", "payload", None), ("payload/bin/bwrap", "file", b"E", None)], False),
+        ("a symlink at an ancestor of a skipped absolute link in the same package, after it", [("opt/bin", "sym", "/external", None), ("opt", "sym", "payload", None)], [("usr/lib/other", "file", b"x", None)], False),
+        ("a symlink at an ancestor named by an EARLIER package, the skipped link below it (opt -> payload ; opt/bin -> /external)", [("opt/bin", "sym", "/external", None)], [("opt", "sym", "payload", None)], True)):
+    case("AC17 %s is refused (exit 1), nothing written" % label, setup=two_pk(first, second), lock=(("libpsx=2.78-r4\n" + LOCK) if rev else (LOCK + "libpsx=2.78-r4\n")), want=1)
+case("AC17 no loader in the unpacked tree is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/other", "file", b"x", None)]), want=1)
+case("AC17 two loaders in the unpacked tree are refused (the wrapper must name exactly one)", setup=lambda d: apk(d + "/archive/" + ARCH + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755), ("lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755)]), want=1)
+case("AC17 no usr/bin/bwrap in the unpacked tree is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/bubblewrap-0.13.0-r0.apk", "bubblewrap", "0.13.0-r0", [("usr/bin/other", "file", b"x", 0o755)]), want=1)
+case("AC17 a host-tools directory that already exists is refused (exit 2), nothing in it touched", setup=lambda d: (os.makedirs(d + "/host-tools"), open(d + "/host-tools/keep", "w").write("k")), want=2, nothing_written=False,
+     after=lambda d, r: (open(d + "/host-tools/keep").read() == "k" and not os.path.exists(d + "/bin/bwrap")) or (_ for _ in ()).throw(AssertionError("touched")))
+for label, lk in (("an empty lock", ""), ("a lock row with no version", "bubblewrap\n"), ("a lock with a blank row", LOCK + "\n"), ("a lock with a carriage return", LOCK.replace("\n", "\r\n")),
+                  ("a lock without its final line end", LOCK.rstrip("\n")), ("a lock that names a package twice", LOCK + "libcap=2.78-r4\n"), ("a lock row with a path part", "../x=1.0-r0\n" + LOCK),
+                  ("a lock row with a space", "bubblewrap = 0.13.0-r0\n"), ("a lock row that is a comment", "# bubblewrap\n" + LOCK)):
+    case("AC17 %s is refused (exit 2), nothing written" % label, lock=lk, want=2)
+case("AC17 an architecture other than x86_64 and aarch64 is refused (exit 2)", arch="riscv64", want=2)
+case("AC17 aarch64 is accepted and reads archive/aarch64/", arch="aarch64", setup=lambda d: (shutil.copytree(d + "/archive/" + ARCH, d + "/archive/aarch64"), [apk(d + "/archive/aarch64/" + f, f.rsplit("-", 2)[0], "-".join(f[:-4].rsplit("-", 2)[1:]), [("usr/bin/bwrap", "file", b"B", 0o755)] if f.startswith("bubblewrap") else [("usr/lib/ld-linux-aarch64.so.1", "file", LOADER, 0o755)] if f.startswith("ld-linux") else [("usr/lib/x%s" % f, "file", b"x", None)], arch="aarch64") for f in os.listdir(d + "/archive/aarch64")]), after=lambda d, r: os.path.exists(d + "/host-tools/usr/lib/ld-linux-aarch64.so.1") or (_ for _ in ()).throw(AssertionError("aarch64 loader")))
+case("AC17 a wrapper that cannot be published (bin/bwrap is a directory) is refused (exit 1) and leaves neither the host-tools directory, a staging directory nor a temporary wrapper", setup=lambda d: os.makedirs(d + "/bin/bwrap"), want=1, nothing_written=False,
+     after=lambda d, r: (not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/host-tools.staging") and not [f for f in os.listdir(d + "/bin") if f.startswith(".bwrap.")]) or (_ for _ in ()).throw(AssertionError("residue")))
+case("AC17 an unknown option is refused (exit 2)", extra_args=("--sudo",), want=2)
+text = open(script).read()
+for word in sys.argv[3].split("|"):
+    print(("ok   " if word not in text else "FAIL ") + "AC17 the host-tools script never names %r (no network, no package manager, no sudo, no other program)" % word)
+PY
+while IFS= read -r line; do case $line in "ok   "*) ok "${line#ok   }";; *) bad "${line#FAIL }";; esac; done < "$work/ac17.out"
 # REQ-CHAIN-004-AC16: the two files the stage's pull step runs are rows of the committed list with their committed sha256
 python3 - "$root/.github/policy/chain-scripts.json" "$work/ar-nosha.json" "$work/ar-norow.json" <<'PY'
 import json, sys
@@ -2572,7 +2805,23 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=871
+# AC17 (the absolute symlink ruling): the unpacked host-tools root is only ever USED by the wrapper (the extracted loader run with --library-path); no script or stage file
+# chroots into it, bind-mounts it, pivots into it or hands it to bwrap/unshare as a root, so an absolute link inside it (etc/mtab -> /proc/mounts) is never resolved against the host
+python3 - "$root" <<'PY' && ok "AC17 nothing chroots into, bind-mounts or pivots into the host-tools root (and an absolute link is never created in it)" || bad "AC17 something chroots into, bind-mounts or pivots into the host-tools root"
+import glob, re, sys
+root = sys.argv[1]
+files = sorted(glob.glob(root + "/.github/workflows/stage-*.yml") + glob.glob(root + "/bin/build-stage-*.sh") + [root + "/bin/install-host-bwrap.py"])
+assert len(files) >= 6, "too few files scanned: %s" % files
+used = 0
+for f in files:
+    for i, line in enumerate(open(f).read().splitlines(), 1):
+        if "host-tools" in line and not line.lstrip().startswith("#"):
+            used += 1
+            bad = re.search(r"chroot|pivot_root|nsenter|--bind|--ro-bind|--dev-bind|--overlay|\bmount\b|--root-bind|unshare", line)
+            assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
+assert used >= 3, "the scan found no use of the host-tools root"
+PY
+EXPECT=962
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
