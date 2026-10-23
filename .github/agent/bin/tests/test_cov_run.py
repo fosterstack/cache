@@ -337,7 +337,7 @@ class Dispose(Base):
         c = "CVE-2099-13"; f = F(c, self.PURL, "libz", sev=sev, fixed="1.1")
         carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
         env = self.env(carriers=[carrier], kev_ok=kev_ok)
-        ans = {"pullable": False, "lift_trigger": "nodejs >= 20.2 embeds libz 1.1", "token_usage": 7}
+        ans = {"pullable": False, "lift_trigger": {"carrier": "nodejs", "min_version": "20.2"}, "token_usage": 7}
         with mock.patch.object(R.cli, "ask_model", return_value=ans) as ask:
             row, mi = R._dispose(c, [f], [c], env, [])
         self.assertEqual(ask.call_args.kwargs["attempt"], "pullability")
@@ -377,14 +377,87 @@ class Dispose(Base):
     def test_carried_not_pullable_deferred_kev_unavailable(self):
         c = "CVE-2099-15"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
         base = dict(carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
-                    carried_lift_trigger={key: "nodejs >= 20.2"})
+                    carried_lift_trigger={key: {"carrier": "nodejs", "min_version": "20.2"}})
         row, _ = R._dispose(c, [f], [c], self.env(kev_ok=False, **base), [])
         self.assertEqual(row["disposition"], "carried (fix not pullable) — recheck deferred")
-        self.assertEqual((row["threshold"], row["expiry"], row["lift_trigger"]), ("at_or_above", "2026-12-01", "nodejs >= 20.2"))
+        self.assertEqual((row["threshold"], row["expiry"], row["lift_trigger"]), ("at_or_above", "2026-12-01", {"carrier": "nodejs", "min_version": "20.2"}))
         self.assertEqual(row["owner_issue_intent"]["reason_key"], "kev-unavailable (fail-closed)")
         self.assertIn("carrier signal absent this run", row["action"])
         row2, _ = R._dispose(c, [f], [c], self.env(kev_ok=True, **base), [])
         self.assertEqual(row2["threshold"], "below"); self.assertNotIn("owner_issue_intent", row2)
+
+
+# ---------------------------------------------------------------- rc-5b R1: the lift trigger is structured and machine-checked
+
+class LiftTrigger(Base):
+    PURL = "pkg:deb/debian/libz@1.0?arch=arm64"
+    GOOD = {"carrier": "nodejs", "min_version": "20.2"}
+
+    def test_the_shape_is_checked(self):
+        self.assertEqual(R._lift_trigger(self.GOOD), self.GOOD)
+        self.assertEqual(R._lift_trigger({"carrier": " nodejs ", "min_version": " v20.2.1 "}), {"carrier": "nodejs", "min_version": "v20.2.1"})
+        for bad in ("nodejs >= 20.2 embeds libz 1.1", "", None, 5, [], {}, {"carrier": "nodejs"}, {"min_version": "20.2"},
+                    {"carrier": "nodejs", "min_version": "20.2", "extra": 1}, {"carrier": "", "min_version": "20.2"}, {"carrier": "nodejs", "min_version": ""},
+                    {"carrier": "nodejs", "min_version": "soon"}, {"carrier": "nodejs", "min_version": "20.2; rm"}, {"carrier": 5, "min_version": "20.2"},
+                    {"carrier": "node\njs", "min_version": "20.2"}, {"carrier": "x" * 201, "min_version": "20.2"}, {"carrier": "nodejs", "min_version": "9" * 65}):
+            self.assertIsNone(R._lift_trigger(bad), repr(bad))
+
+    def test_versions_compare_by_their_numbers(self):
+        for a, b, want in (("20.3", "20.2", True), ("20.2", "20.2", True), ("20.1", "20.2", False), ("20.10", "20.2", True), ("v20.2.1", "20.2", True),
+                           ("20.2", "20.2.1", False), ("3.0.13-1~deb12u1", "3.0.13", True), ("12.4", "12.6", False), ("abc", "20.2", None), ("20.2", "abc", None), (None, "1", None)):
+            self.assertIs(R._version_ge(a, b), want, (a, b))
+
+    def test_the_trigger_state_reads_the_carrier_version(self):
+        crs = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
+        self.assertEqual(R._trigger_state(self.GOOD, crs), "unmet")
+        self.assertEqual(R._trigger_state(self.GOOD, dict(crs, carrier_version="20.2")), "met")
+        self.assertEqual(R._trigger_state(self.GOOD, dict(crs, carrier="pkg:deb/debian/NodeJS@20.1")), "unmet")          # the carrier named by purl or by name
+        self.assertEqual(R._trigger_state(self.GOOD, dict(crs, carrier="other")), "unknown")                          # a different carrier proves nothing
+        self.assertEqual(R._trigger_state(self.GOOD, dict(crs, carrier_version="weird")), "unknown")
+        self.assertEqual(R._trigger_state(self.GOOD, None), "unknown")
+        self.assertEqual(R._trigger_state(None, crs), "unknown")                                                       # a legacy or malformed trigger is never compared
+
+    def test_a_structured_trigger_is_accepted_and_an_unstructured_one_is_not(self):
+        c = "CVE-2099-21"; f = F(c, self.PURL, "libz", fixed="1.1")
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": False, "lift_trigger": self.GOOD, "token_usage": 1}):
+            row, _ = R._dispose(c, [f], [c], self.env(carriers=[carrier]), [])
+        self.assertEqual((row["section"], row["lift_trigger"]), (2, self.GOOD))
+        self.assertIn("lifts when nodejs >= 20.2", row["reason"])
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": False, "lift_trigger": "nodejs >= 20.2 embeds libz 1.1", "token_usage": 1}):
+            row2, _ = R._dispose(c, [f], [c], self.env(carriers=[carrier]), [])
+        self.assertNotEqual(row2["section"], 2)                                                                       # no acceptance without a machine-checkable trigger
+        self.assertNotIn("lift_trigger", row2)
+
+    def _recheck(self, version, trigger, ask_answer=None):
+        c = "CVE-2099-22"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": version}
+        env = self.env(carriers=[carrier], carried_not_pullable={key}, carried_expiry={key: "2026-12-01"}, carried_lift_trigger={key: trigger})
+        with mock.patch.object(R.cli, "ask_model", return_value=ask_answer or {"pullable": False, "lift_trigger": self.GOOD, "token_usage": 1}) as ask:
+            row, mi = R._dispose(c, [f], [c], env, [])
+        return row, mi, ask
+
+    def test_the_recheck_compares_the_carrier_version_before_asking_the_model(self):
+        row, mi, ask = self._recheck("20.1", self.GOOD)                                  # the carrier is still below the trigger
+        ask.assert_not_called(); self.assertEqual(mi, 0)
+        self.assertEqual((row["section"], row["lift_trigger"]), (2, self.GOOD))
+        self.assertIn("lift trigger not met", row["action"]); self.assertIn("nodejs at 20.1", row["action"])
+        row, mi, ask = self._recheck("20.3", self.GOOD, {"pullable": True, "component_fixed": "1.1", "candidate_release": "nodejs 20.3", "token_usage": 1})
+        self.assertEqual(ask.call_args.kwargs["attempt"], "pullability"); self.assertEqual(mi, 1)       # met: the model confirms before anything lifts
+        self.assertEqual(row["disposition"], "lifted (fix now pullable)")
+        row, mi, ask = self._recheck("20.3", self.GOOD)                                  # met but not confirmed: stays carried
+        self.assertEqual(mi, 1); self.assertEqual(row["section"], 2)
+
+    def test_a_legacy_text_trigger_is_not_compared_not_dropped(self):
+        row, mi, ask = self._recheck("20.1", "nodejs >= 20.2 embeds libz 1.1")             # carried by an earlier release as free text
+        self.assertEqual(ask.call_args.kwargs["attempt"], "pullability"); self.assertEqual(mi, 1)       # asked, as before
+        self.assertEqual((row["section"], row["lift_trigger"]), (2, self.GOOD))                          # and replaced by the structured one the model gives
+
+    def test_a_deferred_recheck_keeps_the_structured_trigger(self):
+        c = "CVE-2099-23"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        env = self.env(carried_not_pullable={key}, carried_expiry={key: "2026-12-01"}, carried_lift_trigger={key: self.GOOD})
+        row, _ = R._dispose(c, [f], [c], env, [])                                          # no carrier signal this run
+        self.assertEqual(row["lift_trigger"], self.GOOD)
 
 
 # ---------------------------------------------------------------- merge / consolidate fallbacks
@@ -1131,7 +1204,7 @@ class Run(Base):
              "products": [{"@id": PROD, "subcomponents": [{"@id": pa}]}]}]})
         self.wj(os.path.join(ws, ".auditor", "accepted-items.json"), {"accepted_items": [
             {"cve": "CVE-2099-60", "scope_purls": [pa], "expiry": "2026-12-01",
-             "not_pullable": "upstream-held", "lift_trigger": "nodejs >= 20.2"},
+             "not_pullable": "upstream-held", "lift_trigger": {"carrier": "nodejs", "min_version": "20.2"}},
             {"cve": "CVE-2099-61", "scope_purls": [pb], "not_pullable": "upstream-held"},      # no expiry: ignored
             {"cve": "CVE-2099-62", "vex_id": "V#unknown", "expiry": "2026-12-01",
              "not_pullable": "upstream-held"}]})                                                # unresolvable: ignored
@@ -1148,7 +1221,7 @@ class Run(Base):
         self.assertEqual(cls["CVE-2099-62"]["disposition"], "real, fixable (base rebuild)")
         items = json.load(open(os.path.join(out, ".auditor", "accepted-items.json")))["accepted_items"]
         self.assertEqual([(i["cve"], i["threshold"], i["lift_trigger"]) for i in items],
-                         [("CVE-2099-60", "at_or_above", "nodejs >= 20.2")])   # KEV unparseable -> fail closed
+                         [("CVE-2099-60", "at_or_above", {"carrier": "nodejs", "min_version": "20.2"})])   # KEV unparseable -> fail closed
         self.assertTrue(os.path.exists(os.path.join(out, ".auditor", "knowledge.md")))
 
     def test_a_consistency_check_that_did_not_complete_makes_the_run_incomplete(self):
