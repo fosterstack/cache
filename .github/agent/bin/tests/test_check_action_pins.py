@@ -993,6 +993,58 @@ class GateWorkflowDigestSet(unittest.TestCase):
         self.assertIn(".github/workflows/agent-review-gate.yml: missing", out)
 
 
+class UsesWriters(unittest.TestCase):
+    """rc-5b item 2 in Python (the coverage gate counts these tests, not the shell ones): a committed script the job runs after a `uses:` step that writes
+    the tree is a finding, and the shapes the 618 fix round added to the lines nothing else reached."""
+    TOOL = "#!/usr/bin/env bash\necho hi\n"
+    BASE = "${{ github.event.pull_request.base.sha }}"
+
+    def job(self, steps, tool="bin/tool.sh", run="bash bin/tool.sh"):
+        body = HEAD + "    steps:\n" + steps + f"      - run: {run}\n"
+        d = gate_tree(gate_variants()[1])           # the accepted gate and its stub scripts, then this workflow beside them
+        self.addCleanup(shutil.rmtree, d)
+        for rel, text in ((".github/workflows/w.yml", body), (tool, self.TOOL)):
+            os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+            with open(os.path.join(d, rel), "w") as fh:
+                fh.write(text)
+        return d
+
+    def uses(self, action, **with_):
+        w = "".join(f"          {k}: {v}\n" for k, v in with_.items())
+        return f"      - uses: {action}@{SHA} # v7.0.1\n" + (f"        with:\n{w}" if w else "")
+
+    def test_an_empty_path_writes_everywhere(self):
+        d = self.job(self.uses("actions/download-artifact", name="x", path='""'))
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn("is changed by the job before it runs", out)
+
+    def test_a_download_into_the_scripts_directory_is_a_finding(self):
+        code, out = run([self.job(self.uses("actions/download-artifact", name="x", path="bin"))])
+        self.assertEqual(code, 1, out)
+        self.assertIn("is changed by the job before it runs", out)
+
+    def test_a_download_elsewhere_is_not(self):
+        code, out = run([self.job(self.uses("actions/download-artifact", name="x", path="out"))])
+        self.assertEqual(code, 0, out)
+
+    def test_a_later_writer_over_the_base_sha_fence_directory_drops_it(self):
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/download-artifact", name="x", path="trusted")
+        d = self.job(steps, run="bash trusted/bin/tool.sh")
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+
+    def test_a_later_default_checkout_drops_the_fence_directory(self):
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/checkout")   # a default checkout fills the workspace itself
+        code, out = run([self.job(steps, run="bash trusted/bin/tool.sh")])
+        self.assertEqual(code, 1, out)
+
+    def test_the_fence_alone_is_main_s_copy(self):
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted")
+        code, out = run([self.job(steps, run="bash trusted/bin/tool.sh")])
+        self.assertEqual(code, 0, out)
+
+
 class NonUtf8Names(unittest.TestCase):
     """rc-5b R10c: `git ls-tree` output was decoded with "replace", so two workflow names that are not valid UTF-8 became the
     same entry and one workflow went unread. A name under .github/ that is not valid UTF-8 is refused, each one named, and no
