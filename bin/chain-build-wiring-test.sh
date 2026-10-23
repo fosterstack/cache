@@ -2823,7 +2823,7 @@ assert used >= 3, "the scan found no use of the host-tools root"
 PY
 # REQ-CHAIN-004 (the binary says neither (devel) nor vcs.modified=true): the job's own directories (archive/, host-tools/, out/, witness-apk/,
 # admission.json) are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file. the marked block of bin/build-apk.sh keeps
-# exactly those five paths out of git's view (the job-local .git/info/exclude, never committed); the recipe check and build-apk.sh stay strict.
+# exactly those nine paths out of git's view (Build: archive/ host-tools/ out/ witness-apk/ admission.json; Rebuild: build-in/ witness-build/ witness-rapk/ policy.json) (the job-local .git/info/exclude, never committed); the recipe check and build-apk.sh stay strict.
 TREE=$(mktemp -d)/tree.sh
 { echo 'GIT=git; set -eu'; echo 'die() { echo "$1" >&2; exit "${2:-1}"; }'; echo 'src=$1'; sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
 tree_repo() { local d; d=$(mktemp -d); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
@@ -2845,6 +2845,10 @@ r=$(mktemp -d); ( cd "$r" && git init -q && git config user.email t@t && git con
 [ -n "$(git -C "$r" status --porcelain)" ] && bash "$TREE" "$r" > /dev/null 2>&1 && [ -z "$(git -C "$r" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout (build-in/, witness-build/, witness-rapk/, policy.json beside the Build paths) is clean after the block" || bad "REQ-BUILDAPK-001-AC4 tree: a Rebuild-shaped checkout is still dirty after the block: $(git -C "$r" status --porcelain | tr '\n' ' ')"
 f=$(mktemp -d); ( cd "$f" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && printf '# local excludes' > .git/info/exclude )
 bash "$TREE" "$f" > /dev/null 2>&1; [ -z "$(git -C "$f" status --porcelain)" ] && [ "$(head -1 "$f/.git/info/exclude")" = "# local excludes" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline keeps its last line and still takes the patterns" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude file with no final newline swallowed a pattern: $(head -3 "$f/.git/info/exclude" | tr '\n' '|')"
+g=$(mktemp -d); ( cd "$g" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir out && echo x > out/f && printf ' /out/\n' > .git/info/exclude )
+bash "$TREE" "$g" > /dev/null 2>&1; [ -z "$(git -C "$g" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' (a different pattern to git) is not taken for /out/, and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' left the tree dirty: $(git -C "$g" status --porcelain | tr '\n' ' ')"
+m=$(mktemp -d); ( cd "$m" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && rm -rf .git/info )
+bash "$TREE" "$m" > /dev/null 2>&1; [ -z "$(git -C "$m" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the block makes it and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the tree is dirty or the block failed: $(git -C "$m" status --porcelain | tr '\n' ' ')"
 python3 - << 'PY' && ok "REQ-BUILDAPK-001-AC4 tree: build-apk.sh holds the exclusion block once, before the sealed melange call" || bad "REQ-BUILDAPK-001-AC4 tree: the exclusion block is missing, repeated or after the sealed melange call"
 t = open("bin/build-apk.sh").read().splitlines()
 b = [i for i, l in enumerate(t) if l == "# tree-exclude begin"]
@@ -2852,8 +2856,8 @@ e = [i for i, l in enumerate(t) if l == "# tree-exclude end"]
 m = [i for i, l in enumerate(t) if l.startswith('melange_bin=')]
 assert len(b) == 1 and len(e) == 1 and b[0] < e[0] < m[0]
 PY
-grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then" build/melange.yaml build/melange-fips.yaml && ok "REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh and both recipes" || bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
-EXPECT=974
+grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then" build/melange.yaml && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then" build/melange-fips.yaml && ok "REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh ((devel) and vcs.modified) and in each of the two recipes" || bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
+EXPECT=976
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
