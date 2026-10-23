@@ -2839,9 +2839,9 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC33
-        given: "the Check scripts (bin/check-acceptance.sh, bin/check-fips.sh, bin/check-artifacts.sh) load a candidate image layout into docker"
-        when: "the layout holds files its index and manifests do not name (a root manifest.json, a stray tar, a blob nothing names), or its index names a blob it lacks"
-        then: "only the files the layout's index and manifests name (oci-layout, index.json, and the named blobs) go into the archive; any other file in the layout is left out, and a layout whose index names a missing blob is refused. Tighten-only; approved by the advisor Oct 23: it extends REQ-CHAIN-006-AC4's named-members rule from the scan to docker load"
+        given: "a Check script (bin/check-acceptance.sh, bin/check-fips.sh, bin/check-artifacts.sh) loads a candidate image layout into docker"
+        when: "the layout holds anything beyond the files its index and manifests name (a root manifest.json, a stray tar, a blob nothing names)"
+        then: "only oci-layout, index.json and the blobs the layout's index and child manifests name go into the archive docker load reads, everything else is left out, and a layout whose index names a blob it lacks is refused before any load. Extends the named-members rule of REQ-CHAIN-006-AC4 from the scan to docker load. Tighten-only; approved by the advisor Oct 23"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-UAT-001
