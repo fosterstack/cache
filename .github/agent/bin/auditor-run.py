@@ -493,8 +493,10 @@ _DEPENDABOT_TITLE = re.compile(r"\b[Bb]ump (\S+) from \S+ to (\S+)")
 def _dependabot_match(prs, module, tkey):
     """The open Dependabot PR (number, url) whose title is `Bump <module> from X to <tkey>` for exactly this module and version, else None."""
     for pr in prs or []:
-        m = _DEPENDABOT_TITLE.search(str(pr.get("title") or ""))
-        if m and m.group(1) == module and m.group(2).lstrip("v").rstrip(".,;") == tkey:
+        title = str(pr.get("title") or "")
+        m = _DEPENDABOT_TITLE.search(title)
+        # a Dependabot PR for another directory says so ("... in /tools/govulncheck"): it bumps that module's go.mod, never ours
+        if m and m.group(1) == module and m.group(2).lstrip("v").rstrip(".,;") == tkey and not re.search(r" in /\S", title):
             return pr.get("number"), pr.get("url") or ""
     return None
 
@@ -518,7 +520,7 @@ def _open_dependabot_prs(ws):
 
 
 def _emit_fixer_issue(title, body, dry, would, cves=(), target=None):
-    """Open OR update the issue that hands a held MAJOR bump to the fixer lane (rc-5b A6; row 75: majors are judged by a machine, never the owner). NOT an
+    """Open OR update the issue that hands a held MAJOR bump to the fixer lane (rc-5b A6: a major is judged by a machine, never by the owner). NOT an
     owner-decision issue: no owner label, no assignee. Returns (ok, ref) like _emit_owner_issue."""
     cmd = "gh issue create --title %s" % shlex.quote(title)
     if dry:
@@ -585,8 +587,8 @@ def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
         if delivered[tk][2] in ("delivered", "delivered-unchecked", "would") and _is_major_bump(fb0.get("module"), fb0.get("from"), fb0.get("to")):  # MAJOR-HELD
             cves = sorted({g["fix_bump"].get("cve") or g["id"] for g in group})
             title = policy.subject("major bump %s -> %s held for the fixer lane" % (fb0["module"], fb0["to"]))
-            body = ("The daily CVE auditor found a fixed version of %s that is a MAJOR transition (%s -> %s). A major bump means an API changed (row 75: judged by a machine, "
-                    "never the owner), so the auditor opened the draft PR but did not arm it; the fixer lane makes the change on our side.\n\n- Vulnerabilities: %s\n- Draft PR: %s\n"
+            body = ("The daily CVE auditor found a fixed version of %s that is a MAJOR transition (%s -> %s). A major bump means an API changed (judged by a machine, "
+                    "not by the repository owner), so the auditor opened the draft PR but did not arm it; the fixer lane makes the change on our side.\n\n- Vulnerabilities: %s\n- Draft PR: %s\n"
                     % (fb0["module"], fb0.get("from"), fb0["to"], ", ".join(cves), delivered[tk][0] or "(dry run)"))
             held[tk] = _emit_fixer_issue(title, body, dry, would, cves=cves, target="%s %s -> %s" % (fb0["module"], fb0.get("from"), fb0["to"]))
     for r in rows:
@@ -598,7 +600,9 @@ def _deliver_bumps(rows, today, commit, dry, would, is_test=False):
         held_note = ""
         if hold is not None:
             if hold[0]:
-                held_note = "; MAJOR transition: held for the fixer lane (issue %s)" % (hold[1] if hold[1] not in (None, "dry", "skipped", "shim-created", "shim-updated") else "opened")
+                held_note = ("; MAJOR transition: the fixer-lane issue would be opened (dry run)" if hold[1] == "dry" else
+                             "; MAJOR transition: held for the fixer lane, issue NOT opened (delivery disabled)" if hold[1] == "skipped" else
+                             "; MAJOR transition: held for the fixer lane (issue %s)" % (hold[1] if hold[1] not in (None, "shim-created", "shim-updated") else "opened"))
             else:
                 held_note = "; MAJOR transition: the fixer-lane issue FAILED to open (run INCOMPLETE)"
                 r["pending_delivery"] = True
@@ -660,6 +664,21 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     if is_test:                                 # a test image is not shipped and always dry (AC9)
         _plan(would, "bump PR", target, cves, note="skipped: test image", key=branch)
         return None, None, "skipped-test"
+    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
+    ws0 = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+    if log or _real_gh_allowed():
+        prs, lerr = _open_dependabot_prs(ws0)
+        hit = _dependabot_match(prs, module, tkey) if prs is not None else None
+        if hit:                                  # row 47: defer to the open Dependabot PR that carries this bump; open nothing (a dry run says so too)
+            if dry:
+                _plan(would, "bump PR", target, cves, note="deferred to Dependabot PR #%s" % hit[0], key=branch)
+            print("bump %s -> %s deferred to Dependabot PR #%s" % (module, to, hit[0]))
+            return (hit[1] or "#%s" % hit[0]), None, "deferred"
+        unchecked = lerr is not None
+        if unchecked:
+            print("warning: could not look at Dependabot PRs (%s); delivering without the check" % lerr)
+    else:
+        unchecked = False
     # A bump PR is ALWAYS a draft and is never armed (rc-5b A5): its dependency-provenance.json is not regenerated, so it cannot pass CI until a lane does that.
     draft = "--draft "
     if dry:
@@ -668,19 +687,6 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
               note="draft", key=branch)
         print("dry-run would open draft bump PR on %s" % branch)
         return None, None, "would"
-    log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
-    ws0 = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
-    if log or _real_gh_allowed():
-        prs, lerr = _open_dependabot_prs(ws0)
-        hit = _dependabot_match(prs, module, tkey) if prs is not None else None
-        if hit:                                  # row 47: defer to the open Dependabot PR that carries this bump; open nothing
-            print("bump %s -> %s deferred to Dependabot PR #%s" % (module, to, hit[0]))
-            return (hit[1] or "#%s" % hit[0]), None, "deferred"
-        unchecked = lerr is not None
-        if unchecked:
-            print("warning: could not look at Dependabot PRs (%s); delivering without the check" % lerr)
-    else:
-        unchecked = False
     if log:
         # test shim: the log is the remote. A target already delivered with the same CVE set is
         # left alone; a changed CVE set updates the SAME PR (AC2); a new target gets its own branch.

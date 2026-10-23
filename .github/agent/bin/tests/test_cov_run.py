@@ -904,6 +904,8 @@ class FixPR(Base):
         self.assertEqual(R._dependabot_match(got, "example.com", "1.1.0"), None)                     # a module that is only a prefix
         self.assertEqual(R._dependabot_match(got, "other.org/z", "2"), (6, "u"))                      # the conventional-commit prefix still matches
         self.assertEqual(R._dependabot_match(None, "m", "1"), None)
+        other_dir = [{"number": 8, "title": "Bump example.com/m from 1.0.0 to 1.1.0 in /tools/govulncheck", "url": "u8"}]
+        self.assertIsNone(R._dependabot_match(other_dir, "example.com/m", "1.1.0"))                  # another directory's go.mod is not ours
         for rules in ({("gh", "pr", "list"): (1, "", "HTTP 500")}, {("gh", "pr", "list"): (0, "not json", "")}):
             with mock.patch.object(R.subprocess, "run", FakeRun(rules)):
                 got, err = R._open_dependabot_prs(self.d("ws"))
@@ -916,6 +918,28 @@ class FixPR(Base):
         self.assertFalse(any(a[:2] in (["git", "checkout"], ["go", "get"]) for a in fr.argvs()))                   # nothing was built or opened
         res, fr = self.real({**self.CHG, ("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (1, "", "HTTP 500"), ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(res, ("https://x/pull/9", None, "delivered-unchecked"))
+
+    def test_a_dry_run_and_a_disabled_delivery_do_not_claim_an_issue_was_opened_and_a_dry_run_checks_the_deferral(self):
+        row = lambda: {"id": "CVE-2099-50", "fix_bump": {"cve": "CVE-2099-50", "module": "example.com/m", "from": "v0.9.0", "to": "v1.0.0"}}
+        r1 = row(); would = []
+        self.quiet(R._deliver_bumps, [r1], "2026-09-22", "abcdef1234567890", True, would)
+        self.assertIn("would be opened (dry run)", r1["action"]); self.assertNotIn("held for the fixer lane (issue", r1["action"])
+        self.assertTrue(any(w["kind"] == "fixer issue (held major bump)" for w in would))
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"; os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        r2 = row()
+        with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")):
+            self.quiet(R._deliver_bumps, [r2], "2026-09-22", "abcdef1234567890", False, [])
+        self.assertIn("issue NOT opened (delivery disabled)", r2["action"])
+        # a dry run that can read GitHub says it would defer to the open Dependabot PR
+        os.environ["AUDITOR_GIT_SHIM_LOG"] = os.path.join(self.tmp, "dd.log")
+        os.environ["AUDITOR_SHIM_DEPENDABOT_PRS"] = json.dumps([{"number": 41, "title": "Bump example.com/m from 0.9.0 to 1.0.0"}])
+        try:
+            r3 = row(); would = []
+            self.quiet(R._deliver_bumps, [r3], "2026-09-22", "abcdef1234567890", True, would)
+        finally:
+            os.environ.pop("AUDITOR_SHIM_DEPENDABOT_PRS", None)
+        self.assertIn("deferred to Dependabot PR", r3["action"])
+        self.assertTrue(any("deferred to Dependabot PR #41" in (w.get("note") or "") for w in would))
 
     def test_the_fixer_issue(self):
         would = []
