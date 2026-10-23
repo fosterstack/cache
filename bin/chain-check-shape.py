@@ -54,7 +54,7 @@ GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain go
 REC_RUN = {"records": 'echo "records=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime)" >> "$GITHUB_OUTPUT"',
            "records-arm64": 'echo "records-arm64=$(bash bin/check-records-digests.sh witness-arm64)" >> "$GITHUB_OUTPUT"'}   # the two pinned steps (bin/chain-test-signers.py PINNED_ALLOWED; REQ-REL-011-AC1, cache#606)
 WF_OUTPUTS = {"records": "${{ jobs.check.outputs.records }}", "records-arm64": "${{ jobs.check-arm64.outputs.records-arm64 }}"}
-GV_BUILD = "govulncheck-build"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (id-token: write) only installs what it hands over
+GV_BUILD = "govulncheck-build"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (no identity token) only installs what it hands over
 GV_BUILD_LINE = "bash bin/install-scanner.sh govulncheck"
 GV_PACK_LINE = "bash bin/pack-govulncheck.sh"   # the one build step; the artifact it uploads is the hand-over (download-artifact fails the step on a digest mismatch; no override is allowed)
 GV_HAND_LINE = "bash bin/unpack-govulncheck.sh"

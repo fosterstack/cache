@@ -176,7 +176,7 @@ if g:
 if re.search(r"go\s+install\s+golang\.org/x/vuln", atxt):
     bad.append("the audit job still builds govulncheck itself")
 # the Check stage (stage-verify.yml): govulncheck is built by `install-scanner.sh govulncheck` (a Go module, no release binary), so its build gets its own job with no credential;
-# the `check` job (id-token: write, for Witness) downloads the artifact with download-artifact's own digest check left on (it fails the step when the digest differs from the one GitHub
+# the `check` job (no identity token: Sign signs its records) downloads the artifact with download-artifact's own digest check left on (it fails the step when the digest differs from the one GitHub
 # recorded at upload) and installs it. The download is by the artifact id the build job exports, not by name, so a same-name artifact another job uploads is not the one it gets. The check
 # and the id prove only that the artifact arrived intact and is the one that job uploaded; the guarantee is that no build runs in a job
 # that holds a credential (AC1 above, which sees this installer arm as a build).

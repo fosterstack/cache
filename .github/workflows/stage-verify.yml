@@ -3,7 +3,7 @@
 # then installs the listed scanners (grype, osv-scanner) by checksum and the pinned Go, takes govulncheck from the govulncheck-build job (below), and runs three Witness steps through the one helper: scanners, acceptance and runtime. Each step first verifies Build's record (bin/check-stage.sh),
 # then runs its checks as listed plain scripts. No registry login, no packages permission, no secret: the stage only reads what the earlier stages made.
 # govulncheck publishes no release binary, so it is built from the committed tools/govulncheck module (go.sum is the pin) in its own job, govulncheck-build, which holds no
-# credential (REQ-REL-011-AC1: a job that holds a credential never builds). The check job, which holds id-token: write for Witness, downloads that binary and installs it only
+# credential (REQ-REL-011-AC1: a job that holds a credential never builds). The check job, which holds no identity token either (its records are made with a throwaway key and signed by Sign), downloads that binary and installs it only
 # after download-artifact's own digest check passed (it fails the step when the downloaded artifact's digest differs from the one GitHub recorded at upload; no override is set). The download
 # is by the artifact id that govulncheck-build exports, not by name, so an artifact another job of the run uploads under the same name is not the one it gets. The digest check and the id prove
 # only that the artifact arrived intact and is the one that job uploaded; the guarantee is that no build runs in a job that holds a credential.

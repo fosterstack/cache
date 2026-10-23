@@ -712,7 +712,24 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=315
+# ---- REQ-REL-011-AC1: Sign's signing helper takes the four Check steps (first look of cache#606: it listed the building steps only, so sign-check would have refused every Check record) ----
+signstaged() { # signstaged STEP: run bin/witness-sign-staged.sh on a one-record plan for STEP; it stops at the token fetch (no ACTIONS_ID_TOKEN_REQUEST_TOKEN here), which is past the plan checks
+  local step=$1 d; d=$(mktemp -d)
+  mkdir -p "$d/staged/witness-$step" "$d/signed"
+  printf 'x' > "$d/staged/witness-$step/$step-collection.payload"
+  printf '%s\t%s\n' "$d/staged/witness-$step/$step-collection.payload" "$d/signed/witness-$step/$step-collection.json" > "$d/staged/plan.txt"
+  (cd "$root" && env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL bash bin/witness-sign-staged.sh "$d/staged" "$d/signed" 2>&1 || true)
+  rm -rf "$d"
+}
+for st in scanners acceptance runtime arm64; do
+  out=$(signstaged "$st")
+  if grep -Fq "unknown step in the plan" <<< "$out"; then bad "REL-011-AC1 witness-sign-staged.sh refuses the Check step $st at the plan check: ${out:0:140}"; else ok "REL-011-AC1 witness-sign-staged.sh accepts the Check step $st in the plan (it stops later, at the token fetch)"; fi
+done
+out=$(signstaged evil)
+if grep -Fq "unknown step in the plan" <<< "$out"; then ok "REL-011-AC1 witness-sign-staged.sh still refuses a step that is not a record step"; else bad "REL-011-AC1 witness-sign-staged.sh accepted an unknown step: ${out:0:140}"; fi
+if grep -Fq 'scanners|acceptance|runtime|arm64) stage=check' "$root/bin/witness-sign-staged.sh"; then ok "REL-011-AC1 witness-sign-staged.sh verifies a signed Check record under the check stage"; else bad "REL-011-AC1 witness-sign-staged.sh has no check stage for the self-check of a signed Check record"; fi
+
+EXPECT=321
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
