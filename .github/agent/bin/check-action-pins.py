@@ -1041,7 +1041,7 @@ def _command_words(toks):
 
 def _container_inner(tool, args):
     """The command a step runs INSIDE a container: for `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` the words after the
-    container, for `… run [opts] IMAGE CMD…` the words after the image (led by the --entrypoint program when one is given). The image or
+    container, for `… run|create [opts] IMAGE CMD…` the words after the image (led by the --entrypoint program when one is given). The image or
     container itself is judged elsewhere; the inner command is a command of its own and is read like a top-level one (#593 review: `exec`
     was a safe verb, so `docker exec C docker pull alpine:latest` was invisible). None when there is no inner command or it cannot be placed
     (an option this check does not know is a finding elsewhere)."""
@@ -1057,7 +1057,7 @@ def _container_inner(tool, args):
     if verb == "exec":  # INNER-EXEC
         k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
         return None if unknown or k >= len(rest) else rest[k + 1:]
-    if verb == "run":  # INNER-RUN
+    if verb in ("run", "create"):  # INNER-RUN
         k, unknown = _options(rest, RUN_VAL, RUN_BOOL)
         if unknown or k >= len(rest):
             return None

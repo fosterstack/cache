@@ -35,7 +35,7 @@ fi
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 # Sharding (advisor 0618; coverage-gate.sh runs the cases as parallel shards under coverage): PINS_SHARD=<i>/<n> runs only every n-th UNIT
-# (a unit is one case_, gitcase, case_out, case3_ call or one of the two stand-alone checks, numbered in file order); PINS_DRY=1 lists every
+# (a unit is one case_, gitcase, case_out, case3_, mutant_ call or one of the two stand-alone checks, numbered in file order); PINS_DRY=1 lists every
 # unit as `UNIT <index> <name>` and, for the units this shard would run, `RUN <name>` (counted in ran=), without executing anything. Unset, every unit runs.
 # The last lines say which shard this was and how many units the file has and how many it ran, so coverage-shard-sum.py can prove the
 # shards together ran the whole list exactly once. The pm-case checks below count every case_out call, run or not, so they hold in a shard.
@@ -1767,8 +1767,14 @@ PY
   if [ "$got" = ok ]; then pass=$((pass+1)); echo "PASS mutant-$name → escapes (the probe needs that branch)"
   else failn=$((failn+1)); echo "FAIL mutant-$name → still caught with the branch cut"; fi
 }
+case_ run-entrypoint-attached-bad  bad "$(r 'docker run --entrypoint=docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+case_ create-inner-pull-bad        bad "$(r 'docker create alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+case_ exec-nested-too-deep-bad     bad "$(r 'docker exec C docker exec C docker exec C docker exec C docker exec C docker exec C true')"
+case_ run-inner-script-binding-bad bad "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 bash evil.sh')" "printf 'docker pull alpine:latest\\n' > evil.sh"
+# a path inside a container is not a committed file: refused (fails closed; the inner command is judged like a top-level one)
+case_ exec-inner-path-refused-bad  bad "$(r 'docker exec C ./run.sh')"
 mutant_ exec-inner      'if verb == "exec":  # INNER-EXEC|||if False:  # INNER-EXEC' "$(r 'docker exec C docker pull alpine:latest')"
-mutant_ run-inner       'if verb == "run":  # INNER-RUN|||if False:  # INNER-RUN' "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+mutant_ run-inner       'if verb in ("run", "create"):  # INNER-RUN|||if False:  # INNER-RUN' "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
 mutant_ entrypoint-inner 'if entry:  # INNER-ENTRYPOINT|||if False:  # INNER-ENTRYPOINT' "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
 mutant_ run-flags-image 'k, unknown = _options(rest, val, boolean)
                 if unknown:
