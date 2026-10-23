@@ -1072,7 +1072,7 @@ def _container_inner(tool, args):
                 entry, j = a.split("=", 1)[1], j + 1
             elif a.startswith("--"):
                 j += 2 if (a in RUN_VAL) else 1
-            elif a.startswith("-") and a != "-":
+            else:                          # a short option cluster (or a stray word: one step)
                 step = 1
                 for c, ch in enumerate(a[1:], 1):
                     o = "-" + ch
@@ -1082,8 +1082,6 @@ def _container_inner(tool, args):
                         step = 1 if c + 1 < len(a) else 2     # the value is attached, or the next word
                     break
                 j += step
-            else:
-                j += 1
         inner = rest[k + 1:]
         if entry:  # INNER-ENTRYPOINT
             inner = [entry] + inner
