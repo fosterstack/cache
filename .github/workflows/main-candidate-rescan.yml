@@ -135,8 +135,8 @@ jobs:
             echo "${v}: built ${base}, final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
           done
       # The Scout self-check fixtures (rule 4): the pinned debian 12.0 linux/amd64 image wrapped in a one-child index (public image bytes), plain as the control and with an attestation
-      # of OUR author that covers only CVE-2023-4911, in our published product form, with the fixture's glibc package as the subcomponent (Scout applies a statement only when it names the package
-      # the finding is on: the Oct 23 root-cause round suppressed with the subcomponent and kept the finding without it). Two tags, pruned like the rest.
+      # of OUR author that covers only CVE-2023-4911, in our published product form, with the fixture's glibc package as the subcomponent (every statement Scout applied in the Oct 23 root-cause round
+      # named the package as a subcomponent of the product; the self-check statement named none and the self-check failed). Two tags, pruned like the rest.
       - name: build the Scout self-check fixtures and push them
         run: |
           set -euo pipefail

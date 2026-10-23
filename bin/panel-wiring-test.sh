@@ -243,8 +243,8 @@ elif dst.startswith("docker://") and df:
                         out.append("the recorded %s (%s) is not the digest of the %s layout's index (%s)" % (key, dig.get(key), name, top[0]["digest"]))
                 if dig.get("fixture-before") == dig.get("fixture-ours"):
                     out.append("the two fixture digests are the same")
-                # Scout applies a statement only when it names the package the finding is on: the root-cause round (Oct 23 run 39945154746) showed the same statement suppressing with the
-                # package as a subcomponent of the product and being kept without it
+                # every statement Scout applied in the root-cause round (Oct 23 run 39945154746) named the package as a subcomponent of the product; the self-check statement named none and the
+                # self-check failed (Scout kept the finding)
                 GLIBC = "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm&os_name=debian&os_version=12"
                 try:
                     stm = json.load(open(os.path.join(t, "attach", "selfcheck-ours.json")))["statements"]
