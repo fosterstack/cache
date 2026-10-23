@@ -687,7 +687,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "68639d51ce19b5d550f9cdd74daca613a251b4ff62a8627e6d9bd21b4a46606e",
+      "sha256": "364166baf181c6c887b5f74764f915378c8898acf81de4300f247305310459de",
       "tools": [
         "find",
         "python3",
@@ -2088,7 +2088,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "81b867c1802d2b0919bb6ad617d4e1b468e019f0af8d525bb459f3bc25324ac5",
+      "sha256": "21b40d6a082f6e5ba0724978f62d3de62e1ef48777dc95147ab0638959acaa4b",
       "tools": [
         "at",
         "python3"

@@ -73,12 +73,24 @@ mkdir -p "$out"
 VEX=.vex/fosterstack-cache.openvex.json
 # The clock is the runner's (round 1 F4): the age of a database is judged against `date +%s` and nothing the environment says. A CHECK_SCAN_NOW in the
 # environment (an older `now` would pass any database as fresh) is refused, defined or empty, never read; the tests give the clock by a fake date command.
+# "The VEX is the only exception" (register rows 18 and 38; cache#580 for the PR gate): grype also drops findings through GRYPE_* settings (GRYPE_ONLY_FIXED, GRYPE_IGNORE_WONTFIX, ...)
+# and through a config file, so any GRYPE_* variable other than the database cache and update settings stops the pass (names only, values are never printed), and
+# grype runs with -c and an EMPTY config file ($tmp/empty.yaml) so no repository, home or XDG config applies.
+bad_env=""
+for v in "${!GRYPE_@}"; do
+  case "$v" in GRYPE_DB_CACHE_DIR|GRYPE_DB_AUTO_UPDATE) ;; *) bad_env="${bad_env}${v} " ;; esac
+done
+if [ -n "$bad_env" ]; then
+  echo "check-scan: $bad_env found in the environment: only the VEX document may hide a finding, and these settings can; refusing to run (names only, values are never printed)" >&2
+  exit 2
+fi
 [ -z "${CHECK_SCAN_NOW+x}" ] || fail "CHECK_SCAN_NOW is defined in the environment: the database age is judged by the runner's clock, which no variable can change"
 now=$(date +%s)
 [[ "$now" =~ ^[0-9]+$ ]] || fail "the runner's clock did not give epoch seconds: $now"
 GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json)
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+: > "$tmp/empty.yaml"   # the one config grype reads (it needs the extension)
 
 add_target() { tname+=("$1"); tdigest+=("$2"); tpath+=("$3"); tplat+=("${4:-}"); }   # one scan target: its name, its digest, the file the scanner reads and (grype on an image) the platform it must scan
 # The platform children of an image layout (S1, chain-v030 review): grype on the multi-platform index with no platform scans only the runner's own
@@ -92,41 +104,35 @@ child_digest() {   # child_digest LAYOUT ARCH -> sha256:<child manifest digest>,
 }
 PLATFORMS=(amd64 arm64)
 other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every index descriptor that is neither linux/amd64, linux/arm64 nor the unknown/unknown provenance descriptor
-  local idx blob d out line; idx=$(jq -r '.manifests[0].digest // empty' "$1/index.json" 2> /dev/null) || return 0
+  local idx blob d mf out line prog pprog; idx=$(jq -r '.manifests[0].digest // empty' "$1/index.json" 2> /dev/null) || return 0
   [[ "$idx" =~ ^sha256:[0-9a-f]{64}$ ]] || return 0
   blob="$1/blobs/sha256/${idx#sha256:}"; [ -f "$blob" ] || return 0
   # unknown/unknown is buildkit's descriptor for one of the two children: annotations vnd.docker.reference.type (a string) and
   # vnd.docker.reference.digest (a string equal to a linux/amd64 or linux/arm64 child digest), AND its own manifest holds only JSON layers
   # (application/...+json, no filesystem layer) (an ordinary image manifest carrying the annotations is a third image nobody scanned). Anything else is named and fails.
-  # Go's decoders (containerd, go-containerregistry, stereoscope) match JSON keys without regard to case, jq does not: an object whose keys collide once
-  # lower-cased reads one way here and another way there, so it is refused; so is any key outside printable ASCII (Go also folds U+017F and U+212A to s and k).
-  # Each file is exactly ONE JSON value (jq reads them all and answers for the last; Go's decoders read the first and ignore the rest).
+  # Golang's decoders (containerd, go-containerregistry, stereoscope) match JSON keys without regard to case, jq does not: an object whose keys collide once
+  # lower-cased reads one way here and another way there, so it is refused; so is any key outside printable ASCII (Golang also folds U+017F and U+212A to s and k).
+  # Each file is exactly ONE JSON value (jq reads them all and answers for the last; Golang's decoders read the first and ignore the rest).
   if ! jq -s -e 'length == 1 and ([.[0] | .. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not)' "$blob" > /dev/null 2>&1 \
      || ! jq -s -e 'length == 1 and ([.[0] | .. | objects | keys | any(.[]; test("^[ -~]+$") | not)] | any | not)' "$1/index.json" > /dev/null 2>&1; then
     echo "index descriptors with keys that differ only in case, with a key outside printable ASCII, or that cannot be read"; return 0
   fi
-  out=$(jq -r 'def obj: if type == "object" then . else {} end;
-         ([.manifests[]? | select((.platform | obj).os == "linux" and ((.platform | obj).architecture == "amd64" or (.platform | obj).architecture == "arm64")) | .digest]) as $kids
-         | .manifests[]? | (((.platform | obj) as $q | "\($q.os // "none")/\($q.architecture // "none")")) as $p
-         | (.annotations | obj) as $a
-         | if $p == "unknown/unknown" and ($a["vnd.docker.reference.type"] | type) == "string"
-              and ($a["vnd.docker.reference.digest"] | type) == "string" and ($kids | index($a["vnd.docker.reference.digest"])) != null
-              and (.digest | type) == "string" then "@@check " + .digest
-           elif $p == "unknown/unknown" then "unknown/unknown (not a descriptor of one of the two children)" else $p end
-         | select(. != "linux/amd64" and . != "linux/arm64")' "$blob" 2> /dev/null) || out="unreadable index descriptors"
-  while IFS= read -r line; do
+  prog='def obj: if type == "object" then . else {} end; ([.manifests[]? | select((.platform | obj).os == "linux" and ((.platform | obj).architecture == "amd64" or (.platform | obj).architecture == "arm64")) | .digest]) as $kids | .manifests[]? | (((.platform | obj) as $q | "\($q.os // "none")/\($q.architecture // "none")")) as $p | (.annotations | obj) as $a | if $p == "unknown/unknown" and ($a["vnd.docker.reference.type"] | type) == "string" and ($a["vnd.docker.reference.digest"] | type) == "string" and ($kids | index($a["vnd.docker.reference.digest"])) != null and (.digest | type) == "string" then "@@check " + .digest elif $p == "unknown/unknown" then "unknown/unknown (not a descriptor of one of the two children)" else $p end | select(. != "linux/amd64" and . != "linux/arm64")'
+  out=$(jq -r "$prog" "$blob" 2> /dev/null) || out="unreadable index descriptors"
+  local -a lines_
+  mapfile -t lines_ <<< "$out"   # the lines are read byte for byte: a trailing space or tab on a digest or a platform string is not trimmed away
+  for line in "${lines_[@]}"; do
     case "$line" in
       "@@check "*)
         d=${line#@@check }
-        if [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] && [ -f "$1/blobs/sha256/${d#sha256:}" ] \
-           && jq -s -e 'length == 1 and (.[0] | ([.. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not)
-                     and .mediaType == "application/vnd.oci.image.manifest.v1+json" and (.layers | type) == "array" and (.layers | length) > 0
-                     and all(.layers[]; (.mediaType | type) == "string" and (.mediaType | test("^application/[a-z0-9.+-]+[+]json\\z"))))' "$1/blobs/sha256/${d#sha256:}" > /dev/null 2>&1; then :
+        pprog='length == 1 and (.[0] | ([.. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not) and .mediaType == "application/vnd.oci.image.manifest.v1+json" and (.layers | type) == "array" and (.layers | length) > 0 and all(.layers[]; (.mediaType | type) == "string" and (.mediaType | test("^application/[a-z0-9.+-]+[+]json\\z"))))'
+        mf="$1/blobs/sha256/${d#sha256:}"
+        if [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] && [ -f "$mf" ] && jq -s -e "$pprog" "$mf" > /dev/null 2>&1; then :
         else echo "unknown/unknown (its own manifest is not a provenance manifest)"; fi ;;
       "") ;;
       *) echo "$line" ;;
     esac
-  done <<< "$out"
+  done
 }
 # osv_archive LAYOUT CHILD_DIGEST ARCHIVE: the tar osv-scanner's "scan image --archive" can read. It wants a docker-save style tar (a manifest.json naming the config
 # and layer files) and fails "file manifest.json not found in tar" on a tar of an OCI layout as it is (probed on the pinned 2.6.0, Oct 22). The archive is built from
@@ -167,7 +173,7 @@ for s in "${scanners[@]}"; do
       osvcache="$tmp/osv-db"; mkdir -p "$osvcache"
     fi
   fi
-  dbrc=0; [ "$s" != grype ] || grype db update < /dev/null || dbrc=$?
+  dbrc=0; [ "$s" != grype ] || grype db update -c "$tmp/empty.yaml" < /dev/null || dbrc=$?
   if [ "$dbrc" != 0 ]; then
     echo "check-scan: grype could not fetch its vulnerability database (grype db update exit $dbrc): nothing is scanned, nothing is clean" >&2
     failed=1
@@ -181,12 +187,13 @@ for s in "${scanners[@]}"; do
   tname=() tdigest=() tpath=() tplat=()
   for v in production fips; do
     if [ "$s" = grype ]; then
-      while IFS= read -r o; do
+      mapfile -t others_ < <(other_platforms "$images/$v")
+      for o in "${others_[@]}"; do
         [ -n "$o" ] || continue
-        echo "check-scan: grype: the $v image index lists a platform other than linux/amd64 and linux/arm64 ($o): it would go unscanned, so it is not scanned clean" >&2
+        echo "check-scan: grype: the $v image index lists a platform other than linux/amd64 and linux/arm64 ($o): it would be left unscanned, so it is not scanned clean" >&2
         verdict=fail
         subjects=$(jq -c --arg n "$v/$o" '. + [{name: $n, digest: null, packages: 0, verdict: "fail"}]' <<< "$subjects")
-      done < <(other_platforms "$images/$v")
+      done
       for a in "${PLATFORMS[@]}"; do
         cd_=$(child_digest "$images/$v" "$a")
         if [[ "$cd_" =~ ^sha256:[0-9a-f]{64}$ ]]; then add_target "$v/linux/$a" "$cd_" "$images/$v" "linux/$a"
@@ -218,8 +225,8 @@ for s in "${scanners[@]}"; do
     rc=0
     : > "$tmp/out.json"; rm -f "$tmp/sbom.json"
     case "$s:$path" in
-      grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
-      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" ${plat:+--platform "$plat"} --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
+      grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
+      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" ${plat:+--platform "$plat"} -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*)
         arc="$tmp/img-${name//\//-}.tar"
@@ -249,6 +256,17 @@ for s in "${scanners[@]}"; do
         echo "check-scan: grype's result for $name has no readable matches list: nothing is judged behind a result that cannot be read" >&2; rc=2
       elif [ "$um" -gt 0 ]; then
         echo "check-scan: grype reported $um finding(s) in $name ($digest) of any severity, UNKNOWN included, that the VEX document does not except" >&2; rc=1
+      else
+        # Everything grype left out must have been left out by the VEX: absent or null is none, otherwise a list whose entries each carry a non-empty list of rule objects, every one
+        # namespace "vex" with a vex-status of not_affected or fixed (a config or environment ignore carries another namespace). Known limit, pending the owner's ruling: grype's own
+        # distro exclusions drop matches before results are built and are not in ignoredMatches; the images are assembled from Wolfi packages, where this has no known effect.
+        igrc=0; ig=$(jq -r 'if .ignoredMatches == null then [] elif (.ignoredMatches | type) == "array" then [.ignoredMatches[] | select((type != "object") or ((.appliedIgnoreRules | type) != "array") or ((.appliedIgnoreRules | length) == 0) or (.appliedIgnoreRules | any((type != "object") or (.namespace != "vex") or ((.["vex-status"] != "not_affected") and (.["vex-status"] != "fixed"))))) | (if type == "object" then ((.vulnerability.id // "?") + " " + (.artifact.name // "?") + "@" + (.artifact.version // "?")) else "a malformed entry" end)] else error("ignoredMatches is not a list") end | .[]' "$tmp/out.json" 2> /dev/null) || igrc=$?
+        if [ "$igrc" -ne 0 ]; then
+          echo "check-scan: grype's result for $name has no readable ignoredMatches list: nothing is judged behind a result that cannot be read" >&2; rc=2
+        elif [ -n "$ig" ]; then
+          igl=$(printf '%s' "$ig" | tr '\n' ',')
+          echo "check-scan: grype hid finding(s) in $name ($digest) by something other than the published VEX document (not a VEX rule): $igl" >&2; rc=1
+        fi
       fi
     fi
     if [ "$s" = grype ] && [ -n "$plat" ] && [ "$rc" = 0 ]; then
