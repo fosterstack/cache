@@ -9,7 +9,7 @@ web-flow committer, which only GitHub applies), whose message is the one fixed n
 is the head sha). Nothing is stored in the pull request's own files, so a pull request cannot carry, edit or forge its own record, and a new push changes the head
 sha, so an old record then names a different sha and does not apply.
 
-  audit-record.py plan --pr N --head SHA --pr-json FILE      (the writer: may a record be made now? FILE = `gh api repos/R/pulls/N`)
+  audit-record.py plan --pr N --head SHA --pr-json FILE --actor LOGIN --base-root DIR      (the writer: may a record be made now, at this actor's request? FILE = `gh api repos/R/pulls/N`)
   audit-record.py verify --head SHA --base-ref REF --base-root DIR [--ref-json FILE --commit-json FILE]
       FILE = the answers of `gh api repos/R/git/ref/heads/audit/SHA` and `gh api repos/R/commits/<that ref's sha>`.
       Exit 0: a base that is not main (the judge decides; nothing is read), or a good record. Exit 1: anything else, with the reason on stdout. Exit 2: usage.
@@ -33,9 +33,12 @@ def record_branch(head):
     return "audit/" + head
 
 
-def _writers(doc):
-    """The (login, id) pairs of a well-formed writers policy, else None."""
-    if not isinstance(doc, dict) or doc.get("schema") != 1 or set(doc) != {"schema", "writers"} or not isinstance(doc["writers"], list) or not doc["writers"]:
+def _policy(doc):
+    """(the (login, id) pairs of the writers, the logins allowed to dispatch the writer) of a well-formed policy, else None."""
+    if not isinstance(doc, dict) or doc.get("schema") != 1 or set(doc) != {"schema", "writers", "dispatchers"} or not isinstance(doc["writers"], list) or not doc["writers"]:
+        return None
+    d = doc["dispatchers"]
+    if not isinstance(d, list) or not d or any(not isinstance(x, str) or not x for x in d):
         return None
     out = set()
     for w in doc["writers"]:
@@ -43,7 +46,12 @@ def _writers(doc):
                 or not isinstance(w["id"], int) or isinstance(w["id"], bool) or w["id"] <= 0):
             return None
         out.add((w["login"], w["id"]))
-    return out
+    return out, set(d)
+
+
+def _writers(doc):
+    p = _policy(doc)
+    return p[0] if p else None
 
 
 def verify_record(head, base_ref, ref, commit, writers):
@@ -86,9 +94,15 @@ def verify_record(head, base_ref, ref, commit, writers):
     return True, ""
 
 
-def plan_record(number, head, pr):
-    """(True, "") when a record may be written for this pull request and head now; (False, reason) otherwise. The writer checks the pull request itself, so a record is
-    never made for a closed or merged pull request, for another base, or for a head that has since moved."""
+def plan_record(number, head, pr, actor=None, policy=None):
+    """(True, "") when a record may be written for this pull request and head now, on the request of this actor; (False, reason) otherwise. The writer checks the pull request
+    itself, so a record is never made for a closed or merged pull request, for another base, or for a head that has since moved, and only an actor the policy names as a
+    dispatcher can ask for one (anyone with write access can start a workflow; not everyone may vouch for a review)."""
+    pol = _policy(policy)
+    if pol is None:
+        return False, "the audit policy (%s of the default branch) is missing or malformed" % WRITERS_PATH
+    if not isinstance(actor, str) or actor not in pol[1]:
+        return False, "the dispatching actor is not named as a dispatcher in %s" % WRITERS_PATH
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
         return False, "the pull request number is not a positive integer"
     if not isinstance(head, str) or not _SHA.match(head):
@@ -129,12 +143,14 @@ def main(argv):
     p.add_argument("--pr", required=True, type=int)
     p.add_argument("--head", required=True)
     p.add_argument("--pr-json", required=True)
+    p.add_argument("--actor", required=True)
+    p.add_argument("--base-root", required=True)
     try:
         a = ap.parse_args(argv)
     except SystemExit:
         return 2
     if a.cmd == "plan":
-        ok, why = plan_record(a.pr, a.head, _load(a.pr_json))
+        ok, why = plan_record(a.pr, a.head, _load(a.pr_json), a.actor, _load(os.path.join(a.base_root, WRITERS_PATH)))
         print("audit-record: " + ("a record may be written for #%d at %s" % (a.pr, a.head) if ok else why))
         return 0 if ok else 1
     if a.cmd != "verify":

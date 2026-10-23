@@ -21,7 +21,7 @@ def check(name, ok, got=""):
 
 HEAD = "a" * 40
 REC = "b" * 40
-WRITERS = {"schema": 1, "writers": [{"login": "fosterstack-automation[bot]", "id": 333151817}]}
+WRITERS = {"schema": 1, "writers": [{"login": "fosterstack-automation[bot]", "id": 333151817}], "dispatchers": ["fosterstack-admin"]}
 REF = {"ref": "refs/heads/audit/" + HEAD, "object": {"sha": REC, "type": "commit"}}
 BOT = {"login": "fosterstack-automation[bot]", "id": 333151817, "type": "Bot"}
 COMMIT = {"sha": REC, "parents": [{"sha": HEAD}], "files": [{"filename": "audit-record", "status": "added"}],
@@ -153,8 +153,8 @@ r, calls = wrap(repo="o/r; x"); check("wrapper: a repository that is not owner/n
 
 # the writer's own checks: the pull request must be open, into main, with exactly this head, before anything is written
 PR = {"number": 7, "state": "open", "merged": False, "head": {"sha": HEAD}, "base": {"ref": "main"}}
-def plan(pr=PR, number=7, head=HEAD):
-    return A.plan_record(number, head, pr)
+def plan(pr=PR, number=7, head=HEAD, actor="fosterstack-admin", policy=WRITERS):
+    return A.plan_record(number, head, pr, actor, policy)
 ok, why = plan(); check("plan: an open pull request into main with this head may be recorded", ok and why == "", (ok, why))
 for name, pr, number, head in (
     ("a closed pull request", mut(PR, ["state"], "closed"), 7, HEAD),
@@ -168,12 +168,21 @@ for name, pr, number, head in (
 ):
     ok, why = plan(pr=pr, number=number, head=head)
     check("plan refused: " + name, (not ok) and bool(why), (ok, why))
+for name, kw in (("an actor who is not a dispatcher", dict(actor="someone")), ("no actor", dict(actor=None)), ("an empty actor", dict(actor="")),
+                 ("the writer bot itself dispatching", dict(actor="fosterstack-automation[bot]")), ("no policy", dict(policy=None)),
+                 ("a policy without dispatchers", dict(policy={"schema": 1, "writers": WRITERS["writers"]})),
+                 ("a policy with an empty dispatchers list", dict(policy=mut(WRITERS, ["dispatchers"], []))),
+                 ("a policy with a non-string dispatcher", dict(policy=mut(WRITERS, ["dispatchers"], [5])))):
+    ok, why = plan(**kw)
+    check("plan refused: " + name, (not ok) and bool(why), (ok, why))
 open(os.path.join(d, "pr.json"), "w").write(json.dumps(PR))
-r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "7", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json")], capture_output=True, text=True)
+r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "7", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json"), "--actor", "fosterstack-admin", "--base-root", base], capture_output=True, text=True)
 check("cli plan: an open pull request exits 0", r.returncode == 0, (r.returncode, r.stdout, r.stderr))
-r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "8", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json")], capture_output=True, text=True)
+r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "8", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json"), "--actor", "fosterstack-admin", "--base-root", base], capture_output=True, text=True)
 check("cli plan: another number exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
-r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "x", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json")], capture_output=True, text=True)
+r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "7", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json"), "--actor", "someone", "--base-root", base], capture_output=True, text=True)
+check("cli plan: an actor who is not a dispatcher exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "x", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json"), "--actor", "fosterstack-admin", "--base-root", base], capture_output=True, text=True)
 check("cli plan: a pull request number that is not a number exits 2", r.returncode == 2, (r.returncode, r.stdout, r.stderr))
 
 # the writer's first half (prepare): a fake gh answers the pull request and the record lookups; it must write only after the plan passes and never over a good record
@@ -193,7 +202,7 @@ esac
 if [ -f "$f.err" ]; then cat "$f.err" >&2; exit 1; fi
 cat "$f.json"
 ''')
-def prepare(pr=PR, number="7", head=HEAD, ref=None, commit=None, pr_err=None, repo="o/r"):
+def prepare(pr=PR, number="7", head=HEAD, ref=None, commit=None, pr_err=None, repo="o/r", actor="fosterstack-admin"):
     fk = tempfile.mkdtemp(dir=d)
     for name, obj, err in (("pr", pr, pr_err), ("ref", ref, None), ("commit", commit, None)):
         if err is not None: open(os.path.join(fk, name + ".err"), "w").write(err)
@@ -202,7 +211,7 @@ def prepare(pr=PR, number="7", head=HEAD, ref=None, commit=None, pr_err=None, re
     calls = os.path.join(fk, "calls"); open(calls, "w").close()
     cwd = tempfile.mkdtemp(dir=d)
     for name in ("bin", ".github"): os.symlink(os.path.join(wroot, name), os.path.join(cwd, name))
-    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY=repo, GH_TOKEN="x")
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY=repo, GH_TOKEN="x", AUDIT_ACTOR=actor)
     r = subprocess.run(["bash", "bin/audit-record-prepare.sh", number, head], capture_output=True, text=True, env=env, cwd=cwd)
     f = os.path.join(cwd, "audit-record")
     return r, open(calls).read(), (open(f).read() if os.path.exists(f) else None)
@@ -221,12 +230,12 @@ def prepare_api(ref_err=None, commit_err=None):
     calls = os.path.join(fk, "calls"); open(calls, "w").close()
     cwd = tempfile.mkdtemp(dir=d)
     for name in ("bin", ".github"): os.symlink(os.path.join(wroot, name), os.path.join(cwd, name))
-    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY="o/r", GH_TOKEN="x")
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY="o/r", GH_TOKEN="x", AUDIT_ACTOR="fosterstack-admin")
     r = subprocess.run(["bash", "bin/audit-record-prepare.sh", "7", HEAD], capture_output=True, text=True, env=env, cwd=cwd)
     return r, os.path.exists(os.path.join(cwd, "audit-record"))
 r, wrote = prepare_api(ref_err="gh: HTTP 502: Bad Gateway"); check("prepare: an API error reading the existing record -> exit 1 and nothing written (never over a record it could not read)", r.returncode == 1 and not wrote and "proceed" not in r.stdout, (r.returncode, r.stdout, r.stderr, wrote))
 r, wrote = prepare_api(commit_err="gh: HTTP 403: rate limit"); check("prepare: an API error reading the record's commit -> exit 1 and nothing written", r.returncode == 1 and not wrote and "proceed" not in r.stdout, (r.returncode, r.stdout, r.stderr, wrote))
-for name, kw in (("a closed pull request", dict(pr=mut(PR, ["state"], "closed"))), ("a merged pull request", dict(pr=mut(PR, ["merged"], True))),
+for name, kw in (("an actor who is not a dispatcher", dict(actor="someone")), ("a closed pull request", dict(pr=mut(PR, ["state"], "closed"))), ("a merged pull request", dict(pr=mut(PR, ["merged"], True))),
                  ("a head that moved", dict(pr=mut(PR, ["head", "sha"], "c" * 40))), ("a pull request not into main", dict(pr=mut(PR, ["base", "ref"], "chain-v030"))),
                  ("an API error reading the pull request", dict(pr_err="gh: HTTP 502"))):
     r, calls, f = prepare(**kw); check("prepare refused: %s -> exit 1, nothing written" % name, r.returncode == 1 and f is None and "proceed" not in r.stdout, (r.returncode, r.stdout, r.stderr, f))

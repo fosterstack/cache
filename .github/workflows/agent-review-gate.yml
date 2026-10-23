@@ -184,6 +184,7 @@ jobs:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           AUDIT_PR: ${{ inputs.audit_pr }}
           AUDIT_HEAD: ${{ inputs.audit_head }}
+          AUDIT_ACTOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
           state=$(bash bin/audit-record-prepare.sh "$AUDIT_PR" "$AUDIT_HEAD" | tail -n 1)
