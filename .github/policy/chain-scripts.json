@@ -232,7 +232,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "90d000c33a30ea282f3541a7f59affb75eeeb94a1c5116b4d8255621f0786554",
+      "sha256": "ea40471add36a002bfc3c1260df0adc8ca7712e4c8c120b205833540277403eb",
       "tools": [
         "at"
       ],
