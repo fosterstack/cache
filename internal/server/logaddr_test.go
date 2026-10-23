@@ -107,3 +107,23 @@ func TestLoggableErrScrubsNestedOpErrors(t *testing.T) {
 	outer := fmt.Errorf("x: %w", &net.OpError{Op: "write", Net: "tcp", Err: inner})
 	assertNoClientAddr(t, loggableErr(outer))
 }
+
+// An *net.OpError with no cause (Err nil) is reduced to its operation alone:
+// the source and remote addresses it carries never reach the log line.
+func TestLoggableErrWithoutCauseNamesOnlyTheOperation(t *testing.T) {
+	op := &net.OpError{
+		Op:     "write",
+		Net:    "tcp",
+		Source: &net.TCPAddr{IP: net.ParseIP("10.9.8.7"), Port: 8080},
+		Addr:   &net.TCPAddr{IP: net.ParseIP("203.0.113.55"), Port: 49152},
+	}
+	got := loggableErr(fmt.Errorf("copy: %w", op))
+	if got != "net write" {
+		t.Errorf("loggableErr = %q, want %q", got, "net write")
+	}
+	for _, a := range []string{"10.9.8.7", "203.0.113.55", "8080", "49152"} {
+		if strings.Contains(got, a) {
+			t.Errorf("log %q carries %q", got, a)
+		}
+	}
+}

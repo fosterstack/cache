@@ -81,6 +81,7 @@ mappings:
       - { type: go-test, ref: "internal/server:TestErrorLogScrubsPeerAddresses" }
       - { type: go-test, ref: "internal/server:TestTemplateWriteFailureLogsCarryNoClientAddress" }
       - { type: go-test, ref: "internal/server:TestLoggableErrScrubsNestedOpErrors" }
+      - { type: go-test, ref: "internal/server:TestLoggableErrWithoutCauseNamesOnlyTheOperation" }
   - ac: REQ-FIPS-003-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml job fips140-only: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
