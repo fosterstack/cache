@@ -2089,7 +2089,7 @@ requirements:
       artifacts it signs or publishes; the Rebuild comparison runs in a job
       with no secrets and no publish permission; builds are isolated from
       each other the same way, each build its own job.
-    source: [.github/workflows/auditor.yml, .github/workflows/go-freshness.yml, bin/job-isolation-test.sh]
+    source: [.github/workflows/auditor.yml, .github/workflows/go-freshness.yml, .github/workflows/stage-verify.yml, bin/job-isolation-test.sh]
     tier: community
     introduced: v0.3.0
     origin: owner ratification Oct 21 2026 (signer and builder never share a machine); advisor handoff 0637
