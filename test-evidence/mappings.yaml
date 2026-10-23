@@ -251,6 +251,11 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestServePanicInServerNewKeepsMarker" }
       - { type: go-test, ref: "cmd/fscache:TestServeTLSErrorsKeepMarker" }
       - { type: go-test, ref: "cmd/fscache:TestServeRealServingErrorWithUploadInFlightThenRestart" }
+  - ac: REQ-STORE-005-AC6
+    evidence:
+      - { type: go-test, ref: "internal/metadata:TestDecodeRejectsARecordThatIsNot16Bytes" }
+      - { type: go-test, ref: "internal/metadata:TestDecodeSizeRejectsARecordThatIsNot16Bytes" }
+      - { type: go-test, ref: "internal/metadata:TestShortRecordIsAnErrorForEveryReader" }
   - ac: REQ-HTTP-001-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }
