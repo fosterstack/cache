@@ -976,6 +976,7 @@ def _arg_error(parts, envnames):
                 return "double-quoted argument %r mixes text with a variable or substitution (use a whole \"$NAME\" from env:)" % t
     return None
 
+ENV_UNSET_OIDC = "env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL "
 PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > (?:digests|rebuild-records|check-records|check-records-arm64)\.json")
 
 def _literal_value(parts):
@@ -1015,6 +1016,8 @@ def check_run(run, envnames, rows, reads=None, argpaths=None):
             elif m.group(1) not in envnames: errs.append("line %d: printf of $%s, which is not in this step's env:" % (n, m.group(1)))
             else: reads.add(m.group(1))
             continue
+        if line.startswith(ENV_UNSET_OIDC + "python3 "):    # the one `env` form: the records command drops the identity-token request variables from its process (ruling on #606)
+            line = line[len(ENV_UNSET_OIDC):]
         words, err = _words(line)
         if err: errs.append("line %d: %s: %s" % (n, line[:90], err)); continue
         if not words: continue

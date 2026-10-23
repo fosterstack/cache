@@ -7,6 +7,8 @@
 # after download-artifact's own digest check passed (it fails the step when the downloaded artifact's digest differs from the one GitHub recorded at upload; no override is set). The download
 # is by the artifact id that govulncheck-build exports, not by name, so an artifact another job of the run uploads under the same name is not the one it gets. The digest check and the id prove
 # only that the artifact arrived intact and is the one that job uploaded; the guarantee is that no build runs in a job that holds a credential.
+# The limit of the job boundary: these jobs hold no secret, no environment, no id-token and no packages permission, but the run's artifact token is in every job, so a step of a
+# job can reach the run's artifacts. Sign therefore trusts no artifact by its place: it checks each record against the digest lists the jobs publish as job outputs.
 # The shape of this file is judged by bin/chain-check-wiring-test.sh (an exact grammar).
 name: 'Stage: check'
 on:

@@ -14,6 +14,8 @@ name: 'Stage: sign'
 #                 nothing built by them (REQ-REL-011-AC1: the Check jobs build tools and run workloads, so they hold no identity token); checks the records against the results and
 #                 against the lists the Check jobs published as job outputs, and signs them.
 # The identity token is requested inside the signing process (cosign or Witness); no step of this file names it.
+# The records command of each job that reads the building jobs' files runs under `env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL`, so the process that
+# parses those files cannot ask for an identity token; only the signing step can (the sign-wiring judge pins the exact command line).
 # The shape of this file is judged by bin/chain-sign-wiring-test.sh (an allowlist), the checks by bin/chain-verify.py.
 
 on:
@@ -112,7 +114,7 @@ jobs:
         run: printf '%s' "$DIGESTS" > digests.json
 
       - name: check Build's records against the artifacts, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
 
       - name: sign the staged records and check each signed one
         run: bash bin/witness-sign-staged.sh staged signed
@@ -173,7 +175,7 @@ jobs:
         run: printf '%s' "$RECORDS" > rebuild-records.json
 
       - name: check Rebuild's records, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
 
       - name: sign the staged records and check each signed one
         run: bash bin/witness-sign-staged.sh staged signed
@@ -244,7 +246,7 @@ jobs:
         run: printf '%s' "$RECORDS_ARM64" > check-records-arm64.json
 
       - name: check Check's records against the results, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests check-records.json --expect-digests check-records-arm64.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests check-records.json --expect-digests check-records-arm64.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64
 
       - name: sign the staged records and check each signed one
         run: bash bin/witness-sign-staged.sh staged signed
