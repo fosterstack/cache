@@ -1831,9 +1831,9 @@ requirements:
         status: approved
 
   - id: REQ-REL-008
-    title: The workflow set is consolidated to the ratified 23 files
+    title: The workflow set is consolidated to the ratified list (ratified 32 → 23; 19 files today)
     statement: >
-      The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), each merge
+      The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), and to the 19 files that remain today after the v0.3.0 chain's ratified removals (AC1 fixes the list), each merge
       keeping every required check's name, top-level placement and events, and no new workflow file added without the
       owner's ratification.
     source: [.github/workflows/go-freshness.yml, .github/workflows/ci.yml]
@@ -3357,9 +3357,9 @@ requirements:
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC11
-        given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
+        given: "the Build stage file and its bin/build-stage-*.sh scripts (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
         when: "they are read"
-        then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"
+        then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their base lock files (build/locks/apko.base.lock.json and build/locks/apko-fips.base.lock.json; bin/assemble-image.sh writes the full lock it builds with)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC12
