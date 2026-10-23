@@ -3214,7 +3214,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='602a08c4fae671cb2b96b0861ab03182ea89f2461160c220523b0f7d7a36e6c1'
+FX_PIN='40639dff62eef23a740b105f8e5fa67f38651fe21355884d498b3193378af109'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4836,7 +4836,7 @@ def plain(d):
     s = apk(d)
     s[:] = [x for x in s if "setup-go" not in str(x.get("uses"))]; s.insert(2, step())
 case("the previous round's allowance, exactly (pinned digest, go-version-file go.mod, cache false, before the Witness step) is now refused", True, run("stage-build.yml", mut("stage-build.yml", plain)))
-case("the same exact step with a version comment in a stage-reproducibility.yml apk job is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["apk"]["steps"].insert(2, step()))))
+case("the same exact step with a version comment in a stage-reproducibility.yml apk job is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["rapk"]["steps"].insert(2, step()))))
 case("a with: key besides the two is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"go-version": "1.20"}))))
 case("cache: true is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"cache": "true"}))))
 case("another go-version-file is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"go-version-file": "x/go.mod"}))))
@@ -4849,7 +4849,7 @@ def after_witness(d):
     s = apk(d); g = s.pop(go_index(d)); s.append(g)
 case("setup-go after the Witness step (the admission step) is refused", True, run("stage-build.yml", mut("stage-build.yml", after_witness)))
 case("setup-go in job assemble is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: d["jobs"]["assemble"]["steps"].insert(1, step()))))
-case("setup-go in stage-reproducibility.yml (Rebuild) is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["apk"]["steps"].insert(1, step()))))
+case("setup-go in stage-reproducibility.yml (Rebuild) is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["rapk"]["steps"].insert(1, step()))))
 case("setup-go in stage-sign.yml is refused", True, run("stage-sign.yml", mut("stage-sign.yml", lambda d: d["jobs"]["sign"]["steps"].insert(1, step()))))
 for label, ok_, got in out:
     print(("ok   " if ok_ else "FAIL ") + "AC4/Go " + label + ("" if ok_ else " -> %r" % got))
@@ -4941,12 +4941,12 @@ t=$(ws_tree planextra); printf 'staged/witness-evil/build-collection.payload\tsi
 t=$(ws_tree badfinal); printf 'staged/witness-build/build-collection.payload\tsigned/elsewhere/build-collection.json\nstaged/witness-apk-ubuntu-24.04/apk-collection.payload\tsigned/witness-apk-ubuntu-24.04/apk-collection.json\n' > "$t/staged/plan.txt"; wsno "F4 a plan line whose signed path is not the fixed one is refused" "$t"
 t=$(ws_tree dup); cat "$t/staged/plan.txt" "$t/staged/plan.txt" > "$t/plan2" && mv "$t/plan2" "$t/staged/plan.txt"; wsno "F4 a payload listed twice is refused" "$t"
 t=$(ws_tree empty); : > "$t/staged/plan.txt"; wsno "F4 an empty plan signs nothing and refuses" "$t"
-t=$(ws_tree link); rm "$t/staged/witness-build/build-collection.payload"; ln -s /etc/hosts "$t/staged/witness-build/build-collection.payload"; wsno "F4 a symlink payload is refused" "$t"
+t=$(ws_tree link); rm "$t/staged/witness-build/build-collection.payload"; echo x > "$t/real-target"; ln -s "$t/real-target" "$t/staged/witness-build/build-collection.payload"; wsno "F4 a symlink payload is refused" "$t"
 t=$(ws_tree stray); echo x > "$t/staged/stray.txt"; wsno "F4 a stray file in the staged root is refused" "$t"
 t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/staged/witness-build/evil-collection.payload"; printf 'staged/witness-build/evil-collection.payload\tsigned/witness-build/evil-collection.json\n' > "$t/staged/plan.txt"; wsno "F4 a payload of a step name outside apk/build/rapk/rebuild is refused" "$t"
 
 # ---- round 2 (Codex terra, cache#586): the repository-wide action-pin gate (a required CI step) reads the Sign helper; it must stay clean on the real tree ----
-if (cd "$root" && python3 -I .github/agent/bin/check-action-pins.py . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes .github/agent/bin/check-action-pins.py (stage-sign.yml and the staged signer bind)"
+if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
 EXPECT=2096

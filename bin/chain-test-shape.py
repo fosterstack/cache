@@ -261,8 +261,11 @@ INSTALL_APKO = "bash bin/install-build-tools.sh apko"
 # steps of their own after the build tools and before the downloads and the Witness step; a failed pull fails the job (no if, no continue-on-error, no env)
 INSTALL_CRANE = "bash bin/install-scanner.sh crane"
 ARCHIVE_PULL = "bash bin/archive-pull.sh --pointer build/archive.json --out archive"
-ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py")      # the files the pull step runs: rows of chain-scripts.json with their sha256
-PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO, INSTALL_CRANE, ARCHIVE_PULL)
+ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py")      # the files the pull step and the host-tools step run: rows of chain-scripts.json with their sha256
+# REQ-CHAIN-004-AC17 (advisor reading Oct 20, rules 15 and 38a): melange's bubblewrap runner needs bwrap, which the hosted images do not ship. An apk job (the jobs that run
+# melange) unpacks it, and what it needs, from the archive just pulled: one step right after the pull, a name and a run and nothing else, never a package manager or sudo.
+INSTALL_HOSTTOOLS = "python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools"
+PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO, INSTALL_CRANE, ARCHIVE_PULL, INSTALL_HOSTTOOLS)
 # The guard step has NO `if` and runs a listed script that judges the raw mode string, case-sensitively: GitHub's `==` and `!=` in an expression compare
 # case-insensitively ('Release' == 'release' is true), so an `if` could not tell a mixed-case mode from the exact one (Codex A r1 F6). The mode reaches the
 # script as a whole "$MODE" argument of a step env (MODE is in env_names of chain-scripts.json).
@@ -275,19 +278,27 @@ HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 # Rebuild's assemble job exposes the sha256 of every record and of the verdict it made or consumed, for Sign (the Witness move, adversarial pass R2): a job output only that job can write
-EXPOSE_RECORDS = 'echo "records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)" >> "$GITHUB_OUTPUT"'
+EXPOSE_RECORDS = 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"'
 RECORDS_STAGE_OUTPUT = "${{ jobs.assemble.outputs.records }}"
+# the Rebuild apk jobs, one per architecture, each exposes the sha256 of its record at its own upload (adversarial pass round 6, A1); assemble checks what it downloads against them
+def exposerapk(runner): return 'r=$(bash bin/rebuild-records-digests.sh --rapk %s witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"' % runner
+RAPK_CHECK_ENV = {"RAPK_RECORDS": "${{ needs.rapk.outputs.records }}", "RAPK_ARM_RECORDS": "${{ needs.rapk-arm.outputs.records }}"}
+RAPK_CHECK_RUN = 'bash bin/rebuild-records-digests.sh --check "$RAPK_RECORDS" "$RAPK_ARM_RECORDS"'
+RAPK_JOBS = {"rapk": "ubuntu-24.04", "rapk-arm": "ubuntu-24.04-arm"}
 RECORDS_JOB_OUTPUT = "${{ steps.records.outputs.records }}"
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,),
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
     ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
-    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, tools=(INSTALL_MELANGE,), mode=True, setup_go=True,
+    ("rebuild", "rapk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in")],
-        up=[("rapk-" + MAT, "out"), ("witness-rapk-" + MAT, "witness-rapk")]),
-    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True, expose_records=True,
+        up=[("rapk-ubuntu-24.04", "out"), ("witness-rapk-ubuntu-24.04", "witness-rapk")]),
+    ("rebuild", "rapk-arm"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=False, runner="ubuntu-24.04-arm", tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True, expose_rapk=True,
+        down=[(WB_DOWN, "witness-build"), ("digests", "build-in")],
+        up=[("rapk-ubuntu-24.04-arm", "out"), ("witness-rapk-ubuntu-24.04-arm", "witness-rapk")]),
+    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True, expose_records=True, check_rapk=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in"), ("items", "build-in")]
               + [("rapk-" + r, "rapk/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "rec-rapk/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
@@ -317,15 +328,16 @@ def stage(path, family, allowed_path=None):
         bad.append("workflow permissions must be exactly contents: read, got %s" % d.get("permissions"))
     if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed-local.sh)")
     jobs = d.get("jobs") or {}
-    if set(jobs) != {"apk", "assemble"}:
-        return bad + ["exactly two jobs required, apk and assemble (one stage = one file = one identity), found %s" % sorted(jobs)]
+    names = ("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("apk", "assemble")
+    if set(jobs) != set(names):
+        return bad + ["exactly the jobs %s required (one stage = one file = one identity), found %s" % (" and ".join(names), sorted(jobs))]
     allowed = None
     if allowed_path:
         try:
             allowed = set(json.load(open(allowed_path)).get("actions", []))
         except (OSError, ValueError):
             bad.append("the allowed-actions list %s is unreadable (fail closed)" % allowed_path)
-    for name in ("apk", "assemble"):
+    for name in names:
         bad += ["%s: %s" % (name, m) for m in job(jobs[name], family, name, allowed)]
     return bad
 
@@ -340,19 +352,23 @@ def pinned(uses, prefix, allowed):
 def job(j, family, name, allowed):
     spec = JOBS[(family, name)]
     bad = []
-    keys = {"runs-on", "permissions", "steps", "timeout-minutes"} | ({"strategy"} if spec["matrix"] else {"needs"})
-    if spec.get("expose") or spec.get("expose_records"): keys.add("outputs")
+    keys = {"runs-on", "permissions", "steps", "timeout-minutes"} | ({"strategy"} if spec["matrix"] else (set() if spec.get("runner") else {"needs"}))
+    if spec.get("expose") or spec.get("expose_records") or spec.get("expose_rapk"): keys.add("outputs")
     if set(j) - keys:
         bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
     if {"runs-on", "permissions", "steps"} - set(j):
         bad.append("job lacks %s" % sorted({"runs-on", "permissions", "steps"} - set(j)))
     for k in ("container", "services", "env", "defaults", "environment", "outputs", "if", "continue-on-error", "uses", "secrets"):
-        if k in j and not (k == "outputs" and (spec.get("expose") or spec.get("expose_records"))): bad.append("job has %s" % k)
+        if k in j and not (k == "outputs" and (spec.get("expose") or spec.get("expose_records") or spec.get("expose_rapk"))): bad.append("job has %s" % k)
     if spec.get("expose") and j.get("outputs") != {"digests": JOB_OUTPUT}:
         bad.append("the assemble job must expose exactly outputs: digests: %s, got %s" % (JOB_OUTPUT, j.get("outputs")))
     if spec.get("expose_records") and j.get("outputs") != {"records": RECORDS_JOB_OUTPUT}:
         bad.append("the Rebuild assemble job must expose exactly outputs: records: %s, got %s" % (RECORDS_JOB_OUTPUT, j.get("outputs")))
-    if spec["matrix"]:
+    if spec.get("expose_rapk") and j.get("outputs") != {"records": RECORDS_JOB_OUTPUT}:
+        bad.append("the Rebuild apk job must expose exactly outputs: records: %s, got %s" % (RECORDS_JOB_OUTPUT, j.get("outputs")))
+    if spec.get("runner"):
+        if j.get("runs-on") != spec["runner"]: bad.append("this Rebuild apk job must run directly on %s (a native runner, no matrix), got %r" % (spec["runner"], j.get("runs-on")))
+    elif spec["matrix"]:
         st = j.get("strategy") or {}
         if j.get("runs-on") != MAT:
             bad.append("the apk job must run on matrix.runner, got %r" % j.get("runs-on"))
@@ -361,7 +377,9 @@ def job(j, family, name, allowed):
             bad.append("strategy must be exactly matrix.runner: both of %s (native runners, no emulation, no include/exclude)" % [r for r, a in RUNNERS])
     else:
         if j.get("runs-on") != "ubuntu-24.04": bad.append("the assemble job must run directly on the ubuntu-24.04 VM (rule 62), got %r" % j.get("runs-on"))
-        if j.get("needs") not in ("apk", ["apk"]): bad.append("assemble must need exactly apk, got %s" % j.get("needs"))
+        if family == "rebuild":
+            if sorted(j.get("needs") or []) != ["rapk", "rapk-arm"] or not isinstance(j.get("needs"), list): bad.append("assemble must need exactly rapk and rapk-arm, got %s" % j.get("needs"))
+        elif j.get("needs") not in ("apk", ["apk"]): bad.append("assemble must need exactly apk, got %s" % j.get("needs"))
     if j.get("permissions") != spec["perm"]:
         bad.append("permissions must be exactly %s, got %s" % (spec["perm"], j.get("permissions")))
     steps = j.get("steps") or []
@@ -403,7 +421,7 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
             bad.append("step %d must be exactly: run %s (the checksum-pinned build tool this job uses and no other, right after the Witness and Go installs, before admission; no env, no secret)" % (i, cmd))
-    for cmd in (INSTALL_CRANE, ARCHIVE_PULL):       # REQ-CHAIN-004-AC16: the pinned crane, then the archive pull, each a step of a name and a run and nothing else
+    for cmd in (INSTALL_CRANE, ARCHIVE_PULL) + ((INSTALL_HOSTTOOLS,) if spec.get("hosttools") else ()):       # REQ-CHAIN-004-AC16: the pinned crane, then the archive pull (AC17: and in an apk job the host tools out of it), each a step of a name and a run and nothing else
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
             bad.append("step %d must be exactly: run %s (REQ-CHAIN-004-AC16: the archive is pulled by its committed digest right after the build tools of "
@@ -414,6 +432,10 @@ def job(j, family, name, allowed):
                 or (s.get("with") or {}) != {"name": nm, "path": path_}):
             bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s "
                        "(a fresh named directory, never . or bin/ or .github/)" % (i, nm, path_))
+    if spec.get("check_rapk"):       # A1: what assemble downloaded of each rapk record is what that rapk job uploaded (release mode only), checked before anything is built
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"name", "if", "env", "run"} or s.get("if") != MODE_RELEASE_IF or s.get("env") != RAPK_CHECK_ENV or str(s.get("run") or "").strip() != RAPK_CHECK_RUN:
+            bad.append("step %d must be exactly if: %s, env %s, run: %s (the rapk records are checked against their jobs' outputs before the Witness step)" % (i, MODE_RELEASE_IF, RAPK_CHECK_ENV, RAPK_CHECK_RUN))
     s = steps[i] if i < len(steps) else {}; i += 1
     want_keys = {"run", "name"} | ({"env"} if spec["gh"] else set()) | ({"if"} if spec.get("mode") else set())
     if set(s) - want_keys: bad.append("the Witness step may carry only %s (no shell, working-directory)" % sorted(want_keys))
@@ -433,6 +455,10 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"id", "name", "run"} or s.get("id") != "digests" or str(s.get("run") or "").strip() != EXPOSE:
             bad.append("step %d must be exactly id: digests, run: %s (the stage output is the digests.json text, compact)" % (i, EXPOSE))
+    if spec.get("expose_rapk"):
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"id", "name", "if", "run"} or s.get("id") != "records" or s.get("if") != MODE_RELEASE_IF or str(s.get("run") or "").strip() != exposerapk(spec["runner"]):
+            bad.append("step %d must be exactly id: records, if: %s, run: %s (the record digests of this apk job, a job output, release mode only)" % (i, MODE_RELEASE_IF, exposerapk(spec["runner"])))
     if spec.get("expose_records"):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"id", "name", "if", "run"} or s.get("id") != "records" or s.get("if") != MODE_RELEASE_IF or str(s.get("run") or "").strip() != EXPOSE_RECORDS:

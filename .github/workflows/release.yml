@@ -18,8 +18,8 @@ on:
       - main
   schedule:
     - cron: '47 9 * * *'   # daily, after the rescan (07:41) and the auditor (08:23)
-  # The dry run of the v0.3.0 chain (PR 1: the Sign boundary): a manual run on a branch that runs the hostile Build step and judges
-  # what it tried; it neither tags nor publishes (every other job below carries `!inputs.dry-run`).
+  # The dry run of the v0.3.0 chain (PR 1: the Sign boundary): a manual run on a branch; the hostile Build step and its judges run on a push of a
+  # release-candidate tag, not here; it neither tags nor publishes (every other job below carries `!inputs.dry-run`).
   workflow_dispatch:
     inputs:
       dry-run:
@@ -574,10 +574,10 @@ jobs:
           DOCKERHUB_TEST_PUSH_TOKEN: ${{ secrets.DOCKERHUB_TEST_PUSH_TOKEN }}
         run: bash bin/vex-live-run.sh cleanup
 
-  # The dry run's judges (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL
+  # The hostile judges, run on a release-candidate tag push (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL
   # verifier against the policy made for this run's own ref, and one positive control (this run's genuine Sign output) must be
   # ACCEPTED by the same policy. The outcome of an attempt is the verifier's own exit code, captured per attempt, never a field
-  # the hostile step wrote. A dry run neither tags nor publishes.
+  # the hostile step wrote. This job only judges; it publishes nothing.
   hostile-verify:
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
     needs: sign

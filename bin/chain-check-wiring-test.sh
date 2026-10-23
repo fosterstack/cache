@@ -116,7 +116,7 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\n    outputs:\n      recor
          + dn("signed-witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist")
          + dn("images", "images")
          + wit("scanners") + wit("acceptance") + wit("runtime")
-         + "      - id: records\n        name: expose\n        run: echo \"records=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime)\" >> \"$GITHUB_OUTPUT\"\n"
+         + "      - id: records\n        name: expose\n        run: r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"\n"
          + f"      - uses: {UPL}\n        with:\n          name: witness-check\n          path: |\n            witness-scanners\n            witness-acceptance\n            witness-runtime\n"
          + up("check-results", "check-results"))
 # REQ-CHAIN-006-AC1 (advisor 0385): the second job, check-arm64, on a hosted arm64 runner, artifact checks only, its own Witness record
@@ -125,7 +125,7 @@ stage += ("  check-arm64:\n    runs-on: ubuntu-24.04-arm\n    permissions:\n    
           "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
           + dn("signed-witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist") + dn("images", "images")
           + "      - name: arm64 under Witness\n        run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh\n"
-          + "      - id: records-arm64\n        name: expose\n        run: echo \"records-arm64=$(bash bin/check-records-digests.sh witness-arm64)\" >> \"$GITHUB_OUTPUT\"\n"
+          + "      - id: records-arm64\n        name: expose\n        run: r=$(bash bin/check-records-digests.sh witness-arm64) && echo \"records-arm64=$r\" >> \"$GITHUB_OUTPUT\"\n"
           + up("witness-check-arm64", "witness-arm64") + up("check-results-arm64", "check-results"))
 open(w + "/stage.yml", "w").write(stage)
 open(w + "/witnessed.sh", "w").write("""#!/usr/bin/env bash
@@ -377,7 +377,7 @@ m r_outw    '(      records: \$\{\{ steps\.records\.outputs\.)records' '\1other'
 m r_nostep  '      - id: records\n        name: expose\n[^\n]*\n' '' 'records' "REL-011-AC1 the check job without its records step"
 m r_stepid  '(      - id: )records(\n        name: expose\n)' '\1other\2' 'records' "REL-011-AC1 the records step under another id"
 m r_steprun '(bin/check-records-digests.sh witness-scanners witness-acceptance )witness-runtime' '\1witness-runtime witness-extra' 'records' "REL-011-AC1 the records step listing another folder"
-m r_stepbeforew '(      - name: scanners\n)' '      - id: records\n        name: expose\n        run: echo "records=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime)" >> "$GITHUB_OUTPUT"\n\1' 'steps must be' "REL-011-AC1 the records step before the witnessed steps (it would list records not made yet)"
+m r_stepbeforew '(      - name: scanners\n)' '      - id: records\n        name: expose\n        run: r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo "records=$r" >> "$GITHUB_OUTPUT"\n\1' 'steps must be' "REL-011-AC1 the records step before the witnessed steps (it would list records not made yet)"
 m r_wfnoout 'on:\n  workflow_call:\n    outputs:\n      records:\n        description: x\n        value: [^\n]*\n      records-arm64:\n        description: x\n        value: [^\n]*\n' 'on:\n  workflow_call:\n' 'workflow_call must carry' "REL-011-AC1 the workflow_call outputs are missing"
 m r_wfval   '(        value: \$\{\{ jobs\.)check-arm64(\.outputs\.records-arm64 \}\})' '\1check\2' 'workflow_call must carry' "REL-011-AC1 the records-arm64 workflow output points at the check job"
 m r_armnoout '    outputs:\n      records-arm64: [^\n]*\n' '' 'records-arm64' "REL-011-AC1 the arm64 job exposes no records-arm64 output"

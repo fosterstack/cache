@@ -13,7 +13,7 @@ on:
   workflow_call:
     inputs:
       hostile:
-        description: dry run only
+        description: release-candidate tag runs only (the hostile Build step)
         type: boolean
         default: false
       mode:
@@ -56,6 +56,8 @@ jobs:
         run: bash bin/install-scanner.sh crane
       - name: pull the archive by its committed digest
         run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - name: unpack the host tools from the archive (bubblewrap for melange's runner)
+        run: python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools
       - name: apk under Witness
         if: ${{ inputs.mode == 'release' }}
         env:

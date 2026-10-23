@@ -93,7 +93,7 @@ jobs:
         run: bash bin/witnessed-local.sh runtime bin/check-phase-runtime.sh
       - id: records
         name: expose the record digests as the stage output
-        run: echo "records=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime)" >> "$GITHUB_OUTPUT"
+        run: r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo "records=$r" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-check
@@ -138,7 +138,7 @@ jobs:
         run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh
       - id: records-arm64
         name: expose the record digest as the stage output
-        run: echo "records-arm64=$(bash bin/check-records-digests.sh witness-arm64)" >> "$GITHUB_OUTPUT"
+        run: r=$(bash bin/check-records-digests.sh witness-arm64) && echo "records-arm64=$r" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-check-arm64

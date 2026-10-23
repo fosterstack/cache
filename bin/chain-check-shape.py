@@ -51,8 +51,8 @@ KIND_STEP = "bash bin/install-kind.sh"
 STEPS = ["scanners", "acceptance", "runtime"]
 SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain govulncheck is built with (an installer of its own; not a scanner)
-REC_RUN = {"records": 'echo "records=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime)" >> "$GITHUB_OUTPUT"',
-           "records-arm64": 'echo "records-arm64=$(bash bin/check-records-digests.sh witness-arm64)" >> "$GITHUB_OUTPUT"'}   # the two pinned steps (bin/chain-test-signers.py PINNED_ALLOWED; REQ-REL-011-AC1, cache#606)
+REC_RUN = {"records": 'r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo "records=$r" >> "$GITHUB_OUTPUT"',
+           "records-arm64": 'r=$(bash bin/check-records-digests.sh witness-arm64) && echo "records-arm64=$r" >> "$GITHUB_OUTPUT"'}   # the two pinned steps (bin/chain-test-signers.py PINNED_ALLOWED; REQ-REL-011-AC1, cache#606)
 WF_OUTPUTS = {"records": "${{ jobs.check.outputs.records }}", "records-arm64": "${{ jobs.check-arm64.outputs.records-arm64 }}"}
 GV_BUILD = "govulncheck-build"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (no identity token) only installs what it hands over
 GV_BUILD_LINE = "bash bin/install-scanner.sh govulncheck"
