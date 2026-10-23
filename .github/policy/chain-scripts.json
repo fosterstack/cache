@@ -486,7 +486,7 @@
       ],
       "signs": false,
       "reason": "the version, revision and clean-tree check of a built binary or apk",
-      "sha256": "dadf64fc26c32813a4cca0028981006b8294226ab2fef7830f50f5e45a704dbc",
+      "sha256": "3a5e720afa6aceb65bdb0c044bbe577f47c8c737e362c0193c774a2a3d87f2bc",
       "env_mentions": [
         {
           "name": "PATH",
@@ -512,7 +512,7 @@
       ],
       "signs": false,
       "reason": "the four Linux archives from the apks (PROPOSED layout)",
-      "sha256": "0033149642f2c7ed3982ec3ffcc71a6d487d6f2513ae824ea4eac9e24e57d483"
+      "sha256": "bb0b6576ea8689acf052103f60343bdd9f5e4b2bad492448814b328ac4a9234c"
     },
     {
       "path": "bin/chain_items.py",
@@ -2377,7 +2377,7 @@
       ],
       "signs": false,
       "reason": "cache P5's image assembly: one reproducible image per variant from the archive and the apko locks, sealed from the network",
-      "sha256": "069016ac6b8cab75977bf8bc4f3f4137bf5a1caeb8ccef0e3bbd66335b519800",
+      "sha256": "6f588ccd095cfc5aa10379e624017956fe6dce487dd19528c44fb4c087d88b17",
       "exceptions": [
         {
           "rule": "script-name",
