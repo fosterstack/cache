@@ -169,7 +169,7 @@
         "bin/loopback-get.sh"
       ],
       "signs": "other",
-      "reason": "the dry run's hostile Build step: signs forged material with a throwaway key made in this job (no token, no cosign) only to prove the verifiers refuse it; runs only when the dry run asks (if: inputs.hostile)",
+      "reason": "the hostile Build step (a release-candidate tag push): signs forged material with a throwaway key made in this job (no token, no cosign) only to prove the verifiers refuse it; runs only when the caller asks (if: inputs.hostile; release.yml sets it on an -rc tag push)",
       "exceptions": [
         {
           "rule": "deny",
@@ -238,7 +238,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
+      "reason": "imported by chain-verify.py: the hostile judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
     },
     {
       "path": "bin/chain-bytes-sha.py",

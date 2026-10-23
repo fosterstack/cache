@@ -18,8 +18,8 @@ on:
       - main
   schedule:
     - cron: '47 9 * * *'   # daily, after the rescan (07:41) and the auditor (08:23)
-  # The dry run of the v0.3.0 chain (PR 1: the Sign boundary): a manual run on a branch that runs the hostile Build step and judges
-  # what it tried; it neither tags nor publishes (every other job below carries `!inputs.dry-run`).
+  # The dry run of the v0.3.0 chain (PR 1: the Sign boundary): a manual run on a branch; the hostile Build step and its judges run on a push of a
+  # release-candidate tag, not here; it neither tags nor publishes (every other job below carries `!inputs.dry-run`).
   workflow_dispatch:
     inputs:
       dry-run:

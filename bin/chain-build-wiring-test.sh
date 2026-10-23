@@ -565,6 +565,10 @@ rb r_rapkrec_leg "A1 the x86 apk job exposes the arm leg's name" "must be exactl
 rb r_rapkrec_dir "A1 the x86 apk job lists another folder than the record it uploads" "must be exactly id: records" '--rapk ubuntu-24.04 witness-rapk)' '--rapk ubuntu-24.04 out)'
 rb r_rapkrec_out "A1 the x86 apk job exposes its records through another output" "must expose exactly outputs: records" 'steps.records.outputs.records }}\n    steps' 'steps.other.outputs.records }}\n    steps'
 rb r_rapk_matrix "A1 the apk jobs are a matrix again (a shared output name, the last leg wins)" "must run directly on ubuntu-24.04" '  rapk:\n    runs-on: ubuntu-24.04\n' '  rapk:\n    runs-on: ${{ matrix.runner }}\n'
+rb r_rapkarm_gone "A1 the arm apk job exposes no record digests" "must be exactly id: records" "      - id: records\n        name: expose the record digests of this apk job as its output\n        if: \${{ inputs.mode == 'release' }}\n        run: r=\$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo \"records=\$r\" >> \"\$GITHUB_OUTPUT\"\n" ''
+rb r_rapkarm_leg "A1 the arm apk job exposes the x86 leg's name" "must be exactly id: records" '--rapk ubuntu-24.04-arm witness-rapk' '--rapk ubuntu-24.04 witness-rapk'
+rb r_chk_armswap "A1 the check hands the x86 leg's output to the arm leg" "rapk records are checked" 'RAPK_ARM_RECORDS: ${{ needs.rapk-arm.outputs.records }}' 'RAPK_ARM_RECORDS: ${{ needs.rapk.outputs.records }}'
+rb r_chk_argswap "A1 the check's arguments are swapped" "rapk records are checked" '--check "$RAPK_RECORDS" "$RAPK_ARM_RECORDS"' '--check "$RAPK_ARM_RECORDS" "$RAPK_RECORDS"'
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      contents: read\n' '      contents: read\n      checks: read\n'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
@@ -1186,7 +1190,7 @@ gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: [build, si
 gr g3  "005-AC5 release does not need rebuild" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign]' "release must need exactly"
 gr g3b "005-AC5 release does not need Sign's second call (Rebuild's records would be unsigned)" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign, rebuild]' "release must need exactly"
 gr g3c "005-AC5 sign-rebuild does not wait for rebuild" '  sign-rebuild:\n    needs: [build, rebuild]' '  sign-rebuild:\n    needs: build' "sign-rebuild must need exactly"
-gr g3e "R2 (round 6) sign-rebuild drops the records input (it would sign whatever arrives under the artifact names)" '      records: ${{ needs.rebuild.outputs.records }}\n' '' "sign-rebuild must pass exactly"
+gr g3x1 "R2 (round 6) sign-rebuild drops the records input (it would sign whatever arrives under the artifact names)" '      records: ${{ needs.rebuild.outputs.records }}\n' '' "sign-rebuild must pass exactly"
 gr g3f "R2 (round 6) sign-rebuild takes its records from Build's output" 'records: ${{ needs.rebuild.outputs.records }}' 'records: ${{ needs.build.outputs.digests }}' "sign-rebuild must pass exactly"
 gr g3d "005-AC5 sign-rebuild signs the build stage (the wrong records)" '      stage: rebuild' '      stage: build' "sign-rebuild must pass exactly"
 gr g3e "005-AC5 sign without the stage input" '      stage: build\n  rebuild:' '  rebuild:' "sign must pass exactly"
@@ -2952,7 +2956,7 @@ for f in files:
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
 
-EXPECT=1023
+EXPECT=1027
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
