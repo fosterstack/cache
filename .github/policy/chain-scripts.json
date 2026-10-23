@@ -1321,7 +1321,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "e1d180c62c4cb870596b29f883f01260e69d62868e9ffbfd7fcc707bc2f27265",
+      "sha256": "3545772280994cced86349b06b532f374bd0ec7a5c4896d06fe460fc50441981",
       "tools": [
         "curl",
         "docker",

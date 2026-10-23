@@ -622,7 +622,7 @@ case "$1" in
        [ -f "$FAKE_DIR/run-fails" ] && { echo "docker: start failed" >&2; exit 125; }
        echo "cid-$v"; echo "$v" > "$FAKE_DIR/last";;
   port) case "$2" in *production*) echo "127.0.0.1:40001";; *) echo "127.0.0.1:40002";; esac;;
-  inspect) echo "$*" >> "$FAKE_DIR/removed"; case "$*" in *--format*) echo "sha256:$(printf '%064d' 7)";; esac;;
+  inspect) echo "$*" >> "$FAKE_DIR/removed"; case "$*" in *--format*localhost/fscache-serve-candidate) if [ -f "$FAKE_DIR/retag" ]; then echo "sha256:$(printf '%064d' 8)"; else echo "sha256:$(printf '%064d' 7)"; fi;; *--format*) echo "sha256:$(printf '%064d' 7)";; esac;;
   rm|stop|logs) echo "$*" >> "$FAKE_DIR/removed";;
 esac
 exit 0
@@ -1066,8 +1066,12 @@ for ref in "fscache:production" "localhost/fa-production:latest" "sha256:${H64:0
 done
 for ref in "sha256:$H64" "localhost/fa-production@sha256:$H64" "ghcr.io/fosterstack/cache:v0.3.0@sha256:$H64" "localhost:5000/team/app-x@sha256:$H64"; do
   serve "$ref"
-  if [ "$rc" = 0 ] && grep -E '^docker run ' "$work/log" | grep -Fq " $ref" && ! grep -q '^docker tag' "$work/log" && ! grep -Fq 'fscache-serve-candidate' "$work/log"; then ok "AC30 serve runs the content-addressed image $ref by that reference (no mutable tag)"; else bad "AC30 serve did not start $ref (rc=$rc): $(head -3 "$work/log" | tr '\n' '|') $out"; fi
+  if [ "$rc" = 0 ] && grep -Eq "^docker tag sha256:$H64 localhost/fscache-serve-candidate( |$)" "$work/log" && grep -E '^docker run ' "$work/log" | grep -Fq ' localhost/fscache-serve-candidate' && ! grep -E '^docker run ' "$work/log" | grep -Fq "$ref"; then ok "AC30 serve starts the content-addressed image $ref: its inspected ID is tagged to the fixed local name and that name is run"; else bad "AC30 serve did not start $ref (rc=$rc): $(head -3 "$work/log" | tr '\n' '|') $out"; fi
 done
+# a re-tag between the tag and the run: the fixed local name must still resolve to the inspected ID right before docker run, or serve refuses and starts nothing
+mkdir -p "$srv/fakedir"; : > "$srv/fakedir/retag"
+serve "sha256:$H64"; rm -f "$srv/fakedir/retag"
+if [ "$rc" != 0 ] && ! grep -q '^docker run' "$work/log" && grep -Fq 'fscache-serve-candidate' <<< "$out"; then ok "AC30 serve refuses to start when the local name no longer resolves to the inspected image ID (no docker run)"; else bad "AC30 a re-tagged local name was run (rc=$rc): $(head -4 "$work/log" | tr '\n' '|') $out"; fi
 # a caller's nocasematch does not turn uppercase hex into valid hex
 : > "$work/log"; rc=0; out=$(cd "$srv" && PATH="$fake:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$srv/fakedir" IMAGE_REF="sha256:$UP64" bash -O nocasematch bin/acceptance-serve.sh gradle main 2>&1) || rc=$?
 if [ "$rc" = 2 ] && ! grep -q '^docker run' "$work/log"; then ok "AC30 serve refuses uppercase hex even when the caller sets nocasematch"; else bad "AC30 nocasematch let uppercase hex through (rc=$rc)"; fi
@@ -1288,7 +1292,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=435
+EXPECT=436
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
