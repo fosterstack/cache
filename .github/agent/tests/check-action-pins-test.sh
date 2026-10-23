@@ -2826,6 +2826,26 @@ case_ w-download-artifact-literal-runner-temp-bad bad "$(uw "$(us actions/downlo
           path: \$RUNNER_TEMP/x")")" "$mk_tool"
 case_ w-download-artifact-literal-braced-runner-temp-bad bad "$(uw "$(us actions/download-artifact "          name: x
           path: \${RUNNER_TEMP}")")" "$mk_tool"
+# 618 round 3 (seat A): the script is also run THROUGH another committed script; the writer between the direct run and that run is a finding
+mk_via='mkdir -p lib && printf "#!/usr/bin/env bash\necho hi\n" > lib/b.sh && printf "#!/usr/bin/env bash\nbash lib/b.sh\n" > a.sh'
+case_ w-writer-between-direct-run-and-run-through-another-script-bad bad "$head
+    steps:
+      - run: bash lib/b.sh
+$(us actions/download-artifact "          path: lib")
+      - run: bash a.sh" "$mk_via"
+case_ w-direct-run-then-run-through-another-script-no-writer-ok ok "$head
+    steps:
+      - run: bash lib/b.sh
+      - run: bash a.sh" "$mk_via"
+case_ w-writer-elsewhere-between-direct-and-indirect-run-ok ok "$head
+    steps:
+      - run: bash lib/b.sh
+$(us actions/download-artifact "          path: out")
+      - run: bash a.sh" "$mk_via"
+# L1: a fence step whose with: holds case-folded duplicate keys is a writer of "." and is not admitted as main's copy
+case_ w-fence-with-duplicate-path-keys-bad bad "$(printf '%s\n    steps:\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: .
+          Path: trusted")")" "$mk_fence"
 case_out w-out-writer-between-two-runs bad "$head
     steps:
       - run: bash bin/tool.sh

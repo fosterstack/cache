@@ -2701,7 +2701,9 @@ def check_runs(where_job, scripts, bad, tree=None):
         lines = job0.split("\n")                        # only what runs before the script's last RUN
         norm = lambda p: re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", p)
         runs = [n for n, ln in enumerate(lines) if any(t[0] in ("__script__", "__exec__") and norm(t[1]) == rel for t in _commands(ln))]
-        k = runs[-1] if runs else len(lines)           # the LAST run: a writer between two runs changes what the second one executes (618 fix, seat D)
+        via_other = any(any(t[0] in ("__script__", "__exec__") and (norm(t[1]) == rel or _base(t[1]) == _base(rel)) for t in _commands(ln))
+                        for src in others for ln in src.split("\n"))
+        k = runs[-1] if runs and not via_other else len(lines)   # also reached through another committed script: judged against the whole job           
         before = "\n".join(lines[:k + 1])               # the run's own line too (printf … > x; bash x)
         if any(_writes(t, rel, src) for src in [before] + others for t in _all_texts(src)):   # each in its own context
             bad.append(f"{scripts[0][0] if scripts else where_job}: {rel} is changed by the job before it runs; the "
@@ -2841,7 +2843,7 @@ def _default_shell(node):
 
 
 def _writer_dir(value):
-    """The directory that a step's `path:` fills: relative to the workspace, or an absolute directory ("/tmp/x", "$RUNNER_TEMP/x",
+    """The directory that a step's `path:` fills: relative to the workspace, or an absolute directory ("/tmp/x", "$RUNNER_TEMP/x", written from the ${{ runner.temp }}/x expression only,
     "~/.cache/x") that is provably not the workspace. Anything this check cannot place by reading it writes everywhere, written ".",
     fail closed: "${{ }}", a "$", a quote, "..", the workspace's own absolute path and every parent of it ("/", "/home", "/home/runner",
     "/github", "~", "~/work/..."). Outside means exactly /tmp, runner.temp and ~/<anything but work> (rc-5b 618 fix, Fable ruling)."""
@@ -2930,10 +2932,11 @@ def run_scripts(doc):
                         wm = {key_of(k): v for k, v in w.value} if isinstance(w, yaml.MappingNode) else {}
                         ref, pth = wm.get("ref"), wm.get("path")
                         pdir = pth.value.strip() if isinstance(pth, yaml.ScalarNode) else "."
+                        dup = len({key_of(k_) for k_, _ in w.value}) != len(w.value) if isinstance(w, yaml.MappingNode) else False
                         lfs = wm.get("lfs")     # LFS objects are not the committed pointer text: not main's copy (618 round 2, seat B)
                         lfs_on = lfs is not None and not (isinstance(lfs, yaml.ScalarNode) and lfs.value.strip().strip("\"'").lower() == "false")
                         if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() == BASE_SHA_REF and "repository" not in wm
-                                and not lfs_on and re.fullmatch(r"[\w][\w-]*", pdir)):
+                                and not lfs_on and not dup and re.fullmatch(r"[\w][\w-]*", pdir)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)
                         else:
