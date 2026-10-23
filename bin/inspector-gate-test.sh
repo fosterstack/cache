@@ -133,7 +133,20 @@ check "a Go product ending in a newline covers nothing (fail closed; the rescan 
 scoped "pkg:golang/github.com/fosterstack/cache" sc-go.json
 check "the plain Go product still covers" 0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-go.json"
 scoped "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates" sc-cand.json
-check "the candidates product still covers" 0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-cand.json"
+check "a candidates-only statement does NOT cover (the gate scans the cache repository's images; REQ-REL-004-AC1: a statement suppresses only what it names)" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-cand.json"
+CANDP="pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+scoped "$CANDP&variant=production&arch=amd64" sc-cand-scoped.json
+check "a candidates-only statement scoped to production/amd64 does not cover that image" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-cand-scoped.json"
+scoped "$CANDP@sha256:$(printf 'a%.0s' $(seq 64))" sc-cand-digest.json
+check "a candidates-only statement scoped to a digest does not suppress" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-cand-digest.json"
+check "a candidates-only statement does not cover a label without identity either" 1 "1 finding" t "$w/sbom.json" "$w/vexed.json" "$w/sc-cand.json"
+python3 - "$w" "$CANDP" "$P" <<'PYX'
+import json, sys
+w, cand, repo = sys.argv[1:]
+d = json.load(open(w + "/sc-none.json")); d["statements"][0]["products"] = [{"@id": cand, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}, {"@id": repo, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]
+json.dump(d, open(w + "/sc-both.json", "w"))
+PYX
+check "a statement naming both repositories still covers through the cache product" 0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-both.json"
 scoped "$P&variant=fips&arch=arm64" sc-fips-arm64.json
 check "the exact grammar still scopes: fips/arm64 covers cand-fips-arm64"      0 "1 covered" cand-fips-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-fips-arm64.json"
 check "the exact grammar still scopes: fips/arm64 does not cover production-amd64" 1 "1 finding" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-fips-arm64.json"
