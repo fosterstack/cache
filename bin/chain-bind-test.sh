@@ -799,6 +799,58 @@ d, _ = sr_tree("sr41", "rebuild"); open(d + "/bad.json", "w").write("{not json")
 sr("sign-records rebuild: a list that is not JSON is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
 d, _ = sr_tree("sr42", "rebuild"); open(d + "/bad.json", "w").write('{"witness-rebuild":{"verdict.json":"abc"}}')
 sr("sign-records rebuild: a list whose digest is not sha256:<64 hex> is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
+# the apk legs' own lists and the assemble job's --check (row-78 round 6, A1): each rapk job prints its folder's list after its Witness step, and the assemble job refuses any record
+# folder that changed between that upload and its own start
+RRD = REPO_ROOT + "/bin/rebuild-records-digests.sh"
+def rrd(args, cwd, env=None):
+    e = {"PATH": os.environ["PATH"], "HOME": work}
+    e.update(env or {})
+    p = subprocess.run(["bash", RRD] + args, capture_output=True, text=True, cwd=cwd, env=e, timeout=60)
+    return p.returncode, p.stdout.strip(), p.stderr
+def rrd_tree(name):
+    t = "%s/%s" % (work, name)
+    shutil.rmtree(t, ignore_errors=True)
+    for leg, body in (("ubuntu-24.04", b"x86 record"), ("ubuntu-24.04-arm", b"arm record")):
+        put(t, "rec-rapk/%s/rapk-collection.local.json" % leg, body)
+    put(t, "witness-rebuild/verdict.json", b"{}"); put(t, "witness-rebuild/rebuild-collection.local.json", b"rec")
+    outs = {leg: rrd(["--rapk", leg, "rec-rapk/" + leg], t)[1] for leg in ("ubuntu-24.04", "ubuntu-24.04-arm")}
+    return t, outs
+def rrd_check(t, outs, **kw):
+    env = {}
+    if "x86" in kw: env["RAPK_RECORDS"] = kw["x86"]
+    elif "x86" not in kw and not kw.get("no_x86"): env["RAPK_RECORDS"] = outs["ubuntu-24.04"]
+    if "arm" in kw: env["RAPK_ARM_RECORDS"] = kw["arm"]
+    elif not kw.get("no_arm"): env["RAPK_ARM_RECORDS"] = outs["ubuntu-24.04-arm"]
+    return rrd(["--check"], t, env)
+def rrd_case(label, rc_want, words, res):
+    rc, out, err = res
+    ok = (rc == 0) if rc_want == 0 else (rc == rc_want and "Traceback" not in err and all(w in err for w in words))
+    check(label, ok, "exit %s, stderr %r" % (rc, err[:240]))
+t, outs = rrd_tree("rrd1")
+whole = json.loads(rrd(["witness-rebuild", "rec-rapk/ubuntu-24.04", "rec-rapk/ubuntu-24.04-arm"], t)[1])
+check("rebuild-records-digests --rapk: each leg's list is that folder's entry of the assemble job's whole list (same format)",
+      all(json.loads(outs[leg]) == {"witness-rapk-" + leg: whole["witness-rapk-" + leg]} for leg in outs) and list(json.loads(outs["ubuntu-24.04"])) == ["witness-rapk-ubuntu-24.04"], repr(outs))
+rrd_case("rebuild-records-digests --check: both legs match the folders -> accepted", 0, (), rrd_check(t, outs))
+t, outs = rrd_tree("rrd2"); put(t, "rec-rapk/ubuntu-24.04/rapk-collection.local.json", b"swapped after the upload")
+rrd_case("rebuild-records-digests --check: the ubuntu-24.04 record swapped after its upload is refused, naming the leg and the file", 1, ("ubuntu-24.04:", "rapk-collection.local.json"), rrd_check(t, outs))
+t, outs = rrd_tree("rrd3"); put(t, "rec-rapk/ubuntu-24.04-arm/rapk-collection.local.json", b"swapped after the upload")
+rrd_case("rebuild-records-digests --check: the ubuntu-24.04-arm record swapped after its upload is refused, naming the leg and the file", 1, ("ubuntu-24.04-arm:", "rapk-collection.local.json"), rrd_check(t, outs))
+t, outs = rrd_tree("rrd4"); put(t, "rec-rapk/ubuntu-24.04/extra.json", b"x")
+rrd_case("rebuild-records-digests --check: an extra file in a leg's folder is refused, naming it", 1, ("ubuntu-24.04:", "extra.json"), rrd_check(t, outs))
+t, outs = rrd_tree("rrd5"); os.remove(t + "/rec-rapk/ubuntu-24.04-arm/rapk-collection.local.json")
+rrd_case("rebuild-records-digests --check: a leg's folder with no file is refused", 1, ("not a regular file",), rrd_check(t, outs))
+t, outs = rrd_tree("rrd6"); shutil.rmtree(t + "/rec-rapk/ubuntu-24.04")
+rrd_case("rebuild-records-digests --check: a missing leg folder is refused", 1, ("not a plain folder",), rrd_check(t, outs))
+t, outs = rrd_tree("rrd7")
+rrd_case("rebuild-records-digests --check: an empty job output is refused, naming the leg", 1, ("ubuntu-24.04:", "empty"), rrd_check(t, outs, x86=""))
+rrd_case("rebuild-records-digests --check: an unset job output is refused", 1, ("ubuntu-24.04-arm:", "empty"), rrd_check(t, outs, no_arm=True))
+rrd_case("rebuild-records-digests --check: an output that is not JSON is refused", 1, ("ubuntu-24.04:", "not a JSON object"), rrd_check(t, outs, x86="{not json"))
+rrd_case("rebuild-records-digests --check: an output that is JSON but not an object is refused", 1, ("ubuntu-24.04:", "not a JSON object"), rrd_check(t, outs, x86="[]"))
+rrd_case("rebuild-records-digests --check: the other runner's output given for this leg (it names the other runner) is refused", 1, ("ubuntu-24.04:", "changed"), rrd_check(t, outs, x86=outs["ubuntu-24.04-arm"]))
+rrd_case("rebuild-records-digests --check: the legs' outputs swapped between the two variables are refused", 1, ("changed",), rrd_check(t, outs, x86=outs["ubuntu-24.04-arm"], arm=outs["ubuntu-24.04"]))
+rrd_case("rebuild-records-digests --check: an output that names a folder besides the leg's own is refused", 1, ("changed",), rrd_check(t, outs, x86=json.dumps(dict(json.loads(outs["ubuntu-24.04"]), **{"witness-rebuild": {"verdict.json": "sha256:" + "0" * 64}}))))
+rrd_case("rebuild-records-digests --check takes no other argument (exit 2)", 2, ("usage",), rrd(["--check", "x"], t, {}))
+rrd_case("rebuild-records-digests --rapk takes a plain runner name (exit 2)", 2, ("usage",), rrd(["--rapk", "../x", "rec-rapk/ubuntu-24.04"], t, {}))
 d, _ = sr_tree("sr25", "rebuild"); coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"verdict.json": b'{"verdict":"pass"}'}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
 sr("sign-records rebuild: a record that names the verdict by its bare file name is refused (the product is witness-rebuild/verdict.json, matched in full)", d, "rebuild", 1, ["witness-rebuild/verdict.json"])
 d, _ = sr_tree("sr26"); os.makedirs(d + "/artifacts/witness-build/dist/locked"); put(d, "artifacts/witness-build/dist/locked/f", b"x"); os.chmod(d + "/artifacts/witness-build/dist/locked", 0)
@@ -819,7 +871,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 156
+EXPECT = 172
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
