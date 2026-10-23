@@ -67,7 +67,7 @@ jobs:
         run: bash bin/install-scanner.sh witness
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: witness-build
+          name: signed-witness-build
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -83,7 +83,7 @@ jobs:
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: witness-rebuild
+          name: signed-witness-rebuild
           path: witness-rebuild
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -135,7 +135,7 @@ jobs:
         run: bash bin/install-build-tools.sh melange
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: witness-build
+          name: signed-witness-build
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -151,7 +151,7 @@ jobs:
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: witness-rebuild
+          name: signed-witness-rebuild
           path: witness-rebuild
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

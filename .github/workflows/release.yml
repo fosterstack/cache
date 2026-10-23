@@ -364,18 +364,33 @@ jobs:
     uses: ./.github/workflows/stage-sign.yml
     with:
       digests: ${{ needs.build.outputs.digests }}
+      stage: build
 
-  # Rebuild (rule 54): fresh runners rebuild everything Build built and compare every item; its only output is the verdict.
+  # Rebuild (rule 54): fresh runners rebuild everything Build built and compare every item; its only output is the verdict. It starts from Build's SIGNED records
+  # (the building jobs hold no identity token; Sign signs what they recorded), so it needs Sign.
   rebuild:
-    needs: build
+    needs: [build, sign]
     permissions:
       contents: read
     uses: ./.github/workflows/stage-reproducibility.yml
 
+  # Sign's second call (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): the same file, the stage rebuild: it checks and signs Rebuild's records
+  # and receives no Rebuild apk or image. Its identity is the first call's (one workflow file, release.yml on top).
+  sign-rebuild:
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
+    needs: [build, rebuild]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      stage: rebuild
+
   # Check (rules 55, 58, 70; REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate
-  # digests, as three Witness steps. It needs Build only (it verifies Build's record on entry; Release verifies Sign's) and runs beside Rebuild and Sign, never after them.
+  # digests, as three Witness steps. It needs Build and Sign (it verifies Build's record, signed by Sign, on entry) and runs beside Rebuild, never after it.
   check:
-    needs: build
+    needs: [build, sign]
     permissions:
       contents: read
       id-token: write
@@ -387,7 +402,7 @@ jobs:
   # and creates no tag.
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
-    needs: [check, rebuild, sign]
+    needs: [check, sign, sign-rebuild]
     # One publication at a time (release review R3, Oct 22): bin/release-publish.sh decides :X and :latest from the registry's tag list, so two
     # release runs must not interleave. One fixed group for every v* run, release candidates included. A queued run waits and a running one is never
     # cancelled (cancel-in-progress false). GitHub keeps one pending run per group: a second queued tag run replaces the first pending one, which ends
@@ -751,7 +766,7 @@ jobs:
     # Also when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, so a third queued tag run
     # replaces the first pending one, which ends as cancelled, not failed. failure() alone would open no issue; the issue below says to publish the tag again.
     if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    needs: [build, sign, rebuild, check, release]
+    needs: [build, sign, rebuild, sign-rebuild, check, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
