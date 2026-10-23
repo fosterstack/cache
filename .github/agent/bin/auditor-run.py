@@ -742,6 +742,7 @@ def _merge_suppressions(ws, supp):
         merged.setdefault(k, newdoc.get(k))
     merged["timestamp"] = newdoc.get("timestamp", merged.get("timestamp"))
     old_ai = _read_reviewed_json(os.path.join(ws, ".auditor", "accepted-items.json"))   # read (and so validated) BEFORE the working tree is touched: an unreadable inventory stops the run with the VEX unwritten
+    new_ai = _read_reviewed_json(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))     # the run's own inventory too
     cli.writej(vp, merged)
 
     # accepted-items.json is COUPLED to the VEX: an affected statement that survives the VEX
@@ -749,10 +750,7 @@ def _merge_suppressions(ws, supp):
     # rejects the package as inconsistent (R1 outer round-5 #2). Merge like the VEX — this
     # run's items win; carry an old item forward for any affected CVE still in the merged
     # document; drop acceptances whose statement is no longer affected.
-    def _loadj(p):
-        return _read_reviewed_json(p)               # the run's own inventory too: absent = none, unreadable or mis-shaped = the run is broken and stops (never a delivery without its inventory)
     aip = os.path.join(ws, ".auditor", "accepted-items.json")
-    new_ai = _loadj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))
     out_ai = {}
     if new_ai is not None or old_ai is not None:
         def _cve(it):
