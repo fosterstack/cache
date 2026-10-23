@@ -539,14 +539,16 @@ func classifyPutError(err, ctxErr error) (reason string, counted bool) {
 // loggableErr is the text a failure log may carry for err. A *net.OpError
 // formats the local and remote socket addresses, so a dropped client would
 // put its IP:port in the log; REQ-OBS-006 forbids that. An error whose
-// chain holds one is reduced to its operation and underlying cause.
+// chain holds one is reduced to its operation and underlying cause, and the
+// result passes through scrubAddrs, so an address nested deeper in the
+// cause is replaced too.
 func loggableErr(err error) string {
 	var op *net.OpError
 	if errors.As(err, &op) {
 		if op.Err == nil {
-			return "net " + op.Op
+			return scrubAddrs("net " + op.Op)
 		}
-		return "net " + op.Op + ": " + op.Err.Error()
+		return scrubAddrs("net " + op.Op + ": " + op.Err.Error())
 	}
-	return err.Error()
+	return scrubAddrs(err.Error())
 }

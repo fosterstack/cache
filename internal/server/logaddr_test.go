@@ -93,3 +93,17 @@ func TestTemplateWriteFailureLogsCarryNoClientAddress(t *testing.T) {
 	}
 	assertNoClientAddr(t, logged)
 }
+
+// A nested *net.OpError (an OpError whose cause is another OpError with
+// addresses) is scrubbed at every level, not only the first.
+func TestLoggableErrScrubsNestedOpErrors(t *testing.T) {
+	inner := &net.OpError{
+		Op:     "write",
+		Net:    "tcp",
+		Source: &net.TCPAddr{IP: net.ParseIP("10.9.8.7"), Port: 8080},
+		Addr:   &net.TCPAddr{IP: net.ParseIP("203.0.113.55"), Port: 49152},
+		Err:    errors.New("broken pipe"),
+	}
+	outer := fmt.Errorf("x: %w", &net.OpError{Op: "write", Net: "tcp", Err: inner})
+	assertNoClientAddr(t, loggableErr(outer))
+}
