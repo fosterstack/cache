@@ -41,6 +41,17 @@
       "sha256": "55c2c5716053b8b82b0009d6186aba33e1f478e75ebc728b9f7c3714155699ed"
     },
     {
+      "path": "bin/install-host-bwrap.py",
+      "tools": [
+        "at",
+        "tar"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the apk jobs' host-tools step: unpacks bubblewrap and what it needs from the archive just pulled (the packages build/locks/host-tools.lock names, checked against the datahash of each apk) into host-tools/ and writes the bwrap wrapper melange's bubblewrap runner calls; no network, no package manager, no sudo, no other program (REQ-CHAIN-004-AC17); the listed tools are words in its messages and comments that the text scan over-reports (the script starts no program: the archive format is read with the Python library)",
+      "sha256": "b0d980cbf3c46c2cb757021cec510d38be73199c8ca77d9aca688d190c95def4"
+    },
+    {
       "path": "bin/chain-verify.py",
       "sha256": "b8af29ebf7c3e60ff8802f9506a33045ca2f4750954ef580070e3eefc01b05c0",
       "tools": [
@@ -141,7 +152,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "af35a2e03e4a7ec7d1e82761b5b748700b9d7d42de5ca58b1d305a4771c5c9e3",
+      "sha256": "2e8a912b886780a91c3981ab02f04c0d886199db6fa79beb8288bfbf687e1750",
       "tools": [
         "at",
         "bash",
@@ -687,7 +698,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "68639d51ce19b5d550f9cdd74daca613a251b4ff62a8627e6d9bd21b4a46606e",
+      "sha256": "07d39f008d95fdc7596d3c142b2b3557d8e904c88219b0907c1bc16667d9c1f1",
       "tools": [
         "find",
         "python3",
@@ -737,20 +748,6 @@
           "rule": "deny",
           "line": "[ -z \"${CHECK_SCAN_NOW+x}\" ] || fail \"CHECK_SCAN_NOW is defined in the environment: the database age is judged by the runner's clock, which no variable can change\"",
           "line_sha256": "2ae0c195e21d2471ef18a310f97cc1229add47c0aeda6b64cad761bdda07bc7b",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    if [ -n \"${OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY:-}\" ]; then",
-          "line_sha256": "1a4a1219de6345a09bc7fe13eb2fcb5e4605a3f28fcb61aa972aa020e6951407",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "      if [ -n \"$(find \"$osvcache\" -mindepth 1 -print -quit)\" ]; then",
-          "line_sha256": "4a3a47eac2c5b5eb85d6b5aef7ca16519682386af3cd44bbc37240b197cbe2b3",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -1137,7 +1134,7 @@
     },
     {
       "path": "bin/acceptance-maven.sh",
-      "sha256": "92c39c7c22f4c04c7910a0b0f110e0da7acaa7f97961757d9765d161c0505324",
+      "sha256": "bd10fd3badd0a4f8fe1ba9e014446266b9adf02de8b4d5e319cc968fde7407ae",
       "tools": [
         "awk",
         "bash",
@@ -1147,55 +1144,11 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "  | awk '/^fscache_http_requests_total\\{method=\"PUT\",status=\"201\"\\}/ {print $2}')",
-          "line_sha256": "f0fcb28faa75f71b31dc4fa3965c8680b034e1bd8f232e573f107bfe992221a4",
-          "count": 2,
-          "why": "closes the multi-line command substitution that reads the PUT counter: curl piped into a single awk program (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${puts:-0}\" -eq \"$COLD_UPLOADS\" ] || { echo \"::error::cold uploads ${puts:-0}, expected $COLD_UPLOADS\" >&2; exit 1; }",
-          "line_sha256": "44dd04552af742d6bbcc29c14dc5639dc48e00f696c7127ba3baa17d36836aff",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${gets404:-0}\" -eq \"$COLD_LOOKUPS\" ] || { echo \"::error::cold lookups ${gets404:-0}, expected $COLD_LOOKUPS\" >&2; exit 1; }",
-          "line_sha256": "d92bb12f28aa9608e295228ff6fb200d52a40620333cff7603536283ae215319",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${restored}\" -eq \"$MODULES\" ] || { echo \"::error::${restored} modules restored, expected $MODULES\" >&2; exit 1; }",
-          "line_sha256": "92fc57117f1467ac5102f1ac34972671846f2bade9cf83e15cda328e0f66384d",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${hits:-0}\" -ge \"$MODULES\" ] || { echo \"::error::server saw ${hits:-0} hits; the restore did not come from the remote\" >&2; exit 1; }",
-          "line_sha256": "58609ec6e0175d5da421d0c1fe2d985efbb47bf87e5d2609314857d38584c7a3",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"${after_puts}\" -eq \"${before_puts}\" ] \\",
-          "line_sha256": "a528cf832d34cf784018a64edaada31e99ad4fd605f03b0ae2eff86cd53006a9",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
-      ]
+      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
     },
     {
       "path": "bin/acceptance-maven-capped.sh",
-      "sha256": "9d5136ab1a7a16188e4e66553fe53fef7ec927560086aac83d0698722ca4266e",
+      "sha256": "5afe2ee9a14d189953385b36f9a0c7ffbbf32f383b2e7ea17b7fdb0e4fecbd84",
       "tools": [
         "awk",
         "bash",
@@ -1204,44 +1157,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "  -I \"http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar\")",
-          "line_sha256": "3ffc3b617c8b70ffa265f7a03429db49afd26e0e558abcc81bba0a1d86286602",
-          "count": 1,
-          "why": "closes the multi-line curl command substitution that reads a response header of the app jar (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
-        },
-        {
-          "rule": "deny",
-          "line": "  --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)",
-          "line_sha256": "7d1cb3e324b12c8b9b18ffec5de18928ac107f109b4687bce495e9a8e8e43783",
-          "count": 1,
-          "why": "closes the multi-line curl command substitution of the oversized probe (REQ-CHAIN-001-AC1: a line that closes a multi-line quote or substitution is refused unless waived here)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$app_key_a\" = \"$app_key_b\" ] \\",
-          "line_sha256": "bc7db97612f4e5adc4b3f2a1b29f531d4bac194fedaefb32d294c2839495fdd5",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$app_code\" = \"404\" ] \\",
-          "line_sha256": "c67b142474d9c5069066855aa1707340c2190fbc23b06bdad40984737e46a8f7",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "[ \"$code\" = \"404\" ] || { echo \"::error::rejected entry is retrievable (${code}) - it was stored\" >&2; exit 1; }",
-          "line_sha256": "589135d0238723b23ca8b4372ee422098dc0d8d6043e1d322d0d4214005e66e2",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
-      ]
+      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
     },
     {
       "path": "bin/acceptance-egress.sh",
@@ -2035,7 +1951,7 @@
     },
     {
       "path": "bin/check-osv-vex.py",
-      "sha256": "10f8ea45340cf5fb1f14b39a0a269e75c5c81c6497c66a00166f48f4ed382c30",
+      "sha256": "b4469b84e9822df6de8d5d29ebcffbcfab3d9816dd035b022a71b9cefcd118a2",
       "tools": [],
       "runs": [
         "bin/rescan-statement.py"
@@ -2088,12 +2004,14 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "d587105d92f85da39aa26ce771ebbd343d212ad0a5f85ec811b1c56d1b327b32",
+      "sha256": "21b40d6a082f6e5ba0724978f62d3de62e1ef48777dc95147ab0638959acaa4b",
       "tools": [
         "at",
         "python3"
       ],
-      "runs": [],
+      "runs": [
+        "bin/rescan-statement.py"
+      ],
       "signs": false,
       "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
     },
@@ -2667,6 +2585,28 @@
       ],
       "signs": false,
       "reason": "the work of Release's comparison (the compare job, no key, no secret, no id-token, nothing signed): it checks the layout, the signer and the signature of every apk on both sides with bin/apk-tool.py, compares them, and writes the small result file apk-compare/apk-compare.json"
+    },
+    {
+      "path": "bin/pack-govulncheck.sh",
+      "sha256": "8a982c3a166e9603f68fad21ede4942242ed785c6be5ca76c80924f0800722eb",
+      "tools": [
+        "install",
+        "mkdir"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "govulncheck-build's last step: places the built govulncheck where the job uploads it from (REQ-REL-011-AC1)"
+    },
+    {
+      "path": "bin/unpack-govulncheck.sh",
+      "sha256": "e4284194b78c956631fd518b61a44e18dd6e15e5261096c0614deb5dfa3fe56e",
+      "tools": [
+        "install",
+        "mkdir"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Check installs the govulncheck the credential-free govulncheck-build job built, after download-artifact's digest check (REQ-REL-011-AC1)"
     }
   ],
   "ambient_env": [

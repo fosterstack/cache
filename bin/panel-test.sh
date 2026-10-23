@@ -143,6 +143,43 @@ for i, pid in enumerate([R + "@sha256:abc", "pkg:oci/cache?repository_url=ghcr.i
     got = covered_images(pid, "pin%d.json" % i)
     check("a pinned or foreign product (%s) covers no image" % pid, got == [], got)
 
+# --- post-merge rulings on cache#563 (P-1, P-2): a product known only by identifiers.purl is read like the gate's vex_index reads it, and the
+# product's REPOSITORY must be this image's (cache), as rescan-statement.py::_vex_match requires
+def vex_with_products(products, name):
+    f = os.path.join(tempfile.mkdtemp(), name)
+    json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0009"}, "status": "not_affected", "products": products}]}, open(f, "w"))
+    return f
+def covered_by(products, name):
+    r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
+              if s_ == "inspector" or img.endswith("amd64")})
+    sub = [{"@id": "pkg:generic/tzdata@2026c"}]
+    v = P.tally(r, P.load_vex(vex_with_products([dict(p_, subcomponents=sub) for p_ in products], name)))
+    return sorted({c["image"] for c in v["vex_covered"]})
+CAND = "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+got = covered_by([{"identifiers": {"purl": R}}], "p1a.json")
+check("a product known only by identifiers.purl, unscoped, covers all four images", len(got) == 4, got)
+got = covered_by([{"identifiers": {"purl": R + "&variant=production&arch=amd64"}}], "p1b.json")
+check("a purl-only product scoped to production/amd64 covers only that image", got == ["production-amd64"], got)
+got = covered_by([{"@id": None, "identifiers": {"purl": R + "&variant=fips"}}], "p1c.json")
+check('"@id": null with a purl behaves as the purl', got == ["fips-amd64", "fips-arm64"], got)
+got = covered_by([{"identifiers": {"purl": R + "&arch=riscv64"}}], "p1d.json")
+check("a malformed purl-only product still covers nothing", got == [], got)
+got = covered_by([{"identifiers": "x"}], "p1e.json")
+check("a product whose identifiers is not an object covers nothing (and does not crash the panel)", got == [], got)
+got = covered_by([{"@id": CAND + "&variant=production&arch=amd64"}], "p2a.json")
+check("a candidates-repository product scoped to production/amd64 covers no panel image", got == [], got)
+got = covered_by([{"@id": CAND}], "p2b.json")
+check("an unscoped candidates-repository product covers no panel image", got == [], got)
+got = covered_by([{"@id": CAND}, {"@id": R + "&variant=fips&arch=arm64"}], "p2c.json")
+check("a statement naming both repositories covers the real one only", got == ["fips-arm64"], got)
+got = covered_by([{"@id": "pkg:golang/github.com/fosterstack/cache"}], "p2d.json")
+check("the unversioned Go product still covers every image", len(got) == 4, got)
+pub = P.load_vex(VEX)
+want_ids = ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"]
+check("the published VEX covers the same ids (the four CVEs and their aliases) on every one of the four images as before",
+      len(pub) == 4 and len({tuple(sorted(pub[img])) for img in pub}) == 1 and set(want_ids) <= set(pub["production-amd64"]),
+      {img: sorted(pub[img]) for img in pub})
+
 # --- rules 5 and 6: merge, seen by N of M, report at two or more
 r = tree({("inspector", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")],
           ("google", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")]}); v = judge(r)
@@ -328,6 +365,76 @@ for name, root in SCEN.items():
         bad = str(e)
     check("the auditor's strict verdict validator accepts the tally's real output: %s" % name, bad == "", bad)
 
+
+# --- one folder per scanner artifact (the Witness adversarial pass): the rescan's panel job downloads panel-<scanner> artifacts WITHOUT merging, so each lands in <in>/panel-<scanner>/<scanner>/<image>/;
+# the tally refuses a layout where one artifact holds another scanner's output, a second copy of an artifact, an artifact from an unexpected job, or a stray file
+import shutil, subprocess
+def as_artifacts(root, extra=None):
+    """the tree() layout (<scanner>/<image>) as the download lays it out: <in>/panel-<scanner>/<scanner>/<image>"""
+    out = tempfile.mkdtemp()
+    for s in P.EXPECTED:
+        if os.path.isdir(os.path.join(root, s)):
+            shutil.copytree(os.path.join(root, s), os.path.join(out, "panel-" + s, s))
+    os.makedirs(os.path.join(out, "panel-scout", "scout-diag"), exist_ok=True)      # what the scout job really uploads beside its results
+    open(os.path.join(out, "panel-scout", "scout-diag", "report.json"), "w").write("{}")
+    return out
+def layout_error(d):
+    try:
+        P.scanner_dirs(d)
+        return ""
+    except P.LayoutError as e:
+        return str(e)
+def tally_cli(d):
+    o = tempfile.mkdtemp()
+    p = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(P.__file__)), "panel.py"), "tally", "--in", d, "--vex", VEX, "--out", o], capture_output=True, text=True)
+    return p.returncode, p.stdout + p.stderr
+good = as_artifacts(tree())
+check("artifact layout: the normal download (one panel-<scanner> folder each) is accepted", layout_error(good) == "", layout_error(good))
+dirs = P.scanner_dirs(good)
+check("artifact layout: the tally of the downloaded layout equals the tally of the direct tree",
+      json.dumps(P.tally(good, P.load_vex(VEX), dirs), sort_keys=True) == json.dumps(judge(tree()), sort_keys=True))
+rc, out = tally_cli(good)
+check("artifact layout: the tally command reads the download layout (exit 0 on a clean day)", rc == 0, "exit %s %s" % (rc, out[-200:]))
+miss = as_artifacts(tree()); shutil.rmtree(os.path.join(miss, "panel-google"))
+check("artifact layout: a scanner whose artifact is missing is not a layout refusal (the tally calls it did-not-run)", layout_error(miss) == "")
+vm = P.tally(miss, P.load_vex(VEX), P.scanner_dirs(miss))
+check("artifact layout: with the google artifact missing the tally records google as did-not-run on its images and exits 2", "google" in vm["images"]["production-amd64"]["did_not_run"] and vm["exit"] == 2, str(vm["images"]["production-amd64"]))
+mix = as_artifacts(tree()); shutil.copytree(os.path.join(mix, "panel-scout", "scout"), os.path.join(mix, "panel-grype", "scout"))
+e = layout_error(mix)
+check("artifact layout: panel-grype that also holds scout's output is refused, naming the folder and the other scanner", "panel-grype" in e and "scout" in e, e)
+rc, out = tally_cli(mix)
+check("artifact layout: the tally command refuses it with exit 2 and an ::error:: line, never a clean result", rc == 2 and "::error::" in out, "exit %s %s" % (rc, out[-200:]))
+twice = as_artifacts(tree()); shutil.copytree(os.path.join(twice, "panel-grype"), os.path.join(twice, "panel-grype-2"))
+e = layout_error(twice)
+check("artifact layout: a second copy of an artifact named for scanner A (panel-grype-2) is refused", "panel-grype-2" in e, e)
+evil = as_artifacts(tree()); shutil.copytree(os.path.join(evil, "panel-grype"), os.path.join(evil, "panel-evil"))
+e = layout_error(evil)
+check("artifact layout: an artifact from an unexpected job (panel-evil) is refused", "panel-evil" in e, e)
+wrongname = as_artifacts(tree()); os.rename(os.path.join(wrongname, "panel-scout", "scout"), os.path.join(wrongname, "panel-scout", "grype"))
+e = layout_error(wrongname)
+check("artifact layout: panel-scout holding a folder named grype (a scanner's output under another scanner's artifact) is refused", "panel-scout" in e and "grype" in e, e)
+stray = as_artifacts(tree()); open(os.path.join(stray, "panel-grype", "note.txt"), "w").write("x")
+e = layout_error(stray)
+check("artifact layout: a stray file inside an artifact folder is refused", "note.txt" in e, e)
+strayf = as_artifacts(tree()); open(os.path.join(strayf, "panel-evidence"), "w").write("x")
+e = layout_error(strayf)
+check("artifact layout: a plain file beside the artifact folders is refused", "panel-evidence" in e, e)
+lnk = as_artifacts(tree()); shutil.rmtree(os.path.join(lnk, "panel-google")); os.symlink(os.path.join(lnk, "panel-grype"), os.path.join(lnk, "panel-google"))
+e = layout_error(lnk)
+check("artifact layout: a symlinked artifact folder is refused", "panel-google" in e, e)
+
+lk = as_artifacts(tree()); shutil.rmtree(os.path.join(lk, "panel-scout", "scout")); os.symlink(os.path.join(lk, "panel-grype", "grype"), os.path.join(lk, "panel-scout", "scout"))
+e = layout_error(lk)
+check("artifact layout: panel-scout/scout that is a link is refused", "panel-scout/scout" in e, e)
+fl = as_artifacts(tree()); shutil.rmtree(os.path.join(fl, "panel-google", "google")); open(os.path.join(fl, "panel-google", "google"), "w").write("x")
+e = layout_error(fl)
+check("artifact layout: panel-google/google that is a plain file is refused", "panel-google/google" in e, e)
+dl = as_artifacts(tree()); shutil.rmtree(os.path.join(dl, "panel-scout", "scout-diag")); os.symlink(os.path.join(dl, "panel-grype"), os.path.join(dl, "panel-scout", "scout-diag"))
+e = layout_error(dl)
+check("artifact layout: scout-diag that is a link is refused", "scout-diag" in e, e)
+nd = as_artifacts(tree()); shutil.copytree(os.path.join(nd, "panel-scout", "scout-diag"), os.path.join(nd, "panel-grype", "scout-diag"))
+e = layout_error(nd)
+check("artifact layout: scout's diagnostics folder inside panel-grype is refused (only scout's own artifact may carry it)", "panel-grype" in e and "scout-diag" in e, e)
 print("panel: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

@@ -1013,6 +1013,12 @@ requirements:
         then: results are identical to today (the existing REQ-PROTO and REQ-EVICT acceptance ACs stay green; no new header, status code, or path)
         verification: { method: acceptance-gradle, release_blocking: false }
         status: approved
+      - id: REQ-OBS-002-AC12
+        given: a server that received 500 distinct unknown HTTP method tokens plus one GET, one HEAD and one PUT
+        when: /metrics is scraped
+        then: fscache_http_requests_total and fscache_http_request_duration_seconds carry method label values GET, HEAD, PUT and other only, all four present, and the 500 unknown tokens are counted under other on fscache_http_requests_total
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-OBS-003
     title: Read-only status page
@@ -1747,6 +1753,12 @@ requirements:
         then: auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-DEP-001-AC10
+        given: a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case
+        when: the reviewer picks its candidates and gathers its evidence
+        then: it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it; a bump whose notes say neither is left to the patch and minor lane
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-DEP-002
     title: The required-check guard runs everywhere
@@ -1799,6 +1811,12 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC2
+        given: a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case
+        when: the auto-merge lane runs
+        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-003-AC3
         given: a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged)
         when: the auto-merge lane or the hourly reviewer sees it
         then: the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual
@@ -2060,6 +2078,43 @@ requirements:
         when: "Docker Scout scans it by tag and by exact digest with our author"
         then: "it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image"
         verification: { method: acceptance-release-artifact, release_blocking: false }
+        status: approved
+  - id: REQ-REL-011
+    title: A job that holds a credential never compiles, and each build is its own job
+    statement: >
+      A workflow job that holds a credential (a secret, an environment, an
+      id-token or packages write grant) shall not build or compile anything,
+      and no job shall run two builds: on GitHub-hosted runners the separate
+      job is the isolation unit, each job a fresh virtual machine. Owner,
+      Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md):
+      "the signer and the builder need hardware isolation and the builds in
+      general need hardware isolation ... the best github actions can do for
+      that, assuming we use github hosted runers, is to use separate jobs in
+      the workflow." The rule: a job that holds the signing key or any
+      publish credential never receives a build output other than the exact
+      artifacts it signs or publishes; the Rebuild comparison runs in a job
+      with no secrets and no publish permission; builds are isolated from
+      each other the same way, each build its own job.
+    source: [.github/workflows/auditor.yml, .github/workflows/go-freshness.yml, .github/workflows/stage-verify.yml, bin/job-isolation-test.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: owner ratification Oct 21 2026 (signer and builder never share a machine); advisor handoff 0637
+    confidence: implementation-only
+    notes: |
+      Four jobs of the release chain on main (stage-build, stage-image, stage-promote, stage-reproducibility) still break AC1 and are listed exclusions in bin/job-isolation-test.sh with their reason: the chain-v030 landing (handoff 0634, cache#514) replaces those files. The exclusion list shrinks to nothing then.
+      A tool that publishes no release binary (govulncheck) is built in its own job that holds no credential and reaches the credential-holding job as an artifact whose sha256 equals the build job's output.
+    acceptance_criteria:
+      - id: REQ-REL-011-AC1
+        given: "any workflow job in the repository that holds a credential: a secrets.* reference, an environment, a permissions grant of id-token: write or packages: write"
+        when: "bin/job-isolation-test.sh judges every workflow file"
+        then: "none of the job's steps compiles or builds (go install, go build, goreleaser, docker build or buildx build, melange or apko build, make, cargo, npm run build); a tool the job needs is installed through bin/install-scanner.sh as a checksum-pinned release binary, and govulncheck, which has no release binary, is built in its own job with no credential and handed to auditor.yml's audit job as an artifact whose sha256 the audit job compares with the build job's output before it runs; the only jobs that may break this are the four listed release-chain exclusions, each with its reason, and a mutated copy of a workflow that adds a build to a credential-holding job fails the test"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-011-AC2
+        given: "any workflow job in the repository"
+        when: "bin/job-isolation-test.sh judges every workflow file"
+        then: "the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job"
+        verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
   - id: REQ-SCAN-001
@@ -2771,6 +2826,18 @@ requirements:
         then: "that one item is exempt from the 7-day age and from nothing else: the exemption holds only when the head's installer has exactly one GO_VER, exactly one download line naming Go and it is the https://go.dev/dl/go${GO_VER} fetch, a sha256 pin of 64 hex for each of the two architectures, and the verify call on the very next line, and only for the version GO_VER names; a Go download from any other host, an unpinned or unverified one, a second Go download or any other tool at 0 days still fails; the advisory and malware audit and every other check still apply to go"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC28
+        given: "the sample project's Gradle wrapper (bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties)"
+        when: "the wrapper downloads its Gradle distribution"
+        then: "the properties file carries distributionSha256Sum, the lowercase sha256 of the distribution its distributionUrl names (the sum Gradle publishes for that zip, re-checked against the zip), so the wrapper refuses any other bytes; this is the owner's plain form for a tool download: exact version and checksum"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC29
+        given: "acceptance.yml run with an image-ref (release-chain mode)"
+        when: "the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line)"
+        then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3395,6 +3462,16 @@ requirements:
         then: "right after the build tool that job installs (melange in an apk job, apko in an assemble job) and before any download or Witness step, it installs the checksum-pinned crane with bin/install-scanner.sh crane and pulls the archive with bin/archive-pull.sh --pointer build/archive.json --out archive, each a step of a name and a run and nothing else (no env, no if, no continue-on-error, no digest of its own, no other directory or pointer), so the build runs only after a pull that exited 0 and verified every file against the committed record, and a failed pull or a missing pointer stops the job with no fallback to Wolfi or any other source; both files the step runs (bin/archive-pull.sh, bin/archive-verify.py) are rows of .github/policy/chain-scripts.json with their sha256; the workflow edit adds no new workflow file and every action stays a commit digest"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
+      # ADVISOR READING Oct 20 (handoff 0524, rules 15, 38a, 44-49 and REQ-SUP-001 as the owner ratified them): the concrete form of "build tools come from the archive only" for
+      # the sandbox melange's bubblewrap runner needs and the hosted images do not ship. Not ratified by the owner until he says so; the status below is "approved" only because
+      # the schema allows one status under an approved baseline. The script is a Python file (bin/install-host-bwrap.py), not the shell script the first reading named, so that
+      # the archive's packages are read and checked as data (tar and gzip as a library), not through a shell.
+      - id: REQ-CHAIN-004-AC17
+        given: "a Build or Rebuild apk job (the two jobs that run melange), the archive pulled into archive/ by AC16's step, and the committed build/locks/host-tools.lock (REQ-REFRESH-001-AC35)"
+        when: "the job runs"
+        then: "right after the archive pull and before any Witness step, one step runs `python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools` (a name and a run and nothing else: no env, no if, no continue-on-error, no sudo, no other argument), which takes ONLY the packages the lock names, for the job's architecture (x86_64 or aarch64), from archive/<arch>/<name>-<version>.apk, checks each one (the file is present, its control segment names the lock's name, version and this architecture, and the sha256 of its data segment equals the datahash that control segment records), unpacks the data of all of them into the new directory host-tools/ (a path that is absolute, has a .. part, a hard link, a device, or a relative symlink that leaves the directory, or one path from two packages, is refused; an absolute symlink is not created (it is skipped and logged); nothing is placed through a link), and writes /usr/local/bin/bwrap as a small wrapper that runs the extracted loader with --library-path over the extracted libraries and the extracted usr/bin/bwrap; it uses no network, no package manager and no sudo, and a lock that is empty or not closed, a missing file, an extra or colliding file, a checksum mismatch, a missing loader or bubblewrap, or a host-tools directory that already exists fails the job before the build with nothing written; an apk job installs melange, crane and the host tools from the archive, and no system package (this amends AC3 and AC5); the script is a row of .github/policy/chain-scripts.json with its sha256, the workflow edit adds no new workflow file, and the Build and Rebuild jobs run no package manager"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
 
   - id: REQ-CHAIN-005
     title: Rebuild repeats the build on a fresh machine and blocks on any difference
@@ -3470,7 +3547,7 @@ requirements:
       The `then` text of AC1, AC2 and AC3 is a PARAPHRASE of the ratified sentences with the literal auditor path replaced by 'the auditor directory' (the layout check forbids that literal in this file); the VERBATIM ratified sentences are quoted in the comments above the three entries in test-evidence/mappings.yaml, which is exempt from the layout check.
       The second review that AC3 requires is enforced outside this repository, by the private review tooling, before merge. The trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's action-pin checker, allowlist guard, pin-wiring judge and scanner guard over the pull request head, read as git objects; it judges no review record and reads no substitute. That the main branch ruleset REQUIRES the checks is not checkable from the repository and is an inspection item for the owner's settings.
       AC1 exemptions in the layout check beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries), plus mappings.yaml and unmapped.yaml (owner, Oct 2) and bin/patch-decide.py with its test (owner, Oct 3). The coverage gate's exclusion list (coverage-exclusions.txt in the auditor directory) is not in the AC2 text, so "100% coverage" is read as zero uncovered eligible statements.
-      Gate-workflow digest set (bootstrap of the scanner guard, cache PR #316): the pin checker (bin/check-action-pins.py in the auditor directory) pins the gate workflow by GATE_WORKFLOW_SHA256, a frozen set of exactly two digests, both taken by its gate_digest (action pins masked): adcfd54f (the gate workflow on main) and 699abb31 (the gate workflow of #316), so #316 can pass main's copy of the checker; a later change removes the old digest and leaves one. A third digest fails with a message naming both accepted ones. RESIDUAL by design: during the window a revert to adcfd54f passes too; the window closes when the later change leaves one.
+      Gate-workflow digest (the scanner guard, cache PR #316): the pin checker (bin/check-action-pins.py in the auditor directory) pins the gate workflow by GATE_WORKFLOW_SHA256, a frozen set of exactly one digest, 699abb31 (the gate workflow of #316), taken by its gate_digest (action pins masked). The bootstrap digest adcfd54f (the gate workflow on main before #316) was removed in the release-candidate review (rc-5b B1), so a revert of the gate workflow to it is refused. A different digest fails with a message naming the accepted one.
     acceptance_criteria:
       - id: REQ-AUD-018-AC1
         given: "any tracked file in the repository"
@@ -4366,7 +4443,7 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REFRESH-001-AC36
-        given: "a host-tools package that fails a checksum, a committed host-tools.lock that names a package version the archive does not hold, or an archived host-tools package that is damaged"
+        given: "a host-tools package that fails a checksum, a committed host-tools.lock that names a package version the archive does not hold and live Wolfi no longer resolves (a version live Wolfi still resolves is downloaded again and checked under the repair of AC17 and AC32, and a first fill fetches the committed versions), or an archived host-tools package that is damaged"
         when: "bin/refresh-inputs.sh refresh runs"
         then: "it exits non-zero naming the package and the file, keeps nothing new in the archive, changes no lock and opens no pull request (the archive is the source of truth, as for the melange lock)"
         verification: { method: unit, release_blocking: false }
@@ -4594,4 +4671,45 @@ requirements:
         when: "it is accepted"
         then: "the owner reads the page cold once; a second reader follows it on a clean machine; and pipeline's AC7 run executes every command against a candidate"
         verification: { method: manual, release_blocking: false }
+        status: approved
+
+  - id: REQ-CI-001
+    title: A required CI job that is split into parallel jobs runs every suite exactly once
+    statement: >
+      When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs
+      twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires,
+      fails unless every new job succeeded.
+    source: [ci-speed read-back of Oct 23 (advisor), the pin-wiring judge (pin-wiring-test.sh)]
+    tier: community
+    introduced: v0.3.0
+    origin: advisor Oct 23 2026 (CI speed, under the owner's rules that no check is dropped and every test runs exactly once); first use is allowlist-chain (allowlist-chain-1..4 and the gate allowlist-chain)
+    confidence: documented
+    notes: >
+      The pin-wiring judge accepts allowlist-chain in exactly two forms: the one job, or four parallel jobs plus the gate. The groups of suites per shard are
+      fixed in the judge; moving a suite to another shard is a reviewed edit of the judge, which the trusted gate runs from main. The gate fails on a missing
+      or empty result as on a failed, skipped or cancelled one.
+    acceptance_criteria:
+      - id: REQ-CI-001-AC1
+        given: "the CI workflow after a required job is split into parallel jobs"
+        when: "the steps of the split jobs are compared with the steps the job had before the split"
+        then: "every step of the old job is in exactly one of the new jobs, unchanged in name, run text and relative order, and no other step exists in them except the checkout, base-ref fetch, Python setup and pip steps each job needs"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC2
+        given: "the same workflow"
+        when: "the gate job is read"
+        then: "a job with the old job's name exists, needs every new job, has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of every needed job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure), so the required-check name is unchanged and a skipped shard cannot pass"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC3
+        given: "any job of the split"
+        when: "its keys are read"
+        then: "no `if`, `env`, `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, `needs`, id-token or secret is added at job or step level, except the gate's own `needs`, `if` and the result variables of its one step"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC4
+        given: "the pin-wiring judge"
+        when: "it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened"
+        then: "it fails for each of those mutations, and it accepts the real workflow"
+        verification: { method: unit, release_blocking: false }
         status: approved

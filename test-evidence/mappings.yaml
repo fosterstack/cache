@@ -46,7 +46,12 @@ mappings:
       - { type: go-test, ref: "internal/server:TestStatusSurfacesRespectBasicAuth" }
   - ac: REQ-AUTH-002-AC1
     evidence:
-      - { type: inspection, ref: "internal/server/server.go withAuth: crypto/subtle.ConstantTimeCompare on both fields, both always evaluated (re-verified 2026-09-11)" }
+      - { type: inspection, ref: "internal/server/server.go withAuth: crypto/subtle.ConstantTimeCompare (digestEqual) over the per-process-keyed HMAC-SHA256 digests of each field, configured digests computed once; both fields always evaluated (re-verified 2026-10-23)" }
+      - { type: go-test, ref: "internal/server:TestCredentialDigestIsFixedSize" }
+      - { type: go-test, ref: "internal/server:TestDigestEqualDecidesOnContent" }
+      - { type: go-test, ref: "internal/server:TestConfiguredDigestsAreComputedFromTheCredentials" }
+      - { type: go-test, ref: "internal/server:TestCredentialDigestIsKeyedPerHasher" }
+      - { type: go-test, ref: "internal/server:TestEmptySecretAgainstUnset" }
   - ac: REQ-AUTH-003-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestMetricsAndHealthzStayOpenWhenAuthEnabled" }
@@ -203,7 +208,7 @@ mappings:
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34711575692/job/103601176857 (same red run — incomplete/unanchored/ambiguous pairs accepted before the implementation commit)" }
   - ac: REQ-AUTH-005-AC4
     evidence:
-      - { type: inspection, ref: "internal/server/server.go withAuth — all four subtle.ConstantTimeCompare calls evaluated unconditionally; pair selection happens after both comparisons complete" }
+      - { type: inspection, ref: "internal/server/server.go withAuth — all four digestEqual calls (ConstantTimeCompare over fixed-size digests) evaluated unconditionally; pair selection happens after all comparisons complete" }
   - ac: REQ-STORE-001-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestRestartPersistence" }
@@ -407,6 +412,14 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the ac3-* cases for downloads in a job that runs a committed script" }
+  - ac: REQ-REL-011-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/job-isolation-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/job-isolation-test.sh over the real workflows and its mutated copies" }
+  - ac: REQ-REL-011-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/job-isolation-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs bin/job-isolation-test.sh over the real workflows and its mutated copies" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
@@ -494,7 +507,7 @@ mappings:
   - ac: REQ-DEP-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
-  - ac: REQ-DEP-003-AC2
+  - ac: REQ-DEP-003-AC3
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
@@ -505,6 +518,14 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
   - ac: REQ-DEP-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-003-AC2
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
@@ -719,6 +740,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/vex-index-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
   - ac: REQ-REL-010-AC2
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -726,6 +748,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/vex-index-test.sh" }
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
   - ac: REQ-REL-010-AC4
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -831,6 +854,12 @@ mappings:
   - ac: REQ-SUP-001-AC27
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC28
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
+  - ac: REQ-SUP-001-AC29
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-REPO-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
@@ -1062,6 +1091,9 @@ mappings:
   - ac: REQ-CHAIN-004-AC16
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC17
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
   - ac: REQ-CHAIN-005-AC7
     evidence:
       - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
@@ -1085,6 +1117,9 @@ mappings:
   - ac: REQ-OBS-001-AC4
     evidence:
       - { type: go-test, ref: "internal/server:TestDocsSayHealthzIsLivenessOnly" }
+  - ac: REQ-OBS-002-AC12
+    evidence:
+      - { type: go-test, ref: "internal/server:TestMethodLabelIsBounded" }
   - ac: REQ-OBS-002-AC2
     evidence:
       - { type: go-test, ref: "internal/server:TestWritableGaugeHealthyIsOneAndDocumented" }
@@ -1632,3 +1667,15 @@ mappings:
   - ac: REQ-SCAN-012-AC6
     evidence:
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
+  - ac: REQ-CI-001-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-001-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-001-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-001-AC4
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }

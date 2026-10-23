@@ -43,12 +43,12 @@ run_build /tmp/mvn-capped-b /tmp/mvn-bc-capped-b /tmp/mvn-capped-b.log \
 # version or remote outcome, so read the KEY off the filesystem.
 app_local_a=$(find /tmp/mvn-bc-capped-a -type f -path '*/app/*/local/app.jar' | head -1)
 app_local_b=$(find /tmp/mvn-bc-capped-b -type f -path '*/app/*/local/app.jar' | head -1)
-[ -n "$app_local_a" ] && [ -n "$app_local_b" ] \
+test -n "$app_local_a" && test -n "$app_local_b" \
   || { echo "::error::app module was not built into either local cache - cannot identify its key" >&2; exit 1; }
 app_key_a=$(basename "$(dirname "$(dirname "$app_local_a")")")
 app_key_b=$(basename "$(dirname "$(dirname "$app_local_b")")")
 echo "app cache key: a=${app_key_a} b=${app_key_b}"
-[ "$app_key_a" = "$app_key_b" ] \
+test "$app_key_a" = "$app_key_b" \
   || { echo "::error::app cache key differs across workspaces (${app_key_a} vs ${app_key_b}) - the oversized resource was not shared byte-for-byte" >&2; exit 1; }
 app_key="$app_key_a"
 
@@ -70,9 +70,8 @@ if find /tmp/mvn-bc-capped-a /tmp/mvn-bc-capped-b -type f -path '*/app/*/fscache
 fi
 # ...and confirm directly on the server that the real app key holds
 # no artifact: HEAD the exact remote path -> 404.
-app_code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' \
-  -I "http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar")
-[ "$app_code" = "404" ] \
+app_code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' -I "http://localhost:18099/maven/v1.1/com.fosterstack.bench/app/${app_key}/app.jar")
+test "$app_code" = "404" \
   || { echo "::error::app/${app_key}/app.jar is retrievable from the remote (${app_code}) - the oversized artifact was stored" >&2; exit 1; }
 
 # Proof 4 (small module DID round-trip): on build b the lib module
@@ -87,19 +86,18 @@ find /tmp/mvn-bc-capped-b -type f -path '*/lib/*/fscache/lib.jar' | grep -q . \
 lib_a=$(sha256sum /tmp/mvn-capped-a/lib/target/lib-*.jar | awk '{print $1}')
 lib_b=$(sha256sum /tmp/mvn-capped-b/lib/target/lib-*.jar | awk '{print $1}')
 echo "lib sha256: a=${lib_a} b=${lib_b}"
-[ "$lib_a" = "$lib_b" ] \
+test "$lib_a" = "$lib_b" \
   || { echo "::error::remotely restored lib jar differs from the uploaded bytes" >&2; exit 1; }
 
 # Mechanism check (kept, but NOT a substitute for the build evidence
 # above): the server's rejection contract, probed directly.
 head -c 524288 /dev/urandom > /tmp/mvn-oversized-probe.bin
-hdr=$(curl -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT \
-  --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)
+hdr=$(curl -s -u mvn:acceptance-secret -D - -o /dev/null -X PUT --data-binary @/tmp/mvn-oversized-probe.bin http://localhost:18099/maven/oversizedprobe)
 grep -q '^HTTP/[0-9.]* 413' <<<"$hdr" || { echo "::error::oversized probe was not 413" >&2; exit 1; }
 grep -qi '^X-FSCache-Reject: entry-exceeds-cache-cap' <<<"$hdr" \
   || { echo "::error::413 lacks the X-FSCache-Reject: entry-exceeds-cache-cap header" >&2; exit 1; }
 code=$(curl -s -u mvn:acceptance-secret -o /dev/null -w '%{http_code}' -I http://localhost:18099/maven/oversizedprobe)
-[ "$code" = "404" ] || { echo "::error::rejected entry is retrievable (${code}) - it was stored" >&2; exit 1; }
+test "$code" = "404" || { echo "::error::rejected entry is retrievable (${code}) - it was stored" >&2; exit 1; }
 echo "REQ-EVICT-002-AC4: identical app key ${app_key} across builds; oversized app upload 413'd and absent from the remote; small lib restored remotely byte-for-byte; reject mechanism verified"
 )
 

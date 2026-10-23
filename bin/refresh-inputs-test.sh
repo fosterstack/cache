@@ -1649,6 +1649,10 @@ t "AC36" "refresh: a downloaded host-tools package that fails its checksum stops
 mkrepo; printf 'busybox=1.37.0-r5\nca-certificates-bundle=20260102-r0\nnosuchtool=9.9.9-r0\n' >"$work/rp/build/locks/host-tools.lock"
 run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "AC36" "refresh: the committed host-tools.lock names a package the archive does not hold: exit 1 naming host-tools.lock and the file, nothing changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'host-tools.lock' '$work/log' && grep -q 'nosuchtool-9.9.9-r0.apk' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
+# AC36 (round 1 of cache#491): a committed host version that live Wolfi still resolves and the archive lacks is downloaded again (the repair of AC17/AC32), not refused
+mkrepo; rm -rf "$work/lv"; cp -R "$fx/live" "$work/lv"; for a in x86_64 aarch64; do mkdir -p "$work/lv/$a"; cp "$work/ar/$a/busybox-1.37.0-r5.apk" "$work/lv/$a/"; done; rm -f "$work"/ar/*/busybox-1.37.0-r5.apk
+run_s2 "${rfe[@]}" STUB_CURL_DIR="$work/lv" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC36" "refresh: a host package the committed lock names and live Wolfi still resolves is downloaded again when the archive lacks it (exit 0, restored, verified)" bash -c "test \"\$(cat '$work/rc')\" = 0 && ls '$work'/ar/*/busybox-1.37.0-r5.apk >/dev/null 2>&1"
 # AC36: a damaged archived copy of a host package stops the job on every run
 mkrepo; bb=$(ls "$work/ar/x86_64/" | grep '^busybox-' | head -1); printf 'X' >>"$work/ar/x86_64/$bb"
 run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"

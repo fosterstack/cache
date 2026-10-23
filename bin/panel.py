@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The daily rescan's scanner panel tally (scanner-panel rules 3-6, ratified by the owner Oct 2; REQ-SCAN-003..006).
-Each scanner job leaves its raw output per image under <in>/<scanner>/<image>/:
+Each scanner job leaves its raw output per image under <scanner>/<image>/ in its own artifact panel-<scanner>; the download lays them out as <in>/panel-<scanner>/<scanner>/<image>/ (one folder per artifact, never merged):
 
   grype      result.cdx.json   CycloneDX from `grype --vex <our VEX> -o cyclonedx-json` (VEX applied by Grype)
   scout      sbom.json         `docker scout sbom --format json`
@@ -52,14 +52,24 @@ def _load(path):
     return json.loads(text)
 
 
+def _product_id(p):
+    """A product's identifier as the PR gate's vex_index reads it: @id, else identifiers.purl."""
+    ids = p.get("identifiers")
+    return p.get("@id") or (ids.get("purl") if isinstance(ids, dict) else None) or ""
+
+
 def _covers(product, image):
     """Does a statement's product cover this image? The repository-wide product covers every image; a product scoped
     with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names. The product is
     read by the PR gate's own grammar (inspector-gate.py::scope_of, the rescan's _parse_product): a product it does not
-    accept (a repeated, upper-case, blank, encoded or unknown qualifier, a pinned or foreign product) covers NO image."""
-    scope = _gate.scope_of(str(product))
+    accept (a repeated, upper-case, blank, encoded or unknown qualifier, a pinned or foreign product) covers NO image, and an
+    OCI product must be this image's own repository (pkg:oci/cache, never cache-candidates), as rescan-statement.py::_vex_match requires."""
+    pid = str(product)
+    scope = _gate.scope_of(pid)
+    if scope is None or (pid.startswith("pkg:oci/") and pid.split("?", 1)[0] != "pkg:oci/cache"):
+        return False
     variant, _, arch = image.rpartition("-")
-    return scope is not None and scope.get("variant", variant) == variant and scope.get("arch", arch) == arch
+    return scope.get("variant", variant) == variant and scope.get("arch", arch) == arch
 
 
 def load_vex(path):
@@ -70,7 +80,7 @@ def load_vex(path):
     for img in sorted({i for imgs in EXPECTED.values() for i in imgs}):
         stmts = []
         for st in doc.get("statements") or []:
-            prods = [p for p in st.get("products") or [] if _covers(p.get("@id", ""), img)]
+            prods = [p for p in st.get("products") or [] if _covers(_product_id(p), img)]
             if not prods:
                 continue
             for p in prods:
@@ -272,12 +282,47 @@ def render_issue(reported):
     return "\n".join(lines) + "\n"
 
 
-def tally(root, vexidx):
+# a scanner's diagnostics the producing job writes beside its results (Scout's raw attestation reports); read by nobody here, allowed so the real artifact is not refused
+DIAG = {"scout": {"scout-diag"}}
+
+
+class LayoutError(Exception):
+    pass
+
+
+def scanner_dirs(inp):
+    """The downloaded artifacts laid out as <inp>/panel-<scanner>/<scanner>/<image>/ (one folder per artifact, never merged): {scanner: the folder holding its images}.
+    A folder that is not panel-<one of the panel's scanners>, a plain file or a link there, an artifact folder holding anything but its own scanner's folder (another scanner's
+    output, a stray file) is refused: one scanner's job can never write another scanner's result. A scanner with no artifact is simply absent (the tally calls it did-not-run)."""
+    dirs = {}
+    try:
+        names = sorted(os.listdir(inp))
+    except OSError as ex:
+        raise LayoutError("the panel artifacts folder %s cannot be read (%s)" % (inp, type(ex).__name__))
+    for n in names:
+        path = os.path.join(inp, n)
+        scanner = n[len("panel-"):] if n.startswith("panel-") else None
+        if scanner not in EXPECTED or os.path.islink(path) or not os.path.isdir(path):
+            raise LayoutError("%s is not the artifact of a panel scanner (expected a plain folder panel-%s)" % (n, "|".join(sorted(EXPECTED))))
+        inner = sorted(os.listdir(path))
+        if [x for x in inner if x not in ({scanner} | DIAG.get(scanner, set()))] or scanner not in inner:
+            raise LayoutError("%s holds %s, not only %s%s: one scanner's artifact never carries another scanner's output" % (n, " ".join(inner) or "nothing", scanner, (" and " + " ".join(sorted(DIAG[scanner]))) if scanner in DIAG else ""))
+        for x in inner:
+            if x != scanner and (os.path.islink(os.path.join(path, x)) or not os.path.isdir(os.path.join(path, x))):
+                raise LayoutError("%s/%s is not a plain folder" % (n, x))
+        sub = os.path.join(path, scanner)
+        if os.path.islink(sub) or not os.path.isdir(sub):
+            raise LayoutError("%s/%s is not a plain folder" % (n, scanner))
+        dirs[scanner] = sub
+    return dirs
+
+
+def tally(root, vexidx, dirs=None):
     images, findings, covered_log = {}, {}, []
     for s, imgs in EXPECTED.items():
         for img in imgs:
             st = images.setdefault(img, {"counts": {}, "did_not_run": [], "ran": []})
-            d = os.path.join(root, s, img)
+            d = os.path.join(root, s, img) if dirs is None else os.path.join(dirs[s], img) if s in dirs else None     # no artifact for the scanner: it did not run
             try:
                 n, found = READ[s](d)
             except (OSError, ValueError, AttributeError, TypeError):
@@ -358,7 +403,12 @@ def main(argv=None):
         with open(a.log, errors="replace") as f:
             json.dump(google_packages(f.read()), sys.stdout)
         return 0
-    v = tally(a.inp, load_vex(a.vex))
+    try:
+        dirs = scanner_dirs(a.inp)
+    except LayoutError as ex:
+        print("::error::scanner panel: %s — a pipeline failure, never a clean result" % ex)
+        return 2
+    v = tally(a.inp, load_vex(a.vex), dirs)
     os.makedirs(a.out, exist_ok=True)
     json.dump(v, open(os.path.join(a.out, "verdict.json"), "w"), indent=1)
     open(os.path.join(a.out, "summary.md"), "w").write(summary(v))

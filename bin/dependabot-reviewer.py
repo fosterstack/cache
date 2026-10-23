@@ -8,7 +8,7 @@ secrets, so the federation identity is only reachable from a scheduled run on ma
 
 Subcommands (each one is small and testable on its own; the workflow strings them together):
 
-  updates  --title T --body-file F           -> JSON list of {name, from, to, major}
+  updates  --title T --body-file F           -> JSON list of {name, from, to, major, flagged, review}
   gather   --pr N --updates F --out DIR       -> DIR/bundle.md (diff + release notes + our usage)
   read     --bundle F --prompt F --model-env NAME --out F
                                               -> one reader's ranked findings (JSON)
@@ -20,7 +20,8 @@ any `breaks-us` => hold; a reader that failed or answered unparseably => error (
 posted; the next hourly run retries). Readers return RANKED FINDINGS, never a verdict
 (row 51). No vendor or model name appears in any output (row 48): model ids are masked.
 """
-import argparse, json, os, re, subprocess, sys
+import argparse, html, json, os, re, subprocess, sys
+from html.parser import HTMLParser
 
 SEVERITIES = ("breaks-us", "check", "noise")
 # The reader's whole budget: any reasoning it does before answering counts against it too. 2048
@@ -116,7 +117,7 @@ def is_major(old, new):
     return a is not None and b is not None and a != b
 
 
-_DETAILS = re.compile(r"<details>(?:(?!<details>).)*?</details>", re.S | re.I)
+_DETAILS = re.compile(r"<details(?:\s[^>]*)?>(?:(?!<details[\s>]).)*?</details\s*>", re.S | re.I)
 
 
 def dependabot_summary(body):
@@ -130,11 +131,95 @@ def dependabot_summary(body):
     return s
 
 
+_FLAG = re.compile(r"breaking|deprecat", re.I)
+_MDADJ = re.compile(r"[A-Za-z0-9]\[|\][A-Za-z0-9]|\]\([^\n]*\)[A-Za-z0-9]|\]\[[^\]\n]*\][A-Za-z0-9]")
+_MDEXOTIC = re.compile(r"\\[\[\]]|\]\(\s*<|&(?:#0*(?:91|93)|#x0*(?:5b|5d)|lbrack|rbrack|lsqb|rsqb);", re.I)
+_MDLINK = re.compile(r"\]\(|\]\[|\]:")
+_CHARREF = re.compile(r"&(?:#|[A-Za-z][A-Za-z0-9]*;)")
+_MDLABEL = re.compile(r"\]\[[^\]]*\]")
+_MDDEF = re.compile(r"(?m)^ {0,3}\[[^\]\n]+\]:.*$")
+
+
+class _Text(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
+def _drop_targets(v, quotes):
+    # Markdown inline link/image targets `](...)`, parentheses balanced, over lines; quotes=True also honours a quoted title that holds a ')'.
+    # An unterminated target is unresolvable: None.
+    out, i, n = [], 0, len(v)
+    while i < n:
+        if v.startswith("](", i):
+            j, depth, inq = i + 2, 1, None
+            while j < n and depth > 0:
+                c = v[j]
+                if c == "\\":
+                    j += 2
+                    continue
+                if quotes and inq is None and c in "\"'" and v[j - 1] in " \t\n":
+                    inq = c
+                elif quotes and inq == c:
+                    inq = None
+                elif inq is None:
+                    depth += 1 if c == "(" else -1 if c == ")" else 0
+                j += 1
+            if depth > 0:
+                return None
+            i = j
+            continue
+        out.append(v[i])
+        i += 1
+    return "".join(out)
+
+
+def is_flagged(body):
+    """True when a Dependabot PR body says "breaking" or "deprecat" (any case) as a reader would see it. The release notes and commit
+    list between old and new are the body's <details> blocks, but markup makes block boundaries unreliable, so the WHOLE body is read and any
+    hit counts: over-flagging only sends a bump to the two readers, never toward auto-merge (tighten-only). Views, any one of which counts:
+    the raw body; with character references decoded; the HTML-rendered text (tags and comments dropped, nothing put in their place); and for
+    each of those the letters and digits only, also with Markdown link targets (balanced parentheses, with and without a quoted title),
+    reference labels and reference definitions removed first, so formatting, links and references between a word's pieces vanish. A body
+    the parser cannot read, an unterminated link target, a word character touching link syntax, an escaped or encoded bracket, an <angle> destination,
+    any character reference in a body that has link syntax, or link syntax left over after every reduction is flagged (fail toward the readers: the class is closed, not enumerated).
+    A non-major so flagged is judged like a major (REQ-DEP-001-AC10)."""
+    raw = str(body or "")
+    try:
+        p = _Text()
+        p.feed(raw)
+        p.close()
+        views = (raw, html.unescape(raw), "".join(p.parts))
+        if _MDADJ.search(raw) or _MDEXOTIC.search(raw):   # link syntax this check does not resolve: an escaped bracket, an <angle> destination, an encoded bracket
+            return True
+        if _MDLINK.search(raw) and _CHARREF.search(raw):   # a character reference (numeric in any spelling, or named with ';'; a URL's &key=value is not one) in a body that has
+            return True                                    # link syntax can spell a bracket or parenthesis of the destination: not resolved here, the readers decide
+        more = []
+        for v in views:
+            more.append(v)
+            for q in (False, True):
+                t = _drop_targets(v, q)
+                if t is None:
+                    return True
+                t = _MDDEF.sub("", _MDLABEL.sub("", t))
+                if "](" in t or "][" in t:   # link syntax that survives every reduction is unresolved
+                    return True
+                more.append(t)
+        views += tuple(re.sub(r"[^A-Za-z0-9]", "", v) for v in more)
+        return any(_FLAG.search(v) for v in views + tuple(more))
+    except Exception:
+        return True
+
+
 def parse_updates(title, body):
     """Every (name, from, to) Dependabot names in the PR body's own summary ("Bumps X from A
     to B." or, for a group, one "Updates `X` from A to B" line per member), falling back to
     the title."""
     found, seen = [], set()
+    flagged = is_flagged(body)
     for src in (dependabot_summary(body), title or ""):
         for m in _BUMPS.finditer(src):
             name, old, new = m.group(1), m.group(2), m.group(3).rstrip(".")
@@ -142,9 +227,16 @@ def parse_updates(title, body):
             if key in seen:
                 continue
             seen.add(key)
-            found.append({"name": name, "from": old, "to": new, "major": is_major(old, new)})
+            major = is_major(old, new)
+            found.append({"name": name, "from": old, "to": new, "major": major,
+                          "flagged": flagged and not major, "review": major or flagged})
         if found:
             break
+    if not found and flagged:
+        # Flagged, but the update lines cannot be read (markup, an odd title): never silently the patch/minor
+        # lane's. One placeholder so the readers judge the diff; it names no repository, so no notes are fetched.
+        found.append({"name": "(unparsed Dependabot update)", "from": "?", "to": "?", "major": False,
+                      "flagged": True, "review": True})
     return found
 
 
@@ -320,12 +412,12 @@ def cmd_gather(a):
         sys.exit(3)
     parts = ["# Bundle for Dependabot PR #%s\n" % a.pr,
              "## Updates in this PR\n",
-             "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "MAJOR" if u["major"] else "not major")
+             "\n".join("- %s: %s -> %s (%s)" % (u["name"], u["from"], u["to"], "FLAGGED: its release notes say breaking or deprecated" if u.get("flagged") else "MAJOR" if u["major"] else "not major")
                        for u in updates) + "\n",
              "## The PR diff\n\n```diff\n%s```\n" % (diff or "(empty diff)\n")]
     notes, unavailable = 0, []
     for u in updates:
-        if not u["major"]:
+        if not u.get("review", u["major"]):
             continue
         text, count = release_notes(u["name"], u["from"], u["to"])
         if count is None:
@@ -341,8 +433,8 @@ def cmd_gather(a):
     if unavailable:  # labeled in the bundle (kept as evidence) and an error: no reader, no verdict, retried
         sys.stderr.write("gather: UNAVAILABLE — %s; no review this hour\n" % "; ".join(unavailable))
         sys.exit(4)
-    print("bundle: %d characters, %d update(s), %d major, %d upstream release note(s)%s"
-          % (len(text), len(updates), sum(1 for u in updates if u["major"]), notes,
+    print("bundle: %d characters, %d update(s), %d to review (major or flagged), %d upstream release note(s)%s"
+          % (len(text), len(updates), sum(1 for u in updates if u.get("review", u["major"])), notes,
              "" if notes else " — NONE found; the readers judge from the diff and our usage only"))
 
 
