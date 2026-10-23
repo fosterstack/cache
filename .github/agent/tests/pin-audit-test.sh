@@ -1202,5 +1202,27 @@ gh, osv = net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
 assert [g["id"] for g in gh] == ["GHSA-aaaa-bbbb-cccc"] and gh[0]["affected"], gh
 PY
 
+CASE="proxy: a 200 answer that is not a module info object ([], null, {}, a non-empty array, a missing, null or empty Version) is CouldNotLook, never 'module not found' (strict mode only)"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+for body in (b"[]", b"null", b"{}", b"[1]", b'{"Version": null}', b'{"Version": ""}', b'{"Version": 3}', b"not json"):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    try:
+        age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("no CouldNotLook", body))
+urllib.request.urlopen = lambda *a, **k: R(b'{"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"}')
+mod, info = age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+assert info["Version"] == "v1.0.0", (mod, info)
+urllib.request.urlopen = lambda *a, **k: R(b"[1]")
+assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None)      # the age check's lenient mode no longer crashes on a list
+PY
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

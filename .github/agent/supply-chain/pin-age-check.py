@@ -158,13 +158,16 @@ def _http_json_strict(url, timeout=30):
     """Like _http_json, but only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
-            return json.load(r)
+            got = json.load(r)
     except urllib.error.HTTPError as e:
         if e.code in (404, 410):
             return None
         raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
     except (OSError, ValueError) as e:
         raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
+    if got is None:
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered with an empty body")      # "not there" is a 404, never a null answer
+    return got
 
 
 TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version)
@@ -229,7 +232,9 @@ def _go_module(path, version, strict=False):
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
         info = (_http_json_strict if strict else _http_json)(f"https://proxy.golang.org/{urllib.parse.quote(mod, safe='/').lower()}/@v/{urllib.parse.quote(version)}.info")
-        if info and info.get("Version"):
+        if strict and info is not None and not (isinstance(info, dict) and isinstance(info.get("Version"), str) and info["Version"]):
+            raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")      # a 200 we cannot read is not "module not found"
+        if isinstance(info, dict) and info.get("Version"):
             return mod, info
     return None, None
 
