@@ -36,6 +36,10 @@ import json, os, sys
 tool = os.path.basename(sys.argv[0]); args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as fh:
     fh.write(json.dumps([tool] + args) + "\n")
+if os.environ.get("FAKE_ENVLOG"):
+    with open(os.environ["FAKE_ENVLOG"], "a") as fh:
+        fh.write(json.dumps({"tool": tool, "args": args, "cwd": os.path.realpath(os.getcwd()),
+                             "GOTOOLCHAIN": os.environ.get("GOTOOLCHAIN"), "GOFLAGS": os.environ.get("GOFLAGS")}) + "\n")
 TAG = ":ghcr.io/fosterstack/cache:cand-production"
 for r in json.load(open(os.environ["FAKE_CFG"])):
     if r["tool"] != tool:
@@ -118,7 +122,8 @@ class Harness(unittest.TestCase):
         self.kdl = os.path.join(self.tmp, "kdl.json"); _wr(self.kdl, "{}")
         self.out = os.path.join(self.tmp, "out", "manifest.json")
         self.oci = os.path.join(self.reports, "candidate.oci"); self.tar = os.path.join(self.reports, "candidate.tar")
-        self.env = {"PATH": self.fb, "FAKE_LOG": self.log, "FAKE_CFG": self.cfg, "AUDITOR_TODAY": "2026-09-27"}
+        self.envlog = os.path.join(self.tmp, "env.log"); _wr(self.envlog, "")
+        self.env = {"PATH": self.fb, "FAKE_LOG": self.log, "FAKE_ENVLOG": self.envlog, "FAKE_CFG": self.cfg, "AUDITOR_TODAY": "2026-09-27"}
 
     def rules(self, rules):
         _wr(self.cfg, json.dumps(rules))
@@ -258,6 +263,61 @@ class MainHappy(Harness):
         self.assertEqual(str(cm.exception),
                          "auditor-manifest: cannot ingest the candidate — no production OCI layout directory (images/production) in the rescan artifacts")
         self.assertEqual(self.argv(), [])
+
+
+HEAD40 = "0123456789abcdef0123456789abcdef01234567"
+
+
+class SourceBinding(Harness):
+    """rc-5b fix 4 (handoff 0663, ruling A2): the source scan runs on the tree it is told to (the selected rescan's head), stamps that head,
+    and is recorded 'did not run' when there is no such tree."""
+
+    panel_dir = MainHappy.panel_dir
+
+    def gv(self):
+        return [json.loads(l) for l in _rd(self.envlog).splitlines() if l.strip() and json.loads(l)["tool"] == "govulncheck" and "-json" in json.loads(l)["args"]]
+
+    def test_the_scan_runs_in_the_source_dir_and_stamps_the_given_head(self):
+        self.rules(GOOD_RULES)
+        self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40), env_extra={"GITHUB_SHA": "f" * 40})
+        m = _rj(self.out)
+        self.assertEqual(m["commit"], HEAD40)
+        self.assertEqual(m["govulncheck"]["commit"], HEAD40)
+        (call,) = self.gv()
+        self.assertEqual(call["cwd"], os.path.realpath(self.source))      # never the process's own directory
+
+    def test_a_foreign_tree_cannot_fetch_a_toolchain_or_modules(self):
+        self.rules(GOOD_RULES)
+        self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
+        (call,) = self.gv()
+        self.assertEqual((call["GOTOOLCHAIN"], call["GOFLAGS"]), ("local", "-mod=vendor"))
+
+    def test_a_commit_that_is_not_40_hex_is_refused(self):
+        self.rules(GOOD_RULES)
+        for bad in ("abc123", "", "unknown", HEAD40.upper(), HEAD40 + "0", HEAD40[:-1] + "g", "HEAD", HEAD40[:-1] + "\n"):
+            with self.assertRaises(SystemExit, msg=repr(bad)):
+                self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", bad))
+        self.assertFalse(os.path.exists(self.out))
+
+    def args_without_source(self):
+        a = self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40)
+        i = a.index("--source-dir")
+        return a[:i] + a[i + 2:]
+
+    def test_no_source_dir_is_did_not_run_never_the_current_directory(self):
+        self.rules(GOOD_RULES)
+        out = self.run_main(self.args_without_source())
+        self.assertEqual(self.gv(), [])
+        self.assertIsNone(_rj(self.out)["govulncheck"])
+        self.assertIn("govulncheck did not run", out)
+
+    def test_a_source_dir_that_is_not_a_directory_is_did_not_run(self):
+        self.rules(GOOD_RULES)
+        for bad in (os.path.join(self.tmp, "nope"), ""):
+            a = self.args_without_source() + ["--source-dir", bad]
+            self.run_main(a)
+            self.assertIsNone(_rj(self.out)["govulncheck"], repr(bad))
+        self.assertEqual(self.gv(), [])
 
 
 class MainDegraded(Harness):
