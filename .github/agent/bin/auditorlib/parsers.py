@@ -268,6 +268,20 @@ def parse_panel(path, scanner):
             rec["extra"]["known_exploited"] = True
         rec["aliases"] = sorted(set(rec["aliases"]) | set(mine.get("aliases") or []))
         rec["extra"]["by_image"][f["image"]] = {"seen_by": sorted(f["seen_by"]), "of": f["of"], "unique": f["unique"]}
+    # What the tally recorded as HIDDEN by our published VEX for this scanner (its Inspector and Google results are filtered against the document, bin/panel.py): a carried
+    # statement must stay re-judgeable each run, so each entry is emitted as a finding flagged `carried` (rc-5b fix 5, REQ-AUD-2 AC7, REQ-AUD-13 AC7). It carries no package URL of its
+    # own (the tally keeps package and version); the run resolves it to the carried statement's scope, or drops it when no carried statement matches.
+    for c in d["vex_covered"]:
+        if c["scanner"] != scanner:
+            continue
+        purl = "pkg:generic/%s@%s" % (c["package"], c["version"])
+        key = (c["id"], purl)
+        rec = seen.get(key)
+        if rec is None:
+            rec = seen[key] = _finding(scanner, c["id"], purl, (), c["package"], None, None,
+                                       {"images": [], "version": c["version"], "by_image": {}, "carried": True})
+        if c["image"] not in rec["extra"]["images"]:
+            rec["extra"]["images"].append(c["image"])
     for rec in seen.values():
         rec["extra"]["images"].sort()
     return list(seen.values())

@@ -73,6 +73,38 @@ def _sub_purl(sc):
     return sc.get("@id") or ((sc.get("identifiers") or {}).get("purl"))
 
 
+def _resolve_carried(groups, carried_stmts):
+    """rc-5b fix 5: the panel's vex_covered entries arrive as findings flagged `carried` with a generic package URL (parsers.parse_panel). Resolve each to the scope of the carried
+    statement that names the same CVE (or an alias) and the same package and version, so the statement is re-judged this run like any visible finding; a flagged entry no carried
+    statement matches is dropped (nothing carries it). Returns the CVE ids of the carried statements that NO scanner (visible or hidden-by-our-VEX) reports this run."""
+    by_cve = {}
+    for s in carried_stmts:
+        nm = (s.get("vulnerability") or {}).get("name")
+        if nm:
+            by_cve.setdefault(nm, []).append(sorted(_scope_key(s)[1]))
+    for cid in list(groups):
+        grp = groups[cid]
+        keep = []
+        for f in grp["findings"]:
+            if not (f.get("extra") or {}).get("carried"):
+                keep.append(f)
+                continue
+            for cve in {cid} | set(grp["aliases"]):
+                for purls in by_cve.get(cve, []):
+                    for p in purls:
+                        pn, pv = PARS._panel_module()._purl_name_version(p)
+                        if pn == f.get("package") and pv == (f.get("extra") or {}).get("version"):
+                            keep.append(PARS._finding(f["scanner"], f["finding_id"], p, f.get("aliases") or (), f.get("package"), None, None,
+                                                      dict(f["extra"], carried=True)))
+        grp["findings"] = keep
+        if not keep:
+            del groups[cid]
+    seen_ids = set()
+    for grp in groups.values():
+        seen_ids |= set(grp["aliases"]) | {grp["id"]}
+    return sorted(nm for nm in by_cve if nm not in seen_ids)
+
+
 def _scope_key(statement):
     """The canonical scope of a VEX statement (REQ-AUD-13 AC1): (sorted product @ids, the sorted
     SET of subcomponent package-URLs). Order- and representation-insensitive and de-duplicated;
@@ -1608,6 +1640,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
     carried_expiry = {}; carried_scopes = set(); carried_status = {}; carried_not_pullable = set()
     carried_lift_trigger = {}
+    carried_stmts = []
     ws0 = os.environ.get("GITHUB_WORKSPACE")
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
@@ -1616,6 +1649,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         prev_id_to_scope = {}
         try:
             pv = json.load(open(os.path.join(ws0, ".vex", "fosterstack-cache.openvex.json")))
+            carried_stmts = list(pv.get("statements", []))
             for s in pv.get("statements", []):
                 if s.get("@id"):
                     prev_id_to_scope[s["@id"]] = _scope_key(s)
@@ -1652,6 +1686,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                         carried_lift_trigger[key] = it["lift_trigger"]
         except Exception:
             carried_expiry = {}
+    state["not_rechecked"] = _resolve_carried(groups, carried_stmts)      # carried statements no scanner reports: listed in the report, never kept silently
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production"),
@@ -2264,6 +2299,8 @@ def _render(m, rows, sections, would, status, dry, adjudicator, consistency, fs_
     L.append("**Scanners:** " + "; ".join(ran_lines) if ran_lines else "**Scanners:** none inventoried")
     if notrun_lines:
         L.append("**Did not run:** " + "; ".join(notrun_lines))
+    if (state or {}).get("not_rechecked"):       # a carried statement no scanner reports this run (our VEX hides it from every scanner): kept as it is, never re-judged, and said so
+        L.append("**Not re-checkable (hidden from all scanners):** " + ", ".join(state["not_rechecked"]))
     # Inventory quorum honesty (scanner-panel rule 3): which images counted, which scanners ran everywhere, which did not run.
     qi = quorum_info or {}
     agreed = qi.get("agreed") or []
