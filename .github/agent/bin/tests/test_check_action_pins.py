@@ -1029,10 +1029,14 @@ class UsesWriters(unittest.TestCase):
         self.assertEqual(code, 0, out)
 
     def test_a_later_writer_over_the_base_sha_fence_directory_drops_it(self):
-        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/download-artifact", name="x", path="trusted")
+        # a writer whose path does not name the fence directory (here the whole workspace) is the case only the drop loop catches: with the loop the script is a plain
+        # path again ("not a committed file"); without it, it would still resolve as main's copy
+        steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/download-artifact", name="x", path=".")
         d = self.job(steps, run="bash trusted/bin/tool.sh")
         code, out = run([d])
         self.assertEqual(code, 1, out)
+        self.assertIn("runs trusted/bin/tool.sh, which is not a committed file", out)
+        self.assertNotIn("bin/tool.sh is changed by the job before it runs", out)
 
     def test_a_later_default_checkout_drops_the_fence_directory(self):
         steps = self.uses("actions/checkout", ref=self.BASE, path="trusted") + self.uses("actions/checkout")   # a default checkout fills the workspace itself

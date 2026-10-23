@@ -2847,9 +2847,7 @@ def _writer_dir(value):
     "~/.cache/x") that is provably not the workspace. Anything this check cannot place by reading it writes everywhere, written ".",
     fail closed: "${{ }}", a "$", a quote, "..", the workspace's own absolute path and every parent of it ("/", "/home", "/home/runner",
     "/github", "~", "~/work/..."). Outside means exactly /tmp, runner.temp and ~/<anything but work> (rc-5b 618 fix, Fable ruling)."""
-    v = str(value).strip().strip("\"'")
-    if not v:
-        return "."
+    v = str(value).strip().strip("\"'")           # an empty path normalises to "." below (the checkout's own directory)
     m = re.match(r"\$\{\{\s*runner\.temp\s*\}\}(/.*)?$", v)      # only the expression: the runner does not expand $RUNNER_TEMP in a with: value, so that is a relative directory
     if m:
         rest = m.group(1) or ""
