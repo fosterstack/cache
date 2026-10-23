@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
+# proves: REQ-SUP-001-AC33, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
 # RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/check-stage.sh and PR 2's
 # bin/witnessed.sh do not exist): step 4.
 #
@@ -617,6 +617,7 @@ cat > "$fake/docker" <<'EOF'
 echo "docker $* ${DOCKER_DEFAULT_PLATFORM:+--platform $DOCKER_DEFAULT_PLATFORM}" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
 case "$1" in
   load) [ "$(tar -tf "${3:-x}" 2> /dev/null | grep -c 'index.json')" -ge 1 ] || { echo "docker: load: not an OCI layout archive" >&2; exit 1; }
+        tar -tf "${3:-x}" > "$FAKE_DIR/members-$(basename "${3:-x}" .tar)" 2> /dev/null
         img=$(basename "${3:-x}" .tar); echo "Loaded image: fscache:$img";;
   run) for a in "$@"; do case "$a" in fscache:production|*production*) v=production;; fscache:fips|*fips*) v=fips;; esac; done
        [ -f "$FAKE_DIR/run-fails" ] && { echo "docker: start failed" >&2; exit 125; }
@@ -644,6 +645,21 @@ resetf() { rm -rf "$work/fakedir"; mkdir -p "$work/fakedir"; st production "$GOO
 resetf; want_ok "AC6 fips active with the validated module v1.0.0 and production off: exit 0" "${FIPS[@]}"
 if [ -f "$fx/out/fips-result.json" ] && jq -e '(.images | length) == 2' "$fx/out/fips-result.json" > /dev/null 2>&1 && ! grep -q 5247 "$fx/out/fips-result.json"; then ok "AC6 the result lists both images and does not report the certificate number (it is a documented mapping, not something a binary reports)"; else bad "AC6 fips-result.json shape, or it reports the certificate number"; fi
 if [ "$(grep -c '^docker run' "$work/log" 2> /dev/null || echo 0)" = 2 ] && [ -f "$work/fakedir/removed" ] && [ "$(wc -l < "$work/fakedir/removed")" -ge 2 ]; then ok "AC6 both candidate images were started and both containers removed"; else bad "AC6 each candidate must be started (docker run) and removed"; fi
+# ---- REQ-SUP-001-AC33: docker load gets the layout's named members only (the three Check scripts that load a candidate) --------------------
+orphan=$(printf orphan | python3 -c 'import hashlib,sys;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
+plant_stray() { # LAYOUT: a root manifest.json (docker would read a layout holding one as a docker-save archive), a stray tar and a hash-valid blob nothing names
+  printf '[{"Config":"blobs/sha256/%s","RepoTags":null,"Layers":[]}]' "$(printf '%064d' 1)" > "$1/manifest.json"; printf 'a layer of somebody else' > "$1/fake.tar"; printf orphan > "$1/blobs/sha256/$orphan"
+}
+unplant_stray() { rm -f "$1/manifest.json" "$1/fake.tar" "$1/blobs/sha256/$orphan"; }
+members_only() { # FILE (what the fake docker was given): oci-layout and index.json, then blobs by name; nothing else, and not the unreferenced blob
+  [ -s "$1" ] && grep -qx 'oci-layout' "$1" && grep -qx 'index.json' "$1" && ! grep -qvxE 'oci-layout|index\.json|blobs/sha256/[0-9a-f]{64}' "$1" && ! grep -q "$orphan" "$1"
+}
+plant_stray "$fx/images/production"; plant_stray "$fx/images/fips"
+resetf; want_ok "AC33 fips: a layout holding a stray manifest.json, a fake.tar and an unreferenced blob still passes" "${FIPS[@]}"
+for v in production fips; do
+  if members_only "$work/fakedir/members-$v"; then ok "AC33 check-fips loads the $v layout from its named members only"; else bad "AC33 check-fips handed docker load: $(tr '\n' ' ' < "$work/fakedir/members-$v" 2> /dev/null | cut -c1-200)"; fi
+done
+unplant_stray "$fx/images/production"; unplant_stray "$fx/images/fips"
 resetf; st fips '{"fips140":false,"fips140_note":"off"}'
 want_fail "AC6 the -fips image reporting off fails naming fips" fips "${FIPS[@]}"
 resetf; st fips '{"fips140":true,"fips140_note":"active (fips140 mode forced at runtime; not the validated-module build)"}'
@@ -754,6 +770,7 @@ cat > "$fake2/docker" <<'DKEOF'
 echo "docker $* ${DOCKER_DEFAULT_PLATFORM:+--platform $DOCKER_DEFAULT_PLATFORM}" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
 case "$1" in
   load) [ "$(tar -tf "${3:-x}" 2> /dev/null | grep -c 'index.json')" -ge 1 ] || { echo "docker: load: not an OCI layout archive" >&2; exit 1; }
+        tar -tf "${3:-x}" > "$FAKE_DIR/members-$(basename "${3:-x}" .tar)" 2> /dev/null
         echo "Loaded image: fscache:$(basename "${3:-x}" .tar)";;
   run)
     ep=""; img=""; detach=0; nm=""
@@ -788,6 +805,12 @@ if [ -f "$fa/out/artifacts-result.json" ] && jq -e '.production.digest and .fips
 if ! grep -q 5247 "$fa/out/artifacts-result.json" 2> /dev/null; then ok "ART the result does not repeat the certificate number (documented mapping only)"; else bad "ART the certificate number is in the result"; fi
 if [ "$(grep -c '^docker run -d' "$work/log" 2> /dev/null || echo 0)" = 0 ]; then :; fi
 arun -- "${ART[@]}"; if grep -Fq 'FSCACHE_USERNAME' "$work/log" && ls "$work"/fakedir/srv-* > /dev/null 2>&1; then bad "ART containers were left running"; else ok "ART the containers are removed at the end and the -fips image is started with credentials"; fi
+plant_stray "$fa/images/production"; plant_stray "$fa/images/fips"
+aok "AC33 artifacts: a layout holding a stray manifest.json, a fake.tar and an unreferenced blob still passes" -- "${ART[@]}"
+for v in production fips; do
+  if members_only "$work/fakedir/members-$v"; then ok "AC33 check-artifacts loads the $v layout from its named members only"; else bad "AC33 check-artifacts handed docker load: $(tr '\n' ' ' < "$work/fakedir/members-$v" 2> /dev/null | cut -c1-200)"; fi
+done
+unplant_stray "$fa/images/production"; unplant_stray "$fa/images/fips"
 mkarch "$fa/dist"; rm "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz"
 afail "PLAT-001-AC1 a missing amd64 archive fails naming it" fscache-fips -- "${ART[@]}"
 mkarch "$fa/dist"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fa/real/fscache-fips.bad"; mkdir -p "$fa/bad"; cp "$fa/real/fscache-fips.bad" "$fa/bad/fscache-fips"; chmod +x "$fa/bad/fscache-fips"
@@ -1053,6 +1076,13 @@ rm -rf "$work/keep-p"; cp -R "$fx/images/production" "$work/keep-p"; rm -rf "$fx
 want_fail "AC5 F1 a valid OCI layout that is not Build's production image (digests.json intact) is refused naming the image before the suite or docker" image-production check-acceptance.sh gradle --digests digests.json --images images --out out
 if ! grep -q '^docker' "$work/log"; then ok "AC5 F1 nothing was loaded behind the refused production layout"; else bad "AC5 F1 docker ran: $(head -2 "$work/log" | tr '\n' '|')"; fi
 rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
+# the same for check-acceptance.sh (its suite scripts are stubs here: what is under test is what docker load is given)
+for sc in acceptance-serve acceptance-gradle; do printf '#!/usr/bin/env bash\nexit 0\n' > "$fx/bin/$sc.sh"; done
+printf '#!/usr/bin/env bash\necho "results=[{\\"ac\\":\\"AC33\\",\\"result\\":\\"pass\\"}]" >> "${GITHUB_OUTPUT:-/dev/null}"\n' > "$fx/bin/acceptance-gradle-capped.sh"
+plant_stray "$fx/images/production"; rm -rf "$work/fakedir"; mkdir -p "$work/fakedir"
+run check-acceptance.sh gradle --digests digests.json --images images --out out
+if [ "$rc" = 0 ] && members_only "$work/fakedir/members-production"; then ok "AC33 check-acceptance loads the production layout from its named members only (a stray manifest.json, fake.tar and unreferenced blob stay out)"; else bad "AC33 check-acceptance rc=$rc handed docker load: $(tr '\n' ' ' < "$work/fakedir/members-production" 2> /dev/null | cut -c1-200) $out"; fi
+unplant_stray "$fx/images/production"; rm -f "$fx/bin/acceptance-serve.sh" "$fx/bin/acceptance-gradle.sh" "$fx/bin/acceptance-gradle-capped.sh"
 # ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed.sh and its 9-minute cap -------------------------------------------
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
 cp "$root/bin/witnessed.sh" "$root/bin/loopback-get.sh" "$hw/bin/" 2> /dev/null || true
@@ -1257,7 +1287,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=413
+EXPECT=420
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

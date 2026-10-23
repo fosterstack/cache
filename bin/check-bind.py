@@ -1,4 +1,4 @@
-"""bin/check-bind.py --digests FILE --images DIR [--archives DIR]: Check reads the bytes Build recorded (REQ-CHAIN-006-AC4, AC5, AC6; PR 3 round 1 F1).
+"""bin/check-bind.py --digests FILE --images DIR [--archives DIR] [--members-out DIR]: Check reads the bytes Build recorded (REQ-CHAIN-006-AC4, AC5, AC6; PR 3 round 1 F1).
 
 stage-start authenticates digests.json (Build's signed record names its digest). What Check then DOWNLOADS is not the record: an image directory that
 merely holds oci-layout and index.json, or an archive that merely has the right name, may be anything. Before any scan, load or run, this file
@@ -10,7 +10,10 @@ binds each file Check is about to judge to the digest Build recorded:
     must be one of those blobs;
   - DIR/archives (with --archives): exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64, of one version), each hashing to the
     digest the list holds under archive-linux-ARCH / archive-fips-linux-ARCH.
-Any difference exits 1 naming the item; nothing is written."""
+With --members-out DIR (REQ-SUP-001-AC33) it also writes DIR/production.members and DIR/fips.members: oci-layout, index.json and the blobs the index and
+the child manifests name, one path per line. The caller archives those files only, never the whole directory: a root manifest.json, a stray archive
+or an unreferenced blob in the layout stays out of what the container engine reads.
+Any difference exits 1 naming the item; nothing is written (but the member lists, after a layout has been bound)."""
 import argparse, hashlib, json, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -36,7 +39,7 @@ def sha256_path(path):
     return h.hexdigest()
 
 
-def bind_layout(images, variant, digest):
+def bind_layout(images, variant, digest, members_out=None):
     key = "image-" + variant
     try:
         children = chain_items.check_layout(images, variant, digest)
@@ -54,6 +57,7 @@ def bind_layout(images, variant, digest):
         if sha256_path(e.path) != e.name:
             fail("%s: the blob %s does not hash to its name (the layout is not the digest Build recorded)" % (key, e.name))
         names.add(e.name)
+    members = {digest}
     for arch, child in sorted(children.items()):
         try:
             with open(os.path.join(blobs, child.split(":", 1)[1]), "rb") as f:
@@ -66,6 +70,14 @@ def bind_layout(images, variant, digest):
         for d in wanted:
             if d.split(":", 1)[1] not in names:
                 fail("%s: the linux/%s manifest names %s, which the layout does not hold" % (key, arch, d))
+        members.update([child] + wanted)
+    if members_out:                     # REQ-SUP-001-AC33: the files of the layout the caller may archive, and nothing else of it
+        listing = ["oci-layout", "index.json"] + ["blobs/sha256/" + d.split(":", 1)[1] for d in sorted(members)]
+        try:
+            with open(os.path.join(members_out, variant + ".members"), "w") as f:
+                f.write("".join(m + "\n" for m in listing))
+        except OSError as e:
+            fail("%s: the member list could not be written (%s)" % (key, e))
 
 
 def bind_archives(archives, digests):
@@ -103,6 +115,7 @@ def main():
     ap.add_argument("--digests", required=True)
     ap.add_argument("--images", required=True)
     ap.add_argument("--archives")
+    ap.add_argument("--members-out", help="a directory (it must exist): writes VARIANT.members, the files of each layout the caller may archive")
     a = ap.parse_args()
     try:
         with open(a.digests, "rb") as f:
@@ -115,7 +128,7 @@ def main():
         d = digests.get("image-" + variant)
         if not isinstance(d, str) or not DIGEST.fullmatch(d):
             fail("the digest list has no image-%s digest" % variant)
-        bind_layout(a.images, variant, d)
+        bind_layout(a.images, variant, d, a.members_out)
     if a.archives:
         bind_archives(a.archives, digests)
     print("check-bind: the layouts%s are the digests Build recorded" % (" and archives" if a.archives else ""))
