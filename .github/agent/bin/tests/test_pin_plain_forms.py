@@ -15,16 +15,18 @@ DIGEST = "ghcr.io/fosterstack/cache@sha256:" + "a" * 64
 
 def wrapper_props():
     out = {}
-    for line in open(PROPS):
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            out[k] = v
+    with open(PROPS) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k] = v
     return out
 
 
 def jobs():
-    return yaml.safe_load(open(WORKFLOW))["jobs"]
+    with open(WORKFLOW) as f:
+        return yaml.safe_load(f)["jobs"]
 
 
 def uses_image_ref(step):
@@ -72,7 +74,8 @@ class ImageRefRefusal(unittest.TestCase):
             open(path, "w").write('#!/bin/sh\necho "%s $*" >>"%s"\nexit 0\n' % (tool, calls))
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
         script = re.sub(r"\$\{\{[^}]*\}\}", "x", script)
-        env = {"PATH": d + ":/usr/bin:/bin", "IMAGE_REF": ref}
+        tools = {os.path.dirname(shutil.which(x)) for x in ("bash", "grep", "printf", "env") if shutil.which(x)}
+        env = {"PATH": os.pathsep.join([d] + sorted(tools)), "IMAGE_REF": ref}
         r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60)
         ran = open(calls).read() if os.path.exists(calls) else ""
         return r, ran
