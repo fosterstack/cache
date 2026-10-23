@@ -33,14 +33,24 @@ done < "$plan"
 uniq_n=$(cut -f1 "$plan" | sort -u | wc -l | tr -d ' ')
 [ "$uniq_n" -eq "$n" ] || { echo "witness-sign-staged: the plan lists a payload twice" >&2; exit 1; }
 seen=0
+dirs=0
 for d in "$staged"/*; do
   [ "$d" = "$plan" ] && continue
   [ -d "$d" ] && [ ! -L "$d" ] || { echo "witness-sign-staged: staged tree holds a non-directory: $d" >&2; exit 1; }
+  cut -f1 "$plan" | grep -Fq -- "$d/" || { echo "witness-sign-staged: staged directory not on the plan: $d" >&2; exit 1; }
+  dirs=$((dirs + 1))
+  files=0
   for f in "$d"/*; do
     [ -f "$f" ] && [ ! -L "$f" ] || { echo "witness-sign-staged: staged tree holds a non-file: $f" >&2; exit 1; }
+    files=$((files + 1))
     case "$f" in *.payload) cut -f1 "$plan" | grep -Fxq -- "$f" || { echo "witness-sign-staged: staged payload not on the plan: $f" >&2; exit 1; }; seen=$((seen + 1)) ;; esac
   done
+  listed=$(ls -A "$d" | wc -l | tr -d ' ')
+  [ "$listed" -eq "$files" ] || { echo "witness-sign-staged: staged directory holds a hidden entry: $d" >&2; exit 1; }
 done
+top=$(ls -A "$staged" | wc -l | tr -d ' ')
+want=$((dirs + 1))
+[ "$top" -eq "$want" ] || { echo "witness-sign-staged: the staged root holds an entry that is neither a planned directory nor plan.txt" >&2; exit 1; }
 [ "$seen" -eq "$n" ] || { echo "witness-sign-staged: the plan names a payload the staged tree lacks" >&2; exit 1; }
 tok=$(sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
 echo "::add-mask::$tok"

@@ -405,7 +405,7 @@
       ],
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' Witness records (REQ-CHAIN-005-AC4): takes the identity token (audience sigstore) into a shell variable, runs witness sign keyless over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record under the stage-sign.yml identity; builds nothing",
-      "sha256": "e76a1ac3502a9e0fc55f74394ceaf6e3d749015428c134ef5911486a21aee044"
+      "sha256": "c4cb2cbecab65bdb3150b24fe939138c29264b6a22f57ef05de5788c3b1d38fb"
     },
     {
       "path": "bin/build-stage-apk.sh",

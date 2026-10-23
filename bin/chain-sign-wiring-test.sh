@@ -2871,7 +2871,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='a12a4954754e09eb89901d08c1b2b3d699c6546f866c6971701cc3af12aa2996'
+FX_PIN='54eae3ccfcf885d8da189b4256af76d845ae4ad09edaf774f7698f689a5d577b'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4531,6 +4531,9 @@ wsno() { # LABEL TREE: refused (non-zero) and the fake witness was never asked t
 }
 t=$(ws_tree good); wsok "F4 the helper signs exactly the planned payloads and copies the data files" "$t"
 t=$(ws_tree extra); echo '{}' > "$t/staged/witness-build/evil-collection.payload"; wsno "F4 a staged payload that is not on the plan is refused before any signing" "$t"
+t=$(ws_tree emptydir); mkdir -p "$t/staged/witness-evil"; wsno "F4 an unplanned EMPTY record directory is refused" "$t"
+t=$(ws_tree hiddenroot); echo x > "$t/staged/.hidden"; wsno "F4 a hidden entry in the staged root is refused" "$t"
+t=$(ws_tree hiddendir); echo x > "$t/staged/witness-build/.hidden"; wsno "F4 a hidden entry inside a planned record directory is refused" "$t"
 t=$(ws_tree extradir); mkdir -p "$t/staged/witness-evil"; echo '{}' > "$t/staged/witness-evil/build-collection.payload"; wsno "F4 an unplanned record directory is refused" "$t"
 t=$(ws_tree missing); rm "$t/staged/witness-apk-ubuntu-24.04/apk-collection.payload"; wsno "F4 a planned payload the staged tree lacks is refused" "$t"
 t=$(ws_tree planextra); printf 'staged/witness-evil/build-collection.payload\tsigned/witness-evil/build-collection.json\n' >> "$t/staged/plan.txt"; wsno "F4 a plan line for a payload that is not staged is refused" "$t"
@@ -4545,7 +4548,7 @@ t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/
 if (cd "$root" && python3 -I .github/agent/bin/check-action-pins.py . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes .github/agent/bin/check-action-pins.py (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
-EXPECT=2066
+EXPECT=2069
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
