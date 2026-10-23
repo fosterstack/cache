@@ -1887,7 +1887,7 @@
       "form": "a download",
       "key": "07b428d59678569fd7a3900265c441e714287fda109c5e650ca64c242a48e937",
       "line": "9aca2ebdd8c73f38cc45f80a41e204e3d457a1ddac8eeeda763fd64304f75e13",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -1895,7 +1895,7 @@
       "form": "a download",
       "key": "258d8c2c6f4f3a703719fed088411404da277426ce7c68a39d7238b4ee968d42",
       "line": "9aca2ebdd8c73f38cc45f80a41e204e3d457a1ddac8eeeda763fd64304f75e13",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -1903,7 +1903,7 @@
       "form": "a download",
       "key": "613e385a8b1ca95218194d29597cc8a678661c65fe07bbd9b623e087bcbec264",
       "line": "184b2129f379c1bb79a09b09bab8a3f473f56d64155d8a7509b849c6fe08fb30",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: curl appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
       "context": "assignment"
     },
     {
@@ -1911,7 +1911,7 @@
       "form": "a download",
       "key": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
       "line": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "context": "assignment"
     },
     {
@@ -1919,7 +1919,7 @@
       "form": "a download",
       "key": "a908cf85d4a79795572f55f73c4d0cecdfb651d54a9e15e9f6f3463e9894ce99",
       "line": "9ffeeedbbe1e448a2f7ad9a27037960ef4edd1882b6f9543104f76e767246906",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -1927,7 +1927,7 @@
       "form": "a download",
       "key": "b03d0718f5264d4777031b3db1bcc0c674fd7cd062bc13bdfecef75141b6ace0",
       "line": "2a350716df21ad9a9b5c6cdb931664e11834653867237a441476a557f327b67f",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -1935,7 +1935,7 @@
       "form": "a download",
       "key": "c24d2dc3a2575d696bd52cb183ec01f26a26b3a016282a246d13fdf4abfe707c",
       "line": "c24d2dc3a2575d696bd52cb183ec01f26a26b3a016282a246d13fdf4abfe707c",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -1943,7 +1943,7 @@
       "form": "a download",
       "key": "1c31f20da63b06855c5b5cc634a1a44f5c54b288c4b0654f8c083ce11c5dbfb4",
       "line": "1c31f20da63b06855c5b5cc634a1a44f5c54b288c4b0654f8c083ce11c5dbfb4",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "context": "assignment"
     },
     {
@@ -1951,7 +1951,7 @@
       "form": "a download",
       "key": "2ed324cdf57fe41fbea80987b36ac5a9d5ea5f09555899058d8812568018e7cb",
       "line": "2ed324cdf57fe41fbea80987b36ac5a9d5ea5f09555899058d8812568018e7cb",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: fed to check-guide.sh as a command the guide check must refuse (it runs only verify forms; a fake curl on PATH is the backstop); nothing downloads",
       "context": "assignment"
     },
     {
@@ -1959,7 +1959,7 @@
       "form": "a download",
       "key": "4bd2fef6ac359add3c6962242a12aa34c5093dad5c697ca72c7443adf25e2278",
       "line": "4bd2fef6ac359add3c6962242a12aa34c5093dad5c697ca72c7443adf25e2278",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -1967,7 +1967,7 @@
       "form": "a download",
       "key": "7ac6f5a9d44b3e06c034672ae10d49d95a6f4664603191a745b2b66bfcdc1ba2",
       "line": "7ac6f5a9d44b3e06c034672ae10d49d95a6f4664603191a745b2b66bfcdc1ba2",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "context": "assignment"
     },
     {
@@ -1975,7 +1975,7 @@
       "form": "a download",
       "key": "8026e64071d458454099b9a4f9f558782af2f1f8b3294466b7cdc6bf04139702",
       "line": "8026e64071d458454099b9a4f9f558782af2f1f8b3294466b7cdc6bf04139702",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "context": "assignment"
     },
     {
@@ -1983,7 +1983,7 @@
       "form": "a download",
       "key": "be43d2107501ada9471408c3f0b60af35a6b8a71eba681dd60922f869155eb49",
       "line": "77e9ce3c64f59f28d7d731685701ebc7732c10ec3ab6c9ccf5d0fba24bfeedd3",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: fed to check-guide.sh as a command the guide check must refuse (it runs only verify forms; a fake curl on PATH is the backstop); nothing downloads",
       "context": "assignment"
     },
     {
@@ -1991,7 +1991,7 @@
       "form": "a download",
       "key": "05228d8824deae37945f01ae39f7fe95a9eadc72809673fb3e95d2f0c6ba9c15",
       "line": "5283149b03ab689851a454ed0ff75f822a050107763107003eb28cdfdc1c0e1d",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -1999,7 +1999,7 @@
       "form": "a download",
       "key": "1919acb14d2c19fc4bd5109f6847aacf23f5d60e893d349c4f2cc8f4d7f6ba59",
       "line": "1919acb14d2c19fc4bd5109f6847aacf23f5d60e893d349c4f2cc8f4d7f6ba59",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2007,7 +2007,7 @@
       "form": "a download",
       "key": "6152628c125088185e57e5ff31f746db4e8b232360468a698f4341385ff24da2",
       "line": "6152628c125088185e57e5ff31f746db4e8b232360468a698f4341385ff24da2",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2015,7 +2015,7 @@
       "form": "a download",
       "key": "5d0f9db22fa27cdc1f22d0f67297bc3e44149a69585e84b75d6603ecc7b03436",
       "line": "5d0f9db22fa27cdc1f22d0f67297bc3e44149a69585e84b75d6603ecc7b03436",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "context": "assignment"
     },
     {
@@ -2023,7 +2023,7 @@
       "form": "a download",
       "key": "dbb0d3bc75acee75aced860d3d31d9750c1821ad3991800e1109cac367d91c8e",
       "line": "dbb0d3bc75acee75aced860d3d31d9750c1821ad3991800e1109cac367d91c8e",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "context": "assignment"
     },
     {
@@ -2031,7 +2031,7 @@
       "form": "a download",
       "key": "5d0f9db22fa27cdc1f22d0f67297bc3e44149a69585e84b75d6603ecc7b03436",
       "line": "5d0f9db22fa27cdc1f22d0f67297bc3e44149a69585e84b75d6603ecc7b03436",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "context": "assignment"
     },
     {
@@ -2039,7 +2039,7 @@
       "form": "a download",
       "key": "dbb0d3bc75acee75aced860d3d31d9750c1821ad3991800e1109cac367d91c8e",
       "line": "dbb0d3bc75acee75aced860d3d31d9750c1821ad3991800e1109cac367d91c8e",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "context": "assignment"
     },
     {
@@ -2047,7 +2047,7 @@
       "form": "a download",
       "key": "43f885be2f1bc9d17ace84d16c1d63ea23640724e0b6b5fff664610de84c470b",
       "line": "43f885be2f1bc9d17ace84d16c1d63ea23640724e0b6b5fff664610de84c470b",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2055,7 +2055,7 @@
       "form": "a download",
       "key": "896e4877a028845bfc2e6459c1067662091503951af58f9086acd4580969e16d",
       "line": "896e4877a028845bfc2e6459c1067662091503951af58f9086acd4580969e16d",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2063,7 +2063,7 @@
       "form": "a download",
       "key": "96aef3956494b1292361c10dc953b863e6c5fd910cab03fe083e909f85561fa0",
       "line": "96aef3956494b1292361c10dc953b863e6c5fd910cab03fe083e909f85561fa0",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2071,7 +2071,7 @@
       "form": "a download",
       "key": "ed2abc9ca792c78b289f8c3749ea1a8053fd8e9b9a95919c7ba0d84c23968ad3",
       "line": "ed2abc9ca792c78b289f8c3749ea1a8053fd8e9b9a95919c7ba0d84c23968ad3",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2079,7 +2079,7 @@
       "form": "a download",
       "key": "ef74c451233ec14d10c4b9a300d6181d227a470449484d701e590f540486c8e0",
       "line": "f18e21c6ba9e99b189c02451477cead8ad5c0252b8cb0e4ffd032a5be04fbf07",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2120,7 +2120,7 @@
       "form": "a download",
       "key": "34c543a0e8027d49b5f9cfa0349348cc120c4754bc3c022c08036bd45d5014ff",
       "line": "34c543a0e8027d49b5f9cfa0349348cc120c4754bc3c022c08036bd45d5014ff",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
       "count": 2,
       "context": "heredoc"
     },
@@ -2209,7 +2209,7 @@
       "form": "a download",
       "key": "5bc6ffa35519944f6f2cd1c498585d2d23d086a722d08b28a0ef172d9e6dff16",
       "line": "5bc6ffa35519944f6f2cd1c498585d2d23d086a722d08b28a0ef172d9e6dff16",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
       "context": "heredoc"
     },
     {
@@ -2233,7 +2233,7 @@
       "form": "a download",
       "key": "66934a09af4ef6527329a5a1a1507ad4fd76e99b8cb762479dd8fcb9fe594418",
       "line": "66934a09af4ef6527329a5a1a1507ad4fd76e99b8cb762479dd8fcb9fe594418",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
       "context": "heredoc"
     },
     {
@@ -2241,7 +2241,7 @@
       "form": "a download",
       "key": "70109bf8d2004e68682735d91b4736a5c56ba040fc2bad625f1156df4c1ad501",
       "line": "70109bf8d2004e68682735d91b4736a5c56ba040fc2bad625f1156df4c1ad501",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
       "context": "heredoc"
     },
     {
@@ -2265,7 +2265,7 @@
       "form": "a download",
       "key": "875649fb6d2c861b8b8bfe900783dcdab56cb1db0b98ebaa4b4c9b75d965b8b1",
       "line": "875649fb6d2c861b8b8bfe900783dcdab56cb1db0b98ebaa4b4c9b75d965b8b1",
-      "ruling": "text, not a command: data in a quoted heredoc fed to cat, written to a file the script only reads; nothing runs it",
+      "ruling": "text, not a command: data in a quoted heredoc fed to cat and written to a file the script reads back; the test passes it to Python (edit_spec), where curl is only inside a string literal; it is never run as a shell command",
       "context": "heredoc"
     },
     {
@@ -2458,7 +2458,7 @@
       "form": "a download",
       "key": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
       "line": "8dd3acc9a86672429357afff73e87837fbbb327da48e6e918cf01850de63ac54",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the name or path of a fake curl that the test writes and runs; it fetches nothing (no network)",
       "context": "assignment"
     },
     {
@@ -2466,7 +2466,7 @@
       "form": "a download",
       "key": "7b4939d8409566256dee796de1a01cb79a091bb9d11b3cfa2522a1127e5fd79a",
       "line": "7b4939d8409566256dee796de1a01cb79a091bb9d11b3cfa2522a1127e5fd79a",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2474,7 +2474,7 @@
       "form": "a download",
       "key": "1d4201dd0e97d54dd3414098c5d0defc7addd29b7ac21092a7bd1699e280cbfd",
       "line": "31bc86620b526dd7ec73f3bba99e5d05cc770eab1a4d495c070af507486d3c99",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: curl appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
       "context": "assignment"
     },
     {
@@ -2482,7 +2482,7 @@
       "form": "a download",
       "key": "4bd2fef6ac359add3c6962242a12aa34c5093dad5c697ca72c7443adf25e2278",
       "line": "4bd2fef6ac359add3c6962242a12aa34c5093dad5c697ca72c7443adf25e2278",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2490,7 +2490,7 @@
       "form": "a gh release or extension download",
       "key": "74c0cff3c281130a2f038e62c1241e0f4f4a45aa9d5a43a8f6530d104574911f",
       "line": "74c0cff3c281130a2f038e62c1241e0f4f4a45aa9d5a43a8f6530d104574911f",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
       "context": "assignment"
     },
     {
@@ -2498,7 +2498,7 @@
       "form": "a gh release or extension download",
       "key": "ab65ff7c9922b313f2792e8f1e53da316a384c128ec4592fd3262448e7a383ef",
       "line": "ab65ff7c9922b313f2792e8f1e53da316a384c128ec4592fd3262448e7a383ef",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment (or a here-string/array of fixture text); it is stored or compared, nothing runs it",
+      "ruling": "text, not a command: curl appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
       "context": "assignment"
     }
   ]
