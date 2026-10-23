@@ -2681,6 +2681,90 @@ case_ r25-bare-variable-still-ok ok "$(rb 'docker run --rm "$IMAGE_REF" true')"
 case_ r25-braced-array-variable-still-ok ok "$(rb 'docker run --rm "${IMAGES[0]}" true')"
 case_ r25-mixed-tag-destination-ok ok "$(rb "docker tag $PIN localhost/fa-\${v}")"
 
+# --- rc-5b B2 (handoff 0663): a `uses:` step that writes the tree is a writer, like a run: step. A committed script the job runs after one
+# is not the committed bytes. Closed list: actions/checkout (with repository, path or a ref other than the base sha), actions/download-artifact,
+# actions/cache and actions/cache/restore; the action name is read in any letter case; a path with ${{ }}, .. or an absolute path writes everywhere.
+# The plain default checkout, the base-sha fence form, upload-only steps and actions/cache/save write nothing into the tree.
+mk_tool='mkdir -p bin && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
+us() { printf '      - uses: %s@%s # v7.0.1\n%s\n' "$1" "$SHA" "${2:+        with:
+$2}"; }
+uw() {   # a workflow: a writer step, then the committed script
+  printf '%s\n    steps:\n%s\n      - run: bash bin/tool.sh\n' "$head" "$1"
+}
+case_ w-default-checkout-ok ok "$(uw "$(us actions/checkout)")" "$mk_tool"
+case_ w-checkout-repository-bad bad "$(uw "$(us actions/checkout "          repository: other/x")")" "$mk_tool"
+case_ w-checkout-repository-path-bad bad "$(uw "$(us actions/checkout "          repository: other/x
+          path: bin")")" "$mk_tool"
+case_ w-checkout-path-bad bad "$(uw "$(us actions/checkout "          path: bin")")" "$mk_tool"
+case_ w-checkout-path-elsewhere-ok ok "$(uw "$(us actions/checkout "          path: other")")" "$mk_tool"
+case_ w-checkout-ref-bad bad "$(uw "$(us actions/checkout "          ref: refs/heads/other")")" "$mk_tool"
+case_ w-checkout-upper-case-bad bad "$(uw "$(us Actions/Checkout "          repository: other/x")")" "$mk_tool"
+case_ w-checkout-mixed-case-bad bad "$(uw "$(us ACTIONS/checkout "          path: bin")")" "$mk_tool"
+case_ w-checkout-base-fence-ok ok "$(uw "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted")")" "$mk_tool"
+case_ w-checkout-base-fence-onto-bin-ok ok "$(uw "$(us actions/checkout "          ref: $BASE_REF
+          path: bin")")" "$mk_tool"
+case_ w-checkout-expression-path-bad bad "$(uw "$(us actions/checkout "          path: \${{ inputs.where }}")")" "$mk_tool"
+case_ w-checkout-dotdot-path-bad bad "$(uw "$(us actions/checkout "          path: ../x")")" "$mk_tool"
+case_ w-checkout-absolute-path-bad bad "$(uw "$(us actions/checkout "          path: /home/runner/work/x/x/bin")")" "$mk_tool"
+case_ w-download-artifact-default-bad bad "$(uw "$(us actions/download-artifact "          name: x")")" "$mk_tool"
+case_ w-download-artifact-path-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: bin")")" "$mk_tool"
+case_ w-download-artifact-upper-bad bad "$(uw "$(us Actions/Download-Artifact "          name: x
+          path: bin")")" "$mk_tool"
+case_ w-download-artifact-elsewhere-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: out")")" "$mk_tool"
+case_ w-download-artifact-expression-bad bad "$(uw "$(us actions/download-artifact "          path: \${{ matrix.dir }}")")" "$mk_tool"
+case_ w-cache-bad bad "$(uw "$(us actions/cache "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-bad bad "$(uw "$(us actions/cache/restore "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-list-bad bad "$(uw "$(us actions/cache/restore "          path: |
+            out
+            bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-upper-bad bad "$(uw "$(us Actions/Cache/Restore "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-elsewhere-ok ok "$(uw "$(us actions/cache/restore "          path: out
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-home-ok ok "$(uw "$(us actions/cache/restore "          path: ~/.cache/go-build
+          key: k")")" "$mk_tool"
+case_ w-cache-restore-expression-bad bad "$(uw "$(us actions/cache/restore "          path: \${{ env.D }}
+          key: k")")" "$mk_tool"
+case_ w-download-artifact-tmp-ok ok "$(uw "$(us actions/download-artifact "          name: images
+          path: /tmp/oci/")")" "$mk_tool"
+case_ w-download-artifact-runner-temp-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/attach")")" "$mk_tool"
+case_ w-download-artifact-runner-temp-dotdot-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/../bin")")" "$mk_tool"
+case_ w-download-artifact-github-workspace-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: /github/workspace/bin")")" "$mk_tool"
+case_ w-checkout-tmp-path-ok ok "$(uw "$(us actions/checkout "          repository: other/x
+          path: /tmp/x")")" "$mk_tool"
+case_ w-cache-save-ok ok "$(uw "$(us actions/cache/save "          path: bin
+          key: k")")" "$mk_tool"
+case_ w-upload-artifact-ok ok "$(uw "$(us actions/upload-artifact "          name: x
+          path: bin")")" "$mk_tool"
+case_ w-writer-after-the-run-ok ok "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: bin")" "$mk_tool"
+case_ w-writer-in-another-job-ok ok "on: push
+jobs:
+  one:
+    runs-on: ubuntu-latest
+    steps:
+$(us actions/download-artifact "          path: bin")
+  two:
+    runs-on: ubuntu-latest
+    steps:
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-conditional-writer-bad bad "$head
+    steps:
+$(us actions/download-artifact "          path: bin")
+        if: \${{ inputs.x }}
+      - run: bash bin/tool.sh" "$mk_tool"
+
 # --- advisor 0198 (option A, fenced): a directory that an EARLIER step of the SAME job filled with actions/checkout of THIS repository at
 # exactly the pull request's base sha (`ref: ${{ github.event.pull_request.base.sha }}`, a literal path) is main's copy: a committed script
 # under it runs at a literal path in any interpreter (REQ-SUP-001's trusted checker). Every other shape stays refused.

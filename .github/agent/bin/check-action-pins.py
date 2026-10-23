@@ -302,7 +302,7 @@ class GitTree:
 
     def __init__(self, commit):
         out = subprocess.run(["git", "ls-tree", "-r", "-z", "--full-tree", commit],
-                             capture_output=True, check=True).stdout.decode("utf-8", "replace")
+                             capture_output=True, check=True).stdout.decode("utf-8", "surrogateescape")   # distinct bytes stay distinct names (rc-5b R10c)
         self.entries, self.blobs = {}, {}
         for rec in filter(None, out.split("\0")):
             meta, path = rec.split("\t", 1)
@@ -2836,6 +2836,55 @@ def _default_shell(node):
     return sh.value if isinstance(sh, yaml.ScalarNode) else None
 
 
+def _writer_dir(value):
+    """The directory (relative to the workspace) that a step's `path:` fills, or None when it fills nothing inside the
+    workspace (an absolute path elsewhere, or under the runner's temp directory). Anything this check cannot place by
+    reading it ("${{ }}", "..", a quote, the workspace's own absolute path) writes everywhere, written ".", fail closed."""
+    v = str(value).strip().strip("\"'")
+    if not v:
+        return "."
+    if v.startswith(("/home/runner/work", "/github/workspace")):
+        return "."                                       # the workspace's own absolute path
+    if v.startswith(("${{ runner.temp }}", "${{runner.temp}}", "$RUNNER_TEMP", "${RUNNER_TEMP}")) and ".." not in v.split("/"):
+        return None                                      # under the runner's temp directory: outside the workspace
+    if "${{" in v or "'" in v or ".." in v.split("/"):
+        return "."
+    if v.startswith("/"):
+        return None                                      # an absolute path outside the workspace cannot hold a committed script
+    return os.path.normpath(v)
+
+
+def _uses_writes(uses, with_node, key_of):
+    """rc-5b B2 (handoff 0663): the workspace directories a `uses:` step fills, from a CLOSED list of writers; [] for any
+    other action. actions/checkout with `repository`, `path` or a `ref` (the plain default checkout and the base-sha fence
+    form are not writers), actions/download-artifact, actions/cache and actions/cache/restore (save and the upload actions
+    write nothing into the tree). The action name is read in any letter case."""
+    name = uses.strip().split("@")[0].lower()
+    wm = {key_of(k): v for k, v in with_node.value} if isinstance(with_node, yaml.MappingNode) else {}
+    val = lambda k: wm[k].value if isinstance(wm.get(k), yaml.ScalarNode) else ("${{" if k in wm else None)
+    if name == "actions/checkout":
+        ref, pth = val("ref"), val("path")
+        if "repository" not in wm and ref is not None and ref.strip() == BASE_SHA_REF and \
+                re.fullmatch(r"[\w][\w-]*", (pth or ".").strip()):
+            return []                                    # the base-sha fence: main's copy, handled as a base directory
+        if "repository" in wm or ref is not None or pth is not None:
+            return [d for d in [_writer_dir(pth if pth is not None else ".")] if d]
+        return []
+    if name == "actions/download-artifact":
+        pth = val("path")
+        return [d for d in [_writer_dir(pth if pth is not None else ".")] if d]
+    if name in ("actions/cache", "actions/cache/restore"):
+        lines = [ln.strip() for ln in (val("path") or "").splitlines() if ln.strip() and not ln.strip().startswith("!")]
+        out = []
+        for ln in lines or ["."]:
+            if ln.startswith(("~", "/")) and not ln.startswith(("/home/runner/work", "/github/workspace")):
+                continue                                 # outside the workspace: cannot hold a committed script
+            ln = re.sub(r"/?\*.*$", "", ln) or "."
+            out.append(_writer_dir(ln))
+        return [d for d in out if d]
+    return []
+
+
 def run_scripts(doc):
     """{job or composite: [(path, run text, shell)]} for every step run: GitHub executes, in order; shell is the
     step's own `shell:`, else its job's then its workflow's defaults.run.shell, else None (bash)."""
@@ -2860,7 +2909,12 @@ def run_scripts(doc):
                         groups.setdefault(group, []).append((f"{base}[{i}].run", run.value, shell, wdir, "if" in m or soft,
                                                               ifn.value if isinstance(ifn, yaml.ScalarNode) else "", tuple(base_dirs)))
                     uses, w = m.get("uses"), m.get("with")
-                    if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip()):
+                    if isinstance(uses, yaml.ScalarNode):
+                        wdirs = _uses_writes(uses.value, w, key_of)
+                        if wdirs:                        # rc-5b B2: a step that puts bytes into the tree is a writer, in step order
+                            groups.setdefault(group, []).append((f"{base}[{i}].uses", "\n".join(f"tar -x -C '{d_}'" for d_ in wdirs),
+                                                                  None, None, "if" in m, "", tuple(base_dirs)))
+                    if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip(), re.I):
                         wm = {key_of(k): v for k, v in w.value} if isinstance(w, yaml.MappingNode) else {}
                         ref, pth = wm.get("ref"), wm.get("path")
                         pdir = pth.value.strip() if isinstance(pth, yaml.ScalarNode) else "."
@@ -3088,6 +3142,15 @@ def check_file(tree, rel, pins, bad):
             check_image(where, node, bad)
 
 
+def _utf8(name):
+    """True when the name is valid UTF-8 (a str that holds surrogate escapes is not)."""
+    try:
+        name.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
 def main():
     argv = sys.argv[1:]
     verify = "--verify-tags" in argv
@@ -3102,6 +3165,11 @@ def main():
         sys.exit("check-action-pins: no .github/workflows/ — nothing checked")
     bad, pins, files = [], [], []
     for rel, kind in sorted(tree.entries.items()):
+        if rel.startswith(".github/") and not _utf8(rel):
+            # rc-5b R10c: a name this check cannot read as text must not be skipped or merged with another; fail closed
+            bad.append(f"{rel.encode('utf-8', 'surrogateescape').decode('ascii', 'backslashreplace')}: a name under .github/ that is not "
+                       f"valid UTF-8; refused (the file would otherwise go unread)")
+            continue
         parts = rel.split("/")
         in_wf = parts[:2] == [".github", "workflows"]
         name = parts[-1]

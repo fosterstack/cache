@@ -981,5 +981,70 @@ class GateWorkflowDigestSet(unittest.TestCase):
         self.assertIn(".github/workflows/agent-review-gate.yml: missing", out)
 
 
+class NonUtf8Names(unittest.TestCase):
+    """rc-5b R10c: `git ls-tree` output was decoded with "replace", so two workflow names that are not valid UTF-8 became the
+    same entry and one workflow went unread. A name under .github/ that is not valid UTF-8 is refused, each one named, and no
+    file is skipped. The trees are made with git plumbing (the index takes any bytes; a macOS file system would not)."""
+
+    def commit_with(self, extra):
+        d = gate_tree(gate_variants()[1])
+        self.addCleanup(shutil.rmtree, d)
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t"}
+        idx = {**env, "GIT_INDEX_FILE": os.path.join(d, ".git", "composed-index")}
+
+        def git(*a, inp=None, e=env):
+            return subprocess.run(["git", *a], cwd=d, env=e, input=inp, capture_output=True, check=True).stdout
+        git("init", "-q")
+        git("add", "-A")
+        info = _index_info(git("ls-files", "-z", "-s"))          # the whole valid tree, then the extra entries as raw bytes
+        blob = git("hash-object", "-w", "--stdin", inp=b"x\n").decode().strip().encode()
+        for name in extra:
+            info += b"100644 " + blob + b"\t" + name + b"\0"
+        git("update-index", "-z", "--add", "--index-info", inp=info, e=idx)
+        tree = git("write-tree", e=idx).decode().strip()
+        return d, git("commit-tree", tree, "-m", "t").decode().strip()
+
+    def test_a_tree_without_odd_names_passes(self):
+        d, c = self.commit_with([])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 0, out)
+
+    def test_two_non_utf8_workflow_names_are_refused_and_both_named(self):
+        d, c = self.commit_with([b".github/workflows/\xff.yml", b".github/workflows/\xfe.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        lines = [ln for ln in out.splitlines() if "not valid UTF-8" in ln]
+        self.assertEqual(len(lines), 2, out)             # not collapsed into one entry
+        self.assertTrue(any("\\xff" in ln for ln in lines) and any("\\xfe" in ln for ln in lines), out)
+
+    def test_one_non_utf8_name_beside_a_valid_one_is_refused(self):
+        d, c = self.commit_with([b".github/workflows/\xff.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("not valid UTF-8", out)
+
+    def test_a_non_utf8_directory_name_under_github_is_refused(self):
+        d, c = self.commit_with([b".github/\xff/x.yml"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 1, out)
+        self.assertIn("not valid UTF-8", out)
+
+    def test_a_non_utf8_name_outside_github_is_not_this_checkers_business(self):
+        d, c = self.commit_with([b"docs/\xff.md"])
+        code, out = run(["--git", c], cwd=d)
+        self.assertEqual(code, 0, out)
+
+
+def _index_info(listing):
+    """`git ls-files -s -z` records ("mode sha stage\tpath\0") as `--index-info` input ("mode sha\tpath\0")."""
+    out = b""
+    for rec in filter(None, listing.split(b"\0")):
+        meta, path = rec.split(b"\t", 1)
+        mode, sha, _stage = meta.split()
+        out += mode + b" " + sha + b"\t" + path + b"\0"
+    return out
+
+
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()
