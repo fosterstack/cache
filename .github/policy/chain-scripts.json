@@ -2035,7 +2035,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "33dc6869e60669d27fdb4c538b8a455e7200558e72fab33bd3ec60689cb54ce5",
+      "sha256": "f6f931c3aac8a26286bd96d8f0bc67c2283eef4db1a68f8ed2addecd5a8046d2",
       "tools": [
         "at",
         "gh",
@@ -2078,7 +2078,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "0403a3e755d81c6ea7b2342e4818d16fbb1d040c261da5f9c046f4ba61b36ad4",
+      "sha256": "20840822be3a18d1bfc2a59c6a22f13bd2c4a4ab0ea92eb65aa2261f37c7794b",
       "tools": [
         "at",
         "python3"
