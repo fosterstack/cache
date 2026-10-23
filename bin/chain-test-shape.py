@@ -261,8 +261,11 @@ INSTALL_APKO = "bash bin/install-build-tools.sh apko"
 # steps of their own after the build tools and before the downloads and the Witness step; a failed pull fails the job (no if, no continue-on-error, no env)
 INSTALL_CRANE = "bash bin/install-scanner.sh crane"
 ARCHIVE_PULL = "bash bin/archive-pull.sh --pointer build/archive.json --out archive"
-ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py")      # the files the pull step runs: rows of chain-scripts.json with their sha256
-PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO, INSTALL_CRANE, ARCHIVE_PULL)
+ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py", "bin/install-host-bwrap.py")      # the files the pull step and the host-tools step run: rows of chain-scripts.json with their sha256
+# REQ-CHAIN-004-AC17 (advisor reading Oct 20, rules 15 and 38a): melange's bubblewrap runner needs bwrap, which the hosted images do not ship. An apk job (the jobs that run
+# melange) unpacks it, and what it needs, from the archive just pulled: one step right after the pull, a name and a run and nothing else, never a package manager or sudo.
+INSTALL_HOSTTOOLS = "python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools"
+PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO, INSTALL_CRANE, ARCHIVE_PULL, INSTALL_HOSTTOOLS)
 # The guard step has NO `if` and runs a listed script that judges the raw mode string, case-sensitively: GitHub's `==` and `!=` in an expression compare
 # case-insensitively ('Release' == 'release' is true), so an `if` could not tell a mixed-case mode from the exact one (Codex A r1 F6). The mode reaches the
 # script as a whole "$MODE" argument of a step env (MODE is in env_names of chain-scripts.json).
@@ -279,12 +282,12 @@ EXPOSE_RECORDS = 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-ra
 RECORDS_STAGE_OUTPUT = "${{ jobs.assemble.outputs.records }}"
 RECORDS_JOB_OUTPUT = "${{ steps.records.outputs.records }}"
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,),
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,), hosttools=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
     ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
-    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, tools=(INSTALL_MELANGE,), mode=True, setup_go=True,
+    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, tools=(INSTALL_MELANGE,), hosttools=True, mode=True, setup_go=True,
         down=[(WB_DOWN, "witness-build"), ("digests", "build-in")],
         up=[("rapk-" + MAT, "out"), ("witness-rapk-" + MAT, "witness-rapk")]),
     ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True, expose_records=True,
@@ -403,7 +406,7 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
             bad.append("step %d must be exactly: run %s (the checksum-pinned build tool this job uses and no other, right after the Witness and Go installs, before admission; no env, no secret)" % (i, cmd))
-    for cmd in (INSTALL_CRANE, ARCHIVE_PULL):       # REQ-CHAIN-004-AC16: the pinned crane, then the archive pull, each a step of a name and a run and nothing else
+    for cmd in (INSTALL_CRANE, ARCHIVE_PULL) + ((INSTALL_HOSTTOOLS,) if spec.get("hosttools") else ()):       # REQ-CHAIN-004-AC16: the pinned crane, then the archive pull (AC17: and in an apk job the host tools out of it), each a step of a name and a run and nothing else
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
             bad.append("step %d must be exactly: run %s (REQ-CHAIN-004-AC16: the archive is pulled by its committed digest right after the build tools of "

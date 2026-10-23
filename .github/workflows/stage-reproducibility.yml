@@ -44,6 +44,8 @@ jobs:
         run: bash bin/install-scanner.sh crane
       - name: pull the archive by its committed digest
         run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
+      - name: unpack the host tools from the archive (bubblewrap for melange's runner)
+        run: python3 -I bin/install-host-bwrap.py --archive archive --lock build/locks/host-tools.lock --root host-tools
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}

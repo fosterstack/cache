@@ -337,7 +337,13 @@ jobs:
         run: git ls-files | python3 .github/agent/bin/auditor-layout-check.py
 
       - name: auditor suites — parser unit tests and the requirements-matrix suite
+        env:
+          BASE: ${{ github.base_ref }}
         run: |
+          # REQ-SUP-001-AC28: when a pull request changes the Gradle wrapper pin, the online test compares it with Gradle's published sum
+          if [ -n "${BASE}" ] && ! git diff --quiet "origin/${BASE}...HEAD" -- bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties; then
+            export GRADLE_SUM_ONLINE=1
+          fi
           # the report lint renders with GitHub's own cmark-gfm (hash-pinned, test-only)
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
           bash .github/agent/tests/auditor-parser-tests.sh
