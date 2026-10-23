@@ -57,8 +57,8 @@ def judge_wf(d, real=False):
         bad.append("pin-age has an if, needs, strategy, continue-on-error or environment: a required check must run on every PR and fail when it should")
     if j.get("permissions") != {"contents": "read", "actions": "read", "checks": "read"}:
         bad.append(f"pin-age's permissions are not exactly contents: read + actions: read + checks: read (found {j.get('permissions')})")
-    if int(str(j.get("timeout-minutes", "999"))) > 10:
-        bad.append("pin-age has no short timeout-minutes (<= 10): it must pass fast")
+    if int(str(j.get("timeout-minutes", "999"))) > 15:
+        bad.append("pin-age has no short timeout-minutes (<= 15): it must pass fast (a refresh pull request moves many files and runs longer than 8 minutes)")
     runs = "\n".join(str(s.get("run", "")) for s in j.get("steps", []))
     for prog, flag in ((".github/agent/supply-chain/pin-age-check.py", "--base"), (".github/agent/supply-chain/pin-audit.py", "--base")):
         if prog not in runs or flag not in runs:
@@ -280,6 +280,8 @@ mut_wf("pin-age is allowed to fail", "pin-age has an if, needs", lambda d: J(d, 
 mut_wf("pin-age can write", "pin-age's permissions are not exactly contents: read + actions: read + checks: read", lambda d: J(d, "pin-age")["permissions"].update(issues="write"))
 mut_wf("pin-age has actions write", "pin-age's permissions are not exactly contents: read + actions: read + checks: read", lambda d: J(d, "pin-age")["permissions"].update(actions="write"))
 mut_wf("pin-age has no timeout", "no short timeout-minutes", lambda d: J(d, "pin-age").pop("timeout-minutes"))
+mut_wf("pin-age timeout above 15", "no short timeout-minutes", lambda d: J(d, "pin-age").update({"timeout-minutes": 16}))
+mut_wf("pin-age timeout far above", "no short timeout-minutes", lambda d: J(d, "pin-age").update({"timeout-minutes": 360}))
 mut_wf("pin-age never runs the age check", "does not run .github/agent/supply-chain/pin-age-check.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-age-check" not in str(s.get("run", ""))]))
 mut_wf("pin-age never audits what moves", "does not run .github/agent/supply-chain/pin-audit.py", lambda d: J(d, "pin-age").update(steps=[s for s in J(d, "pin-age")["steps"] if "pin-audit" not in str(s.get("run", ""))]))
 mut_wf("pin-age compares the wrong commits", "does not compare the PR's base and head", lambda d: [s.update(run=s["run"].replace("github.event.pull_request.base.sha", "github.sha")) for s in J(d, "pin-age")["steps"] if "run" in s])

@@ -30,9 +30,11 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   services:  a mapping of plain identifiers (the runner passes the name unquoted to docker); each
              service is an image string or a mapping with an image.
   An action path with a `.`, `..` or empty segment is refused (it could reach another action).
-  container:/service mappings may carry only image, credentials and env (plainly named variables):
-             the runner splices `options`, `ports` and `volumes` unquoted into `docker create` ahead
-             of the image, where any of them can name another image (this repo uses none).
+  container:/service mappings may carry only image, credentials and env (plainly named variables),
+             and a SERVICE may also carry `ports`, each item a plain 127.0.0.1:<host>:<container>
+             string (loopback only, both numbers 1..65535): the runner splices `options`, `ports` and
+             `volumes` unquoted into `docker create` ahead of the image, where any of them can name
+             another image, so every other key, and `ports` on a job container, is refused.
   Every action must be CLASSIFIED (ACTIONS below, or EXECUTOR_ALLOWED): an action we have not
              classified may run an image we hand it through an input, so it fails closed until a
              reviewed change to this file says what it runs.
@@ -201,6 +203,7 @@ COMMENT = re.compile(r"[ \t]+#[ \t]*(v[0-9][0-9A-Za-z.+-]*)[ \t]*")
 ACTIONS = {
     "actions/attest": "node: signs attestations; no image run",
     "actions/attest-build-provenance": "composite over actions/attest; no image run",
+    "actions/cache": "node: restores/saves one directory (restore and save subactions; REQ-REL-004-AC8); no image run",
     "actions/checkout": "node: git checkout",
     "actions/create-github-app-token": "node: mints a token",
     "actions/dependency-review-action": "node: GitHub API diff review",
@@ -383,16 +386,26 @@ def walk(node, path, out, bad, where):
 
 # ---------------------------------------------------------------------------- the rules
 
-def container_keys(where, node, bad):
-    """A job container or service mapping: only image, credentials, and env with plain names."""
+LOOPBACK_PORT = re.compile(r"127\.0\.0\.1:[0-9]{1,5}:[0-9]{1,5}")
+
+
+def container_keys(where, node, bad, ports_ok=False):
+    """A job container or service mapping: only image, credentials, and env with plain names. A SERVICE may also publish ports, each a plain
+    127.0.0.1:<host>:<container> string (the runner puts the value into the docker command, so no other form is read)."""
     for k, v in node.value:
         name = k.value if isinstance(k, yaml.ScalarNode) else None
-        if name == "env" and isinstance(v, yaml.MappingNode):
+        if name == "ports" and ports_ok:
+            if not isinstance(v, yaml.SequenceNode):
+                bad.append(f"{where}.ports: not a list")
+            for item in (v.value if isinstance(v, yaml.SequenceNode) else []):
+                if not (isinstance(item, yaml.ScalarNode) and LOOPBACK_PORT.fullmatch(item.value) and all(1 <= int(n) <= 65535 for n in item.value.split(":")[1:])):
+                    bad.append(f"{where}.ports: only 127.0.0.1:<port>:<port> as plain text is read, got {getattr(item, 'value', None)!r}")
+        elif name == "env" and isinstance(v, yaml.MappingNode):
             for kk, _ in v.value:
                 if not (isinstance(kk, yaml.ScalarNode) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", kk.value)):
                     bad.append(f"{where}.env: a variable name that is not plain: {getattr(kk, 'value', None)!r}")
         elif name not in ("image", "credentials"):
-            bad.append(f"{where}.{name}: refused (only image, credentials and env; the runner splices "
+            bad.append(f"{where}.{name}: refused (only image, credentials and env, and ports on a service; the runner splices "
                        f"the rest into the docker command ahead of the image)")
 
 
@@ -3076,7 +3089,7 @@ def check_file(tree, rel, pins, bad):
                     imgs = [vv for kk, vv in v.value if key_of(kk) == "image"]
                     if not imgs:
                         bad.append(f"{sw}: service without an image")
-                    container_keys(sw, v, bad)
+                    container_keys(sw, v, bad, ports_ok=True)
                     for vv in imgs:
                         check_image(f"{sw}.image", vv, bad)
                 else:
