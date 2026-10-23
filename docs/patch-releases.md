@@ -1,15 +1,3 @@
 # Automatic patch releases
 
-DRAFT, for the owner's read. The quoted rules are the owner's ratified text (Oct 2 2026, with the amendment of the same day), copied as written.
-
-> **What a patch is.** Fixes only: CVE fixes (dependency bumps, base-image digest bumps), VEX changes, bug fixes with no behavior change. A patch release bumps the patch number: vX.Y.Z → vX.Y.(Z+1), a real semantic-version tag; no build numbers, no suffixes. Minor and major releases stay the owner's, tagged by hand as now.
-
-> **When it is cut.** A fix for a critical or high CVE cuts a patch release as soon as it merges. Anything else that changes shipped bytes is picked up by the auditor's daily run: if main is ahead of the latest tag in shipped bytes, it cuts one patch that day. Never more than one patch per day except for critical/high fixes.
-
-> **Same pipeline, no shortcuts.** A patch runs the full chain: admission, build, assembly, reproducibility, scans, acceptance, authorization, promotion. The tag lands on GHCR and the Docker Hub mirror with identical digests.
-
-> **Release notes, generated.** Per fix: CVE id, package, old → new version, severity, affected image variants; each VEX statement added or changed; a "no behavior change" line. Posted on the GitHub release and in the changelog.
-
-> **Floating tags.** A CI patch release moves :X.Y to itself every time; it moves :X and :latest only when it is the highest released version. Same on GHCR and the Docker Hub mirror, by digest.
-
-How the tags are named and how to pin one: [upgrading and pinning](upgrading.md).
+Fixes ship as patch releases cut by CI. A release that carries only fixes (dependency and base-image updates, VEX changes, bug fixes with no behavior change) gets the next patch tag, vX.Y.Z → vX.Y.(Z+1), signed keylessly by the release workflow's own identity. A critical or high vulnerability fix can be released as soon as it merges; other fixes are batched, at most one patch a day. Every patch runs the full release chain, is published to GHCR and Docker Hub with identical digests, and gets generated release notes listing each fix. `:X.Y`, `:X` and `:latest` are floating tags and can move; `:X` and `:latest` move only when the release is the highest version. Pin `:X.Y.Z` or a digest. Minor and major releases are tagged by hand.
