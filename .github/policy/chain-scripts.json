@@ -1961,7 +1961,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "193e0bd7829f10f7aeb77f0326e60f00790439cbbb74b1ff45d62e46ca9ddc90",
+      "sha256": "fc8ca393f1b9d8fd081491fca536cb22878c441cdf0de6c46299c5dc59496abf",
       "tools": [
         "at",
         "gh",

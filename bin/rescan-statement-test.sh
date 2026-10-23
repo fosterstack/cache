@@ -31,12 +31,17 @@ STMT_EXTRA=(--vex "$VEX0")
 
 # ---- statement helpers ---------------------------------------------------
 # Write one child report file and append its manifest line.
-child() { # manifest-file  childno  platform  exit  report-json
-  local mf="$1" no="$2" plat="$3" code="$4" body="$5"
+child() { # manifest-file  childno  platform  exit  report-json  [packages: a number, or "none" to leave the key out; default 5]
+  local mf="$1" no="$2" plat="$3" code="$4" body="$5" pk="${6:-5}"
   local rp="$D/report-${no}.json"
   printf '%s' "$body" > "$rp"
-  jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg f "$rp" \
-    '{platform:$p, ref:$r, exit:$e, report:$f}' >> "$mf"
+  if [ "$pk" = none ]; then
+    jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg f "$rp" \
+      '{platform:$p, ref:$r, exit:$e, report:$f}' >> "$mf"
+  else
+    jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg f "$rp" --argjson k "$pk" \
+      '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> "$mf"
+  fi
 }
 # A child whose scanner produced NO file at all (operational crash).
 child_missing() { # manifest-file  childno  platform  exit
@@ -693,6 +698,27 @@ for cve in CVE-2025-60876 CVE-2025-46394 CVE-2024-58251; do
   vrun osv-scanner 1 "$(osvrep $cve busybox 1.37.0)" "$PUBVEX"; expect "published VEX ($cve, busybox 1.37.0) still suppresses after the qualifier rule" clean false 0 1
 done
 vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.5.0)" "$PUBVEX"; expect "published VEX (CVE-2024-51744, Go product) still suppresses after the qualifier rule" clean false 0 1
+
+# ---- rc-5a D (astra B6, Fable R3): a child that COMPLETED but inventoried no package is not clean ----------------------------------------------------
+# The published-release rescan used to take `matches: []` as clean whatever the scanner had looked at. Register row 53: zero packages = did not run.
+# Each child's package count is recorded by the workflow (children-scanned.jsonl `packages`); a completed child without one, or with zero, is an error.
+OSV_CLEAN='{"results":[]}'
+mf=$D/pk1; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 3; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+assert_stmt "grype: every child inventoried packages and found nothing is clean" grype "$mf" clean false 0
+mf=$D/pk2; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 0; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+assert_stmt "grype: one child with zero packages makes the whole rescan an error, not clean" grype "$mf" error false 0
+mf=$D/pk3; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" none; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+assert_stmt "grype: a completed child with no package count is an error" grype "$mf" error false 0
+mf=$D/pk4; : >"$mf"; child "$mf" 1 linux/amd64 0 "$OSV_CLEAN" 0
+assert_stmt "osv-scanner: an empty results list with zero packages is an error, not clean" osv-scanner "$mf" error false 0
+mf=$D/pk5; : >"$mf"; child "$mf" 1 linux/amd64 0 "$OSV_CLEAN" 4
+assert_stmt "osv-scanner: packages inventoried and no finding is clean" osv-scanner "$mf" clean false 0
+mf=$D/pk6; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" '"3"'
+assert_stmt "grype: a package count that is not a number is an error" grype "$mf" error false 0
+mf=$D/pk7; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" -1
+assert_stmt "grype: a negative package count is an error" grype "$mf" error false 0
+if python3 "$SCRIPT" statement --scanner grype --children "$D/pk2" "${STMT_EXTRA[@]}" --raw-out "$D/raw.json" --out "$D/stmt.json" --release v0.2.0 --variant production \
+     --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00 2>&1 >/dev/null | grep -q "inventoried no package"; then ok; else bad "the zero-package error names what happened (inventoried no package)"; fi
 
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
