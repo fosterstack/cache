@@ -2857,7 +2857,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='d151c86336236b0f618ebfa4037f2e71bb1c9f02c09cdea037b20cd5adbe308e'
+FX_PIN='c36fd80842955a916b092eb33ac37ed3f4a92f9a36d6f1e227d8db50a2fdcc87'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4082,8 +4082,7 @@ dc dc_zb $'de$*clare -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compou
 dc dc_zc $'for v in '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'the value before the builtin on the line (loop)'
 dc dc_zd $'w() { declare -a "$1"; }
 w '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a function wrapper: builtin and value on different lines'
-dc dc_ze $'shopt -s expand_aliases
-alias d=declare
+dc dc_ze $'shopt -s expand_aliases; alias d=declare
 d -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an alias: builtin and value on different lines'
 dc dc_zf $'d -a a=\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'escaped compound value with no builtin word on the line'
 dc dc_zg $'for v in '"'"$'a=(1 2)'"'"$' '"'"$'b=(3)'"'"$'; do declare -a "$v"; done
@@ -4150,8 +4149,7 @@ declare -a "$n"$"(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'a 
 dc dc_zzn $'a=("one two" '"'"$'three (4)'"'"$')
 x=$'"'"$'\\n'"'"$'
 echo "${a[@]}" $x\n' ok - 'control: plain array with quoted elements, an ANSI-C newline, a quoted ( with no opener'
-dc dc_zzo $'shopt -s expand_aliases
-alias d=declare
+dc dc_zzo $'shopt -s expand_aliases; alias d=declare
 x="$(printf '"'"$'"'"'"$')"; d -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a quote inside a nested substitution upsets the word splitter'
 dc dc_zzp $'w() { declare -a "a=$1$2"; }
 w '"'"$'(x '"'"$' '"'"$'$(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'fragments of one compound value in separate words: the opener fragment is quoted data'
