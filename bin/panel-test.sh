@@ -360,6 +360,36 @@ put(spv, "sbom.json", {"artifacts": []})
 put(spv, "cves.json", {"vulnerabilities": [{"identifiers": [{"type": "cve", "value": "CVE-2099-0115"}],
      "location": {"dependency": {"package": {"name": "pkg:deb/debian/tzdata@2026c"}}}}]})
 check("Scout: a version given only in the package URL is taken from it", P.read_scout(spv)[1][0][1:4] == ("tzdata", "2026c", "pkg:deb/debian/tzdata@2026c"), P.read_scout(spv)[1])
+# rc-5a B round 3 (fix-round seat): any affects entry that is not an object is an incomplete report (not only when none are left); a component that has neither a
+# purl nor a name cannot be attributed either; and Inspector's refs may live only in the request SBOM (sbom.cdx.json)
+gdm = os.path.join(tempfile.mkdtemp(), "gm")
+put(gdm, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                             "vulnerabilities": [{"id": "CVE-2099-0116", "affects": [{"ref": "r0"}, "junk"]}]})
+try:
+    P.read_grype(gdm); got = None
+except ValueError as e_:
+    got = str(e_)
+check("Grype's affects list holding a good entry and a non-object entry is a ValueError (did not run), not silently trimmed", got is not None and "CVE-2099-0116" in got, got)
+gdn2 = os.path.join(tempfile.mkdtemp(), "gn2")
+put(gdn2, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "type": "library"}], "vulnerabilities": [{"id": "CVE-2099-0117", "affects": [{"ref": "r0"}]}]})
+try:
+    P.read_grype(gdn2); got = None
+except ValueError as e_:
+    got = str(e_)
+check("Grype's affects naming a component with neither a package URL nor a name is a ValueError (did not run), not a '?' finding", got is not None and "CVE-2099-0117" in got, got)
+idr = os.path.join(tempfile.mkdtemp(), "ir")
+put(idr, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "c0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+put(idr, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [], "vulnerabilities": [{"id": "CVE-2099-0118", "affects": [{"ref": "c0"}]}]}})
+rr_ = P.read_inspector(idr)
+check("Inspector: a ref that exists only in the request SBOM (the scan answer repeats no components) still resolves to the package", rr_[0] == 1 and [t[1:3] for t in rr_[1]] == [("tzdata", "2026c")], rr_)
+idu = os.path.join(tempfile.mkdtemp(), "iu")
+put(idu, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "c0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+put(idu, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [], "vulnerabilities": [{"id": "CVE-2099-0119", "affects": [{"ref": "nope"}]}]}})
+try:
+    P.read_inspector(idu); got = None
+except ValueError as e_:
+    got = str(e_)
+check("Inspector: a ref that is in neither document is a ValueError (did not run)", got is not None and "CVE-2099-0119" in got, got)
 gd2 = os.path.join(tempfile.mkdtemp(), "g2")
 put(gd2, "packages.json", [{"package": "tzdata", "version": "2026c", "packageType": "OS"}])
 put(gd2, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0104", "vulnerability": {"shortDescription": "CVE-2099-0104", "severity": "CRITICAL",

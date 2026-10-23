@@ -173,9 +173,9 @@ def _cdx_findings(doc, comps, inspector=False):
               if c.get("bom-ref")}
     out = []
     for v in doc.get("vulnerabilities") or []:
-        affects = [a for a in v.get("affects") or [] if isinstance(a, dict)]
-        if not affects:   # a vulnerability nobody can attribute to a component is an incomplete report: did not run, never silence
-            raise ValueError("vulnerability %s has no affects: the report is incomplete" % (v.get("id") or "?"))
+        affects = v.get("affects") or []
+        if not affects or not all(isinstance(a, dict) for a in affects):   # a vulnerability nobody can attribute (none, or an entry that is not an object) is an incomplete report: did not run, never silence
+            raise ValueError("vulnerability %s has no usable affects list: the report is incomplete" % (v.get("id") or "?"))
         for a in affects:
             c = by_ref.get(a.get("ref"))
             if c is None:   # a finding that names no component of the report cannot be attributed: incomplete, never a nameless "?" finding
@@ -183,6 +183,8 @@ def _cdx_findings(doc, comps, inspector=False):
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")
+            if name == "?":   # the component has neither a package URL nor a name: still a finding nobody can attribute
+                raise ValueError("vulnerability %s affects the component %r, which has neither a package URL nor a name: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
             # Grype writes its CISA KEV listing as a rating (source 'CISA KEV Catalog', method other, justification 'Listed in CISA KEV'): that is the known-exploited
             # marker, not a severity; its 'Negligible' is CycloneDX 'none'
             rts = [r for r in v.get("ratings") or [] if isinstance(r, dict)]
