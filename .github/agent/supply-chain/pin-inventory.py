@@ -121,11 +121,16 @@ class Item:
         self.step = ""   # a placeholder's identity: the hash of the step it sits in
         self.raw = None  # a file item's repository path, exactly as git names it (name goes through _hide(); REQ-SUP-001-AC21 compares this)
         self.src = None  # (script path, line id) of the script line that made this item (not part of its identity): REQ-SUP-001-AC20 binds a ruled row to that line
+        self.sum = ""    # the checksum(s) the repo pins for this tool or package (an install-scanner.sh SUM, a requirements --hash): part of the item's identity (rc-5b item 6) but not of its key
 
     @property
     def key(self):
         sub = f"/{self.path}" if self.path else ""
         return f"{self.kind}:{self.name}{sub}@{self.version}" + (f"#{self.step}" if self.step else "")
+
+    @property
+    def ident(self):
+        return self.key + (f"#sum:{self.sum}" if self.sum else "")
 
     def __repr__(self):
         return self.key
@@ -646,8 +651,10 @@ def _step_items(node, out, labels):
                 if re.fullmatch(r"[A-Za-z][A-Za-z0-9._-]*(\[[\w,.-]*\])?", tok) and not tok.startswith("-"):
                     out.append(Item("package", f"pypi/{tok.split('[')[0].lower().replace('_', '-')}", "(unpinned)"))  # no version at all: it cannot be proven, so adding one fails closed
         if re.search(r"\bpip[0-9.]*\b", run) and "--require-hashes" in run:  # a requirements list fed on stdin (a heredoc): its `name==version \\` lines
+            rsums = _req_sums(run)
             for p in _REQ_PIN.finditer(run):
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
+                out[-1].sum = _sumid(rsums.get((p.group(1).lower().replace("_", "-"), p.group(2)), []))
 
 
 def _walk(node, out, labels, path="", in_step=False):
@@ -705,6 +712,41 @@ def _walk(node, out, labels, path="", in_step=False):
             _walk(v, out, labels, path, in_step=in_step)
 
 
+def _sumid(sums):
+    return hashlib.sha256(" ".join(sorted(set(sums))).encode()).hexdigest()[:24] if sums else ""
+
+
+_CASE_SUM = re.compile(r"^[ \t]*([\w.\-]+):[^)\n]*\)[ \t]*SUM=['\"]?([0-9a-fA-F]{64})['\"]?", re.M)
+
+
+def _scanner_sums(text, name, version):
+    """The sha256 values install-scanner.sh pins for a tool: the `<tool>:<arch>) SUM=<hex>` rows whose tool label is the item's name (docker-scout for scout, osv-scanner for osv ...).
+    A label that carries a version (docker-scout-1.25.0) belongs to that version only; a label without one belongs to the item the *_VER variable names."""
+    exact, plain = [], []
+    for lab, hx in _CASE_SUM.findall(text):
+        lab = lab.lower()
+        m = re.fullmatch(r"(.+?)-(\d+(?:\.\d+)+)", lab)
+        if m and (m.group(1) == name or m.group(1).endswith("-" + name)):
+            if m.group(2) == version:
+                exact.append(hx.lower())
+        elif lab == name or lab.endswith("-" + name) or lab.startswith(name + "-"):
+            plain.append(hx.lower())
+    return exact or plain
+
+
+_REQ_HASH = re.compile(r"--hash=([A-Za-z0-9]+:[0-9A-Fa-f]+)")
+
+
+def _req_sums(text):
+    """{(name, version): [hash, ...]} of the requirement lines (continuations joined) that carry --hash options."""
+    out = {}
+    for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
+        m = _REQ_PIN.match(ln)
+        if m:
+            out.setdefault((m.group(1).lower().replace("_", "-"), m.group(2)), []).extend(h.lower() for h in _REQ_HASH.findall(ln))
+    return out
+
+
 def inventory(files):
     """The items of one tree's files ({path: text}). Raises on a workflow that does not parse: a pin we cannot read is never skipped."""
     items = {}
@@ -717,6 +759,9 @@ def inventory(files):
             found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
             found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
+            for it in found:
+                if it.kind == "tool" and not it.name.startswith("source:"):
+                    it.sum = _sumid(_scanner_sums(text, it.name, it.version))
             sjoined, sraw = _script_lines(text)
             sctx = _assign_context(sjoined, sraw)
             for ln, lid, actx, rawln in zip(sjoined, _line_ids(text), sctx, sraw):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
@@ -757,6 +802,9 @@ def inventory(files):
                     raise RuntimeError(f"{path} yields more than {MAX_ITEMS_PER_FILE} items: refusing to read it")   # a script's go install / pip install / docker run / release download are measured like a run step's
         elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
             found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
+            rsums = _req_sums(text)
+            for it in found:
+                it.sum = _sumid(rsums.get((it.name[5:], it.version), []))
             for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
                 body = ln.split("#", 1)[0].strip()
                 if not body or body.startswith("--hash="):
@@ -812,7 +860,7 @@ def inventory(files):
 
 def moved(base_items, head_items):
     """Items in the head that the base did not have: a new pin, or a changed version, counts as moved."""
-    return [head_items[k] for k in sorted(head_items) if k not in base_items]
+    return [head_items[k] for k in sorted(head_items) if k not in base_items or base_items[k].sum != head_items[k].sum]   # the pinned checksum is part of the identity: the same version with a new sum is a moved item
 
 
 def load_at(root, rev):

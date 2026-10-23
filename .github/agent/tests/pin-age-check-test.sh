@@ -71,6 +71,9 @@ cat >"$base/bin/install-scanner.sh" <<'EOF'
 TRIVY_VER=0.74.0
 GRYPE_VER=0.118.0
 GITSIGN_VER=0.17.1
+case "${TOOL}:${arch}" in
+  trivy:x86_64|trivy:amd64) SUM=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+esac
 EOF
 cat >"$base/.github/pins/adjudicator-requirements.txt" <<'EOF'
 # hash-pinned
@@ -291,8 +294,8 @@ out=$(liveproof "$MOVED" schedule)
 CASE="observer: the tag was seen on 2026-01-01 at a DIFFERENT commit; its move to the pinned commit was never observed: no proof (the tj-actions pattern)"
 case "$out" in "[]") ok "$CASE";; *) bad "$CASE ($out)";; esac
 out=$(liveproof "$GOODSTATE" schedule v9.9.9)
-CASE="observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no proof"
-case "$out" in "[]") ok "$CASE";; *) bad "$CASE ($out)";; esac
+CASE="observer: the # version label must itself resolve to the pinned commit (v9.9.9 does not): no age proof, only a bad-label marker (rc-5b item 6, R8a)"
+case "$out" in "[(None, 'bad-label:v9.9.9')]") ok "$CASE";; *) bad "$CASE ($out)";; esac
 out=$(liveproof - schedule)
 CASE="observer: no scheduled run has produced state yet: nothing observed, no proof, and no error (ages only get younger)"
 case "$out" in "[]") ok "$CASE";; *) bad "$CASE ($out)";; esac
@@ -330,8 +333,8 @@ PY
 ) 2>&1 | tail -1; }
 CASE="PR clock: the earliest workflow run on the first commit whose INVENTORY holds the item (not on an earlier commit that merely mentions 21 in a comment, nor the later head)"
 check test "$(pcclock '[{"created_at":"2026-09-20T00:00:00Z"},{"created_at":"2026-09-25T00:00:00Z"}]')" = 2026-09-20T00:00:00Z
-CASE="PR clock: no run on the introducing commit means no clock (the later commit's runs do not count)"
-check test "$(pcclock -)" = None
+CASE="PR clock: no run on the introducing commit itself: the earliest run whose head CONTAINS it counts (the later head's run), never an earlier commit's run (rc-5b item 6, R8b)"
+check test "$(pcclock -)" = 2026-10-04T00:00:00Z
 CASE="PR clock: outside a PR (no base) there is no clock"
 check test "$(cd "$work" && GITHUB_REPOSITORY=o/r python3 - "$chk" "$work/pc" <<'PY'
 import importlib.util, sys
@@ -4240,6 +4243,79 @@ for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 
   esac
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
+
+# --- rc-5b item 6 (A4, R7, R8, R12): the checksum is part of an item's identity; a server proof beats the PR clock for tools and packages; a label that does not resolve is "age not provable"; the Go proxy's case escaping ---
+A64=$(printf 'a%.0s' $(seq 64)); B64=$(printf 'b%.0s' $(seq 64))
+newcase sum-scanner "$(sub bin/install-scanner.sh "SUM=$A64" "SUM=$B64")"
+runck sum-scanner '{"times": {}}'
+CASE="sum: a checksum change under the SAME tool version is a moved item (no age data: fails and names it)"
+check test "$rc" -eq 1; check grep -qF 'tool:trivy@0.74.0' "$work/sum-scanner.out"
+runck sum-scanner "{\"times\": {\"tool:trivy@0.74.0\": {\"time\": \"$YOUNG\", \"source\": \"github-release\"}}}"
+CASE="sum: the same sum-only change with a release asset 3 days old fails"; check test "$rc" -eq 1
+runck sum-scanner "{\"times\": {\"tool:trivy@0.74.0\": {\"time\": \"$OLD\", \"source\": \"github-release\"}}}"
+CASE="sum: the same sum-only change with a release asset 10 days old passes"; check test "$rc" -eq 0
+newcase sum-req "$(sub .github/pins/adjudicator-requirements.txt '--hash=sha256:aaaa' '--hash=sha256:cccc')"
+runck sum-req '{"times": {}}'
+CASE="sum: a --hash change under the SAME package version is a moved item"
+check test "$rc" -eq 1; check grep -qF 'package:pypi/anthropic@1.9.0' "$work/sum-req.out"
+newcase sum-comment "pathlib=__import__('pathlib'); p=pathlib.Path('bin/install-scanner.sh'); p.write_text(p.read_text()+'# a note\n')"
+runck sum-comment '{"times": {}}'
+CASE="sum: a comment added to the installer script moves nothing"; check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/sum-comment.out"
+CASE="item 6: a server proof beats the PR clock for tools and packages; the clock stands in only when there is none"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+for kind, name, ver, src in (("tool", "trivy", "0.74.0", "github-release"), ("package", "pypi/p", "1.0", "pypi")):
+    it = inv.Item(kind, name, ver)
+    ok, why, pr = ac.judge_item(it, [("2026-10-04T00:00:00Z", src), ("2020-01-01T00:00:00Z", "pr-clock")], now)
+    assert not ok and pr["source"] == src, (kind, why)          # a replaced asset (young server proof) is not out-aged by the version's old PR clock
+    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", "pr-clock")], now)
+    assert ok and pr["source"] == "pr-clock", (kind, why)        # the PR clock stands in only when no server proof exists
+    ok, why, pr = ac.judge_item(it, [("2020-01-01T00:00:00Z", src), ("2026-10-04T00:00:00Z", "pr-clock")], now)
+    assert ok and pr["source"] == src, (kind, why)               # an old server proof decides; a young PR clock does not undo it
+act = inv.Item("action", "o/act", "a" * 40, "v4")
+ok, why, pr = ac.judge_item(act, [("2020-01-01T00:00:00Z", "pr-clock"), ("2026-10-04T00:00:00Z", "observer")], now)
+assert ok, why   # actions keep the oldest-proof rule (their age is the observer or the PR clock)
+PY
+CASE="item 6: a # vX label that does not resolve to the pinned commit is 'age not provable' and names the label, even with an old PR clock"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+SHA = "a" * 40
+ac._tag_refs = lambda repo: {"v4": SHA}
+ac.observed = lambda: None
+ac._pr_clock = lambda *a, **k: "2020-01-01T00:00:00Z"
+bad = inv.Item("action", "o/act", SHA, "v9.9.9")
+ok, why, _ = ac.judge_item(bad, ac.live_proofs(bad, ".", "base"), now)
+assert not ok and "v9.9.9" in why and "label" in why and "does not" in why, why   # the label is wrong; it is not read as a missing clock
+good = inv.Item("action", "o/act", SHA, "v4")
+ok, why, _ = ac.judge_item(good, ac.live_proofs(good, ".", "base"), now)
+assert ok, why
+PY
+CASE="item 6: the Go proxy gets the !x case escaping and the index Path is matched exactly"
+check python3 - "$chk" <<'PY'
+import contextlib, importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+assert ac._go_escape("github.com/BurntSushi/toml") == "github.com/!burnt!sushi/toml"
+assert ac._go_escape("golang.org/x/tools") == "golang.org/x/tools"
+seen = []
+def fake(u):
+    seen.append(u)
+    return {"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"} if "!burnt!sushi/toml/@v/" in u else None
+ac._http_json = fake
+mod, info = ac._go_module("github.com/BurntSushi/toml/cmd/x", "v1.0.0")
+assert mod == "github.com/BurntSushi/toml" and not any(c.isupper() for u in seen for c in u.split("proxy.golang.org/")[1].split("/@v/")[0]), (mod, seen)
+rows = '{"Path":"github.com/burntsushi/toml","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n{"Path":"github.com/BurntSushi/toml","Version":"v1.0.0","Timestamp":"2026-02-02T00:00:00Z"}\n'
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+urllib.request.urlopen = lambda *a, **k: R(rows.encode())
+assert ac._go_index_time("github.com/BurntSushi/toml", "v1.0.0", "2020-01-01T00:00:00Z") == "2026-02-02T00:00:00Z"   # an exact Path match: another module's case-twin lends no time
+PY
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
