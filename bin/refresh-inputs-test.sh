@@ -151,6 +151,7 @@ echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"; fr
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
 t "rule 73" "fips-module: a newer certified module -> the fips recipe moves to it (GOFIPS140 and the proof value) and a PR is opened" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'v1.1.0' '$work/rp3/build/melange-fips.yaml' && grep -q 'v1.1.0-deadbeef' '$work/rp3/build/melange-fips.yaml' && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1"
 t "rule 73" "fips-module: a PR is opened, not merged, and nothing is pushed to main" bash -c "grep -q '^gh pr create' '$CALLS' && ! grep -Eq '^gh pr merge' '$CALLS' && ! grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -Eq '( |:|/)main( |\$)'"
+t "rule 73" "fips-module: the PR body names the four files a human must change for a new certificate (bin/check-artifacts.sh, bin/check-fips.sh, internal/buildinfo/buildinfo.go, docs/install.md; rc-3 item 7)" bash -c "l=\$(grep '^gh pr create' '$CALLS'); for f in bin/check-artifacts.sh bin/check-fips.sh internal/buildinfo/buildinfo.go docs/install.md; do case \"\$l\" in *\"\$f\"*) ;; *) echo \"the body does not name \$f\"; exit 1;; esac; done"
 rm -f "$gr/lib/fips140/certified.txt"; fr
 sf "rule 73" "fips-module: a missing certified.txt fails closed and names the file" 'certified\.txt' "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
 : >"$gr/lib/fips140/certified.txt"
