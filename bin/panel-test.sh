@@ -309,6 +309,9 @@ put(sd, "cves.json", {"vulnerabilities": [
 ex = {t[0]: t[4] for t in P.read_scout(sd)[1]}
 check("Scout's GitLab-format report: severity and the other identifiers as aliases; Unknown severity is absent",
       ex["CVE-2099-0102"] == {"severity": "medium", "aliases": ["GHSA-dddd-eeee-ffff"]} and ex["CVE-2099-0103"] == {}, ex)
+# rc-5a C round 2 (fix-round seats): the panel counts packages the same way the gates do: a component with a non-empty STRING purl
+pcd = {"components": [{"purl": "pkg:generic/a@1"}, {"purl": ""}, {"purl": None}, {"purl": 7}, {"purl": {"a": 1}}, {"purl": [1]}, {"purl": True}, {"name": "f"}, "x"]}
+check("panel: only a component with a non-empty string purl is a package (7, an object, a list and true are not)", len(P._cdx_packages(pcd)) == 1, P._cdx_packages(pcd))
 gd2 = os.path.join(tempfile.mkdtemp(), "g2")
 put(gd2, "packages.json", [{"package": "tzdata", "version": "2026c", "packageType": "OS"}])
 put(gd2, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0104", "vulnerability": {"shortDescription": "CVE-2099-0104", "severity": "CRITICAL",
