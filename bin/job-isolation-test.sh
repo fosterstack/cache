@@ -16,6 +16,7 @@ import glob, os, re, sys, yaml
 wf = sys.argv[1]
 # a step that builds or compiles (commands and actions; comment lines never count)
 COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|goreleaser/goreleaser-action|\bgoreleaser\s+(?:build|release)\b|\bdocker\s+(?:buildx\s+)?build\b|\bbuildx\s+(?:build|bake)\b|docker/build-push-action|docker/bake-action"
+                     r"|\binstall-scanner\.sh\s+govulncheck\b"          # govulncheck is built from source by this installer arm: the build the workflow text does not show
                      r"|\bmelange\s+build\b|\bapko\s+(?:build|publish)\b|\bcargo\s+(?:build|install)\b|\bmake\b|\bnpm\s+(?:run\s+)?build\b")
 # Exclusions: none on the release-chain branch (cache#561 ruling B2). On main the table named the old release-chain jobs (stage-build build, stage-image assemble, stage-promote promote,
 # stage-reproducibility reproduce, stage-acceptance-artifacts artifacts) that the chain landing replaces; those jobs do not exist here, so the rows are gone (the requirement's own note
@@ -93,6 +94,38 @@ if g:
         bad.append("the downloaded govulncheck is referenced outside the digest-gated install")
 if re.search(r"go\s+install\s+golang\.org/x/vuln", atxt):
     bad.append("the audit job still builds govulncheck itself")
+# the Check stage (stage-verify.yml): govulncheck is built by `install-scanner.sh govulncheck` (a Go module, no release binary), so its build gets its own job with no
+# credential; the `check` job (id-token: write, for Witness) downloads it and installs it only after its sha256 equals the build job's output. The output proves
+# the artifact arrived intact; the guarantee is that no build runs in a job that holds a credential (AC1 above, which now sees this installer arm as a build).
+sv = yaml.safe_load(open(os.path.join(wf, "stage-verify.yml"))) or {}
+sj = sv.get("jobs") or {}
+gb = sj.get("govulncheck-build")
+chk = sj.get("check") or {}
+if not gb:
+    bad.append("stage-verify.yml has no govulncheck-build job")
+else:
+    if holds(sv, gb):
+        bad.append("stage-verify.yml govulncheck-build holds a credential: %s" % holds(sv, gb))
+    if not any("install-scanner.sh govulncheck" in steps_text(st) for st in gb.get("steps") or []):
+        bad.append("stage-verify.yml govulncheck-build does not build govulncheck")
+    if not (isinstance(gb.get("outputs"), dict) and "sha256" in gb["outputs"]):
+        bad.append("stage-verify.yml govulncheck-build has no sha256 output")
+cneeds = chk.get("needs")
+cneeds = [cneeds] if isinstance(cneeds, str) else (cneeds or [])
+if "govulncheck-build" not in cneeds:
+    bad.append("stage-verify.yml check does not need govulncheck-build")
+csteps = chk.get("steps") or []
+ctxt = "\n".join(steps_text(st) for st in csteps)
+if "needs.govulncheck-build.outputs.sha256" not in ctxt or "sha256sum" not in ctxt:
+    bad.append("stage-verify.yml check does not compare the downloaded govulncheck with the build job's sha256 output")
+GATE2 = (r'\[ "\$\(sha256sum govulncheck-dl/govulncheck \| cut -d\' \' -f1\)" = "\$\{GOVULNCHECK_SHA256\}" \] \|\| [^\n]*exit 1[^\n]*\n\s*'
+         r'install -m 0755 govulncheck-dl/govulncheck /usr/local/bin/govulncheck')
+if not re.search(GATE2, ctxt):
+    bad.append("stage-verify.yml check installs govulncheck without the equality gate (sha256 of the downloaded file against the build job's output, then install)")
+else:
+    inst = [st for st in csteps if "govulncheck-dl/govulncheck" in (st.get("run") or "")]
+    if len(inst) != 1 or (inst[0].get("env") or {}) != {"GOVULNCHECK_SHA256": "${{ needs.govulncheck-build.outputs.sha256 }}"}:
+        bad.append("stage-verify.yml check: the downloaded govulncheck is used outside the one gated step, or the gate's expected digest is not the build job's output")
 print("\n".join(bad)); sys.exit(1 if bad else 0)
 PY
 }
@@ -154,6 +187,33 @@ mutate "an ungated install appended to the download line" '
 edit("auditor.yml", lambda s: s.replace("-D \"${RUNNER_TEMP}/govulncheck-dl\" \\\n", "-D \"${RUNNER_TEMP}/govulncheck-dl\"; install -m 0755 \"${RUNNER_TEMP}/govulncheck-dl/govulncheck\" \"${RUNNER_TEMP}/gobin/govulncheck\" \\\n", 1))'
 mutate "the audit job stops needing the build job" '
 edit("auditor.yml", lambda s: s.replace("needs: [govulncheck-build]", "needs: []"))'
+
+# the hidden build (install-scanner.sh govulncheck compiles from source) in a credential-holding job: the one that lost it, and any other
+mutate "install-scanner.sh govulncheck put back in the Check job (id-token: write)" '
+edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
+mutate "install-scanner.sh govulncheck added to the arm64 Check job (id-token: write)" '
+edit("stage-verify.yml", lambda s: re.sub(r"(  check-arm64:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
+mutate "install-scanner.sh govulncheck added to go-freshness refresh (App key, packages: write)" '
+edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n\n      - name: log in", 1))'
+mutate "install-scanner.sh govulncheck added to a job that reads a secret (release.yml decide)" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
+mutate "install-scanner.sh govulncheck added to a job with an environment (auditor panel-probe)" '
+edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
+# the Check stage hand-over
+mutate "the Check job stops needing govulncheck-build" '
+edit("stage-verify.yml", lambda s: s.replace("    needs: govulncheck-build\n", "", 1))'
+mutate "the Check job no longer compares the sha256" '
+edit("stage-verify.yml", lambda s: s.replace("needs.govulncheck-build.outputs.sha256", "needs.govulncheck-build.outputs.other"))'
+mutate "the Check job installs the downloaded govulncheck with the comparison inverted" '
+edit("stage-verify.yml", lambda s: s.replace("cut -d\x27 \x27 -f1)\" = \"${GOVULNCHECK_SHA256}\"", "cut -d\x27 \x27 -f1)\" != \"${GOVULNCHECK_SHA256}\""))'
+mutate "govulncheck-build is granted id-token: write" '
+edit("stage-verify.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    permissions:\n      contents: read\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
+mutate "govulncheck-build reads a secret" '
+edit("stage-verify.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}\n        run: echo x\n", s, count=1, flags=re.S))'
+mutate "govulncheck-build has no sha256 output" '
+edit("stage-verify.yml", lambda s: s.replace("    outputs:\n      sha256: ${{ steps.build.outputs.sha256 }}\n", "", 1))'
+mutate "the downloaded govulncheck is installed a second time without the gate" '
+edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: install -m 0755 govulncheck-dl/govulncheck /usr/local/bin/govulncheck\n", s, count=1, flags=re.S))'
 
 
 echo "job-isolation: $pass passed, $failn failed"

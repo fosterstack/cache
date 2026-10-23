@@ -44,13 +44,18 @@ collection holds); PR 2's bin/chain-test-shape.py (the same flag allowlist, the 
 import hashlib, json, os, re, shlex, sys, yaml
 
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
-DOWN = {"witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
+DOWN = {"witness-build", "digests", "dist", "locks", "images", "govulncheck"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
 UP = {"witness-check": RECORD_DIRS, "check-results": "check-results"}   # artifact name -> the path(s) it may carry
 KIND_STEP = "bash bin/install-kind.sh"
 STEPS = ["scanners", "acceptance", "runtime"]
 SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain govulncheck is built with (an installer of its own; not a scanner)
+GV_BUILD = "govulncheck-build"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (id-token: write) only installs what it hands over
+GV_BUILD_LINE = "bash bin/install-scanner.sh govulncheck\necho \"sha256=$(sha256sum /usr/local/bin/govulncheck | cut -d' ' -f1)\" >> \"$GITHUB_OUTPUT\""
+GV_HAND_LINE = ("[ \"$(sha256sum govulncheck-dl/govulncheck | cut -d' ' -f1)\" = \"${GOVULNCHECK_SHA256}\" ] || { echo \"govulncheck differs from the build job's digest\" >&2; exit 1; }\n"
+                "install -m 0755 govulncheck-dl/govulncheck /usr/local/bin/govulncheck")
+GV_HAND_ENV = {"GOVULNCHECK_SHA256": "${{ needs.govulncheck-build.outputs.sha256 }}"}
 SOURCE_SCANNERS = ["govulncheck"]   # ruling G (advisor Oct 12): the source scanners of .github/policy/scanners.json `source_scanners`, installed after Go, run by bin/check-govulncheck.py
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
 STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # PR 2's + PR 3's three
@@ -181,7 +186,8 @@ def exact_steps(label, steps, want, what):
     if len(steps) != len(want):
         bad.append("%s must have exactly its %d listed steps (%s), found %d" % (label, len(want), what, len(steps)))
     for i, (s, (kind, arg)) in enumerate(zip(steps, want), 1):
-        if not isinstance(s, dict) or set(s) - {"name", "uses", "with", "run"}:
+        extra = {"build": {"id"}, "hand": {"env"}}.get(kind, set())
+        if not isinstance(s, dict) or set(s) - ({"name", "uses", "with", "run"} | extra):
             bad.append("%s step %d: keys not allowed (an if, env or shell would change what runs): %s" % (label, i, sorted(s) if isinstance(s, dict) else s)); continue
         u, w, r = (s.get("uses") or ""), s.get("with") or {}, (s.get("run") or "").strip()
         if kind == "checkout":
@@ -190,6 +196,12 @@ def exact_steps(label, steps, want, what):
         elif kind == "run":
             if u or r != arg:
                 bad.append("%s step %d must be exactly `run: %s`, found %r" % (label, i, arg, (r or u)[:80]))
+        elif kind == "build":
+            if u or r != arg or s.get("id") != "build":
+                bad.append("%s step %d must be exactly `id: build` with the run %r, found %r" % (label, i, arg, (r or u)[:120]))
+        elif kind == "hand":
+            if u or r != arg or s.get("env") != GV_HAND_ENV:
+                bad.append("%s step %d must be exactly the digest-gated install of the downloaded govulncheck (env %s, run %r), found %r" % (label, i, GV_HAND_ENV, arg, (r or u)[:120]))
         elif kind in ("down", "up"):
             action = "actions/%s-artifact@" % ("download" if kind == "down" else "upload")
             if not u.startswith(action) or not PIN.match(u.split(" ")[0]) or set(w) != {"name", "path"} or w["name"] != arg[0] or (w["path"] or "").strip() != arg[1] or "run" in s:
@@ -218,6 +230,26 @@ def arm_job(j):
     return bad
 
 
+def gv_job(j):
+    """REQ-REL-011-AC1: govulncheck-build holds contents read only (no id-token, no secret, no environment, no other key), runs on ubuntu-24.04 and has EXACTLY these steps: a digest-pinned
+    checkout without persisted credentials, the checksum-pinned Go install, the one build step (`id: build`: the pinned installer arm and the sha256 written to the job output) and the
+    digest-pinned upload of the binary as the artifact govulncheck. Its one output is that sha256 (it proves the artifact arrived intact; the guarantee is that this job holds no credential)."""
+    if not isinstance(j, dict):
+        return ["%s is not a job" % GV_BUILD]
+    bad = []
+    if set(j) != {"runs-on", "permissions", "outputs", "steps"}:
+        bad.append("%s may hold exactly runs-on, permissions, outputs and steps (no if, needs, env, environment, container): %s" % (GV_BUILD, sorted(j)))
+    if j.get("runs-on") != "ubuntu-24.04":
+        bad.append("%s must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % (GV_BUILD, j.get("runs-on")))
+    if j.get("permissions") != {"contents": "read"}:
+        bad.append("%s permissions must be exactly contents read (it holds no credential): %s" % (GV_BUILD, j.get("permissions")))
+    if j.get("outputs") != {"sha256": "${{ steps.build.outputs.sha256 }}"}:
+        bad.append("%s must expose exactly the output sha256 from its build step: %s" % (GV_BUILD, j.get("outputs")))
+    want = [("checkout", None), ("run", GO_INSTALL), ("build", GV_BUILD_LINE), ("up", ("govulncheck", "/usr/local/bin/govulncheck"))]
+    bad += exact_steps(GV_BUILD, j.get("steps") or [], want, "checkout, Go install, the one build step, the upload")
+    return bad
+
+
 def stage(path):
     d, bad = load(path), []
     on = d.get("on") or {}
@@ -226,13 +258,16 @@ def stage(path):
     if set(d) - {"name", "on", "permissions", "jobs"}:
         bad.append("workflow keys not allowed: %s" % sorted(set(d) - {"name", "on", "permissions", "jobs"}))
     jobs = d.get("jobs") or {}
-    if list(jobs) != ["check", "check-arm64"]:
-        bad.append("exactly two jobs, check and check-arm64, are required (advisor 0385), found %s" % list(jobs))
+    if list(jobs) != [GV_BUILD, "check", "check-arm64"]:
+        bad.append("exactly three jobs, govulncheck-build, check and check-arm64, are required (advisor 0385; REQ-REL-011-AC1), found %s" % list(jobs))
         return bad
+    bad += gv_job(jobs[GV_BUILD])
     bad += arm_job(jobs["check-arm64"])
     j = jobs["check"]
-    if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes"}:
-        bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes"}))
+    if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}:
+        bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}))
+    if j.get("needs") != GV_BUILD:
+        bad.append("check must need exactly %s (the job that builds govulncheck with no credential), got %r" % (GV_BUILD, j.get("needs")))
     if j.get("runs-on") != "ubuntu-24.04":
         bad.append("check must run on the GitHub-hosted ubuntu-24.04 runner, got %r" % j.get("runs-on"))
     if j.get("permissions") != {"contents": "read", "id-token": "write"}:
@@ -243,16 +278,18 @@ def stage(path):
         bad.append("a registry login, a secret, a packages or attestations permission or a registry name appears in the file")
     kinds, names = [], []
     for s in steps:
-        if set(s) - {"name", "uses", "with", "run"}:
-            bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run"}))
+        if set(s) - {"name", "uses", "with", "run", "env"}:
+            bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run", "env"}))
+        if "env" in s and (s.get("run") or "").strip() != GV_HAND_LINE:
+            bad.append("env is allowed only on the digest-gated install of govulncheck: %s" % sorted(s["env"]))
         u = s.get("uses", "")
         if u.startswith("actions/checkout@"):
             kinds.append("checkout")
             if not PIN.match(u.split(" ")[0]) or s.get("with") != {"persist-credentials": "false"}:
                 bad.append("checkout must be digest-pinned with persist-credentials: false only")
         elif u.startswith("actions/download-artifact@"):
-            kinds.append("down")
             w = s.get("with") or {}
+            kinds.append("gvdown" if w.get("name") == "govulncheck" else "down")
             if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".")):
                 bad.append("download-artifact must be digest-pinned, name in %s, an explicit path outside bin/ and .github/: %s" % (sorted(DOWN), w))
         elif u.startswith("actions/upload-artifact@"):
@@ -262,8 +299,10 @@ def stage(path):
                 bad.append("upload-artifact must be digest-pinned, name and path from %s (witness-check carries witness-records/): %s" % (UP, w))
         elif u:
             bad.append("uses not allowed in the Check stage: %s" % u)
-        elif (s.get("run") or "").strip() in ["bash bin/install-scanner.sh " + n for n in ["witness"] + SCANNERS + ["go"] + SOURCE_SCANNERS]:
+        elif (s.get("run") or "").strip() in ["bash bin/install-scanner.sh " + n for n in ["witness"] + SCANNERS + ["go"]]:
             kinds.append("install")
+        elif (s.get("run") or "").strip() == GV_HAND_LINE and s.get("env") == GV_HAND_ENV:
+            kinds.append("hand")
         elif (s.get("run") or "").strip() == KIND_STEP:
             kinds.append("kind")
         elif "run" in s:
@@ -275,7 +314,7 @@ def stage(path):
                 names.append(m.group(1))
         else:
             bad.append("a step with neither uses nor run")
-    want = ["checkout", "install"] + ["install"] * len(SCANNERS) + ["install"] * (1 + len(SOURCE_SCANNERS)) + ["kind"]
+    want = ["checkout", "install"] + ["install"] * len(SCANNERS) + ["install"] + ["gvdown", "hand"] + ["kind"]
     k = len(want)
     got_down = [x for x in kinds if x == "down"]
     body = [x for x in kinds if x != "down"]
@@ -283,7 +322,7 @@ def stage(path):
         bad.append("steps must be checkout, install Witness, install each listed scanner, install kind (bash bin/install-kind.sh), downloads, THREE witnessed steps, uploads (in that order); got %s" % kinds)
     if "kind" in kinds and "down" in kinds and kinds.index("down") < kinds.index("kind"):
         bad.append("the downloads come after the installs")
-    want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", GO_INSTALL)] + [("run", "bash bin/install-scanner.sh " + s) for s in SOURCE_SCANNERS] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
+    want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", GO_INSTALL)] + [("down", ("govulncheck", "govulncheck-dl")), ("hand", GV_HAND_LINE)] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
              [("run", "bash bin/witnessed.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS] + [("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))]
     bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, kind install, four downloads, the three witnessed steps, the two uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
@@ -306,14 +345,24 @@ def installs(path, scanners_path):
     listed = (doc.get("scanners") or []) + (doc.get("source_scanners") or [])   # the image scanners and the source scanners (ruling G)
     jobs = (load(path).get("jobs") or {})
     runs = [(s.get("run") or "").strip() for s in ((jobs.get("check") or {}).get("steps") or []) if isinstance(s, dict)]
+    gv_runs = [(s.get("run") or "").strip() for s in ((jobs.get(GV_BUILD) or {}).get("steps") or []) if isinstance(s, dict)]
     got = [r.split(" ")[-1] for r in runs if r.startswith("bash bin/install-scanner.sh ")]
     bad = []
+    source = doc.get("source_scanners") or []
     for s in listed:
-        if "bash bin/install-scanner.sh " + s not in runs:
+        if s in source:   # a source scanner is a Go module: built in the credential-free govulncheck-build job and handed to check by digest (REQ-REL-011-AC1)
+            if not any(r.startswith("bash bin/install-scanner.sh " + s + "\n") for r in gv_runs):
+                bad.append("scanners.json lists the source scanner %s but the %s job has no build step `bash bin/install-scanner.sh %s`" % (s, GV_BUILD, s))
+            if GV_HAND_LINE not in runs:
+                bad.append("scanners.json lists the source scanner %s but the check job has no digest-gated install of it" % s)
+        elif "bash bin/install-scanner.sh " + s not in runs:
             bad.append("scanners.json lists %s but the check job has no step `bash bin/install-scanner.sh %s`" % (s, s))
+    for r in gv_runs:
+        if r.startswith("bash bin/install-scanner.sh ") and r.split("\n")[0].split(" ")[-1] not in ["go"] + source:
+            bad.append("the %s job builds %s (`%s`), which scanners.json does not list as a source scanner" % (GV_BUILD, r.split("\n")[0].split(" ")[-1], r.split("\n")[0]))
     for g in got:
-        if g not in ("witness", "go") and g not in listed:
-            bad.append("the check job installs %s (`bash bin/install-scanner.sh %s`), which scanners.json does not list" % (g, g))
+        if g not in ("witness", "go") and (g not in listed or g in source):
+            bad.append("the check job installs %s (`bash bin/install-scanner.sh %s`), which scanners.json does not list (or which is built in %s and handed over)" % (g, g, GV_BUILD))
     return bad
 
 

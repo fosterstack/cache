@@ -1,7 +1,10 @@
 # The Check stage of the v0.3.0 release chain (rules 55, 58, 66, 68, 70; REQ-CHAIN-006). Called only from release.yml, after Build, beside Rebuild and Sign.
 # It downloads Build's artifacts (the candidate images as OCI layout directories, the digest list, the dist archives to scan alongside the images),
-# then installs the listed scanners (grype, osv-scanner) by checksum, the pinned Go and govulncheck (built from the committed tools/govulncheck module), and runs three Witness steps through the one helper: scanners, acceptance and runtime. Each step first verifies Build's record (bin/check-stage.sh),
+# then installs the listed scanners (grype, osv-scanner) by checksum and the pinned Go, takes govulncheck from the govulncheck-build job (below), and runs three Witness steps through the one helper: scanners, acceptance and runtime. Each step first verifies Build's record (bin/check-stage.sh),
 # then runs its checks as listed plain scripts. No registry login, no packages permission, no secret: the stage only reads what the earlier stages made.
+# govulncheck publishes no release binary, so it is built from the committed tools/govulncheck module (go.sum is the pin) in its own job, govulncheck-build, which holds no
+# credential (REQ-REL-011-AC1: a job that holds a credential never builds). The check job, which holds id-token: write for Witness, downloads that binary and installs it only
+# after its sha256 equals the build job's output. The output proves the artifact arrived intact; the guarantee is that no build runs in a job that holds a credential.
 # The shape of this file is judged by bin/chain-check-wiring-test.sh (an exact grammar).
 name: 'Stage: check'
 on:
@@ -9,7 +12,29 @@ on:
 permissions:
   contents: read
 jobs:
+  govulncheck-build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.build.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
+      - name: build govulncheck (pinned by go.sum) and record its sha256
+        id: build
+        run: |
+          bash bin/install-scanner.sh govulncheck
+          echo "sha256=$(sha256sum /usr/local/bin/govulncheck | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: govulncheck
+          path: /usr/local/bin/govulncheck
   check:
+    needs: govulncheck-build
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -26,8 +51,16 @@ jobs:
         run: bash bin/install-scanner.sh osv-scanner
       - name: install Go (pinned by checksum)
         run: bash bin/install-scanner.sh go
-      - name: install govulncheck (pinned by go.sum)
-        run: bash bin/install-scanner.sh govulncheck
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: govulncheck
+          path: govulncheck-dl
+      - name: install govulncheck from its build job (sha256 compared first)
+        env:
+          GOVULNCHECK_SHA256: ${{ needs.govulncheck-build.outputs.sha256 }}
+        run: |
+          [ "$(sha256sum govulncheck-dl/govulncheck | cut -d' ' -f1)" = "${GOVULNCHECK_SHA256}" ] || { echo "govulncheck differs from the build job's digest" >&2; exit 1; }
+          install -m 0755 govulncheck-dl/govulncheck /usr/local/bin/govulncheck
       - name: install kind and kubectl (exact versions, committed checksums)
         run: bash bin/install-kind.sh
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
