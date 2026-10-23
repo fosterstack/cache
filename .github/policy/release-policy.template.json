@@ -13,7 +13,7 @@
    "workflow": ".github/workflows/stage-sign.yml"
   },
   "check": {
-   "workflow": ".github/workflows/stage-verify.yml"
+   "workflow": ".github/workflows/stage-sign.yml"
   },
   "release": {
    "workflow": ".github/workflows/stage-promote.yml"
