@@ -33,7 +33,7 @@
 #   X.Y.Z and X.Y.Z-rc.N and names the apk fscache-0.3.0-r0.apk (final) or fscache-0.3.0_rc1-r0.apk (rc), fips as fscache-fips-.... Both forms run below.
 #   The stage names no apk file: bin/build-version-check.py and `items-apk` find the apk of a variant in a directory.
 # THE GH TOKEN: bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env (job permissions contents, checks, statuses, pull-requests
-#   read + id-token write; advisor ruling, confirmed). The script runs `unset GH_TOKEN` right after the admission line, so cache's scripts never see it.
+#   read, no id-token; advisor ruling, confirmed; the Witness move of Oct 22 removed the token). The script runs `unset GH_TOKEN` right after the admission line, so cache's scripts never see it.
 #
 # THE WITNESS SEAM (advisor ruling; owner's amendment of rule 68): bin/witnessed-local.sh holds ALL the Witness flags and `timeout 540`; the judge is the
 # three functions witness_seam, helper and directwitness in bin/chain-test-shape.py and the fixture side is witness_block and witnessed_text below. If
