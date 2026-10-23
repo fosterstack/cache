@@ -2182,7 +2182,7 @@ for jn, j in (d.get("jobs") or {}).items():
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
-if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", text): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
+if re.search(r"(?<!vnd)\.oci\b|\.tar\b(?!\.gz)|oci-archive:", text): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
 if "/tmp/oci/" in text and not re.search(r"\boci:/tmp/oci/\$\{v\}|\boci:%s", text): bad.append("does not read the layout with skopeo oci:")
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY

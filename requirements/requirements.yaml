@@ -680,6 +680,12 @@ requirements:
         then: the identical bytes return, and store totals reflect the entry
         verification: { method: component, release_blocking: true }
         status: approved
+      - id: REQ-STORE-001-AC2
+        given: a store where two PUTs of different sizes replace the same key concurrently, in either completion order of their blob write and their index record
+        when: both have completed
+        then: the index records the size of the bytes now retrievable under that key, the store total equals the sum of the indexed sizes, and reconciliation at the next start finds nothing to correct
+        verification: { method: component, release_blocking: true }
+        status: approved
 
   - id: REQ-STORE-002
     title: Atomic writes
@@ -813,7 +819,9 @@ requirements:
       temporary headroom, not a hard filesystem quota: temporary and
       in-flight disk usage during writes, and concurrent-write headroom,
       are outside this requirement and need requirements of their own
-      before any hard disk ceiling is claimed.
+      before any hard disk ceiling is claimed. That exclusion covers in-flight
+      temporary disk usage only, never the accuracy of the index once the
+      operations have completed (REQ-STORE-001-AC2).
     source: [README.md "Full core", docs/docker-deploy.md "Sizing", internal/cache/cache.go]
     tier: community
     introduced: v0.1.0
@@ -1569,6 +1577,12 @@ requirements:
         when: the scan check or the rescan would call Amazon Inspector for it
         then: "it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ"
         verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-004-AC9
+        given: "the toolchain-freshness job's bump branch, and a main whose ruleset requires signed commits"
+        when: "bin/go-bump-open-pr.sh creates a bump branch (no branch and no pull request exist for it)"
+        then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the two bumped go.mod files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token), and the API is asked whether that commit is verified; only then is the draft pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; and no workflow file or script outside the tests runs git commit, git commit-tree or git merge, so no PR-opening bot has a commit path that produces an unsigned commit (rule: main requires signed commits; advisor handoff 0623 after cache#464 was found BLOCKED by an unsigned bump commit, same mechanism as REQ-REFRESH-001-AC34, no new credential)"
+        verification: { method: unit, release_blocking: false }
         status: approved
 
   - id: REQ-REL-005

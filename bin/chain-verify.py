@@ -1444,7 +1444,7 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
     subs = typed_subjects(stage, stmt)
     commits = [x["name"][len(GIT_COMMIT_PREFIX):] for x in subs if x["name"].startswith(GIT_COMMIT_PREFIX)]
     if commits != [commit]:
-        refuse(stage, "commit: the record's git commit %s is not the run's commit %s" % (", ".join(commits) or "(none)", commit))
+        refuse(stage, "commit: the record names commit %s, not the run's commit %s" % (", ".join(commits) or "(none)", commit))
     products = {}
     for x in subs:
         if x["name"].startswith(PRODUCT_PREFIX):
