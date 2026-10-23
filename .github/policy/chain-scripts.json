@@ -669,7 +669,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "8c1d7b6771ef1847712ab4b472e5461c9a41009ab95ce68c101f89111e696692",
+      "sha256": "7defb43417a49cdbb100cf3bf4408cefa042c9838cdafa15f6ad4fa6990cf6e9",
       "tools": [
         "env",
         "go",

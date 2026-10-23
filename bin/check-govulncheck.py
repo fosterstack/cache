@@ -99,14 +99,17 @@ def read_recipe(rec, fips):
         t = l.strip()
         if not t or t.startswith("#"):
             continue
-        toks = t.split()
-        cmd = re.sub(r"^(- )?runs:\s*", "", t).split()
+        if "$(" in t or "`" in t or re.match(r"^(- )?(runs:\s*)?\$", t):
+            fail("%s line %d holds a substitution, a backtick or a leading word built from an expansion, which the grammar cannot resolve: %r" % (rec, k + 1, t))
+        t_plain = re.sub(r"[\\'\"]", "", t)          # g'o' and g\o are the same word to the shell: judged as the plain word
+        toks = t_plain.split()
+        cmd = re.sub(r"^(- )?runs:\s*", "", t_plain).split()
         is_go = "go" in toks or (bool(cmd) and cmd[0].rsplit("/", 1)[-1] == _G and "/" in cmd[0])
         is_export = "export" in toks
         if is_go or is_export:
             if any(j in t for j in SHELL_JOINERS):
                 fail("%s line %d joins or comments a go or export line (# ; & | backtick $( are refused there): %r" % (rec, k + 1, t))
-            m = BUILD_LINE.match(t)
+            m = BUILD_LINE.match(t) if t_plain == t else None
             if m:
                 pkgs.append(m.group(1))
             elif VERSION_LINE.match(t) or t in EXPORT_OK:
