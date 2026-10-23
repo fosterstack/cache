@@ -191,11 +191,37 @@ def idoc(at, purl):
     return {"statements": [{"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": at, "identifiers": {"purl": purl}, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}
 row("index: an empty @id beside an identifiers.purl of our image covers nothing", G.covered(G.vex_index(idoc("", OCI)), "CVE-9999-1", PKG, None) is False)
 row("index: an @id equal to the identifiers.purl covers", G.covered(G.vex_index(idoc(OCI, OCI)), "CVE-9999-1", PKG, None) is True)
+# the LATEST statement per (vulnerability id, product, subcomponent set) wins (rc-5a 667 item 4): a later affected retracts an earlier not_affected, by timestamp when both parse, else by document order
+def lw(*specs, subs=("pkg:generic/busybox@1.37.0",), prods=None):
+    sts = []
+    for status, ts in specs:
+        s_ = {"vulnerability": {"name": "CVE-9999-1"}, "status": status, "products": [{"@id": p_, "subcomponents": [{"@id": x} for x in subs]} for p_ in (prods or [OCI])]}
+        if ts is not None: s_["timestamp"] = ts
+        sts.append(s_)
+    return G.covered(G.vex_index({"statements": sts}), "CVE-9999-1", PKG, None)
+T1, T2 = "2026-01-01T00:00:00Z", "2026-02-01T00:00:00+00:00"
+row("latest: not_affected then affected (document order): retracted", lw(("not_affected", None), ("affected", None)) is False)
+row("latest: affected then not_affected (document order): covers", lw(("affected", None), ("not_affected", None)) is True)
+row("latest: under_investigation after not_affected retracts too", lw(("not_affected", None), ("under_investigation", None)) is False)
+row("latest: the timestamps beat the document order (affected is earlier by time, later by position)", lw(("not_affected", T2), ("affected", T1)) is True)
+row("latest: ...and the other way (affected is later by time, earlier by position)", lw(("affected", T2), ("not_affected", T1)) is False)
+row("latest: an unparseable timestamp falls back to document order for the pair", lw(("not_affected", T1), ("affected", "garbage")) is False)
+row("latest: a missing timestamp on one side falls back to document order for the pair", lw(("affected", T2), ("not_affected", None)) is True)
+row("latest: equal timestamps: the later in the document wins", lw(("not_affected", T1), ("affected", T1)) is False)
+row("latest: a different subcomponent set is another pair and is not retracted", G.covered(G.vex_index({"statements": [
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/zlib@1.2"}]}]}]}), "CVE-9999-1", PKG, None) is True)
+row("latest: a different product is another pair and is not retracted", lw(("not_affected", None), prods=[OCI]) is True and G.covered(G.vex_index({"statements": [
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
+    {"vulnerability": {"name": "CVE-9999-1"}, "status": "affected", "products": [{"@id": OCI + "&variant=fips", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}), "CVE-9999-1", PKG, None) is True)
+row("latest: an alias is the same vulnerability (the later affected statement names the alias)", G.covered(G.vex_index({"statements": [
+    {"vulnerability": {"name": "CVE-9999-1", "aliases": ["GHSA-x"]}, "status": "not_affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]},
+    {"vulnerability": {"name": "GHSA-x"}, "status": "affected", "products": [{"@id": OCI, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}), "CVE-9999-1", PKG, None) is False)
 print("index-cases-run")
 PYI
 )"; idx_rc=$?
 echo "$IDXOUT" | sed 's/^/  /'
-[ "$idx_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 34 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 34, or the section exited non-zero (a crash or a skipped case)"; fail=$((fail+1)); }
+[ "$idx_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 45 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 45, or the section exited non-zero (a crash or a skipped case)"; fail=$((fail+1)); }
 pass=$((pass + $(grep -c '^ok:' <<<"$IDXOUT"))); fail=$((fail + $(grep -c '^FAIL:' <<<"$IDXOUT")))
 
 echo "----"

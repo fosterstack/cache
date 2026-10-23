@@ -33,6 +33,7 @@
 # Pure python3 + json, no network — exercised by bin/inspector-gate-test.sh.
 import json
 import re
+import datetime
 import sys
 
 OUR_PRODUCTS = re.compile(
@@ -111,16 +112,63 @@ def load(path):
         return json.load(f)
 
 
+def _stamp(value):
+    """A statement's timestamp as an aware datetime, or None when it is missing or unreadable (ISO 8601; a trailing Z is UTC; no offset is read as UTC)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        d = datetime.datetime.fromisoformat(value.strip()[:-1] + "+00:00" if value.strip().endswith("Z") else value.strip())
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+
+
+def superseded(statements):
+    """{(statement index, product index)} that a LATER statement for the same vulnerability (its name or an alias), product and subcomponent set replaces: the latest
+    statement of such a pair is the current one, whatever its status, so a later `affected` retracts an earlier `not_affected`. 'Later' is by timestamp when both
+    parse (equal timestamps: the later in the document), else by document order. Statements of another product or another subcomponent set are other pairs."""
+    seen = {}
+    for i, st in enumerate(statements):
+        if not isinstance(st, dict):
+            continue
+        v = st.get("vulnerability") or {}
+        ids = {x for x in ({v.get("name")} | set(v.get("aliases") or [])) if isinstance(x, str) and x}
+        for pi, p in enumerate(st.get("products") or []):
+            if not isinstance(p, dict):
+                continue
+            at = p.get("@id")
+            pid = at if at is not None else (p.get("identifiers") or {}).get("purl") or ""
+            subs = frozenset(str(s.get("@id")) for s in p.get("subcomponents") or [] if isinstance(s, dict))
+            for vid in ids:
+                seen.setdefault((vid, pid, subs), []).append((i, pi, _stamp(st.get("timestamp")), ids))
+    dead = set()
+    for entries in seen.values():
+        for a in entries:
+            for b in entries:
+                if b[0] == a[0]:
+                    continue
+                if a[2] is not None and b[2] is not None and a[2] != b[2]:
+                    later = b[2] > a[2]          # both timestamps read and different: the time decides
+                else:
+                    later = b[0] > a[0]          # otherwise (missing, unreadable or equal): the document order decides
+                if later:
+                    dead.add((a[0], a[1]))
+    return dead
+
+
 def vex_index(doc):
     """vulnerability id → list of (subcomponent (name, ver) set, product scope); an empty set
     means the statement covers every package of our product."""
     idx = {}
-    for st in doc.get("statements") or []:
+    dead = superseded(doc.get("statements") or [])
+    for si, st in enumerate(doc.get("statements") or []):
         if not isinstance(st, dict) or st.get("status") not in SUPPRESSING:
             continue
         v = st.get("vulnerability") or {}
         ids = {v.get("name")} | set(v.get("aliases") or [])
-        for p in st.get("products") or []:
+        for pi, p in enumerate(st.get("products") or []):
+            if (si, pi) in dead:       # a later statement of the same vulnerability, product and subcomponents replaces this one
+                continue
             pid = p.get("@id") if p.get("@id") is not None else (p.get("identifiers") or {}).get("purl") or ""   # an @id that is present (even "") is the id, as the rescan reads it; only a missing or null one falls back
             if not isinstance(pid, str) or not OUR_PRODUCTS.match(pid):
                 continue
