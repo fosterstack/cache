@@ -70,7 +70,8 @@ class ApiRun(FakeRun):
                  lookup=None, pr_head=OID, contents=None):
         defaults = {("git", "status"): (0, " M .vex/fosterstack-cache.openvex.json\0?? .auditor/knowledge.md\0", ""),
                     ("git", "rev-parse"): (0, SHA + "\n", ""),
-                    ("git", "diff", "--cached", "--name-only"): (0, "go.mod\0", "")}      # the staged bump (rc-5b A5): go.mod alone unless a test says more
+                    ("git", "diff", "--cached", "--name-only"): (0, "go.mod\0", ""),
+                    ("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (0, "[]", "")}      # no open Dependabot PR (rc-5b A7) unless a test says so      # the staged bump (rc-5b A5): go.mod alone unless a test says more
         super().__init__({**defaults, **(rules or {})})
         self.live, self.post, self.patch, self.delete, self.mutation = live, post, patch, delete, mutation
         self.lookup = lookup or head_lookup()
@@ -749,7 +750,7 @@ class FixPR(Base):
         for pre, label in ((("git", "fetch"), "git fetch"), (("git", "checkout"), "git checkout")):
             res, fr = self.real({pre: (1, "", "nope")})
             self.assertEqual(res, (None, "%s: nope" % label, "error"))
-            self.assertEqual(fr.argvs()[0], ["git", "reset", "--hard"])
+            self.assertEqual([a for a in fr.argvs() if a[0] == "git"][0], ["git", "reset", "--hard"])      # (after the Dependabot lookup)
         # (changed: `git commit` / `git push` are never run; the commit is made through the API and its failures are signed-commit failures)
         res, fr = self.real({("git", "diff"): (1, "", ""), ("git", "rev-parse"): (1, "", "bad ref")})
         self.assertEqual(res, (None, "git rev-parse: bad ref", "error"))
@@ -890,6 +891,93 @@ class FixPR(Base):
         self.assertIn(["gh", "pr", "merge", "--disable-auto", "https://x/pull/7"], fr.argvs())
         res, fr = self.real({**self.REUSE, ("gh", "pr", "view"): (0, "true\n", ""), ("gh", "pr", "merge", "--disable-auto"): (1, "", "HTTP 500")}, api={"lookup": head_lookup(True, SHA)})
         self.assertEqual(res[2], "error"); self.assertIn("disable auto-merge", res[1])
+
+    def test_open_dependabot_prs_and_the_title_match(self):
+        os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.d("ws")); os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        prs = [{"number": 5, "title": "Bump example.com/m from 1.0.0 to 1.1.0", "url": "https://x/pull/5"}, {"number": 6, "title": "build(deps): bump other.org/z from 1 to 2", "url": "u"}]
+        fr = FakeRun({("gh", "pr", "list"): (0, json.dumps(prs), "")})
+        with mock.patch.object(R.subprocess, "run", fr):
+            got, err = R._open_dependabot_prs(self.d("ws"))
+        self.assertEqual((got, err), (prs, None))
+        self.assertEqual(R._dependabot_match(got, "example.com/m", "1.1.0"), (5, "https://x/pull/5"))
+        self.assertEqual(R._dependabot_match(got, "example.com/m", "1.1.1"), None)                  # another version
+        self.assertEqual(R._dependabot_match(got, "example.com", "1.1.0"), None)                     # a module that is only a prefix
+        self.assertEqual(R._dependabot_match(got, "other.org/z", "2"), (6, "u"))                      # the conventional-commit prefix still matches
+        self.assertEqual(R._dependabot_match(None, "m", "1"), None)
+        other_dir = [{"number": 8, "title": "Bump example.com/m from 1.0.0 to 1.1.0 in /tools/govulncheck", "url": "u8"}]
+        self.assertIsNone(R._dependabot_match(other_dir, "example.com/m", "1.1.0"))                  # another directory's go.mod is not ours
+        for rules in ({("gh", "pr", "list"): (1, "", "HTTP 500")}, {("gh", "pr", "list"): (0, "not json", "")}):
+            with mock.patch.object(R.subprocess, "run", FakeRun(rules)):
+                got, err = R._open_dependabot_prs(self.d("ws"))
+            self.assertIsNone(got); self.assertIn("gh pr list", err)
+
+    def test_a_real_run_defers_to_an_open_dependabot_pr_and_survives_a_failed_lookup(self):
+        dep = {("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (0, json.dumps([{"number": 5, "title": "Bump example.com/m from 1.0.0 to 1.1.0", "url": "https://x/pull/5"}]), "")}
+        res, fr = self.real({**self.CHG, **dep})
+        self.assertEqual(res, ("https://x/pull/5", None, "deferred"))
+        self.assertFalse(any(a[:2] in (["git", "checkout"], ["go", "get"]) for a in fr.argvs()))                   # nothing was built or opened
+        res, fr = self.real({**self.CHG, ("gh", "pr", "list", "--state", "open", "--author", "app/dependabot"): (1, "", "HTTP 500"), ("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
+        self.assertEqual(res, ("https://x/pull/9", None, "delivered-unchecked"))
+
+    def test_a_dry_run_and_a_disabled_delivery_do_not_claim_an_issue_was_opened_and_a_dry_run_checks_the_deferral(self):
+        row = lambda: {"id": "CVE-2099-50", "fix_bump": {"cve": "CVE-2099-50", "module": "example.com/m", "from": "v0.9.0", "to": "v1.0.0"}}
+        r1 = row(); would = []
+        self.quiet(R._deliver_bumps, [r1], "2026-09-22", "abcdef1234567890", True, would)
+        self.assertIn("would be opened (dry run)", r1["action"]); self.assertNotIn("held for the fixer lane (issue", r1["action"])
+        self.assertTrue(any(w["kind"] == "fixer issue (held major bump)" for w in would))
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"; os.environ.pop("AUDITOR_GIT_SHIM_LOG", None)
+        r2 = row()
+        with mock.patch.object(R, "_deliver_fix_pr", return_value=("https://x/pull/3", None, "delivered")):
+            self.quiet(R._deliver_bumps, [r2], "2026-09-22", "abcdef1234567890", False, [])
+        self.assertIn("issue NOT opened (delivery disabled)", r2["action"])
+        # a dry run that can read GitHub says it would defer to the open Dependabot PR
+        os.environ["AUDITOR_GIT_SHIM_LOG"] = os.path.join(self.tmp, "dd.log")
+        os.environ["AUDITOR_SHIM_DEPENDABOT_PRS"] = json.dumps([{"number": 41, "title": "Bump example.com/m from 0.9.0 to 1.0.0"}])
+        try:
+            r3 = row(); would = []
+            self.quiet(R._deliver_bumps, [r3], "2026-09-22", "abcdef1234567890", True, would)
+        finally:
+            os.environ.pop("AUDITOR_SHIM_DEPENDABOT_PRS", None)
+        self.assertIn("deferred to Dependabot PR", r3["action"])
+        self.assertTrue(any("deferred to Dependabot PR #41" in (w.get("note") or "") for w in would))
+
+    def test_the_fixer_issue(self):
+        would = []
+        self.assertEqual(R._emit_fixer_issue("t", "b", True, would, cves=["C"], target="x"), (True, "dry")); self.assertEqual(len(would), 1)
+        os.environ.pop("AUDITOR_GIT_SHIM_LOG", None); os.environ["AUDITOR_ALLOW_REAL_GH"] = "0"
+        self.assertEqual(R._emit_fixer_issue("t", "b", False, []), (True, "skipped"))
+        os.environ["AUDITOR_ALLOW_REAL_GH"] = "1"
+        def go(rules):
+            fr = FakeRun(rules)
+            with mock.patch.object(R.subprocess, "run", fr):
+                return R._emit_fixer_issue("t", "b", False, []), fr
+        res, fr = go({("gh", "issue", "list"): (0, "[]", ""), ("gh", "issue", "create"): (0, "https://x/issues/12\n", "")})
+        self.assertEqual(res, (True, 12))
+        create = [a for a in fr.argvs() if a[:3] == ["gh", "issue", "create"]][0]
+        self.assertNotIn("--label", create); self.assertNotIn("--assignee", create)                                  # never an owner-decision issue
+        res, fr = go({("gh", "issue", "list"): (0, json.dumps([{"number": 3, "title": "t"}]), "")})
+        self.assertEqual(res, (True, 3)); self.assertIn(["gh", "issue", "comment", "3", "--body", "b"], fr.argvs())
+        self.assertEqual(go({("gh", "issue", "list"): (1, "", "boom")})[0], (False, None))
+        self.assertEqual(go({("gh", "issue", "list"): (0, "[]", ""), ("gh", "issue", "create"): (1, "", "boom")})[0], (False, None))
+        self.assertEqual(go({("gh", "issue", "list"): (0, "[]", ""), ("gh", "issue", "create"): (0, "", "")})[0], (True, ""))
+        self.assertEqual(go({("gh", "issue", "list"): (0, "{bad", "")})[0], (False, None))
+        log = os.path.join(self.tmp, "fx.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log
+        self.assertEqual(R._emit_fixer_issue("t", "b", False, []), (True, "shim-created"))
+        self.assertEqual(R._emit_fixer_issue("t", "b", False, []), (True, "shim-updated"))
+        os.environ["AUDITOR_SHIM_ISSUE_FAIL"] = "1"
+        try:
+            self.assertEqual(R._emit_fixer_issue("u", "b", False, []), (False, None))
+        finally:
+            os.environ.pop("AUDITOR_SHIM_ISSUE_FAIL", None)
+
+    def test_a_major_whose_fixer_issue_fails_makes_the_run_incomplete(self):
+        log = os.path.join(self.tmp, "mj.log"); os.environ["AUDITOR_GIT_SHIM_LOG"] = log; os.environ["AUDITOR_SHIM_ISSUE_FAIL"] = "1"
+        row = {"id": "CVE-2099-40", "fix_bump": {"cve": "CVE-2099-40", "module": "example.com/m", "from": "v0.9.0", "to": "v1.0.0"}}
+        try:
+            errs = self.quiet(R._deliver_bumps, [row], "2026-09-22", "abcdef1234567890", False, [])[0]
+        finally:
+            os.environ.pop("AUDITOR_SHIM_ISSUE_FAIL", None)
+        self.assertEqual(errs, ["fixer-lane issue"]); self.assertTrue(row["pending_delivery"]); self.assertIn("FAILED to open", row["action"])
 
     def test_the_staged_path_guard(self):
         ws = self.d("guard"); os.makedirs(os.path.join(ws, "vendor", "m")); open(os.path.join(ws, "vendor", "m", "a.go"), "w").write("12345678")
