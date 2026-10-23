@@ -114,8 +114,8 @@ latency; a colocated 1 vCPU box beats a cross-region 8 vCPU one. Put the
 server in the same region — ideally the same VPC — as the runners that
 hammer it.
 
-**It runs as nonroot (uid 65532) by default**, inherited from the
-`gcr.io/distroless/static:nonroot` base — there is no root process in the
+**It runs as nonroot (uid 65532) by default**, set in the image's own
+configuration — there is no root process in the
 container and no shell to become one with. Whatever storage you attach has
 to be writable by uid 65532; see the mount note above, and
 [`securityContext`](kubernetes.md#securitycontext) on Kubernetes.

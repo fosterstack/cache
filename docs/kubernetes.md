@@ -309,7 +309,7 @@ not assumed:
 | Setting | Supported | Why |
 |---|---|---|
 | `runAsNonRoot: true` | yes | image `User` is the numeric uid `65532`, which the kubelet can verify as nonroot without resolving a name |
-| `runAsUser` / `runAsGroup: 65532` | yes | matches the `gcr.io/distroless/static:nonroot` base |
+| `runAsUser` / `runAsGroup: 65532` | yes | matches the image's own user (uid and gid 65532) |
 | `fsGroup: 65532` | **required** | a freshly provisioned PVC is `root`-owned; without `fsGroup` the nonroot process cannot create the blob store and the pod crash-loops |
 | `readOnlyRootFilesystem: true` | yes | the server writes only inside its data directory — no temp files elsewhere, no `/tmp` use |
 | `capabilities: drop: ["ALL"]` | yes | it binds `:8080`, an unprivileged port, so it needs none |
