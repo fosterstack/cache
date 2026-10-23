@@ -164,6 +164,8 @@ got = covered_by([{"@id": None, "identifiers": {"purl": R + "&variant=fips"}}], 
 check('"@id": null with a purl behaves as the purl', got == ["fips-amd64", "fips-arm64"], got)
 got = covered_by([{"identifiers": {"purl": R + "&arch=riscv64"}}], "p1d.json")
 check("a malformed purl-only product still covers nothing", got == [], got)
+got = covered_by([{"identifiers": "x"}], "p1e.json")
+check("a product whose identifiers is not an object covers nothing (and does not crash the panel)", got == [], got)
 got = covered_by([{"@id": CAND + "&variant=production&arch=amd64"}], "p2a.json")
 check("a candidates-repository product scoped to production/amd64 covers no panel image", got == [], got)
 got = covered_by([{"@id": CAND}], "p2b.json")

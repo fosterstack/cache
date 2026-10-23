@@ -54,7 +54,8 @@ def _load(path):
 
 def _product_id(p):
     """A product's identifier as the PR gate's vex_index reads it: @id, else identifiers.purl."""
-    return p.get("@id") or (p.get("identifiers") or {}).get("purl") or ""
+    ids = p.get("identifiers")
+    return p.get("@id") or (ids.get("purl") if isinstance(ids, dict) else None) or ""
 
 
 def _covers(product, image):
