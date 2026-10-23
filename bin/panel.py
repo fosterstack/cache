@@ -52,14 +52,24 @@ def _load(path):
     return json.loads(text)
 
 
+def _product_id(p):
+    """A product's identifier as the PR gate's vex_index reads it: @id, else identifiers.purl."""
+    ids = p.get("identifiers")
+    return p.get("@id") or (ids.get("purl") if isinstance(ids, dict) else None) or ""
+
+
 def _covers(product, image):
     """Does a statement's product cover this image? The repository-wide product covers every image; a product scoped
     with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names. The product is
     read by the PR gate's own grammar (inspector-gate.py::scope_of, the rescan's _parse_product): a product it does not
-    accept (a repeated, upper-case, blank, encoded or unknown qualifier, a pinned or foreign product) covers NO image."""
-    scope = _gate.scope_of(str(product))
+    accept (a repeated, upper-case, blank, encoded or unknown qualifier, a pinned or foreign product) covers NO image, and an
+    OCI product must be this image's own repository (pkg:oci/cache, never cache-candidates), as rescan-statement.py::_vex_match requires."""
+    pid = str(product)
+    scope = _gate.scope_of(pid)
+    if scope is None or (pid.startswith("pkg:oci/") and pid.split("?", 1)[0] != "pkg:oci/cache"):
+        return False
     variant, _, arch = image.rpartition("-")
-    return scope is not None and scope.get("variant", variant) == variant and scope.get("arch", arch) == arch
+    return scope.get("variant", variant) == variant and scope.get("arch", arch) == arch
 
 
 def load_vex(path):
@@ -70,7 +80,7 @@ def load_vex(path):
     for img in sorted({i for imgs in EXPECTED.values() for i in imgs}):
         stmts = []
         for st in doc.get("statements") or []:
-            prods = [p for p in st.get("products") or [] if _covers(p.get("@id", ""), img)]
+            prods = [p for p in st.get("products") or [] if _covers(_product_id(p), img)]
             if not prods:
                 continue
             for p in prods:

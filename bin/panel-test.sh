@@ -143,6 +143,43 @@ for i, pid in enumerate([R + "@sha256:abc", "pkg:oci/cache?repository_url=ghcr.i
     got = covered_images(pid, "pin%d.json" % i)
     check("a pinned or foreign product (%s) covers no image" % pid, got == [], got)
 
+# --- post-merge rulings on cache#563 (P-1, P-2): a product known only by identifiers.purl is read like the gate's vex_index reads it, and the
+# product's REPOSITORY must be this image's (cache), as rescan-statement.py::_vex_match requires
+def vex_with_products(products, name):
+    f = os.path.join(tempfile.mkdtemp(), name)
+    json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0009"}, "status": "not_affected", "products": products}]}, open(f, "w"))
+    return f
+def covered_by(products, name):
+    r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
+              if s_ == "inspector" or img.endswith("amd64")})
+    sub = [{"@id": "pkg:generic/tzdata@2026c"}]
+    v = P.tally(r, P.load_vex(vex_with_products([dict(p_, subcomponents=sub) for p_ in products], name)))
+    return sorted({c["image"] for c in v["vex_covered"]})
+CAND = "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+got = covered_by([{"identifiers": {"purl": R}}], "p1a.json")
+check("a product known only by identifiers.purl, unscoped, covers all four images", len(got) == 4, got)
+got = covered_by([{"identifiers": {"purl": R + "&variant=production&arch=amd64"}}], "p1b.json")
+check("a purl-only product scoped to production/amd64 covers only that image", got == ["production-amd64"], got)
+got = covered_by([{"@id": None, "identifiers": {"purl": R + "&variant=fips"}}], "p1c.json")
+check('"@id": null with a purl behaves as the purl', got == ["fips-amd64", "fips-arm64"], got)
+got = covered_by([{"identifiers": {"purl": R + "&arch=riscv64"}}], "p1d.json")
+check("a malformed purl-only product still covers nothing", got == [], got)
+got = covered_by([{"identifiers": "x"}], "p1e.json")
+check("a product whose identifiers is not an object covers nothing (and does not crash the panel)", got == [], got)
+got = covered_by([{"@id": CAND + "&variant=production&arch=amd64"}], "p2a.json")
+check("a candidates-repository product scoped to production/amd64 covers no panel image", got == [], got)
+got = covered_by([{"@id": CAND}], "p2b.json")
+check("an unscoped candidates-repository product covers no panel image", got == [], got)
+got = covered_by([{"@id": CAND}, {"@id": R + "&variant=fips&arch=arm64"}], "p2c.json")
+check("a statement naming both repositories covers the real one only", got == ["fips-arm64"], got)
+got = covered_by([{"@id": "pkg:golang/github.com/fosterstack/cache"}], "p2d.json")
+check("the unversioned Go product still covers every image", len(got) == 4, got)
+pub = P.load_vex(VEX)
+want_ids = ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"]
+check("the published VEX covers the same ids (the four CVEs and their aliases) on every one of the four images as before",
+      len(pub) == 4 and len({tuple(sorted(pub[img])) for img in pub}) == 1 and set(want_ids) <= set(pub["production-amd64"]),
+      {img: sorted(pub[img]) for img in pub})
+
 # --- rules 5 and 6: merge, seen by N of M, report at two or more
 r = tree({("inspector", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")],
           ("google", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")]}); v = judge(r)
