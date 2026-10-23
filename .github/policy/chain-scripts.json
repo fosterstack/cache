@@ -42,16 +42,17 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "2014ad38c905c86d6ef71aa28b9a67d92d36457e69079b5fb9d5984fc143b3c1",
+      "sha256": "ad5a6d84167bb474d2421e6d9509466feac930714a2e035f75284e9a895a0772",
       "tools": [
         "make",
         "at",
-        "exec"
+        "exec",
+        "git"
       ],
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec",
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs",
       "env_mentions": [
         {
           "name": "PATH",

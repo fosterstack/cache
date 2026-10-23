@@ -1354,8 +1354,8 @@ def cmd_sign(a):
 
 
 # ---- sign-records (the Witness move; owner Oct 22): Sign's check-and-stage step for the building jobs' local records ---------------------------------------
-# Build and Rebuild record under Witness with a throwaway key inside their jobs; those records are UNTRUSTED. This command is the check that comes before Sign re-signs the
-# payloads keyless: it signs nothing, calls no tool and reads no token. A shell step (bin/witness-sign-staged.sh) signs each staged payload and `verify` checks the result.
+# Build and Rebuild record under Witness with a throwaway key inside their jobs; those records are UNTRUSTED. This step is the check that comes before Sign re-signs the
+# payloads keyless: it signs nothing, calls no tool and reads no token. A shell step of the Sign job signs each staged payload and `verify` checks the result.
 SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild")}
 SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
 SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
