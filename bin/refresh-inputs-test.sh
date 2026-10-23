@@ -164,7 +164,7 @@ for f in need:
     except OSError:
         bad.append(f + ' does not exist')
 # a file that carries the literal and is neither named nor a fixture, a generated file, a test of something else or a record is a file the body would have to name
-exempt = ('build/', 'docs/quality/', 'requirements/', 'test-evidence/', 'audits/', 'vendor/')
+exempt = ('build/', 'docs/quality/', 'requirements/', 'test-evidence/', 'audits/')
 exempt_files = {'bin/build-apk.sh', 'bin/melange-apko-lib.sh', 'bin/check-version-literals.sh', 'bin/build-apk-test.sh', 'bin/build-helpers-test.sh', 'bin/chain-check-scripts-test.sh',
                 'bin/chain-check-wiring-test.sh', 'bin/refresh-inputs-test.sh', 'internal/server/tls_test.go'}
 for f in subprocess.run(['git', '-C', root, 'ls-files'], capture_output=True, text=True).stdout.split():
