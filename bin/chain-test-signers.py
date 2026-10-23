@@ -644,6 +644,8 @@ STAGE_STEP_KEYS = {"name", "id", "uses", "with", "run", "env", "if", "timeout-mi
 HOSTED = re.compile(r"ubuntu-(22\.04|24\.04)(-arm)?|ubuntu-latest")  # CLOSED set of GitHub-hosted labels (Codex #249 r6 B5); extend only by a reviewed edit
 MATRIX_READ = re.compile(r"\$\{\{ ?matrix\.([A-Za-z_][\w-]*) ?\}\}")  # the one expression runs-on may hold: a whole read of one matrix key
 MATRIX_LIT = re.compile(r"[A-Za-z0-9_.-]+")
+GV_IDS_STEP = (".github/workflows/stage-verify.yml", "check")        # the one step that may download by artifact id (the Check job, govulncheck-build's artifact)
+GV_IDS_VALUE = "${{ needs.govulncheck-build.outputs.artifact-id }}"
 USES_OK = re.compile(r"actions/(checkout|download-artifact|upload-artifact)@([0-9a-f]{40})")
 
 def action_files(base):
@@ -1177,7 +1179,12 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                     if set(w) - {"persist-credentials", "fetch-depth"} or w.get("persist-credentials") != "false":
                         errs.append("%s: checkout may carry only persist-credentials: false (explicit) and fetch-depth (no ref, repository, path, token): %s" % (sp, w))
                 elif act == "download-artifact":
-                    if set(w) - {"name", "path", "pattern", "merge-multiple"}: errs.append("%s: download-artifact keys %s are not allowed" % (sp, sorted(set(w) - {"name", "path", "pattern", "merge-multiple"})))
+                    # REQ-REL-011-AC1 (advisor, Oct 23): ONE step may select its artifact by id instead of by name, so the artifact another job uploaded under the same name cannot be swapped in:
+                    # stage-verify.yml's check job downloads govulncheck-build's artifact with exactly `artifact-ids: <that job's artifact-id output>` and a path, nothing else beside them.
+                    by_id = "artifact-ids" in w
+                    if by_id and not ((full, jn) == GV_IDS_STEP and set(w) == {"artifact-ids", "path"} and w.get("artifact-ids") == GV_IDS_VALUE):
+                        errs.append("%s: download-artifact artifact-ids is allowed only as exactly %r with a path, in %s job %s (no name, pattern or merge-multiple beside it)" % (sp, GV_IDS_VALUE, GV_IDS_STEP[0], GV_IDS_STEP[1]))
+                    if set(w) - {"name", "path", "pattern", "merge-multiple"} - ({"artifact-ids"} if by_id else set()): errs.append("%s: download-artifact keys %s are not allowed" % (sp, sorted(set(w) - {"name", "path", "pattern", "merge-multiple"} - ({"artifact-ids"} if by_id else set()))))
                     e = _artifact_path_error(w.get("path"), rows, True)
                     if e: errs.append("%s: download-artifact %s" % (sp, e))
                 else:

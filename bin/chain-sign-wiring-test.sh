@@ -1311,6 +1311,98 @@ jobs:
     steps:
       - uses: actions/checkout@SHA
 EOF
+ycase y_idsok "download-artifact by the one literal artifact id of govulncheck-build, in the Check job (REQ-REL-011-AC1: the artifact cannot be swapped by name)" ok <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: govulncheck-dl
+EOF
+ycase y_idsother "download-artifact by artifact-ids with another expression" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.digest }}
+          path: govulncheck-dl
+EOF
+ycase y_idsnum "download-artifact by a literal numeric artifact id" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: 123456
+          path: govulncheck-dl
+EOF
+ycase y_idsname "download-artifact by artifact-ids with the name added again" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: govulncheck
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: govulncheck-dl
+EOF
+ycase y_idspattern "download-artifact by artifact-ids with a pattern beside it" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          pattern: '*'
+          path: govulncheck-dl
+EOF
+ycase y_idsmerge "download-artifact by artifact-ids with merge-multiple beside it" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          merge-multiple: true
+          path: govulncheck-dl
+EOF
+ycase y_idsjob "download-artifact by the artifact-ids literal in a job that is not the Check job" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: govulncheck-dl
+EOF
+ycase y_idsmore "download-artifact by artifact-ids with a second id" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }},1
+          path: govulncheck-dl
+EOF
+ycase y_idsbin "download-artifact by the artifact-ids literal into bin/" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: bin
+EOF
+ycase y_idsnopath "download-artifact by the artifact-ids literal with no path" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+EOF
 ycase y_dlbin "download-artifact into bin (Opus P6): the downloaded content is not the hashed file" <<'EOF'
 jobs:
   j:
@@ -3033,7 +3125,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='9ba2a9ea59a159f16e6dc92131954a9958b3513336c64916495ff7e6314e20a8'
+FX_PIN='7346cee1cfb2daf78df1ae2f4673a1d1accb2cd7e4cffe6e4f2fa82f9ed8148b'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4768,7 +4860,7 @@ t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/
 if (cd "$root" && python3 -I .github/agent/bin/check-action-pins.py . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes .github/agent/bin/check-action-pins.py (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
-EXPECT=2072
+EXPECT=2082
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

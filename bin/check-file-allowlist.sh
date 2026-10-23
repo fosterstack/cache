@@ -172,6 +172,7 @@ ALLOW_PATTERNS=(
   '^bin/loopback-get-test\.sh$'
   '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
   '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/(un)?pack-govulncheck\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'

@@ -477,8 +477,8 @@ else:
                 if WITH(s) != {"persist-credentials": "false"}: bad.append("hostile-verify's checkout with: must be exactly {persist-credentials: false} (no repository, ref, token, path, fetch-depth: it runs this repository's verifier): %s" % WITH(s))
             elif act and act.group(1) == "download-artifact":
                 nm, pth = WITH(s).get("name"), WITH(s).get("path")
-                want = {"hostile-attempts": "attempts", "witness-build": "witness-build", "provenance": "provenance"}
-                if want.get(nm) != pth or set(WITH(s)) - {"name", "path"}: bad.append("hostile-verify downloads %s into %s; only hostile-attempts->attempts, witness-build->witness-build, provenance->provenance" % (nm, pth)); kinds.append("download?")
+                want = {"hostile-attempts": "attempts", "signed-witness-build": "witness-build", "provenance": "provenance"}
+                if want.get(nm) != pth or set(WITH(s)) - {"name", "path"}: bad.append("hostile-verify downloads %s into %s; only hostile-attempts->attempts, signed-witness-build->witness-build, provenance->provenance" % (nm, pth)); kinds.append("download?")
                 else: kinds.append("download:" + nm)
             elif act and act.group(1) == "upload-artifact":
                 kinds.append("upload")
@@ -489,14 +489,14 @@ else:
             else:
                 kinds.append("other"); bad.append("hostile-verify has a step outside the allowlist (checkout, the three downloads, the pinned `policy make`, the attempt steps and the positive control, collect, upload): %r" % (s.get("name") or run or u))
         if kinds.count("checkout") != 1: bad.append("hostile-verify must check the repo out exactly once")
-        for nm in ("hostile-attempts", "witness-build", "provenance"):
+        for nm in ("hostile-attempts", "signed-witness-build", "provenance"):
             if kinds.count("download:" + nm) != 1: bad.append("hostile-verify must download the artifact %s exactly once (without it every verify reads a missing file and 'refuses')" % nm)
         if kinds.count("policy") != 1: bad.append("hostile-verify must run the pinned `policy make --template .github/policy/release-policy.template.json --ref \"$GITHUB_REF\" --out policy.json` exactly once (a permissive or tracked policy.json proves nothing)")
         if os.path.exists(os.path.join(root, "policy.json")): bad.append("a policy.json is part of the tree: the verify job must make its own")
         try:
             lead = [k for k in kinds if not k.startswith("attempt:")]
             first_att = next(i for i, k in enumerate(kinds) if k.startswith("attempt:"))
-            if not (kinds[0] == "checkout" and kinds.index("policy") < first_att and all(kinds.index("download:" + n) < first_att for n in ("hostile-attempts", "witness-build", "provenance"))):
+            if not (kinds[0] == "checkout" and kinds.index("policy") < first_att and all(kinds.index("download:" + n) < first_att for n in ("hostile-attempts", "signed-witness-build", "provenance"))):
                 bad.append("hostile-verify order must be checkout, downloads, policy make, then the attempts")
         except (StopIteration, ValueError): bad.append("hostile-verify has no attempt steps or no policy step")
         # one three-line step per attempt, the exit code captured from the verifier's own invocation
@@ -639,7 +639,7 @@ jobs:
       - uses: actions/download-artifact@$sha # v8
         with: {name: hostile-attempts, path: attempts}
       - uses: actions/download-artifact@$sha # v8
-        with: {name: witness-build, path: witness-build}
+        with: {name: signed-witness-build, path: witness-build}
       - uses: actions/download-artifact@$sha # v8
         with: {name: provenance, path: provenance}
       - run: python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "\$GITHUB_REF" --out policy.json
@@ -1138,10 +1138,11 @@ d=$(mk w_tpl); pymut "$(rel "$d")" "--template .github/policy/release-policy.tem
 d=$(mk w_policytracked); echo '{}' > "$d/policy.json"; wexpect caught "wiring: a policy.json is committed to the tree" "$d"
 d=$(mk w_nowb); python3 - "$(rel "$d")" <<'PY'
 import sys
-t = open(sys.argv[1]).read().replace("      - uses: actions/download-artifact@" + "a" * 40 + " # v8\n        with: {name: witness-build, path: witness-build}\n", "", 1)
+t = open(sys.argv[1]).read().replace("      - uses: actions/download-artifact@" + "a" * 40 + " # v8\n        with: {name: signed-witness-build, path: witness-build}\n", "", 1)
 open(sys.argv[1], "w").write(t)
 PY
 wexpect caught "wiring: Build's verified record (witness-build) is not downloaded" "$d"
+d=$(mk w_unsignedbuild); pymut "$(rel "$d")" "name: signed-witness-build, path: witness-build" "name: witness-build, path: witness-build"; wexpect caught "R1 (row-78 pass): hostile-verify downloads the unsigned witness-build (its .local.json record is refused at stage build, not sign)" "$d"
 d=$(mk w_bradv); pymut "$(rel "$d")" "--build-record witness-build/build-collection.json" "--build-record attempts/build-collection.json"; wexpect caught "wiring: hand_sign_code checks against the record the HOSTILE step supplied, not Build's verified one" "$d"
 d=$(mk w_noprov); python3 - "$(rel "$d")" <<'PY'
 import sys
@@ -1304,7 +1305,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=265
+EXPECT=266
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
