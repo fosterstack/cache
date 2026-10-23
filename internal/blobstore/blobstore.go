@@ -23,6 +23,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // ErrNotFound is returned when a key has no stored blob.
@@ -64,11 +65,17 @@ const (
 // readdir/close on an open directory handle — have no portable fault
 // injection.
 var (
-	randRead   = rand.Read
-	fileSync   = (*os.File).Sync
-	fileClose  = (*os.File).Close
-	fileStat   = (*os.File).Stat
-	dirClose   = (*os.File).Close
+	randRead  = rand.Read
+	fileSync  = (*os.File).Sync
+	fileClose = (*os.File).Close
+	fileStat  = (*os.File).Stat
+	dirClose  = (*os.File).Close
+	// rootOpen opens a regular file for reading without blocking: if something
+	// replaced the checked file with a FIFO in between, the open returns at
+	// once and the same-file check refuses it.
+	rootOpen = func(r *os.Root, name string) (*os.File, error) {
+		return r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	}
 	readDirAll = func(f *os.File) ([]os.DirEntry, error) { return f.ReadDir(-1) }
 	// On some platforms (e.g. darwin's getattrlistbulk-backed ReadDir) the
 	// entries above carry their stat info eagerly, so DirEntry.Info cannot
@@ -193,16 +200,48 @@ func (s *Store) Put(key string, r io.Reader) (int64, error) {
 	return n, nil
 }
 
+// absent reports whether err says that nothing is stored at the path: the
+// path does not exist, or a component of it is a file where a directory
+// would have to be (a stored key's blob can sit where another key's
+// directory would go).
+func absent(err error) bool {
+	return os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR)
+}
+
+// regularFile returns the description of the entry at rel when it is a
+// regular file. A directory, a symbolic link or any other kind of file at
+// a key's path is not a blob (REQ-PROTO-003-AC5): the answer is
+// ErrNotFound, and nothing is opened, so a FIFO cannot block the caller.
+// op names the caller's operation in a failure that is not "absent".
+func (s *Store) regularFile(rel, op string) (fs.FileInfo, error) {
+	info, err := s.root.Lstat(rel)
+	if err != nil {
+		if absent(err) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("blobstore: %s: %w", op, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, ErrNotFound
+	}
+	return info, nil
+}
+
 // Get opens the blob stored under key. Callers must Close the returned
-// reader. Returns ErrNotFound if the key is unknown.
+// reader. Returns ErrNotFound if the key is unknown, or if the path of the
+// key is not a regular file.
 func (s *Store) Get(key string) (io.ReadCloser, int64, error) {
 	rel, err := relPath(key)
 	if err != nil {
 		return nil, 0, err
 	}
-	f, err := s.root.Open(rel)
+	before, err := s.regularFile(rel, "open")
 	if err != nil {
-		if os.IsNotExist(err) {
+		return nil, 0, err
+	}
+	f, err := rootOpen(s.root, rel)
+	if err != nil {
+		if absent(err) {
 			return nil, 0, ErrNotFound
 		}
 		return nil, 0, fmt.Errorf("blobstore: open: %w", err)
@@ -212,22 +251,26 @@ func (s *Store) Get(key string) (io.ReadCloser, int64, error) {
 		_ = f.Close()
 		return nil, 0, fmt.Errorf("blobstore: stat: %w", err)
 	}
+	// The path was checked before it was opened: what was opened must be
+	// that same regular file, not something swapped in between.
+	if !info.Mode().IsRegular() || !os.SameFile(before, info) {
+		_ = f.Close()
+		return nil, 0, ErrNotFound
+	}
 	return f, info.Size(), nil
 }
 
 // Stat reports the size of the blob stored under key without reading it.
-// Returns ErrNotFound if the key is unknown.
+// Returns ErrNotFound if the key is unknown, or if the path of the key is
+// not a regular file.
 func (s *Store) Stat(key string) (int64, error) {
 	rel, err := relPath(key)
 	if err != nil {
 		return 0, err
 	}
-	info, err := s.root.Stat(rel)
+	info, err := s.regularFile(rel, "stat")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, ErrNotFound
-		}
-		return 0, fmt.Errorf("blobstore: stat: %w", err)
+		return 0, err
 	}
 	return info.Size(), nil
 }
@@ -302,6 +345,9 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 				}
 				continue
 			}
+			if !e.Type().IsRegular() {
+				continue // a symbolic link, FIFO or the like is never a blob (REQ-PROTO-003-AC5)
+			}
 			if top {
 				// A file at the root is not a blob this store wrote; a
 				// .tmp- one is a leftover temporary file.
@@ -313,6 +359,9 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 			info, err := dirEntryInfo(e)
 			if err != nil {
 				return fmt.Errorf("blobstore: walk stat %q: %w", child, err)
+			}
+			if !info.Mode().IsRegular() {
+				continue // swapped for a link or the like since the listing
 			}
 			// Invert relPath: drop the shard directory (parent of the leaf).
 			parts := strings.Split(child, "/")
@@ -337,10 +386,10 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 	return staleTemp, nil
 }
 
-// opensFile reports whether opening rel through the store root reaches the
-// file described by info (the file Get would serve for rel).
+// opensFile reports whether rel is the regular file described by info: the
+// file Get would serve for rel (a link at rel is not followed).
 func (s *Store) opensFile(rel string, info fs.FileInfo) bool {
-	target, err := s.root.Stat(rel)
+	target, err := s.regularFile(rel, "stat")
 	return err == nil && os.SameFile(target, info)
 }
 
