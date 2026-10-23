@@ -4,8 +4,8 @@
 # a channel the artifact names cannot reach. It reads files and prints; it writes nothing and builds nothing.
 #   REBUILD_DIR RAPK_DIR...     the assemble job's whole list after its Witness step (witness-rebuild for REBUILD_DIR, witness-rapk-<runner> for each RAPK_DIR, <runner> the folder's own name)
 #   --rapk RUNNER DIR           one apk leg's list after that leg's Witness step: {"witness-rapk-<RUNNER>": {file: sha256}}; the leg's job prints it as its output
-#   --check                     in the assemble job BEFORE its Witness step: each leg's output (the environment values RAPK_RECORDS for ubuntu-24.04 and RAPK_ARM_RECORDS for
-#                               ubuntu-24.04-arm) must equal the list recomputed from rec-rapk/<runner>; refuses on any difference, extra or missing file or folder, empty or invalid JSON
+#   --check X86 ARM             in the assemble job BEFORE its Witness step: each leg's output (the two arguments: the ubuntu-24.04 job's text, then the ubuntu-24.04-arm job's text)
+#                               must equal the list recomputed from rec-rapk/<runner>; refuses on any difference, extra or missing file or folder, empty or invalid JSON
 set -euo pipefail
 
 emit() {
@@ -62,16 +62,16 @@ case "${1:-}" in
     emit "witness-rapk-$2" "$3" | to_json
     ;;
   --check)
-    if [ "$#" -ne 1 ]; then
-      echo "rebuild-records-digests: usage: --check (no other argument)" >&2
+    if [ "$#" -ne 3 ]; then
+      echo "rebuild-records-digests: usage: --check X86_OUTPUT ARM_OUTPUT (exactly two arguments, each leg's job output)" >&2
       exit 2
     fi
-    check_leg ubuntu-24.04 "${RAPK_RECORDS:-}"
-    check_leg ubuntu-24.04-arm "${RAPK_ARM_RECORDS:-}"
+    check_leg ubuntu-24.04 "$2"
+    check_leg ubuntu-24.04-arm "$3"
     ;;
   *)
     if [ "$#" -lt 2 ]; then
-      echo "rebuild-records-digests: usage: REBUILD_DIR RAPK_DIR... | --rapk RUNNER DIR | --check" >&2
+      echo "rebuild-records-digests: usage: REBUILD_DIR RAPK_DIR... | --rapk RUNNER DIR | --check X86_OUTPUT ARM_OUTPUT" >&2
       exit 2
     fi
     first=1
