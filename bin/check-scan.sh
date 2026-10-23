@@ -107,7 +107,9 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
   fi
   prog='def obj: if type == "object" then . else {} end; ([.manifests[]? | select((.platform | obj).os == "linux" and ((.platform | obj).architecture == "amd64" or (.platform | obj).architecture == "arm64")) | .digest]) as $kids | .manifests[]? | (((.platform | obj) as $q | "\($q.os // "none")/\($q.architecture // "none")")) as $p | (.annotations | obj) as $a | if $p == "unknown/unknown" and ($a["vnd.docker.reference.type"] | type) == "string" and ($a["vnd.docker.reference.digest"] | type) == "string" and ($kids | index($a["vnd.docker.reference.digest"])) != null and (.digest | type) == "string" then "@@check " + .digest elif $p == "unknown/unknown" then "unknown/unknown (not a descriptor of one of the two children)" else $p end | select(. != "linux/amd64" and . != "linux/arm64")'
   out=$(jq -r "$prog" "$blob" 2> /dev/null) || out="unreadable index descriptors"
-  while read -r line; do
+  local -a lines_
+  mapfile -t lines_ <<< "$out"   # the lines are read byte for byte: a trailing space or tab on a digest or a platform string is not trimmed away
+  for line in "${lines_[@]}"; do
     case "$line" in
       "@@check "*)
         d=${line#@@check }
@@ -118,7 +120,7 @@ other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every
       "") ;;
       *) echo "$line" ;;
     esac
-  done <<< "$out"
+  done
 }
 # osv_archive LAYOUT CHILD_DIGEST ARCHIVE: the tar osv-scanner's "scan image --archive" can read. It wants a docker-save style tar (a manifest.json naming the config
 # and layer files) and fails "file manifest.json not found in tar" on a tar of an OCI layout as it is (probed on the pinned 2.6.0, Oct 22). The archive is built from
@@ -173,12 +175,13 @@ for s in "${scanners[@]}"; do
   tname=() tdigest=() tpath=() tplat=()
   for v in production fips; do
     if [ "$s" = grype ]; then
-      while read -r o; do
+      mapfile -t others_ < <(other_platforms "$images/$v")
+      for o in "${others_[@]}"; do
         [ -n "$o" ] || continue
         echo "check-scan: grype: the $v image index lists a platform other than linux/amd64 and linux/arm64 ($o): it would be left unscanned, so it is not scanned clean" >&2
         verdict=fail
         subjects=$(jq -c --arg n "$v/$o" '. + [{name: $n, digest: null, packages: 0, verdict: "fail"}]' <<< "$subjects")
-      done < <(other_platforms "$images/$v")
+      done
       for a in "${PLATFORMS[@]}"; do
         cd_=$(child_digest "$images/$v" "$a")
         if [[ "$cd_" =~ ^sha256:[0-9a-f]{64}$ ]]; then add_target "$v/linux/$a" "$cd_" "$images/$v" "linux/$a"

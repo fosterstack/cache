@@ -126,6 +126,8 @@ for p in plats:
         kid["annotations"] = []
     elif p == "unknown/unknown" and not os.environ.get("NO_ATT_ANNOTATION"):   # (ATT_ODD=plain-image keeps the annotations on an ordinary image manifest)
         kid["annotations"] = {"vnd.docker.reference.type": "attestation-manifest", "vnd.docker.reference.digest": ("sha256:" + "9" * 64) if os.environ.get("ATT_DIGEST_OTHER") else kids[0]["digest"]}      # buildkit's descriptor for the first child
+    if p == "unknown/unknown" and os.environ.get("ATT_DIGEST_PAD") is not None:
+        kid["digest"] = kid["digest"] + os.environ["ATT_DIGEST_PAD"]   # the descriptor's digest string carries trailing whitespace; the blob keeps the unpadded name
     kids.append(kid)
     names[arch] = {"layer": layer.split(":")[1], "config": cfg.split(":")[1], "manifest": man.split(":")[1]}
 idx, isz = blob(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": kids}, sort_keys=True).encode())
@@ -419,6 +421,16 @@ rm -rf "$fx/images/production"; ATT_ODD=two-values python3 "$work/mkoci.py" "$fx
 want_fail "AC4 S1 a provenance manifest blob holding two JSON values (an image, then a JSON-only manifest) is not exempt" "provenance manifest" "${SCAN[@]}"
 rm -rf "$fx/images/production"; ATT_ODD=annotations-list python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown linux/s390x > /dev/null; mkdig "$fx"
 want_fail "AC4 S1 an unreadable annotations value does not hide a later linux/s390x descriptor" "linux/s390x" "${SCAN[@]}"
+restore_prod
+# the lines other_platforms() reads are taken byte for byte (cache#575 first look, all four reviewers): trailing whitespace on a provenance descriptor's digest, or on a platform string, must not be trimmed away
+rm -rf "$fx/images/production"; ATT_DIGEST_PAD=" " python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 a provenance descriptor whose digest has a trailing space is refused, not trimmed into a valid one" "provenance manifest" "${SCAN[@]}"
+restore_prod
+rm -rf "$fx/images/production"; ATT_DIGEST_PAD=$'\t' python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 a provenance descriptor whose digest has a trailing tab is refused, not trimmed into a valid one" "provenance manifest" "${SCAN[@]}"
+restore_prod
+rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production" production linux/amd64 linux/arm64 "linux/amd64 " > /dev/null; mkdig "$fx"
+want_fail "AC4 S1 a platform string with a trailing space is named as it is, not as the real child" "(linux/amd64 )" "${SCAN[@]}"
 restore_prod
 FAKE_GRYPE_MD=mismatch want_fail "AC4 S1 grype reporting another manifest digest than the child recorded fails" "names manifest digest" "${SCAN[@]}"
 FAKE_GRYPE_MD=missing want_fail "AC4 S1 grype reporting no manifest digest fails" "names manifest digest" "${SCAN[@]}"
@@ -1145,7 +1157,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=357
+EXPECT=360
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
