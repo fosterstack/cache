@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-010-AC1, REQ-SCAN-010-AC2, REQ-SCAN-010-AC5, REQ-SCAN-010-AC6, REQ-SCAN-010-AC7, REQ-SCAN-010-AC8
+# proves: REQ-SCAN-010-AC1, REQ-SCAN-010-AC2, REQ-SCAN-010-AC3, REQ-SCAN-010-AC5, REQ-SCAN-010-AC6, REQ-SCAN-010-AC7, REQ-SCAN-010-AC8
 # Scanner-panel rule 10 (owner RATIFIED Oct 2; advisor 0076/0077): every release publishes our VEX three ways, all
 # generated from the one OpenVEX file. "The same statements", in the advisor's exact words: the CSAF file carries every
 # OpenVEX statement; the Inspector file carries one rule per suppressible statement (not_affected, fixed) and none for

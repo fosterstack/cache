@@ -619,7 +619,7 @@ No artifact shall be published with a known CVE at any severity unless a publish
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-003-AC1 | Given the scanner configurations and the VEX document; when they are compared; then every scanner ignore corresponds to a statement in .vex/, and both release scanners consume the same VEX document | inspection |  | approved | 2 item(s) |
+| REQ-REL-003-AC1 | Given the scanner configurations and the VEX document; when they are compared; then every scanner ignore corresponds to a statement in .vex/, and both release scanners consume the same VEX document | inspection |  | approved | 1 item(s) |
 
 ### REQ-REL-004 — Continuous scan gate and toolchain freshness
 
@@ -924,7 +924,7 @@ Every release shall publish the VEX three ways, all generated from the one OpenV
 |---|---|---|---|---|---|
 | REQ-SCAN-010-AC1 | Given a release; when it is published; then it carries the OpenVEX file, an Inspector suppression-rule file (one rule per statement that names a package, scoped by CVE, image digest and that package, loadable with aws inspector2 create-filter) and a CSAF 2.0 file (loadable with gcloud artifacts vulnerabilities load-vex), all generated from the one OpenVEX file | unit |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC2 | Given the three VEX forms; when they are compared; then they cover exactly the same statements | unit |  | approved | 1 item(s) |
-| REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | 1 item(s) |
+| REQ-SCAN-010-AC3 | Given Inspector's and Google's results; when our pipeline judges them; then they keep being filtered against the OpenVEX file | unit |  | approved | 2 item(s) |
 | REQ-SCAN-010-AC4 | Given documentation of the Google VEX upload; when it is published; then it says the upload is a preview feature | inspection |  | approved | 1 item(s) |
 | REQ-SCAN-010-AC5 | Given a digest file, passed to the generator by its path: a JSON object with exactly two keys, production and fips; each value an object with exactly two keys, index and children; children an object with exactly two keys, linux/amd64 and linux/arm64; every digest a string of sha256: followed by 64 lower-case hexadecimal characters; when the three VEX forms are generated; then the forms name exactly the six digests in that file and no other image digest. The generator checks the file's shape and key set only. It does not check that the digests are the ones Build verified; that check belongs to the release workflow and is tested there. The generator reads no registry and opens no network connection. | unit | yes | approved | 1 item(s) |
 | REQ-SCAN-010-AC6 | Given a digest file that is not a JSON object; that repeats a key at any level; that has a key other than production and fips, or lacks either; whose variant value is not an object with exactly the keys index and children; whose children lack linux/amd64 or linux/arm64 or have any other key; that has any digest which is not a string of sha256: followed by 64 lower-case hexadecimal characters; or that names the same digest twice; when the forms are generated; then generation stops with a non-zero exit before any form file is written, no form file is created or changed in the output directory, and the error names the key path (for example fips.children.linux/arm64) or the value at fault | unit | yes | approved | 1 item(s) |
