@@ -337,7 +337,7 @@ class Dispose(Base):
         c = "CVE-2099-13"; f = F(c, self.PURL, "libz", sev=sev, fixed="1.1")
         carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
         env = self.env(carriers=[carrier], kev_ok=kev_ok)
-        ans = {"pullable": False, "lift_trigger": {"carrier": "nodejs", "min_version": "20.2"}, "token_usage": 7}
+        ans = {"pullable": False, "lift_trigger": {"carrier": "nodejs", "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"}, "token_usage": 7}
         with mock.patch.object(R.cli, "ask_model", return_value=ans) as ask:
             row, mi = R._dispose(c, [f], [c], env, [])
         self.assertEqual(ask.call_args.kwargs["attempt"], "pullability")
@@ -377,10 +377,10 @@ class Dispose(Base):
     def test_carried_not_pullable_deferred_kev_unavailable(self):
         c = "CVE-2099-15"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
         base = dict(carried_not_pullable={key}, carried_expiry={key: "2026-12-01"},
-                    carried_lift_trigger={key: {"carrier": "nodejs", "min_version": "20.2"}})
+                    carried_lift_trigger={key: {"carrier": "nodejs", "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"}})
         row, _ = R._dispose(c, [f], [c], self.env(kev_ok=False, **base), [])
         self.assertEqual(row["disposition"], "carried (fix not pullable) — recheck deferred")
-        self.assertEqual((row["threshold"], row["expiry"], row["lift_trigger"]), ("at_or_above", "2026-12-01", {"carrier": "nodejs", "min_version": "20.2"}))
+        self.assertEqual((row["threshold"], row["expiry"], row["lift_trigger"]), ("at_or_above", "2026-12-01", {"carrier": "nodejs", "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"}))
         self.assertEqual(row["owner_issue_intent"]["reason_key"], "kev-unavailable (fail-closed)")
         self.assertIn("carrier signal absent this run", row["action"])
         row2, _ = R._dispose(c, [f], [c], self.env(kev_ok=True, **base), [])
@@ -391,17 +391,24 @@ class Dispose(Base):
 
 class LiftTrigger(Base):
     PURL = "pkg:deb/debian/libz@1.0?arch=arm64"
-    GOOD = {"carrier": "nodejs", "min_version": "20.2"}
+    GOOD = {"carrier": "nodejs", "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"}
 
     def test_the_shape_is_checked(self):
         self.assertEqual(R._lift_trigger(self.GOOD), self.GOOD)
-        self.assertEqual(R._lift_trigger({"carrier": " nodejs ", "min_version": " v20.2.1 "}), {"carrier": "nodejs", "min_version": "v20.2.1"})
-        self.assertEqual(R._lift_trigger({"carrier": "openssl", "min_version": "1.1.1n"}), {"carrier": "openssl", "min_version": "1.1.1n"})        # a letter suffix is a real version
-        for bad in ("nodejs >= 20.2 embeds libz 1.1", "", None, 5, [], {}, {"carrier": "nodejs"}, {"min_version": "20.2"},
-                    {"carrier": "nodejs", "min_version": "20.2", "extra": 1}, {"carrier": "", "min_version": "20.2"}, {"carrier": "nodejs", "min_version": ""},
-                    {"carrier": "nodejs", "min_version": "soon"}, {"carrier": "nodejs", "min_version": "\u0662\u0660"}, {"carrier": "nodejs", "min_version": "20.2; rm"}, {"carrier": 5, "min_version": "20.2"},
-                    {"carrier": "node\njs", "min_version": "20.2"}, {"carrier": "x" * 201, "min_version": "20.2"}, {"carrier": "nodejs", "min_version": "9" * 65}):
+        self.assertEqual(R._lift_trigger({"carrier": " nodejs ", "min_version": " v20.2.1 ", "component": "openssl", "component_min_version": "3.0.13"}), {"carrier": "nodejs", "min_version": "v20.2.1", "component": "openssl", "component_min_version": "3.0.13"})
+        self.assertEqual(R._lift_trigger({"carrier": "openssl", "min_version": "1.1.1n", "component": "openssl", "component_min_version": "3.0.13"}), {"carrier": "openssl", "min_version": "1.1.1n", "component": "openssl", "component_min_version": "3.0.13"})        # a letter suffix is a real version
+        for bad in ("nodejs >= 20.2 embeds libz 1.1", "", None, 5, [], {}, {"carrier": "nodejs"}, {"min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"},
+                    {"carrier": "nodejs", "min_version": "20.2", "extra": 1}, {"carrier": "", "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"}, {"carrier": "nodejs", "min_version": "", "component": "openssl", "component_min_version": "3.0.13"},
+                    {"carrier": "nodejs", "min_version": "soon", "component": "openssl", "component_min_version": "3.0.13"}, {"carrier": "nodejs", "min_version": "\u0662\u0660", "component": "openssl", "component_min_version": "3.0.13"}, {"carrier": "nodejs", "min_version": "20.2; rm", "component": "openssl", "component_min_version": "3.0.13"}, {"carrier": 5, "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"},
+                    {"carrier": "node\njs", "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"}, {"carrier": "x" * 201, "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"}, {"carrier": "nodejs", "min_version": "9" * 65}):
             self.assertIsNone(R._lift_trigger(bad), repr(bad))
+        g = self.GOOD
+        for bad in ({"carrier": "nodejs", "min_version": "20.2"},                                                  # the old two-key form: no component, no acceptance
+                    dict(g, component=""), dict(g, component="o\npenssl"), dict(g, component="x" * 201),
+                    dict(g, component_min_version=""), dict(g, component_min_version="soon"), dict(g, component_min_version="3.0; rm"), dict(g, component_min_version="9" * 65),
+                    dict(g, component=3), dict(g, component_min_version=None)):
+            self.assertIsNone(R._lift_trigger(bad), repr(bad))
+        self.assertEqual(R._trigger_text(g), "nodejs >= 20.2 embeds openssl >= 3.0.13")
 
     def test_versions_compare_by_their_numbers(self):
         for a, b, want in (("20.3", "20.2", True), ("20.2", "20.2", True), ("20.1", "20.2", False), ("20.10", "20.2", True), ("v20.2.1", "20.2", True),
@@ -1220,7 +1227,7 @@ class Run(Base):
              "products": [{"@id": PROD, "subcomponents": [{"@id": pa}]}]}]})
         self.wj(os.path.join(ws, ".auditor", "accepted-items.json"), {"accepted_items": [
             {"cve": "CVE-2099-60", "scope_purls": [pa], "expiry": "2026-12-01",
-             "not_pullable": "upstream-held", "lift_trigger": {"carrier": "nodejs", "min_version": "20.2"}},
+             "not_pullable": "upstream-held", "lift_trigger": {"carrier": "nodejs", "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"}},
             {"cve": "CVE-2099-61", "scope_purls": [pb], "not_pullable": "upstream-held"},      # no expiry: ignored
             {"cve": "CVE-2099-62", "vex_id": "V#unknown", "expiry": "2026-12-01",
              "not_pullable": "upstream-held"}]})                                                # unresolvable: ignored
@@ -1237,7 +1244,7 @@ class Run(Base):
         self.assertEqual(cls["CVE-2099-62"]["disposition"], "real, fixable (base rebuild)")
         items = json.load(open(os.path.join(out, ".auditor", "accepted-items.json")))["accepted_items"]
         self.assertEqual([(i["cve"], i["threshold"], i["lift_trigger"]) for i in items],
-                         [("CVE-2099-60", "at_or_above", {"carrier": "nodejs", "min_version": "20.2"})])   # KEV unparseable -> fail closed
+                         [("CVE-2099-60", "at_or_above", {"carrier": "nodejs", "min_version": "20.2", "component": "openssl", "component_min_version": "3.0.13"})])   # KEV unparseable -> fail closed
         self.assertTrue(os.path.exists(os.path.join(out, ".auditor", "knowledge.md")))
 
     def test_a_consistency_check_that_did_not_complete_makes_the_run_incomplete(self):

@@ -447,19 +447,24 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     return url, None
 
 
-# rc-5b R1 (REQ-AUD-14 AC3/AC4): the lift trigger is {carrier, min_version}, validated by shape and compared with the SBOM's carrier version on
+# rc-5b R1 (REQ-AUD-14 AC3/AC4): the lift trigger is {carrier, min_version, component, component_min_version} ("carrier >= X embeds component >= Y"), validated by shape and compared with the SBOM's carrier version on
 # the daily recheck before the model is asked. A free-text trigger is no acceptance (the finding stays visible), exactly like a missing one.
+_LIFT_KEYS = {"carrier", "min_version", "component", "component_min_version"}
 _LIFT_VERSION = re.compile(r"^v?[0-9]+(?:\.[0-9]+)*[0-9A-Za-z.+~:-]*$")
 
 
 def _lift_trigger(t):
-    """The normalized {carrier, min_version} of a well-formed trigger, else None."""
-    if not isinstance(t, dict) or set(t) != {"carrier", "min_version"} or not all(isinstance(v, str) for v in t.values()):
+    """The normalized {carrier, min_version, component, component_min_version} of a well-formed trigger, else None."""
+    if not isinstance(t, dict) or set(t) != _LIFT_KEYS or not all(isinstance(v, str) for v in t.values()):
         return None
-    carrier, ver = t["carrier"].strip(), t["min_version"].strip()
-    if not carrier or len(carrier) > 200 or any(ord(ch) < 32 for ch in carrier) or not ver or len(ver) > 64 or not _LIFT_VERSION.match(ver):
-        return None
-    return {"carrier": carrier, "min_version": ver}
+    out = {k: v.strip() for k, v in t.items()}
+    for name in ("carrier", "component"):
+        if not out[name] or len(out[name]) > 200 or any(ord(ch) < 32 for ch in out[name]):
+            return None
+    for ver in ("min_version", "component_min_version"):
+        if not out[ver] or len(out[ver]) > 64 or not _LIFT_VERSION.match(out[ver]):
+            return None
+    return out
 
 
 def _version_numbers(v):
@@ -498,7 +503,7 @@ def _trigger_state(trigger, carrier):
 
 
 def _trigger_text(t):
-    return "%s >= %s" % (t["carrier"], t["min_version"])
+    return "%s >= %s embeds %s >= %s" % (t["carrier"], t["min_version"], t["component"], t["component_min_version"])
 
 
 def _bump_target(fb):
