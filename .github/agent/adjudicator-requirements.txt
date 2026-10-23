@@ -1,5 +1,5 @@
 # Hash-pinned adjudicator runtime: the anthropic SDK (workload-identity federation) and its
-# full transitive tree, resolved from anthropic==1.13.0; plus openai==3.24.0 for the scanner panel's
+# full transitive tree, resolved from anthropic==1.15.0; plus openai==3.24.0 for the scanner panel's
 # second auditor seat (workload-identity federation, Responses API), whose runtime dependencies are
 # all already pinned below. Installed ONLY on real/schedule
 # runs with `pip install --require-hashes`. Bump via the pip ecosystem in dependabot.yml.
@@ -7,7 +7,7 @@
 annotated-types==0.8.0 \
     --hash=sha256:13b2beaad985e05e2d6407ee4c4f35590b11f8d693a258a561055cac8f64cab7 \
     --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
-anthropic==1.13.0 \
+anthropic==1.15.0 \
     --hash=sha256:157bd74dbf6a595cf9e5fcac557c791fd297924dc48261f57470c2ed6f4e6671 \
     --hash=sha256:ad11d9bb9adafdfea26113943bcde9973e2a439ebeeda6c89ff3e3d85bb2f5c1
 anyio==4.15.1 \
