@@ -214,8 +214,13 @@ GUARD_STEPS = [
 # REQ-CI-001 (advisor Oct 23, CI speed): allowlist-chain is accepted in EXACTLY TWO forms: the one job (SPLIT_STEPS below), or four parallel jobs
 # allowlist-chain-1..4 plus a gate job that keeps the name allowlist-chain. The groups are positions in the one job's step list (12 is the image-assembly
 # suite, the long one); the fourth shard takes every other suite step and the two guard steps. Every shard opens with the five setup steps.
+# The groups name their steps by run text (stripped), not by position, so an edit of the one job's step list cannot move a suite to another shard silently.
 CHAIN_SHARD_IDS = ["allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowlist-chain-4"]
-CHAIN_GROUPS = [[12], [8, 25], [7, 16, 24, 21]]
+CHAIN_GROUPS = [
+    ["bash bin/assemble-image-test.sh"],
+    ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
+    ["bash bin/build-apk-test.sh", "./bin/install-scanner.sh grype\nbash bin/vex-scope-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+]
 CHAIN_SETUP = 5
 CHAIN_GATE = {
     "name": "allowlist-chain",
@@ -621,8 +626,20 @@ SPLIT_STEPS = json.loads(r'''{
 }''')
 def chain_shard_steps(k):   # the exact step list of shard k (1-based): the setup steps, then its suites in the one job's order
     full = SPLIT_STEPS["allowlist-chain"]
-    taken = {i for g in CHAIN_GROUPS for i in g}
-    groups = [sorted(g) for g in CHAIN_GROUPS] + [[i for i in range(CHAIN_SETUP, len(full)) if i not in taken]]
+    pos = {}
+    for i in range(CHAIN_SETUP, len(full)):
+        pos.setdefault((full[i].get("run") or "").strip(), []).append(i)
+    groups = []
+    for g in CHAIN_GROUPS:
+        idx = []
+        for r in g:
+            if len(pos.get(r, [])) != 1:
+                bad.append(f"CHAIN_GROUPS names a step that is not exactly once in the one job's list: {r!r}")
+            else:
+                idx.append(pos[r][0])
+        groups.append(sorted(idx))
+    taken = {i for g in groups for i in g}
+    groups.append([i for i in range(CHAIN_SETUP, len(full)) if i not in taken])
     return full[:CHAIN_SETUP] + [full[i] for i in groups[k - 1]]
 for jid, want_steps in SPLIT_STEPS.items():
     if jid == "allowlist-chain" and chain_split:   # the second exact form: four shards (each exactly its list) and the gate (exactly CHAIN_GATE)
@@ -642,6 +659,15 @@ for jid, want_steps in SPLIT_STEPS.items():
                 bad.append(f"the {k} job does not run on exactly `ubuntu-latest`")
             if sj.get("steps") != chain_shard_steps(n_):
                 bad.append(f"the {k} steps are not exactly the judged list (REQ-CI-001-AC1: every step of the one job in exactly one shard, unchanged, in order)")
+        # REQ-CI-001-AC1/AC4, exactly once across the WHOLE workflow: a chain suite appears once more than it does in the other judged jobs (the pins-auditor
+        # job runs one of them too) and nowhere else, so a copy kept in the allowlist job or in a renamed original job is refused
+        others = [st for oj, ws in SPLIT_STEPS.items() if oj != "allowlist-chain" for st in ws]
+        for st_ in SPLIT_STEPS["allowlist-chain"][CHAIN_SETUP:]:
+            r_ = (st_.get("run") or "").strip()
+            have_ = sum(1 for j_ in _jobs_.values() if isinstance(j_, dict) for x_ in (j_.get("steps") or []) if isinstance(x_, dict) and (x_.get("run") or "").strip() == r_)
+            want_ = 1 + sum(1 for x_ in others if (x_.get("run") or "").strip() == r_)
+            if have_ != want_:
+                bad.append(f"the step running `{r_}` appears {have_} times in the workflow, not {want_} (REQ-CI-001-AC1: exactly once across the shards, nowhere else)")
         if _jobs_.get("allowlist-chain") != CHAIN_GATE:
             bad.append("the allowlist-chain gate job is not exactly the judged gate (REQ-CI-001-AC2: needs the four shards, always runs, no checkout, fails on anything but success)")
         continue
@@ -921,13 +947,16 @@ case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append(
 # the five setup steps open every shard, the groups below are positions in the old job's step list (position 12 is the image-assembly suite, the long one).
 cat > "$work/split.py" <<'PYS'
 import copy
-GROUPS = [[12], [8, 25], [7, 16, 24, 21]]      # the rest (the small suites and the two guard steps) is the fourth shard
+GROUPS = [["bash bin/assemble-image-test.sh"], ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
+          ["bash bin/build-apk-test.sh", "./bin/install-scanner.sh grype\nbash bin/vex-scope-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"]]   # the rest is the fourth shard
 def split_chain(d):
     old = d["jobs"]["allowlist-chain"]
     steps = old["steps"]
     pre, suites = steps[:5], steps[5:]
-    taken = {i for g in GROUPS for i in g}
-    groups = [sorted(g) for g in GROUPS] + [[i for i in range(5, len(steps)) if i not in taken]]
+    idx = {(st.get("run") or "").strip(): i for i, st in enumerate(steps) if i >= 5}
+    groups = [sorted(idx[r] for r in g) for g in GROUPS]
+    taken = {i for g in groups for i in g}
+    groups.append([i for i in range(5, len(steps)) if i not in taken])
     jobs = {}
     for k, g in enumerate(groups, 1):
         jobs[f"allowlist-chain-{k}"] = {"name": f"allowlist-chain-{k}", "runs-on": "ubuntu-latest", "steps": copy.deepcopy(pre) + [copy.deepcopy(steps[i]) for i in g]}
@@ -993,6 +1022,11 @@ case_ chain-split-step-secrets    bad "${SC}${S1}['steps'][-1]['env'] = {'T': '\
 case_ chain-split-shard-runs-on   bad "${SC}${S1}['runs-on'] = 'self-hosted'"
 case_ chain-split-shard-name      bad "${SC}${S1}['name'] = 'allowlist-chain'"
 case_ chain-split-impersonate     bad "${SC}d['jobs']['replacement'] = {'name': 'allowlist-chain', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+# exactly once across the whole workflow (seat A of cache#608, round 1): a copy of a chain suite kept in another job is refused
+case_ chain-split-copy-in-allowlist bad "${SC}d['jobs']['allowlist']['steps'].append(copy.deepcopy(${S1}['steps'][-1]))"
+case_ chain-split-copy-in-pa        bad "${SC}d['jobs']['allowlist-pins-auditor']['steps'].append({'name': 'x', 'run': 'bash bin/assemble-image-test.sh'})"
+case_ chain-split-original-kept     bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/assemble-image-test.sh'}]}"
+case_ chain-split-vex-index-twice   bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/vex-index-test.sh </dev/null'}]}"
 # the judge keeps refusing the old shape with a leftover shard (a half-done split)
 case_ chain-half-split            bad "d['jobs']['allowlist-chain-1'] = {'name': 'allowlist-chain-1', 'runs-on': 'ubuntu-latest', 'steps': d['jobs']['allowlist-chain']['steps'][:5]}"
 # allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
