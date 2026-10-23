@@ -177,6 +177,78 @@ class Image(Tmp):
         self.assertIn("no evidence from image debug-amd64", err.getvalue())
 
 
+APK_DB = (b"C:Q1abc=\nP:baselayout\nV:20240315-r2\nA:aarch64\no:baselayout\nL:GPL-2.0-only\n\n"
+          b"C:Q1def=\nP:libssl3\nV:3.3.2-r0\nA:aarch64\no:openssl\nL:Apache-2.0\n\n")
+
+
+class ApkDatabase(Tmp):
+    """rc-5b fix 3 (ruling A1): an apko-built image keeps its packages in the apk installed database. The evidence reads
+    it, says which package databases were read, and absence is proof only for a kind that was read
+    (REQ-SCAN-008-AC1: real only if the audit confirms from the image itself; AC2: each audit cites evidence)."""
+
+    def image(self, files, name="apk"):
+        oci_archive(os.path.join(self.d, name), [tar_bytes(files)])
+        return P.read_image(os.path.join(self.d, name), "arm64")
+
+    def finding(self, package, purl_kind, version="20240315-r2"):
+        return {"image": "fips-arm64", "package": package, "version": version, "seen_by": ["scout"],
+                "purls": ["pkg:%s/%s@%s" % (purl_kind, package, version)]}
+
+    def test_an_installed_apk_package_is_recorded_not_declared_absent(self):
+        facts = self.image([("lib/apk/db/installed", APK_DB, 0o644)])
+        f = self.finding("baselayout", "apk")
+        b = P.bundle_text(facts, {}, f)
+        self.assertIn("Package: baselayout\nVersion: 20240315-r2", b)
+        self.assertNotIn("no record names baselayout", b)
+        self.assertEqual(P.installed_versions(b, f), {"20240315-r2"})
+        verdict = {"verdict": "false", "evidence": ["package database: no record names baselayout"]}
+        self.assertIsNone(P.validated(verdict, b, f)[0])        # no manufactured absence, so no not_affected VEX
+
+    def test_a_package_the_read_apk_database_lacks_is_absent(self):
+        facts = self.image([("lib/apk/db/installed", APK_DB, 0o644)])
+        f = self.finding("curl", "apk", "8.9.0-r0")
+        b = P.bundle_text(facts, {}, f)
+        self.assertIn("package databases read: apk", b)
+        self.assertIn("package database: no record names curl", b)
+        self.assertEqual(P.installed_versions(b, f), set())
+        self.assertTrue(P.absence_is_complete(b, f))
+        verdict = {"verdict": "false", "evidence": ["package database: no record names curl"]}
+        self.assertEqual(P.validated(verdict, b, f)[0], "false")
+
+    def test_absence_is_never_proven_from_a_database_kind_that_was_not_read(self):
+        dpkg_only = self.image([("var/lib/dpkg/status", b"Package: netbase\nVersion: 6.4\n", 0o644)], "dpkg")
+        f = self.finding("baselayout", "apk")
+        b = P.bundle_text(dpkg_only, {}, f)
+        self.assertIn("package databases read: dpkg", b)
+        self.assertFalse(P.absence_is_complete(b, f))
+        verdict = {"verdict": "false", "evidence": ["files: no path in the image mentions baselayout"]}
+        self.assertIsNone(P.validated(verdict, b, f)[0])
+        nothing = self.image([("etc/os-release", b"ID=x\n", 0o644)], "none")
+        b = P.bundle_text(nothing, {}, f)
+        self.assertIn("package databases read: none", b)
+        self.assertFalse(P.absence_is_complete(b, f))
+        self.assertFalse(P.absence_is_complete(b, self.finding("netbase", "deb", "6.4")))
+
+    def test_an_rpm_finding_is_never_shown_absent(self):
+        facts = self.image([("lib/apk/db/installed", APK_DB, 0o644), ("var/lib/dpkg/status", b"Package: x\n", 0o644)], "both")
+        b = P.bundle_text(facts, {}, self.finding("zlib", "rpm", "1.3"))
+        self.assertIn("package databases read: apk, dpkg", b)
+        self.assertFalse(P.absence_is_complete(b, self.finding("zlib", "rpm", "1.3")))
+
+    def test_a_later_layer_that_removes_the_apk_database_removes_its_records(self):
+        oci_archive(os.path.join(self.d, "wh"), [tar_bytes([("lib/apk/db/installed", APK_DB, 0o644)]),
+                                                 tar_bytes([("lib/apk/db/.wh.installed", b"", 0o644)])])
+        facts = P.read_image(os.path.join(self.d, "wh"), "arm64")
+        b = P.bundle_text(facts, {}, self.finding("baselayout", "apk"))
+        self.assertIn("package databases read: none", b)
+        self.assertNotIn("Package: baselayout", b)
+
+    def test_an_apk_record_without_a_version_is_not_an_installed_version(self):
+        facts = self.image([("lib/apk/db/installed", b"P:odd\nA:aarch64\n\nV:1.0\n\n", 0o644)])
+        b = P.bundle_text(facts, {}, self.finding("odd", "apk", "1.0"))
+        self.assertEqual(P.installed_versions(b, self.finding("odd", "apk", "1.0")), set())
+
+
 class Prompts(unittest.TestCase):
     def test_sections_and_rendering(self):
         req = {"mode": "case", "finding": {"id": "CVE-1"}, "bundle": "BUNDLE-TEXT", "own_case": None,
