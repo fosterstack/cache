@@ -2500,6 +2500,38 @@
       "line": "ab65ff7c9922b313f2792e8f1e53da316a384c128ec4592fd3262448e7a383ef",
       "ruling": "text, not a command: `gh release download` appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
       "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a system package install",
+      "key": "44c2455a5919392120f5472d403267dd976a354697a62eef398794bdd05301ca",
+      "line": "44c2455a5919392120f5472d403267dd976a354697a62eef398794bdd05301ca",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "11b71eb0582aa2c0b7885af29cedf940d574d14c64caad686b41293669b5e042",
+      "line": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a download",
+      "key": "570e342d0e4708dab94b2025f6b928845b659b405872d824b45473c4635d7b1d",
+      "line": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
+    },
+    {
+      "file": "bin/chain-build-wiring-test.sh",
+      "form": "a system package install",
+      "key": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
+      "line": "ddf8c932b67250a99fc511cede0f4ef9fe8a8f4d89fc80ecf51dbf83db76d6dc",
+      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "context": "assignment"
     }
   ]
 }
