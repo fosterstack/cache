@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import unicodedata
 import sys
@@ -1352,6 +1353,149 @@ def cmd_sign(a):
     print("ok")
 
 
+# ---- sign-records (the Witness move; owner Oct 22): Sign's check-and-stage step for the building jobs' local records ---------------------------------------
+# Build and Rebuild record under Witness with a throwaway key inside their jobs; those records are UNTRUSTED. This command is the check that comes before Sign re-signs the
+# payloads keyless: it signs nothing, calls no tool and reads no token. A shell step (bin/witness-sign-staged.sh) signs each staged payload and `verify` checks the result.
+SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild")}
+SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
+SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
+SR_ATTESTORS = ("environment", "git", "material", "product")
+GIT_COMMIT_PREFIX = "https://witness.dev/attestations/git/v0.1/commithash:"
+ATTESTOR_URI = re.compile(r"https://witness\.dev/attestations/([a-z-]+)/v0\.1")
+
+
+def sr_received(stage, rec_dir, art_dir, name):
+    """{relative name: sha256} of the files Sign RECEIVES for one record: the data files of the record directory and every file under art_dir/name."""
+    got = {}
+    for n in sorted(os.listdir(rec_dir)):
+        path = os.path.join(rec_dir, n)
+        if os.path.islink(path) or not os.path.isfile(path):
+            refuse(stage, "record: %s/%s is not a regular file (a link or a folder in a record directory)" % (name, n))
+        if n.endswith(".local.json"):
+            continue
+        if n not in SR_DATA:
+            refuse(stage, "record: %s holds %s, which is neither the record (<step>-collection.local.json) nor a data file (%s)" % (name, n, " ".join(SR_DATA)))
+        got[n] = _sha256_bytes_of(path, stage, n)
+    if art_dir:
+        base = os.path.join(art_dir, name)
+        if os.path.lexists(base):
+            links = []
+            for here, dirs, files in os.walk(base):
+                for n in dirs + files:
+                    if os.path.islink(os.path.join(here, n)):
+                        links.append(os.path.relpath(os.path.join(here, n), base))
+            if links:
+                refuse(stage, "symlink: %s" % " ".join(sorted(links)))
+            for here, _dirs, files in os.walk(base):
+                for n in files:
+                    rel = os.path.relpath(os.path.join(here, n), base)
+                    got.setdefault(rel, _sha256_bytes_of(os.path.join(here, n), stage, rel))
+                    if got[rel] != _sha256_bytes_of(os.path.join(here, n), stage, rel):
+                        refuse(stage, "digest: %s differs between the record directory and the artifacts" % rel)
+    return got
+
+
+def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
+    """Checks one record directory; returns (step, payload bytes, [data file names])."""
+    steps = SR_STEPS[stage]
+    names = sorted(os.listdir(rec_dir))
+    locals_ = [n for n in names if n.endswith(".local.json")]
+    if len(locals_) != 1:
+        refuse(stage, "record: %s must hold exactly one *.local.json record, it holds %d" % (name, len(locals_)))
+    fname = locals_[0]
+    if fname.startswith("snapshot-"):
+        refuse(stage, "snapshot record: %s/%s is a snapshot step's file name" % (name, fname))
+    m = re.fullmatch(r"([a-z]+)-collection\.local\.json", fname)
+    if not m or m.group(1) not in steps:
+        refuse(stage, "step: %s/%s is not a record of the %s stage (%s-collection.local.json)" % (name, fname, stage, " or ".join(steps)))
+    step = m.group(1)
+    for n in names:
+        if n != fname and n not in SR_DATA:
+            refuse(stage, "record: %s holds %s, which is neither the record (%s) nor a data file (%s)" % (name, n, fname, " ".join(SR_DATA)))
+    try:
+        with open(os.path.join(rec_dir, fname), "rb") as f:
+            dsse = strict_json(f.read())
+        payload = b64d(dsse["payload"])
+        ptype = dsse["payloadType"]
+        stmt = strict_json(payload)
+        pred = stmt["predicate"]
+        cname, atts = pred["name"], pred["attestations"]
+    except Exception as ex:
+        refuse(stage, "record: %s/%s is not a DSSE envelope of a Witness collection (%s)" % (name, fname, type(ex).__name__))
+    if not isinstance(dsse, dict) or ptype != DSSE_STMT:
+        refuse(stage, "payloadType: %r is not %s" % (ptype, DSSE_STMT))
+    if stmt.get("predicateType") != COLL or stmt.get("_type") not in STMT_TYPES:
+        refuse(stage, "record: %s/%s is not an in-toto statement with the Witness collection predicate" % (name, fname))
+    chain_items.check_record_names(stage, payload)             # a snapshot name or version; a collection name that is not a release name of the stage
+    if cname != step:
+        refuse(stage, "step: the record's collection name %r is not its file's step %r" % (cname, step))
+    chain_items.check_record_env(stage, dsse, payload)         # no token variable or value (REQ-CHAIN-004-AC8)
+    kinds = []
+    for att in atts if isinstance(atts, list) else []:
+        t = att.get("type") if isinstance(att, dict) else None
+        mm = ATTESTOR_URI.fullmatch(t) if isinstance(t, str) else None
+        kinds.append(mm.group(1) if mm else repr(t))
+    extra, missing = sorted(set(kinds) - set(SR_ATTESTORS)), sorted(set(SR_ATTESTORS) - set(kinds))
+    if extra or missing or len(kinds) != len(set(kinds)):
+        refuse(stage, "attestors: exactly %s are allowed (beyond: %s; missing: %s; a repeated attestor is refused too)" % (", ".join(SR_ATTESTORS), " ".join(extra) or "none", " ".join(missing) or "none"))
+    subs = typed_subjects(stage, stmt)
+    commits = [x["name"][len(GIT_COMMIT_PREFIX):] for x in subs if x["name"].startswith(GIT_COMMIT_PREFIX)]
+    if commits != [commit]:
+        refuse(stage, "commit: the record's git commit %s is not the run's commit %s" % (", ".join(commits) or "(none)", commit))
+    products = {}
+    for x in subs:
+        if x["name"].startswith(PRODUCT_PREFIX):
+            products.setdefault(x["name"][len(PRODUCT_PREFIX):], []).append(x["digest"].get("sha256"))
+    if step == "rapk" and art_dir and os.path.lexists(os.path.join(art_dir, name)):
+        refuse(stage, "rapk: %s has artifacts under %s, but Rebuild's apks never reach Sign" % (name, art_dir))
+    received = sr_received(stage, rec_dir, art_dir, name)
+    wrong = sorted(n for n, h in received.items() if products.get(n) != [h])
+    if wrong:
+        refuse(stage, "digest: a received file is not a product of the record with the same sha256, or the record names it twice: %s" % " ".join(wrong))
+    if step in SR_REQUIRED:
+        lacking = sorted(n for n in SR_REQUIRED[step] if n not in received or n not in products)
+        if lacking:
+            refuse(stage, "missing: %s must be a product of the %s record and be received: %s" % (step, step, " ".join(lacking)))
+    if stage == "rebuild":
+        mats = [x for x in subs if x["name"] == MATERIAL]
+        if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
+            refuse(stage, "material: the record's file:witness-build/digests.json is not Build's attested digests.json (--digests)")
+    return step, payload, [n for n in names if n != fname]
+
+
+def cmd_sign_records(a):
+    stage = a.stage
+    require_fresh_out(a.out)
+    make_policy_from_template(a, a.template)                    # the same policy gate as `sign --check`: a pushed tag, or a workflow_dispatch on a branch (the dry run)
+    commit = os.environ.get("GITHUB_SHA", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        refuse(stage, "commit: GITHUB_SHA is not a 40-hex commit")
+    digests_sha = _sha256_bytes_of(a.digests, stage, "--digests")
+    seen, plan = set(), []
+    for rec_dir in a.record_dir:
+        name = os.path.basename(rec_dir.rstrip("/"))
+        if name in seen or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name) or not os.path.isdir(rec_dir) or os.path.islink(rec_dir):
+            refuse(stage, "record: %r is not a distinct plain record directory" % rec_dir)
+        seen.add(name)
+        step, payload, data = sr_check_record(stage, rec_dir, name, a.artifacts_dir, commit, digests_sha)
+        plan.append((rec_dir, name, step, payload, data))
+    make_out(a.out)
+    try:
+        lines = []
+        for rec_dir, name, step, payload, data in plan:
+            os.mkdir(os.path.join(a.out, name))
+            with open(os.path.join(a.out, name, step + "-collection.payload"), "wb") as f:
+                f.write(payload)
+            for n in data:
+                with open(os.path.join(rec_dir, n), "rb") as src, open(os.path.join(a.out, name, n), "wb") as dst:
+                    dst.write(src.read())
+            lines.append("%s\t%s" % (os.path.join(a.out, name, step + "-collection.payload"), "signed/%s/%s-collection.json" % (name, step)))
+    except OSError as ex:
+        shutil.rmtree(a.out, ignore_errors=True)
+        refuse(stage, "staging: cannot write %s (%s)" % (a.out, type(ex).__name__))
+    print("\n".join(lines))
+
+
 def same_json(a, b):
     """Equal JSON values of the SAME types (Opus r1-verify H2): Python's == says true == 1 == 1.0, which would let a signed
     `"dryRun": 1` pass for the `true` Sign built; here bool, int and float are three types and each container is compared item by item."""
@@ -1592,6 +1736,15 @@ def build_parser():
         s.add_argument("--now")
         for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
             s.add_argument("--" + n)
+    sr = sub.add_parser("sign-records")
+    sr.add_argument("--stage", required=True, choices=sorted(SR_STEPS))
+    sr.add_argument("--template", required=True)
+    sr.add_argument("--digests", required=True)
+    sr.add_argument("--out", required=True)
+    sr.add_argument("--record-dir", action="append", required=True)
+    sr.add_argument("--artifacts-dir")
+    for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
+        sr.add_argument("--" + n)
     st = sub.add_parser("stage-start")
     st.add_argument("--stage", required=True)
     st.add_argument("--previous", required=True)
@@ -1673,6 +1826,8 @@ def main(argv):
             cmd_check_list(a)
         elif a.cmd == "bind-check":
             cmd_bind_check(a)
+        elif a.cmd == "sign-records":
+            cmd_sign_records(a)
         elif a.cmd == "actions":
             cmd_actions(a)
         elif a.cmd in chain_items.COMMANDS:
