@@ -219,8 +219,10 @@ CHAIN_SHARD_IDS = ["allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3"
 CHAIN_GROUPS = [
     ["bash bin/assemble-image-test.sh"],
     ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
-    ["bash bin/build-apk-test.sh", "./bin/install-scanner.sh grype\nbash bin/vex-scope-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+    ["bash bin/build-apk-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
 ]
+# Installed state does not cross jobs (each shard is a fresh runner): the one step that installs a tool for later steps, `./bin/install-scanner.sh grype` (with the
+# vex-scope suite), stays in shard 4 with its consumers, vex-both-scanners-test and the suite-floor re-run (suite-guard-run.py all). cache#608 round 2, both seats.
 CHAIN_SETUP = 5
 CHAIN_GATE = {
     "name": "allowlist-chain",
@@ -948,7 +950,7 @@ case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append(
 cat > "$work/split.py" <<'PYS'
 import copy
 GROUPS = [["bash bin/assemble-image-test.sh"], ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
-          ["bash bin/build-apk-test.sh", "./bin/install-scanner.sh grype\nbash bin/vex-scope-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"]]   # the rest is the fourth shard
+          ["bash bin/build-apk-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"]]   # the rest is the fourth shard (it keeps the grype installer with its consumers)
 def split_chain(d):
     old = d["jobs"]["allowlist-chain"]
     steps = old["steps"]
@@ -1027,6 +1029,21 @@ case_ chain-split-copy-in-allowlist bad "${SC}d['jobs']['allowlist']['steps'].ap
 case_ chain-split-copy-in-pa        bad "${SC}d['jobs']['allowlist-pins-auditor']['steps'].append({'name': 'x', 'run': 'bash bin/assemble-image-test.sh'})"
 case_ chain-split-original-kept     bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/assemble-image-test.sh'}]}"
 case_ chain-split-vex-index-twice   bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/vex-index-test.sh </dev/null'}]}"
+# installed state does not cross jobs: every shard that runs a consumer of the installed grype (vex-both-scanners-test, the suite-floor re-run) must also run the installer step
+# and run it BEFORE the consumer. Checked on the split form the helper builds from the real ci.yml (independent of the judge's groups).
+if python3 - "$here/.github/workflows/ci.yml" "$work/split.py" > "$work/dep.out" 2>&1 <<'PYD'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])); exec(open(sys.argv[2]).read()); split_chain(d)
+inst, cons, bad = "install-scanner.sh grype", ("vex-both-scanners-test.sh", "suite-guard-run.py all"), []
+for k in ("allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowlist-chain-4"):
+    runs = [(st.get("run") or "") for st in d["jobs"][k]["steps"]]
+    pos_i = [n for n, r in enumerate(runs) if inst in r]
+    for n, r in enumerate(runs):
+        if any(c in r for c in cons) and not (pos_i and min(pos_i) < n):
+            bad.append(f"{k}: `{r.strip()[:50]}` runs without the grype installer before it")
+print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
+PYD
+then pass=$((pass+1)); echo "PASS chain-split-grype-installer-with-consumers → ok"; else failn=$((failn+1)); echo "FAIL chain-split-grype-installer-with-consumers → $(cat "$work/dep.out")"; fi
 # the judge keeps refusing the old shape with a leftover shard (a half-done split)
 case_ chain-half-split            bad "d['jobs']['allowlist-chain-1'] = {'name': 'allowlist-chain-1', 'runs-on': 'ubuntu-latest', 'steps': d['jobs']['allowlist-chain']['steps'][:5]}"
 # allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
