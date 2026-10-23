@@ -19,7 +19,7 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Active requirements | 99 |
 | Acceptance criteria | 478 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 467 |
+| ACs with mapped evidence | 468 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 47 |
@@ -619,7 +619,7 @@ No artifact shall be published with a known CVE at any severity unless a publish
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-003-AC1 | Given the scanner configurations and the VEX document; when they are compared; then every scanner ignore corresponds to a statement in .vex/, and both release scanners consume the same VEX document | inspection |  | approved | 1 item(s) |
+| REQ-REL-003-AC1 | Given the scanner configurations and the VEX document; when they are compared; then every scanner ignore corresponds to a statement in .vex/, and both release scanners consume the same VEX document | inspection |  | approved | 2 item(s) |
 
 ### REQ-REL-004 — Continuous scan gate and toolchain freshness
 
@@ -941,7 +941,7 @@ docs/using-our-vex.md shall ship in the same release as the three VEX forms, nev
 |---|---|---|---|---|---|
 | REQ-SCAN-011-AC1 | Given docs/using-our-vex.md; when a release is cut; then it ships in the same release as the rule-10 files, never before | inspection |  | approved | none mapped |
 | REQ-SCAN-011-AC2 | Given the guide; when it is read; then for each scanner it gives which file, where it lives in each release, how to verify it is ours with the release's existing signing, the exact command, what it does in the customer's account, how to stay current (including removing a suppression when a statement turns affected), and what to do for an unlisted scanner | inspection |  | approved | 1 item(s) |
-| REQ-SCAN-011-AC3 | Given every command in the guide; when the live test runs; then it worked exactly as written | ci-workflow |  | approved | none mapped |
+| REQ-SCAN-011-AC3 | Given every command in the guide; when the live test runs; then it worked exactly as written | ci-workflow |  | approved | 2 item(s) |
 | REQ-SCAN-011-AC4 | Given the guide; when it is reviewed; then it names no competitor and claims nothing beyond what ships | inspection |  | approved | 1 item(s) |
 
 ### REQ-SCAN-012 — Live tests

@@ -356,6 +356,11 @@ d = r.decide([clean("A")] + [{"reader": "B", "findings": None, "error": None}])
 check("decide: a reader with no findings and no error -> error", d["decision"] == "error", d)
 check("decide: no readers -> error", r.decide([])["decision"] == "error")
 
+# rc-5a astra R9: the bundle marks an update MAJOR or FLAGGED and the program sends both to the readers, so the prompt asks for findings for both
+_pt = open(os.path.join(os.path.dirname(os.environ["REVIEWER_PY"]), "..", ".github", "policy", "dependabot-reviewer-prompt.txt")).read()
+check("prompt: the task asks for findings for each update marked MAJOR or FLAGGED, as the bundle marks them",
+      "for each update marked MAJOR or FLAGGED" in _pt and "for each MAJOR update" not in _pt and "FLAGGED" in r.__dict__.get("__doc__", "") + open(os.environ["REVIEWER_PY"]).read())
+
 print("----")
 print("dependabot-reviewer: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
