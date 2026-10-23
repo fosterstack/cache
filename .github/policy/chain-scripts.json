@@ -3,7 +3,8 @@
   "env_names": [
     "DIGESTS",
     "MODE",
-    "RECORDS"
+    "RECORDS",
+    "RECORDS_ARM64"
   ],
   "scripts": [
     {
@@ -302,7 +303,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "d64c6697e22ea5a62b857f35f580fea40038ad015669024f3864a19952cc6aaa",
+      "sha256": "1805ad0d354671fa4ee805736f31747d0b396af96d397a0f4eb098165a4d5c13",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -359,7 +360,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "d7ab910fb31977158de648b4a352edcfe505dda2fe52f9121d6cd17ab4343a9c",
+      "sha256": "07378b33b2dda5b280d0074249ee24f0cddb197fcb56a87a9f82401f017bbd67",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",

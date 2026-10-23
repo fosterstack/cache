@@ -21,11 +21,16 @@ on:
         required: true
         type: string
       stage:
-        description: 'build or rebuild: which records this call signs (the release graph calls this file once for each)'
+        description: 'build, rebuild or check: which records this call signs (the release graph calls this file once for each)'
         required: true
         type: string
       records:
-        description: 'JSON of the sha256 of the Rebuild record, verdict and rapk records, from the assemble job of Rebuild (the rebuild call only)'
+        description: 'JSON of the sha256 of the Rebuild record, verdict and rapk records, from the assemble job of Rebuild (the rebuild call), or of the records of the check job (the check call)'
+        required: false
+        type: string
+        default: ''
+      records-arm64:
+        description: 'JSON of the sha256 of the record of the arm64 check job, from the check-arm64 job (the check call only)'
         required: false
         type: string
         default: ''
@@ -184,3 +189,72 @@ jobs:
         with:
           name: signed-witness-rebuild
           path: signed/witness-rebuild
+
+  sign-check:
+    name: sign-check
+    if: ${{ inputs.stage == 'check' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-check
+          path: rec-check
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-check-arm64
+          path: rec-arm64/witness-arm64
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: check-results
+          path: artifacts/check-results
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: check-results-arm64
+          path: artifacts/check-results-arm64
+
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+
+      - name: write Build's digest list to a file
+        env:
+          DIGESTS: ${{ inputs.digests }}
+        run: printf '%s' "$DIGESTS" > digests.json
+
+      - name: write the check job's record digests to a file
+        env:
+          RECORDS: ${{ inputs.records }}
+        run: printf '%s' "$RECORDS" > check-records.json
+
+      - name: write the arm64 check job's record digests to a file
+        env:
+          RECORDS_ARM64: ${{ inputs.records-arm64 }}
+        run: printf '%s' "$RECORDS_ARM64" > check-records-arm64.json
+
+      - name: check Check's records against the results, then sign them
+        run: python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests check-records.json --expect-digests check-records-arm64.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64
+
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-check
+          path: |-
+            signed/witness-scanners
+            signed/witness-acceptance
+            signed/witness-runtime
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-check-arm64
+          path: signed/witness-arm64

@@ -57,9 +57,9 @@ def wit(step, env):
     cond = "" if step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"   # a release candidate (a tag with a hyphen) ends after release-verify (AC14)
     return f"      - name: {step}\n" + cond + (f"        env:\n{e}" if env else "") + f"        run: bash bin/witnessed.sh {step} bin/{step}.sh\n"
 REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}", "GH_TOKEN": "${{ github.token }}"}
-VDOWN = ("signed-witness-build", "digests", "items", "signed-witness-rebuild", "witness-check", "check-results", "provenance", "apk-compare")      # what release-verify reads: the records and Check's govulncheck stream
-VPATH = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
-def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
+VDOWN = ("signed-witness-build", "digests", "items", "signed-witness-rebuild", "signed-witness-check", "check-results", "provenance", "apk-compare")      # what release-verify reads: the records and Check's govulncheck stream
+VPATH = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "signed-witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
+def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("signed-witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
 RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
 # REQ-CHAIN-007-AC1 (Astra R6) and the owner's rule of Oct 21 2026 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY (no id-token, no environment,
 # no secret): it receives Build's and Rebuild's apks, runs bin/release-compare.sh as a plain step and uploads the small result apk-compare. `verify` needs it and holds contents read + id-token write
@@ -112,9 +112,12 @@ jobs:
   check:
     needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
+  sign-check:
+    needs: [build, check]
+    uses: ./.github/workflows/stage-sign.yml
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
-    needs: [check, sign, sign-rebuild]
+    needs: [check, sign, sign-rebuild, sign-check]
     uses: ./.github/workflows/stage-promote.yml
     permissions:
       contents: write
@@ -214,7 +217,7 @@ m s_trig    'workflow_call:'                                'workflow_call:\n  p
 m s_unp     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v4'                          'digest-pinned'      "AC1 an unpinned checkout"
 m s_persist 'persist-credentials: false'                    'persist-credentials: true'                              'persist-credentials' "AC1 persisted credentials"
 m s_dlname  'name: provenance\n          path: provenance' 'name: not-listed\n          path: provenance'             'download-artifact'  "AC1 a download outside the allowlist"
-m s_noarm   '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-check-arm64\n          path: witness-check/witness-arm64\n' '' 'witness-check-arm64' "AC16 the arm64 Check record is not downloaded (check-list would refuse the release, so the stage must fetch it)"
+m s_noarm   '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: signed-witness-check-arm64\n          path: witness-check/witness-arm64\n' '' 'witness-check-arm64' "AC16 the arm64 Check record is not downloaded (check-list would refuse the release, so the stage must fetch it)"
 m s_nocr    '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: check-results\n          path: check-results\n' '' 'check-results' "G Check's scanner product (check-results/govulncheck.json) is not downloaded: release-sign would have no file to pass"
 m s_crpath  'name: check-results\n          path: check-results' 'name: check-results\n          path: witness-check' 'check-results' "G check-results lands inside witness-check/ (check-list refuses a stray file there)"
 m s_armpath 'path: witness-check/witness-arm64' 'path: witness-arm64'                          'witness-check-arm64' "AC16 the arm64 record lands outside witness-check/ (check-list reads witness-check/witness-arm64/)"
@@ -365,12 +368,12 @@ expect caught "AC3 the Check call grants packages write (only the release job ma
 gm() { if mutate "$work/release.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" graph "$work/$1.yml"; fi; }
 # Rule 70 (advisor step-5 revisit, Oct 10), amended by the Witness move (owner Oct 22): Sign signs the building stages' records, so Rebuild and Check run side by side AFTER sign,
 # sign-rebuild signs Rebuild's records, and the release job needs EXACTLY check, sign and sign-rebuild. Build is reached through check (check needs build and sign).
-gm g_nosign  'needs: \[check, sign, sign-rebuild\]'            'needs: [check, sign-rebuild]'                            'exactly check, sign and sign-rebuild' "AC11 release does not need sign"
-gm g_nochk   'needs: \[check, sign, sign-rebuild\]'            'needs: [sign, sign-rebuild]'                             'exactly check, sign and sign-rebuild' "AC11 release does not need check"
-gm g_norb    'needs: \[check, sign, sign-rebuild\]'            'needs: [check, sign]'                                    'exactly check, sign and sign-rebuild' "AC11 release does not need sign-rebuild (Rebuild's signed record)"
-gm g_extra   'needs: \[check, sign, sign-rebuild\]'            'needs: [check, sign, sign-rebuild, decide]'              'exactly check, sign and sign-rebuild' "AC11 release waits for something else"
-gm g_relbld  'needs: \[check, sign, sign-rebuild\]'            'needs: [build, check, sign, sign-rebuild]'               'exactly check, sign and sign-rebuild' "AC11 release also lists build (not exactly the set: build is reached through check)"
-gm g_relrb   'needs: \[check, sign, sign-rebuild\]'            'needs: [check, rebuild, sign, sign-rebuild]'             'exactly check, sign and sign-rebuild' "AC11 release also lists rebuild (its signed record is what Release needs)"
+gm g_nosign  'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [check, sign-rebuild, sign-check]'                            'exactly check, sign, sign-rebuild and sign-check' "AC11 release does not need sign"
+gm g_nochk   'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [sign, sign-rebuild, sign-check]'                             'exactly check, sign, sign-rebuild and sign-check' "AC11 release does not need check"
+gm g_norb    'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [check, sign, sign-check]'                                    'exactly check, sign, sign-rebuild and sign-check' "AC11 release does not need sign-rebuild (Rebuild's signed record)"
+gm g_extra   'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [check, sign, sign-rebuild, sign-check, decide]'              'exactly check, sign, sign-rebuild and sign-check' "AC11 release waits for something else"
+gm g_relbld  'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [build, check, sign, sign-rebuild, sign-check]'               'exactly check, sign, sign-rebuild and sign-check' "AC11 release also lists build (not exactly the set: build is reached through check)"
+gm g_relrb   'needs: \[check, sign, sign-rebuild, sign-check\]'            'needs: [check, rebuild, sign, sign-rebuild, sign-check]'             'exactly check, sign, sign-rebuild and sign-check' "AC11 release also lists rebuild (its signed record is what Release needs)"
 gm g_rbnosign '  rebuild:\n    needs: \[build, sign\]'         '  rebuild:\n    needs: build'                          'rebuild must need exactly build and sign' "AC11 rebuild does not wait for sign"
 gm g_srnoreb '  sign-rebuild:\n    needs: \[build, rebuild\]'  '  sign-rebuild:\n    needs: [build]'                       'sign-rebuild must need exactly build and rebuild' "AC11 sign-rebuild does not wait for rebuild"
 gm g_always  '  rebuild:\n    needs: \[build, sign\]'          "  rebuild:\n    if: \${{ always() }}\n    needs: [build, sign]"  'no if' "AC11 rebuild runs even when build failed"

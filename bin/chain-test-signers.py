@@ -972,7 +972,7 @@ def _arg_error(parts, envnames):
                 return "double-quoted argument %r mixes text with a variable or substitution (use a whole \"$NAME\" from env:)" % t
     return None
 
-PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > (?:digests|rebuild-records)\.json")
+PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > (?:digests|rebuild-records|check-records|check-records-arm64)\.json")
 
 def _literal_value(parts):
     """The shell word a quote-only word stands for (round 3 (1)): lit, single-quoted and double-quoted parts without an expansion, joined (bi'n/x' is
@@ -1007,7 +1007,7 @@ def check_run(run, envnames, rows, reads=None, argpaths=None):
         if line == "set -euo pipefail": continue
         if line.startswith("printf"):                   # the one write: an env var into digests.json; ANYTHING else starting with printf is an error
             m = PRINTF_OK.fullmatch(line)
-            if not m: errs.append("line %d: %s: a printf line must be exactly printf '%%s' \"$NAME\" > digests.json or > rebuild-records.json (the two writes the Sign job needs)" % (n, line[:90]))
+            if not m: errs.append("line %d: %s: a printf line must be exactly printf '%%s' \"$NAME\" > digests.json, > rebuild-records.json, > check-records.json or > check-records-arm64.json (the writes the Sign job needs)" % (n, line[:90]))
             elif m.group(1) not in envnames: errs.append("line %d: printf of $%s, which is not in this step's env:" % (n, m.group(1)))
             else: reads.add(m.group(1))
             continue

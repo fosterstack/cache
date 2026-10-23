@@ -393,8 +393,21 @@ jobs:
     needs: [build, sign]
     permissions:
       contents: read
-      id-token: write
     uses: ./.github/workflows/stage-verify.yml
+
+  # Sign's third call (REQ-REL-011-AC1, cache#606): the same file, the stage check: it checks and signs the records of the Check jobs, which hold no identity token (their
+  # steps build tools and run workloads), against the results Check uploaded. Its identity is the first call's.
+  sign-check:
+    needs: [build, check]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      stage: check
+      records: ${{ needs.check.outputs.records }}
+      records-arm64: ${{ needs.check.outputs.records-arm64 }}
 
   # Release (rules 56, 57, 64, 69, 71; REQ-CHAIN-007): the only job that holds a registry credential, the apk signing key or write access to packages and
   # releases. It needs exactly Check, Sign and Sign-rebuild (rule 70; it reaches Build and Rebuild through them), has no `if` that survives a failed or skipped predecessor
@@ -402,7 +415,7 @@ jobs:
   # and creates no tag.
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
-    needs: [check, sign, sign-rebuild]
+    needs: [check, sign, sign-rebuild, sign-check]
     # One publication at a time (release review R3, Oct 22): bin/release-publish.sh decides :X and :latest from the registry's tag list, so two
     # release runs must not interleave. One fixed group for every v* run, release candidates included. A queued run waits and a running one is never
     # cancelled (cancel-in-progress false). GitHub keeps one pending run per group: a second queued tag run replaces the first pending one, which ends

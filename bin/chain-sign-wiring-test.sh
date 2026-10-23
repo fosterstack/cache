@@ -83,6 +83,8 @@ def signer_calls(text, strip_comments=True): return _cts.signer_calls(text, TABL
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
 R_PRINTF_REC = r"printf '%s' \"\$RECORDS\" > rebuild-records\.json"
+R_PRINTF_CREC = r"printf '%s' \"\$RECORDS\" > check-records\.json"
+R_PRINTF_CRECA = r"printf '%s' \"\$RECORDS_ARM64\" > check-records-arm64\.json"
 R_INSTALL = r"bash bin/install-scanner\.sh cosign"
 R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
 R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
@@ -90,6 +92,7 @@ R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
 # the artifacts it receives and signs each one keyless; the Rebuild records in their own job, which receives no Rebuild apk or image (the owner's separation rule)
 R_REC_BUILD = r"python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
 R_REC_REBUILD = r"python3 -I -B bin/chain-verify\.py sign-records --stage rebuild --template \.github/policy/release-policy\.template\.json --digests digests\.json --expect-digests rebuild-records\.json --out staged --record-dir witness-rapk-ubuntu-24\.04 --record-dir witness-rapk-ubuntu-24\.04-arm --record-dir witness-rebuild"
+R_REC_CHECK = r"python3 -I -B bin/chain-verify\.py sign-records --stage check --template \.github/policy/release-policy\.template\.json --digests digests\.json --expect-digests check-records\.json --expect-digests check-records-arm64\.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64"
 RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
 EXPECT_STEPS = {
     "sign": [("checkout",), ("download", "witness-build", "witness-build")]
@@ -104,6 +107,11 @@ EXPECT_STEPS = {
             + [("download", "witness-rebuild", "witness-rebuild"), ("install", "witness"), ("printf",), ("printfrec",), ("records", "rebuild"), ("signstaged",)]
             + [("upload", "signed-witness-rapk-" + r, "signed/witness-rapk-" + r) for r in RUNNERS]
             + [("upload", "signed-witness-rebuild", "signed/witness-rebuild")],
+    # REQ-REL-011-AC1 (cache#606): the third call signs the Check jobs' records; Sign receives the records and the check-results the records name, nothing else
+    "sign-check": [("checkout",), ("download", "witness-check", "rec-check"), ("download", "witness-check-arm64", "rec-arm64/witness-arm64"),
+                   ("download", "check-results", "artifacts/check-results"), ("download", "check-results-arm64", "artifacts/check-results-arm64"),
+                   ("install", "witness"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",),
+                   ("upload", "signed-witness-check", "signed/witness-scanners\nsigned/witness-acceptance\nsigned/witness-runtime"), ("upload", "signed-witness-check-arm64", "signed/witness-arm64")],
 }
 R_SIGN = r"python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 def judge_sign(path):
@@ -120,22 +128,23 @@ def judge_sign(path):
         bad.append("AC1: on: must be exactly workflow_call: %s" % on)
     call = (on or {}).get("workflow_call") or {} if isinstance(on, dict) else {}
     inputs = call.get("inputs") or {}
-    if set(inputs) != {"digests", "stage", "records"} or any((inputs.get(k) or {}).get("type") != "string" for k in ("digests", "stage", "records")):
-        bad.append("AC2: the only inputs must be `digests`, `stage` and `records` (all string; records is the Rebuild record digests for the rebuild call), found %s" % sorted(inputs))
+    if set(inputs) != {"digests", "stage", "records", "records-arm64"} or any((inputs.get(k) or {}).get("type") != "string" for k in ("digests", "stage", "records", "records-arm64")):
+        bad.append("AC2: the only inputs must be `digests`, `stage`, `records` and `records-arm64` (all string; records is the Rebuild record digests for the rebuild call and the check job's for the check call, records-arm64 the arm64 job's), found %s" % sorted(inputs))
     if call.get("secrets"): bad.append("AC3: the workflow declares secrets")
     if call.get("outputs"): bad.append("AC3 (step output sink): workflow_call outputs are not allowed")
     if d.get("env"): bad.append("AC3: workflow-level env is not allowed")
     if re.search(r"secrets\b|toJSON|\bcontext\b", text): bad.append("AC3/002-AC4: secrets, toJSON or context appear in the file")
     jobs = d.get("jobs") or {}
-    if set(jobs) != {"sign", "sign-rebuild"}: bad.append("AC1: exactly the jobs sign and sign-rebuild are required, found %s" % sorted(jobs))
+    if set(jobs) != {"sign", "sign-rebuild", "sign-check"}: bad.append("AC1: exactly the jobs sign, sign-rebuild and sign-check are required, found %s" % sorted(jobs))
     for name, j in jobs.items():
         ro = j.get("runs-on")
         if not isinstance(ro, str) or not _cts.HOSTED.fullmatch(ro):   # the ONE closed runner set, shared with the stage grammar (Sonnet r7 R2)
             bad.append("AC1: job %s must run on a GitHub-hosted ubuntu runner, got %r" % (name, ro))
         for k in ("container", "services", "uses", "env", "outputs", "strategy", "needs", "environment", "defaults", "secrets"):
             if k in j: bad.append("AC2/AC3: job %s has `%s`, which Sign's job must not have" % (name, k))
-        if j.get("if") != "${{ inputs.stage == '%s' }}" % ("build" if name == "sign" else "rebuild"):
-            bad.append("AC1: job %s must have exactly `if: ${{ inputs.stage == '%s' }}` (the release graph calls this file once per stage), found %r" % (name, "build" if name == "sign" else "rebuild", j.get("if")))
+        stg = {"sign": "build", "sign-rebuild": "rebuild", "sign-check": "check"}.get(name, "?")
+        if j.get("if") != "${{ inputs.stage == '%s' }}" % stg:
+            bad.append("AC1: job %s must have exactly `if: ${{ inputs.stage == '%s' }}` (the release graph calls this file once per stage), found %r" % (name, stg, j.get("if")))
         perm = j.get("permissions")
         if not isinstance(perm, dict) or perm.get("id-token") != "write" or any(v == "write" for k, v in perm.items() if k != "id-token"):
             bad.append("AC3: Sign's permissions must be id-token: write and no other write: %s" % perm)
@@ -177,6 +186,12 @@ def judge_sign(path):
                 elif "\n" not in line and re.fullmatch(R_PRINTF_REC, line):
                     order.append("printf"); seq.append(("printfrec",))
                     if env != {"RECORDS": "${{ inputs.records }}"}: bad.append("AC3: the records step must have exactly env RECORDS: ${{ inputs.records }}, found %s" % env)
+                elif "\n" not in line and re.fullmatch(R_PRINTF_CREC, line):
+                    order.append("printf"); seq.append(("printfchk",))
+                    if env != {"RECORDS": "${{ inputs.records }}"}: bad.append("AC3: the check records step must have exactly env RECORDS: ${{ inputs.records }}, found %s" % env)
+                elif "\n" not in line and re.fullmatch(R_PRINTF_CRECA, line):
+                    order.append("printf"); seq.append(("printfchka",))
+                    if env != {"RECORDS_ARM64": "${{ inputs.records-arm64 }}"}: bad.append("AC3: the arm64 check records step must have exactly env RECORDS_ARM64: ${{ inputs.records-arm64 }}, found %s" % env)
                 elif "\n" not in line and re.fullmatch(R_INSTALL, line):
                     order.append("install"); seq.append(("install", "cosign"))
                     if env: bad.append("AC3: step %r passes env" % sn)
@@ -189,8 +204,8 @@ def judge_sign(path):
                 elif "\n" not in line and re.fullmatch(R_SIGNSTAGED, line):
                     order.append("signstaged"); seq.append(("signstaged",))
                     if env: bad.append("AC3: the staged-signing step passes env %s" % sorted(env))
-                elif "\n" not in line and (re.fullmatch(R_REC_BUILD, line) or re.fullmatch(R_REC_REBUILD, line)):
-                    kind = "build" if re.fullmatch(R_REC_BUILD, line) else "rebuild"
+                elif "\n" not in line and (re.fullmatch(R_REC_BUILD, line) or re.fullmatch(R_REC_REBUILD, line) or re.fullmatch(R_REC_CHECK, line)):
+                    kind = "build" if re.fullmatch(R_REC_BUILD, line) else "rebuild" if re.fullmatch(R_REC_REBUILD, line) else "check"
                     order.append("records"); seq.append(("records", kind))
                     if env: bad.append("AC3: the records step passes env %s" % sorted(env))
                 else:
@@ -538,6 +553,11 @@ on:
         required: false
         type: string
         default: ''
+      records-arm64:
+        description: 'the arm64 check job record digests'
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -661,6 +681,61 @@ jobs:
         with:
           name: signed-witness-rebuild
           path: signed/witness-rebuild
+  sign-check:
+    if: \${{ inputs.stage == 'check' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@$sha # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-check
+          path: rec-check
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-check-arm64
+          path: rec-arm64/witness-arm64
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: check-results
+          path: artifacts/check-results
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: check-results-arm64
+          path: artifacts/check-results-arm64
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: write the digest list to a file
+        env:
+          DIGESTS: \${{ inputs.digests }}
+        run: printf '%s' "\$DIGESTS" > digests.json
+      - name: write the check job record digests to a file
+        env:
+          RECORDS: \${{ inputs.records }}
+        run: printf '%s' "\$RECORDS" > check-records.json
+      - name: write the arm64 check job record digests to a file
+        env:
+          RECORDS_ARM64: \${{ inputs.records-arm64 }}
+        run: printf '%s' "\$RECORDS_ARM64" > check-records-arm64.json
+      - name: check Check's records against the results, then sign them
+        run: python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests check-records.json --expect-digests check-records-arm64.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-check
+          path: |-
+            signed/witness-scanners
+            signed/witness-acceptance
+            signed/witness-runtime
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-check-arm64
+          path: signed/witness-arm64
 EOF
 # mutate LABEL  python-regex  replacement : writes $work/LABEL.yml, or counts a FAILURE if the mutation did not apply
 mutate() {
@@ -679,6 +754,20 @@ SIGNLINE='run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "F11 a digest-shaped download-artifact pin that is not on the allowed-actions list" 'download-artifact@a{40}' "download-artifact@$(printf 'b%.0s' $(seq 40))"
 caught "F1 Sign no longer downloads Build's digest list into witness-build" 'name: digests\n          path: witness-build' 'name: dist\n          path: witness-build'
+caught "REL-011 the Check call drops the arm64 record digests list" ' --expect-digests check-records-arm64.json' ''
+caught "REL-011 the Check call drops the check job record digests list" ' --expect-digests check-records.json' ''
+caught "REL-011 the Check call reads the arm64 digests from the check list" '--expect-digests check-records-arm64.json' '--expect-digests check-records.json'
+caught "REL-011 the Check call drops a record folder" ' --record-dir rec-check/witness-runtime' ''
+caught "REL-011 the Check call takes a record folder from another place" '--record-dir rec-arm64/witness-arm64' '--record-dir rec-check/witness-arm64'
+caught "REL-011 the Check call checks no artifacts" ' --artifacts-dir artifacts' ''
+caught "REL-011 sign-check does not receive the check results" 'name: check-results\n          path: artifacts/check-results' 'name: dist\n          path: artifacts/check-results'
+caught "REL-011 sign-check does not receive the arm64 check results" 'name: check-results-arm64\n          path: artifacts/check-results-arm64' 'name: dist\n          path: artifacts/check-results-arm64'
+caught "REL-011 sign-check also downloads the images" 'name: check-results-arm64\n          path: artifacts/check-results-arm64\n' 'name: check-results-arm64\n          path: artifacts/check-results-arm64\n      - uses: actions/download-artifact@\$sha # v8\n        with:\n          name: images\n          path: artifacts/images\n'
+caught "REL-011 sign-check uploads the unsigned records" 'name: signed-witness-check\n          path: |-\n            signed/witness-scanners' 'name: signed-witness-check\n          path: |-\n            rec-check/witness-scanners'
+caught "REL-011 sign-check uploads an extra directory" 'signed/witness-runtime' 'signed/witness-runtime\n            artifacts'
+caught "REL-011 sign-check without the stage if" "if: \\\${{ inputs.stage == 'check' }}" "if: \\\${{ inputs.stage != 'build' }}"
+caught "REL-011 sign-check gets the wrong records env" 'RECORDS_ARM64: \${{ inputs.records-arm64 }}' 'RECORDS_ARM64: \${{ inputs.records }}'
+caught "REL-011 sign-check holds a write permission beyond id-token" 'permissions:\n      contents: read\n      id-token: write\n    steps:\n      - uses: actions/checkout@\$sha # v7.0.1\n        with:\n          persist-credentials: false\n      - uses: actions/download-artifact@\$sha # v8\n        with:\n          name: witness-check\n' 'permissions:\n      contents: read\n      id-token: write\n      packages: write\n    steps:\n      - uses: actions/checkout@\$sha # v7.0.1\n        with:\n          persist-credentials: false\n      - uses: actions/download-artifact@\$sha # v8\n        with:\n          name: witness-check\n'
 caught "R2 the Rebuild call drops the expected record digests" ' --expect-digests rebuild-records.json' ''
 caught "R2 the Rebuild records step reads the digests from another file" '--expect-digests rebuild-records.json' '--expect-digests digests.json'
 caught "item 4 the unused signed apk records are uploaded again" 'name: signed-witness-build\n          path: signed/witness-build' 'name: signed-witness-build\n          path: signed/witness-build\n      - uses: actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n        with:\n          name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04'
