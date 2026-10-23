@@ -41,7 +41,7 @@ on:
 # startup_failure with zero jobs (the former release-chain-pr.yml learned this the hard way);
 # checks/statuses/pull-requests read are requested by Build's admission step, which snapshot mode
 # does not run, but they are static job permissions of the called stage. The callers' grants
-# are a static ceiling (REQ-CHAIN-004-AC14): no write but id-token. The scanner job requests
+# are a static ceiling (REQ-CHAIN-004-AC14): no write and, since the Witness move, no id-token (building jobs record under a throwaway key). The scanner job requests
 # id-token: write for the Inspector leg's role assumption. Dependabot-
 # triggered runs get a read-only token that the permissions key can raise
 # (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork

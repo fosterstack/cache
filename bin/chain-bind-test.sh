@@ -702,6 +702,7 @@ lines = [l.split("\t") for l in out.strip().split("\n") if l]
 check("sign-records build: one `payload<TAB>final` line per record, the final name is signed/<dir>/<step>-collection.json",
       sorted(lines) == sorted([["staged/witness-build/build-collection.payload", "signed/witness-build/build-collection.json"],
                                ["staged/witness-apk-ubuntu-24.04/apk-collection.payload", "signed/witness-apk-ubuntu-24.04/apk-collection.json"]]), repr(lines))
+check("sign-records build: OUT/plan.txt is the printed list, line for line (the signing step signs exactly it)", rc == 0 and open(d + "/staged/plan.txt").read() == out.strip("\n") + "\n")
 check("sign-records build: the staged payload is the record's payload byte for byte", rc == 0 and open(d + "/staged/witness-build/build-collection.payload", "rb").read() == pays["witness-build"])
 check("sign-records build: the data files are copied unchanged and no *.local.json is staged",
       rc == 0 and all(open(d + "/staged/witness-build/" + n, "rb").read() == v for n, v in BUILD_DATA.items())
@@ -772,12 +773,12 @@ d, _ = sr_tree("sr30"); os.rename(d + "/witness-build/build-collection.local.jso
 sr("sign-records build: a Rebuild record (rebuild-collection.local.json) passed off as Build's is refused", d, "build", 1, ["step"])
 d, _ = sr_tree("sr31"); os.rename(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", d + "/witness-apk-ubuntu-24.04/rapk-collection.local.json")
 sr("sign-records build: a rapk record (Rebuild's apk leg) passed off as Build's apk leg is refused", d, "build", 1, ["step"])
-d, _ = sr_tree("sr25"); 
+d, _ = sr_tree("sr25");
 sr("sign-records: --stage rebuild given Build's apk/build records is refused (a record's step must be a step of the stage)", d, "rebuild", 1, ["step"], args=sr_args("rebuild", d, ["witness-build", "witness-apk-ubuntu-24.04"]))
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 144
+EXPECT = 145
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

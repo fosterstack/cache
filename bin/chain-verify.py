@@ -1496,6 +1496,8 @@ def cmd_sign_records(a):
                 with open(os.path.join(rec_dir, n), "rb") as src, open(os.path.join(a.out, name, n), "wb") as dst:
                     dst.write(src.read())
             lines.append("%s\t%s" % (os.path.join(a.out, name, step + "-collection.payload"), "signed/%s/%s-collection.json" % (name, step)))
+        with open(os.path.join(a.out, "plan.txt"), "w") as f:      # the list the signing step reads: it signs exactly these payloads and refuses any other
+            f.write("\n".join(lines) + "\n")
     except OSError as ex:
         shutil.rmtree(a.out, ignore_errors=True)
         refuse(stage, "staging: cannot write %s (%s)" % (a.out, type(ex).__name__))

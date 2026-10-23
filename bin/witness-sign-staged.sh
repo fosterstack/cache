@@ -10,29 +10,35 @@ set -euo pipefail
 staged="$1"
 signed="$2"
 plan="$staged/plan.txt"
-declare -A want
+[ -f "$plan" ] && [ ! -L "$plan" ] || { echo "witness-sign-staged: no plan.txt in $staged" >&2; exit 1; }
 n=0
-while IFS=$'\t' read -r payload final extra; do
-  [ -n "$payload" ] || { echo "witness-sign-staged: empty line in the plan" >&2; exit 1; }
-  if [[ ! "$payload" =~ ^"$staged"/([A-Za-z0-9._-]+)/(apk|build|rapk|rebuild)-collection\.payload$ ]] || [ -n "$extra" ]; then
-    echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1
-  fi
-  name=${BASH_REMATCH[1]}
-  step=${BASH_REMATCH[2]}
-  if [ "$final" != "$signed/$name/$step-collection.json" ] || [ -n "${want[$payload]:-}" ] || [ ! -f "$payload" ] || [ -L "$payload" ]; then
+while read -r line; do
+  payload=$(printf '%s' "$line" | cut -f1)
+  final=$(printf '%s' "$line" | cut -f2 -s)
+  extra=$(printf '%s' "$line" | cut -f3- -s)
+  case "$payload" in "$staged"/*/*-collection.payload) ;; *) echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1 ;; esac
+  rest=${payload#"$staged"/}
+  name=${rest%%/*}
+  file=${rest#*/}
+  step=${file%-collection.payload}
+  case "$name" in ''|*[!A-Za-z0-9._-]*) echo "witness-sign-staged: bad record directory name in the plan: $payload" >&2; exit 1 ;; esac
+  case "$file" in *[/]*) echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1 ;; esac
+  case "$step" in apk|build|rapk|rebuild) ;; *) echo "witness-sign-staged: unknown step in the plan: $payload" >&2; exit 1 ;; esac
+  if [ -n "$extra" ] || [ "$final" != "$signed/$name/$step-collection.json" ] || [ ! -f "$payload" ] || [ -L "$payload" ]; then
     echo "witness-sign-staged: plan line does not match the staged tree: $payload" >&2; exit 1
   fi
-  want[$payload]=$final
   n=$((n + 1))
 done < "$plan"
 [ "$n" -gt 0 ] || { echo "witness-sign-staged: the plan is empty" >&2; exit 1; }
+uniq_n=$(cut -f1 "$plan" | sort -u | wc -l | tr -d ' ')
+[ "$uniq_n" -eq "$n" ] || { echo "witness-sign-staged: the plan lists a payload twice" >&2; exit 1; }
 seen=0
 for d in "$staged"/*; do
   [ "$d" = "$plan" ] && continue
   [ -d "$d" ] && [ ! -L "$d" ] || { echo "witness-sign-staged: staged tree holds a non-directory: $d" >&2; exit 1; }
   for f in "$d"/*; do
     [ -f "$f" ] && [ ! -L "$f" ] || { echo "witness-sign-staged: staged tree holds a non-file: $f" >&2; exit 1; }
-    case "$f" in *.payload) [ -n "${want[$f]:-}" ] || { echo "witness-sign-staged: staged payload not on the plan: $f" >&2; exit 1; }; seen=$((seen + 1)) ;; esac
+    case "$f" in *.payload) cut -f1 "$plan" | grep -Fxq -- "$f" || { echo "witness-sign-staged: staged payload not on the plan: $f" >&2; exit 1; }; seen=$((seen + 1)) ;; esac
   done
 done
 [ "$seen" -eq "$n" ] || { echo "witness-sign-staged: the plan names a payload the staged tree lacks" >&2; exit 1; }
@@ -41,7 +47,9 @@ echo "::add-mask::$tok"
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN
 python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json
-for payload in "${!want[@]}"; do
+while read -r line; do
+  payload=$(printf '%s' "$line" | cut -f1)
+  final=$(printf '%s' "$line" | cut -f2 -s)
   dir=$(dirname "$payload")
   name=$(basename "$dir")
   base=$(basename "$payload" .payload)
@@ -54,7 +62,7 @@ for payload in "${!want[@]}"; do
     --signer-fulcio-oidc-client-id sigstore \
     --signer-fulcio-token-path <(printf %s "$tok") \
     --timestamp-servers https://timestamp.sigstore.dev/api/v1/timestamp \
-    -o "${want[$payload]}"
+    -o "$final"
   case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
-  python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "${want[$payload]}"
-done
+  python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "$final"
+done < "$plan"

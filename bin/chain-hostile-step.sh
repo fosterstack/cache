@@ -62,10 +62,10 @@ attempt_read_sign_token() {
   {
     echo "# transcript: searched /proc/*/environ for a token belonging to the sign job, then asked the runner for this job's own token"
     grep -l -a 'ACTIONS_ID_TOKEN_REQUEST' /proc/[0-9]*/environ 2> /dev/null | head -5 | sed 's#^#a process on this runner holds a token request address: #'
-    # the claims of the token this job can get (no signature): the verifier reads job_workflow_ref from them. If the request address is set and no token
+    # the claims of the token this job can get (no signature): the verifier reads job_workflow_ref from them. If the request address exists and no token
     # can be fetched there is nothing to grade and the verifier reports an error, so the dry run is red instead of vacuously green.
-    if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
-      # Build holds no id-token permission since the Witness move: the runner never sets the request address, so there is no token to get. The verifier
+    if ! compgen -e | grep -q '^ACTIONS_ID_TOKEN_REQUEST_'; then
+      # Build holds no id-token permission since the Witness move: the runner never offers a request address, so there is no token to get. The verifier
       # accepts this only with the environ search above finding nothing and the count of files it looked at.
       echo "request-env: absent"
       echo "environ-files: $(ls /proc/[0-9]*/environ 2> /dev/null | wc -l | tr -d ' ')"
