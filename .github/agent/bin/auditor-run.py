@@ -700,7 +700,6 @@ def _merge_suppressions(ws, supp):
     same-@id statement, adds new ones, keeps the rest)."""
     import shutil
     vp = os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")
-    os.makedirs(os.path.dirname(vp), exist_ok=True)
     newdoc = _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))
     if newdoc is None:                              # the run's own consolidated VEX must exist (as before: a missing file is a staging error)
         raise FileNotFoundError(os.path.join(supp, "fosterstack-cache.openvex.json"))
@@ -743,6 +742,7 @@ def _merge_suppressions(ws, supp):
     merged["timestamp"] = newdoc.get("timestamp", merged.get("timestamp"))
     old_ai = _read_reviewed_json(os.path.join(ws, ".auditor", "accepted-items.json"))   # read (and so validated) BEFORE the working tree is touched: an unreadable inventory stops the run with the VEX unwritten
     new_ai = _read_reviewed_json(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))     # the run's own inventory too
+    os.makedirs(os.path.dirname(vp), exist_ok=True)       # the working tree is touched only after every read above has passed
     cli.writej(vp, merged)
 
     # accepted-items.json is COUPLED to the VEX: an affected statement that survives the VEX

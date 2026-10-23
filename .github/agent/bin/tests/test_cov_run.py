@@ -434,7 +434,7 @@ class MergeConsolidate(Base):
         self.wj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"), "{bad")
         with self.assertRaises(R.ReviewedInputInvalid):
             R._merge_suppressions(ws, supp)
-        self.assertFalse(os.path.exists(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))      # and the VEX was not written ahead of the stop
+        self.assertFalse(os.path.exists(os.path.join(ws, ".vex")))      # and neither the VEX nor its folder was created ahead of the stop
 
     def test_read_reopened_is_strict(self):
         for bad in ({"reopened": [0, None, ""]}, {"reopened": [["CVE", 5, 6]]}, {"reopened": [["CVE", "prod", "purl"]]}, {"reopened": [[["x"], [], []]]}, {"reopened": "x"}, [1]):
