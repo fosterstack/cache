@@ -281,6 +281,18 @@ else:
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
+# rc-5a D1 (Fable R4, astra B4): Grype runs with an empty config file and refuses GRYPE_* variables (as bin/grype-scan.sh does), and a failed Grype or Scout
+# command removes that image's output directory, so a readable partial report can never count as "ran" (the contract: fewer outputs = did not run)
+tg_ = text("panel-grype")
+if not re.search(r'grype "docker:\$\{ref\}" -c "\$RUNNER_TEMP/empty-grype\.yaml"', tg_) or not re.search(r': > "\$RUNNER_TEMP/empty-grype\.yaml"', tg_):
+    bad.append("panel-grype does not run grype with -c on an empty file made in the step")
+if not re.search(r"compgen -e \| grep '\^GRYPE_'", tg_) or "exit 2" not in tg_.split("compgen -e", 1)[-1].split("done", 1)[0]:
+    bad.append("panel-grype does not refuse a GRYPE_* variable in the environment before it runs")
+if not re.search(r'\|\| \{[^}]*rm -rf "\$\{d\}"', tg_):
+    bad.append("panel-grype does not remove the image's output directory when grype fails")
+ts_ = text("panel-scout")
+if not re.search(r'\|\| \{[^}]*rm -rf "\$\{d\}"', ts_.split("docker scout sbom", 1)[-1]):
+    bad.append("panel-scout does not remove the image's output directory when docker scout fails")
 # rule 9 (owner, Oct 3): the AI judging lives in the auditor; the rescan's panel job tallies and cannot audit
 pj = jobs["panel"]
 if "id-token" in (pj.get("permissions") or {}) or pj.get("environment") or re.search(r"profiles|audit|--prior", text("panel")):
@@ -462,6 +474,10 @@ if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"
   pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
 else failn=$((failn+1)); echo "FAIL probe-document"; fi
 case_ real                    ok  ""
+case_ grype-keeps-partial     bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
+case_ scout-keeps-partial     bad "s=$(step_of panel-scout 'docker scout sbom'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
+case_ grype-repo-config       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(' -c \"\$RUNNER_TEMP/empty-grype.yaml\"', '')"
+case_ grype-no-env-refusal    bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
 case_ panel-dl-same-id        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with']['artifact-ids'] = '\${{ needs.panel-grype.outputs.artifact-id }}'"
 case_ panel-dl-by-name        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'name': 'panel-scout', 'path': '/tmp/panel/panel-scout'}"
 case_ panel-dl-pattern        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'pattern': 'panel-*', 'path': '/tmp/panel/'}"
