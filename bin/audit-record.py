@@ -4,13 +4,14 @@
 (REQ-REL-012; owner RATIFIED Oct 23 2026, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md, rule 6.)
 
 The record is a branch named audit/<the pull request's head sha>. It holds ONE commit whose only parent is that head, that GitHub verified,
-that the writer named in .github/policy/audit-writers.json of the BASE checkout authored (login AND id), and that changes no file. Nothing
-is stored in the pull request's own files, so a pull request cannot carry, edit or forge its own record, and a new push changes the head
+that the writer named in .github/policy/audit-writers.json of the BASE checkout authored (login AND id) and committed (the writer, or GitHub's own
+web-flow committer, which only GitHub applies), whose message is the one fixed neutral line, and that adds exactly one file, audit-record (its content
+is the head sha). Nothing is stored in the pull request's own files, so a pull request cannot carry, edit or forge its own record, and a new push changes the head
 sha, so an old record then names a different sha and does not apply.
 
   audit-record.py verify --head SHA --base-ref REF --base-root DIR [--ref-json FILE --commit-json FILE]
       FILE = the answers of `gh api repos/R/git/ref/heads/audit/SHA` and `gh api repos/R/commits/<that ref's sha>`.
-      Exit 0: a base that is not main (nothing is read), or a good record. Exit 1: anything else, with the reason on stdout. Exit 2: usage.
+      Exit 0: a base that is not main (the judge decides; nothing is read), or a good record. Exit 1: anything else, with the reason on stdout. Exit 2: usage.
 
 Every doubt fails closed: a missing or malformed answer, a head that is not 40 lower-case hex, a missing policy file.
 """
@@ -21,6 +22,8 @@ import re
 import sys
 
 RECORD_MESSAGE = "audit record"       # the one fixed, neutral line the writer commits; the record names no tool, model or reviewer
+RECORD_FILE = "audit-record"          # the one file the record commit adds (createCommitOnBranch needs a change to make a commit); its content is the head sha
+WEB_FLOW = ("web-flow", 19864447)     # GitHub's own committer for commits it makes and signs on an actor's behalf
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 WRITERS_PATH = ".github/policy/audit-writers.json"
 
@@ -65,15 +68,20 @@ def verify_record(head, base_ref, ref, commit, writers):
     if not (isinstance(parents, list) and len(parents) == 1 and isinstance(parents[0], dict) and parents[0].get("sha") == head):
         return False, "the record is not one commit parented on this head (a record for an older head is stale)"
     files = commit.get("files")
-    if not isinstance(files, list) or files:
-        return False, "the record commit changes files (or does not say it changes none)"
+    if not (isinstance(files, list) and len(files) == 1 and isinstance(files[0], dict) and files[0].get("filename") == RECORD_FILE and files[0].get("status") == "added"):
+        return False, "the record commit does not add exactly the one file %s" % RECORD_FILE
     c = commit.get("commit")
+    if not isinstance(c, dict) or not isinstance(c.get("message"), str) or c["message"].strip() != RECORD_MESSAGE:
+        return False, "the record commit's message is not the fixed record line"
     ver = c.get("verification") if isinstance(c, dict) else None
     if not isinstance(ver, dict) or ver.get("verified") is not True or ver.get("reason") != "valid":
         return False, "the record commit is not verified by GitHub"
     a = commit.get("author")
     if not isinstance(a, dict) or a.get("type") != "Bot" or (a.get("login"), a.get("id")) not in allowed:
         return False, "the record commit was not authored by an audit writer named in %s" % WRITERS_PATH
+    k = commit.get("committer")
+    if not isinstance(k, dict) or ((k.get("login"), k.get("id")) not in allowed and (k.get("login"), k.get("id")) != WEB_FLOW):
+        return False, "the record commit was not committed by an audit writer or by GitHub itself (a signature made with someone else's own key does not count)"
     return True, ""
 
 
@@ -102,12 +110,9 @@ def main(argv):
         return 2
     if a.cmd != "verify":
         return 2
-    if a.base_ref != "main":
-        print("audit-record: base %r is not main: nothing to check" % a.base_ref)
-        return 0
     ok, why = verify_record(a.head, a.base_ref, _load(a.ref_json), _load(a.commit_json),
                             _load(os.path.join(a.base_root, WRITERS_PATH)))
-    print("audit-record: " + ("passed-audit record found for " + a.head if ok else why))
+    print("audit-record: " + (why if not ok else ("passed-audit record found for " + a.head if a.base_ref == "main" else "base %r is not main: nothing to check" % a.base_ref)))
     return 0 if ok else 1
 
 

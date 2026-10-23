@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3
+# proves: REQ-AUD-018-AC1, REQ-AUD-018-AC2, REQ-AUD-018-AC3, REQ-REL-012-AC4
 # Matrix-first EFFECT-OBSERVING failing suite for the daily CVE auditor
 # (.github/agent/docs/cve-auditor-matrix.md). Round-7 hardening after the second review
 # pass. Fixtures are inputs only, in neutral files with no prose; the mapping from
@@ -3283,16 +3283,16 @@ nr="$(python3 - <<'NR'
 import os,re
 gate=".github/agent/bin/auditor-review-gate.py"
 src=open(".github/workflows/agent-review-gate.yml").read()
-tools=("check-action-pins.py --verify-tags --git","bin/check-file-allowlist.sh","pin-wiring-test.sh","bin/scan-no-workflow-call-test.sh")
+tools=("check-action-pins.py --verify-tags --git","bin/check-file-allowlist.sh","pin-wiring-test.sh","bin/scan-no-workflow-call-test.sh","bin/audit-record-judge.sh")
 code="\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
 ok=(not os.path.exists(gate) and "auditor-review-gate.py" not in src and "--subs-rev" not in src
     and all(code.count(t)==2 for t in tools) and "reviews/" not in src)
 print("OK" if ok else "BAD")
 NR
 )"
-eq "$nr" "OK" && ok || no "no review-record script; the verdict runs the four checks in judge and sweep" "state=$nr"
+eq "$nr" "OK" && ok || no "no review-record script; the verdict runs the five checks in judge and sweep" "state=$nr"
 
-begin "req18-ac3-verdict-runs-and-propagates" "the judge and the sweep, run as written with recording stand-ins for the four checks, publish success only when the pin checker, the allowlist guard, the pin-wiring judge and the scanner guard ALL exit 0, call each check, and fail when any one fails"
+begin "req18-ac3-verdict-runs-and-propagates" "the judge and the sweep, run as written with recording stand-ins for the five checks, publish success only when the pin checker, the allowlist guard, the pin-wiring judge, the scanner guard and the passed-audit record judge ALL exit 0, call each check, and fail when any one fails"
 vp="$(python3 - <<'VP'
 import sys, os, subprocess, tempfile, itertools, shutil
 sys.path.insert(0, ".github/agent/fixtures/testlib")
@@ -3323,6 +3323,7 @@ try:
         "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\nexit \"$STUB_ALLOW\"\n",
         ".github/agent/tests/pin-wiring-test.sh": "echo wiring >> \"$CALLS\"\nexit \"$STUB_WIRING\"\n",
         "bin/scan-no-workflow-call-test.sh": "echo scan >> \"$CALLS\"\nexit \"$STUB_SCAN\"\n",
+        "bin/audit-record-judge.sh": "echo audit >> \"$CALLS\"\nexit \"$STUB_AUDIT\"\n",
     }.items():
         f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True); open(f, "w").write(body)
     os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
@@ -3337,8 +3338,8 @@ try:
         'esac\n' % (sha, sha))
     os.chmod(gh, 0o755)
     bad = []
-    for pins, allow, wiring, scan in itertools.product((0, 1), repeat=4):
-        allpass = (pins, allow, wiring, scan) == (0, 0, 0, 0)
+    for pins, allow, wiring, scan, audit in itertools.product((0, 1), repeat=5):
+        allpass = (pins, allow, wiring, scan, audit) == (0, 0, 0, 0, 0)
         for which, run in (("judge", judge_run), ("sweep", sweep_run)):
             calls = os.path.join(root, "calls"); out = os.path.join(root, "out"); tmp = os.path.join(root, "tmp")
             for f in (calls, out): open(f, "w").close()
@@ -3346,20 +3347,20 @@ try:
             env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, RUNNER_TEMP=tmp, HEAD_SHA=sha,
                        GITHUB_HEAD_REF="feature", GITHUB_BASE_REF="main", GITHUB_HEAD_REPO="owner/repo",
                        GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
-                       STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_WIRING=str(wiring), STUB_SCAN=str(scan),
+                       STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_WIRING=str(wiring), STUB_SCAN=str(scan), STUB_AUDIT=str(audit),
                        PATH=stubbin + ":" + os.environ["PATH"])
             r = subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
             c = open(calls).read().split()
-            tag = "%s pins=%d allow=%d wiring=%d scan=%d" % (which, pins, allow, wiring, scan)
+            tag = "%s pins=%d allow=%d wiring=%d scan=%d audit=%d" % (which, pins, allow, wiring, scan, audit)
             if which == "judge":
                 v = open(out).read().strip()
-                if sorted(c) != ["allow", "pins", "scan", "wiring"]: bad.append(tag + " calls=%s" % c)
+                if sorted(c) != ["allow", "audit", "pins", "scan", "wiring"]: bad.append(tag + " calls=%s" % c)
                 if v != ("verdict=success" if allpass else "verdict=failure"): bad.append(tag + " out=%s" % v)
                 if (r.returncode == 0) != allpass: bad.append(tag + " rc=%d" % r.returncode)
             else:
                 pub = [x for x in c if x.startswith("conclusion=")]
                 if pub != ["conclusion=success" if allpass else "conclusion=failure"]: bad.append(tag + " published=%s" % pub)
-                if "pins" not in c or (allpass and sorted(x for x in c if not x.startswith("conclusion=")) != ["allow", "pins", "scan", "wiring"]):
+                if "pins" not in c or (allpass and sorted(x for x in c if not x.startswith("conclusion=")) != ["allow", "audit", "pins", "scan", "wiring"]):
                     bad.append(tag + " calls=%s" % c)
                 if any("unexpected" in x for x in c): bad.append(tag + " unexpected gh call")
     print("OK" if not bad else "BAD " + "; ".join(bad[:4]))
@@ -3367,7 +3368,7 @@ finally:
     shutil.rmtree(root, ignore_errors=True)
 VP
 )"
-eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all four checks exit 0" "$vp"
+eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all five checks exit 0" "$vp"
 
 begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"
 wg="$(python3 - <<'WG'

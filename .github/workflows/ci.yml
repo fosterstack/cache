@@ -737,41 +737,6 @@ jobs:
       - name: daily-rescan merge/classification/enumeration regressions
         run: bash bin/rescan-statement-test.sh
 
-  # REQ-REL-012-AC1..AC4 (release process rule 6, owner Oct 23): a pull request into main carries a passed-audit record for its exact head, or it cannot merge. The record is
-  # the branch audit/<head sha>: one commit parented on that head, verified by GitHub, authored by a writer named in .github/policy/audit-writers.json, changing no file.
-  # The judge (bin/audit-record.py) and the writers policy are read from the BASE checkout, never from the pull request. Every pull request runs the job; a base other than
-  # main passes without a read. Read permission only, no secret. LIMIT: a pull request that also rewrites THIS job is stopped by the workflow-change rule (both reviews and the
-  # owner's merge), not by the job; bin/audit-record-test.sh pins the job's text so an edit fails the suite on the same pull request.
-  audit-record:
-    name: audit-record
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          persist-credentials: false
-      - name: the passed-audit record for this exact head
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-        run: |
-          set -euo pipefail
-          [ -f bin/audit-record.py ] || { echo "audit-record: the gate is not in the base checkout yet: nothing to enforce"; exit 0; }
-          if [ "$BASE_REF" = main ]; then
-            gh api "repos/${REPO}/git/ref/heads/audit/${HEAD_SHA}" > "${RUNNER_TEMP}/ref.json" 2>/dev/null || rm -f "${RUNNER_TEMP}/ref.json"
-            if [ -s "${RUNNER_TEMP}/ref.json" ]; then
-              rec=$(jq -r '.object.sha // empty' "${RUNNER_TEMP}/ref.json")
-              [[ "$rec" =~ ^[0-9a-f]{40}$ ]] && { gh api "repos/${REPO}/commits/${rec}" > "${RUNNER_TEMP}/commit.json" 2>/dev/null || rm -f "${RUNNER_TEMP}/commit.json"; }
-            fi
-          fi
-          python3 -I bin/audit-record.py verify --head "$HEAD_SHA" --base-ref "$BASE_REF" --base-root . \
-            --ref-json "${RUNNER_TEMP}/ref.json" --commit-json "${RUNNER_TEMP}/commit.json"
-
   dependency-review:
     if: ${{ github.event_name == 'pull_request' }}   # required on pull requests only; the action needs a PR
     runs-on: ubuntu-latest

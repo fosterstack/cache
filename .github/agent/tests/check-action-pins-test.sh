@@ -73,7 +73,7 @@ case_() {
   if [ -z "${3//[[:space:]]/}" ]; then failn=$((failn+1)); echo "FAIL $name → empty fixture (the helper that builds it produced nothing)"; return; fi
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"   # every tree must carry the pinned gate
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"  # the gate's committed programs
+  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"  # the gate's committed programs
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   if python3 "$here/../bin/check-action-pins.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS $name → $got"
@@ -698,7 +698,7 @@ gitcase() {
   take "git-$1" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
+  mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"
   (cd "$d" && eval "${4:-true}" && git init -q && git add -A && git -c user.name=t -c user.email=t@t commit -qm t)
   if (cd "$d" && python3 "$here/../bin/check-action-pins.py" --git HEAD >/dev/null 2>&1); then got=ok; else got=bad; fi
   if [ "$got" = "$expect" ]; then pass=$((pass+1)); echo "PASS git-$name → $got"
@@ -1116,7 +1116,7 @@ case_out() {
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
+  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"
   for s in build.sh witnessed.sh build-stage-apk.sh build-stage-rebuild-apk.sh install-scanner.sh build-stage-refuse-mode.sh \
            build-stage-snapshot-apk.sh build-stage-snapshot-rebuild-apk.sh; do   # committed, plain, pin-clean stubs
     printf '#!/usr/bin/env bash\nset -euo pipefail\n:\n' > "$d/bin/$s"; chmod +x "$d/bin/$s"
@@ -1995,7 +1995,7 @@ realcase="$work/real-auditor-plain-run"
 mkdir -p "$realcase/.github/workflows" "$realcase/.github/agent/bin"
 cp "$real_repo/.github/workflows/auditor.yml" "$realcase/.github/workflows/auditor.yml"
 cp "$gate" "$realcase/.github/workflows/agent-review-gate.yml"
-: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"
+: > "$realcase/.github/agent/bin/check-action-pins.py"; mkdir -p "$realcase/bin" "$realcase/.github/agent/tests"; : > "$realcase/bin/check-file-allowlist.sh"; : > "$realcase/.github/agent/tests/pin-wiring-test.sh"; : > "$realcase/bin/scan-no-workflow-call-test.sh"; : > "$realcase/bin/audit-record-judge.sh"
 python3 -c "
 s = open('$realcase/.github/workflows/auditor.yml').read()
 marker = '    steps:\n'

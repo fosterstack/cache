@@ -234,11 +234,11 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO for the bootstrap of
-# cache PR #316 (scanner guard): main's gate workflow and #316's; a later change removes main's old one, leaving one
+# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO while a change to the gate is in flight:
+# main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
-    "adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d",   # main's gate workflow before #316
-    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # the gate workflow of cache PR #316
+    "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # main's gate workflow (the scanner guard, cache PR #316)
+    "2bfbe15d143f58eecf76ef6fa09c7f9d2571cfa343e64bc0f0c642678aea8333",   # the gate workflow with the passed-audit record judge (REQ-REL-012, gate 6)
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)

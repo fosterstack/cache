@@ -2099,40 +2099,43 @@ requirements:
       "once we agree on this if it can be coded it should be"). The release is main. The record is the branch
       audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in
       .github/policy/audit-writers.json of the base checkout, changing no file. Nothing is stored in the pull request's
-      own files, and a new push changes the head sha, so an earlier record no longer applies.
-    source: [.github/workflows/ci.yml, bin/audit-record.py, .github/policy/audit-writers.json]
+      own files, and a new push changes the head sha, so an earlier record no longer applies. The verdict is part of the
+      existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
+      cannot edit or skip it, and a retarget re-runs it.
+    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
     tier: community
     introduced: v0.3.0
     origin: release process rule 6 (owner Oct 23 2026); advisor handoff 0668, read-backs 2026-10-23-payments-readback-release-audit-gates and -v2
     confidence: implementation-only
     notes: >
-      The required check `audit-record` is added to the main ruleset and to .github/policy/required-checks.json on the
-      landing day, together with the ruleset rule that only the writer creates branches under audit/**, by the owner;
-      until then the job runs and reports but does not block. The record branch is written by a job that holds the
-      writer's credential (a later pull request); this one is the judge.
+      No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
+      main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
+      exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
+      owner's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
+      something.
     acceptance_criteria:
       - id: REQ-REL-012-AC1
         given: "a pull request whose base is main, and the head sha it has now"
-        when: "the audit-record job of ci.yml judges it with bin/audit-record.py"
-        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the base checkout authored (login and numeric id, a bot), and that changes no file; otherwise it fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
+        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC2
-        given: "a record that is missing, for another head, stale (a parent that is not the head, two parents, none), changing a file, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), or any answer that is malformed, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base"
+        given: "a record that is missing, for another head, stale (a parent that is not the head, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base"
         when: "the judge decides"
-        then: "it fails closed and says why; no doubt passes"
+        then: "it fails closed and says why (an API error says it is one); no doubt passes"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC3
         given: "a pull request whose base is not main"
-        when: "the audit-record job runs"
+        when: "the judge runs"
         then: "it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-012-AC4
-        given: "the audit-record job"
-        when: "bin/audit-record-test.sh judges ci.yml"
-        then: "the job has read permission only, no secret and no environment, checks out the BASE sha with no persisted credential, reads the judge and the writers policy from that checkout, swallows no failure, and every mutated copy of it is refused"
+        given: "the verdict job and the sweep of agent-review-gate.yml"
+        when: "the auditor matrix runs them as written with stand-ins for the checks"
+        then: "each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

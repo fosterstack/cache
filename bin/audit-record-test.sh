@@ -3,13 +3,16 @@
 # Gate 6 of the release process (owner RATIFIED Oct 23, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md, rule 6, "a
 # pull request into the release carries a passed-audit record for its exact head, or it cannot merge"), offline. The record is the branch
 # audit/<the pull request's head sha>: ONE commit whose only parent is that head, verified by GitHub, authored by the writer the policy file
-# of the BASE checkout names, changing no file. The judge reads the API answers as data and fails closed on every doubt.
+# of the default branch names (and committed by it or by GitHub's own web-flow), with the fixed message, adding exactly the one file
+# audit-record. The judge reads the API answers as data and fails closed on every doubt; bin/audit-record-judge.sh reads them (a fake gh here)
+# and the verdict job of agent-review-gate.yml runs it from the default branch, over the head.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT
-python3 -I - "$here/audit-record.py" <<'PY'
+python3 -I - "$here/audit-record.py" "$here/audit-record-judge.sh" <<'PY'
 import copy, importlib.util, json, os, re, subprocess, sys, tempfile
 spec = importlib.util.spec_from_file_location("ar", sys.argv[1]); A = importlib.util.module_from_spec(spec); spec.loader.exec_module(A)
+JUDGE_SH = sys.argv[2]
 passed = failed = 0
 def check(name, ok, got=""):
     global passed, failed
@@ -20,9 +23,10 @@ HEAD = "a" * 40
 REC = "b" * 40
 WRITERS = {"schema": 1, "writers": [{"login": "fosterstack-automation[bot]", "id": 333151817}]}
 REF = {"ref": "refs/heads/audit/" + HEAD, "object": {"sha": REC, "type": "commit"}}
-COMMIT = {"sha": REC, "parents": [{"sha": HEAD}], "files": [],
+BOT = {"login": "fosterstack-automation[bot]", "id": 333151817, "type": "Bot"}
+COMMIT = {"sha": REC, "parents": [{"sha": HEAD}], "files": [{"filename": "audit-record", "status": "added"}],
           "commit": {"message": "audit record", "verification": {"verified": True, "reason": "valid"}},
-          "author": {"login": "fosterstack-automation[bot]", "id": 333151817, "type": "Bot"}}
+          "author": BOT, "committer": {"login": "web-flow", "id": 19864447, "type": "User"}}
 def judge(ref=REF, commit=COMMIT, writers=WRITERS, head=HEAD, base="main"):
     return A.verify_record(head, base, ref, commit, writers)
 def mut(src, path, value):
@@ -33,7 +37,9 @@ def mut(src, path, value):
     return d
 
 ok, why = judge()
-check("a record for the exact head, verified, by the named writer, changing nothing -> passes", ok and why == "", (ok, why))
+check("a record for the exact head, verified, by the named writer, committed by GitHub, one file -> passes", ok and why == "", (ok, why))
+ok, why = judge(commit=mut(COMMIT, ["committer"], BOT))
+check("a record the writer itself committed passes too", ok, (ok, why))
 ok, why = judge(ref=None, commit=None, base="chain-v030")
 check("a pull request whose base is not main passes without a read", ok, (ok, why))
 ok, why = judge(ref=None, commit=None, base="")
@@ -48,8 +54,13 @@ for name, ref, commit in (
     ("the record's parent is not the head (stale)", REF, mut(COMMIT, ["parents"], [{"sha": "c" * 40}])),
     ("the record has two parents", REF, mut(COMMIT, ["parents"], [{"sha": HEAD}, {"sha": "c" * 40}])),
     ("the record has no parent", REF, mut(COMMIT, ["parents"], [])),
-    ("the record changes a file", REF, mut(COMMIT, ["files"], [{"filename": "x"}])),
+    ("the record changes no file", REF, mut(COMMIT, ["files"], [])),
+    ("the record adds another file", REF, mut(COMMIT, ["files"], [{"filename": "x", "status": "added"}])),
+    ("the record modifies its file instead of adding it", REF, mut(COMMIT, ["files"], [{"filename": "audit-record", "status": "modified"}])),
+    ("the record adds two files", REF, mut(COMMIT, ["files"], [{"filename": "audit-record", "status": "added"}, {"filename": "y", "status": "added"}])),
     ("the record has no file list at all", REF, mut(COMMIT, ["files"], A)),
+    ("the record's message is another line", REF, mut(COMMIT, ["commit", "message"], "reviewed by somebody")),
+    ("the record has no message", REF, mut(COMMIT, ["commit", "message"], A)),
     ("the commit is not verified", REF, mut(COMMIT, ["commit", "verification", "verified"], False)),
     ("verified is the string true", REF, mut(COMMIT, ["commit", "verification", "verified"], "true")),
     ("verification says unsigned", REF, mut(COMMIT, ["commit", "verification", "reason"], "unsigned")),
@@ -59,6 +70,10 @@ for name, ref, commit in (
     ("the author has the writer's id but another name", REF, mut(COMMIT, ["author", "login"], "fosterstack-automation")),
     ("the author is not a bot", REF, mut(COMMIT, ["author", "type"], "User")),
     ("the author is unknown to GitHub (null)", REF, mut(COMMIT, ["author"], None)),
+    ("the committer is somebody who signed with their own key", REF, mut(COMMIT, ["committer"], {"login": "someone", "id": 5, "type": "User"})),
+    ("the committer is web-flow by name but another id", REF, mut(COMMIT, ["committer", "id"], 5)),
+    ("the committer is unknown (null)", REF, mut(COMMIT, ["committer"], None)),
+    ("no committer at all", REF, mut(COMMIT, ["committer"], A)),
     ("a malformed answer", [], COMMIT), ("a malformed commit answer", REF, "x"),
 ):
     ok, why = judge(ref=ref, commit=commit)
@@ -72,7 +87,7 @@ for name, writers in (("no writers file", None), ("an empty writers list", {"sch
 for h in ("", "abc", "A" * 40, "a" * 39, "a" * 41, "g" * 40, None, 5):
     ok, why = judge(head=h)
     check("refused: a head that is not 40 lower-case hex (%r)" % (h,), not ok, (ok, why))
-check("the record's commit message is the one fixed neutral line", A.RECORD_MESSAGE == "audit record" and re.fullmatch(r"[a-z ]+", A.RECORD_MESSAGE), A.RECORD_MESSAGE)
+check("the record's commit message is the one fixed neutral line, and the judge enforces it", A.RECORD_MESSAGE == "audit record" and re.fullmatch(r"[a-z ]+", A.RECORD_MESSAGE), A.RECORD_MESSAGE)
 check("the branch name is audit/ plus the sha", A.record_branch(HEAD) == "audit/" + HEAD, A.record_branch(HEAD))
 
 # the command line: facts as files, one exit code
@@ -90,70 +105,51 @@ r = cli(ref=None); check("cli: a missing ref file exits 1 and says why", r.retur
 r = cli(root=d + "/nowhere"); check("cli: a missing policy file exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r = cli(commit=mut(COMMIT, ["commit", "verification", "verified"], False)); check("cli: an unverified record exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r = cli(base_ref="chain-v030", ref=None, commit=None); check("cli: a base that is not main exits 0 without reading", r.returncode == 0, (r.returncode, r.stdout, r.stderr))
+r = cli(base_ref="", ref=None, commit=None); check("cli: an EMPTY base exits 1 (the judge decides, not the command line)", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 open(os.path.join(d, "ref.json"), "w").write("{not json")
 r = subprocess.run([sys.executable, "-I", sys.argv[1], "verify", "--head", HEAD, "--base-ref", "main", "--base-root", base, "--ref-json", os.path.join(d, "ref.json"), "--commit-json", w("commit.json", COMMIT)], capture_output=True, text=True)
 check("cli: unparseable JSON exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r = subprocess.run([sys.executable, "-I", sys.argv[1], "bogus"], capture_output=True, text=True)
 check("cli: an unknown command exits 2", r.returncode == 2, r.returncode)
 
-# the job in ci.yml: its text is pinned here (a mutated copy of the job must be refused), as the marker gate's is
-import yaml
-root = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[1])))
-def job_problems(wf):
-    job = (wf.get("jobs") or {}).get("audit-record")
-    if not isinstance(job, dict):
-        return ["no audit-record job"]
-    bad = []
-    if job.get("name") != "audit-record" or job.get("runs-on") != "ubuntu-latest":
-        bad.append("name or runner")
-    if job.get("if") != "github.event_name == 'pull_request'":
-        bad.append("the job must run on every pull request (a base other than main passes inside the judge)")
-    if job.get("permissions") != {"contents": "read"}:
-        bad.append("permissions must be contents: read only")
-    if set(job) - {"name", "runs-on", "if", "permissions", "steps"}:
-        bad.append("keys beyond name, runs-on, if, permissions, steps (an environment, a matrix, continue-on-error)")
-    steps = job.get("steps") or []
-    if len(steps) != 2:
-        return bad + ["two steps: the BASE checkout and the judge"]
-    co, run = steps
-    if not str(co.get("uses", "")).startswith("actions/checkout@") or not re.search(r"@[0-9a-f]{40}$", str(co.get("uses", ""))):
-        bad.append("the checkout is not an action pinned by digest")
-    if co.get("with") != {"ref": "${{ github.event.pull_request.base.sha }}", "persist-credentials": "false"}:
-        bad.append("the checkout must be the BASE sha, with no persisted credential")
-    if set(co) - {"uses", "with"}:
-        bad.append("checkout keys beyond uses and with")
-    if run.get("env") != {"GH_TOKEN": "${{ github.token }}", "REPO": "${{ github.repository }}", "HEAD_SHA": "${{ github.event.pull_request.head.sha }}", "BASE_REF": "${{ github.event.pull_request.base.ref }}"}:
-        bad.append("the judge step's env must be exactly the job token, the repository, the head sha and the base ref")
-    if set(run) - {"name", "env", "run"}:
-        bad.append("judge step keys beyond name, env, run (continue-on-error, if)")
-    text = str(run.get("run", ""))
-    for need in ('python3 -I bin/audit-record.py verify --head "$HEAD_SHA" --base-ref "$BASE_REF" --base-root .', 'repos/${REPO}/git/ref/heads/audit/${HEAD_SHA}', "set -euo pipefail"):
-        if need not in text:
-            bad.append("the judge step lacks: " + need)
-    if re.search(r"\|\|\s*(true|:)|continue-on-error|exit 0\s*$", text.replace('nothing to enforce"; exit 0; }', "")):
-        bad.append("the judge step swallows a failure")
-    if "secrets." in json.dumps(job):
-        bad.append("a secret")
-    return bad
-wf = yaml.load(open(root + "/.github/workflows/ci.yml"), Loader=yaml.BaseLoader)
-check("ci.yml: the audit-record job is the reviewed one", job_problems(wf) == [], job_problems(wf))
-def wf_mut(fn):
-    d = copy.deepcopy(wf); fn(d["jobs"]["audit-record"]); return d
-J = lambda d: d
-for name, fn, frag in (
-    ("an environment", lambda j: j.update({"environment": "agent"}), "keys beyond"),
-    ("write permission", lambda j: j["permissions"].update({"id-token": "write"}), "permissions"),
-    ("head checkout", lambda j: j["steps"][0]["with"].update({"ref": "${{ github.event.pull_request.head.sha }}"}), "BASE sha"),
-    ("a swallowed failure", lambda j: j["steps"][1].update({"run": j["steps"][1]["run"] + "\n|| true"}), "swallows"),
-    ("continue-on-error", lambda j: j["steps"][1].update({"continue-on-error": "true"}), "keys beyond"),
-    ("a step condition", lambda j: j["steps"][1].update({"if": "false"}), "keys beyond"),
-    ("only on some pull requests", lambda j: j.update({"if": "github.event.pull_request.base.ref == 'main'"}), "every pull request"),
-    ("an unpinned checkout", lambda j: j["steps"][0].update({"uses": "actions/checkout@v4"}), "digest"),
-    ("a different judge", lambda j: j["steps"][1].update({"run": j["steps"][1]["run"].replace("bin/audit-record.py", "bin/other.py")}), "lacks"),
-    ("a secret in the env", lambda j: j["steps"][1]["env"].update({"TOKEN": "${{ secrets.X }}"}), "env must be exactly"),
-):
-    probs = job_problems(wf_mut(fn))
-    check("ci.yml: a copy with %s is refused" % name, any(frag in p for p in probs), probs)
+# the wrapper the verdict job runs: a fake gh answers from files; every path must fail closed, and say which kind of failure it is
+fake = os.path.join(d, "fakebin"); os.makedirs(fake)
+open(os.path.join(fake, "gh"), "w").write('''#!/usr/bin/env bash
+echo "gh $*" >> "$CALLS"
+case "$2" in
+  repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref"; ;;
+  repos/o/r/commits/*) f="$FAKE/commit"; ;;
+  *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
+esac
+if [ -f "$f.err" ]; then cat "$f.err" >&2; exit 1; fi
+cat "$f.json"
+''')
+os.chmod(os.path.join(fake, "gh"), 0o755)
+root = os.path.join(d, "repo"); os.makedirs(root + "/bin"); os.makedirs(root + "/.github/policy")
+for src, dst in ((sys.argv[1], root + "/bin/audit-record.py"), (JUDGE_SH, root + "/bin/audit-record-judge.sh")):
+    open(dst, "w").write(open(src).read()); os.chmod(dst, 0o755)
+open(root + "/.github/policy/audit-writers.json", "w").write(json.dumps(WRITERS))
+def wrap(head=HEAD, base_ref="main", ref=REF, commit=COMMIT, ref_err=None, commit_err=None, repo="o/r"):
+    fk = tempfile.mkdtemp(dir=d)
+    for name, obj, err in (("ref", ref, ref_err), ("commit", commit, commit_err)):
+        if err is not None: open(os.path.join(fk, name + ".err"), "w").write(err)
+        elif obj is not None: open(os.path.join(fk, name + ".json"), "w").write(json.dumps(obj))
+        else: open(os.path.join(fk, name + ".err"), "w").write("gh: Not Found (HTTP 404)")
+    calls = os.path.join(fk, "calls"); open(calls, "w").close()
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY=repo, GH_TOKEN="x")
+    r = subprocess.run(["bash", root + "/bin/audit-record-judge.sh", head, base_ref], capture_output=True, text=True, env=env)
+    return r, open(calls).read()
+r, calls = wrap(); check("wrapper: a good record exits 0 after reading the ref and the commit", r.returncode == 0 and calls.count("gh api") == 2, (r.returncode, r.stdout, r.stderr, calls))
+r, calls = wrap(base_ref="chain-v030"); check("wrapper: a base that is not main exits 0 and calls nothing", r.returncode == 0 and calls == "", (r.returncode, calls))
+r, calls = wrap(base_ref=""); check("wrapper: an empty base exits 1 and calls nothing", r.returncode == 1 and calls == "", (r.returncode, r.stdout, calls))
+r, calls = wrap(head="x; rm -rf /"); check("wrapper: a head that is not 40 hex exits 1 and calls nothing (nothing odd reaches a request path)", r.returncode == 1 and calls == "", (r.returncode, r.stdout, calls))
+r, calls = wrap(ref=None); check("wrapper: no record branch (404) exits 1 saying there is no record", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref_err="gh: HTTP 502: Bad Gateway"); check("wrapper: a GitHub API error on the ref exits 1 and says it is an API error, not a record defect", r.returncode == 1 and "could not read the record" in r.stderr, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(commit_err="gh: HTTP 403: rate limit exceeded"); check("wrapper: a GitHub API error on the commit exits 1 as an API error", r.returncode == 1 and "could not read the record" in r.stderr, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(commit=None); check("wrapper: a commit that is not found exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(commit=mut(COMMIT, ["commit", "verification", "verified"], False)); check("wrapper: an unverified record exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}}); check("wrapper: a ref whose object is not a sha exits 1 without a commit request", r.returncode == 1 and calls.count("gh api") == 1, (r.returncode, r.stdout, calls))
+r, calls = wrap(repo="o/r; x"); check("wrapper: a repository that is not owner/name exits 1 and calls nothing", r.returncode == 1 and calls == "", (r.returncode, r.stderr, calls))
 
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
