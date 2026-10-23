@@ -1359,6 +1359,7 @@ def cmd_sign(a):
 SR_STEPS = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild")}
 SR_DATA = ("digests.json", "items.json", "admission-baseline.json", "verdict.json")
 SR_REQUIRED = {"build": ("digests.json", "items.json", "admission-baseline.json"), "rebuild": ("verdict.json",)}
+SR_PATH = {"verdict.json": "witness-rebuild/verdict.json"}   # a data file's product name is its path from the repository root: Build's three sit at the root, Rebuild's verdict in witness-rebuild/; matched in full, never by basename
 SR_ATTESTORS = ("environment", "git", "material", "product")
 GIT_COMMIT_PREFIX = "https://witness.dev/attestations/git/v0.1/commithash:"
 ATTESTOR_URI = re.compile(r"https://witness\.dev/attestations/([a-z-]+)/v0\.1")
@@ -1375,18 +1376,20 @@ def sr_received(stage, rec_dir, art_dir, name):
             continue
         if n not in SR_DATA:
             refuse(stage, "record: %s holds %s, which is neither the record (<step>-collection.local.json) nor a data file (%s)" % (name, n, " ".join(SR_DATA)))
-        got[n] = _sha256_bytes_of(path, stage, n)
+        got[SR_PATH.get(n, n)] = _sha256_bytes_of(path, stage, n)
     if art_dir:
         base = os.path.join(art_dir, name)
         if os.path.lexists(base):
             links = []
-            for here, dirs, files in os.walk(base):
+            def walk_failed(ex):
+                refuse(stage, "unreadable: %s (%s)" % (ex.filename, type(ex).__name__))
+            for here, dirs, files in os.walk(base, onerror=walk_failed):
                 for n in dirs + files:
                     if os.path.islink(os.path.join(here, n)):
                         links.append(os.path.relpath(os.path.join(here, n), base))
             if links:
                 refuse(stage, "symlink: %s" % " ".join(sorted(links)))
-            for here, _dirs, files in os.walk(base):
+            for here, _dirs, files in os.walk(base, onerror=walk_failed):
                 for n in files:
                     rel = os.path.relpath(os.path.join(here, n), base)
                     got.setdefault(rel, _sha256_bytes_of(os.path.join(here, n), stage, rel))
@@ -1453,9 +1456,12 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
     if wrong:
         refuse(stage, "digest: a received file is not a product of the record with the same sha256, or the record names it twice: %s" % " ".join(wrong))
     if step in SR_REQUIRED:
-        lacking = sorted(n for n in SR_REQUIRED[step] if n not in received or n not in products)
+        lacking = sorted(SR_PATH.get(n, n) for n in SR_REQUIRED[step] if SR_PATH.get(n, n) not in received or SR_PATH.get(n, n) not in products)
         if lacking:
             refuse(stage, "missing: %s must be a product of the %s record and be received: %s" % (step, step, " ".join(lacking)))
+    unreceived = [] if stage != "build" else sorted(n for n in products if n.startswith(("out/", "dist/")) and n not in received)
+    if unreceived:
+        refuse(stage, "missing: the record names build products under out/ or dist/ that Sign did not receive: %s" % " ".join(unreceived))
     if stage == "rebuild":
         mats = [x for x in subs if x["name"] == MATERIAL]
         if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:

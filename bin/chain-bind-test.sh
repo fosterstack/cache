@@ -636,7 +636,7 @@ def coll_record(path, name, products, material=(), commit=TAGSHA, attestors=ATT,
 
 
 BUILD_DATA = {"digests.json": b'{"apk":"sha256:' + b"c" * 64 + b'"}', "items.json": b'{"items":1}', "admission-baseline.json": b'{"baseline":"v0.3.0"}'}
-BUILD_ART = {"dist/fscache_0.3.0_linux_amd64.tar.gz": b"archive-bytes", "images/production/index.json": b"{}"}
+BUILD_ART = {"dist/fscache_0.3.0_linux_amd64.tar.gz": b"archive-bytes", "out/production/index.json": b"{}"}   # Sign downloads Build's images to artifacts/witness-build/out and dist to artifacts/witness-build/dist (stage-sign.yml)
 
 
 def put(root, rel, data):
@@ -656,7 +656,7 @@ def sr_tree(name, stage="build"):
         pays["witness-build"] = coll_record(root + "/witness-build.rec", "build", prods)
         os.makedirs(root + "/witness-build"); os.rename(root + "/witness-build.rec", root + "/witness-build/build-collection.local.json")
         for n, d in BUILD_DATA.items():
-            put(root, "witness-build/" + n, d); put(root, "artifacts/witness-build/" + n, d)
+            put(root, "witness-build/" + n, d)
         for n, d in BUILD_ART.items():
             put(root, "artifacts/witness-build/" + n, d)
         os.makedirs(root + "/witness-apk-ubuntu-24.04")
@@ -665,8 +665,8 @@ def sr_tree(name, stage="build"):
     else:
         mat = [("witness-build/digests.json", BUILD_DATA["digests.json"])]
         os.makedirs(root + "/witness-rebuild"); os.makedirs(root + "/witness-rapk-ubuntu-24.04")
-        pays["witness-rebuild"] = coll_record(root + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"verdict.json": b'{"verdict":"pass"}'}, mat)
-        put(root, "witness-rebuild/verdict.json", b'{"verdict":"pass"}'); put(root, "artifacts/witness-rebuild/verdict.json", b'{"verdict":"pass"}')
+        pays["witness-rebuild"] = coll_record(root + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"witness-rebuild/verdict.json": b'{"verdict":"pass"}'}, mat)
+        put(root, "witness-rebuild/verdict.json", b'{"verdict":"pass"}')
         pays["witness-rapk-ubuntu-24.04"] = coll_record(root + "/witness-rapk-ubuntu-24.04/rapk-collection.local.json", "rapk", {"out/x86_64/fscache-0.3.0-r0.apk": b"apk-x", "admission.json": b"{}"}, mat)
     return root, pays
 
@@ -710,7 +710,7 @@ d, _ = sr_tree("sr2"); put(d, "artifacts/witness-build/dist/fscache_0.3.0_linux_
 sr("sign-records build: a received file whose bytes differ from the record's product is refused", d, "build", 1, ["dist/fscache_0.3.0_linux_amd64.tar.gz"])
 d, _ = sr_tree("sr3"); put(d, "artifacts/witness-build/dist/extra.txt", b"x")
 sr("sign-records build: a received file the record does not name is refused", d, "build", 1, ["dist/extra.txt"])
-d, _ = sr_tree("sr4"); os.remove(d + "/witness-build/items.json"); os.remove(d + "/artifacts/witness-build/items.json")
+d, _ = sr_tree("sr4"); os.remove(d + "/witness-build/items.json")
 sr("sign-records build: a required name the record holds but Sign did not receive (items.json) is refused", d, "build", 1, ["items.json"])
 d, _ = sr_tree("sr5"); put(d, "witness-build/digests.json", b'{"apk":"sha256:' + b"d" * 64 + b'"}')
 sr("sign-records build: a data file whose bytes differ from the record's product is refused", d, "build", 1, ["digests.json"])
@@ -750,20 +750,34 @@ sr("sign-records: a dry run (workflow_dispatch on a branch) is accepted", d, "bu
 d, _ = sr_tree("sr21", "rebuild")
 rc, out, err = sr("sign-records rebuild: a valid set (Rebuild's record and one rapk leg) is accepted without Rebuild's apks or images", d, "rebuild", 0)
 check("sign-records rebuild: the final names are rebuild-collection.json and rapk-collection.json", rc == 0 and sorted(l.split("\t")[1] for l in out.strip().split("\n")) == ["signed/witness-rapk-ubuntu-24.04/rapk-collection.json", "signed/witness-rebuild/rebuild-collection.json"], out)
-d, _ = sr_tree("sr21b", "rebuild"); shutil.rmtree(d + "/artifacts")
+d, _ = sr_tree("sr21b", "rebuild"); shutil.rmtree(d + "/artifacts", ignore_errors=True)
 sr("sign-records rebuild: without --artifacts-dir the data files of the record directories are the received files (sign-rebuild passes none)", d, "rebuild", 0, args=sr_args("rebuild", d, artifacts=False))
-d, _ = sr_tree("sr22", "rebuild"); put(d, "artifacts/witness-rebuild/verdict.json", b'{"verdict":"fail"}'); put(d, "witness-rebuild/verdict.json", b'{"verdict":"fail"}')
+d, _ = sr_tree("sr22", "rebuild"); put(d, "witness-rebuild/verdict.json", b'{"verdict":"fail"}')
 sr("sign-records rebuild: a verdict.json whose bytes differ from the record's product is refused", d, "rebuild", 1, ["verdict.json"])
 d, _ = sr_tree("sr23", "rebuild"); put(d, "digests.json", b'{"apk":"sha256:' + b"9" * 64 + b'"}')
 sr("sign-records rebuild: a record whose material digests.json is not Build's attested list (--digests) is refused", d, "rebuild", 1, ["material", "digests"])
-d, _ = sr_tree("sr24", "rebuild"); os.remove(d + "/artifacts/witness-rebuild/verdict.json"); os.remove(d + "/witness-rebuild/verdict.json")
+d, _ = sr_tree("sr24", "rebuild"); os.remove(d + "/witness-rebuild/verdict.json")
 sr("sign-records rebuild: Rebuild's record without the verdict.json it names is refused", d, "rebuild", 1, ["verdict.json"])
+d, _ = sr_tree("sr25", "rebuild"); coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"verdict.json": b'{"verdict":"pass"}'}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
+sr("sign-records rebuild: a record that names the verdict by its bare file name is refused (the product is witness-rebuild/verdict.json, matched in full)", d, "rebuild", 1, ["witness-rebuild/verdict.json"])
+d, _ = sr_tree("sr26"); os.makedirs(d + "/artifacts/witness-build/dist/locked"); put(d, "artifacts/witness-build/dist/locked/f", b"x"); os.chmod(d + "/artifacts/witness-build/dist/locked", 0)
+sr("sign-records build: an unreadable folder among the received files is refused, not counted as empty", d, "build", 1, ["unreadable"]); os.chmod(d + "/artifacts/witness-build/dist/locked", 0o755)
+d, _ = sr_tree("sr27"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART), env_vars={"X": "github_pat_" + "A" * 30})
+sr("sign-records build: a record that holds a fine-grained github_pat_ token value is refused (record-env)", d, "build", 1, ["env", "token"])
+d, _ = sr_tree("sr28"); coll_record(d + "/witness-build/build-collection.local.json", "build", dict(BUILD_DATA, **BUILD_ART, **{"out/never-received.tar": b"z"}))
+sr("sign-records build: a Build product under out/ that Sign did not receive is refused", d, "build", 1, ["out/never-received.tar"])
+d, _ = sr_tree("sr29", "rebuild"); os.rename(d + "/witness-rebuild/rebuild-collection.local.json", d + "/witness-rebuild/build-collection.local.json")
+sr("sign-records rebuild: a Build record (build-collection.local.json) passed off as Rebuild's is refused", d, "rebuild", 1, ["step"])
+d, _ = sr_tree("sr30"); os.rename(d + "/witness-build/build-collection.local.json", d + "/witness-build/rebuild-collection.local.json")
+sr("sign-records build: a Rebuild record (rebuild-collection.local.json) passed off as Build's is refused", d, "build", 1, ["step"])
+d, _ = sr_tree("sr31"); os.rename(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", d + "/witness-apk-ubuntu-24.04/rapk-collection.local.json")
+sr("sign-records build: a rapk record (Rebuild's apk leg) passed off as Build's apk leg is refused", d, "build", 1, ["step"])
 d, _ = sr_tree("sr25"); 
 sr("sign-records: --stage rebuild given Build's apk/build records is refused (a record's step must be a step of the stage)", d, "rebuild", 1, ["step"], args=sr_args("rebuild", d, ["witness-build", "witness-apk-ubuntu-24.04"]))
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 137
+EXPECT = 144
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
