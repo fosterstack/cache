@@ -189,10 +189,10 @@ for c in onlyfixed:"GRYPE_ONLY_FIXED" cfgfile:"a config-file ignore"; do
 done
 # ignoredMatches shapes: absent or null is fine, a list of VEX-only entries is fine, everything else fails closed (exit 2 for a wrong type, 1 for an entry that is not a clean VEX rule).
 ENT='{"vulnerability":{"id":"CVE-2099-1"},"artifact":{"name":"pkg","version":"1.0"}'
-shape() { # name expected-rc json-text what
+shape() { # name expected-rc json-text what [text the output must contain]
   fake_grype "grype-shape-$1" "$OKCDX" "$3"
   out="$(GRYPE="$w/grype-shape-$1" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" "shape-$1" 2>&1)"; rc=$?
-  [ "$rc" -eq "$2" ] && ok "grype: ignoredMatches $4 -> exit $2" || bad "grype: ignoredMatches $4 (rc $rc, want $2)" "$out"
+  [ "$rc" -eq "$2" ] && { [ -z "${5:-}" ] || grep -q "$5" <<<"$out"; } && ok "grype: ignoredMatches $4 -> exit $2" || bad "grype: ignoredMatches $4 (rc $rc, want $2)" "$out"
 }
 shape absent 0 '{"matches":[]}' "absent"
 shape null 0 '{"matches":[],"ignoredMatches":null}' "null"
@@ -204,7 +204,7 @@ shape objrules 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\
 shape norules 1 "{\"matches\":[],\"ignoredMatches\":[$ENT}]}" "an entry with no appliedIgnoreRules"
 shape emptyrules 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[]}]}" "an entry with an empty rule list"
 shape nonobjrule 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[\"vex\"]}]}" "a rule that is not an object"
-shape scalar 1 '{"matches":[],"ignoredMatches":["malformed-entry"]}' "an entry that is a string, not an object"
+shape scalar 1 '{"matches":[],"ignoredMatches":["malformed-entry"]}' "an entry that is a string, not an object" "a malformed entry"
 shape nons 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[{\"vex-status\":\"fixed\"}]}]}" "a rule with no namespace"
 shape mixed 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"fixed\"},{\"namespace\":\"\",\"fix-state\":\"unknown\"}]}]}" "a VEX rule plus a config rule"
 # These two depend on the live vulnerability database (busybox 1.36.0 having exactly these findings, none with a fix version); they fail loudly, never pass falsely.
