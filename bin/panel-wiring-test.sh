@@ -327,8 +327,11 @@ else:
 if not diag:
     bad.append("no Scout attestation diagnostics (read-back 5a/5b)")
 else:
-    if diag.get("if") or diag.get("continue-on-error"):
-        bad.append("the Scout diagnostics must be unconditional and contained inside the step, not continue-on-error")
+    # unconditional means it runs after a failed self-check too: a step without an `if` is skipped once an earlier step failed, which hid the 5a/5b data on the Oct 23 runs
+    if str(diag.get("if", "")).strip() != "${{ always() }}" or diag.get("continue-on-error"):
+        bad.append("the Scout diagnostics must carry exactly `if: ${{ always() }}` (they run after a failed self-check; a step with no if is skipped then) and be contained inside the step, not continue-on-error")
+    if scout_steps.index(diag) < scout_steps.index(sc):
+        bad.append("the Scout diagnostics come before the self-check")
     for failing in ("docker", "skopeo", "sudo"):   # a diagnostic failure never fails the step
         if run_block(diag.get("run", ""), "applies", failing)[0] != 0:
             bad.append("the diagnostics step fails the job when %s fails" % failing)
@@ -506,6 +509,10 @@ case_ scout-scan-wrong-digest bad "s = $(step_of panel-scout 'for v in'); s['run
 case_ scout-no-attach-need    bad "$J['panel-scout']['needs'] = ['build', 'assemble']"
 case_ scout-perms-write       bad "$J['panel-scout']['permissions']['packages'] = 'write'"
 case_ scout-diag-fails        bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('exit 0', 'exit \$rc')"
+case_ scout-diag-no-always    bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s.pop('if', None)"
+case_ scout-diag-success-only bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ success() }}'"
+case_ scout-diag-failure-only bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ failure() }}'"
+case_ scout-diag-coe          bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['continue-on-error'] = True"
 case_ scout-diag-gone         bad "$J['panel-scout']['steps'] = [s for s in $J['panel-scout']['steps'] if 'diagnostics' not in (s.get('name') or '')]"
 case_ attach-gone             bad "$J.pop('vex-attach')"
 case_ attach-perms-id-token   bad "$J['vex-attach']['permissions']['id-token'] = 'write'"
