@@ -1095,9 +1095,6 @@ def _commands(script, depth=0, in_container=False):
         toks = _tokens(chunk)
         if not toks or toks[0] in PRINTERS:
             continue
-        at0 = next((i for i, w in enumerate(toks) if _base(w) in ("docker", "podman", "nerdctl")), None)
-        inner0 = _container_inner(_base(toks[at0]), toks[at0 + 1:]) if at0 is not None else None
-        inner_start = len(toks) - len(inner0) if inner0 else None     # the words from here on run inside the container
         for i, w in enumerate(toks):
             c = next((j for j in range(i + 1, len(toks)) if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", toks[j])), None) \
                 if _base(w) in SHELLS else None
@@ -1113,11 +1110,11 @@ def _commands(script, depth=0, in_container=False):
                 if depth >= 4:                                # nesting past the limit is refused (Codex r1, C02)
                     out.append(["__too_deep__", w])
                 elif c is not None:
-                    out += _commands(toks[c + 1], depth + 1, in_container or (inner_start is not None and i >= inner_start)) if c + 1 < len(toks) else []
+                    out += _commands(toks[c + 1], depth + 1, in_container) if c + 1 < len(toks) else []
                 elif trap_cmd is not None:
-                    out += _commands(trap_cmd, depth + 1, in_container or (inner_start is not None and i >= inner_start))
+                    out += _commands(trap_cmd, depth + 1, in_container)
                 else:
-                    out += _commands(" ".join(toks[i + 1:]), depth + 1, in_container or (inner_start is not None and i >= inner_start))
+                    out += _commands(" ".join(toks[i + 1:]), depth + 1, in_container)
                 break
         inline = next((w for w in _command_words(toks) if _base(w) in INTERPRETERS and any(
             re.match(INTERPRETERS[_base(w)], t) for t in toks[toks.index(w) + 1:])), None)
