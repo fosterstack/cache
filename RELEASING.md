@@ -19,7 +19,7 @@ Build -> Sign -> { Rebuild, Check } ; Rebuild -> Sign (second call) ; { Check, S
 
 The chain starts on a pushed `v*` tag (or a branch dry run, which publishes
 nothing). Rebuild, Check and Release each first verify the signed records of the stages
-before them and tie their work to the digest list Build attested; Sign checks
+before them and tie their work to the digest list Build made; Sign checks
 the building jobs' records (Build's against the artifacts it receives, Rebuild's
 against Build's digest list) and signs them. Release publishes by
 digest the exact bytes Build made and Rebuild and Check judged, and never
