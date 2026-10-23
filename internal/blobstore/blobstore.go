@@ -65,12 +65,17 @@ const (
 // readdir/close on an open directory handle — have no portable fault
 // injection.
 var (
-	randRead   = rand.Read
-	fileSync   = (*os.File).Sync
-	fileClose  = (*os.File).Close
-	fileStat   = (*os.File).Stat
-	dirClose   = (*os.File).Close
-	rootOpen   = (*os.Root).Open
+	randRead  = rand.Read
+	fileSync  = (*os.File).Sync
+	fileClose = (*os.File).Close
+	fileStat  = (*os.File).Stat
+	dirClose  = (*os.File).Close
+	// rootOpen opens a regular file for reading without blocking: if something
+	// replaced the checked file with a FIFO in between, the open returns at
+	// once and the same-file check refuses it.
+	rootOpen = func(r *os.Root, name string) (*os.File, error) {
+		return r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	}
 	readDirAll = func(f *os.File) ([]os.DirEntry, error) { return f.ReadDir(-1) }
 	// On some platforms (e.g. darwin's getattrlistbulk-backed ReadDir) the
 	// entries above carry their stat info eagerly, so DirEntry.Info cannot
@@ -355,6 +360,9 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 			if err != nil {
 				return fmt.Errorf("blobstore: walk stat %q: %w", child, err)
 			}
+			if !info.Mode().IsRegular() {
+				continue // swapped for a link or the like since the listing
+			}
 			// Invert relPath: drop the shard directory (parent of the leaf).
 			parts := strings.Split(child, "/")
 			keyParts := append(append([]string{}, parts[:len(parts)-2]...), parts[len(parts)-1])
@@ -378,10 +386,10 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 	return staleTemp, nil
 }
 
-// opensFile reports whether opening rel through the store root reaches the
-// file described by info (the file Get would serve for rel).
+// opensFile reports whether rel is the regular file described by info: the
+// file Get would serve for rel (a link at rel is not followed).
 func (s *Store) opensFile(rel string, info fs.FileInfo) bool {
-	target, err := s.root.Stat(rel)
+	target, err := s.regularFile(rel, "stat")
 	return err == nil && os.SameFile(target, info)
 }
 

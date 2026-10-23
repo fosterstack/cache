@@ -124,3 +124,47 @@ func TestGetSurfacesAnOpenFailureOfARegularFile(t *testing.T) {
 		t.Errorf("Get on an unreadable blob: err = %v, want an open failure", err)
 	}
 }
+
+// A symlink at a key's path is not a blob, and the walk must not find the
+// key by following that link to another regular file: Get answers 404 for
+// it, so the walk may not report it (the walk reports what Get would serve).
+func TestWalkSkipsAKeyWhosePathIsASymlink(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := os.MkdirAll(filepath.Join(dir, "xy"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "xy", "abc"), []byte("stray"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "ab"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../xy/abc", filepath.Join(dir, "ab", "abc")); err != nil {
+		t.Skipf("no symlinks here: %v", err)
+	}
+	wantNotFound(t, s, "abc")
+	if k := walkKeys(t, s); has(k, "abc") {
+		t.Errorf("Walk reported abc, whose path is a symlink: %v", k)
+	}
+}
+
+// The listing said "regular file"; by the time the walk asks for the entry's
+// description it may be something else: it is not reported.
+func TestWalkSkipsAnEntryThatStoppedBeingRegularAfterTheListing(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	put(t, s, "abc", "payload")
+	setSeam(t, &dirEntryInfo, func(os.DirEntry) (os.FileInfo, error) { return os.Stat(dir) })
+	if k := walkKeys(t, s); has(k, "abc") {
+		t.Errorf("Walk reported abc although its description is a directory: %v", k)
+	}
+}

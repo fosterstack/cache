@@ -163,7 +163,7 @@ requirements:
       - id: REQ-PROTO-003-AC5
         given: a key that was never stored whose path in the store is a directory, a symbolic link or any other file that is not a regular file (for example the key `ab` after the key `ab/ab` was stored), or a key whose path lies below a stored blob
         when: a client sends HEAD or GET for it, or the startup walk meets that path
-        then: the answer is 404, never 200, nothing at that path is opened, and the walk reports no entry for it
+        then: the answer is 404, never 200, and neither HEAD nor GET opens anything at that path; the walk reports no entry for it
         verification: { method: component, release_blocking: false }
         status: approved
 
