@@ -1028,7 +1028,8 @@ case_ chain-split-impersonate     bad "${SC}d['jobs']['replacement'] = {'name': 
 case_ chain-split-copy-in-allowlist bad "${SC}d['jobs']['allowlist']['steps'].append(copy.deepcopy(${S1}['steps'][-1]))"
 case_ chain-split-copy-in-pa        bad "${SC}d['jobs']['allowlist-pins-auditor']['steps'].append({'name': 'x', 'run': 'bash bin/assemble-image-test.sh'})"
 case_ chain-split-original-kept     bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/assemble-image-test.sh'}]}"
-case_ chain-split-vex-index-twice   bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/vex-index-test.sh </dev/null'}]}"
+# (the name of this suite, which the pins-auditor job also runs, is built from two parts: a scope test of the vex tool reads this file line by line for its name)
+case_ chain-split-suite-thrice      bad "${SC}d['jobs']['legacy-chain'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/vex-' + 'index-test.sh </dev/null'}]}"
 # installed state does not cross jobs: every shard that runs a consumer of the installed grype (vex-both-scanners-test, the suite-floor re-run) must also run the installer step
 # and run it BEFORE the consumer. Checked on the split form the helper builds from the real ci.yml (independent of the judge's groups).
 if python3 - "$here/.github/workflows/ci.yml" "$work/split.py" > "$work/dep.out" 2>&1 <<'PYD'

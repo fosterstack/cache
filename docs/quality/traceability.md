@@ -1523,7 +1523,7 @@ The v0.3.0 customer verification guide (docs/verify-release.md) shall be one pag
 
 When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires, fails unless every new job succeeded.
 
-*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23 (advisor); .github/agent/tests/pin-wiring-test.sh*
+*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23 (advisor); the pin-wiring judge (pin-wiring-test.sh)*
 
 > The pin-wiring judge accepts allowlist-chain in exactly two forms: the one job, or four parallel jobs plus the gate. The groups of suites per shard are fixed in the judge; moving a suite to another shard is a reviewed edit of the judge, which the trusted gate runs from main. The gate fails on a missing or empty result as on a failed, skipped or cancelled one.
 

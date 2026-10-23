@@ -4673,7 +4673,7 @@ requirements:
       When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs
       twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires,
       fails unless every new job succeeded.
-    source: [ci-speed read-back of Oct 23 (advisor), .github/agent/tests/pin-wiring-test.sh]
+    source: [ci-speed read-back of Oct 23 (advisor), the pin-wiring judge (pin-wiring-test.sh)]
     tier: community
     introduced: v0.3.0
     origin: advisor Oct 23 2026 (CI speed, under the owner's rules that no check is dropped and every test runs exactly once); first use is allowlist-chain (allowlist-chain-1..4 and the gate allowlist-chain)
