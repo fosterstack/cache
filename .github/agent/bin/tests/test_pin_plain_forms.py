@@ -136,6 +136,13 @@ class ImageRefRefusal(unittest.TestCase):
                 "ghcr.io/fosterstack/cache..x@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/cache:@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/cache:one:two@sha256:" + "a" * 64,
+                "a..b/x@sha256:" + "a" * 64,
+                ".ghcr.io/x@sha256:" + "a" * 64,
+                "ghcr.io./x@sha256:" + "a" * 64,
+                "-ghcr.io/x@sha256:" + "a" * 64,
+                "ghcr-.io/x@sha256:" + "a" * 64,
+                "ghcr.io:/x@sha256:" + "a" * 64,
+                "ghcr.io:port/x@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/cache:v1/child@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/Cache@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/cache:" + "t" * 129 + "@sha256:" + "a" * 64,
@@ -162,6 +169,7 @@ class ImageRefRefusal(unittest.TestCase):
             "ghcr.io/fosterstack/cache__release@sha256:" + "b" * 64,
             "localhost:5000/team/app-x.y@sha256:" + "b" * 64,
             "cache@sha256:" + "b" * 64,
+            "registry-1.docker.io/library/a-b@sha256:" + "b" * 64,
         ]
         for name, job in jobs().items():
             i, step = refusal_step(job)
