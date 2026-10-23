@@ -276,8 +276,9 @@ if [ "\$name" = grype ]; then
   python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({**({"ignoredMatches":json.loads(os.environ["FAKE_GRYPE_IGNORED"])} if "FAKE_GRYPE_IGNORED" in os.environ else {}),"matches":json.loads(os.environ.get("FAKE_GRYPE_MATCHES","[]")),"source":{"type":"image","target":({"manifestDigest":os.environ["FAKE_MD"]} if os.environ.get("FAKE_MD") else {})},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
 else
   eco=Debian:12; case " \$* " in *go.mod*) eco=Go;; esac
-  python3 "$work/osvout.py" "\$n" "\$eco"
+  if [ -n "\${FAKE_OSV_GARBAGE:-}" ]; then echo "this is not json"; else python3 "$work/osvout.py" "\$n" "\$eco"; fi
 fi
+if [ "\$name" = osv-scanner ] && [ -n "\${FAKE_OSV_RC:-}" ]; then exit "\$FAKE_OSV_RC"; fi
 if [ "\$name" = osv-scanner ] && [ -n "\${FAKE_OSV_ECO_ONLY:-}" ] && [ "\$eco" != "\$FAKE_OSV_ECO_ONLY" ]; then exit 0; fi
 exit $2
 EOF
@@ -376,7 +377,17 @@ FAKE_OSV_ECO_ONLY=Go FAKE_OSV_VULNS="$PAIR" want_fail "AC4 d with no toml the sa
 mkfake osv-scanner 0 80
 OSV_SCANNER_CONFIG_FILE=x.toml want_rc "AC4 d an OSV_SCANNER_* setting other than the cache directory stops the pass (exit 2)" 2 "${SCAN[@]}"
 if grep -Fq 'OSV_SCANNER_CONFIG_FILE' <<< "$out" && ! grep -Fq 'x.toml' <<< "$out"; then ok "AC4 d the refused OSV_SCANNER_* variable is named and its value is not printed"; else bad "AC4 d refused osv variable output: ${out:0:140}"; fi
-OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$work/osvdb-ext" want_ok "AC4 d OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY is allowed" "${SCAN[@]}"
+OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$work/osvdb-ext" want_rc "AC4 d even OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY is refused (exit 2): the database directory is always a fresh one inside the script's own temporary directory (a symlink to a populated directory passed the emptiness check)" 2 "${SCAN[@]}"
+if grep -Fq 'OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY' <<< "$out" && ! grep -Fq 'osvdb-ext' <<< "$out"; then ok "AC4 d the refused cache-directory variable is named and its value is not printed"; else bad "AC4 d refused cache variable output: ${out:0:140}"; fi
+# exit 0 does not mean an empty report: osv-scanner can list findings and still exit 0 (findings it classes as unimportant or, with call analysis, uncalled). The report is judged at ANY exit code.
+mkfake osv-scanner 0 80
+FAKE_OSV_RC=0 FAKE_OSV_VULNS='[{"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "AC4 e osv-scanner exits 0 with an uncovered finding in its report: the scan fails" "found vulnerabilities" "${SCAN[@]}"
+FAKE_OSV_RC=0 FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}]' want_ok "AC4 e osv-scanner exits 0 with a finding the published VEX excepts: the scan passes" "${SCAN[@]}"
+FAKE_OSV_RC=0 FAKE_OSV_GARBAGE=1 want_fail "AC4 e osv-scanner exits 0 with a report that cannot be read: the scan did not run" "could not run" "${SCAN[@]}"
+FAKE_OSV_RC=0 want_ok "AC4 e osv-scanner exits 0 with an empty report: the scan passes" "${SCAN[@]}"
+want_ok "AC4 e osv-scanner clean" "${SCAN[@]}"
+na_=$(grep -c '^osv-scanner scan ' "$work/log" || true); nf_=$(grep -c -E '^osv-scanner scan .* --all-vulns ' "$work/log" || true)
+if [ "$nf_" = "$na_" ] && [ "$na_" -gt 0 ]; then ok "AC4 e all $na_ osv-scanner scan calls pass --all-vulns (unimportant and uncalled findings are shown, never dropped by the scanner)"; else bad "AC4 e osv-scanner flags: $nf_ of $na_ scan calls carry --all-vulns"; fi
 mkfake grype 0 120; mkfake osv-scanner 1 80
 want_fail "AC4 the second scanner reports findings: the script fails naming it" osv-scanner "${SCAN[@]}"
 mkfake osv-scanner 0 80; mkfake grype 0 0
@@ -403,7 +414,7 @@ rm -f "$fx/images/fips.tar"; mkdir -p "$fx/images/fips"; printf '{"schemaVersion
 want_fail "AC4 an image directory without oci-layout is not a layout and is refused" layout "${SCAN[@]}"
 rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" fips > /dev/null
 want_ok "AC4 grype scans each image layout directory by oci-dir: and osv-scanner a tar made of it" "${SCAN[@]}"
-if grep -Eq '^grype oci-dir:images/(production|fips) ' "$work/log" && ! grep -q 'oci-archive' "$work/log" && grep -Eq '^osv-scanner scan image --config [^ ]+ --archive .*\.tar$' "$work/log" 2> /dev/null; then ok "AC4 the scanner argv carries the layout: oci-dir for grype, an archive made of the layout for osv"; else bad "AC4 layout argv: $(grep -E '^(grype|osv)' "$work/log" | head -4 | cut -c1-160 | tr '\n' '|')"; fi
+if grep -Eq '^grype oci-dir:images/(production|fips) ' "$work/log" && ! grep -q 'oci-archive' "$work/log" && grep -Eq '^osv-scanner scan image --config [^ ]+ --all-vulns --archive .*\.tar$' "$work/log" 2> /dev/null; then ok "AC4 the scanner argv carries the layout: oci-dir for grype, an archive made of the layout for osv"; else bad "AC4 layout argv: $(grep -E '^(grype|osv)' "$work/log" | head -4 | cut -c1-160 | tr '\n' '|')"; fi
 # ---- chain-v030 review S1 (REQ-CHAIN-006-AC4): grype scans each platform child of the multi-platform index, both required --------------
 # `grype oci-dir:` on the index with no platform scans only the runner's own platform (linux/amd64): the arm64 child's packages were never scanned while the
 # verdict was recorded for the index digest. Each variant is now scanned once per child (--platform linux/amd64, linux/arm64), each child's own manifest
@@ -564,7 +575,7 @@ if [ -f "$fx/out/scan-results.json" ] && jq -e --arg o "$O" '[.scanners[] | sele
 if grep -q '^osvcache-before 0$' "$work/log" && grep -E '^osv-scanner .*--offline-vulnerabilities .*--download-offline-databases' "$work/log" > /dev/null; then ok "AC15 osv-scanner downloads its databases fresh into an empty cache, in offline mode"; else bad "AC15 osv cache not empty at the first download, or not offline mode: $(grep -E '^osv' "$work/log" | head -2 | tr '\n' ' ' | cut -c1-200)"; fi
 if jq -e '[.scanners[] | select(.name == "osv-scanner")] | length == 1 and (.[0] | ([keys[] | select(startswith("db_"))] | length == 0) and (.databases | length > 0))' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC15 the osv result entry has no scanner-level db_* keys (its databases are listed in a non-empty databases list)"; else bad "AC15 osv entry keys: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | keys]' "$fx/out/scan-results.json" 2>&1 | cut -c1-160)"; fi
 pre="$work/precache"; mkdir -p "$pre/Go"; : > "$pre/Go/all.zip"
-OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$pre" want_fail "AC15 a pre-set osv cache directory that is not empty is refused (the databases must be downloaded fresh in this job)" "cache directory not empty" "${SCAN[@]}"
+OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$pre" want_rc "AC15 a pre-set osv cache directory (here a populated one) is refused before anything runs (the databases must be downloaded fresh in this job)" 2 "${SCAN[@]}"
 FAKE_OSV_MODIFIED=2026-10-07T00:00:00Z want_fail "AC15 an osv database whose newest record is 72 h old fails closed (not refreshed)" "older than 48 hours" "${SCAN[@]}"
 FAKE_OSV_ZIP=none want_fail "AC15 no osv database zip in the cache after the run fails closed" "no osv database" "${SCAN[@]}"
 FAKE_OSV_ZIP=empty want_fail "AC15 an osv database zip without records fails closed" "no record" "${SCAN[@]}"
@@ -1214,7 +1225,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=386
+EXPECT=393
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

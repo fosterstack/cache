@@ -14,8 +14,8 @@
 # (descriptor.db.status, the shape recorded in the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json) and must come from grype.anchore.io, carry
 # its sha256 in the download URL's checksum and be built less than 48 hours before now (the runner's clock, `date +%s`; a CHECK_SCAN_NOW in
 # the environment is refused: no variable sets it). osv-scanner runs in its documented offline mode (v2.6.0 docs/offline-mode.md): --offline-vulnerabilities
-# --download-offline-databases with OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY an empty directory (made fresh for this run, or, when the
-# variable is already defined, refused unless empty: "cache directory not empty"), so every database is downloaded in this job as
+# --download-offline-databases with OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY an empty directory made fresh for this run inside the script's own
+# temporary directory (a variable of that name already defined is refused, as is every OSV_SCANNER_* one), so every database is downloaded in this job as
 # <ecosystem>/all.zip from osv-vulnerabilities.storage.googleapis.com; the evidence is read from those files (the zip's sha256, the newest
 # `modified` of its OSV records) and every zip must be for an ecosystem the scans reported. The results record db_source_url,
 # db_source_basis, the date and db_digest: grype per scanner, its date db_built_or_published (the database build time) and its URL
@@ -78,12 +78,13 @@ VEX=.vex/fosterstack-cache.openvex.json
 # grype runs with -c and an EMPTY config file ($tmp/empty.yaml) so no repository, home or XDG config applies. The same holds for osv-scanner (the owner: the published OpenVEX file is the
 # only exception for all four scanners): any OSV_SCANNER_* variable other than its database cache directory stops the pass, and both osv-scanner calls get --config with an EMPTY toml
 # ($tmp/empty.toml), because it reads an osv-scanner.toml beside the scanned go.mod and drops the vulnerabilities it lists from its report, where the VEX check below never sees them.
+# Its database directory is always a fresh one of this run, so every OSV_SCANNER_* variable is refused, the cache directory one included.
 bad_env=""
 for v in "${!GRYPE_@}"; do
   case "$v" in GRYPE_DB_CACHE_DIR|GRYPE_DB_AUTO_UPDATE) ;; *) bad_env="${bad_env}${v} " ;; esac
 done
 for v in "${!OSV_SCANNER_@}"; do
-  case "$v" in OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY) ;; *) bad_env="${bad_env}${v} " ;; esac
+  bad_env="${bad_env}${v} "
 done
 if [ -n "$bad_env" ]; then
   echo "check-scan: $bad_env found in the environment: only the VEX document may hide a finding, and these settings can; refusing to run (names only, values are never printed)" >&2
@@ -95,7 +96,7 @@ now=$(date +%s)
 GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json)
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-: > "$tmp/empty.yaml"; : > "$tmp/empty.toml"   # the one config grype reads (it needs the extension)
+: > "$tmp/empty.yaml"; : > "$tmp/empty.toml"   # empty.yaml is the one config grype reads (it needs the extension); empty.toml is osv-scanner's
 
 add_target() { tname+=("$1"); tdigest+=("$2"); tpath+=("$3"); tplat+=("${4:-}"); }   # one scan target: its name, its digest, the file the scanner reads and (grype on an image) the platform it must scan
 # The platform children of an image layout (S1, chain-v030 review): grype on the multi-platform index with no platform scans only the runner's own
@@ -166,17 +167,7 @@ for s in "${scanners[@]}"; do
   db_url="" db_built="" db_digest=""
   : > "$tmp/osv-ecos"
   if [ "$s" = osv-scanner ]; then
-    if [ -n "${OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY:-}" ]; then
-      osvcache=$OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY; mkdir -p "$osvcache"
-      if [ -n "$(find "$osvcache" -mindepth 1 -print -quit)" ]; then
-        echo "check-scan: osv-scanner's database cache directory not empty ($osvcache): the databases must be downloaded fresh in this job" >&2
-        failed=1
-        all=$(jq -c --arg n "$s" --arg ver "$version" '. + [{name: $n, version: $ver, verdict: "fail", databases: [], subjects: []}]' <<< "$all")
-        continue
-      fi
-    else
-      osvcache="$tmp/osv-db"; mkdir -p "$osvcache"
-    fi
+    osvcache="$tmp/osv-db"; mkdir -p "$osvcache"   # always a fresh directory of this run: the cache variable is refused above, so no earlier or planted database is ever read
   fi
   dbrc=0; [ "$s" != grype ] || grype db update -c "$tmp/empty.yaml" < /dev/null || dbrc=$?
   if [ "$dbrc" != 0 ]; then
@@ -232,11 +223,11 @@ for s in "${scanners[@]}"; do
     case "$s:$path" in
       grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" ${plat:+--platform "$plat"} -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
-      osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --config "$tmp/empty.toml" --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
+      osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --config "$tmp/empty.toml" --all-vulns --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*)
         arc="$tmp/img-${name//\//-}.tar"
         if osv_archive "$path" "$digest" "$arc"; then
-          OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --config "$tmp/empty.toml" --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$arc" > "$tmp/out.json" || rc=$?
+          OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --config "$tmp/empty.toml" --all-vulns --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$arc" > "$tmp/out.json" || rc=$?
         else
           echo "check-scan: osv-scanner: the archive of $name could not be made from its manifest" >&2; rc=2
         fi ;;
@@ -279,6 +270,18 @@ for s in "${scanners[@]}"; do
       md=$(jq -r '.source.target.manifestDigest // empty' "$tmp/out.json" 2> /dev/null) || md=""
       if [ "$md" != "$digest" ]; then
         echo "check-scan: grype's report for $name names manifest digest '${md:-none}', not the child $digest it was asked to scan: the recorded digest is not the one scanned" >&2; rc=2
+      fi
+    fi
+    if [ "$rc" = 0 ] && [ "$s" = osv-scanner ]; then
+      # An exit 0 does not mean an empty report: osv-scanner can list findings and still exit 0 (findings it classes as unimportant or, with call analysis, uncalled).
+      # --all-vulns shows them; call analysis is OFF by default in 2.6.0 (probed) and no config or variable can turn it on here (the config is empty, OSV_SCANNER_* is refused),
+      # so the scanner never decides not-affected on its own; the report is judged here whatever the exit code. Known limit, pending the owner: osv-scanner's container filter
+      # drops a package named linux before matching, whatever the config or the VEX says.
+      nf=$(jq -e '[.results[]?.packages[]?.vulnerabilities[]?] | length' "$tmp/out.json" 2> /dev/null) || nf=unreadable
+      if [[ ! "$nf" =~ ^[0-9]+$ ]]; then
+        echo "check-scan: osv-scanner's report for $name cannot be read: nothing is judged behind a result that cannot be read" >&2; rc=2
+      elif [ "$nf" -gt 0 ]; then
+        rc=1   # findings in the report: the published VEX decides below, exactly as for an exit 1
       fi
     fi
     if [ "$rc" = 1 ] && [ "$s" = osv-scanner ]; then
