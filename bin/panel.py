@@ -282,6 +282,10 @@ def render_issue(reported):
     return "\n".join(lines) + "\n"
 
 
+# a scanner's diagnostics the producing job writes beside its results (Scout's raw attestation reports); read by nobody here, allowed so the real artifact is not refused
+DIAG = {"scout": {"scout-diag"}}
+
+
 class LayoutError(Exception):
     pass
 
@@ -301,8 +305,11 @@ def scanner_dirs(inp):
         if scanner not in EXPECTED or os.path.islink(path) or not os.path.isdir(path):
             raise LayoutError("%s is not the artifact of a panel scanner (expected a plain folder panel-%s)" % (n, "|".join(sorted(EXPECTED))))
         inner = sorted(os.listdir(path))
-        if inner != [scanner]:
-            raise LayoutError("%s holds %s, not only %s: one scanner's artifact never carries another scanner's output" % (n, " ".join(inner) or "nothing", scanner))
+        if [x for x in inner if x not in ({scanner} | DIAG.get(scanner, set()))] or scanner not in inner:
+            raise LayoutError("%s holds %s, not only %s%s: one scanner's artifact never carries another scanner's output" % (n, " ".join(inner) or "nothing", scanner, (" and " + " ".join(sorted(DIAG[scanner]))) if scanner in DIAG else ""))
+        for x in inner:
+            if x != scanner and (os.path.islink(os.path.join(path, x)) or not os.path.isdir(os.path.join(path, x))):
+                raise LayoutError("%s/%s is not a plain folder" % (n, x))
         sub = os.path.join(path, scanner)
         if os.path.islink(sub) or not os.path.isdir(sub):
             raise LayoutError("%s/%s is not a plain folder" % (n, scanner))

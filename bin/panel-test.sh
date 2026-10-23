@@ -375,6 +375,8 @@ def as_artifacts(root, extra=None):
     for s in P.EXPECTED:
         if os.path.isdir(os.path.join(root, s)):
             shutil.copytree(os.path.join(root, s), os.path.join(out, "panel-" + s, s))
+    os.makedirs(os.path.join(out, "panel-scout", "scout-diag"), exist_ok=True)      # what the scout job really uploads beside its results
+    open(os.path.join(out, "panel-scout", "scout-diag", "report.json"), "w").write("{}")
     return out
 def layout_error(d):
     try:
@@ -421,6 +423,18 @@ lnk = as_artifacts(tree()); shutil.rmtree(os.path.join(lnk, "panel-google")); os
 e = layout_error(lnk)
 check("artifact layout: a symlinked artifact folder is refused", "panel-google" in e, e)
 
+lk = as_artifacts(tree()); shutil.rmtree(os.path.join(lk, "panel-scout", "scout")); os.symlink(os.path.join(lk, "panel-grype", "grype"), os.path.join(lk, "panel-scout", "scout"))
+e = layout_error(lk)
+check("artifact layout: panel-scout/scout that is a link is refused", "panel-scout/scout" in e, e)
+fl = as_artifacts(tree()); shutil.rmtree(os.path.join(fl, "panel-google", "google")); open(os.path.join(fl, "panel-google", "google"), "w").write("x")
+e = layout_error(fl)
+check("artifact layout: panel-google/google that is a plain file is refused", "panel-google/google" in e, e)
+dl = as_artifacts(tree()); shutil.rmtree(os.path.join(dl, "panel-scout", "scout-diag")); os.symlink(os.path.join(dl, "panel-grype"), os.path.join(dl, "panel-scout", "scout-diag"))
+e = layout_error(dl)
+check("artifact layout: scout-diag that is a link is refused", "scout-diag" in e, e)
+nd = as_artifacts(tree()); shutil.copytree(os.path.join(nd, "panel-scout", "scout-diag"), os.path.join(nd, "panel-grype", "scout-diag"))
+e = layout_error(nd)
+check("artifact layout: scout's diagnostics folder inside panel-grype is refused (only scout's own artifact may carry it)", "panel-grype" in e and "scout-diag" in e, e)
 print("panel: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

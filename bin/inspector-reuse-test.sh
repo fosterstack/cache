@@ -1345,10 +1345,11 @@ if which == "rescan":
         bad.append("the tally no longer needs panel-inspector")
     if "bin/panel.py tally" not in "\n".join(s.get("run") or "" for s in pj["steps"]):
         bad.append("the panel tally step is gone")
-    if "pattern: panel-*" not in raw:
-        bad.append("the tally no longer reads the panel-* artifacts")
-    if "merge-multiple" in raw[raw.index("pattern: panel-*") - 400: raw.index("pattern: panel-*") + 200]:
-        bad.append("the panel artifacts are merged into one folder (merge-multiple): each scanner's artifact must keep its own folder panel-<scanner>")
+    if "bin/panel.py tally --in /tmp/panel" not in raw:
+        bad.append("the tally no longer reads /tmp/panel")
+    dls_ = [st for st in pj["steps"] if str(st.get("uses", "")).startswith("actions/download-artifact@")]
+    if len(dls_) != 4 or any(set((st.get("with") or {})) != {"artifact-ids", "path"} for st in dls_):
+        bad.append("the panel job's downloads are not exactly four by artifact id into their own folders (no name, pattern or merge-multiple): bin/panel-wiring-test.sh judges each in full")
 if bad:
     print("; ".join(bad)); sys.exit(1)
 print("wired")
@@ -1477,7 +1478,7 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
 done
 # the gate is still fed after the call site, and the tally still reads the result
 wf main-candidate-rescan.yml rescan panel-artifacts-separate ok ""
-wf main-candidate-rescan.yml rescan panel-artifacts-merged bad "t = t.replace('pattern: panel-*\n          path: /tmp/panel/\n', 'pattern: panel-*\n          path: /tmp/panel/\n          merge-multiple: true\n', 1)"
+wf main-candidate-rescan.yml rescan panel-artifacts-by-name bad "t = t.replace('artifact-ids: \${{ needs.panel-scout.outputs.artifact-id }}', 'name: panel-scout', 1)"
 wf scan.yml scan gate-before-call bad "t = t.replace('python3 bin/inspector-gate.py', 'true bin/inspector-gate.py', 1) + '\n# python3 bin/inspector-gate.py'"
 
 echo "inspector-reuse: $pass passed, $failn failed"

@@ -323,7 +323,9 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
             and "github.event_name!='pull_request'||github.event.pull_request.head.repo.full_name==github.repository" in cond
         # the save-time UTC day step (midnight fix) runs under plain always(), like the save it feeds
         saveday = j == "panel-inspector" and st.get("id") == "insp-save-day" and cond == "always()"
-        if cond and not cache and not saveday and not cond.startswith("${{always()") and "steps.judge" not in cond:
+        # the panel job's four downloads by artifact id carry exactly the non-empty-id guard (checked in full by the artifact section below)
+        dlguard = j == "panel" and str(st.get("uses", "")).startswith("actions/download-artifact@") and re.fullmatch(r"\$\{\{needs\.panel-(grype|scout|inspector|google)\.outputs\.artifact-id!=''\}\}", cond)
+        if cond and not cache and not saveday and not dlguard and not cond.startswith("${{always()") and "steps.judge" not in cond:
             bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
         if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")
@@ -338,6 +340,35 @@ if 'echo "rc=$?" >> "$GITHUB_OUTPUT"' not in js or not re.search(r"bin/panel\.py
 last = pj.get("steps", [])[-1] if pj.get("steps") else {}
 if "steps.judge.outputs.rc != '0'" not in str(last.get("if", "")) or "exit 1" not in (last.get("run") or ""):
     bad.append("the panel's last step does not fail the run when the judge's verdict is not clean")
+# one folder per scanner artifact (the Witness adversarial pass, cache#602): each scanner job uploads exactly one artifact panel-<scanner> from /tmp/panel/ and exposes its id; the
+# panel job downloads each of the four BY ARTIFACT ID (not by name or pattern, so one artifact can never stand for another) into its own fixed folder, only when the id is not empty
+# (an empty id would download every artifact), and each scanner job writes only its own scanner's folder under /tmp/panel/ (scout also its scout-diag)
+PANEL_SC = ("grype", "scout", "inspector", "google")
+PANEL_EXTRA = {"scout": {"scout-diag"}}
+for sc in PANEL_SC:
+    jb = jobs["panel-" + sc]
+    ups = [st for st in jb.get("steps", []) if str(st.get("uses", "")).startswith("actions/upload-artifact@")]
+    if len(ups) != 1 or (ups[0].get("with") or {}).get("name") != "panel-" + sc or (ups[0].get("with") or {}).get("path") != "/tmp/panel/" or ups[0].get("id") != "upload":
+        bad.append(f"panel-{sc} does not upload exactly one artifact panel-{sc} from /tmp/panel/ with the step id upload")
+    if jb.get("outputs") != {"artifact-id": "${{ steps.upload.outputs.artifact-id }}"}:
+        bad.append(f"panel-{sc} does not expose exactly the artifact-id of its upload: {jb.get('outputs')}")
+    tops = set(re.findall(r"/tmp/panel/([A-Za-z0-9_-]+)", text("panel-" + sc)))
+    if tops - ({sc} | PANEL_EXTRA.get(sc, set())):
+        bad.append(f"panel-{sc} writes under /tmp/panel/ outside its own folder: {sorted(tops - ({sc} | PANEL_EXTRA.get(sc, set())))}")
+dls = [st for st in jobs["panel"].get("steps", []) if str(st.get("uses", "")).startswith("actions/download-artifact@")]
+want = {"panel-" + sc: sc for sc in PANEL_SC}
+seen = []
+for st in dls:
+    w = st.get("with") or {}
+    ids = w.get("artifact-ids", "")
+    m = re.fullmatch(r"\$\{\{ needs\.panel-(grype|scout|inspector|google)\.outputs\.artifact-id \}\}", ids)
+    if not m or set(w) != {"artifact-ids", "path"} or w.get("path") != "/tmp/panel/panel-" + m.group(1) \
+            or (st.get("if") or "").replace(" ", "") != "${{needs.panel-%s.outputs.artifact-id!=''}}" % m.group(1):
+        bad.append(f"a panel download is not exactly artifact-ids of one scanner job into its own /tmp/panel/panel-<scanner> folder, guarded by a non-empty id: {w} if {st.get('if')}")
+    else:
+        seen.append(m.group(1))
+if sorted(seen) != sorted(PANEL_SC):
+    bad.append(f"the panel job does not download each of grype, scout, inspector and google exactly once by artifact id: {seen}")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -431,6 +462,15 @@ if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"
   pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
 else failn=$((failn+1)); echo "FAIL probe-document"; fi
 case_ real                    ok  ""
+case_ panel-dl-same-id        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with']['artifact-ids'] = '\${{ needs.panel-grype.outputs.artifact-id }}'"
+case_ panel-dl-by-name        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'name': 'panel-scout', 'path': '/tmp/panel/panel-scout'}"
+case_ panel-dl-pattern        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'pattern': 'panel-*', 'path': '/tmp/panel/'}"
+case_ panel-dl-missing        bad "$J['panel']['steps'] = [x for x in $J['panel']['steps'] if 'panel-google' not in str((x.get('with') or {}).get('path'))]"
+case_ panel-dl-no-guard       bad "s=[x for x in $J['panel']['steps'] if 'panel-inspector' in str((x.get('with') or {}).get('path'))][0]; s.pop('if')"
+case_ panel-dl-wrong-folder   bad "s=[x for x in $J['panel']['steps'] if 'panel-google' in str((x.get('with') or {}).get('path'))][0]; s['with']['path'] = '/tmp/panel/panel-grype'"
+case_ panel-job-no-output     bad "$J['panel-scout'].pop('outputs')"
+case_ panel-upload-wrong-name bad "[x for x in $J['panel-grype']['steps'] if x.get('id') == 'upload'][0]['with']['name'] = 'panel-scout'"
+case_ panel-writes-other      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'] + chr(10) + 'mkdir -p /tmp/panel/scout/x'"
 case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
 case_ grype-three-images      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production fips', 'for v in production')"
 case_ computed-images         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in \$ARCHES')"
