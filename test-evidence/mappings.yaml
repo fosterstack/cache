@@ -78,6 +78,7 @@ mappings:
       - { type: inspection, ref: "internal/server/server.go: per-request logging exists at exactly two failure sites (short write, store error), fields method/key/error only (re-verified 2026-09-11)" }
       - { type: go-test, ref: "internal/server:TestShortWriteLogCarriesNoClientAddress" }
       - { type: go-test, ref: "internal/server:TestStoreErrorLogCarriesNoClientAddress" }
+      - { type: go-test, ref: "internal/server:TestErrorLogScrubsPeerAddresses" }
   - ac: REQ-FIPS-003-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml job fips140-only: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
