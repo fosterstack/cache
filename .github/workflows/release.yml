@@ -385,6 +385,7 @@ jobs:
     with:
       digests: ${{ needs.build.outputs.digests }}
       stage: rebuild
+      records: ${{ needs.rebuild.outputs.records }}
 
   # Check (rules 55, 58, 70; REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate
   # digests, as three Witness steps. It needs Build and Sign (it verifies Build's record, signed by Sign, on entry) and runs beside Rebuild, never after it.

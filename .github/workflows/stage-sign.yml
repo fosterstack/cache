@@ -24,6 +24,11 @@ on:
         description: 'build or rebuild: which records this call signs (the release graph calls this file once for each)'
         required: true
         type: string
+      records:
+        description: 'JSON of the sha256 of the Rebuild record, verdict and rapk records, from the assemble job of Rebuild (the rebuild call only)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -117,15 +122,7 @@ jobs:
           name: signed-witness-build
           path: signed/witness-build
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: signed-witness-apk-ubuntu-24.04
-          path: signed/witness-apk-ubuntu-24.04
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: signed-witness-apk-ubuntu-24.04-arm
-          path: signed/witness-apk-ubuntu-24.04-arm
 
   sign-rebuild:
     name: sign-rebuild
@@ -162,8 +159,13 @@ jobs:
           DIGESTS: ${{ inputs.digests }}
         run: printf '%s' "$DIGESTS" > digests.json
 
+      - name: write Rebuild's record digests to a file
+        env:
+          RECORDS: ${{ inputs.records }}
+        run: printf '%s' "$RECORDS" > rebuild-records.json
+
       - name: check Rebuild's records, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+        run: python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
 
       - name: sign the staged records and check each signed one
         run: bash bin/witness-sign-staged.sh staged signed

@@ -129,7 +129,7 @@ def wrap(line, width=110):      # break a long command at its option boundaries,
 
 
 def stage_text(family):
-    call = "    inputs:\n      mode:\n        description: release or snapshot\n        type: string\n        default: release\n" if family == "rebuild" else ""
+    call = "    inputs:\n      mode:\n        description: release or snapshot\n        type: string\n        default: release\n    outputs:\n      records:\n        description: the record digests, for Sign\n        value: %s\n" % S.RECORDS_STAGE_OUTPUT if family == "rebuild" else ""
     if family == "build":
         call = "    inputs:\n      hostile:\n        description: dry run only\n        type: boolean\n        default: false\n"
         call += "      mode:\n        description: release or snapshot\n        type: string\n        default: release\n"
@@ -142,6 +142,7 @@ def stage_text(family):
                 else "    needs: apk\n    runs-on: ubuntu-24.04\n")
         out += "    permissions:\n" + "".join("      %s: %s\n" % kv for kv in sp["perm"].items())
         if sp.get("expose"): out += "    outputs:\n      digests: %s\n" % S.JOB_OUTPUT
+        if sp.get("expose_records"): out += "    outputs:\n      records: %s\n" % S.RECORDS_JOB_OUTPUT
         out += "    steps:\n"
         out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
         out += "          persist-credentials: false\n          fetch-depth: 0\n"
@@ -156,6 +157,7 @@ def stage_text(family):
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
+        if sp.get("expose_records"): out += "      - id: records\n        name: expose the record digests as the stage output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.EXPOSE_RECORDS)
         if sp.get("hostile"):
             out += "      - name: hostile step (dry run only)\n        if: %s\n        run: %s\n" % (S.HOSTILE_IF, S.HOSTILE_RUN)
             out += "      - name: upload the hostile attempts (dry run only)\n        if: %s\n" % S.HOSTILE_IF
@@ -220,6 +222,7 @@ jobs:
     with:
       digests: ${{ needs.build.outputs.digests }}
       stage: rebuild
+      records: ${{ needs.rebuild.outputs.records }}
   check:
     needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
@@ -479,8 +482,13 @@ rb r_dl "005-AC4 Rebuild downloads Build's dist (it takes only the record and th
        "name: \${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}\n          path: witness-build" 'name: dist\n          path: witness-build'
 rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" '      - name: rapk under Witness' \
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
-rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its verdict artifact)" "on: must be" 'workflow_call:\n' \
-             'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
+rb r_out "005-AC1 Rebuild exposes a second stage output (its only output is the record digests)" "on: must be" '    outputs:\n      records:' \
+             '    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n      records:'
+rb r_recgone "R2 the record-digest step is gone from Rebuild's assemble job" "must be exactly id: records" '      - id: records\n        name: expose the record digests as the stage output\n        if: ${{ inputs.mode == '"'"'release'"'"' }}\n        run: echo "records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)" >> "$GITHUB_OUTPUT"\n' ''
+rb r_recid "R2 the record-digest step has another id" "must be exactly id: records" '      - id: records' '      - id: other'
+rb r_recdir "R2 the record-digest step reads another rapk directory" "must be exactly id: records" 'rec-rapk/ubuntu-24.04-arm)' 'rec-rapk/ubuntu-24.04)'
+rb r_recif "R2 the record-digest step runs in snapshot mode too" "must be exactly id: records" "        if: \${{ inputs.mode == 'release' }}\n        run: echo \"records=" '        run: echo "records='
+rb r_recjob "R2 the assemble job exposes the records of another step" "must expose exactly" 'steps.records.outputs.records }}\n    steps' 'steps.other.outputs.records }}\n    steps'
 rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" '    inputs:\n      mode:' \
              '    inputs:\n      hostile:\n        type: boolean\n        default: false\n      mode:'
 # Release review R1 (Oct 21), REQ-CHAIN-005-AC2/AC6: Rebuild's apk job installs the same checksum-pinned Go toolchain as Build's (build-apk.sh refuses to run in CI without it), right after Witness
@@ -2675,7 +2683,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=914
+EXPECT=919
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -2,7 +2,8 @@
   "_note": "The scripts a release-chain stage file may run (rule 66/67 grammar, advisor decision b, Oct 9): by path and sha256. Changing a listed script changes its hash: update the row in the same commit (python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' PATH). The text scan over listed scripts over-reports by design; `tools` lists the denied words a script may contain, `runs` the listed scripts it may start.",
   "env_names": [
     "DIGESTS",
-    "MODE"
+    "MODE",
+    "RECORDS"
   ],
   "scripts": [
     {
@@ -2756,6 +2757,13 @@
       "id": "digests",
       "run": "echo \"digests=$(jq -c . digests.json)\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-004-AC2: the stage output Sign reads (the digests.json text); the one reviewed write into the job outputs"
+    },
+    {
+      "file": ".github/workflows/stage-reproducibility.yml",
+      "job": "assemble",
+      "id": "records",
+      "run": "echo \"records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-005-AC4 (adversarial pass R2): the stage output Sign checks Rebuild\u0027s records against (the sha256 of its record, verdict and rapk records); a job output only the Rebuild assemble job can write"
     }
   ]
 }

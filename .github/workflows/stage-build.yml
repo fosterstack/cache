@@ -5,8 +5,8 @@
 # output `digests`), Rebuild and Check get the artifacts.
 # `mode` is release (the default) or snapshot (REQ-CHAIN-004-AC12): the guard step (no if: GitHub compares case-insensitively) refuses any other value, and each job has one Witness step per mode,
 # gated by `if`. A snapshot has no tag, no admission and no Sign; its records carry a snapshot- step name that every verifier refuses (AC13).
-# `hostile` is true only in a dry run on a branch (PR 1's REQ-CHAIN-001-AC5): the hostile step tries to defeat Sign and writes the raw
-# material of its attempts; it never runs in a release.
+# `hostile` is true only on a push of a release-candidate tag (a tag with -rc, release.yml; PR 1's REQ-CHAIN-001-AC5): the hostile step tries to defeat Sign and
+# writes the raw material of its attempts; it never runs for a final tag or a branch.
 # The shape of this file is judged by bin/chain-build-wiring-test.sh (an exact grammar), the behaviour of the scripts by the same test.
 name: 'Stage: build'
 on:
