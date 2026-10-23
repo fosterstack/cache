@@ -3125,7 +3125,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='432c54bcc86d4fcc7b4792b31dc599576637bead5b57e8c8b4d0d7e5a7706daf'
+FX_PIN='40639dff62eef23a740b105f8e5fa67f38651fe21355884d498b3193378af109'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4852,7 +4852,7 @@ t=$(ws_tree planextra); printf 'staged/witness-evil/build-collection.payload\tsi
 t=$(ws_tree badfinal); printf 'staged/witness-build/build-collection.payload\tsigned/elsewhere/build-collection.json\nstaged/witness-apk-ubuntu-24.04/apk-collection.payload\tsigned/witness-apk-ubuntu-24.04/apk-collection.json\n' > "$t/staged/plan.txt"; wsno "F4 a plan line whose signed path is not the fixed one is refused" "$t"
 t=$(ws_tree dup); cat "$t/staged/plan.txt" "$t/staged/plan.txt" > "$t/plan2" && mv "$t/plan2" "$t/staged/plan.txt"; wsno "F4 a payload listed twice is refused" "$t"
 t=$(ws_tree empty); : > "$t/staged/plan.txt"; wsno "F4 an empty plan signs nothing and refuses" "$t"
-t=$(ws_tree link); rm "$t/staged/witness-build/build-collection.payload"; ln -s /etc/hosts "$t/staged/witness-build/build-collection.payload"; wsno "F4 a symlink payload is refused" "$t"
+t=$(ws_tree link); rm "$t/staged/witness-build/build-collection.payload"; echo x > "$t/real-target"; ln -s "$t/real-target" "$t/staged/witness-build/build-collection.payload"; wsno "F4 a symlink payload is refused" "$t"
 t=$(ws_tree stray); echo x > "$t/staged/stray.txt"; wsno "F4 a stray file in the staged root is refused" "$t"
 t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/staged/witness-build/evil-collection.payload"; printf 'staged/witness-build/evil-collection.payload\tsigned/witness-build/evil-collection.json\n' > "$t/staged/plan.txt"; wsno "F4 a payload of a step name outside apk/build/rapk/rebuild is refused" "$t"
 
