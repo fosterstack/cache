@@ -10,7 +10,7 @@
 #                                                                 cosign to bin/install-scanner.sh)
 #                 4. run: printf '%s' "$DIGESTS" > digests.json  (env DIGESTS: ${{ inputs.digests }}, the only env in the job)
 #                 5. run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json
-#                         --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+#                         --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
 #                         (the filenames are PINNED: `--template` names the committed template, from which `sign --check` makes the
 #                          per-tag policy with the committed trust file and the tag from GITHUB_REF, rule 57; it verifies Build's
 #                          record, compares the digests, THEN signs; the identity token is requested by cosign
@@ -76,27 +76,28 @@ def signer_calls(text, strip_comments=True): return _cts.signer_calls(text, TABL
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
 R_INSTALL = r"bash bin/install-scanner\.sh cosign"
+R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
 R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
 # the Witness records of the building jobs carry a throwaway key's signature only (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): Sign checks them against
 # the artifacts it receives and signs each one keyless; the Rebuild records in their own job, which receives no Rebuild apk or image (the owner's separation rule)
-R_REC_BUILD = r"python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out signed --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
-R_REC_REBUILD = r"python3 -I -B bin/chain-verify\.py sign-records --stage rebuild --template \.github/policy/release-policy\.template\.json --digests digests\.json --out signed --record-dir witness-rapk-ubuntu-24\.04 --record-dir witness-rapk-ubuntu-24\.04-arm --record-dir witness-rebuild"
+R_REC_BUILD = r"python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
+R_REC_REBUILD = r"python3 -I -B bin/chain-verify\.py sign-records --stage rebuild --template \.github/policy/release-policy\.template\.json --digests digests\.json --out staged --record-dir witness-rapk-ubuntu-24\.04 --record-dir witness-rapk-ubuntu-24\.04-arm --record-dir witness-rebuild"
 RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
 EXPECT_STEPS = {
     "sign": [("checkout",), ("download", "witness-build", "witness-build")]
             + [("download", "witness-apk-" + r, "witness-apk-" + r) for r in RUNNERS]
             + [("download", "images", "artifacts/witness-build/out"), ("download", "dist", "artifacts/witness-build/dist")]
             + [("download", "apk-" + r, "artifacts/witness-apk-" + r + "/out") for r in RUNNERS]
-            + [("install", "cosign"), ("install", "witness"), ("printf",), ("records", "build"), ("sign",), ("upload", "provenance", "provenance"),
+            + [("install", "cosign"), ("install", "witness"), ("printf",), ("records", "build"), ("signstaged",), ("sign",), ("upload", "provenance", "provenance"),
                ("upload", "signed-witness-build", "signed/witness-build")]
             + [("upload", "signed-witness-apk-" + r, "signed/witness-apk-" + r) for r in RUNNERS],
     "sign-rebuild": [("checkout",)]
             + [("download", "witness-rapk-" + r, "witness-rapk-" + r) for r in RUNNERS]
-            + [("download", "witness-rebuild", "witness-rebuild"), ("install", "witness"), ("printf",), ("records", "rebuild")]
+            + [("download", "witness-rebuild", "witness-rebuild"), ("install", "witness"), ("printf",), ("records", "rebuild"), ("signstaged",)]
             + [("upload", "signed-witness-rapk-" + r, "signed/witness-rapk-" + r) for r in RUNNERS]
             + [("upload", "signed-witness-rebuild", "signed/witness-rebuild")],
 }
-R_SIGN = r"python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
+R_SIGN = r"python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 def judge_sign(path):
     if not os.path.exists(path): return ["missing: " + path]
     try: d, text = load(path)
@@ -171,6 +172,9 @@ def judge_sign(path):
                 elif "\n" not in line and re.fullmatch(R_SIGN, line):
                     order.append("sign"); seq.append(("sign",))
                     if env: bad.append("AC3: the signing step passes env %s; the digests come from the file" % sorted(env))
+                elif "\n" not in line and re.fullmatch(R_SIGNSTAGED, line):
+                    order.append("signstaged"); seq.append(("signstaged",))
+                    if env: bad.append("AC3: the staged-signing step passes env %s" % sorted(env))
                 elif "\n" not in line and (re.fullmatch(R_REC_BUILD, line) or re.fullmatch(R_REC_REBUILD, line)):
                     kind = "build" if re.fullmatch(R_REC_BUILD, line) else "rebuild"
                     order.append("records"); seq.append(("records", kind))
@@ -563,9 +567,11 @@ jobs:
           DIGESTS: \${{ inputs.digests }}
         run: printf '%s' "\$DIGESTS" > digests.json
       - name: check Build's records against the artifacts, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out signed --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
+        run: python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
       - name: check Build's record, compare the digests, then sign the provenance
-        run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+        run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: provenance
@@ -611,7 +617,9 @@ jobs:
           DIGESTS: \${{ inputs.digests }}
         run: printf '%s' "\$DIGESTS" > digests.json
       - name: check Rebuild's records, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --out signed --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+        run: python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: signed-witness-rapk-ubuntu-24.04
@@ -638,7 +646,7 @@ PY
 caught() { # LABEL regex replacement
   if mutate "$1" "$2" "$3"; then expect caught "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi
 }
-SIGNLINE='run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
+SIGNLINE='run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
@@ -654,10 +662,10 @@ caught "WIT3 sign-rebuild without id-token (it signs keyless)" '(  sign-rebuild:
 caught "WIT3 sign-rebuild with a write beyond id-token" '(  sign-rebuild:.*?permissions:\n      contents: read)' '\1\n      packages: write'
 caught "WIT3 the records step of sign runs the wrong stage" 'sign-records --stage build' 'sign-records --stage rebuild'
 caught "WIT3 the records step of sign-rebuild runs the wrong stage" 'sign-records --stage rebuild' 'sign-records --stage build'
-caught "WIT3 the records step without the artifact directory" ' --artifacts-dir artifacts --out signed' ' --out signed'
+caught "WIT3 the records step without the artifact directory" ' --artifacts-dir artifacts --out staged' ' --out staged'
 caught "WIT3 an extra record directory" '--record-dir witness-apk-ubuntu-24.04-arm\n' '--record-dir witness-apk-ubuntu-24.04-arm --record-dir witness-evil\n'
 caught "WIT3 the records step with an env" "      - name: check Build's records against the artifacts, then sign them" "      - env:\n          X: y\n        name: check Build's records against the artifacts, then sign them"
-caught "WIT3 the records step after the provenance step (the records must be checked first)" "(      - name: check Build's records against the artifacts, then sign them\n        run: [^\n]*\n)(      - name: check Build's record, compare the digests, then sign the provenance\n        run: [^\n]*\n)" '\2\1'
+caught "WIT3 the records step after the provenance step (the records must be checked first)" "(      - name: check Build's records against the artifacts, then sign them\n        run: [^\n]*\n)(      - name: sign the staged records and check each signed one\n        run: [^\n]*\n)(      - name: check Build's record, compare the digests, then sign the provenance\n        run: [^\n]*\n)" '\3\1\2'
 caught "WIT3 the whole signed directory uploaded (only the named signed-witness-* directories may leave)" 'name: signed-witness-build\n          path: signed/witness-build' 'name: signed-witness-build\n          path: signed'
 caught "WIT3 an unsigned record directory uploaded as a signed artifact" 'path: signed/witness-apk-ubuntu-24.04\n' 'path: witness-apk-ubuntu-24.04\n'
 caught "WIT3 Witness is not installed from the pinned installer" 'run: bash bin/install-scanner.sh witness' 'run: curl -sL https://example.com/witness -o /usr/local/bin/witness'
@@ -699,12 +707,12 @@ caught "AC2 unpinned action" "actions/checkout@$sha" 'actions/checkout@v4'
 caught "AC2 github-script step" "      - uses: actions/checkout" "      - uses: actions/github-script@$sha\n        with:\n          script: core.setOutput('t', await core.getIDToken())\n      - uses: actions/checkout"
 caught "AC2 the Sign step does not check (no --check)" ' --check' ''
 caught "AC2 the Sign step only verifies (verify, not sign --check)" 'chain-verify.py sign --check --signer cosign' 'chain-verify.py verify --record witness-build/build-collection.json #'
-caught "AC2 the Sign step has no Build record" ' --build-record witness-build/build-collection.json' ''
+caught "AC2 the Sign step has no Build record" ' --build-record signed/witness-build/build-collection.json' ''
 caught "AC2 the Sign step reads the digests inline, not from the file" '--digests digests.json' '--digests "\$DIGESTS"'
 caught "AC2 the Sign step uses another signer" '--signer cosign' '--signer witness'
 caught "AC2 the signing tool is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' 'run: curl -sL https://example.com/cosign -o cosign'
 caught "AC2 the signing step runs before the tool is installed" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
-caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
+caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
 # Opus r4 B1: Python puts the script's directory first on sys.path, so an unlisted bin/<stdlib name>.py would replace that module inside
 # the Sign job (which holds id-token: write); -I (isolated) removes it. The Sign step must run the verifier isolated.
 caught "AC2 the Sign step runs the verifier without -I (a bin/<stdlib name>.py would shadow the standard library)" 'python3 -I -B bin/chain-verify.py' 'python3 bin/chain-verify.py'
@@ -794,12 +802,14 @@ mk() {
   printf '#!/usr/bin/env python3\nprint("chain-verify")\n' > "$d/bin/chain-verify.py"
   printf '#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build -- bin/build-apk.sh "$1"\n' > "$d/bin/build-stage.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho built\n' > "$d/bin/build-apk.sh"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho staged\n' > "$d/bin/witness-sign-staged.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
   printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"stage-sign.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"}]}\n' > "$d/.github/policy/id-token-jobs.json"
   cat > "$d/.spec.json" <<'JSON'
 [{"path":"bin/install-scanner.sh","tools":["curl","sha256sum"],"signs":false,"runs":[]},
  {"path":"bin/chain-verify.py","tools":[],"signs":"provenance","sign_subcommand":"sign","reason":"only `chain-verify.py sign` in stage-sign.yml signs provenance","runs":[]},
  {"path":"bin/build-stage.sh","tools":["witness"],"signs":"other","reason":"Build's own Witness collection (rule 51)","runs":["bin/build-apk.sh"]},
+ {"path":"bin/witness-sign-staged.sh","tools":[],"signs":"other","reason":"Sign's staged-record signer (REQ-CHAIN-005-AC4)","runs":[]},
  {"path":"bin/build-apk.sh","tools":[],"signs":false,"runs":[]}]
 JSON
   gen "$d"; echo "$d"
@@ -4470,7 +4480,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=2031
+EXPECT=2052
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -87,10 +87,13 @@ jobs:
         run: printf '%s' "$DIGESTS" > digests.json
 
       - name: check Build's records against the artifacts, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out signed --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
+        run: python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
+
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
 
       - name: check Build's record and the digests, then sign the provenance
-        run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+        run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -148,7 +151,10 @@ jobs:
         run: printf '%s' "$DIGESTS" > digests.json
 
       - name: check Rebuild's records, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --out signed --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+        run: python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
