@@ -1773,6 +1773,8 @@ case_ exec-nested-too-deep-bad     bad "$(r 'docker exec C docker exec C docker 
 case_ run-inner-script-binding-bad bad "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 bash evil.sh')" "printf 'docker pull alpine:latest\\n' > evil.sh"
 # a path inside a container is not a committed file: refused (fails closed; the inner command is judged like a top-level one)
 case_ exec-inner-path-refused-bad  bad "$(r 'docker exec C ./run.sh')"
+case_ run-optvar-inner-bad         bad "$(rb 'RUN_OPTS=--rm; docker run $RUN_OPTS alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pip install unpinned-pkg')"
+case_ exec-optvar-inner-bad        bad "$(rb 'EX_OPTS=-i; docker exec $EX_OPTS C pip install unpinned-pkg')"
 mutant_ exec-inner      'if verb == "exec":  # INNER-EXEC|||if False:  # INNER-EXEC' "$(r 'docker exec C docker pull alpine:latest')"
 mutant_ run-inner       'if verb in ("run", "create"):  # INNER-RUN|||if False:  # INNER-RUN' "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
 mutant_ entrypoint-inner 'if entry:  # INNER-ENTRYPOINT|||if False:  # INNER-ENTRYPOINT' "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"

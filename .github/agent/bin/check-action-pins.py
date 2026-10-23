@@ -1039,7 +1039,7 @@ def _command_words(toks):
     return words
 
 
-def _container_inner(tool, args):
+def _container_inner(tool, args, optvars=frozenset()):
     """The command a step runs INSIDE a container: for `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` the words after the
     container, for `… run|create [opts] IMAGE CMD…` the words after the image (led by the --entrypoint program when one is given). The image or
     container itself is judged elsewhere; the inner command is a command of its own and is read like a top-level one (#593 review: `exec`
@@ -1054,6 +1054,7 @@ def _container_inner(tool, args):
     verb, rest = rest[0], rest[1:]
     if verb == "container" and rest[:1] in (["exec"], ["run"]):
         verb, rest = rest[0], rest[1:]
+    rest = [a for a in rest if not _is_optvar(a, optvars)]  # INNER-OPTVARS  (a variable that holds OPTIONS is not the image or the container)
     if verb == "exec":  # INNER-EXEC
         k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
         return None if unknown or k >= len(rest) else rest[k + 1:]
@@ -1079,6 +1080,7 @@ def _commands(script, depth=0):
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
+    optvars = _options_variables(script)
     out = []
     if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
         out.append(["__too_deep__", "case ... esac inside $( )"])    # a case pattern's `)` ends the substitution early: refuse (Codex #164 r19, B10)
@@ -1172,7 +1174,7 @@ def _commands(script, depth=0):
         at = next((i for i, w in enumerate(toks) if _base(w) in TOOLS or PKG_TOOL.match(_base(w))), None)
         if at is not None:
             out.append([_base(toks[at])] + toks[at + 1:])
-            inner = _container_inner(_base(toks[at]), toks[at + 1:])
+            inner = _container_inner(_base(toks[at]), toks[at + 1:], optvars)
             if inner:         # the command run inside the container is a command of its own
                 if depth >= 4:
                     out.append(["__too_deep__", _base(toks[at])])
