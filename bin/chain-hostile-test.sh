@@ -351,17 +351,22 @@ def conj(cond):
     condition proves nothing about either side). A conjunct must be EXACTLY the wanted text: `!startsWith(...)` and
     `startsWith(...) == false` are different conjuncts (Opus r5 SF-B)."""
     m = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", cond.strip(), re.S)
-    if not m or "||" in m.group(1): return None
+    if not m: return None
+    # patch-failed (cache#554): the ONE grouped or-condition allowed is this exact text, as a whole && conjunct; it is a status check on the
+    # needed jobs (a failed one, or a release job cancelled by the concurrency group), so it neither negates nor hides any other conjunct
+    grp = re.sub(r"(?<!!)(?<!! )\(\s*contains\(\s*needs\.\*\.result\s*,\s*'failure'\s*\)\s*\|\|\s*needs\.release\.result\s*==\s*'cancelled'\s*\)", "FAILGRP", m.group(1))
+    if "||" in grp: return None
     # round 8 (Opus R3 should-fix 1): the ONLY parentheses allowed are those of the exact startsWith(...) call; any other
     # grouping (`!( a && b )`) changes what the conjuncts mean, so it fails closed
-    body = re.sub(r"startsWith\(\s*github\.ref\s*,\s*'refs/tags/v'\s*\)", "TAGCALL", m.group(1))
+    body = re.sub(r"startsWith\(\s*github\.ref\s*,\s*'refs/tags/v'\s*\)", "TAGCALL", grp)
     # implementation step (PR 1): the exact status function `failure()` (no arguments, no grouping) is also allowed, because patch-failed
     # must run on a failed stage; it is a status check, not a grouping, so it cannot negate or hide a conjunct
     body = re.sub(r"(?<![\w.])failure\(\)", "FAILCALL", body)
+    body = re.sub(r"(?<![\w.])always\(\)", "ALWAYSCALL", body)   # cache#554: patch-failed opens with always() (the status function that lets it run after a failed or cancelled job); same reasoning
     # the exact rc-tag test (advisor 0383) is also one allowed call: a jobs's `!contains(github.ref_name, '-rc')` conjunct keeps an rc tag out of the old publishing path
     body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-rc'\s*\)", "RCCALL", body)
     if "(" in body or ")" in body: return None
-    return [re.sub(r"\s+", " ", c.strip()).replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("RCCALL", "contains(github.ref_name, '-rc')") for c in body.split("&&")]
+    return [re.sub(r"\s+", " ", c.strip()).replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("ALWAYSCALL", "always()").replace("FAILGRP", "(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled')").replace("RCCALL", "contains(github.ref_name, '-rc')") for c in body.split("&&")]
 OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml"}
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
@@ -1197,6 +1202,62 @@ d=$(mk w_tagneg); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref,
 d=$(mk w_tagfalse); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v') == false"; wexpect caught "wiring: the tag conjunct is compared (== false)" "$d"
 d=$(mk w_tagparen); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "!(true && !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') && true)"; wexpect caught "wiring: the whole condition is negated by a grouping parenthesis (round 8, Opus R3)" "$d"
 d=$(mk w_gateneg); pymut "$(rel "$d")" "!inputs.dry-run && startsWith(github.ref, 'refs/tags/v')" "inputs.dry-run && startsWith(github.ref, 'refs/tags/v')"; wexpect caught "wiring: the dry-run conjunct is not negated (promotion would run ONLY in a dry run)" "$d"
+d=$(mk w_pf_ok); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect ok "wiring: patch-failed with the cache#554 condition (a failed job, or a cancelled release, on a tag run) passes" "$d"
+d=$(mk w_pf_notag); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed in the cache#554 form without the tag conjunct (a branch run could reach it)" "$d"
+d=$(mk w_pf_negtag); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && !startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed in the cache#554 form with the tag conjunct negated" "$d"
+d=$(mk w_pf_nodry); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed in the cache#554 form without !inputs.dry-run" "$d"
+d=$(mk w_pf_orrest); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run || true }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed in the cache#554 form with a trailing || true" "$d"
+d=$(mk w_pf_orgrp); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled' || startsWith(github.ref, 'refs/tags/v')) && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed whose group has a third or-term (the tag test hidden in the group)" "$d"
+d=$(mk w_pf_othergrp); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && (contains(needs.*.result, 'failure') || true) && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed with a different grouped or-condition (|| true)" "$d"
+d=$(mk w_pf_negrp); pymut "$(rel "$d")" "  promotion:" "  patch-failed:
+    if: \${{ always() && !(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
+    needs: [sign]
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+  promotion:"; wexpect caught "wiring: patch-failed with the group negated" "$d"
 d=$(mk w_pmref); pymut "$d/.github/workflows/stage-promote.yml" '--tag "$GITHUB_REF_NAME"' '--ref "$GITHUB_REF"'; wexpect caught "wiring: Release makes its policy with --ref (a branch dry-run record would be accepted)" "$d"
 d=$(mk w_pmnone); printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo publish\n' > "$d/.github/workflows/stage-promote.yml"; wexpect caught "wiring: Release never makes a policy" "$d"
 d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template t --ref "$GITHUB_REF" --out p.json\n' > "$d/.github/workflows/stage-verify.yml"; wexpect caught "wiring: another stage file makes a policy with --ref" "$d"
@@ -1269,7 +1330,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=253
+EXPECT=261
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
