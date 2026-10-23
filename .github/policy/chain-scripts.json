@@ -38,7 +38,7 @@
       "runs": [],
       "signs": false,
       "reason": "reads the archive pointer and verifies the archive artifact and each file's sha256 and size against it (run by bin/archive-pull.sh)",
-      "sha256": "55c2c5716053b8b82b0009d6186aba33e1f478e75ebc728b9f7c3714155699ed"
+      "sha256": "4587448ff82d3258336688450621533ded507fbc3c1b00a944e2490020505519"
     },
     {
       "path": "bin/install-host-bwrap.py",

@@ -399,7 +399,7 @@ for p in sys.argv[1:]:
             n += 1; assert re.match(r"\s+-I\s+-B\b", m.group(1)), (p, ln)
 assert n >= 3, n
 P
-t AC9 "archive-verify.py runs no subprocess and opens no socket (hashlib, json, os, re, sys only)" bash -c "! grep -Eq '^ *(import|from) +(subprocess|socket|urllib|http|ssl|shutil|tempfile|ctypes|requests)' '$VER' && grep -Eq '^import' '$VER'"
+t AC9 "archive-verify.py runs no subprocess and opens no socket (hashlib, json, os, re, signal, sys only)" bash -c "! grep -Eq '^ *(import|from) +(subprocess|socket|urllib|http|ssl|shutil|tempfile|ctypes|requests)' '$VER' && grep -Eq '^import' '$VER'"
 t AC9 "no test hook: neither script mentions a test mode or a TEST_ or ARCHIVE_ variable" bash -c "! grep -v TEST-SUBST '$PUSH' '$PULL' '$VER' | grep -En 'TEST_MODE|FSCACHE_TEST|ARCHIVE_[A-Z]+|TEST_[A-Z]+'"
 t AC9 "the copy the suite runs differs from each production file ONLY in occurrences of the four fixed paths, each replaced one for one by the dispatcher of that tool (any other byte difference fails)" python3 - "$root/bin" "$CP" "$work/tools" <<'P'
 import re, sys
@@ -487,5 +487,27 @@ assert n[0] >= 2, "the injection point was never reached"
 assert not os.path.lexists(out + ".stage"), "the stage directory was left behind"
 assert not os.path.lexists(out), "a partial output was left behind"
 P
+for SIG in SIGTERM SIGINT; do
+t AC6 "$SIG during the extraction (after the first file) leaves no <out>.stage and no <out> behind, and the process exits through SystemExit" python3 - "$VER" "$work/ptr.json" "$work/layout-keep" "$work/o-sig-$SIG" "$SIG" <<'P'
+import importlib.util, os, signal, sys
+spec = importlib.util.spec_from_file_location("av", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ptr, layout, out, name = sys.argv[2:6]
+n = [0]; real = os.chmod
+def interrupted(p, mode, *a, **k):
+    n[0] += 1
+    if n[0] == 2: os.kill(os.getpid(), getattr(signal, name))   # a real signal, delivered to this process in the middle of the extraction
+    return real(p, mode, *a, **k)
+os.chmod = interrupted
+try:
+    m.cmd_unpack({"--pointer": ptr, "--layout": layout, "--out": out})
+except SystemExit as e:
+    assert e.code not in (0, None), "the interrupted extraction exited as a success"
+else:
+    raise SystemExit("the signal did not stop the extraction")
+assert n[0] >= 2, "the injection point was never reached"
+assert not os.path.lexists(out + ".stage"), "the stage directory was left behind"
+assert not os.path.lexists(out), "a partial output was left behind"
+P
+done
 echo "archive-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
