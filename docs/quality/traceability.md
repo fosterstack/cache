@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 99 |
-| Acceptance criteria | 481 |
+| Acceptance criteria | 483 |
 | Release-blocking ACs | 130 |
-| ACs with mapped evidence | 470 |
+| ACs with mapped evidence | 472 |
 | Release-blocking ACs with mapped evidence | 130 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 47 |
@@ -327,6 +327,7 @@ The server shall write a marker file at startup and remove it on clean shutdown.
 | REQ-STORE-005-AC3 | Given a data directory with an unclean-shutdown marker and one of each inconsistency; when the server starts; then reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk | component |  | approved | 2 item(s) |
 | REQ-STORE-005-AC4 | Given a data directory with an unclean-shutdown marker, and a startup reconciliation that fails partway, returning an error after some index changes; when the server starts; then it exits non-zero without serving, naming the reconciliation failure; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles again | component | yes | approved | 3 item(s) |
 | REQ-STORE-005-AC5 | Given a started server (startup reconciliation completed) with an upload in flight, and a serving error or a shutdown error (the HTTP server is forced closed before the handler finishes); when the process exits through that error; then it exits non-zero naming the serving or shutdown error; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles and adopts any blob that was stored but not indexed (adopted_blobs counted) | component | yes | approved | 9 item(s) |
+| REQ-STORE-005-AC6 | Given a metadata record whose value is not exactly 16 bytes (on-disk corruption), at any key; when the index is read for that key or scanned (touch, total size, least recently used, list); then the read returns a corrupt-record error naming the problem; it never indexes past the end of the value, so the process does not panic | unit |  | approved | 3 item(s) |
 
 ## Eviction
 
@@ -407,6 +408,7 @@ GET /statusz shall return the server's state — version, revision, FIPS posture
 | REQ-OBS-003-AC5 | Given /statusz and /metrics requested within the same 5-second sample lifetime (either order); when both responses are compared; then the disk values are identical, because both returned the one cached sample; neither request caused the other to see an older or newer measurement (if the sample expires between the two requests the second re-measures; the equality rule is guaranteed within a sample) | http-integration |  | approved | 1 item(s) |
 | REQ-OBS-003-AC6 | Given a request with an HTML Accept header, on a healthy and on a read-only server; when /statusz is fetched; then the page shows a "Data directory" row ("writable, X GiB free" or "NOT writable, X GiB free") and PUT errors by reason; still no form, button, or state-changing control (extends AC2) | http-integration |  | approved | 1 item(s) |
 | REQ-OBS-003-AC7 | Given auth enabled; when /statusz, /metrics, /healthz are fetched without credentials; then /statusz is refused as today; /metrics and /healthz stay open as today (/metrics now exposes the free bytes of the data volume: operational, not secret, the same exposure level as store_bytes) | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-003-AC8 | Given two uploads that overlap in time, the first upload's gauge refresh held after it read the totals and before it set the gauges; when the second upload completes and then the first refresh continues; then the store_bytes and store_entries gauges end equal to the store's totals (the last refresh to run also read last) | component |  | approved | 1 item(s) |
 
 ### REQ-OBS-004 — Startup announcement
 

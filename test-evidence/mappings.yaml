@@ -263,6 +263,11 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestServePanicInServerNewKeepsMarker" }
       - { type: go-test, ref: "cmd/fscache:TestServeTLSErrorsKeepMarker" }
       - { type: go-test, ref: "cmd/fscache:TestServeRealServingErrorWithUploadInFlightThenRestart" }
+  - ac: REQ-STORE-005-AC6
+    evidence:
+      - { type: go-test, ref: "internal/metadata:TestDecodeRejectsARecordThatIsNot16Bytes" }
+      - { type: go-test, ref: "internal/metadata:TestDecodeSizeRejectsARecordThatIsNot16Bytes" }
+      - { type: go-test, ref: "internal/metadata:TestShortRecordIsAnErrorForEveryReader" }
   - ac: REQ-HTTP-001-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }
@@ -1204,6 +1209,9 @@ mappings:
   - ac: REQ-OBS-003-AC7
     evidence:
       - { type: go-test, ref: "internal/server:TestAuthSurfaceUnchangedWithDiskSignals" }
+  - ac: REQ-OBS-003-AC8
+    evidence:
+      - { type: go-test, ref: "internal/server:TestGaugesEndAtTheStoreTotalsWhenUploadsOverlap" }
   - ac: REQ-SBOM-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }

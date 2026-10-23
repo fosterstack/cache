@@ -178,9 +178,9 @@ type ReconcileStats struct {
 // unclean shutdown (REQ-STORE-005): blobs are truth, the index is
 // rebuildable. Blobs with no record are adopted (size from disk, recency
 // now); records whose size differs from the blob's are corrected; records
-// with no blob are dropped; stale temp files from
-// interrupted writes are removed. Totals correct themselves because
-// Record and Delete maintain them.
+// with no blob are dropped; stale temp files from interrupted writes are
+// removed. Nothing keeps a running total: TotalSize and EntryCount are
+// computed from the index on each call, so correcting the index corrects them.
 func (c *Cache) Reconcile(ctx context.Context) (ReconcileStats, error) {
 	var stats ReconcileStats
 
@@ -320,6 +320,8 @@ func (c *Cache) putLocked(key string, r io.Reader) (int64, error) {
 		// reconciliation adopts the orphan blob or drops the dangling record
 		// later, which is the recovery path for exactly this. The undo is part
 		// of this key's replace-and-record: another Put of the key waits for it.
+		// A clean shutdown does not reconcile: until the next start that follows an
+		// unclean one, an orphan blob counts toward nothing.
 		if delErr := c.blobs.Delete(key); delErr != nil {
 			c.log.Error("cache: blob cleanup after metadata failure also failed; startup reconciliation will adopt it",
 				"key", key, "record_error", err, "delete_error", delErr)
