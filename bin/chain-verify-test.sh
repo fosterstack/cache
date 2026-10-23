@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-001-AC4, REQ-CHAIN-002-AC1, REQ-CHAIN-002-AC2, REQ-CHAIN-002-AC3, REQ-CHAIN-003-AC1, REQ-CHAIN-003-AC2, REQ-CHAIN-003-AC4, REQ-CHAIN-007-AC16, REQ-CHAIN-001-AC6 — 001-AC3 here is the key-material and token-sentinel part
+# proves: REQ-CHAIN-005-AC4 — apk-compare: the comparison job's result file is accepted only as a pass for Build's attested apk digests
 # RED until bin/chain-verify.py exists (tests before implementation, step 4 of the nine-step process).
 #
 # Tests for the plain verify script of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63, 67).
@@ -2248,7 +2249,69 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=816
+# ---- apk-compare (the owner's rule of Oct 21 2026: the comparison of Build's and Rebuild's apks runs in a job without a key; Release reads only its small result file) ----
+# bin/release-compare.sh writes apk-compare/apk-compare.json (verdict pass, four pairs with the sha256 and the apk-tool digest of both apks); `apk-compare` checks that file
+# against Build's attested apk digests (witness-build/digests.json keys apk-<variant>-<amd64|arm64>) and accepts only pass, exactly four pairs, rebuild == build == attested
+python3 - "$work" <<'PY'
+import hashlib, json, sys
+w = sys.argv[1]
+def h(x): return "sha256:" + hashlib.sha256(x.encode()).hexdigest()
+dig = {"image-production": h("ip"), "image-fips": h("if")}
+pairs = []
+for arch, runner in (("amd64", "x86_64"), ("arm64", "aarch64")):
+    for variant, name in (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk")):
+        d = h("data-%s-%s" % (variant, arch)); dig["apk-%s-%s" % (variant, arch)] = d
+        pairs.append({"arch": arch, "variant": variant, "name": name, "build_sha256": hashlib.sha256(("b" + d).encode()).hexdigest(), "rebuild_sha256": hashlib.sha256(("r" + d).encode()).hexdigest(), "build_digest": d, "rebuild_digest": d})
+json.dump(dig, open(w + "/acd.json", "w"))
+good = {"verdict": "pass", "pairs": pairs}
+def put(name, obj): json.dump(obj, open(w + "/ac_" + name + ".json", "w"))
+def mod(f):
+    o = json.loads(json.dumps(good)); f(o); return o
+put("good", good)
+put("fail", mod(lambda o: o.update(verdict="fail")))
+put("noverdict", mod(lambda o: o.pop("verdict")))
+put("Pass", mod(lambda o: o.update(verdict="Pass")))
+put("three", mod(lambda o: o["pairs"].pop()))
+put("five", mod(lambda o: o["pairs"].append(dict(o["pairs"][0], variant="fips", name="fscache-fips-0.3.0-r0.apk", arch="amd64"))))
+put("dup", mod(lambda o: o["pairs"].__setitem__(3, dict(o["pairs"][2]))))
+put("wrongdigest", mod(lambda o: o["pairs"][1].update(build_digest=h("other"), rebuild_digest=h("other"))))
+put("rebuilddiffers", mod(lambda o: o["pairs"][2].update(rebuild_digest=h("other"))))
+put("extrakey", mod(lambda o: o["pairs"][0].update(note="x")))
+put("extratop", mod(lambda o: o.update(note="x")))
+put("badhex", mod(lambda o: o["pairs"][0].update(build_sha256="z" * 64)))
+put("upperhex", mod(lambda o: o["pairs"][0].update(rebuild_sha256="A" * 64)))
+put("prefixed", mod(lambda o: o["pairs"][0].update(build_sha256="sha256:" + "a" * 64)))
+put("shorthex", mod(lambda o: o["pairs"][0].update(build_sha256="a" * 63)))
+put("badname", mod(lambda o: o["pairs"][0].update(name="fscache-evil.apk")))
+put("badnamefips", mod(lambda o: o["pairs"][1].update(name="fscache-0.3.0-r0.apk")))
+put("badarch", mod(lambda o: o["pairs"][0].update(arch="x86_64")))
+put("badvariant", mod(lambda o: o["pairs"][0].update(variant="debug")))
+put("pairsnotlist", mod(lambda o: o.update(pairs={"a": 1})))
+open(w + "/ac_notjson.json", "w").write("{not json")
+open(w + "/ac_array.json", "w").write("[]")
+d2 = json.loads(json.dumps(dig)); d2.pop("apk-fips-arm64"); json.dump(d2, open(w + "/acd_missing.json", "w"))
+PY
+ACV() { echo apk-compare --file "$work/ac_$1.json" --digests "$work/${2:-acd}.json"; }
+expect_ok     "apk-compare: the good result (pass, four pairs, rebuild == build == Build's attested digest) is accepted" $(ACV good)
+for c in fail noverdict Pass; do expect_refuse "apk-compare: the verdict '$c' is refused (only the exact word pass)" "apk-compare|verdict" $(ACV $c); done
+expect_refuse "apk-compare: three pairs are refused" "apk-compare|four" $(ACV three)
+expect_refuse "apk-compare: five pairs are refused" "apk-compare|four" $(ACV five)
+expect_refuse "apk-compare: a pair twice (and another missing) is refused" "apk-compare|pair" $(ACV dup)
+expect_refuse "apk-compare: a Build digest that is not the one Build attested is refused" "apk-compare|attested" $(ACV wrongdigest)
+expect_refuse "apk-compare: a Rebuild digest that differs from Build's is refused" "apk-compare|rebuild" $(ACV rebuilddiffers)
+expect_refuse "apk-compare: an extra key in a pair is refused" "apk-compare|key" $(ACV extrakey)
+expect_refuse "apk-compare: an extra top-level key is refused" "apk-compare|key" $(ACV extratop)
+for c in badhex upperhex prefixed shorthex; do expect_refuse "apk-compare: a sha256 that is not 64 lowercase hex ($c) is refused" "apk-compare|sha256" $(ACV $c); done
+expect_refuse "apk-compare: a standard apk named like nothing Build makes is refused" "apk-compare|name" $(ACV badname)
+expect_refuse "apk-compare: a fips apk with the standard name is refused" "apk-compare|name" $(ACV badnamefips)
+expect_refuse "apk-compare: an architecture other than amd64 and arm64 is refused" "apk-compare|arch" $(ACV badarch)
+expect_refuse "apk-compare: a variant other than standard and fips is refused" "apk-compare|variant" $(ACV badvariant)
+expect_refuse "apk-compare: pairs that are not a list are refused" "apk-compare|pairs" $(ACV pairsnotlist)
+expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|json" $(ACV notjson)
+expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
+expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
+expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
+EXPECT=840
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

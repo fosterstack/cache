@@ -42,7 +42,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "b621d8943fe985c86663c00ac1eb82c957eca981a590f94021fe9efa0efad693",
+      "sha256": "b8af29ebf7c3e60ff8802f9506a33045ca2f4750954ef580070e3eefc01b05c0",
       "tools": [
         "make",
         "at",
@@ -67,7 +67,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "8f9cca7b3b6be118143ecea0346fa24c6952df0bf03147875e910482d46ed03f",
+      "sha256": "6bbc34ef5a13ddf74491a87c55b4a554a0ba00c29cdb754abb2120069b9245b2",
       "tools": [
         "at",
         "curl",
@@ -687,7 +687,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "ff28939bc293f498968880832fdef0715594340f9d3c09e6f8a9f2cb9da4bf5c",
+      "sha256": "3d5c2a605e43c7eed35932efd81798298469a03e4bddab48d554606b90fb98c9",
       "tools": [
         "find",
         "python3",
@@ -1164,7 +1164,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "2cb48402757c20362f4b6c3efa4dbbe5332b66e25e6c01c53972cf2206360119",
+      "sha256": "26294f50e61980b026f9439f6395ab0b2a91ed23e049a4580d2d05f06afdf06b",
       "tools": [
         "at",
         "awk",
@@ -1505,7 +1505,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no secret or token is bound to this step",
-      "sha256": "9f064b81de90907e21d78f9cdf70eb731feb5c327d5b3fd72101df03448389dd",
+      "sha256": "276a2b27707d86698c23c6b17d4d11cf87614e07016cd438e4dcec73a2d8b6d4",
       "exceptions": [
         {
           "rule": "deny",
@@ -1537,7 +1537,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (Build/Rebuild comparison and melange sign) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
-      "sha256": "c9492711e09669c9d8c7ffce59ce35a7350363b3facb99034458da911e332de8",
+      "sha256": "bb859d4254e1d4cced43922b4c381be86e6a723fd4ef3bb515b496bec2e4828f",
       "reads_env": [
         "APK_RELEASE_SIGNING_KEY"
       ],
@@ -1572,13 +1572,6 @@
         },
         {
           "rule": "deny",
-          "line": "    if [ -f \"rapks/$runner/$arch/${files[0]##*/}\" ]; then cp \"rapks/$runner/$arch/${files[0]##*/}\" \"release-apks-rebuild/$arch/\"; fi",
-          "line_sha256": "7f819748eccb840f4f976789d0b350bb796e16e5fc87822e579b8c4c8deae3b7",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
           "line": "    if [ \"$got\" != \"$want\" ]; then echo \"release-apks: ${files[0]} differs from the digest Build attested for $key ($got, attested $want)\" >&2; exit 1; fi",
           "line_sha256": "4c6b10f482d126354e5a4a5fdd9db588158e1e0f7d2f68bbae8bb143e10d8545",
           "count": 1,
@@ -1599,7 +1592,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "7562be1b5cbcd9d57a051d309ba07dfad02ccee935e817bb6e645052b29fb8b3",
+      "sha256": "2aaf3d0aebb74f8d79e2217825fa0d57d0757a8dfc956d7f4fb2dab315baee04",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1633,13 +1626,6 @@
           "line_sha256": "1ef923e0855bd10ef7f6ad6275a077edae3c38f8a0fe88aabd831c065b0a679e",
           "count": 2,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  if [ \"$highest\" = \"$ver\" ]; then plan+=(\"production:${ver%%.*}\" \"production:latest\"); fi",
-          "line_sha256": "28601330ec12bb7daf5fe62e79a6cf8390227cc8b80121dfdf862ca888e98398",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -2021,12 +2007,14 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "25a0cdba9df3466d04296a8da3e3883961f280fbc8a8f6ea3b90be48eeb828d1",
+      "sha256": "6beed1869ac76ff2ae969a05334d1584dcbdc122c002ba3a4c3843486270d159",
       "tools": [
         "at",
         "python3"
       ],
-      "runs": [],
+      "runs": [
+        "bin/rescan-statement.py"
+      ],
       "signs": false,
       "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
     },
@@ -2101,7 +2089,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "f589caa84302a03c3772cb2d315eba0bd53e525da99d67af60e17eaa057a8d0d"
+      "sha256": "6885b20ca04340219a59d92b35d6741aae93b177acb24567ee737fe24027bf2f"
     },
     {
       "path": "bin/release-sign-apks.sh",
@@ -2117,7 +2105,7 @@
       ],
       "signs": "other",
       "reason": "cache P4's release signing: refuses unless Build and Rebuild agree on every apk, then re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
-      "sha256": "003d9477419f512b6da0f74be9445a37feb557db042574567d4e48fa3d3791c7",
+      "sha256": "42201bbb58cffc49f69e06c385534e931ae25a85ad5c3b0178ead644e2b9022b",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2164,31 +2152,17 @@
         },
         {
           "rule": "deny",
-          "line": "  [ -f \"$cb/$rel\" ] || die \"the Rebuild directory has no counterpart for ${rel#./}; Build and Rebuild must produce the same apks\"",
-          "line_sha256": "413acd6c889bad5d8beab92de4dc84acbf65f847c1aad7898b1c466692bcfc66",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  [ -f \"$ca/$rel\" ] || die \"the Rebuild directory has an extra apk ${rel#./} that Build did not make (no counterpart in Build); refusing\"",
-          "line_sha256": "ddf5f81bc647146e9eaaef3788cddb134ccf9f2c661d67894efa36c75f1e4a37",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    [ \"$sg\" = assembly.rsa.pub ] || die \"${rel#./} is signed by '$sg', not assembly.rsa.pub: Build and Rebuild must both carry the assembly key's signature\"",
-          "line_sha256": "bf0cd9ceafc7df2de5a537908c294a5970db5f86453045fd41e130d3f5fa7ccb",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
           "line": "  [ \"$signer\" = release.rsa.pub ] || die \"${rel#./} is signed by '$signer', not release.rsa.pub; nothing in $orig_a was changed\" 1",
           "line_sha256": "cdafaca2bb8feae6f3ade2acaf46d44da378429425627d9e632f9dea6f5ffa44",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
+        },
+        {
+          "rule": "deny",
+          "line": "  [ \"$sg\" = assembly.rsa.pub ] || die \"${rel#./} is signed by '$sg', not assembly.rsa.pub: Build must carry the assembly key's signature\"",
+          "line_sha256": "9cacb3ed41ec99346374fd13c3795d92b178c5879a712400904164141a2a8e70",
+          "count": 1,
+          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ],
       "env_mentions": [
@@ -2224,7 +2198,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "5136b1ef162888a4637e4f766eeff9a79762d72bf11e7b1f7ad5008a5c68e6d7",
+      "sha256": "0a5bff4d853b6e407eb37c994f5cbb8bf6f078651190268da1b14e9da3169232",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2343,8 +2317,8 @@
         },
         {
           "rule": "deny",
-          "line": "  [ \"$fipsvals\" = \"GOFIPS140=v1.0.0-c2097c7c\" ] || die \"the fips binary must record exactly one GOFIPS140=v1.0.0-c2097c7c and nothing else (found: ${fipsvals:-none})\" 1",
-          "line_sha256": "d702c5f2fa63ec57010d630e165a2576ab4b77be29cbaf20885a78a771b5c05b",
+          "line": "  [ \"$fipsvals\" = \"$fipswant\" ] || die \"the fips binary must record exactly one $fipswant (the module build/locks/fips-module.txt names) and nothing else (found: ${fipsvals:-none})\" 1",
+          "line_sha256": "b683d12502b5ba1ff41a702cc87c40c38a0ed7bbe677193a20ecebed8abadec5",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
@@ -2592,6 +2566,28 @@
       ],
       "signs": false,
       "reason": "the only way a script reaches a loopback or in-cluster address: a closed URL and option list over curl (REQ-SUP-001-AC24)"
+    },
+    {
+      "path": "bin/release-compare.sh",
+      "sha256": "aace40444a381c6b091f4d4b3594c262f027334989f21a32f8c4093c25b87ea3",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/release-compare.py"
+      ],
+      "signs": false,
+      "reason": "Release's comparison of Build's and Rebuild's apks, the compare job's one plain step (contents read only: no key, no secret, no id-token, nothing signed; the owner's rule of Oct 21 2026): a wrapper that runs bin/release-compare.py from the repository root"
+    },
+    {
+      "path": "bin/release-compare.py",
+      "sha256": "561e4059bd2c99dc9af3d4a71361be72a610c687d7e6fcb327f923feaa988589",
+      "tools": [],
+      "runs": [
+        "bin/apk-tool.py"
+      ],
+      "signs": false,
+      "reason": "the work of Release's comparison (the compare job, no key, no secret, no id-token, nothing signed): it checks the layout, the signer and the signature of every apk on both sides with bin/apk-tool.py, compares them, and writes the small result file apk-compare/apk-compare.json"
     }
   ],
   "ambient_env": [

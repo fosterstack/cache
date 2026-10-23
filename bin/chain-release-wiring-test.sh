@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-007-AC1, REQ-CHAIN-007-AC2, REQ-CHAIN-007-AC3, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC11, REQ-CHAIN-007-AC12, REQ-CHAIN-007-AC13, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC16, REQ-CHAIN-007-AC19
+# proves: REQ-CHAIN-007-AC1, REQ-CHAIN-007-AC2, REQ-CHAIN-007-AC3, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC11, REQ-CHAIN-007-AC12, REQ-CHAIN-007-AC13, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC16, REQ-CHAIN-007-AC19, REQ-CHAIN-005-AC4
 # RED until PR 4 is implemented (stage-promote.yml rewritten, bin/release-*.sh, chain-scripts.json rows, the old authorization machinery removed): step 4.
 #
 # Release, static half (v0.3.0 rules 5, 17, 29, 50, 52, 53, 53b, 56, 57, 60, 61, 63, 64, 65, 69, 70, 71; advisor read-back approved Oct 9 with three
@@ -57,22 +57,29 @@ def wit(step, env):
     cond = "" if step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"   # a release candidate (a tag with a hyphen) ends after release-verify (AC14)
     return f"      - name: {step}\n" + cond + (f"        env:\n{e}" if env else "") + f"        run: bash bin/witnessed.sh {step} bin/{step}.sh\n"
 REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}", "GH_TOKEN": "${{ github.token }}"}
-VDOWN = ("witness-build", "digests", "items", "witness-rebuild", "witness-check", "check-results", "provenance")      # what release-verify reads: the records and Check's govulncheck stream
-VPATH = {"witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "witness-rebuild": "witness-rebuild", "witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance"}
+VDOWN = ("witness-build", "digests", "items", "witness-rebuild", "witness-check", "check-results", "provenance", "apk-compare")      # what release-verify reads: the records and Check's govulncheck stream
+VPATH = {"witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "witness-rebuild": "witness-rebuild", "witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
 def vdowns(): return "".join(dn(n, VPATH[n]) for n in VDOWN) + dn("admission-baseline", "witness-build") + dn("witness-check-arm64", "witness-check/witness-arm64")      # the pairs of the real stage file
 RC_COND = "    if: ${{ !contains(github.ref_name, '-') }}\n"
-# REQ-CHAIN-007-AC1 (Astra R6): TWO jobs. `verify` holds contents read + id-token write only (Witness needs the identity token), no environment, no secret; `release` needs it, is skipped for a release
-# candidate, holds the environment and the three writes, and re-runs release-verify first on its own downloads before any credential step.
+# REQ-CHAIN-007-AC1 (Astra R6) and the owner's rule of Oct 21 2026 (signer and builder never share a machine): THREE jobs. `compare` holds contents read ONLY (no id-token, no environment,
+# no secret): it receives Build's and Rebuild's apks, runs bin/release-compare.sh as a plain step and uploads the small result apk-compare. `verify` needs it and holds contents read + id-token write
+# only (Witness needs the identity token), no environment, no secret, and reads only the result file; `release` needs both, is skipped for a release candidate, holds the environment and the three
+# writes, receives Build's artifacts only (never a rapk), and re-runs release-verify first on its own downloads before any credential step.
+def up_checked(name): return up(name).rstrip("\n") + "\n          if-no-files-found: error\n"
 stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n"
-         "  verify:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
+         "  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n    steps:\n"
+         f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
+         + dn("apk-ubuntu-24.04", "apks/ubuntu-24.04") + dn("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm") + dn("rapk-ubuntu-24.04", "rapks/ubuntu-24.04") + dn("rapk-ubuntu-24.04-arm", "rapks/ubuntu-24.04-arm")
+         + "      - name: compare Build's and Rebuild's apks\n        run: bash bin/release-compare.sh\n" + up_checked("apk-compare")
+         + "  verify:\n    needs: compare\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          + inst("witness") + vdowns() + wit("release-verify", {}) + up("witness-release-verify").rstrip("\n") + "\n          if-no-files-found: error\n"
-         + "  release:\n    needs: verify\n" + RC_COND + "    runs-on: ubuntu-24.04\n    environment: release\n"
+         + "  release:\n    needs: [compare, verify]\n" + RC_COND + "    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          + inst("witness") + inst("cosign") + inst("crane") + inst_m("melange")
          + vdowns()      # the nine records and files release-verify reads (the baseline admission chose, REQ-CHAIN-007-AC19; the arm64 leg's record, REQ-CHAIN-006-AC17), then the six the later steps use
-         + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm"), ("rapk-ubuntu-24.04", "rapks/ubuntu-24.04"), ("rapk-ubuntu-24.04-arm", "rapks/ubuntu-24.04-arm")))
+         + "".join(dn(n, pth) for n, pth in (("dist", "dist"), ("images", "images"), ("apk-ubuntu-24.04", "apks/ubuntu-24.04"), ("apk-ubuntu-24.04-arm", "apks/ubuntu-24.04-arm")))
          + wit("release-verify", {}) + wit("release-apks", {"APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}"})
          + wit("release-publish", REG) + wit("release-sign", REG) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"}) + wit("release-postverify", {"GH_TOKEN": "${{ github.token }}"})
          + up("release-evidence") + up("witness-release"))
@@ -124,6 +131,7 @@ V = ['[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] ||
      "python3 bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/admission-baseline.json --product admission-baseline.json",
      "python3 bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
      "python3 bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json",
+     "python3 bin/chain-verify.py apk-compare --file apk-compare/apk-compare.json --digests witness-build/digests.json",
      "python3 bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check",
      # ruling G (advisor Oct 12): the govulncheck stream Release hands the evidence step is a product of Check's scanners record, bound under Check's identity
      "python3 bin/chain-verify.py bind-check --policy policy.json --record witness-check/witness-scanners/scanners-collection.json --digests witness-build/digests.json --file check-results/govulncheck.json --product check-results/govulncheck.json"]
@@ -132,13 +140,14 @@ open(w + "/verify.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n" + "
 os.makedirs(w + "/s/bin", exist_ok=True); os.makedirs(w + "/s/.github/policy", exist_ok=True)
 BODY = {
  "release-verify": "set -euo pipefail\npython3 bin/chain-verify.py verify --stage build\n",
- "release-apks": 'set -euo pipefail\nkeyfile=$(mktemp)\ntrap \'rm -f "$keyfile"\' EXIT\nprintf %s "$APK_RELEASE_SIGNING_KEY" > "$keyfile"\npython3 bin/apk-tool.py digest apks/a.apk\nbash bin/release-sign-apks.sh --build-dir b --rebuild-dir r --key "$keyfile"\n',
+ "release-compare": "set -euo pipefail\npython3 -I -B bin/release-compare.py\n",
+ "release-apks": 'set -euo pipefail\nkeyfile=$(mktemp)\ntrap \'rm -f "$keyfile"\' EXIT\nprintf %s "$APK_RELEASE_SIGNING_KEY" > "$keyfile"\npython3 bin/apk-tool.py digest apks/a.apk\nbash bin/release-sign-apks.sh --build-dir b --key "$keyfile"\n',
  "release-publish": 'set -euo pipefail\npython3 bin/release-layout.py images/x "$digest"\ncrane copy "src@$digest" "dst:$tag"\ncrane digest "dst:$tag" | jq -R .\n',
  "release-sign": 'set -euo pipefail\ndate=$(git log -1 --format=%ct "$GITHUB_SHA")\npython3 bin/vendor-provenance.py evidence --out evidence\ncosign sign --yes "ghcr.io/x@$digest"\ncosign sign-blob --yes --bundle policy.bundle policy.json\njq . policy.bundle\n',
  "release-postverify": 'set -euo pipefail\npython3 bin/release-postverify.py\n',
  "release-assets": 'set -euo pipefail\ngh release upload "$GITHUB_REF_NAME" apks/* dist/* --clobber\ngh release create "$GITHUB_REF_NAME" --verify-tag --draft\n',
 }
-ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-apks": (["bash", "jq", "python3", "trap"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
+ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-compare": (["python3"], False, ["bin/release-compare.py"]), "release-apks": (["bash", "jq", "python3", "trap"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
         "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "git", "jq", "python3", "trap"], "other", ["bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
         "release-assets": (["gh", "git", "python3"], False, ["bin/release-metadata.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
 rows = []
@@ -148,6 +157,8 @@ for n, b in BODY.items():
     rows.append({"path": f"bin/{n}.sh", "sha256": hashlib.sha256(open(f"{w}/s/bin/{n}.sh", "rb").read()).hexdigest(), "tools": t, "signs": s, "runs": r, "reason": "fixture"})
 open(w + "/s/bin/release-postverify.py", "w").write("import subprocess\n")
 rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": [], "reason": "fixture"})
+open(w + "/s/bin/release-compare.py", "w").write("import sys\n")
+rows.append({"path": "bin/release-compare.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-compare.py", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": ["bin/apk-tool.py"], "reason": "fixture"})
 open(w + "/s/bin/release-layout.py", "w").write("import sys\n")
 rows.append({"path": "bin/release-layout.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-layout.py", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
 open(w + "/s/bin/witnessed.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
@@ -184,7 +195,7 @@ mkdir -p "$work/rm" && expect ok "fixture: none of the old authorization machine
 m() { # m NAME REGEX REPL WORD LABEL
   if mutate "$work/stage.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" stage "$work/$1.yml"; fi
 }
-m s_job2    'jobs:\n  verify:'                           'jobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  verify:' 'exactly'  "AC1 a third job"
+m s_job2    'jobs:\n  compare:'                          'jobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  compare:' 'exactly'  "AC1 a fourth job"
 m s_selfh   'runs-on: ubuntu-24.04'                         'runs-on: self-hosted'                                   'ubuntu-24.04'       "AC1 a self-hosted runner"
 m s_envnone '    environment: release\n'                     ''                                                       'environment'        "AC1 no environment (the credentials would not be protected)"
 m s_envoth  'environment: release'                          'environment: agent'                                     'environment'        "AC1 another environment"
@@ -216,13 +227,38 @@ m s_melapko 'install-build-tools.sh melange'               'install-build-tools.
 m s_vwrite   '=contents: read\n      id-token: write\n    steps' 'contents: write\n      id-token: write\n    steps'                    'verify'  "AC1 (Astra R6) the verify job holds contents write"
 m s_vpkg     '=contents: read\n      id-token: write\n    steps' 'contents: read\n      packages: write\n      id-token: write\n    steps'  'verify'  "AC1 (Astra R6) the verify job holds packages write"
 m s_vnoid    '=contents: read\n      id-token: write\n    steps' 'contents: read\n    steps'                                              'verify'  "AC1 (Astra R6) the verify job has no id-token write (Witness cannot sign its record)"
-m s_venv     '=  verify:\n    runs-on: ubuntu-24.04\n'        '  verify:\n    environment: release\n    runs-on: ubuntu-24.04\n'  'verify'  "AC1 (Astra R6) the verify job is in the release environment (it would see its secrets)"
+m s_venv     '=  verify:\n    needs: compare\n    runs-on: ubuntu-24.04\n' '  verify:\n    needs: compare\n    environment: release\n    runs-on: ubuntu-24.04\n'  'verify'  "AC1 (Astra R6) the verify job is in the release environment (it would see its secrets)"
 m s_vcos     '=install witness\n        run: bash bin/install-scanner.sh witness\n      - uses' 'install witness\n        run: bash bin/install-scanner.sh witness\n      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n      - uses' 'verify' "AC1 (Astra R6) the verify job installs a tool it does not need"
 m s_vnorv    'release-verify bin/release-verify.sh'            'release-apks bin/release-apks.sh'                                      'verify'  "AC1 (Astra R6) the verify job's Witness step is not release-verify"
 m s_vgone    '(?s)  verify:\n.*?(?=  release:\n)'              ''                                                                      'verify'  "AC1 (Astra R6) there is no verify job (the credentials job would verify only in itself)"
-m s_rnoneeds '=  release:\n    needs: verify\n'             '  release:\n'                                                          'needs'   "AC1 (Astra R6) the release job does not need verify"
-m s_rneedsot '=needs: verify'                                 'needs: build'                                                          'needs'   "AC1 (Astra R6) the release job needs another job than verify"
-m s_rnoif    "=    needs: verify\n    if: \${{ !contains(github.ref_name, '-') }}\n" '    needs: verify\n'                          'job'     "AC1 (Astra R6) the release job is not skipped for a release candidate (it would enter the environment for an rc)"
+m s_rnoneeds '=  release:\n    needs: [compare, verify]\n' '  release:\n'                                                          'needs'   "AC1 (Astra R6) the release job does not need verify"
+m s_rneedsot '=needs: [compare, verify]'                       'needs: build'                                                          'needs'   "AC1 (Astra R6) the release job needs another job than verify"
+m s_rnoif    "=    needs: [compare, verify]\n    if: \${{ !contains(github.ref_name, '-') }}\n" '    needs: [compare, verify]\n'                          'job'     "AC1 (Astra R6) the release job is not skipped for a release candidate (it would enter the environment for an rc)"
+
+# ---- the owner's rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the comparison of Build's and Rebuild's apks is the `compare` job, which holds no key, no token and
+# no environment; the jobs that hold the id-token or the signing key and the publish credentials never receive a rapk, and each build is its own job (the compare job runs no build script) ------------
+m c_norel   '=needs: [compare, verify]'                        'needs: verify'                                         'needs'   "SIGNER the release job does not need the compare job"
+m c_novneed '=  verify:\n    needs: compare\n'                  '  verify:\n'                                           'needs'   "SIGNER the verify job does not need the compare job"
+m c_order   '=  compare:\n'                                    '  zzz:\n'                                              'exactly'  "SIGNER the compare job is missing (a job of another name stands in)"
+m c_env     '=  compare:\n    runs-on: ubuntu-24.04\n'           '  compare:\n    environment: release\n    runs-on: ubuntu-24.04\n' 'compare job' "SIGNER the compare job is in the release environment"
+m c_idt     '=  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n' 'compare job' "SIGNER the compare job holds the id-token (an OIDC token can get a signing certificate)"
+m c_wr      '=  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: write\n' 'compare job' "SIGNER the compare job holds contents write"
+m c_pk      '=  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n' '  compare:\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      packages: write\n' 'compare job' "SIGNER the compare job holds packages write"
+m c_self    '=  compare:\n    runs-on: ubuntu-24.04\n'           '  compare:\n    runs-on: self-hosted\n'               'compare job' "SIGNER the compare job runs on a self-hosted runner"
+m c_jenv    '=  compare:\n    runs-on: ubuntu-24.04\n'           '  compare:\n    env: {X: y}\n    runs-on: ubuntu-24.04\n' 'compare job' "SIGNER a job env on the compare job"
+m c_senv    '=        run: bash bin/release-compare.sh\n'         '        env:\n          X: y\n        run: bash bin/release-compare.sh\n' 'compare job' "SIGNER an env on the compare step"
+m c_sec     '=        run: bash bin/release-compare.sh\n'         '        env:\n          GH_TOKEN: ${{ secrets.X }}\n        run: bash bin/release-compare.sh\n' 'compare job' "SIGNER a secret on the compare step"
+m c_wit     '=        run: bash bin/release-compare.sh\n'         '        run: bash bin/witnessed.sh release-compare bin/release-compare.sh\n' 'compare job' "SIGNER the compare step through Witness (Witness signs through the id-token the job must not hold)"
+m c_build   '=        run: bash bin/release-compare.sh\n'         '        run: bash bin/build-apk.sh --out x\n'   'compare job' "SIGNER a build script in the compare job (each build is its own job)"
+m c_if      '=        run: bash bin/release-compare.sh\n'         "        if: \${{ always() }}\n        run: bash bin/release-compare.sh\n" 'compare job' "SIGNER an if on the compare step (it could be skipped)"
+m c_2steps  '=        run: bash bin/release-compare.sh\n'         '        run: bash bin/release-compare.sh\n      - run: echo hi\n' 'compare job' "SIGNER a second step in the compare job"
+m c_norapk  '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: rapk-ubuntu-24.04-arm\n          path: rapks/ubuntu-24.04-arm\n' '' 'compare job' "SIGNER the compare job does not receive Rebuild's arm64 apks"
+m c_dlimg   '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: rapk-ubuntu-24.04-arm\n          path: rapks/ubuntu-24.04-arm\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n' 'compare job' "SIGNER the compare job downloads an artifact it does not compare (images)"
+m c_upname  '=          name: apk-compare\n          path: apk-compare\n          if-no-files-found: error\n' '          name: release-evidence\n          path: apk-compare\n          if-no-files-found: error\n' 'compare job' "SIGNER the compare job uploads under another name"
+m c_upopt   '=          name: apk-compare\n          path: apk-compare\n          if-no-files-found: error\n' '          name: apk-compare\n          path: apk-compare\n' 'compare job' "SIGNER the compare upload may succeed with no file (if-no-files-found is not error)"
+m r_rapk    'name: dist\n          path: dist'                'name: rapk-ubuntu-24.04\n          path: rapks/ubuntu-24.04' 'download'  "SIGNER the release job downloads a rapk (Rebuild's apks reach the signer)"
+m v_nocmp   '=      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: apk-compare\n          path: apk-compare\n' '' 'download'  "SIGNER the verify job does not download the comparison result (the first occurrence: release-verify would have nothing to read)"
+m r_nocmp   '(name: apk-compare\n          path: apk-compare\n.*?)      - uses: [^\n]*\n        with:\n          name: apk-compare\n          path: apk-compare\n' '\1' 'download'  "SIGNER the release job does not download the comparison result"
 m s_rnorv    '=      - name: release-verify\n        run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks\n' '      - name: release-apks\n' 'exactly' "AC1 (Astra R6) the release job's first witnessed step is not release-verify (no re-run before the credentials)"
 # round 1 (Codex seat B): the steps between the first and last Witness step are Witness steps and nothing else, and an install never comes after the first four
 m s_latemel  '=run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: release-apks' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh\n      - name: install melange again\n        run: bash bin/install-build-tools.sh melange\n      - name: release-apks' 'between' "AC1 (Astra R4, round 1) a second melange install between release-verify and release-apks"
@@ -275,7 +311,8 @@ c c_rjson   '=      - name: install cosign\n'                       '      - nam
 c c_vsq     '=      - name: install witness\n'                      '      - name: "x ${{ github['\''token'\''] }}"\n'                            'verify job' "AC2 (Astra R6, round 2) the verify job reads the token through the single-quoted bracket form (the executable one)"
 c c_rsq     '=      - name: install cosign\n'                       '      - name: "x ${{ secrets['\''DOCKERHUB_TOKEN'\''] }}"\n'                  'up to release-verify' "AC2 (Astra R6, round 2) the release job reads a secret through the single-quoted bracket form before its re-run of release-verify"
 c c_vwrap   '=      - name: install witness\n'                      '      - name: x ${{ format('\''{0}'\'', github) }}\n'                          'verify job' "AC2 (Astra R6, round 2) the verify job passes the github context through format()"
-c c_chk     'persist-credentials: false'                   'persist-credentials: false\n        env:\n          GH_TOKEN: ${{ github.token }}' 'up to release-verify' "AC2 the token on the checkout step"
+c c_chk     'persist-credentials: false'                   'persist-credentials: false\n        env:\n          GH_TOKEN: ${{ github.token }}' 'compare job' "AC2 the token on the compare job's checkout step"
+c c_chkr    '(environment: release\n    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n      - uses: [^\n]*\n        with:\n          persist-credentials: false)' '\1\n        env:\n          GH_TOKEN: ${{ github.token }}' 'up to release-verify' "AC2 the token on the release job's checkout step"
 c c_dlsec   'name: images\n          path: images'        'name: images\n          path: images\n          token: ${{ secrets.DOCKERHUB_TOKEN }}' 'up to release-verify' "AC2 a secret in a download"
 c c_vfy     '      - name: release-verify\n'               '      - name: release-verify\n        env:\n          GH_TOKEN: ${{ github.token }}\n' 'up to release-verify' "AC2 any env on the verify step"
 c c_apkpub  '=DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-publish' 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n          APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}\n        run: bash bin/witnessed.sh release-publish' 'release-publish' "AC2 the apk signing key in the publish step"
@@ -500,7 +537,7 @@ assert "no credential exists" not in row["reason"], "row reason"
 h = open(sys.argv[3]).read().split("\nname:")[0]
 assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
 PY
-EXPECT=244
+EXPECT=267
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

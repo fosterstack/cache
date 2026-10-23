@@ -1378,6 +1378,104 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
     return out
 
 
+GO_EXEMPT_REASON = "exempt from the 7-day hold: Go's own release, downloaded from go.dev and verified against its pinned sha256 (owner ratified Oct 21 2026, REQ-SUP-001-AC27); the advisory check still applies"
+_GO_VER_LINE = re.compile(r"^GO_VER=(\d+\.\d+\.\d+)$")
+_GO_FILE = re.compile(r'^[ \t]*gofile="go\$\{GO_VER\}\.\$\{A_GO\}\.tar\.gz"[ \t]*$')
+_GO_CURL = re.compile(r'^[ \t]*curl -q -fsSL -g -o "\$tmp/go\.tgz" "https://go\.dev/dl/\$\{gofile\}" \|\| die "download failed: go toolchain"[ \t]*$')
+_GO_VERIFY = ["verify() { # file", "  local got", "  got=$(sha256sum \"$1\" | cut -d' ' -f1)",
+              '  [ "$got" = "$SUM" ] || pipeline_fail "${TOOL} checksum mismatch (got ${got}, pinned ${SUM}) - refusing to run an unverified scanner"', "}"]
+_GO_EXTRACT = re.compile(r'^[ \t]*mkdir -p "\$tmp/x" && tar -xzf "\$tmp/go\.tgz" -C "\$tmp/x" \|\| pipeline_fail "extract failed for go"[ \t]*$')
+_GO_MSG = r'"(?:[^"$`\\]|\$\{[A-Za-z_]+\})*"'
+_GO_WANT = re.compile(r'^[ \t]*\[ "\$want" = "\$GO_VER" \] \|\| pipeline_fail ' + _GO_MSG + r'[ \t]*$')
+_GO_SHOW = re.compile(r'^[ \t]*"\$\{DEST\}/fscache-go/bin/go" version \| grep -q "go\$\{GO_VER\} " \|\| pipeline_fail ' + _GO_MSG + r'[ \t]*$')
+_GO_FAIL = ['pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }']
+_SUM_ROW = re.compile(r"^[ \t]*[A-Za-z0-9_.:|-]+\) SUM=[0-9a-f]{64} ;;[ \t]*$")
+_SUM_MODULE = re.compile(r'^[ \t]*govulncheck:\*\) SUM="" ;;[ \t]*(?:#.*)?$')   # a module pinned by go.sum: its own key, empty sum
+_GO_SUM = {a: re.compile(r"^[ \t]*go:" + a + r"\) SUM=[0-9a-f]{64} ;;[ \t]*$") for a in (r"x86_64\|go:amd64", r"aarch64\|go:arm64")}
+
+
+def go_exemption(root, head):
+    """The pinned Go version when the head's bin/install-scanner.sh fetches Go ONLY from https://go.dev/dl/ at its pinned GO_VER, pins the sha256 of both
+    architectures (64 hex each) and verifies the file right after the download; otherwise None (the 7-day hold applies). Any other line that downloads
+    something Go-shaped (curl or wget naming go.tgz, GO_VER, go.dev or golang) voids it."""
+    try:
+        text = inv.tree_files(root, head).get("bin/install-scanner.sh")
+    except (OSError, ValueError, RuntimeError):
+        return None
+    if not text:
+        return None
+    lines = text.split("\n")
+    joined = re.sub(r"\\[ \t]*\n", " ", text).split("\n")   # a shell continuation is one command: a download written over two lines is still one
+    vers = [m.group(1) for m in (_GO_VER_LINE.match(l) for l in lines) if m]
+    if len(vers) != 1 or sum(1 for l in lines if re.match(r"^[ \t]*(?:export[ \t]+)?GO_VER=", l)) != 1:
+        return None
+    fetch = [i for i, l in enumerate(joined) if re.search(r"\b(curl|wget)\b", l) and re.search(r"go\.tgz|GO_VER|gofile|go\.dev|golang|go\$\{|go[0-9]+\.[0-9]", l)]
+    if len(fetch) != 1 or not _GO_CURL.match(joined[fetch[0]]):
+        return None
+    names = [l for l in joined if re.match(r"^[ \t]*(?:export[ \t]+|readonly[ \t]+|local[ \t]+)?gofile=", l)]
+    if len(names) != 1 or not _GO_FILE.match(names[0]):
+        return None
+    nxt = next((l.strip() for l in joined[fetch[0] + 1:] if l.strip()), "")
+    if nxt != 'verify "$tmp/go.tgz"':
+        return None
+    if any(sum(1 for l in lines if rx.match(l)) != 1 for rx in _GO_SUM.values()) or sum(1 for l in lines if re.search(r"\bgo:", l) and re.search(r"\bSUM", l)) != 2:
+        return None
+    # the verifier and the failure helper are the reviewed ones, each defined once in ANY spelling (verify() / verify () / function verify)
+    for name, want in (("verify", _GO_VERIFY), ("pipeline_fail", _GO_FAIL)):
+        if len(re.findall(r"\bfunction[ \t]+" + name + r"\b|\b" + name + r"[ \t]*\([ \t]*\)", text)) != 1:
+            return None
+        starts = [i for i, l in enumerate(lines) if re.match(r"^" + name + r"\(\)", l)]
+        if len(starts) != 1 or [l.rstrip() for l in lines[starts[0]:starts[0] + len(want)]] != want:
+            return None
+    # the installer defines only the reviewed helpers (a redefined sha256sum, cut or echo would change what verify() computes) and aliases nothing
+    defs = set()
+    for l in joined:
+        if not l.lstrip().startswith("#"):
+            q = re.sub(r"'[^']*'|\"[^\"]*\"", '""', l)
+            defs.update(re.findall(r"([A-Za-z_][\w.-]*)[ \t]*\([ \t]*\)", q) + re.findall(r"\bfunction[ \t]+([\w.-]+)", q))
+            if re.search(r"(?:^|[;&|{(]|\bthen|\bdo|\belse)[ \t]*(?:alias|enable|builtin|unalias)\b", q):
+                return None
+    if defs - {"verify", "pipeline_fail", "die"}:
+        return None
+    # the download and its verify call sit at the top level of the go arm of the one tool dispatch: counted from the START of the file, the only open construct at the
+    # download is that dispatch `case` (a wrapper around it, a group or loop or condition around the arm, an inline `; (` all raise the depth: refused)
+    arm = [i for i, l in enumerate(joined[:fetch[0]]) if re.match(r"^[ \t]*go\)[ \t]*$", l)]
+    if len(arm) != 1:
+        return None
+    depth = 0
+    for l in joined[:fetch[0]]:
+        t = re.sub(r"'[^']*'|\"[^\"]*\"", '""', l.strip())
+        if t.startswith("#"):
+            continue
+        depth += (len(re.findall(r"(?:^|[;&|)][ \t]*|\bthen[ \t]+|\bdo[ \t]+|\belse[ \t]+)(?:if|while|until|for|select|case)\b", t)) + (1 if t[:1] in "({" else 0)
+                 + len(re.findall(r"[;&|][ \t]*[({]", t)) + (1 if re.search(r"\)[ \t]*\{[ \t]*(?:#.*)?$", t) else 0))
+        depth -= len(re.findall(r"(?:^|[;&|)][ \t]*)(?:fi|done|esac)\b", t)) + (1 if t[:1] in ")}" else 0)
+    if depth != 1:
+        return None
+    # outside the reviewed lines the Go names appear ONLY in the two reviewed read shapes (a version comparison and the installed-version grep, each ending in a
+    # pipeline_fail whose message holds no command substitution); ANY other mention of GO_VER, gofile, go.tgz, go.dev or a Go archive name (go<N>.<N>) in a
+    # non-comment line voids the exemption: a write in any form, a second transfer by any command, a URL variable, a read in another command
+    for i, l in enumerate(joined):
+        if i == fetch[0] or l.lstrip().startswith("#") or _GO_FILE.match(l) or _GO_VER_LINE.match(l) or l.strip() == 'verify "$tmp/go.tgz"' or _GO_EXTRACT.match(l) \
+                or _GO_WANT.match(l) or _GO_SHOW.match(l):
+            continue
+        if re.search(r"GO_VER|gofile|go\.tgz|go\.dev|\bgo[0-9]+\.[0-9]", l):
+            return None
+    # every SUM assignment, anywhere on any line, is a pinned row: a literal pattern (no glob), `) SUM=<64 hex> ;;`; any other mention of SUM must only read it
+    for l in joined:
+        rest = re.sub(r"\$\{SUM\}|\$SUM\b", "", l)
+        if re.search(r"\bSUM\b", rest) and not (_SUM_ROW.match(l) or _SUM_MODULE.match(l)):
+            return None
+    return vers[0]
+
+
+def split_go_exempt(moved, root, head):
+    """(the moved items without the exempt Go release, the exempt ones): only `tool:go` at the installer's own pinned version."""
+    ver = go_exemption(root, head) if any(it.kind == "tool" and it.name == "go" for it in moved) else None
+    keep = [it for it in moved if not (ver and it.kind == "tool" and it.name == "go" and it.version == ver)]
+    return keep, [it for it in moved if it not in keep]
+
+
 def _run(a, moved, fx, now):
     rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
     lines = _unmeasured_counts(a.root, a.base, a.head)
@@ -1406,7 +1504,8 @@ def _run(a, moved, fx, now):
     moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))   # REQ-SUP-001-AC20
     moved, base_files = split_base_inputs(moved, load_base_inputs(a.base_inputs or DEFAULT_BASE_INPUTS, required=bool(a.base_inputs)))   # REQ-SUP-001-AC21
     moved, ruled_calls = split_ruled_local_calls(moved, rulings)                                                       # REQ-SUP-001-AC19: judged by the ruled row of ITS OWN line, never by another line's
-    if not moved and not added:
+    moved, go_free = split_go_exempt(moved, a.root, a.head)
+    if not moved and not added and not go_free:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
@@ -1414,6 +1513,9 @@ def _run(a, moved, fx, now):
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
+        for it in go_free:
+            rows.append({"item": it.key, "label": it.label, "ok": True, "reason": GO_EXEMPT_REASON, "proof": None})
+            print(f"  ok   {it.key}: {GO_EXEMPT_REASON}")
     for path, what, line in added:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})

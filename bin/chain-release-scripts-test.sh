@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21
+# proves: REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10, REQ-CHAIN-007-AC14, REQ-CHAIN-007-AC17, REQ-CHAIN-007-AC19, REQ-CHAIN-007-AC20, REQ-CHAIN-007-AC21, REQ-CHAIN-005-AC4
 # RED until PR 4 is implemented (bin/release-verify.sh, release-apks.sh, release-publish.sh, release-sign.sh, release-assets.sh, release-postverify.sh/.py do not exist): step 4.
 #
 # Release, behaviour half (v0.3.0 rules 5, 17, 29, 53b, 56, 57, 64, 69, 71; advisor rulings of Oct 9: rc tags like finals, the release policy
@@ -47,7 +47,14 @@ case "$1" in
         [ "${REG_CORRUPT:-}" = "$host" ] && d="sha256:$(printf 'f%.0s' $(seq 64))"; echo "$d" > "$p" ;;
   digest) p="$REG/${2/://}"; [ -e "$p" ] && cat "$p" || { echo "NAME_UNKNOWN $2" >&2; exit 1; } ;;
   ls) [ -z "${LS_FAIL:-}" ] || { echo "connection refused" >&2; exit 1; }
-      [ -d "$REG/$2" ] || { echo "NAME_UNKNOWN $2" >&2; exit 1; }; ls "$REG/$2" ;;
+      [ -d "$REG/$2" ] || { echo "NAME_UNKNOWN $2" >&2; exit 1; }
+      # LS_RACE_AFTER=N: after answering the Nth listing, a concurrent publication of the higher release 0.3.1 completes in both registries
+      # (its exact tags, :0 and :latest, all at another digest): the interleaving of release review R3 (Oct 22)
+      n=$(( $(cat "$REG/.lsn" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$REG/.lsn"; out=$(ls "$REG/$2")
+      if [ "${LS_RACE_AFTER:-}" = "$n" ]; then
+        for h in ghcr.io docker.io; do d="$REG/$h/fosterstack/cache"; mkdir -p "$d"; for x in 0.3.1 0.3.1-fips 0 latest; do echo "sha256:$(printf '8%.0s' $(seq 64))" > "$d/$x"; done; done
+      fi
+      printf '%s\n' "$out" ;;
   *) echo "crane: unexpected $1" >&2; exit 2 ;;
 esac''',
  "cosign": r'''#!/usr/bin/env bash
@@ -109,14 +116,11 @@ elif cmd == "signer": print(lines[1].split(": ", 1)[1])
 elif cmd == "same": sys.exit(0 if open(f).read().split("\n")[2:] == open(sys.argv[3]).read().split("\n")[2:] else 1)
 else: sys.exit(2)''',
  "bin/release-sign-apks.sh": r'''#!/usr/bin/env bash
-# a model of cache's bin/release-sign-apks.sh (P4, measured): --build-dir A --rebuild-dir B --key K; every apk of A needs the same apk in B (same control
-# and data, apk-tool.py same) else exit 1 and nothing is signed; the key is copied to a private file NAMED release.rsa (melange names the signer after the key
-# file); each apk of A is re-signed in place with `melange sign --signing-key`
+# a model of cache's bin/release-sign-apks.sh (P4, measured; the owner's rule of Oct 21 2026 took --rebuild-dir away): --build-dir A --key K; the key is copied to a
+# private file NAMED release.rsa (melange names the signer after the key file); each apk of A is re-signed in place with `melange sign --signing-key`
 echo "release-sign-apks $*" >> "$LOG"
 set -euo pipefail
-while [ $# -gt 0 ]; do case $1 in --build-dir) a=$2;; --rebuild-dir) b=$2;; --key) k=$2;; *) exit 2;; esac; shift 2; done
-for f in "$a"/*/*.apk; do rel=${f#"$a"/}; [ -f "$b/$rel" ] || { echo "release-sign-apks.sh: $rel only in Build" >&2; exit 2; }
-  python3 bin/apk-tool.py same "$f" "$b/$rel" || { echo "release-sign-apks.sh: $rel differs between Build and Rebuild" >&2; exit 1; }; done
+while [ $# -gt 0 ]; do case $1 in --build-dir) a=$2;; --key) k=$2;; *) echo "release-sign-apks.sh: unknown argument: $1" >&2; exit 2;; esac; shift 2; done
 [ "$(basename "$k")" = release.rsa ] || { echo "release-sign-apks.sh: the key file must be named release.rsa" >&2; exit 2; }   # measured: line 123 of cache's script
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; umask 077; cp "$k" "$t/release.rsa"
 for f in "$a"/*/*.apk; do melange sign --signing-key "$t/release.rsa" "$f"; done''',
@@ -149,6 +153,11 @@ if a[0] == "check-list":     # exactly four records, one per slot
     if os.environ.get("FAIL_STAGE") == "check": print("refused at check: a record is invalid", file=sys.stderr); sys.exit(1)
     for n in ("scanners", "acceptance", "runtime", "arm64"):
         if not os.path.exists(os.path.join(d, "witness-" + n, n + "-collection.json")): print("refused at check: missing the %s record" % n, file=sys.stderr); sys.exit(1)
+    sys.exit(0)
+if a[0] == "apk-compare":    # the comparison job's result file: modelled as the file and the digest list existing
+    if os.environ.get("FAIL_STAGE") == "apkcompare": print("refused at rebuild: apk-compare: the result is not a pass", file=sys.stderr); sys.exit(1)
+    for f in (a[a.index("--file") + 1], a[a.index("--digests") + 1]):
+        if not os.path.exists(f): print("refused at rebuild: apk-compare: missing %s" % f, file=sys.stderr); sys.exit(1)
     sys.exit(0)
 prev = a[a.index("--previous") + 1]; rec = a[a.index("--record") + 1]
 if not os.path.exists(rec): print("refused at %s: missing record %s" % (prev, rec), file=sys.stderr); sys.exit(1)
@@ -199,7 +208,7 @@ def tree(extra_env=None):
     for tg in ("v0.3.0", "v0.3.1"): open(os.path.join(t, "requirements/releases/%s.yaml" % tg), "w").write("baseline " + tg + "\n")
     open(os.path.join(t, "test-evidence/mappings.yaml"), "w").write("evidence\n")
     digs = dict(DIG)
-    for top in ("apks", "rapks"):                      # Build's apk-<runner> and Rebuild's rapk-<runner> artifacts, downloaded to apks/<runner> and rapks/<runner>
+    for top in ("apks",):                              # Build's apk-<runner> artifacts, downloaded to apks/<runner>; Rebuild's apks never reach Release (the owner's rule of Oct 21 2026)
         for runner, archdir, short in RUNNERS:
             d = os.path.join(t, top, runner, archdir); os.makedirs(d)
             for variant, name in APKS:
@@ -211,8 +220,9 @@ def tree(extra_env=None):
         open(os.path.join(t, "images", v + ".digest"), "w").write(DIG["image-" + v] + "\n")
         open(os.path.join(t, "images", v + ".manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\narm64 sha256:" + "2" * 64 + "\n")
         open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("lock " + v); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("sbom " + v)
-    for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist", "check-results"):
+    for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist", "check-results", "apk-compare"):
         os.makedirs(os.path.join(t, d), exist_ok=True)
+    open(os.path.join(t, "apk-compare/apk-compare.json"), "w").write("{}")   # the comparison job's result file (modelled as existing; chain-verify apk-compare judges it)
     open(os.path.join(t, "check-results/govulncheck.json"), "w").write('{"config":{"scanner_name":"govulncheck"}}\n')   # Check's product (ruling G), bound by release-verify
     for k in ("archive-linux-amd64", "archive-linux-arm64", "archive-fips-linux-amd64", "archive-fips-linux-arm64"): digs[k] = "sha256:" + hashlib.sha256(k.encode()).hexdigest()
     json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
@@ -259,8 +269,8 @@ def tree_text(t):
     return out
 def first(s): return s.strip().split("\n")[0] if s.strip() else ""
 # ---- AC4/AC5: release-verify.sh ------------------------------------------------------------------------------------------------------
-STAGES = ["build", "items", "baseline", "sign", "rebuild", "check", "govulncheck"]     # items: bind-items (REQ-CHAIN-007-AC16); baseline: bind-items --product admission-baseline.json (AC19, ruling B); check: the list verifier of the four Check records
-def stage_of(c): return c.split("--previous ")[1].split()[0] if "--previous" in c else (("baseline" if "--product admission-baseline.json" in c else "items") if c.startswith("chain-verify bind-items") else "govulncheck" if c.startswith("chain-verify bind-check") else "check" if c.startswith("chain-verify check-list") else None)
+STAGES = ["build", "items", "baseline", "sign", "rebuild", "apkcompare", "check", "govulncheck"]     # items: bind-items (REQ-CHAIN-007-AC16); baseline: bind-items --product admission-baseline.json (AC19, ruling B); check: the list verifier of the four Check records
+def stage_of(c): return c.split("--previous ")[1].split()[0] if "--previous" in c else (("baseline" if "--product admission-baseline.json" in c else "items") if c.startswith("chain-verify bind-items") else "govulncheck" if c.startswith("chain-verify bind-check") else "check" if c.startswith("chain-verify check-list") else "apkcompare" if c.startswith("chain-verify apk-compare") else None)
 t = tree(); rc, so, se = run(t, "release-verify")
 calls = [l for l in log(t) if l.startswith("chain-verify")]
 check(rc == 0, "AC5 a good v0.3.0 passes", se)
@@ -276,10 +286,10 @@ for s in STAGES:
     t = tree(); rc, so, se = run(t, "release-verify", env={"FAIL_STAGE": s})
     after = STAGES[STAGES.index(s) + 1:]
     seen = " ".join(l for l in log(t) if l.startswith("chain-verify"))
-    check(rc != 0 and first(se).startswith("refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else s) + ":") and not any(("--previous " + a in seen) or (a == "check" and "check-list" in seen) or (a == "items" and "bind-items" in seen) or (a == "baseline" and "--product admission-baseline.json" in seen) or (a == "govulncheck" and "bind-check" in seen) for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
-    t = tree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/witness-arm64/arm64-collection.json", "items": "witness-build/items.json", "baseline": "witness-build/admission-baseline.json", "govulncheck": "check-results/govulncheck.json"}[s]
+    check(rc != 0 and first(se).startswith("refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) + ":") and not any(("--previous " + a in seen) or (a == "check" and "check-list" in seen) or (a == "items" and "bind-items" in seen) or (a == "baseline" and "--product admission-baseline.json" in seen) or (a == "govulncheck" and "bind-check" in seen) or (a == "apkcompare" and "apk-compare" in seen) for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
+    t = tree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/witness-arm64/arm64-collection.json", "items": "witness-build/items.json", "baseline": "witness-build/admission-baseline.json", "govulncheck": "check-results/govulncheck.json", "apkcompare": "apk-compare/apk-compare.json"}[s]
     os.remove(os.path.join(t, rec)); rc, so, se = run(t, "release-verify")
-    check(rc != 0 and "refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else s) in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
+    check(rc != 0 and "refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else "rebuild" if s == "apkcompare" else s) in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
 # rule 58 (PR 3 made Check verify Build's record only): Release does not rely on Check having verified Sign; it verifies Sign's provenance itself, whatever Check's four records say
 t = tree(); rc, so, se = run(t, "release-verify", env={"FAIL_STAGE": "sign"}); seen = [l for l in log(t) if "--previous sign" in l]
 check(rc != 0 and first(se).startswith("refused at sign:") and len(seen) == 1 and "provenance/provenance.json" in seen[0] and "--rekor-stub provenance/provenance.rekor.json" in seen[0], "AC4 (rule 58) Release verifies Sign's provenance and its Rekor entry itself; four valid Check records do not stand in for it", "rc=%s %s" % (rc, first(se)))
@@ -297,7 +307,7 @@ def signers(t):
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY)
 check(rc == 0 and signers(t) == ["release.rsa.pub"] * 4, "AC6 all four apks (standard and fips, x86_64 and aarch64) come out signed by the release key, laid out as release-apks/<apk arch>/<file>", "rc=%s %s %s" % (rc, signers(t), first(se)))
 cs = [l for l in log(t) if l.startswith("release-sign-apks")]
-check(len(cs) == 1 and "--build-dir" in cs[0] and "--rebuild-dir" in cs[0] and "--key" in cs[0] and not [l for l in log(t) if l.startswith("melange") and "release-sign" not in l and "--signing-key" not in l], "AC6 cache's bin/release-sign-apks.sh is called once with --build-dir --rebuild-dir --key (Release does not call melange itself)", str(cs))
+check(len(cs) == 1 and "--build-dir" in cs[0] and "--rebuild-dir" not in cs[0] and "--key" in cs[0] and not [l for l in log(t) if l.startswith("melange") and "release-sign" not in l and "--signing-key" not in l], "AC6 cache's bin/release-sign-apks.sh is called once with --build-dir --rebuild-dir --key (Release does not call melange itself)", str(cs))
 check(len([l for l in log(t) if l.startswith("melange")]) == 4 and all("--signing-key" in l for l in log(t) if l.startswith("melange")), "AC6 melange is reached only through that script, with --signing-key (measured: --key is not a melange flag)")
 kp = open(os.path.join(t, "calls.log.keypath")).read().strip() if os.path.exists(os.path.join(t, "calls.log.keypath")) else ""
 kl = open(os.path.join(t, "calls.log.key")).read() if os.path.exists(os.path.join(t, "calls.log.key")) else ""
@@ -314,9 +324,11 @@ for key in ("apk-standard-amd64", "apk-standard-arm64", "apk-fips-amd64", "apk-f
     check(rc != 0 and "differs" in se and not [l for l in log(t) if l.startswith(("melange", "release-sign-apks"))] and not os.path.exists(os.path.join(t, "release-apks")), "AC6 the attested digest %s not matching its apk stops before anything is signed" % key, "rc=%s %s" % (rc, first(se)))
 t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); del d["apk-fips-arm64"]; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
 rc, so, se = run(t, "release-apks", creds=KEY); check(rc != 0 and "apk-fips-arm64" in se and not log(t), "AC6 a missing attested digest key is refused, naming it")
-t = tree(); open(os.path.join(t, "rapks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"), "w").write("apk\nsigner: assembly.rsa.pub\ndata: other\n")
+t = tree(); os.makedirs(os.path.join(t, "rapks/ubuntu-24.04-arm/aarch64")); open(os.path.join(t, "rapks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"), "w").write("apk\nsigner: assembly.rsa.pub\ndata: other\n")
 rc, so, se = run(t, "release-apks", creds=KEY)
-check(rc != 0 and "differs" in se and "fscache-fips" in se and signers(t) == [], "AC6 an apk Rebuild built differently stops the release (cache's script refuses, signs nothing), naming it", "rc=%s %s" % (rc, first(se)))
+check(rc == 0 and signers(t) == ["release.rsa.pub"] * 4 and "rapks" not in " ".join(log(t)), "AC6 Rebuild's apks are never read by release-apks (a differing file under rapks/ changes nothing: the comparison is the compare job's, in a job without the key)", "rc=%s %s" % (rc, first(se)))
+RA = open(os.path.join(BIN, "release-apks.sh")).read()
+check("rapks" not in RA and "rebuild-dir" not in RA and "release-apks-rebuild" not in RA, "AC6 release-apks.sh names neither rapks/ nor --rebuild-dir nor a rebuild staging directory")
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"MELANGE_BREAK": "1"})
 check(rc != 0 and "release" in se.lower() and "signed" in se.lower(), "AC6 an apk the signer left signed by another key is refused ('not signed by the release key')", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"MELANGE_FAIL": "1"}); kp = open(os.path.join(t, "calls.log.keypath")).read().strip() if os.path.exists(os.path.join(t, "calls.log.keypath")) else ""
@@ -363,9 +375,10 @@ for miss in ("DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"):
 # AC11: ":X.Y to itself every time, :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest".
 # The released versions are the plain X.Y.Z tags of ghcr.io/fosterstack/cache (rc tags, -fips tags and the floating tags themselves are not versions).
 # NOT in AC11 and so not built: floating tags of the -fips image (it gets its exact tag only), and any flag. The registry fake lists tags with `crane ls`.
-def seed(t, tags, host="ghcr.io"):
-    d = os.path.join(t, "reg", host, "fosterstack", "cache"); os.makedirs(d, exist_ok=True)
-    for x in tags: open(os.path.join(d, x), "w").write("sha256:" + "7" * 64)
+def seed(t, tags, hosts=("ghcr.io", "docker.io"), dig="7"):
+    for host in hosts:
+        d = os.path.join(t, "reg", host, "fosterstack", "cache"); os.makedirs(d, exist_ok=True)
+        for x in tags: open(os.path.join(d, x), "w").write("sha256:" + dig * 64)
 def float_run(tag, tags, env=None, creds=REG):
     t = tree()
     if tags is not None: seed(t, tags)
@@ -375,9 +388,9 @@ def tagset(t): return {(p[3].split("/")[0], p[3].split(":")[1]) for p in pushes(
 def want(*tags): return {(h, x) for h in ("ghcr.io", "docker.io") for x in tags}
 t, rc, so, se = float_run("v0.3.0", ["0.2.2", "0.2.1", "latest", "0.2"]); got = tagset(t)
 check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "AC11 the highest released version moves :X.Y, :X and :latest (production image), the -fips image gets its exact tag only, in both registries", "rc=%s %s %s" % (rc, sorted(got), first(se)))
-t, rc, so, se = float_run("v0.3.1", ["0.3.0", "0.4.0"]); got = tagset(t)
+t, rc, so, se = float_run("v0.3.1", ["0.3.0", "0.4.0", "0.4", "0", "latest"]); got = tagset(t)
 check(rc == 0 and got == want("0.3.1", "0.3.1-fips", "0.3"), "AC11 a patch of an older line moves :X.Y only: 0.4.0 is higher, so neither :0 nor :latest moves (the Codex B1 finding: the old stage moved :latest always)", "rc=%s %s %s" % (rc, sorted(got), first(se)))
-t, rc, so, se = float_run("v0.3.0", ["1.0.0"]); got = tagset(t)
+t, rc, so, se = float_run("v0.3.0", ["1.0.0", "1.0", "1", "latest"]); got = tagset(t)
 check(rc == 0 and "latest" not in {x for _, x in got} and "0" not in {x for _, x in got} and ("ghcr.io", "0.3") in got, "AC11 :latest is never moved by a version lower than a released one (1.0.0 exists)", str(sorted(got)))
 t, rc, so, se = float_run("v0.3.0", ["0.4.0-rc.1", "0.2.0-fips", "latest", "0.3", "0", "9.9.9-fips", "1.0.0-rc.2", "v9.9.9", "latest-fips"]); got = tagset(t)
 check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "AC11 only plain X.Y.Z tags are released versions: rc tags, -fips tags, floating tags and malformed tags do not block :latest", "rc=%s %s %s" % (rc, sorted(got), first(se)))
@@ -393,10 +406,37 @@ for tag in ("v0.3.0-rc1", "v10.20.30-rc7"):
 t, rc, so, se = float_run(tag, ["0.2.2"]); x = {y for _, y in tagset(t)}
 t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); L = [l for l in log(t) if l.startswith("crane push")]
 check(L and all(re.search(r" images/(production|fips) ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
+# ---- release review R3 (Oct 22): :0 and :latest were decided once from the first `crane ls`; a concurrent publication of a higher release between that
+# listing and the floating pushes was rolled back (0.3.1 published, then a resumed 0.3.0 moved :0/:latest back to 0.3.0's digest, and the digest read-back passed).
+# The highest version is now decided again right before the floating tags are pushed, and the END STATE of both registries is checked after every final run. The remaining
+# window (a publication that completes between that last listing and the push) is closed by the release job's concurrency group (release.yml; asserted in bin/chain-build-wiring-test.sh).
+HIGHER = "sha256:" + "8" * 64
+def regtag(t, host, tag):
+    p = os.path.join(t, "reg", host, "fosterstack", "cache", tag)
+    return open(p).read().strip() if os.path.exists(p) else None
+def again(t, tag="v0.3.0", env=None): return run(t, "release-publish", creds=REG, env=env, tag=tag)
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "1"})
+check(rc != 0 and all(regtag(t, h, x) == HIGHER for h in ("ghcr.io", "docker.io") for x in ("0", "latest")) and ("ghcr.io", "latest") not in tagset(t) and ("docker.io", "0") not in tagset(t) and "0.3.1" in se,
+      "R3 a higher release that appears after the first listing keeps :0 and :latest (neither is moved back to 0.3.0) in both registries; :0.3 (always moved, ratified) now differs from the line's highest, so the end-state check fails naming 0.3.1", "rc=%s 0=%s latest=%s pushed=%s %s" % (rc, regtag(t, "ghcr.io", "0"), regtag(t, "docker.io", "latest"), sorted(tagset(t)), first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "2"})
+check(rc != 0 and "0.3.1" in se, "R3 a higher release that completes after the last listing but before the floating push: the end-state check fails the step naming 0.3.1", "rc=%s %s" % (rc, first(se)))
+# audit ruling, Oct 22: a RETRY must not go green over a rolled-back state. The end state of every final run is checked in BOTH registries (the highest plain X.Y.Z on
+# ghcr exists on each registry with ghcr's digest; :latest and :<major> equal it; :X.Y equals the line's highest); digests are compared, nothing is retagged.
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "2"}); rc2, so2, se2 = again(t)
+check(rc != 0 and rc2 != 0 and "0.3.1" in se2, "R3 re-running 0.3.0 on the registry the race-2 run left behind (ghcr :0/:latest rolled back) fails naming 0.3.1 instead of passing", "rc=%s rc2=%s %s" % (rc, rc2, first(se2)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "3"}); rc2, so2, se2 = again(t)
+check(rc != 0 and rc2 != 0 and "docker.io" in se2 and "0.3.1" in se2, "R3 re-running 0.3.0 after the race-3 run (the mirror rolled back, ghcr correct) fails naming the mirror and 0.3.1", "rc=%s rc2=%s %s" % (rc, rc2, first(se2)))
+t = tree(); seed(t, ["0.3.1", "0.3", "0", "latest"], hosts=("ghcr.io",), dig="8"); seed(t, ["0.3.1"], hosts=("docker.io",), dig="8"); seed(t, ["0", "latest", "0.3"], hosts=("docker.io",), dig="7")
+rc, so, se = run(t, "release-publish", creds=REG, tag="v0.3.0")
+check(rc != 0 and "docker.io" in se and "0.3.1" in se, "R3 a mirror holding stale :0/:latest (no race, ghcr correct at the higher release) fails the older release's run naming the mirror and 0.3.1", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.3.1", "0.3.1-fips", "0.3", "0", "latest"])
+check(rc != 0 and ("ghcr.io", "0.3") in tagset(t) and ("ghcr.io", "latest") not in tagset(t) and "0.3.1" in se and "0.3" in se, "R3 a resumed older patch of the same line still moves :0.3 (the owner's 'always move :X.Y') but the step fails naming the line's highest, 0.3.1: the rollback is never silent", "rc=%s %s %s" % (rc, sorted(tagset(t)), first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_RACE_AFTER": "9"}); got = tagset(t)
+check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "R3 no concurrent publication: unchanged, the highest release moves :0 and :latest", "rc=%s %s" % (rc, sorted(got)))
 t = tree(); import shutil as _sh; _sh.rmtree(os.path.join(t, "images/production")); open(os.path.join(t, "images/production"), "w").write("a tarball, not a layout directory")
 rc, so, se = run(t, "release-publish", creds=REG); check(rc != 0 and "production" in se and not pushes(t), "AC7 an image that is not an OCI layout directory (a tarball) is refused before any push, naming it", "rc=%s %s" % (rc, first(se)))
 # round 1 (Codex B R1): a signing run that leaves one of the four apks of the attested list missing is refused (no empty glob skips validation)
-for top in ("apks", "rapks"):
+for top in ("apks",):
     t = tree(); os.remove(os.path.join(t, top, "ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"))
     rc, so, se = run(t, "release-apks", creds=KEY)
     check(rc != 0 and "fips" in se and "aarch64" in se, "AC6 R1 the %s tree missing the arm64 -fips apk is refused naming the apk (an empty glob does not skip it)" % top, "rc=%s %s" % (rc, first(se)))
@@ -807,7 +847,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "385"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "394"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

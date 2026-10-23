@@ -1236,7 +1236,7 @@ else:
     IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
     job, scan_name, marker = "panel-inspector", "Amazon Inspector every image", None
     perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"},
-             "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read"},
+             "vex-attach": {"contents": "read", "packages": "write"}, "panel-grype": {"contents": "read"}, "panel-scout": {"contents": "read", "packages": "read"},
              "scout-root-cause": {"contents": "read", "packages": "write"}, "panel-inspector": {"contents": "read", "id-token": "write"},
              "panel-google": {"contents": "read", "id-token": "write"}, "panel": {"contents": "read", "issues": "write"},
              "scout-older-versions": {"contents": "read"}, "manifests": None, "rescan": {"contents": "read", "issues": "write", "packages": "read"}}
