@@ -1727,6 +1727,54 @@ case_ n32-combined-o-file-ok   ok  "$(rb 'bash -eo pipefail bin/x.sh')" "mkdir -
 case_ n32-repo-script-ok       ok  "$(rb 'bash bin/x.sh --flag; sh ./tools/y.sh')" "mkdir -p bin tools; printf 'echo x\\n' > bin/x.sh; printf 'echo y\\n' > tools/y.sh"
 case_ n32-bash-c-ok            ok  "$(rb 'bash -c "echo hi"')"
 case_ n32-docker-shell-arg-ok  ok  "$(rb 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c true')"
+
+# --- the command a step runs INSIDE a container is a command of its own (docker/podman/nerdctl exec, and the words after the image of run):
+#     judged like a top-level command, pinned by digest or refused (#593 review: `exec` sat in the safe verbs, so a pull through it was invisible)
+case_ exec-inner-pull-bad          bad "$(r 'docker exec C docker pull alpine:latest')"
+case_ exec-inner-options-bad       bad "$(r 'docker exec -it -e A=b -u root -w /x C docker pull alpine:latest')"
+case_ exec-inner-dashdash-bad      bad "$(r 'docker exec -i -- C docker pull alpine:latest')"
+case_ exec-inner-podman-bad        bad "$(r 'podman exec C docker pull alpine:latest')"
+case_ exec-inner-nerdctl-bad       bad "$(r 'nerdctl exec C docker pull alpine:latest')"
+case_ exec-inner-container-verb-bad bad "$(r 'docker container exec C docker pull alpine:latest')"
+case_ exec-inner-sh-c-bad          bad "$(r "docker exec C sh -c 'docker pull alpine:latest'")"
+case_ exec-inner-pip-bad           bad "$(r 'docker exec C pip install requests')"
+case_ exec-unknown-option-bad      bad "$(r 'docker exec --frobnicate C true')"
+case_ exec-inner-plain-ok          ok  "$(r 'docker exec C make test')"
+case_ exec-inner-bash-c-ok         ok  "$(r "docker exec -it C bash -c 'echo hi'")"
+case_ exec-inner-pinned-pull-ok    ok  "$(r 'docker exec C docker pull alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667')"
+case_ run-inner-pull-bad           bad "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+case_ run-inner-sh-c-bad           bad "$(r "docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c 'docker pull alpine:latest'")"
+case_ run-inner-pip-flags-bad      bad "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pip install requests')"
+case_ run-entrypoint-inner-bad     bad "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+case_ run-flags-image-tag-bad      bad "$(r 'docker run --rm -v x:y -e A=b alpine:latest true')"
+case_ run-flags-image-digest-ok    ok  "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 make test')"
+case_ run-option-value-looks-pinned-bad  bad "$(r 'docker run --label alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 alpine:latest true')"
+# mutants: the checker with ONE branch cut must let the matching probe through (the probe depends on that branch)
+mutant_() {   # name, python replace (old|new), probe script
+  local name=$1 d="$work/mut-$1"
+  take "mutant-$name" || return 0
+  mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
+  mkdir -p "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
+  python3 - "$here/../bin/check-action-pins.py" "$d/mut.py" "$2" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+old, new = sys.argv[3].split("|||")
+assert src.count(old) == 1, "mutation site not found exactly once: " + old
+open(sys.argv[2], "w").write(src.replace(old, new))
+PY
+  if python3 "$d/mut.py" "$d" >/dev/null 2>&1; then got=ok; else got=bad; fi
+  if [ "$got" = ok ]; then pass=$((pass+1)); echo "PASS mutant-$name → escapes (the probe needs that branch)"
+  else failn=$((failn+1)); echo "FAIL mutant-$name → still caught with the branch cut"; fi
+}
+mutant_ exec-inner      'if verb == "exec":  # INNER-EXEC|||if False:  # INNER-EXEC' "$(r 'docker exec C docker pull alpine:latest')"
+mutant_ run-inner       'if verb == "run":  # INNER-RUN|||if False:  # INNER-RUN' "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+mutant_ entrypoint-inner 'if entry:  # INNER-ENTRYPOINT|||if False:  # INNER-ENTRYPOINT' "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+mutant_ run-flags-image 'k, unknown = _options(rest, val, boolean)
+                if unknown:
+                    ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "|||k, unknown = next((i for i, a in enumerate(rest) if not a.startswith("-")), len(rest)), None
+                if unknown:
+                    ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "' "$(r 'docker run --label alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 alpine:latest true')"
 # --- Codex #164 adversarial r1 (C01, C03-C13): each a fail-closed reading of what bash, pip, docker or BuildKit does
 case_ c01-backslash-newline    bad "$(rb "doc\\
           ker run alpine:3.20")"

@@ -125,6 +125,10 @@ Round 13 (NEW-16..20): nothing may point docker or buildx at another daemon or c
 --config are refused, and so are DOCKER_HOST, DOCKER_CONTEXT, BUILDKIT_HOST and any DOCKER_CONFIG but a fresh
 $(mktemp -d), in scripts or env blocks; plugin, context, import, system, trust, secret, config and buildx create/use
 are off the reviewed list (refused).
+Inside a container (#593 review): the command `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` runs, and the words after the
+image of `… run [opts] IMAGE CMD…` (led by an --entrypoint program), are read as a command of their own and judged like a top-level
+one: `docker exec C docker pull alpine:latest` is the same finding `docker pull alpine:latest` is. An exec option this check does not
+know is a finding (it cannot tell which word is the container).
 Round 12 (NEW-14/15): every verb of docker/podman/nerdctl, skopeo and crane is either read (run/create/pull/build/
 scout/…), on a reviewed list of verbs that pull or run nothing remote, or refused (podman kube play, skopeo sync, crane
 append/mutate, …). Tool words match by exact case (the scope is ubuntu runners, where `Docker` is not found); PATH
@@ -603,6 +607,8 @@ RUN_VAL = {"--add-host", "--annotation", "-a", "--attach", "--blkio-weight", "--
 RUN_BOOL = {"-d", "--detach", "--disable-content-trust", "--init", "-i", "--interactive", "--no-healthcheck",
             "--oom-kill-disable", "--privileged", "-P", "--publish-all", "-q", "--quiet", "--read-only", "--rm",
             "--sig-proxy", "-t", "--tty"}
+EXEC_VAL = {"-e", "--env", "--env-file", "-u", "--user", "-w", "--workdir", "--detach-keys"}
+EXEC_BOOL = {"-d", "--detach", "-i", "--interactive", "--privileged", "-t", "--tty"}
 PULL_VAL = {"--platform"}
 PULL_BOOL = {"-a", "--all-tags", "--disable-content-trust", "-q", "--quiet"}
 TOOLS = {"docker", "podman", "nerdctl", "skopeo", "crane", "docker-compose", "podman-compose",
@@ -1033,6 +1039,41 @@ def _command_words(toks):
     return words
 
 
+def _container_inner(tool, args):
+    """The command a step runs INSIDE a container: for `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` the words after the
+    container, for `… run [opts] IMAGE CMD…` the words after the image (led by the --entrypoint program when one is given). The image or
+    container itself is judged elsewhere; the inner command is a command of its own and is read like a top-level one (#593 review: `exec`
+    was a safe verb, so `docker exec C docker pull alpine:latest` was invisible). None when there is no inner command or it cannot be placed
+    (an option this check does not know is a finding elsewhere)."""
+    if tool not in ("docker", "podman", "nerdctl"):
+        return None
+    k, unknown = _options(args, DOCKER_GLOBAL_VAL, DOCKER_GLOBAL_BOOL)
+    rest = args[k:]
+    if unknown or not rest:
+        return None
+    verb, rest = rest[0], rest[1:]
+    if verb == "container" and rest[:1] in (["exec"], ["run"]):
+        verb, rest = rest[0], rest[1:]
+    if verb == "exec":  # INNER-EXEC
+        k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
+        return None if unknown or k >= len(rest) else rest[k + 1:]
+    if verb == "run":  # INNER-RUN
+        k, unknown = _options(rest, RUN_VAL, RUN_BOOL)
+        if unknown or k >= len(rest):
+            return None
+        entry = None
+        for j, a in enumerate(rest[:k]):
+            if a == "--entrypoint" and j + 1 < k:
+                entry = rest[j + 1]
+            elif a.startswith("--entrypoint="):
+                entry = a.split("=", 1)[1]
+        inner = rest[k + 1:]
+        if entry:  # INNER-ENTRYPOINT
+            inner = [entry] + inner
+        return inner
+    return None
+
+
 def _commands(script, depth=0):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
@@ -1131,6 +1172,12 @@ def _commands(script, depth=0):
         at = next((i for i, w in enumerate(toks) if _base(w) in TOOLS or PKG_TOOL.match(_base(w))), None)
         if at is not None:
             out.append([_base(toks[at])] + toks[at + 1:])
+            inner = _container_inner(_base(toks[at]), toks[at + 1:])
+            if inner:         # the command run inside the container is a command of its own
+                if depth >= 4:
+                    out.append(["__too_deep__", _base(toks[at])])
+                else:
+                    out += _commands(" ".join(shlex.quote(t) for t in inner), depth + 1)
     return out
 
 
@@ -1693,6 +1740,11 @@ def script_images(script):
                 ev += _scout(rest)
             elif verb == "tag" and len(rest) >= 2:
                 ev.append(("tag", rest[-2], rest[-1]))      # judged in check_runs: the source must be ours (NEW-21)
+            elif verb == "exec":
+                k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
+                if unknown:
+                    ev.append(("finding", "`%s exec` has an option this check does not know (%s): it cannot tell which word is "
+                                          "the container, so the command inside cannot be read" % (cmd, unknown)))
             elif verb in DOCKER_SAFE:
                 pass
             elif verb not in ("build",):
