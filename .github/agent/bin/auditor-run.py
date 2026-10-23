@@ -870,10 +870,12 @@ def adjudicate(adjudicator, ctx, state):
         # this run — it takes effect only after the owner merges the audit-lane PR. A proposal is
         # kept ONLY when it names a recognized kind AND carries evidence (AC4 "with evidence"); a
         # malformed / evidence-free / unsupported-kind proposal is dropped, never forwarded.
-        _pr = ans.get("propose")
-        if isinstance(_pr, dict) and _pr.get("kind") in ("defect_log", "knowledge") and _pr.get("evidence"):
+        _pr = _valid_proposal(ans.get("propose"))
+        if _pr is not None:
             state.setdefault("proposals", []).append(
                 {"finding_id": ctx["finding_id"], "package": ctx.get("package"), "propose": _pr})
+        elif ans.get("propose") is not None:
+            state["proposals_refused"] = state.get("proposals_refused", 0) + 1      # the proposal is refused, not the run (rc-5b R4)
         return ans.get("category") or "unknown"
     return "adjudicator_error" if (errored and not refused) else "refused"
 
@@ -1992,6 +1994,46 @@ def _configured_model_values():
         if k.startswith("AUDITOR_MODEL") and v and len(v.strip()) >= 3:
             out.append(re.escape(v.strip()))
     return out
+
+
+_PROP_KEYS = {"kind", "package", "keys", "note", "evidence"}
+_PROP_KEY_KEYS = {"scanner", "finding_id", "purl"}
+_PROP_MAX = 2000
+
+
+def _scrubbed(x):
+    """True when the text holds no vendor/model attribution and none of this run's configured model identifiers (row 48: the public repo names none)."""
+    if FORBIDDEN_NAMES.search(x):
+        return False
+    cfg = _configured_model_values()
+    return not (cfg and re.search("|".join(cfg), x, re.I))
+
+
+def _valid_proposal(pr):
+    """A model-proposed defect-log/knowledge entry, validated by SHAPE (rc-5b R4; REQ-AUD-17 AC4 "code validation"): exactly the keys kind/package/keys/note/evidence, kind one of
+    defect_log|knowledge, evidence a non-empty string, the other fields strings (keys: a list of {scanner, finding_id, purl} strings), each at most 2000 characters, and no
+    string naming a vendor or model. Anything else returns None: the proposal is refused (and counted), never forwarded, and the run goes on."""
+    if not isinstance(pr, dict) or set(pr) - _PROP_KEYS or pr.get("kind") not in ("defect_log", "knowledge"):
+        return None
+    ev = pr.get("evidence")
+    if not isinstance(ev, str) or not ev.strip():
+        return None
+    texts = [ev]
+    for k in ("package", "note"):
+        if k in pr:
+            if not isinstance(pr[k], str):
+                return None
+            texts.append(pr[k])
+    if "keys" in pr:
+        if not isinstance(pr["keys"], list):
+            return None
+        for kk in pr["keys"]:
+            if not isinstance(kk, dict) or set(kk) - _PROP_KEY_KEYS or not all(isinstance(v, str) for v in kk.values()):
+                return None
+            texts += list(kk.values())
+    if any(len(t) > _PROP_MAX or not _scrubbed(t) for t in texts):
+        return None
+    return pr
 
 
 def _narrative_ok(text, sections):

@@ -4005,6 +4005,44 @@ i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/nu
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
+# rc-5b fix 12 (R4 + R5): the production client reads the category and the refusal from the JSON answer's own keys (exact), and the driver refuses a model proposal by shape and by
+# vendor/model name (the proposal, not the run).
+begin "rc5b-12-client-category-is-exact-json" "the adjudicator client takes the category and the refusal from the JSON keys, exact match: 'not a false_positive' in prose is not false_positive, a word 'cannot' in prose is not a refusal, no JSON is under_investigation"
+r12="$("$PY" -c "
+import importlib.util,os,json
+os.environ['AUDITOR_MODEL_PRIMARY']='m'
+spec=importlib.util.spec_from_file_location('c','.github/agent/bin/auditor-adjudicator-client.py'); C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
+def ask(text):
+    class B: pass
+    b=B(); b.text=text
+    class Msg: content=[b]; usage=None
+    class _M:
+        @staticmethod
+        def create(**k): return Msg()
+    class Client: messages=_M()
+    a=C._handle({'finding_id':'CVE-X','package':'p','kind':'disposition'},Client())
+    return a.get('category'), a.get('refused')
+got=[ask('{\"category\": \"false_positive\"}'), ask('This is not a false_positive; it is real_fixable.'), ask('{\"category\": \"not a false_positive\"}'),
+     ask('I cannot assess this.'), ask('{\"refused\": true}'), ask('Analysis: {\"category\": \"real_fixable\", \"x\": 1}'), ask('{\"category\": \"real_fixable or false_positive\"}')]
+want=[('false_positive',False),('under_investigation',False),('under_investigation',False),('under_investigation',False),('under_investigation',True),('real_fixable',False),('under_investigation',False)]
+print('OK' if got==want else 'BAD %r'%(got,))" 2>/dev/null | tail -1)"
+eq "$r12" "OK" && ok || no "client category and refusal are read from exact JSON keys" "$r12"
+begin "rc5b-12-proposals-validated-by-shape-and-name" "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap and no vendor/model name; a refused proposal does not stop the run"
+r12p="$("$PY" -c "
+import importlib.util,os,sys
+sys.path.insert(0,'.github/agent/bin')
+spec=importlib.util.spec_from_file_location('r','.github/agent/bin/auditor-run.py'); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+good={'kind':'defect_log','package':'libpropose','keys':[{'scanner':'grype','finding_id':'CVE-2099-PROPOSE','purl':'pkg:deb/debian/libpropose@1.0'}],'note':'generalises from a recorded no-DSA pattern','evidence':'debian security tracker: no-DSA (minor)'}
+bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''), dict(good,evidence=['x']), dict(good,note=3), dict(good,keys='x'),
+     dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'p','extra':'y'}]), dict(good,keys=[{'scanner':'grype','finding_id':1,'purl':'p'}]),
+     dict(good,note='proposed by Claude'), dict(good,evidence='per the gpt-5 analysis'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
+     dict(good,note='x'*2001), None, 'x', [], {}]
+os.environ['AUDITOR_MODEL_PRIMARY']='secret-model-id-7'
+bad.append(dict(good,note='uses secret-model-id-7'))
+ok=R._valid_proposal(good)==good and R._valid_proposal({'kind':'knowledge','evidence':'e'})=={'kind':'knowledge','evidence':'e'}
+rej=[b for b in bad if R._valid_proposal(b) is not None]
+print('OK' if ok and not rej else 'BAD kept=%r ok=%s'%(rej,ok))" 2>/dev/null | tail -1)"
+eq "$r12p" "OK" && ok || no "_valid_proposal keeps a well-shaped proposal and refuses every mis-shaped or name-bearing one" "$r12p"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"

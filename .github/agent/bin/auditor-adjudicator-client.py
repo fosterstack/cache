@@ -150,14 +150,15 @@ def _handle(req, client):
     msg = client.messages.create(model=model, max_tokens=512,
                                  messages=[{"role": "user", "content": prompt}])
     text = "".join(getattr(b, "text", "") for b in msg.content)
-    cat = next((c for c in ("false_positive", "not_affected_unreachable", "real_fixable",
-                            "risk_acceptance") if c in text), "under_investigation")
-    ans = {"refused": "cannot" in text.lower() and cat == "under_investigation",
+    # the category and the refusal are read from the JSON answer's own keys, exact match (rc-5b R5): a substring of free text ("not a false_positive") is not a category, and
+    # a word in prose is not a refusal. No JSON, or a value outside the four = under_investigation, not refused.
+    p = _extract_json(text)
+    cat = p.get("category") if isinstance(p, dict) and p.get("category") in ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance") else "under_investigation"
+    ans = {"refused": isinstance(p, dict) and p.get("refused") is True and cat == "under_investigation",
            "category": cat, "proposed": True, "token_usage": _usage(msg)}
     # REQ-AUD-16 AC4: the model MAY propose a new defect-log/knowledge entry (with evidence). Pass
     # it through under "propose"; the driver delivers it in the draft PR and it takes effect only
     # after merge. The model never edits its own instructions or the live records here.
-    p = _extract_json(text)
     if isinstance(p, dict) and isinstance(p.get("propose"), dict):
         ans["propose"] = p["propose"]
     return ans
