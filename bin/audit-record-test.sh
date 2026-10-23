@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4
+# proves: REQ-REL-012-AC1, REQ-REL-012-AC2, REQ-REL-012-AC3, REQ-REL-012-AC4, REQ-REL-012-AC5
 # Gate 6 of the release process (owner RATIFIED Oct 23, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md, rule 6, "a
 # pull request into the release carries a passed-audit record for its exact head, or it cannot merge"), offline. The record is the branch
 # audit/<the pull request's head sha>: ONE commit whose only parent is that head, verified by GitHub, authored by the writer the policy file
@@ -150,6 +150,72 @@ r, calls = wrap(commit=None); check("wrapper: a commit that is not found exits 1
 r, calls = wrap(commit=mut(COMMIT, ["commit", "verification", "verified"], False)); check("wrapper: an unverified record exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}}); check("wrapper: a ref whose object is not a sha exits 1 without a commit request", r.returncode == 1 and calls.count("gh api") == 1, (r.returncode, r.stdout, calls))
 r, calls = wrap(repo="o/r; x"); check("wrapper: a repository that is not owner/name exits 1 and calls nothing", r.returncode == 1 and calls == "", (r.returncode, r.stderr, calls))
+
+# the writer's own checks: the pull request must be open, into main, with exactly this head, before anything is written
+PR = {"number": 7, "state": "open", "merged": False, "head": {"sha": HEAD}, "base": {"ref": "main"}}
+def plan(pr=PR, number=7, head=HEAD):
+    return A.plan_record(number, head, pr)
+ok, why = plan(); check("plan: an open pull request into main with this head may be recorded", ok and why == "", (ok, why))
+for name, pr, number, head in (
+    ("a closed pull request", mut(PR, ["state"], "closed"), 7, HEAD),
+    ("a merged pull request", mut(PR, ["merged"], True), 7, HEAD),
+    ("a head that moved", mut(PR, ["head", "sha"], "c" * 40), 7, HEAD),
+    ("another base", mut(PR, ["base", "ref"], "chain-v030"), 7, HEAD),
+    ("another number", PR, 8, HEAD),
+    ("a number that is not a positive integer", PR, "7", HEAD), ("zero", PR, 0, HEAD), ("a bool", PR, True, HEAD),
+    ("a head that is not 40 hex", PR, 7, "abc"), ("no head", PR, 7, None),
+    ("no answer", None, 7, HEAD), ("a malformed answer", [], 7, HEAD), ("no head block", mut(PR, ["head"], A), 7, HEAD),
+):
+    ok, why = plan(pr=pr, number=number, head=head)
+    check("plan refused: " + name, (not ok) and bool(why), (ok, why))
+open(os.path.join(d, "pr.json"), "w").write(json.dumps(PR))
+r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "7", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json")], capture_output=True, text=True)
+check("cli plan: an open pull request exits 0", r.returncode == 0, (r.returncode, r.stdout, r.stderr))
+r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "8", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json")], capture_output=True, text=True)
+check("cli plan: another number exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
+r = subprocess.run([sys.executable, "-I", sys.argv[1], "plan", "--pr", "x", "--head", HEAD, "--pr-json", os.path.join(d, "pr.json")], capture_output=True, text=True)
+check("cli plan: a pull request number that is not a number exits 2", r.returncode == 2, (r.returncode, r.stdout, r.stderr))
+
+# the writer's first half (prepare): a fake gh answers the pull request and the record lookups; it must write only after the plan passes and never over a good record
+PREP_SH = os.path.join(os.path.dirname(JUDGE_SH), "audit-record-prepare.sh")
+wroot = os.path.join(d, "wrepo"); os.makedirs(wroot + "/bin"); os.makedirs(wroot + "/.github/policy")
+for src, dst in ((sys.argv[1], wroot + "/bin/audit-record.py"), (JUDGE_SH, wroot + "/bin/audit-record-judge.sh"), (PREP_SH, wroot + "/bin/audit-record-prepare.sh")):
+    open(dst, "w").write(open(src).read()); os.chmod(dst, 0o755)
+open(wroot + "/.github/policy/audit-writers.json", "w").write(json.dumps(WRITERS))
+open(fake + "/gh", "w").write('''#!/usr/bin/env bash
+echo "gh $*" >> "$CALLS"
+case "$2" in
+  repos/o/r/pulls/*) f="$FAKE/pr" ;;
+  repos/o/r/git/ref/heads/audit/*) f="$FAKE/ref" ;;
+  repos/o/r/commits/*) f="$FAKE/commit" ;;
+  *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
+esac
+if [ -f "$f.err" ]; then cat "$f.err" >&2; exit 1; fi
+cat "$f.json"
+''')
+def prepare(pr=PR, number="7", head=HEAD, ref=None, commit=None, pr_err=None, repo="o/r"):
+    fk = tempfile.mkdtemp(dir=d)
+    for name, obj, err in (("pr", pr, pr_err), ("ref", ref, None), ("commit", commit, None)):
+        if err is not None: open(os.path.join(fk, name + ".err"), "w").write(err)
+        elif obj is not None: open(os.path.join(fk, name + ".json"), "w").write(json.dumps(obj))
+        else: open(os.path.join(fk, name + ".err"), "w").write("gh: Not Found (HTTP 404)")
+    calls = os.path.join(fk, "calls"); open(calls, "w").close()
+    cwd = tempfile.mkdtemp(dir=d)
+    for name in ("bin", ".github"): os.symlink(os.path.join(wroot, name), os.path.join(cwd, name))
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY=repo, GH_TOKEN="x")
+    r = subprocess.run(["bash", "bin/audit-record-prepare.sh", number, head], capture_output=True, text=True, env=env, cwd=cwd)
+    f = os.path.join(cwd, "audit-record")
+    return r, open(calls).read(), (open(f).read() if os.path.exists(f) else None)
+r, calls, f = prepare(); check("prepare: an open pull request into main with no record yet -> proceed, and the file audit-record holds the head",
+    r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and f == HEAD + "\n", (r.returncode, r.stdout, r.stderr, f))
+r, calls, f = prepare(ref=REF, commit=COMMIT); check("prepare: a record that already passes -> present, nothing written", r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "present" and f is None, (r.returncode, r.stdout, f))
+r, calls, f = prepare(ref=REF, commit=mut(COMMIT, ["commit", "verification", "verified"], False)); check("prepare: a record that does not pass -> proceed", r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and f == HEAD + "\n", (r.returncode, r.stdout, f))
+for name, kw in (("a closed pull request", dict(pr=mut(PR, ["state"], "closed"))), ("a merged pull request", dict(pr=mut(PR, ["merged"], True))),
+                 ("a head that moved", dict(pr=mut(PR, ["head", "sha"], "c" * 40))), ("a pull request not into main", dict(pr=mut(PR, ["base", "ref"], "chain-v030"))),
+                 ("an API error reading the pull request", dict(pr_err="gh: HTTP 502"))):
+    r, calls, f = prepare(**kw); check("prepare refused: %s -> exit 1, nothing written" % name, r.returncode == 1 and f is None and "proceed" not in r.stdout, (r.returncode, r.stdout, r.stderr, f))
+for name, kw in (("a pull request number that is not digits", dict(number="7; rm -rf /")), ("a head that is not 40 hex", dict(head="abc")), ("a repository that is not owner/name", dict(repo="o/r x"))):
+    r, calls, f = prepare(**kw); check("prepare refused: %s -> exit 1, nothing called" % name, r.returncode == 1 and calls == "" and f is None, (r.returncode, calls, f))
 
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

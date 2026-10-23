@@ -2138,6 +2138,18 @@ requirements:
         then: "each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-REL-012-AC5
+        given: "a workflow dispatch of agent-review-gate.yml with a pull request number and a head sha, sent by the step that clears the pull request's review"
+        when: "the record job runs"
+        then: "it takes nothing else from the pull request, re-reads the pull request and writes nothing unless it is open, into main, with exactly that head; it leaves a record that already passes alone; otherwise it makes ONE signed commit on audit/<head sha> parented on that head, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents only, and judges what it wrote with the review gate's own judge; the signed-commit lane guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC6
+        given: "a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch"
+        when: "the scheduled sweep runs"
+        then: "it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
 
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan

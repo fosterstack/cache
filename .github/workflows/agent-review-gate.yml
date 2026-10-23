@@ -39,11 +39,20 @@ on:
   schedule:
     - cron: '*/10 * * * *'
   workflow_dispatch:
+    inputs:
+      audit_pr:
+        description: 'Write the passed-audit record (REQ-REL-012) for this pull request number; with audit_head'
+        type: string
+        default: ''
+      audit_head:
+        description: 'The pull request head sha the record is for (40 lower-case hex); empty = run the sweep'
+        type: string
+        default: ''
 
 permissions: {}
 
 concurrency:
-  group: agent-review-gate-${{ github.event.pull_request.number || 'sweep' }}
+  group: agent-review-gate-${{ github.event.pull_request.number || (inputs.audit_head != '' && format('record-{0}', inputs.audit_pr)) || 'sweep' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request_target' }}
 
 jobs:
@@ -144,9 +153,59 @@ jobs:
             -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
             -f "output[title]=auditor review gate: ${conclusion}" -f "output[summary]=${summary}" >/dev/null
 
+  # REQ-REL-012 (release process rule 6): the writer of the passed-audit record. Dispatched with a pull request number and its head sha by the step that clears the review; it takes
+  # nothing else from the pull request. Main's copy of bin/audit-record-write.sh re-reads the pull request (open, into main, this head) and makes ONE signed commit on audit/<head sha>,
+  # through the App's token scoped to contents only (the lane guard allows audit/ and only audit/<that sha>). It holds no PR data other than the two inputs and runs nothing of the PR.
+  record:
+    name: agent review gate — passed-audit record writer
+    if: github.event_name == 'workflow_dispatch' && inputs.audit_head != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: mint the App token (contents only)
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ secrets.AUDITOR_APP_ID }}
+          private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
+          repositories: cache
+          permission-contents: write
+
+      - name: may a record be written? (the pull request is open, into main, with this exact head; no passing record yet)
+        id: prep
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          AUDIT_PR: ${{ inputs.audit_pr }}
+          AUDIT_HEAD: ${{ inputs.audit_head }}
+        run: |
+          set -euo pipefail
+          state=$(bash bin/audit-record-prepare.sh "$AUDIT_PR" "$AUDIT_HEAD" | tail -n 1)
+          echo "state=${state}" >> "$GITHUB_OUTPUT"
+
+      - name: make the signed record commit (one commit on audit/<head>, parented on the head)
+        if: steps.prep.outputs.state == 'proceed'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          AUDIT_HEAD: ${{ inputs.audit_head }}
+        run: python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "audit/${AUDIT_HEAD}" --base "$AUDIT_HEAD" --prefix audit/ --message "audit record" --path audit-record
+
+      - name: judge what was written, as the review gate will
+        if: steps.prep.outputs.state == 'proceed'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          AUDIT_HEAD: ${{ inputs.audit_head }}
+        run: bash bin/audit-record-judge.sh "$AUDIT_HEAD" main
+
   sweep:
     name: agent review gate — sweep
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.audit_head == '')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: agent
@@ -193,7 +252,13 @@ jobs:
                     | if . == null then \"none\" elif .conclusion == \"success\" then \"success\"
                       elif (now - (.completed_at | fromdate)) < 21600 then \"failure\" else \"stale\" end")" \
               || { fail=1; continue; }
-            case "$last" in success|stale) continue ;; esac
+            case "$last" in success) continue ;; esac
+            # an older failure waits for a push or a re-run, EXCEPT when the head has a passed-audit record branch now (REQ-REL-012: the record is written after the review clears, which can be
+            # hours after the first "no record" verdict, and no event of the pull request re-runs its gate): one cheap lookup, then it is judged again like a recent failure
+            if [ "$last" = stale ]; then
+              GH_TOKEN="$LIST_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/audit/${sha}" > /dev/null 2>&1 || continue
+              last=failure
+            fi
             git fetch --no-tags -q origin "+refs/pull/${n}/head:refs/remotes/pr/${n}" || { fail=1; continue; }
             [ "$(git rev-parse "refs/remotes/pr/${n}")" = "$sha" ] || continue     # moved: next sweep
             conclusion=failure
