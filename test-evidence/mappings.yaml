@@ -1637,7 +1637,7 @@ mappings:
       - { type: shell-test, ref: "bin/vex-guide-test.sh" }
   - ac: REQ-SCAN-011-AC3
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/release.yml job live-test-release (MODE release): bin/vex-live-run.sh run executes every command block of docs/using-our-vex.md as written against the real services; the release-candidate live-test job and the main-push job in ci.yml run it only in part (the blocks listed in docs/using-our-vex.cannot-run.json need a published release, and ci.yml prints a notice and skips until one carries the rule-10 files)" }
+      - { type: workflow-job, ref: ".github/workflows/release.yml job live-test-release (MODE release): bin/vex-live-run.sh run executes every command block of docs/using-our-vex.md as written against the real services; the release-candidate live-test job leaves out the blocks listed in docs/using-our-vex.cannot-run.json (they need a published release), and the main-push job in ci.yml runs every block against the newest release that carries the rule-10 files, printing a notice and skipping until one exists" }
       - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
   - ac: REQ-SCAN-011-AC4
     evidence:
