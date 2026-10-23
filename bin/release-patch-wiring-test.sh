@@ -512,5 +512,25 @@ print("; ".join(bad) or "ok")
 PY
 )
 if [ "$stages_out" = ok ]; then pass=$((pass+1)); echo "PASS stages-read-baseline → ok"; else failn=$((failn+1)); echo "FAIL stages-read-baseline ($stages_out)"; fi
+# the standing issue always updates (REQ-REL-009 AC1): run 39989891074 died with exit 126 (argument too long) because the whole commit
+# list went through --body. The step now caps the list, writes the body to a file and hands gh --body-file; run the real step text
+# against a decision of 4000 long entries with a stub gh and check what it would have been given.
+issue_out=$(WF="$root/.github/workflows/release.yml" W="$work" python3 - <<'PY'
+import os, subprocess, json, yaml
+d = yaml.load(open(os.environ["WF"]), Loader=yaml.BaseLoader)
+st = [s for s in d["jobs"]["decide"]["steps"] if "standing information issue" in s.get("name", "")][0]
+w = os.environ["W"]
+os.makedirs(w + "/iss", exist_ok=True)
+json.dump({"since": "v0.2.2", "not_clean": ["%07d: %s" % (i, "x" * 3000) for i in range(4000)]}, open(w + "/iss/decision.json", "w"))
+stub = w + "/iss/bin"; os.makedirs(stub, exist_ok=True)
+open(stub + "/gh", "w").write('#!/bin/bash\nfor a in "$@"; do [ "${#a}" -lt 100000 ] || { echo "ARGLEN" >&2; exit 126; }; done\nwhile [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "' + w + '/iss/body" && echo FILE >> "' + w + '/iss/log"; shift; done\n')
+os.chmod(stub + "/gh", 0o755)
+r = subprocess.run(["bash", "-c", st["run"]], env={"PATH": stub + ":" + os.environ["PATH"], "RUNNER_TEMP": w + "/iss", "GH_TOKEN": "x"}, capture_output=True, text=True)
+body = open(w + "/iss/body").read() if os.path.exists(w + "/iss/body") else ""
+ok = r.returncode == 0 and 0 < len(body) < 60000 and "more" in body and "v0.2.2" in body
+print("ok" if ok else "rc=%s len=%s err=%s" % (r.returncode, len(body), r.stderr[-200:]))
+PY
+)
+if [ "$issue_out" = ok ]; then pass=$((pass+1)); echo "PASS standing-issue-small-body → ok"; else failn=$((failn+1)); echo "FAIL standing-issue-small-body ($issue_out)"; fi
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -147,9 +147,11 @@ jobs:
         run: |
           set -euo pipefail
           title="auditor: main is not patch-clean"
-          body=$(jq -r '"No patch was cut: these commits since " + (.since // "the latest tag") + " are not fix-only (rule 1). A minor release, or the owner'"'"'s patch-fix label on the PR, resolves each.\n\n" + (.not_clean | map("- " + .) | join("\n"))' "$RUNNER_TEMP/decision.json")
+          # the list is capped (first 30, each cut to 400 characters, then "and N more") and handed over as a file: the whole list as
+          # one argument is past the kernel's limit on a long run of commits and the step died with exit 126
+          jq -r '"No patch was cut: these commits since " + (.since // "the latest tag") + " are not fix-only (rule 1). A minor release, or the owner'"'"'s patch-fix label on the PR, resolves each.\n\n" + (.not_clean | (.[:30] | map("- " + .[:400]) | join("\n")) + (if length > 30 then "\n\n... and " + ((length - 30) | tostring) + " more (the decide job log lists them all)" else "" end))' "$RUNNER_TEMP/decision.json" > "$RUNNER_TEMP/issue-body.md"
           n=$(gh issue list --state open --search "$title in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
-          if [ -n "$n" ]; then gh issue comment "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+          if [ -n "$n" ]; then gh issue comment "$n" --body-file "$RUNNER_TEMP/issue-body.md"; else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"; fi
 
       # REQ-REL-009-AC13 (owner RATIFIED Oct 2): a CI patch uses the latest owner-approved ACs baseline of its line, only
       # if the requirements are byte-for-byte unchanged since it. Admission applies this rule; decide applies the SAME
