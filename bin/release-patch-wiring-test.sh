@@ -118,12 +118,13 @@ fail = jobs.get("patch-failed") or {}
 # the condition names a failed job and is exactly these && conjuncts (cache#581 ruling): always() or failure() (the status call), the exact group
 # "a needed job failed, or the release job was cancelled by its concurrency group" (needs.*.result, so a longer needs list changes nothing) as a
 # whole conjunct, the tag test, the workflow_dispatch exclusion and !inputs.dry-run. Whitespace is collapsed first; anything else, a negation, a
-# comparison, a wrapper call or a stray `||`, is refused; the status call or the group, the tag, the dispatch and the dry-run conjuncts are all required.
+# comparison, a wrapper call or a stray `||`, is refused. Required: a real status call (always() or failure(); without one GitHub keeps the implicit
+# success() and the job never fires after a failure), the group or failure(), the tag, the dispatch and the dry-run conjuncts.
 FAILGRP = "(contains(needs.*.result, 'failure') || needs.release.result == 'cancelled')"
 _ALLOWED = {"always()", "failure()", FAILGRP, "startsWith(github.ref, 'refs/tags/v')", "github.event_name != 'workflow_dispatch'", "!inputs.dry-run"}
 _fm = re.fullmatch(r"\$\{\{\s*(.*?)\s*\}\}", str(fail.get("if", "")).strip(), re.S)
 _parts = [c.strip() for c in re.sub(r"\s+", " ", _fm.group(1)).split("&&")] if _fm else []
-if not _fm or not set(_parts) <= _ALLOWED or not ({"failure()", FAILGRP} & set(_parts)) or not {"startsWith(github.ref, 'refs/tags/v')", "github.event_name != 'workflow_dispatch'", "!inputs.dry-run"} <= set(_parts) or fail.get("permissions") != {"contents": "read", "issues": "write"}:
+if not _fm or not set(_parts) <= _ALLOWED or not ({"always()", "failure()"} & set(_parts)) or FAILGRP not in _parts and "failure()" not in _parts or not {"startsWith(github.ref, 'refs/tags/v')", "github.event_name != 'workflow_dispatch'", "!inputs.dry-run"} <= set(_parts) or fail.get("permissions") != {"contents": "read", "issues": "write"}:
     bad.append("no failure-issue job for tag runs: %s" % fail.get("if"))
 if "gh issue create" not in "\n".join(s.get("run") or "" for s in fail.get("steps") or []):
     bad.append("the failure job opens no issue")
@@ -398,6 +399,7 @@ case_ fail-failure-negated bad "$J['patch-failed'].__setitem__('if', \"\${{ alwa
 case_ fail-tag-negated bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && !startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
 case_ fail-no-dispatch bad "$J['patch-failed'].__setitem__('if', \"\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}\")"
 case_ fail-failure-form ok "$J['patch-failed'].__setitem__('if', \"\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
+case_ fail-no-status-call     bad "$J['patch-failed'].__setitem__('if', \"\${{ (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}\")"
 case_ a-rerun-path            bad "$J['patch-failed']['steps'][0]['run'] += '\\ngh run rerun \$GITHUB_RUN_ID'"
 case_ gitsign-unpinned        bad "[s.__setitem__('run', s['run'].replace('bin/install-scanner.sh gitsign', 'go install github.com/sigstore/gitsign@latest')) for s in $D['steps'] if 'install-scanner.sh gitsign' in (s.get('run') or '')]"
 case_ no-failure-issue        bad "$J.pop('patch-failed')"
