@@ -74,6 +74,10 @@ FETCH_SUM = re.compile(r"^      expected-sha256: [0-9a-f]{64}$")
 OTHER_SHA256 = "169700dc8e6a76b347bd85aea5a562705c5bf18543019e21d89c28766a01015d"
 
 
+# the recipe lines outside the pipeline and the environment block: the package keys, the licence, the package list (the packages change with every refresh, so they are read by form, not pinned)
+PRE_LINE = re.compile(r"  (name: [a-z0-9-]+|version: \"@VERSION@\"|epoch: 0|description: [^:#'\"`$&|;<>\\]+|copyright:|contents:)|    (- license: [A-Za-z0-9.-]+|packages:)|      - [a-z0-9][a-z0-9_.+-]*=[A-Za-z0-9._+~:-]+")
+
+
 def read_recipe(rec, fips):
     """(the package path, CGO_ENABLED) of one recipe, read with a CLOSED line grammar (standard library only): the environment block holds exactly the four known keys;
     the pipeline holds the one exact build line, `go version -m`, the search-path and GOPATH/GOCACHE exports and, in the FIPS recipe only, GOFIPS140=v1.0.0 and its
@@ -101,9 +105,16 @@ def read_recipe(rec, fips):
     pipes = [k for k, l in enumerate(lines) if l == "pipeline:"]
     if len(pipes) != 1:
         fail("%s has %d top-level pipeline blocks (exactly one is required)" % (rec, len(pipes)))
-    for k, l in enumerate(lines[:pipes[0]]):
-        if k not in block and re.search(r"\bruns:", l) and not l.lstrip().startswith("#"):
-            fail("%s line %d runs a shell step outside the pipeline: %r" % (rec, k + 1, l.strip()))
+    # the part of the recipe outside the pipeline is closed too: three top-level keys, the package keys, the package list and the licence line; an extra
+    # subpackage, a quoted or unquoted step key, or an added key anywhere else would be a second place that builds, so it fails closed (Codex astra on #597)
+    for k, l in enumerate(lines):
+        if k in block or k == starts[0] or not l.strip() or l.lstrip().startswith("#") or k > pipes[0]:
+            continue
+        if not (l in ("package:", "environment:", "pipeline:") or PRE_LINE.fullmatch(l)):
+            fail("%s line %d is outside the pipeline and is not one of the recipe's package, licence and package-list lines: %r" % (rec, k + 1, l.strip()))
+    for l in lines:
+        if l and not l.startswith((" ", "#")) and l not in ("package:", "environment:", "pipeline:"):
+            fail("%s has a top-level key other than package, environment and pipeline: %r" % (rec, l))
     pkgs, fips_exports, proofs, other = [], 0, 0, []
     for k in range(pipes[0] + 1, len(lines)):
         l = lines[k]

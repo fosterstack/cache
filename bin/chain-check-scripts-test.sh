@@ -1309,6 +1309,11 @@ gvcases_=(
   'a template line changed (the install directory)|sed -i.bak "s#^  - runs: mkdir -p /usr/local/#  - runs: mkdir -p /usr/local/x#" "$gvt/build/melange.yaml"'
   'a template line removed (the git set-up)|sed -i.bak "/safe.directory/d" "$gvt/build/melange.yaml"'
   'a template line added in a second step|printf "  - runs: true\n" >> "$gvt/build/melange.yaml"'
+  'an extra subpackage with a quoted runs key before the pipeline|sed -i.bak "s#^pipeline:#subpackages:\n  - name: audit-extra\n    pipeline:\n      - \"runs\": |\n          export GOFLAGS=-mod=mod\npipeline:#" "$gvt/build/melange.yaml"'
+  'an extra subpackage with an unquoted runs key before the pipeline|sed -i.bak "s#^pipeline:#subpackages:\n  - name: audit-extra\n    pipeline:\n      - runs: |\n          export GOFLAGS=-mod=mod\npipeline:#" "$gvt/build/melange.yaml"'
+  'a subpackages key after the pipeline|printf "subpackages:\n  - name: x\n" >> "$gvt/build/melange.yaml"'
+  'a pipeline key under the package keys|sed -i.bak "s#^  epoch: 0#  epoch: 0\n  pipeline: x#" "$gvt/build/melange.yaml"'
+  'a package list line that is not a package|sed -i.bak "s#^      - busybox=#      - evil; true\n      - busybox=#" "$gvt/build/melange.yaml"'
   'a runs step before the pipeline|sed -i.bak "s#^pipeline:#  extra:\n    - runs: true\npipeline:#" "$gvt/build/melange.yaml"'
 )
 for rc_ in "${gvcases_[@]}"; do
@@ -1317,6 +1322,11 @@ for rc_ in "${gvcases_[@]}"; do
   if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the closed recipe grammar refuses before any scan: ${rc_%%|*}"; else bad "G grammar case '${rc_%%|*}' accepted: rc=$rc $out"; fi
   gv_recipes
 done
+# a package-pin bump (the refresh rewrites the `- pkg=ver` lines) is not a change of the grammar: it still scans
+gv_recipes; sed -i.bak 's#^      - busybox=1.38.0-r3#      - busybox=1.39.0-r1#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
+gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && grep -q 'busybox=1.39.0-r1' "$gvt/build/melange.yaml" && [ "$(grep -c '^govulncheck -json ' "$work/gvlog")" = 6 ]; then ok "G a package-pin bump in the recipes still passes the closed grammar (six runs)"; else bad "G a package-pin bump was refused or the scan did not run: rc=$rc $out"; fi
+gv_recipes
 # the package and CGO_ENABLED come from the recipes, never hard-coded: another path and CGO "1" reach the scan's target and environment
 gv_recipes 1; sed -i.bak 's#fscache ./cmd/fscache$#fscache ./cmd/other#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
 gvrun GV_OUT=clean -- "${GVARGS[@]}"
@@ -1372,7 +1382,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=465
+EXPECT=471
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
