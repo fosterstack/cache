@@ -687,7 +687,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "364166baf181c6c887b5f74764f915378c8898acf81de4300f247305310459de",
+      "sha256": "649171c73e1fe8489e8929ef85d31cdb5556eea6e2d07b58941c5eafe0feba27",
       "tools": [
         "find",
         "python3",
@@ -1954,7 +1954,7 @@
     },
     {
       "path": "bin/check-osv-vex.py",
-      "sha256": "10f8ea45340cf5fb1f14b39a0a269e75c5c81c6497c66a00166f48f4ed382c30",
+      "sha256": "b4469b84e9822df6de8d5d29ebcffbcfab3d9816dd035b022a71b9cefcd118a2",
       "tools": [],
       "runs": [
         "bin/rescan-statement.py"
@@ -2007,7 +2007,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "6beed1869ac76ff2ae969a05334d1584dcbdc122c002ba3a4c3843486270d159",
+      "sha256": "21b40d6a082f6e5ba0724978f62d3de62e1ef48777dc95147ab0638959acaa4b",
       "tools": [
         "at",
         "python3"

@@ -280,7 +280,7 @@ for s in "${scanners[@]}"; do
       # grype read the VEX itself (--vex); osv-scanner cannot, so its findings are held to the same published document here (round 1 F3): exit 1 stands
       # unless the report holds findings and every one is excepted by a statement (the rescan's product-and-alias-scoped decision)
       vv=""; case "${name%%/*}" in production|fips) vv=${name%%/*} ;; esac
-      if python3 bin/check-osv-vex.py --vex "$VEX" --report "$tmp/out.json" --variant "$vv" > "$tmp/vex-out.json"; then
+      if python3 bin/check-osv-vex.py --vex "$VEX" --report "$tmp/out.json" --variant "$vv" ${plat:+--platform "$plat"} > "$tmp/vex-out.json"; then
         vexn=$(jq -r '.excepted' "$tmp/vex-out.json"); rc=0
         echo "check-scan: osv-scanner: all $vexn findings in $name ($digest) are excepted by the published VEX document"
       fi
