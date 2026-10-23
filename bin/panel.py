@@ -177,7 +177,9 @@ def _cdx_findings(doc, comps, inspector=False):
         if not affects:   # a vulnerability nobody can attribute to a component is an incomplete report: did not run, never silence
             raise ValueError("vulnerability %s has no affects: the report is incomplete" % (v.get("id") or "?"))
         for a in affects:
-            c = by_ref.get(a.get("ref"), {})
+            c = by_ref.get(a.get("ref"))
+            if c is None:   # a finding that names no component of the report cannot be attributed: incomplete, never a nameless "?" finding
+                raise ValueError("vulnerability %s affects %r, which is not a component of the report: the report is incomplete" % (v.get("id") or "?", a.get("ref")))
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
                 name, ver = (c.get("name") or "?"), (c.get("version") or "")

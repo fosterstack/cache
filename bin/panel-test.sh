@@ -344,6 +344,22 @@ for label, aff in (("missing", None), ("empty", [])):
     except ValueError as e_:
         got = str(e_)
     check("Inspector's vulnerability with %s affects is a ValueError (did not run), not dropped" % label, got is not None and "CVE-2099-0113" in got, got)
+# rc-5a B round 2 (advisor: tighten): an affects entry that names no component of the report cannot be attributed either: did not run
+for label, aff in (("a ref that matches no component", [{"ref": "nope"}]), ("an entry with no ref", [{}]), ("only entries that are not objects", ["r0", 7])):
+    gdr = os.path.join(tempfile.mkdtemp(), "gr")
+    put(gdr, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                                 "vulnerabilities": [{"id": "CVE-2099-0114", "affects": aff}]})
+    try:
+        P.read_grype(gdr); got = None
+    except ValueError as e_:
+        got = str(e_)
+    check("Grype's vulnerability with affects holding %s is a ValueError (did not run)" % label, got is not None and "CVE-2099-0114" in got, got)
+# a version that only the purl carries is read from the purl
+spv = os.path.join(tempfile.mkdtemp(), "spv")
+put(spv, "sbom.json", {"artifacts": []})
+put(spv, "cves.json", {"vulnerabilities": [{"identifiers": [{"type": "cve", "value": "CVE-2099-0115"}],
+     "location": {"dependency": {"package": {"name": "pkg:deb/debian/tzdata@2026c"}}}}]})
+check("Scout: a version given only in the package URL is taken from it", P.read_scout(spv)[1][0][1:4] == ("tzdata", "2026c", "pkg:deb/debian/tzdata@2026c"), P.read_scout(spv)[1])
 gd2 = os.path.join(tempfile.mkdtemp(), "g2")
 put(gd2, "packages.json", [{"package": "tzdata", "version": "2026c", "packageType": "OS"}])
 put(gd2, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0104", "vulnerability": {"shortDescription": "CVE-2099-0104", "severity": "CRITICAL",
