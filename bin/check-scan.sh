@@ -75,10 +75,15 @@ VEX=.vex/fosterstack-cache.openvex.json
 # environment (an older `now` would pass any database as fresh) is refused, defined or empty, never read; the tests give the clock by a fake date command.
 # "The VEX is the only exception" (register rows 18 and 38; cache#580 for the PR gate): grype also drops findings through GRYPE_* settings (GRYPE_ONLY_FIXED, GRYPE_IGNORE_WONTFIX, ...)
 # and through a config file, so any GRYPE_* variable other than the database cache and update settings stops the pass (names only, values are never printed), and
-# grype runs with -c and an EMPTY config file ($tmp/empty.yaml) so no repository, home or XDG config applies.
+# grype runs with -c and an EMPTY config file ($tmp/empty.yaml) so no repository, home or XDG config applies. The same holds for osv-scanner (the owner: the published OpenVEX file is the
+# only exception for all four scanners): any OSV_SCANNER_* variable other than its database cache directory stops the pass, and both osv-scanner calls get --config with an EMPTY toml
+# ($tmp/empty.toml), because it reads an osv-scanner.toml beside the scanned go.mod and drops the vulnerabilities it lists from its report, where the VEX check below never sees them.
 bad_env=""
 for v in "${!GRYPE_@}"; do
   case "$v" in GRYPE_DB_CACHE_DIR|GRYPE_DB_AUTO_UPDATE) ;; *) bad_env="${bad_env}${v} " ;; esac
+done
+for v in "${!OSV_SCANNER_@}"; do
+  case "$v" in OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY) ;; *) bad_env="${bad_env}${v} " ;; esac
 done
 if [ -n "$bad_env" ]; then
   echo "check-scan: $bad_env found in the environment: only the VEX document may hide a finding, and these settings can; refusing to run (names only, values are never printed)" >&2
@@ -90,7 +95,7 @@ now=$(date +%s)
 GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json)
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
-: > "$tmp/empty.yaml"   # the one config grype reads (it needs the extension)
+: > "$tmp/empty.yaml"; : > "$tmp/empty.toml"   # the one config grype reads (it needs the extension)
 
 add_target() { tname+=("$1"); tdigest+=("$2"); tpath+=("$3"); tplat+=("${4:-}"); }   # one scan target: its name, its digest, the file the scanner reads and (grype on an image) the platform it must scan
 # The platform children of an image layout (S1, chain-v030 review): grype on the multi-platform index with no platform scans only the runner's own
@@ -227,11 +232,11 @@ for s in "${scanners[@]}"; do
     case "$s:$path" in
       grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" ${plat:+--platform "$plat"} -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
-      osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
+      osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --config "$tmp/empty.toml" --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*)
         arc="$tmp/img-${name//\//-}.tar"
         if osv_archive "$path" "$digest" "$arc"; then
-          OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$arc" > "$tmp/out.json" || rc=$?
+          OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --config "$tmp/empty.toml" --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$arc" > "$tmp/out.json" || rc=$?
         else
           echo "check-scan: osv-scanner: the archive of $name could not be made from its manifest" >&2; rc=2
         fi ;;

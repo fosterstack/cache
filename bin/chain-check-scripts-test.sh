@@ -209,6 +209,10 @@ import json, os, sys
 # {"pkg": "name@version", "id": ..., "aliases": [...]}) puts those vulnerabilities on the first packages
 n, eco = int(sys.argv[1]), sys.argv[2]
 vulns = json.loads(os.environ.get("FAKE_OSV_VULNS") or "[]")
+if os.environ.get("FAKE_OSV_ECO_ONLY") and os.environ["FAKE_OSV_ECO_ONLY"] != eco:
+    vulns = []                       # this finding belongs to the other ecosystem's scan only
+ignored = os.environ.get("FAKE_OSV_IGNORE", "").split()
+vulns = [v for v in vulns if v["id"] not in ignored]    # an osv-scanner.toml [[IgnoredVulns]] drops the report entries it lists (probed on 2.6.0)
 pk = []
 for i in range(n):
     name, ver, vs = "p%d" % i, "1", []
@@ -233,6 +237,13 @@ n=$3; name=$1
 for a in "\$@"; do case "\$a" in cyclonedx-json=*) python3 -c 'import json,sys; json.dump({"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"p%d" % i,"version":"1"} for i in range(int(sys.argv[2]))]}, open(sys.argv[1],"w"))' "\${a#cyclonedx-json=}" "\$n";; esac; done
 if [ "\$name" = osv-scanner ]; then
   case " \$* " in *" --offline-vulnerabilities "*) ;; *) echo "online scan refused by the fake: no --offline-vulnerabilities" >&2; exit 99;; esac
+  ocfg=""; oprev=""
+  for oa in "\$@"; do [ "\$oprev" != --config ] || ocfg=\$oa; oprev=\$oa; done
+  if [ -z "\$ocfg" ]; then echo "osv-config none" >> "\$FAKE_LOG"; elif [ -f "\$ocfg" ] && [ ! -s "\$ocfg" ]; then echo "osv-config empty" >> "\$FAKE_LOG"; else echo "osv-config other" >> "\$FAKE_LOG"; fi
+  if [ -z "\$ocfg" ]; then   # real osv-scanner 2.6.0 (probed): with no --config it reads osv-scanner.toml BESIDE the scanned go.mod and drops the ids it lists; with --config only that file
+    ot=\$(dirname "\${@: -1}")/osv-scanner.toml
+    if [ -f "\$ot" ]; then FAKE_OSV_IGNORE=\$(sed -n 's/^id = "\(.*\)"\$/\1/p' "\$ot" | tr '\n' ' '); export FAKE_OSV_IGNORE; fi
+  fi
   case " \$* " in *" scan image "*) python3 "$work/osvarc.py" "\${@: -1}" >> "\$FAKE_LOG" || exit 2;; esac
   case " \$* " in *" --download-offline-databases "*)
     c=\${OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY:?}
@@ -267,6 +278,7 @@ else
   eco=Debian:12; case " \$* " in *go.mod*) eco=Go;; esac
   python3 "$work/osvout.py" "\$n" "\$eco"
 fi
+if [ "\$name" = osv-scanner ] && [ -n "\${FAKE_OSV_ECO_ONLY:-}" ] && [ "\$eco" != "\$FAKE_OSV_ECO_ONLY" ]; then exit 0; fi
 exit $2
 EOF
   chmod +x "$fake/$1"
@@ -349,6 +361,22 @@ GRYPE_ONLY_FIXED=true want_rc "AC4 c a GRYPE_ONLY_FIXED setting stops the pass (
 if grep -Fq 'GRYPE_ONLY_FIXED' <<< "$out" && ! grep -Fq 'true' <<< "$out"; then ok "AC4 c the refused variable is named and its value is not printed"; else bad "AC4 c refused variable output: ${out:0:140}"; fi
 GRYPE_DB_VALIDATE_AGE=false want_rc "AC4 c a GRYPE_DB_VALIDATE_AGE setting stops the pass (exit 2)" 2 "${SCAN[@]}"
 GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_CACHE_DIR="$work/dbcache" want_ok "AC4 c GRYPE_DB_AUTO_UPDATE and GRYPE_DB_CACHE_DIR are allowed" "${SCAN[@]}"
+# The same rule for osv-scanner (the owner: "Our published OpenVEX file is the only exception, for all four scanners"): it reads an osv-scanner.toml beside the scanned go.mod and drops the
+# vulnerabilities it lists from its report, where check-osv-vex.py never sees them. Probed on osv-scanner 2.6.0: with `--config <empty file>` the toml beside go.mod no longer applies; a toml
+# only in the working directory is not read for a source scan either way. Archive mode (`scan image --archive`) is NOT probed: --config is passed there too (harmless if it is ignored).
+want_ok "AC4 d osv-scanner clean: every osv-scanner scan call got --config with an empty file" "${SCAN[@]}"
+no_=$(grep -c '^osv-scanner scan ' "$work/log" || true); oe_=$(grep -c '^osv-config empty$' "$work/log" || true); ob_=$(grep -c -E '^osv-config (none|other)$' "$work/log" || true)
+if [ "$ob_" = 0 ] && [ "$oe_" = "$no_" ] && [ "$no_" -gt 0 ]; then ok "AC4 d all $no_ osv-scanner scan calls (Go modules and image archives) got --config with an empty file"; else bad "AC4 d osv-scanner config: $oe_ empty, $ob_ other or none, of $no_ scan calls"; fi
+mkfake osv-scanner 1 80
+PAIR='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}, {"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]'
+for t_ in "$fx/osv-scanner.toml" "$fx/tools/requirements/osv-scanner.toml"; do printf '[[IgnoredVulns]]\nid = "CVE-2025-99999"\nreason = "x"\n' > "$t_"; done
+FAKE_OSV_ECO_ONLY=Go FAKE_OSV_VULNS="$PAIR" want_fail "AC4 d an osv-scanner.toml beside each go.mod that ignores the uncovered one of two findings does not hide it (the other is excepted by the VEX)" "found vulnerabilities" "${SCAN[@]}"
+rm -f "$fx/osv-scanner.toml" "$fx/tools/requirements/osv-scanner.toml"
+FAKE_OSV_ECO_ONLY=Go FAKE_OSV_VULNS="$PAIR" want_fail "AC4 d with no toml the same pair fails (the baseline of the two cases above)" "found vulnerabilities" "${SCAN[@]}"
+mkfake osv-scanner 0 80
+OSV_SCANNER_CONFIG_FILE=x.toml want_rc "AC4 d an OSV_SCANNER_* setting other than the cache directory stops the pass (exit 2)" 2 "${SCAN[@]}"
+if grep -Fq 'OSV_SCANNER_CONFIG_FILE' <<< "$out" && ! grep -Fq 'x.toml' <<< "$out"; then ok "AC4 d the refused OSV_SCANNER_* variable is named and its value is not printed"; else bad "AC4 d refused osv variable output: ${out:0:140}"; fi
+OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$work/osvdb-ext" want_ok "AC4 d OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY is allowed" "${SCAN[@]}"
 mkfake grype 0 120; mkfake osv-scanner 1 80
 want_fail "AC4 the second scanner reports findings: the script fails naming it" osv-scanner "${SCAN[@]}"
 mkfake osv-scanner 0 80; mkfake grype 0 0
@@ -375,7 +403,7 @@ rm -f "$fx/images/fips.tar"; mkdir -p "$fx/images/fips"; printf '{"schemaVersion
 want_fail "AC4 an image directory without oci-layout is not a layout and is refused" layout "${SCAN[@]}"
 rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" fips > /dev/null
 want_ok "AC4 grype scans each image layout directory by oci-dir: and osv-scanner a tar made of it" "${SCAN[@]}"
-if grep -Eq '^grype oci-dir:images/(production|fips) ' "$work/log" && ! grep -q 'oci-archive' "$work/log" && grep -Eq '^osv-scanner scan image --archive .*\.tar$' "$work/log" 2> /dev/null; then ok "AC4 the scanner argv carries the layout: oci-dir for grype, an archive made of the layout for osv"; else bad "AC4 layout argv: $(grep -E '^(grype|osv)' "$work/log" | head -4 | cut -c1-160 | tr '\n' '|')"; fi
+if grep -Eq '^grype oci-dir:images/(production|fips) ' "$work/log" && ! grep -q 'oci-archive' "$work/log" && grep -Eq '^osv-scanner scan image --config [^ ]+ --archive .*\.tar$' "$work/log" 2> /dev/null; then ok "AC4 the scanner argv carries the layout: oci-dir for grype, an archive made of the layout for osv"; else bad "AC4 layout argv: $(grep -E '^(grype|osv)' "$work/log" | head -4 | cut -c1-160 | tr '\n' '|')"; fi
 # ---- chain-v030 review S1 (REQ-CHAIN-006-AC4): grype scans each platform child of the multi-platform index, both required --------------
 # `grype oci-dir:` on the index with no platform scans only the runner's own platform (linux/amd64): the arm64 child's packages were never scanned while the
 # verdict was recorded for the index digest. Each variant is now scanned once per child (--platform linux/amd64, linux/arm64), each child's own manifest
@@ -1186,7 +1214,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=379
+EXPECT=386
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
