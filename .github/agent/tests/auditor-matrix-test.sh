@@ -3439,7 +3439,7 @@ def problems(d):
     co, mint, prep, sign, judge = st
     if not str(co.get("uses", "")).startswith("actions/checkout@") or co.get("with") != {"persist-credentials": False}: bad.append("checkout")
     if not str(mint.get("uses", "")).startswith("actions/create-github-app-token@") or mint.get("id") != "app" or mint.get("with") != {
-            "app-id": "${{ secrets.AUDITOR_APP_ID }}", "private-key": "${{ secrets.AUDITOR_APP_PRIVATE_KEY }}", "repositories": "cache", "permission-contents": "write"}: bad.append("the token must be contents-only")
+            "app-id": "${{ secrets.AUDITOR_APP_ID }}", "private-key": "${{ secrets.AUDITOR_APP_PRIVATE_KEY }}", "repositories": "cache", "permission-contents": "write", "permission-pull-requests": "read"}: bad.append("the token must be contents write and pull-requests read, nothing else")
     envs = {"GH_TOKEN": "${{ steps.app.outputs.token }}", "AUDIT_PR": "${{ inputs.audit_pr }}", "AUDIT_HEAD": "${{ inputs.audit_head }}"}
     if prep.get("env") != dict(envs, AUDIT_ACTOR="${{ github.triggering_actor }}") or prep.get("id") != "prep" or "bash bin/audit-record-prepare.sh \"$AUDIT_PR\" \"$AUDIT_HEAD\"" not in prep.get("run", "") or "set -euo pipefail" not in prep.get("run", ""): bad.append("prepare step")
     if sign.get("if") != "steps.prep.outputs.state == 'proceed'" or sign.get("env") != {"GH_TOKEN": envs["GH_TOKEN"], "AUDIT_HEAD": envs["AUDIT_HEAD"]} or sign.get("run") != 'python3 .github/agent/bin/auditor-signed-commit.py --repo "$GITHUB_REPOSITORY" --branch "audit/${AUDIT_HEAD}" --base "$AUDIT_HEAD" --prefix audit/ --message "audit record" --path audit-record': bad.append("sign step")

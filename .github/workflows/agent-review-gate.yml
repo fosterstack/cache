@@ -155,7 +155,7 @@ jobs:
 
   # REQ-REL-012 (release process rule 6): the writer of the passed-audit record. Dispatched with a pull request number and its head sha by the step that clears the review; it takes
   # nothing else from the pull request. Main's copy of bin/audit-record-write.sh re-reads the pull request (open, into main, this head) and makes ONE signed commit on audit/<head sha>,
-  # through the App's token scoped to contents only (the lane guard allows audit/ and only audit/<that sha>). It holds no PR data other than the two inputs and runs nothing of the PR.
+  # through the App's token scoped to contents write and pull-requests read (the lane guard allows audit/ and only audit/<that sha>). It holds no PR data other than the two inputs and runs nothing of the PR.
   record:
     name: agent review gate — passed-audit record writer
     if: github.event_name == 'workflow_dispatch' && inputs.audit_head != ''
@@ -169,7 +169,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: mint the App token (contents only)
+      - name: mint the App token (contents write, pull requests read)
         id: app
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -177,6 +177,7 @@ jobs:
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
           repositories: cache
           permission-contents: write
+          permission-pull-requests: read
 
       - name: may a record be written? (the pull request is open, into main, with this exact head; no passing record yet)
         id: prep

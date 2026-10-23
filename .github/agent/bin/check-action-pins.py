@@ -238,7 +238,7 @@ GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
 # main's gate workflow and the change's; a later change removes main's old one, leaving one
 GATE_WORKFLOW_SHA256 = frozenset({
     "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # main's gate workflow
-    "4fb9341103041ec2256a71b766482b5bb8f866aec475e1c0a842bdc8a0150710",   # the gate workflow with the passed-audit record judge and writer (REQ-REL-012, gate 6)
+    "34358ce9e25cb1b2ae3865fbaa95deab51677857283892d5894b69f5a76ca36f",   # the gate workflow with the passed-audit record judge and writer (REQ-REL-012, gate 6)
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
