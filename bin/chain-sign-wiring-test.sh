@@ -373,12 +373,22 @@ def direct_signers(base, files, frozen, allowed, bad):
     disc = []
     found = signing_files(base, disc)          # workflows, composite actions and any other jobs:/runs: YAML anywhere (Codex #249 r7 B8, r8 B4)
     bad += ["AC1: " + x for x in disc]
+    called, judged = set(), set()
     for f in found:
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         if os.path.relpath(f, base) in frozen or rel == "stage-sign.yml": continue
+        judged.add(rel)
         for e, pv, line in signer_calls(open(f).read()) + decoded_signer_calls(f, rel, bad):
+            called.add((rel, e["name"]))
             if pv: bad.append("AC1: %s signs provenance (%s: %s); only stage-sign.yml may" % (rel, e["name"], line[:80]))
             elif e["name"] not in allowed.get(rel, set()): bad.append("AC1: %s calls %r, which is not listed with a reason in chain-signers.json" % (rel, e["name"]))
+    # rc-2 signing review R5: a listed signer must be one the tree can use: its file exists, and a file this judge reads makes that call
+    # (a pre-authorisation of a signer that must never return is the opposite of the allowlist; the legacy frozen files are not read, so their rows are not judged)
+    for rel, tools in sorted(allowed.items()):
+        if not (os.path.exists(os.path.join(wfdir, str(rel))) or os.path.exists(os.path.join(base, str(rel)))):
+            bad.append("AC1: chain-signers.json lists %s, which is not a file of the tree" % rel); continue
+        if rel in judged:
+            bad += ["AC1: chain-signers.json lists %r for %s, but that file makes no such call (remove the row)" % (t, rel) for t in sorted(tools, key=str) if (rel, t) not in called]
 
 def stage_grammars(base, files, frozen, rows, envn, bad):
     """001-AC1: "every stage-*.yml is judged over a closed set of keys" (keys, env names, uses, run lines). Returns what each stage runs."""
@@ -2446,6 +2456,21 @@ d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"rea
 expect caught "AC1 a listed signer with no reason" tree "$d"
 d=$(mk t_nolist); rm "$d/.github/policy/chain-signers.json"
 expect caught "AC1 no chain-signers.json" tree "$d"
+# rc-2 signing review R5: a pre-authorisation of a signer the tree cannot use is itself a finding
+d=$(mk t_ghost)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-admission.yml", "tool": "gitsign", "reason": "old chain: verifies the CI patch-tag identity"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a workflow file that does not exist" tree "$d"
+d=$(mk t_unused)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-build.yml", "tool": "actions/attest", "reason": "old chain: signs the build predicate"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row for an existing workflow whose file never makes that call" tree "$d"
 # 003-AC5: only release.yml calls stage-sign.yml and no stage calls a stage (a stage that calls another stage gets that stage's SAN: spike (b) case 5)
 d=$(mk c_good); printf 'jobs:\n  s:\n    uses: ./.github/workflows/stage-sign.yml\n  b:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/release.yml"
 expect ok "003-AC5 fixture: release.yml calls every stage file" calls "$d"
@@ -2949,7 +2974,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='f9afe7fcab33a17c3c690cbc5d7fac19a14a82036d1d16cfae7080fd8a02a025'
+FX_PIN='d4f9e5c952ed5ebd9ebbdfcb2a6e37aa74a77e66f67e74f4a1af119e61899fdb'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -4636,7 +4661,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=2041
+EXPECT=2043
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
