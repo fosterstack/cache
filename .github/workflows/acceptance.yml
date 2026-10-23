@@ -70,6 +70,17 @@ jobs:
           echo "fscache never became healthy" >&2
           exit 1
 
+      - name: refuse an image-ref that is not pinned by digest
+        if: inputs.image-ref != ''
+        env:
+          IMAGE_REF: ${{ inputs.image-ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${IMAGE_REF}" =~ ^[A-Za-z0-9._/:-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "image-ref must be name@sha256:<64 lowercase hex>, got: ${IMAGE_REF}" >&2
+            exit 1
+          fi
+
       - name: start the exact candidate image (release-chain mode)
         if: inputs.image-ref != ''
         env:
@@ -186,6 +197,17 @@ jobs:
             curl -sf http://localhost:18098/healthz && exit 0; sleep 0.5
           done
           echo "server never became healthy" >&2; exit 1
+
+      - name: refuse an image-ref that is not pinned by digest
+        if: inputs.image-ref != ''
+        env:
+          IMAGE_REF: ${{ inputs.image-ref }}
+        run: |
+          set -euo pipefail
+          if ! [[ "${IMAGE_REF}" =~ ^[A-Za-z0-9._/:-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "image-ref must be name@sha256:<64 lowercase hex>, got: ${IMAGE_REF}" >&2
+            exit 1
+          fi
 
       - name: start the exact candidate image WITH Basic Auth (release-chain mode)
         if: inputs.image-ref != ''

@@ -1,0 +1,117 @@
+# proves: REQ-SUP-001-AC28, REQ-SUP-001-AC29
+"""Two plain-form pins (owner: tool downloads are an exact version plus a checksum; images are pinned by digest).
+AC28: the sample project's Gradle wrapper carries distributionSha256Sum, a lowercase sha256 hex.
+AC29: acceptance.yml refuses an image-ref that is not name@sha256:<64 lowercase hex> before any docker run: in every job that
+starts an image from IMAGE_REF, an earlier step runs the refusal; the step's own script is run here against hostile refs."""
+import os, re, shutil, stat, subprocess, tempfile, unittest
+
+import yaml
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+PROPS = os.path.join(ROOT, "bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties")
+WORKFLOW = os.path.join(ROOT, ".github/workflows/acceptance.yml")
+DIGEST = "ghcr.io/fosterstack/cache@sha256:" + "a" * 64
+
+
+def wrapper_props():
+    out = {}
+    for line in open(PROPS):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            out[k] = v
+    return out
+
+
+def jobs():
+    return yaml.safe_load(open(WORKFLOW))["jobs"]
+
+
+def uses_image_ref(step):
+    return "IMAGE_REF" in (step.get("env") or {})
+
+
+def refusal_step(job):
+    """The first step of the job that runs when an image-ref is given and starts no container."""
+    for i, s in enumerate(job["steps"]):
+        if "inputs.image-ref != ''" in str(s.get("if", "")) and "docker" not in s.get("run", "").replace("docker login", ""):
+            return i, s
+    return None, None
+
+
+class GradleWrapperSum(unittest.TestCase):
+    def test_the_wrapper_pins_its_distribution_by_sha256(self):
+        p = wrapper_props()
+        self.assertIn("distributionSha256Sum", p, "the Gradle wrapper must carry distributionSha256Sum")
+        self.assertRegex(p["distributionSha256Sum"], r"^[0-9a-f]{64}$")
+
+    def test_the_sum_is_for_the_distribution_the_url_names(self):
+        p = wrapper_props()
+        self.assertRegex(p["distributionUrl"], r"gradle-\d+\.\d+(\.\d+)?-bin\.zip$")
+        self.assertEqual(p.get("validateDistributionUrl"), "true")
+
+
+class ImageRefRefusal(unittest.TestCase):
+    def run_step(self, ref, script):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        calls = os.path.join(d, "calls")
+        for tool in ("docker", "curl", "sleep"):
+            path = os.path.join(d, tool)
+            open(path, "w").write('#!/bin/sh\necho "%s $*" >>"%s"\nexit 0\n' % (tool, calls))
+            os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+        script = re.sub(r"\$\{\{[^}]*\}\}", "x", script)
+        env = {"PATH": d + ":/usr/bin:/bin", "IMAGE_REF": ref}
+        r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60)
+        ran = open(calls).read() if os.path.exists(calls) else ""
+        return r, ran
+
+    def test_every_job_that_starts_an_image_refuses_a_bad_ref_first(self):
+        n = 0
+        for name, job in jobs().items():
+            idx = [i for i, s in enumerate(job["steps"]) if uses_image_ref(s) and "docker run" in s.get("run", "")]
+            if not idx:
+                continue
+            n += 1
+            r, step = refusal_step(job)
+            self.assertIsNotNone(step, "job %s starts an image from IMAGE_REF with no refusal step" % name)
+            self.assertLess(r, idx[0], "job %s: the refusal must come before the first docker run" % name)
+            self.assertNotEqual(step.get("continue-on-error"), True)
+        self.assertGreater(n, 0)
+
+    def test_the_refusal_script_refuses_everything_but_a_full_lowercase_digest(self):
+        for name, job in jobs().items():
+            i, step = refusal_step(job)
+            if step is None or not any(uses_image_ref(s) and "docker run" in s.get("run", "") for s in job["steps"]):
+                continue
+            self.assertTrue(uses_image_ref(step), "the refusal step reads IMAGE_REF from env, not inline")
+            bad = [
+                "ghcr.io/fosterstack/cache:latest",
+                "ghcr.io/fosterstack/cache:v0.3.0",
+                "ghcr.io/fosterstack/cache",
+                "ghcr.io/fosterstack/cache@sha256:" + "a" * 63,
+                "ghcr.io/fosterstack/cache@sha256:" + "A" * 64,
+                "ghcr.io/fosterstack/cache@sha256:" + "a" * 64 + "x",
+                "ghcr.io/fosterstack/cache:v1@sha256:" + "g" * 64,
+                DIGEST + " --privileged",
+                DIGEST + "\nextra",
+                "",
+            ]
+            for ref in bad:
+                r, ran = self.run_step(ref, step["run"])
+                self.assertNotEqual(r.returncode, 0, "job %s accepted %r" % (name, ref))
+                self.assertNotIn("docker run", ran, "docker ran for %r" % ref)
+            r, ran = self.run_step(DIGEST, step["run"])
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_digest_ref_with_a_tag_is_accepted_only_when_the_digest_is_complete(self):
+        for name, job in jobs().items():
+            i, step = refusal_step(job)
+            if step is None or not uses_image_ref(step):
+                continue
+            r, _ = self.run_step("ghcr.io/fosterstack/cache:v0.3.0@sha256:" + "b" * 64, step["run"])
+            self.assertEqual(r.returncode, 0, r.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
