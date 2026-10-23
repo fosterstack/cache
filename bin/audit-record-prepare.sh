@@ -15,6 +15,9 @@ pr=${1:-}; head=${2:-}; repo=${GITHUB_REPOSITORY:-}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 gh api "repos/${repo}/pulls/${pr}" > "$tmp/pr.json" 2> "$tmp/err" || { echo "audit-record: could not read pull request #${pr}: $(tail -c 200 "$tmp/err" | tr '\n' ' ')" >&2; exit 1; }
 python3 -I bin/audit-record.py plan --pr "$pr" --head "$head" --pr-json "$tmp/pr.json" >&2 || exit 1
-if bash bin/audit-record-judge.sh "$head" main > /dev/null 2>&1; then echo present; exit 0; fi
+# exit 0 = a passing record is there; 1 = no passing record (missing or invalid): write one; anything else (3 = a GitHub API error) = we could not tell: write nothing, never over a record we could not read
+bash bin/audit-record-judge.sh "$head" main > /dev/null 2>&1; rc=$?
+if [ "$rc" = 0 ]; then echo present; exit 0; fi
+if [ "$rc" != 1 ]; then echo "audit-record: could not check for an existing record (judge exit ${rc}); nothing written" >&2; exit 1; fi
 printf '%s\n' "$head" > audit-record
 echo proceed

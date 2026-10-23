@@ -144,8 +144,8 @@ r, calls = wrap(base_ref="chain-v030"); check("wrapper: a base that is not main 
 r, calls = wrap(base_ref=""); check("wrapper: an empty base exits 1 and calls nothing", r.returncode == 1 and calls == "", (r.returncode, r.stdout, calls))
 r, calls = wrap(head="x; rm -rf /"); check("wrapper: a head that is not 40 hex exits 1 and calls nothing (nothing odd reaches a request path)", r.returncode == 1 and calls == "", (r.returncode, r.stdout, calls))
 r, calls = wrap(ref=None); check("wrapper: no record branch (404) exits 1 saying there is no record", r.returncode == 1 and "no passed-audit record" in r.stdout, (r.returncode, r.stdout, r.stderr))
-r, calls = wrap(ref_err="gh: HTTP 502: Bad Gateway"); check("wrapper: a GitHub API error on the ref exits 1 and says it is an API error, not a record defect", r.returncode == 1 and "could not read the record" in r.stderr, (r.returncode, r.stdout, r.stderr))
-r, calls = wrap(commit_err="gh: HTTP 403: rate limit exceeded"); check("wrapper: a GitHub API error on the commit exits 1 as an API error", r.returncode == 1 and "could not read the record" in r.stderr, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(ref_err="gh: HTTP 502: Bad Gateway"); check("wrapper: a GitHub API error on the ref exits 3 and says it is an API error, not a record defect", r.returncode == 3 and "could not read the record" in r.stderr, (r.returncode, r.stdout, r.stderr))
+r, calls = wrap(commit_err="gh: HTTP 403: rate limit exceeded"); check("wrapper: a GitHub API error on the commit exits 3 as an API error", r.returncode == 3 and "could not read the record" in r.stderr, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(commit=None); check("wrapper: a commit that is not found exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(commit=mut(COMMIT, ["commit", "verification", "verified"], False)); check("wrapper: an unverified record exits 1", r.returncode == 1, (r.returncode, r.stdout, r.stderr))
 r, calls = wrap(ref={"ref": "refs/heads/audit/" + HEAD, "object": {"sha": "not-a-sha", "type": "commit"}}); check("wrapper: a ref whose object is not a sha exits 1 without a commit request", r.returncode == 1 and calls.count("gh api") == 1, (r.returncode, r.stdout, calls))
@@ -210,6 +210,22 @@ r, calls, f = prepare(); check("prepare: an open pull request into main with no 
     r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and f == HEAD + "\n", (r.returncode, r.stdout, r.stderr, f))
 r, calls, f = prepare(ref=REF, commit=COMMIT); check("prepare: a record that already passes -> present, nothing written", r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "present" and f is None, (r.returncode, r.stdout, f))
 r, calls, f = prepare(ref=REF, commit=mut(COMMIT, ["commit", "verification", "verified"], False)); check("prepare: a record that does not pass -> proceed", r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "proceed" and f == HEAD + "\n", (r.returncode, r.stdout, f))
+def prepare_api(ref_err=None, commit_err=None):
+    # the same as prepare(), with a GitHub API error on the record lookup
+    fk = tempfile.mkdtemp(dir=d)
+    open(os.path.join(fk, "pr.json"), "w").write(json.dumps(PR))
+    if ref_err: open(os.path.join(fk, "ref.err"), "w").write(ref_err)
+    else: open(os.path.join(fk, "ref.json"), "w").write(json.dumps(REF))
+    if commit_err: open(os.path.join(fk, "commit.err"), "w").write(commit_err)
+    else: open(os.path.join(fk, "commit.json"), "w").write(json.dumps(COMMIT))
+    calls = os.path.join(fk, "calls"); open(calls, "w").close()
+    cwd = tempfile.mkdtemp(dir=d)
+    for name in ("bin", ".github"): os.symlink(os.path.join(wroot, name), os.path.join(cwd, name))
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, GITHUB_REPOSITORY="o/r", GH_TOKEN="x")
+    r = subprocess.run(["bash", "bin/audit-record-prepare.sh", "7", HEAD], capture_output=True, text=True, env=env, cwd=cwd)
+    return r, os.path.exists(os.path.join(cwd, "audit-record"))
+r, wrote = prepare_api(ref_err="gh: HTTP 502: Bad Gateway"); check("prepare: an API error reading the existing record -> exit 1 and nothing written (never over a record it could not read)", r.returncode == 1 and not wrote and "proceed" not in r.stdout, (r.returncode, r.stdout, r.stderr, wrote))
+r, wrote = prepare_api(commit_err="gh: HTTP 403: rate limit"); check("prepare: an API error reading the record's commit -> exit 1 and nothing written", r.returncode == 1 and not wrote and "proceed" not in r.stdout, (r.returncode, r.stdout, r.stderr, wrote))
 for name, kw in (("a closed pull request", dict(pr=mut(PR, ["state"], "closed"))), ("a merged pull request", dict(pr=mut(PR, ["merged"], True))),
                  ("a head that moved", dict(pr=mut(PR, ["head", "sha"], "c" * 40))), ("a pull request not into main", dict(pr=mut(PR, ["base", "ref"], "chain-v030"))),
                  ("an API error reading the pull request", dict(pr_err="gh: HTTP 502"))):
