@@ -300,6 +300,26 @@ def envelope_shape(dsse):
     return None
 
 
+def throwaway_only(stage, dsse):
+    """The Witness move (owner Oct 22): the building jobs record under Witness with a throwaway key, and Sign re-signs the record keyless. A record whose signatures
+    carry a key id and no certificate is that throwaway form (Witness 0.12.0 with a file key: signatures [{keyid, sig}]); no stage accepts it, with a plain reason."""
+    sigs = dsse.get("signatures") if isinstance(dsse, dict) else None
+    if isinstance(sigs, list) and sigs and all(isinstance(x, dict) and not x.get("certificate") for x in sigs) and any(x.get("keyid") for x in sigs):
+        refuse(stage, "record is signed only by the build job's throwaway key (a key id and no certificate): only stage-sign.yml's keyless signature is trusted")
+
+
+def local_records(stage, rec_path):
+    """A *.local.json is the building job's untrusted local record: it is never read as a record, and a directory handed to a verifier must not hold one."""
+    d = os.path.dirname(os.path.abspath(rec_path))
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        names = []
+    bad = [n for n in names if n.endswith(".local.json")] + ([os.path.basename(rec_path)] if rec_path.endswith(".local.json") and os.path.basename(rec_path) not in names else [])
+    if bad:
+        refuse(stage, "record: %s holds %s: an unsigned local record (*.local.json) is never trusted and must not sit beside a trusted one" % (os.path.basename(d) or d, " ".join(bad)))
+
+
 def read_record(stage, path):
     try:
         with open(path, "rb") as f:
@@ -312,6 +332,7 @@ def read_record(stage, path):
         payload = b64d(dsse["payload"]) if not why else None
     except Exception as ex:
         refuse(stage, "record is not a DSSE envelope (%s)" % (ex if isinstance(ex, ValueError) and "duplicate" in str(ex) else type(ex).__name__))
+    throwaway_only(stage, dsse)        # before the shape complaint: the plain reason for the throwaway form is the one worth reading
     if why:
         refuse(stage, "record is not a DSSE envelope (%s)" % why)
     ptype = dsse["payloadType"]
@@ -638,6 +659,7 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
         refuse(stage, "stage %r is not in the policy" % stage)
     if pol.get("dry_run") and stage != "sign":
         refuse(stage, "the policy is a dry-run policy (dry): it is accepted only for stage sign")
+    local_records(stage, rec_path)
     dsse, payload, ptype = read_record(stage, rec_path)
     entry = dsse["signatures"][0]
     try:
