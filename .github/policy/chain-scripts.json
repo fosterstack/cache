@@ -2672,7 +2672,7 @@
     },
     {
       "path": "bin/pack-govulncheck.sh",
-      "sha256": "49c6cd57c01fca812a431154e1d3d769b3e66ff12f1f713cde6c32b66818a269",
+      "sha256": "8a982c3a166e9603f68fad21ede4942242ed785c6be5ca76c80924f0800722eb",
       "tools": [
         "install",
         "mkdir"
@@ -2683,7 +2683,7 @@
     },
     {
       "path": "bin/unpack-govulncheck.sh",
-      "sha256": "719fa9ce5b8f10ab352c868bf285f97032552a53d886a713aafe11d5de6ff4ae",
+      "sha256": "1c177b81622310f5c428433f9ba74d8e44e1aa5675112a6597469f890b4837eb",
       "tools": [
         "install",
         "mkdir"
