@@ -12,8 +12,8 @@ import (
 
 // REQ-OBS-002-AC1 (fscache_http_requests_total by method and status): the
 // method label is bounded, so a client sending arbitrary method tokens
-// cannot grow the series set for the life of the process (rc-1 ruling,
-// Fable R1 / Astra 4).
+// cannot grow the series set for the life of the process (release-candidate
+// review, server area).
 func TestMethodLabelIsBounded(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := metrics.New(reg)
