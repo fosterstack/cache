@@ -96,6 +96,31 @@ case_ pinned-quoted        ok  "$head
 case_ pinned-subpath       ok  "$head
     steps:
       - uses: github/codeql-action/init@$SHA # v4.1.0"
+# actions/cache (restore and save subactions, REQ-REL-004-AC8 on the release chain): a node action, pinned like every other
+case_ cache-restore-pinned ok  "$head
+    steps:
+      - uses: actions/cache/restore@$SHA # v5.0.5"
+case_ cache-save-pinned    ok  "$head
+    steps:
+      - uses: actions/cache/save@$SHA # v5.0.5"
+case_ cache-root-pinned    ok  "$head
+    steps:
+      - uses: actions/cache@$SHA # v5.0.5"
+case_ cache-restore-tag    bad "$head
+    steps:
+      - uses: actions/cache/restore@v5"
+case_ cache-save-short-sha bad "$head
+    steps:
+      - uses: actions/cache/save@3d3c42e # v5.0.5"
+case_ cache-restore-no-comment bad "$head
+    steps:
+      - uses: actions/cache/restore@$SHA"
+case_ cache-lookalike-subpath bad "$head
+    steps:
+      - uses: actions/cachex/restore@$SHA # v5.0.5"
+case_ cache-lookalike-name bad "$head
+    steps:
+      - uses: actions/cache-evil@$SHA # v1.0.0"
 case_ remote-reusable      bad "on: push
 jobs:
   j:
@@ -553,6 +578,15 @@ case_ container-options    bad "$head
     container:
       image: alpine@$DIG
       options: --cpus 1
+    steps:
+      - run: true"
+# a service may publish a port on the runner's loopback only, as three plain parts (the registry the release-candidate persona job loads Build's image into, REQ-UAT-001-AC1); anything else is spliced into the docker command
+case_ service-port-loopback-ok     ok  "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:5000:5000
     steps:
       - run: true"
 
@@ -1432,11 +1466,98 @@ case_out pm-scope-other-file-valid      ok  "$W_PLAIN" '0 finding' 'pwsh|runs-on
 case_out pm-scope-other-file-unresolved bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_UNRESOLVED' > .github/other.yml"
 OTHER_WINDOWS='on: push\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [windows-2022]\n    steps:\n      - run: bash bin/build.sh\n'
 case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_WINDOWS' > .github/other.yml"
-PM_EXPECT=132
+# the release chain's service-port and job-container port cases (cache#569 ruling F3): each refusing case asserts the checker's finding text, so a crash cannot pass as a refusal
+case_out service-port-all-interfaces  bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 5000:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-any-address     bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 0.0.0.0:5000:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-localhost-name  bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - localhost:5000:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-injects-flag    bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - '127.0.0.1:5000:5000 --privileged'
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-expression      bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:\${{ vars.PORT }}:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-not-a-list      bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports: 127.0.0.1:5000:5000
+    steps:
+      - run: true" 'ports: not a list'
+case_out service-port-nested          bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - [127.0.0.1:5000:5000]
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-out-of-range    bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:99999:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-container-overflow bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:5000:70000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out service-port-zero            bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:0:5000
+    steps:
+      - run: true" 'ports: only 127\.0\.0\.1:<port>:<port> as plain text is read'
+case_out container-port-loopback      bad "$head
+    container:
+      image: alpine@$DIG
+      ports:
+        - 127.0.0.1:5000:5000
+    steps:
+      - run: true" 'ports on a service'
+PM_EXPECT=143
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
 # Codex round 1 at 643db58 (both seats): the count alone does not pin WHICH cases ran; the sha256 of the sorted case names does
-PM_NAMES_SHA=0163536e0856f6f4eb0a70d2dc6eac52a213dfca69801b916badbc325541f878
+PM_NAMES_SHA=fac15d64929fb9fb7ec05ad79cebdd18d64856ce1ae7c013aaff1f5bbba07b0d
 pm_names_sha=$(printf '%s' "$pm_names" | LC_ALL=C sort | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
 if [ "$pm_names_sha" = "$PM_NAMES_SHA" ]; then pass=$((pass+1)); echo "PASS pm-case-names → $pm_names_sha"
 else failn=$((failn+1)); echo "FAIL pm-case-names → the sorted pm case names hash to $pm_names_sha, want $PM_NAMES_SHA"; fi
