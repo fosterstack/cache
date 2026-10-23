@@ -1,6 +1,6 @@
 # The landing page and the status page
 
-Three read-only paths tell you the server is up and what state it is in. This page is read from `internal/server/status.go` and `internal/server/server.go`.
+These read-only paths tell you the server is up and what state it is in. This page is read from `internal/server/status.go` and `internal/server/server.go`.
 
 | Path | Answers | Credentials when authentication is on |
 |---|---|---|
@@ -12,7 +12,7 @@ Three read-only paths tell you the server is up and what state it is in. This pa
 
 ## The landing page
 
-Opening the server's address in a browser shows a short page: the version, the FIPS 140-3 note, the uptime, and links to the status page, metrics and health paths. It exists so that the address answers with a page and not an error. Build tools address the server directly; there is nothing to click on it.
+Opening the server's address in a browser shows a short page: the version, the FIPS 140-3 note, the uptime, and links to the status page, metrics and health paths, and the project docs. It exists so that the address answers with a page and not an error. Build tools address the server directly; there is nothing to click on it.
 
 ## The status page and `/statusz`
 
