@@ -4,7 +4,7 @@ This page says what the server does when it did not shut down cleanly, and what 
 
 ## The marker
 
-The server writes a marker file (`.unclean-shutdown`) in the data directory when it starts and removes it on a clean shutdown. A clean shutdown is a `SIGTERM` or `SIGINT` after which requests in flight finish within 10 seconds and the stores close without error; anything else (a kill, a crash, a power loss, a slow request, an error) leaves the marker in place. A clean restart skips the work below.
+The server writes a marker file (`.unclean-shutdown`) in the data directory when it starts and removes it on a clean shutdown. A clean shutdown is a `SIGTERM` or `SIGINT` after which requests in flight finish within 10 seconds and the stores close without error; anything else (a kill, a crash, a power loss, a slow request, or a serving, reconcile, shutdown or store-close error) leaves the marker in place. A clean restart skips the work below.
 
 ## What happens at the next start
 
