@@ -913,7 +913,7 @@ sys.stdout.write(t)' "$1"; }
 CLEAN='{"sbom":{"bomFormat":"CycloneDX","components":[],"vulnerabilities":[]}}'
 
 # --- scan.yml: the PR gate
-extract scan.yml scanner "Amazon Inspector scan every loaded image" > "$sim/scan-raw.sh" || { bad "extract scan.yml's Inspector step"; }
+extract scan.yml inspector "Amazon Inspector scan every loaded image" > "$sim/scan-raw.sh" || { bad "extract scan.yml's Inspector step"; }
 sandbox < "$sim/scan-raw.sh" > "$sim/scan-step.sh"
 reset_scan() { rm -rf "$sim/tmp"; mkdir -p "$sim/tmp"; printf 'ghcr.io/fosterstack/cache:cand-production-amd64\nghcr.io/fosterstack/cache:cand-production-arm64\nghcr.io/fosterstack/cache:cand-debug-amd64\n' > "$sim/tmp/refs.txt"; }
 gate_lines() { grep -c '^- ' "$sim/summary.md" | tr -d ' '; }  # one verdict line per image, plus the "SBOMs assessed" line
@@ -1196,7 +1196,7 @@ mksbom "$sim/sboms/cand-fips-amd64.json"       urn:uuid:f1 2026-10-06T01:00:00Z 
 mksbom "$sim/sboms/cand-fips-arm64.json"       urn:uuid:f2 2026-10-06T01:00:09Z v1 busybox@1.37.0 libc6@2.36 go:github.com/beorn7/perks@v1.0.1 openssl@4
 
 # --- the save step's day is read at save time: the extracted day step prints the clock's day at that moment
-extract scan.yml scanner "Amazon Inspector - the UTC day at save time" > "$sim/saveday-raw.sh" 2>/dev/null || { bad "scan.yml has no save-time day step"; : > "$sim/saveday-raw.sh"; }
+extract scan.yml inspector "Amazon Inspector - the UTC day at save time" > "$sim/saveday-raw.sh" 2>/dev/null || { bad "scan.yml has no save-time day step"; : > "$sim/saveday-raw.sh"; }
 sandbox < "$sim/saveday-raw.sh" > "$sim/saveday.sh"
 : > "$sim/out.txt"; ( cd "$sim/repo" && PATH="$sim/bin:$PATH" FAKE_DAY=2026-10-07 FAKE_CACHE="$sim/none" GITHUB_OUTPUT="$sim/out.txt" bash "$sim/saveday.sh" ) >/dev/null 2>&1
 expect "scan.yml save-time day step: outputs the clock's day at that moment" "date=2026-10-07" "$(cat "$sim/out.txt")"
@@ -1220,14 +1220,14 @@ norm = lambda s: " ".join((s or "").split())
 FORKP = "(" + FORK + ")"
 if which == "scan":
     triggers = {"pull_request": "", "push": {"branches": ["main"], "tags": ["v*"]}}
-    IF_SCAN = "matrix.scanner == 'inspector'"
-    IF_REST = IF_SCAN + " && " + FORKP
-    IF_SDAY = "always() && matrix.scanner == 'inspector'"
-    IF_SAVE = "always() && matrix.scanner == 'inspector' && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
-    job, scan_name, marker = "scanner", "Amazon Inspector scan every loaded image", "python3 bin/inspector-gate.py"
+    IF_SCAN = None                         # the Inspector job (the Witness adversarial pass): its own job, no matrix, so no matrix condition on any step
+    IF_REST = FORK
+    IF_SDAY = "always()"
+    IF_SAVE = "always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && " + FORKP
+    job, scan_name, marker = "inspector", "Amazon Inspector scan every loaded image", "python3 bin/inspector-gate.py"
     perms = {"top": {"contents": "read"}, "build": {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"},
              "rebuild": {"contents": "read", "id-token": "write"}, "reproducibility": None, "scanners": None,
-             "scanner": {"contents": "read", "id-token": "write"}, "scan": None}
+             "scanner": {"contents": "read"}, "inspector": {"contents": "read", "id-token": "write"}, "scan": None}
 else:
     triggers = {"schedule": [{"cron": "41 7 * * *"}], "workflow_dispatch": {}}
     IF_SCAN = None
@@ -1248,6 +1248,12 @@ got = {"top": d.get("permissions")}
 got.update({j: v.get("permissions") for j, v in d["jobs"].items()})
 if got != perms:
     bad.append("permissions changed: %s" % json.dumps(got))
+if which == "scan":
+    rd = " ".join((st.get("run") or "") for st in d["jobs"]["scanners"]["steps"])
+    if "map(select(. != \"inspector\"))" not in rd:
+        bad.append("the scanner matrix list still holds inspector: it has its own job, the matrix holds no token")
+    if "inspector" in json.dumps(d["jobs"]["scanner"]["steps"]).replace("inspector-evidence", ""):
+        bad.append("the scanner matrix job still carries an Inspector step")
 if re.search(r"^\s*actions\s*:\s*(write|read)", raw, re.M):
     bad.append("an actions: permission is granted")
 # the stock actions/cache restore and save only: exactly one of each, in the call-site job, nothing else cache-like
@@ -1446,7 +1452,7 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   wf "$f" "$k" restore-key-can-match-exactly bad "t = t.replace('github.run_id }}-miss', 'github.run_id }}', 1)"
   wf "$f" "$k" save-key-without-date bad "t = t.replace('key: inspector-\${{ steps.insp-save-day.outputs.date }}-\${{ github.run_id }}\n', 'key: inspector-\${{ github.run_id }}\n', 1)"
   wf "$f" "$k" actions-write-added bad "t = re.sub(r'(?m)^( +)id-token: write', lambda m: m.group(0) + '\n' + m.group(1) + 'actions: write', t, count=1)"
-  wf "$f" "$k" call-site-contents-write bad "i = t.index('  ' + ('scanner' if '$k' == 'scan' else 'panel-inspector') + ':\n'); j = t.index('contents: read', i); t = t[:j] + 'contents: write' + t[j+14:]"
+  wf "$f" "$k" call-site-contents-write bad "i = t.index('  ' + ('inspector' if '$k' == 'scan' else 'panel-inspector') + ':\n'); j = t.index('contents: read', i); t = t[:j] + 'contents: write' + t[j+14:]"
   wf "$f" "$k" restore-pinned-by-tag bad "t = t.replace('actions/cache/restore@$PINX # v6.1.0', 'actions/cache/restore@v6', 1)"
   wf "$f" "$k" save-pinned-by-tag bad "t = t.replace('actions/cache/save@$PINX # v6.1.0', 'actions/cache/save@v6', 1)"
   wf "$f" "$k" restore-wrong-version-comment bad "t = t.replace('actions/cache/restore@$PINX # v6.1.0', 'actions/cache/restore@$PINX # v6.0.0', 1)"
@@ -1472,7 +1478,9 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   wf "$f" "$k" a-fixed-day-env-back bad "$W_INSPECTOR_DAY_BACK"
   wf "$f" "$k" trigger-added-or-changed bad "$([ "$k" = scan ] && echo "$W_PR_TARGET_TRIGGER" || echo "$W_PUSH_TRIGGER_ADDED")"
   if [ "$k" = scan ]; then
-    wf "$f" "$k" restore-without-the-inspector-condition bad "$W_RESTORE_NO_SCANNER"
+    wf "$f" "$k" scanner-matrix-gets-id-token bad "i = t.index('  scanner:\n'); j = t.index('contents: read', i); t = t[:j] + 'contents: read\n      id-token: write' + t[j+14:]"
+    wf "$f" "$k" inspector-job-loses-id-token bad "i = t.index('  inspector:\n'); j = t.index('      id-token: write\n', i); t = t[:j] + t[j+len('      id-token: write\n'):]"
+    wf "$f" "$k" inspector-back-in-the-matrix bad "t = t.replace('map(select(. != \"inspector\"))', 'map(.)', 1)"
     wf "$f" "$k" gate-fed-the-unscanned-sbom bad "$W_GATE_UNSCANNED"
   fi
 done

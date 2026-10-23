@@ -53,7 +53,6 @@ ALLOWED = re.compile(r'(?:bash bin/|\./bin/)install-scanner\.sh (?P<tool>[a-z0-9
 EXCLUDED_INSTALLER = {
     ("auditor.yml", "audit"): {"lines": ['./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \\', './bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" || echo "::warning::could not install syft; the package inventory falls back to matched packages"'], "needs": [], "why": "the syft install whose failure is a warning (the line continues on the next line)"},
     ("main-candidate-rescan.yml", "scout-root-cause"): {"lines": ['./bin/install-scanner.sh "$t" "$RUNNER_TEMP/$t"'], "needs": ["for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do"], "forbid": r"(?<![\w$])t=", "why": "a loop over three literal docker-scout names, t assigned nowhere else in the step"},
-    ("scan.yml", "scanner"): {"lines": ["./bin/install-scanner.sh '${{ matrix.scanner == 'inspector' && 'inspector-sbomgen' || matrix.scanner }}'"], "needs": [], "why": "the matrix tool comes from the pr_gate list of .github/policy/scanners.json (checked below)"},
 }
 def names_installer(line):
     """True when the line could name bin/install-scanner.sh: the name with its quote and backslash characters removed (install-"scanner".sh is the same word to the shell), or an
@@ -322,12 +321,12 @@ mutate "an extra installer line with a quoted name inside the scout-root-cause e
 edit("main-candidate-rescan.yml", lambda s: s.replace("          for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do\n", "          bash bin/install-\"scanner\".sh govulncheck\n          for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do\n", 1))'
 mutate "an extra installer line in the auditor syft exception step" '
 edit("auditor.yml", lambda s: s.replace("          ./bin/install-scanner.sh syft \"${RUNNER_TEMP}/gobin\" \\\n", "          bash bin/install-\"scanner\".sh govulncheck\n          ./bin/install-scanner.sh syft \"${RUNNER_TEMP}/gobin\" \\\n", 1))'
-mutate "scan.yml scanner job gets a second installer line with a variable" '
-edit("scan.yml", lambda s: s.replace("        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n", "        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n      - name: extra\n        run: |\n          tool=govulncheck\n          bash bin/install-scanner.sh \"$tool\"\n", 1))'
+mutate "scan.yml inspector job (the credential holder) gets a second installer line with a variable" '
+edit("scan.yml", lambda s: s.replace("        run: ./bin/install-scanner.sh inspector-sbomgen\n", "        run: ./bin/install-scanner.sh inspector-sbomgen\n      - name: extra\n        run: |\n          tool=govulncheck\n          bash bin/install-scanner.sh \"$tool\"\n", 1))'
 mutate "scan.yml scanner job adds a matrix.include entry naming govulncheck" '
 edit("scan.yml", lambda s: s.replace("        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}\n", "        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}\n        include:\n          - scanner: govulncheck\n", 1))'
-mutate "scan.yml scanner job gets a pinned Go install and a variable installer line" '
-edit("scan.yml", lambda s: s.replace("        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n", "        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n      - name: go\n        run: bash bin/install-scanner.sh go\n      - name: extra\n        run: |\n          TOOL=govulncheck; bash bin/install-scanner.sh \"$TOOL\"\n", 1))'
+mutate "scan.yml inspector job (the credential holder) gets a pinned Go install and a variable installer line" '
+edit("scan.yml", lambda s: s.replace("        run: ./bin/install-scanner.sh inspector-sbomgen\n", "        run: ./bin/install-scanner.sh inspector-sbomgen\n      - name: go\n        run: bash bin/install-scanner.sh go\n      - name: extra\n        run: |\n          TOOL=govulncheck; bash bin/install-scanner.sh \"$TOOL\"\n", 1))'
 mutate "scan.yml matrix list taken from another key of scanners.json (scanners)" '
 edit("scan.yml", lambda s: s.replace("jq -c \x27.pr_gate\x27 .github/policy/scanners.json", "jq -c \x27.source_scanners\x27 .github/policy/scanners.json", 1))'
 mutate "pr_gate-driven matrix job loses its exclusion (scan.yml reads another key)" '
