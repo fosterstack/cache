@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 98 |
-| Acceptance criteria | 474 |
+| Acceptance criteria | 475 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 463 |
+| ACs with mapped evidence | 464 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
@@ -378,7 +378,7 @@ GET /metrics shall expose, in Prometheus format, at least fscache_http_requests_
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-002-AC1 | Given a server that served one hit and one miss; when /metrics is scraped; then every named metric is present and hits/misses read 1 and 1 | http-integration | yes | approved | 3 item(s) |
+| REQ-OBS-002-AC1 | Given a server that served one hit and one miss; when /metrics is scraped; then every named metric is present and hits/misses read 1 and 1 | http-integration | yes | approved | 2 item(s) |
 | REQ-OBS-002-AC2 | Given a server with a normal writable data directory; when /metrics is scraped; then fscache_store_writable is present, is a gauge, reads exactly 1; its help text says it is 1 when the server could create, sync and delete a file in the data directory within the probe limit, else 0 | http-integration |  | approved | 1 item(s) |
 | REQ-OBS-002-AC3 | Given a data directory made read-only, and separately a store whose writes fail with "no space"; when /metrics is scraped after the sample has expired (or after a failed PUT marked it stale); then fscache_store_writable reads 0 in both cases, and reads 1 again on the next scrape after the directory is made writable (and the sample has expired); a change of state is logged once | http-integration |  | approved | 6 item(s) |
 | REQ-OBS-002-AC4 | Given a server probing its data directory, including one probe that fails midway; when GET/HEAD of any key, store_bytes, store_entries and the cap are read during and after probes; then no probe file is ever served as a key (no key of any spelling reaches it), nothing is counted against bytes, entries or the cap, no eviction is triggered, and no probe file remains after a successful probe (a failed midway probe leaves at most a .tmp- file that the startup sweep removes) | http-integration |  | approved | 3 item(s) |
@@ -389,6 +389,7 @@ GET /metrics shall expose, in Prometheus format, at least fscache_http_requests_
 | REQ-OBS-002-AC9 | Given PUTs refused for bad key (400), bad credentials (401), read-only credential (403), upload bound (429), and a successful PUT; when /metrics is scraped; then fscache_put_errors_total did not move | http-integration |  | approved | 1 item(s) |
 | REQ-OBS-002-AC10 | Given a server that started on a healthy directory whose volume later becomes read-only or full, and a server asked to start on a read-only or full directory; when /metrics is scraped; then in the first case fscache_store_writable reads 0 and fscache_store_free_bytes the real free bytes within one refresh, the fscache_put_errors_total series count the failed PUTs by reason, and GETs still work; in the second case the server exits at start with the fatal error naming the failed write and serves nothing, and it never reports writable 1 for a volume it could not write | http-integration |  | approved | 3 item(s) |
 | REQ-OBS-002-AC11 | Given the Gradle and Maven acceptance builds; when run with the new signals present; then results are identical to today (the existing REQ-PROTO and REQ-EVICT acceptance ACs stay green; no new header, status code, or path) | acceptance-gradle |  | approved | 1 item(s) |
+| REQ-OBS-002-AC12 | Given a server that received 500 distinct unknown HTTP method tokens plus one GET, one HEAD and one PUT; when /metrics is scraped; then fscache_http_requests_total and fscache_http_request_duration_seconds carry method label values GET, HEAD, PUT and other only, all four present, and the 500 unknown tokens are counted under other on fscache_http_requests_total | unit |  | approved | 1 item(s) |
 
 ### REQ-OBS-003 — Read-only status page
 

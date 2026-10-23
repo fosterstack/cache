@@ -65,7 +65,6 @@ mappings:
     evidence:
       - { type: go-test, ref: "internal/server:TestMetricsEndpointExposesFscacheMetrics" }
       - { type: go-test, ref: "internal/server:TestMetricsReportsStoreBytesAndEntries" }
-      - { type: go-test, ref: "internal/server:TestMethodLabelIsBounded" }
   - ac: REQ-OBS-003-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetrics" }
@@ -1113,6 +1112,9 @@ mappings:
   - ac: REQ-OBS-001-AC4
     evidence:
       - { type: go-test, ref: "internal/server:TestDocsSayHealthzIsLivenessOnly" }
+  - ac: REQ-OBS-002-AC12
+    evidence:
+      - { type: go-test, ref: "internal/server:TestMethodLabelIsBounded" }
   - ac: REQ-OBS-002-AC2
     evidence:
       - { type: go-test, ref: "internal/server:TestWritableGaugeHealthyIsOneAndDocumented" }
