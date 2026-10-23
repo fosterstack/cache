@@ -80,7 +80,13 @@ mappings:
       - { type: go-test, ref: "internal/server:TestStatuszServesHTMLToBrowsers" }
   - ac: REQ-OBS-006-AC1
     evidence:
-      - { type: inspection, ref: "internal/server/server.go: per-request logging exists at exactly two failure sites (short write, store error), fields method/key/error only (re-verified 2026-09-11)" }
+      - { type: inspection, ref: "internal/server/server.go: per-request logging exists only on failure paths (GET short write, store error); the status and landing template-write failures and the gauge refresh failures are also failure logs; every error that can come from a client connection goes through loggableErr, and Go's own server error lines through NewErrorLog (re-verified 2026-10-23)" }
+      - { type: go-test, ref: "internal/server:TestShortWriteLogCarriesNoClientAddress" }
+      - { type: go-test, ref: "internal/server:TestStoreErrorLogCarriesNoClientAddress" }
+      - { type: go-test, ref: "internal/server:TestErrorLogScrubsPeerAddresses" }
+      - { type: go-test, ref: "internal/server:TestTemplateWriteFailureLogsCarryNoClientAddress" }
+      - { type: go-test, ref: "internal/server:TestLoggableErrScrubsNestedOpErrors" }
+      - { type: go-test, ref: "internal/server:TestLoggableErrWithoutCauseNamesOnlyTheOperation" }
   - ac: REQ-FIPS-003-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml job fips140-only: full race suite under GOFIPS140=v1.0.0 + GODEBUG=fips140=only on every push/PR" }
