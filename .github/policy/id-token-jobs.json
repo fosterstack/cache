@@ -53,7 +53,7 @@
   },
   {
    "workflow": "scan.yml",
-   "job": "scanner",
+   "job": "inspector",
    "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
   },
   {
