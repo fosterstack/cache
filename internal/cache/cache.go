@@ -113,8 +113,9 @@ type ReconcileStats struct {
 // unclean shutdown (REQ-STORE-005): blobs are truth, the index is
 // rebuildable. Blobs with no record are adopted (size from disk, recency
 // now); records with no blob are dropped; stale temp files from
-// interrupted writes are removed. Totals correct themselves because
-// Record and Delete maintain them.
+// interrupted writes are removed. Nothing keeps a running total: TotalSize
+// and EntryCount are computed from the index on each call, so correcting
+// the index corrects them.
 func (c *Cache) Reconcile(ctx context.Context) (ReconcileStats, error) {
 	var stats ReconcileStats
 
@@ -225,8 +226,10 @@ func (c *Cache) Put(ctx context.Context, key string, r io.Reader) (int64, error)
 		// REQ-STORE-004: a cache that says "stored" has stored it. An
 		// unindexed blob is invisible to eviction and totals, so the write
 		// is undone and the client told the truth. The delete is
-		// best-effort — if it also fails, startup reconciliation adopts
-		// the orphan later, which is the recovery path for exactly this.
+		// best-effort — if it also fails, the blob stays on disk with no
+		// record until the next start that follows an unclean shutdown
+		// reconciles it (a clean shutdown does not), and it counts toward
+		// nothing until then.
 		if delErr := c.blobs.Delete(key); delErr != nil {
 			c.log.Error("cache: blob cleanup after metadata failure also failed; startup reconciliation will adopt it",
 				"key", key, "record_error", err, "delete_error", delErr)

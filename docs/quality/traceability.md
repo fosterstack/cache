@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 99 |
-| Acceptance criteria | 479 |
+| Acceptance criteria | 480 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 468 |
+| ACs with mapped evidence | 469 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 47 |
@@ -406,6 +406,7 @@ GET /statusz shall return the server's state — version, revision, FIPS posture
 | REQ-OBS-003-AC5 | Given /statusz and /metrics requested within the same 5-second sample lifetime (either order); when both responses are compared; then the disk values are identical, because both returned the one cached sample; neither request caused the other to see an older or newer measurement (if the sample expires between the two requests the second re-measures; the equality rule is guaranteed within a sample) | http-integration |  | approved | 1 item(s) |
 | REQ-OBS-003-AC6 | Given a request with an HTML Accept header, on a healthy and on a read-only server; when /statusz is fetched; then the page shows a "Data directory" row ("writable, X GiB free" or "NOT writable, X GiB free") and PUT errors by reason; still no form, button, or state-changing control (extends AC2) | http-integration |  | approved | 1 item(s) |
 | REQ-OBS-003-AC7 | Given auth enabled; when /statusz, /metrics, /healthz are fetched without credentials; then /statusz is refused as today; /metrics and /healthz stay open as today (/metrics now exposes the free bytes of the data volume: operational, not secret, the same exposure level as store_bytes) | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-003-AC8 | Given two uploads that overlap in time, the first upload's gauge refresh held after it read the totals and before it set the gauges; when the second upload completes and then the first refresh continues; then the store_bytes and store_entries gauges end equal to the store's totals (the last refresh to run also read last) | component |  | approved | 1 item(s) |
 
 ### REQ-OBS-004 — Startup announcement
 

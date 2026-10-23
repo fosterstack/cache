@@ -1183,6 +1183,9 @@ mappings:
   - ac: REQ-OBS-003-AC7
     evidence:
       - { type: go-test, ref: "internal/server:TestAuthSurfaceUnchangedWithDiskSignals" }
+  - ac: REQ-OBS-003-AC8
+    evidence:
+      - { type: go-test, ref: "internal/server:TestGaugesEndAtTheStoreTotalsWhenUploadsOverlap" }
   - ac: REQ-SBOM-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
