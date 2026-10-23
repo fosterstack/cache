@@ -235,6 +235,8 @@ this project deliberately avoids.
 enabled. `/healthz` and `/metrics` stay open, so liveness probes and Prometheus
 scrapers need no credentials.
 
+After a crash or a forced stop the server reconciles its stores before it serves: [crash recovery](crash-recovery.md).
+
 ## Resetting the cache
 
 There is no purge endpoint and no admin UI, by design — see
