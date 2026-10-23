@@ -10,7 +10,7 @@ Images are published to `ghcr.io/fosterstack/cache` and mirrored, with the same 
 |---|---|
 | `:X.Y.Z` | The production image of exactly that release. |
 | `:X.Y.Z-fips` | The `-fips` image of exactly that release. The `-fips` image has this exact tag only; there are no floating tags for it. |
-| `:X.Y` | Moves to every final release of that X.Y line. |
+| `:X.Y` | A floating tag for the X.Y line; it can move. Pin `:X.Y.Z` or a digest. |
 | `:X` and `:latest` | Move only when the release is the highest released version. |
 
 A release candidate (a tag like `vX.Y.Z-rcN`) runs the release chain and then stops: nothing is pushed, no release is created and no floating tag moves. A candidate never shows up as an image tag.
@@ -25,7 +25,7 @@ docker pull ghcr.io/fosterstack/cache:X.Y.Z
 docker pull ghcr.io/fosterstack/cache@sha256:<digest>
 ```
 
-The digest of each image is listed in `digests.json` on the release page, under `image-production` and `image-fips`. [Verify a release](verify-release.md) shows how to check an image by digest before you run it.
+The digest of each image is listed in `digests.json` on the release page, under `image-production` and `image-fips`; pull by that digest.
 
 To see which version a running server is, read the `version` field of `GET /statusz` (it also appears on the status page and in the startup log line). `/statusz` needs credentials when authentication is on.
 
@@ -36,7 +36,7 @@ The cache keeps its entries in one data directory, and the metadata index in it 
 **Container**
 
 1. Pull the new tag or digest.
-2. Stop the old container. The server shuts down cleanly on `SIGTERM` or `SIGINT`.
+2. Stop the old container. On `SIGTERM` or `SIGINT` the server tries to shut down cleanly, waiting up to 10 seconds for requests in flight.
 3. Start the new one with the same data volume and the same `FSCACHE_` settings.
 
 **Kubernetes**: use `replicas: 1` and `strategy: Recreate`, as in the [Kubernetes page](kubernetes.md). The default rolling update starts the new pod before the old one stops, and the two contend for the lock.
