@@ -153,11 +153,13 @@ class Evidence(unittest.TestCase):
         # Codex r2 B1: absence from ONE source is not absence when the package database records it at that version
         self.assertIsNone(P.vote(false(ev="go build info: no Go binary in the image records tzdata"), BUNDLE, f))
         self.assertIsNone(P.vote(real(ev="go build info: no Go binary in the image records tzdata"), BUNDLE, f))
-        gone = ("h\n%s\npackage database: no record names busybox\nfiles: no path in the image mentions busybox\n"
+        gone = ("h\n%s\npackage databases read: dpkg\npackage database: no record names busybox\nfiles: no path in the image mentions busybox\n"
                 "go build info: no Go binary in the image records busybox\n" % P.EVIDENCE_MARK)
         bb = finding(pkg="busybox", ver="1.37.0")
         self.assertEqual(P.vote(false(ev="package database: no record names busybox"), gone, bb), "false")
         self.assertIsNone(P.vote(real(ev="package database: no record names busybox"), gone, bb))
+        unread = gone.replace("package databases read: dpkg", "package databases read: none")      # rc-5b fix 3
+        self.assertIsNone(P.vote(false(ev="package database: no record names busybox"), unread, bb))
 
     def test_a_file_name_or_another_packages_constraint_is_not_a_version(self):    # Codex r2 B1
         b = ("h\n%s\npackage database /var/lib/dpkg/status.d/tzdata:\nPackage: tzdata\nVersion: 2026c-0+deb13u1\n"
@@ -340,9 +342,9 @@ class Day(unittest.TestCase):
                     "go build info: no Go binary in the image records busybox"])
         self.assertIsNone(P.vote(false(ev="package database: no record names busybox"), static, bb))
         deb = finding(pkg="libssl3", ver="3.0", purls=("pkg:deb/debian/libssl3@3.0",))
-        clean = b(["package database: no record names libssl3", "files: no path in the image mentions libssl3"])
+        clean = b(["package databases read: dpkg", "package database: no record names libssl3", "files: no path in the image mentions libssl3"])
         self.assertEqual(P.vote(false(ev="package database: no record names libssl3"), clean, deb), "false")
-        named = b(["package database: no record names libssl3", "file: /usr/lib/libssl3.so"])
+        named = b(["package databases read: dpkg", "package database: no record names libssl3", "file: /usr/lib/libssl3.so"])
         self.assertIsNone(P.vote(false(ev="package database: no record names libssl3"), named, deb))
         mod = finding(pkg="golang.org/x/net", ver="v0.1.0", purls=("pkg:golang/golang.org/x/net@v0.1.0",))
         gob = b(["go build info /cache: /cache: go1.26.6", "go build info: no Go binary in the image records golang.org/x/net"])
