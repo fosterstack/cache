@@ -309,6 +309,41 @@ put(sd, "cves.json", {"vulnerabilities": [
 ex = {t[0]: t[4] for t in P.read_scout(sd)[1]}
 check("Scout's GitLab-format report: severity and the other identifiers as aliases; Unknown severity is absent",
       ex["CVE-2099-0102"] == {"severity": "medium", "aliases": ["GHSA-dddd-eeee-ffff"]} and ex["CVE-2099-0103"] == {}, ex)
+# rc-5a B (Fable ruling on astra B2): Scout puts the package URL in dependency.package.name (scout-selfcheck.py:124); the reader names it as the other scanners do
+sp = os.path.join(tempfile.mkdtemp(), "sp")
+put(sp, "sbom.json", {"artifacts": [{"name": "tzdata", "version": "2026c", "purl": "pkg:deb/debian/tzdata@2026c"}]})
+put(sp, "cves.json", {"vulnerabilities": [{"severity": "High", "identifiers": [{"type": "cve", "value": "CVE-2099-0110"}],
+     "location": {"dependency": {"package": {"name": "pkg:deb/debian/tzdata@2026c"}, "version": "2026c"}}},
+    {"severity": "High", "identifiers": [{"type": "cve", "value": "CVE-2099-0111"}],
+     "location": {"dependency": {"package": {"name": "pkg:golang/golang.org/x/sys@v0.47.0"}, "version": "v0.47.0"}}}]})
+sf = {t[0]: t for t in P.read_scout(sp)[1]}
+check("Scout's package URL in the name field is read as name and version (tzdata 2026c), and the purl is kept", sf["CVE-2099-0110"][1:4] == ("tzdata", "2026c", "pkg:deb/debian/tzdata@2026c"), sf["CVE-2099-0110"])
+check("Scout's Go purl name keeps the module path", sf["CVE-2099-0111"][1] == "golang.org/x/sys", sf["CVE-2099-0111"])
+r = tree({("grype", "production-amd64"): [("CVE-2099-0112", "tzdata", "2026c")]}); sc = os.path.join(r, "scout", "production-amd64")
+put(sc, "cves.json", {"vulnerabilities": [{"identifiers": [{"type": "cve", "value": "CVE-2099-0112"}],
+     "location": {"dependency": {"package": {"name": "pkg:generic/tzdata@2026c"}, "version": "2026c"}}}]}); v = judge(r)
+f0 = [f for f in v["findings"] if f["id"] == "CVE-2099-0112" and f["image"] == "production-amd64"]
+check("a Scout finding named by purl corroborates Grype's finding for the same CVE and package (one finding, both scanners)", len(f0) == 1 and sorted(f0[0]["seen_by"]) == ["grype", "scout"], f0)
+# rc-5a B (astra B5): a vulnerability with no affects, or an empty one, is a report nobody can attribute: did not run, never silence
+for label, aff in (("missing", None), ("empty", [])):
+    gdn = os.path.join(tempfile.mkdtemp(), "gn")
+    vv = {"id": "CVE-2099-0113"}
+    if aff is not None:
+        vv["affects"] = aff
+    put(gdn, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}], "vulnerabilities": [vv]})
+    try:
+        P.read_grype(gdn); got = None
+    except ValueError as e_:
+        got = str(e_)
+    check("Grype's vulnerability with %s affects is a ValueError (did not run), not dropped" % label, got is not None and "CVE-2099-0113" in got, got)
+    idn = os.path.join(tempfile.mkdtemp(), "in")
+    put(idn, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+    put(idn, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [], "vulnerabilities": [vv]}})
+    try:
+        P.read_inspector(idn); got = None
+    except ValueError as e_:
+        got = str(e_)
+    check("Inspector's vulnerability with %s affects is a ValueError (did not run), not dropped" % label, got is not None and "CVE-2099-0113" in got, got)
 gd2 = os.path.join(tempfile.mkdtemp(), "g2")
 put(gd2, "packages.json", [{"package": "tzdata", "version": "2026c", "packageType": "OS"}])
 put(gd2, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0104", "vulnerability": {"shortDescription": "CVE-2099-0104", "severity": "CRITICAL",

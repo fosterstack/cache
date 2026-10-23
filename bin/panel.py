@@ -173,7 +173,10 @@ def _cdx_findings(doc, comps, inspector=False):
               if c.get("bom-ref")}
     out = []
     for v in doc.get("vulnerabilities") or []:
-        for a in v.get("affects") or []:
+        affects = [a for a in v.get("affects") or [] if isinstance(a, dict)]
+        if not affects:   # a vulnerability nobody can attribute to a component is an incomplete report: did not run, never silence
+            raise ValueError("vulnerability %s has no affects: the report is incomplete" % (v.get("id") or "?"))
+        for a in affects:
             c = by_ref.get(a.get("ref"), {})
             name, ver = _purl_name_version(c.get("purl") or "")
             if not name:
@@ -217,7 +220,12 @@ def read_scout(d):
         ids = [i.get("value") for i in v.get("identifiers") or [] if i.get("value")]
         dep = (v.get("location") or {}).get("dependency") or {}
         name, ver = (dep.get("package") or {}).get("name") or "?", dep.get("version") or ""
-        purl = next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
+        purl = None
+        if name.startswith("pkg:"):   # Scout's GitLab report puts the package URL in name (scout-selfcheck.py:124): name it as the other scanners do
+            purl = name
+            name, pver = _purl_name_version(purl)
+            ver = ver or pver
+        purl = purl or next((a.get("purl") for a in arts if a.get("name") == name and a.get("version") == ver and a.get("purl")), None)
         out.append((ids[0] if ids else "?", name, ver, purl, _extra(norm_severity(v.get("severity")), None, ids[1:], ids[0] if ids else None)))
     return len(arts), out
 
