@@ -2821,7 +2821,34 @@ for f in files:
             assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
-EXPECT=962
+# REQ-CHAIN-004 (the binary says neither (devel) nor vcs.modified=true): the job's own directories (archive/, host-tools/, out/, witness-apk/,
+# admission.json) are untracked in the checkout melange copies, and Go stamps vcs.modified=true for any untracked file. the marked block of bin/build-apk.sh keeps
+# exactly those five paths out of git's view (the job-local .git/info/exclude, never committed); the recipe check and build-apk.sh stay strict.
+TREE=$(mktemp -d)/tree.sh
+{ echo 'GIT=git; set -eu'; echo 'src=$1'; sed -n '/^# tree-exclude begin$/,/^# tree-exclude end$/p' bin/build-apk.sh; } > "$TREE"
+tree_repo() { local d; d=$(mktemp -d); ( cd "$d" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i
+  mkdir archive host-tools out witness-apk && for f in archive host-tools out witness-apk; do echo x > "$f/f"; done; echo '{}' > admission.json ); echo "$d"; }
+d=$(tree_repo)
+[ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: the job's directories make the tree dirty without the block (the cause of vcs.modified=true)" || bad "REQ-BUILDAPK-001-AC4 tree: the cause did not reproduce"
+trc=127; if [ -f "$TREE" ]; then trc=0; bash "$TREE" "$d" > /dev/null 2>&1 || trc=$?; fi
+[ "$trc" = 0 ] && ok "REQ-BUILDAPK-001-AC4 tree: the block runs in a git checkout (exit 0)" || bad "REQ-BUILDAPK-001-AC4 tree: the block did not run (exit $trc)"
+[ -z "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: with the block the five job paths no longer dirty the tree" || bad "REQ-BUILDAPK-001-AC4 tree: the tree is still dirty after the block: $(git -C "$d" status --porcelain | tr '\n' ' ')"
+if [ -f "$TREE" ]; then bash "$TREE" "$d" > /dev/null 2>&1; fi
+[ "$(grep -c . "$d/.git/info/exclude")" = "$(sort -u "$d/.git/info/exclude" | grep -c .)" ] && ok "REQ-BUILDAPK-001-AC4 tree: running the block twice adds no line twice" || bad "REQ-BUILDAPK-001-AC4 tree: the block is not idempotent"
+echo s > "$d/stray.go"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a stray untracked file still makes the tree dirty" || bad "REQ-BUILDAPK-001-AC4 tree: a stray file is hidden"
+rm "$d/stray.go"; mkdir -p "$d/pkg/archive" && echo s > "$d/pkg/archive/x.go"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a nested archive/ below the root still makes the tree dirty (the exclusions are anchored)" || bad "REQ-BUILDAPK-001-AC4 tree: a nested archive/ is hidden"
+rm -r "$d/pkg"; echo b >> "$d/tracked"; [ -n "$(git -C "$d" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: a modified tracked file still makes the tree dirty" || bad "REQ-BUILDAPK-001-AC4 tree: a modified tracked file is hidden"
+n=$(mktemp -d); nrc=0; if [ -f "$TREE" ]; then bash "$TREE" "$n" > /dev/null 2>&1 || nrc=$?; fi
+[ "$nrc" = 0 ] && [ -z "$(ls -A "$n")" ] && ok "REQ-BUILDAPK-001-AC4 tree: outside a git checkout the block changes nothing" || bad "REQ-BUILDAPK-001-AC4 tree: the block changed a non-git directory"
+python3 - << 'PY' && ok "REQ-BUILDAPK-001-AC4 tree: build-apk.sh holds the exclusion block once, before the sealed melange call" || bad "REQ-BUILDAPK-001-AC4 tree: the exclusion block is missing, repeated or after the sealed melange call"
+t = open("bin/build-apk.sh").read().splitlines()
+b = [i for i, l in enumerate(t) if l == "# tree-exclude begin"]
+e = [i for i, l in enumerate(t) if l == "# tree-exclude end"]
+m = [i for i, l in enumerate(t) if l.startswith('melange_bin=')]
+assert len(b) == 1 and len(e) == 1 and b[0] < e[0] < m[0]
+PY
+grep -q 'vcs.modified' bin/build-apk.sh && grep -q 'vcs.modified' build/melange.yaml && grep -q 'vcs.modified' build/melange-fips.yaml && ok "REQ-BUILDAPK-001-AC4 tree: the dirty-tree checks in build-apk.sh and both recipes are still there" || bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check was removed"
+EXPECT=972
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

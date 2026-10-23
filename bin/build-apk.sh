@@ -155,6 +155,19 @@ mkdir -p "$tmp/cache"; cp "$goarch_dir/$gofile" "$tmp/cache/sha256:$gosha"
 mkdir -p "$out"
 
 # ---- 4. the sealed call ----
+# tree-exclude begin
+# The job's own directories (archive/, host-tools/, out/, witness-apk/, admission.json) are untracked in the checkout melange copies, and Go stamps
+# vcs.modified=true for any untracked file. These five paths, anchored at the root, go into the job-local exclude file of the checkout (never committed).
+# Every other untracked or modified file still makes the tree dirty, and the dirty-tree checks below and in both recipes are unchanged.
+excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) || excl=""
+if [ -n "$excl" ] && [ -d "${excl%/*}" ]; then   # bash builtins only (the AC9 runs hold coreutils alone)
+  for p in /archive/ /host-tools/ /out/ /witness-apk/ /admission.json; do
+    seen=0
+    if [ -f "$excl" ]; then while read -r line; do [ "$line" != "$p" ] || seen=1; done <"$excl"; fi
+    [ "$seen" = 1 ] || echo "$p" >>"$excl"
+  done
+fi
+# tree-exclude end
 "$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 || echo "build-apk.sh: warning: could not relax kernel.apparmor_restrict_unprivileged_userns (not needed off Ubuntu 24.04)" >&2
 margs=(build "$(basename "$rendered")" --arch "$arch" --runner bubblewrap --signing-key "$assembly_key"
   --keyring-append "$keyring" --repository-append "$repo" --build-date "$build_date"

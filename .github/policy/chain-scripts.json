@@ -2195,7 +2195,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "0a5bff4d853b6e407eb37c994f5cbb8bf6f078651190268da1b14e9da3169232",
+      "sha256": "a05c946a0a38193d10b05b9fba9ea19c8c5ae5148b6d690eb6800657f9e0a518",
       "exceptions": [
         {
           "rule": "script-name",
