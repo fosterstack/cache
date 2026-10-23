@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 98 |
-| Acceptance criteria | 474 |
+| Active requirements | 99 |
+| Acceptance criteria | 478 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 463 |
+| ACs with mapped evidence | 467 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 46 |
+| Confidence: documented | 47 |
 | Confidence: implementation-only | 51 |
 
 ## Cache protocol
@@ -1516,3 +1516,20 @@ The v0.3.0 customer verification guide (docs/verify-release.md) shall be one pag
 | REQ-GUIDE-001-AC6 | Given docs/verify-release.md; when it is read; then Witness records appear only as a pointer outside the ten commands, and no build-chain tool name appears other than cosign, gh and jq (matrix AC47) | unit |  | approved | 1 item(s) |
 | REQ-GUIDE-001-AC7 | Given docs/verify-release.md, in draft or final; when it is checked before it is made final; then the page makes no claim the chain does not back: every command in it has been executed against a candidate image by pipeline's AC7 run, and any command not yet runnable is marked TO-VERIFY in the draft and the page cannot be final while a TO-VERIFY mark remains | unit |  | approved | 1 item(s) |
 | REQ-GUIDE-001-AC8 | Given docs/verify-release.md, complete; when it is accepted; then the owner reads the page cold once; a second reader follows it on a clean machine; and pipeline's AC7 run executes every command against a candidate | manual |  | approved | none mapped |
+
+## CI
+
+### REQ-CI-001 — A required CI job that is split into parallel jobs runs every suite exactly once
+
+When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires, fails unless every new job succeeded.
+
+*Introduced v0.3.0 · tier community · confidence documented · source: ci-speed read-back of Oct 23 (advisor); .github/agent/tests/pin-wiring-test.sh*
+
+> The pin-wiring judge accepts allowlist-chain in exactly two forms: the one job, or four parallel jobs plus the gate. The groups of suites per shard are fixed in the judge; moving a suite to another shard is a reviewed edit of the judge, which the trusted gate runs from main. The gate fails on a missing or empty result as on a failed, skipped or cancelled one.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-CI-001-AC1 | Given the CI workflow after a required job is split into parallel jobs; when the steps of the split jobs are compared with the steps the job had before the split; then every step of the old job is in exactly one of the new jobs, unchanged in name, run text and relative order, and no other step exists in them except the checkout, base-ref fetch, Python setup and pip steps each job needs | unit |  | approved | 1 item(s) |
+| REQ-CI-001-AC2 | Given the same workflow; when the gate job is read; then a job with the old job's name exists, needs every new job, has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of every needed job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure), so the required-check name is unchanged and a skipped shard cannot pass | unit |  | approved | 1 item(s) |
+| REQ-CI-001-AC3 | Given any job of the split; when its keys are read; then no `if`, `env`, `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, `needs`, id-token or secret is added at job or step level, except the gate's own `needs`, `if` and the result variables of its one step | unit |  | approved | 1 item(s) |
+| REQ-CI-001-AC4 | Given the pin-wiring judge; when it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened; then it fails for each of those mutations, and it accepts the real workflow | unit |  | approved | 1 item(s) |

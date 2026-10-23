@@ -4666,3 +4666,44 @@ requirements:
         then: "the owner reads the page cold once; a second reader follows it on a clean machine; and pipeline's AC7 run executes every command against a candidate"
         verification: { method: manual, release_blocking: false }
         status: approved
+
+  - id: REQ-CI-001
+    title: A required CI job that is split into parallel jobs runs every suite exactly once
+    statement: >
+      When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs
+      twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires,
+      fails unless every new job succeeded.
+    source: [ci-speed read-back of Oct 23 (advisor), .github/agent/tests/pin-wiring-test.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: advisor Oct 23 2026 (CI speed, under the owner's rules that no check is dropped and every test runs exactly once); first use is allowlist-chain (allowlist-chain-1..4 and the gate allowlist-chain)
+    confidence: documented
+    notes: >
+      The pin-wiring judge accepts allowlist-chain in exactly two forms: the one job, or four parallel jobs plus the gate. The groups of suites per shard are
+      fixed in the judge; moving a suite to another shard is a reviewed edit of the judge, which the trusted gate runs from main. The gate fails on a missing
+      or empty result as on a failed, skipped or cancelled one.
+    acceptance_criteria:
+      - id: REQ-CI-001-AC1
+        given: "the CI workflow after a required job is split into parallel jobs"
+        when: "the steps of the split jobs are compared with the steps the job had before the split"
+        then: "every step of the old job is in exactly one of the new jobs, unchanged in name, run text and relative order, and no other step exists in them except the checkout, base-ref fetch, Python setup and pip steps each job needs"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC2
+        given: "the same workflow"
+        when: "the gate job is read"
+        then: "a job with the old job's name exists, needs every new job, has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of every needed job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure), so the required-check name is unchanged and a skipped shard cannot pass"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC3
+        given: "any job of the split"
+        when: "its keys are read"
+        then: "no `if`, `env`, `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, `needs`, id-token or secret is added at job or step level, except the gate's own `needs`, `if` and the result variables of its one step"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC4
+        given: "the pin-wiring judge"
+        when: "it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened"
+        then: "it fails for each of those mutations, and it accepts the real workflow"
+        verification: { method: unit, release_blocking: false }
+        status: approved
