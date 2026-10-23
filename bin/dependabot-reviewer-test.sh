@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-004-AC1, REQ-DEP-004-AC2, REQ-DEP-003-AC2
+# proves: REQ-DEP-001-AC2, REQ-DEP-001-AC3, REQ-DEP-001-AC4, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC7, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-001-AC10, REQ-DEP-003-AC2, REQ-DEP-004-AC1, REQ-DEP-004-AC2, REQ-DEP-003-AC3
 # Offline suite for bin/dependabot-reviewer.py (register row 75). Pure functions only:
 # `gather` and `read` need gh / the model and are never called here; release_notes is
 # exercised with `_gh_json` stubbed. Real Dependabot PR bodies from this repository are in
@@ -67,6 +67,113 @@ u = r.parse_updates("Build(deps): bump actions/setup-go from 5 to 7", "")
 check("title-only fallback (empty body)", triples(u) == [("actions/setup-go", "5", "7", True)], triples(u))
 u = r.parse_updates("Build(deps): bump actions/setup-go from 5 to 7", None)
 check("title-only fallback (null body)", triples(u) == [("actions/setup-go", "5", "7", True)], triples(u))
+# --- flagged: a non-major whose release notes (the <details> blocks) say "breaking" or "deprecat"
+# goes the major path (REQ-DEP-001-AC10); the real #400 codeql group quotes a "Breaking change" note
+u = real(400)
+check("real #400: four non-major codeql members, all flagged (4.39.0 notes say 'Breaking change')",
+      len(u) == 4 and all(x["major"] is False and x["flagged"] is True for x in u), [(x["name"], x["major"], x.get("flagged")) for x in u])
+check("real #124, #90 (no such words in their notes): not flagged",
+      not any(x["flagged"] for x in real(124) + real(90)), "")
+check("a major is never also 'flagged' (it is already the major path); real #99 and #91",
+      all(x["major"] and not x["flagged"] for x in real(99) + real(91)), "")
+def one(body, title="Build(deps): bump x/y from 1.2.0 to 1.3.0"):
+    return r.parse_updates(title, body)
+NOTE = "Bumps x/y from 1.2.0 to 1.3.0.\n<details>\n<summary>Release notes</summary>\n<p>%s</p>\n</details>\n"
+check("flagged: 'breaking' in the notes", one(NOTE % "Breaking change: drop old API")[0]["flagged"] is True, "")
+check("flagged: 'deprecat' in the notes (Deprecated, DEPRECATION, deprecates)",
+      all(one(NOTE % w)[0]["flagged"] is True for w in ("Deprecated the flag", "DEPRECATION notice", "deprecates foo")), "")
+check("flagged: the words in the commit list <details> count too",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><summary>Commits</summary><ul><li>deprecate old</li></ul></details>")[0]["flagged"] is True, "")
+check("not flagged: ordinary notes", one(NOTE % "Fixes a typo")[0]["flagged"] is False, "")
+check("flagged: the words OUTSIDE the <details> blocks count too (the whole body is read; over-flagging only reaches the readers)",
+      one("Bumps x/y from 1.2.0 to 1.3.0. This is a breaking or deprecated thing.\n<details><summary>Release notes</summary>fine</details>")[0]["flagged"] is True, "")
+check("not flagged: no notes at all (a digest bump)",
+      one("Bumps golang from `3f3c01a` to `9e8d7c6`.\n", "Build(deps): bump golang from `3f3c01a` to `9e8d7c6`")[0]["flagged"] is False, "")
+check("flagged: a words-in-nested-details body still flags", 
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><summary>a</summary><details><summary>b</summary>breaking</details></details>")[0]["flagged"] is True, "")
+check("unclosed / stray <details> tags without those words are not flagged; with them they are",
+      [one("Bumps x/y from 1.2.0 to 1.3.0.\n%s" % b)[0]["flagged"] for b in ("<details><summary>Release notes</summary>fine", "</details> stray", "<details>unclosed breaking")] == [False, False, True], "")
+check("flagged: <details open> is a block like any other, its words count",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details open>Breaking change</details>")[0]["flagged"] is True, "")
+check("not flagged: <details open> with ordinary notes, balanced",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details open><summary>s</summary>fine</details>")[0]["flagged"] is False, "")
+# what the reader sees (round 2): comments, quoted attributes, references, code, fences
+RENDERED = ["break<b>ing</b> change", "depre&#99;ated", "&lt;breaking change&gt;", "break<!-- > -->ing", "depre<span title=\">\">cat</span>ed",
+            "<code>&lt;breaking&gt;</code>", "<!-- </details> -->Breaking change<!-- <details> -->", "```\n<details>deprecated</details>\n```", "DEPRECATION", "BrEaKiNg"]
+check("flagged: every shape of the words a reader sees (tags/comments splitting a word, references, entity-escaped code, fences, case)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>%s</details>" % w)[0]["flagged"] is True for w in RENDERED),
+      [w for w in RENDERED if not one("Bumps x/y from 1.2.0 to 1.3.0.\n<details>%s</details>" % w)[0]["flagged"]])
+MDSPLIT = ["**Break**ing change", "Depre*cat*ed API", "[Break](https://example.invalid)ing change", "break**ing** change", "![break*ing*](https://example.invalid/i.png)",
+           "break_ing_ change", "~~brea~~king", "`break`ing"]
+check("flagged: Markdown formatting, links and image alt text splitting the words (round 3)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDSPLIT),
+      [w for w in MDSPLIT if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
+MDLINK = ["[Break][ref]ing change\n\n[ref]: https://example.invalid", "[Break](https://example.invalid/(a)b)ing change", "[Break](https://example.invalid/a(b)c)ing",
+          "[Break](u \"a)b\")ing", "[Break]ing change\n\n[break]: https://e.invalid", "x[Break](u)ing"]
+check("flagged: valid Markdown link/reference forms that hide the word's pieces are unresolvable and flagged (round 4)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDLINK),
+      [w for w in MDLINK if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
+MDCOMBO = ["[Break](https://example.invalid/a(b)/c)**ing** change", "[Depre](u(a)/b)*cat*ed", "[Break][ref]**ing** change\n\n[ref]: https://example.invalid",
+           "[Break][ref]<b>ing</b> change\n\n[ref]: https://example.invalid", "[Break](https://e.invalid/\n(x))ing", "[Break](u \"a)b\")**ing**", "[Break](unterminated"]
+check("flagged: combined link, reference and formatting forms (round 5)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDCOMBO),
+      [w for w in MDCOMBO if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
+MDEXO = ["[Break][ref\\]*x]**ing** change\n\n[ref\\]*x]: https://example.invalid", "[Break][r\\] x]**ing** change\n\n[r\\] x]: https://example.invalid",
+         "[Depre][r\\] x]**cated**\n\n[r\\] x]: https://e.invalid", "[Break](<#a)/b>)**ing** change", "[Depre](<../a)/b>)*cat*ed", "[Break][r&#93; x]**ing**\n\n[r&#93; x]: u",
+         "[Break][r&#x5d; x]**ing**", "[Break][r&rbrack; x]**ing**",
+         "[Break](a&#41;b)<em>ing</em>", "[Break](a&#x29;b)<b>ing</b>", "[Break](a&rpar;b)**ing**", "[Depre](a&#0041;b)<i>cat</i>ed", "[Break](a&#40;b)<em>ing</em>", "[Break](a&lpar;b)<em>ing</em>",
+         "[Break](a&#X29;b)<em>ing</em>", "[Break](a&#x0029;b)<em>ing</em>", "[Break](a&#00000041;b)<em>ing</em>", "[Break](a&#41b)<em>ing</em>", "[Break](a&RPAR;b)<em>ing</em>",
+         "[Break](a&Rpar;b)<em>ing</em>", "[Depre](a&#x29;b)*cat*ed", "[Break](a&#9;b)<em>ing</em>", "[Break](a&Tab;b)<em>ing</em>", "[Break](a&amp;b)<em>ing</em>"]
+check("flagged: escaped or encoded brackets and <angle> destinations are unresolved link syntax and flagged (round 6, the class closed)",
+      all(one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"] is True for w in MDEXO),
+      [w for w in MDEXO if not one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n%s\n\n</details>" % w)[0]["flagged"]])
+check("not flagged: a URL's &key=value (Dependabot's own badge URL) is not a character reference",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n\n[![c](https://example.invalid/badge?dependency-name=x%2Fy&package-manager=github_actions&previous-version=1.2.0&new-version=1.3.0)](https://example.invalid/docs)")[0]["flagged"] is False, "")
+check("a body with a character reference but NO link syntax is judged on its words alone (no blanket flag)",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>Fixes &amp; speeds up &lt;things&gt;</details>")[0]["flagged"] is False, "")
+check("not flagged: real Dependabot bodies #90, #91, #124 still pass the closed class", not any(r.is_flagged(json.load(open(os.path.join(FIX, "pr-%d.json" % n)))["body"]) for n in (90, 91, 124)), "")
+check("not flagged: Markdown links with ordinary words, nested parentheses and titles",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\nSee [the docs](https://e.invalid/a(b)/c \"a title\") and [more][ref] for **details**.\n\n[ref]: https://e.invalid\n\n</details>")[0]["flagged"] is False, "")
+check("not flagged: ordinary Markdown with links and emphasis",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n\n<details>\n\n**Fixes** a [typo](https://example.invalid/typo) and `speeds` up *parsing*.\n\n</details>")[0]["flagged"] is False, "")
+check("not flagged: tags, comments and references around ordinary words",
+      one("Bumps x/y from 1.2.0 to 1.3.0.\n<details><p>Fixes &amp; <b>speed</b><!-- note --></p></details>")[0]["flagged"] is False, "")
+_T = r._Text
+r._Text = None
+_unreadable = r.is_flagged("x")
+r._Text = _T
+check("a body the parser cannot read is flagged (fail toward the readers)", _unreadable is True, "")
+# a flagged body whose update lines cannot be read is never silently the patch/minor lane's (round 2, seat A)
+u = r.parse_updates("Bump the actions group with 1 update",
+    "Bumps the actions group with 1 update.\n<!-- <details> -->\nUpdates `x/y` from 1.0.0 to 1.1.0\n<details><summary>Release notes</summary>Breaking: removed.</details>\n<!-- </details> -->\n<!-- <details> -->\n")
+check("flagged body with unreadable update lines -> one placeholder to review, major false",
+      len(u) == 1 and u[0]["review"] is True and u[0]["flagged"] is True and u[0]["major"] is False and "unparsed" in u[0]["name"], u)
+check("an unflagged body with no update lines stays empty (the patch/minor lane's)", r.parse_updates("t", "nothing to see") == [], "")
+check("title-only fallback (no body) is not flagged", one("", "Build(deps): bump x/y from 1.2.0 to 1.3.0")[0]["flagged"] is False, "")
+check("review = major or flagged",
+      [x["review"] for x in r.parse_updates("t", "Updates `a/b` from 1.0.0 to 2.0.0\nUpdates `c/d` from 1.0.0 to 1.1.0\n<details>breaking</details>")] == [True, True]
+      and [x["review"] for x in one(NOTE % "Fixes a typo")] == [False], "")
+# gather fetches notes and our usage for a flagged non-major and not for a plain one, and says why
+calls = []
+_saved = (r._run, r.release_notes, r.our_usage)
+r._run = lambda cmd, cap=None: ("diff --git a/x b/x\n", 0)
+r.release_notes = lambda n, o, nw: (calls.append(n) or ("notes of " + n + "\n", 1))
+r.our_usage = lambda n: "usage of " + n + "\n"
+import tempfile
+def gathered(updates):
+    del calls[:]
+    d = tempfile.mkdtemp(); p = os.path.join(d, "u.json"); json.dump(updates, open(p, "w"))
+    class A: pass
+    a = A(); a.pr, a.updates, a.out = 7, p, os.path.join(d, "out")
+    r.cmd_gather(a)
+    return open(os.path.join(a.out, "bundle.md")).read()
+b = gathered([{"name": "a/flag", "from": "1.0.0", "to": "1.1.0", "major": False, "flagged": True, "review": True},
+              {"name": "a/plain", "from": "1.0.0", "to": "1.0.1", "major": False, "flagged": False, "review": False},
+              {"name": "a/big", "from": "1.0.0", "to": "2.0.0", "major": True, "flagged": False, "review": True}])
+r._run, r.release_notes, r.our_usage = _saved
+check("gather: notes only for the flagged and the major, never the plain minor", calls == ["a/flag", "a/big"], calls)
+check("gather: the bundle labels the flagged update FLAGGED and the plain one not major",
+      "a/flag: 1.0.0 -> 1.1.0 (FLAGGED" in b and "a/flag: 1.0.0 -> 1.1.0 (MAJOR" not in b and "a/plain: 1.0.0 -> 1.0.1 (not major)" in b and "a/big: 1.0.0 -> 2.0.0 (MAJOR)" in b, b[:400])
 check("is_major: v1.2.3 -> v2.0.0", r.is_major("v1.2.3", "v2.0.0") is True)
 check("is_major: 0.21.0 -> 0.22.0 is not", r.is_major("0.21.0", "0.22.0") is False)
 check("is_major: unparseable is not", r.is_major("latest", "stable") is False)
@@ -272,6 +379,8 @@ assert len(run) == 1, "act step not found"
 open(sys.argv[2], "w").write(run[0])
 PY
 mkdir -p "$w/bin" "$w/py/anthropic"
+jq -n --slurpfile a "$FIX/pr-99.json" --slurpfile b "$FIX/pr-90.json" --slurpfile c "$FIX/pr-91.json" --slurpfile d "$FIX/pr-400.json" \
+  '[($a[0] + {number: 99, headRefOid: "sha99"}), ($b[0] + {number: 90, headRefOid: "sha90"}), ($c[0] + {number: 91, headRefOid: "sha91"}), ($d[0] + {number: 400, headRefOid: "sha400"})]' > "$w/prs-flagged.json"
 cat > "$w/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >> "$GH_LOG"
@@ -497,9 +606,12 @@ case "$1 $2" in
   "api repos/o/r/commits/sha99/check-runs?check_name=dependabot-reviewer") [ "${LOOKUP99:-}" = fail ] && exit 1; echo "${PRIOR99:-none}" ;;
   "api repos/o/r/commits/sha91/check-runs?check_name=dependabot-reviewer") echo "${PRIOR91:-none}" ;;
   "api repos/o/r/commits/sha77/check-runs?check_name=dependabot-reviewer") echo "${PRIOR77:-none}" ;;
+  "api repos/o/r/commits/sha400/check-runs?check_name=dependabot-reviewer") echo "${PRIOR400:-none}" ;;
+  "api repos/o/r/issues/99/events") [ "${EVENTSFAIL:-}" = 1 ] && exit 1; printf '%b' "${EVENTS99:-}" ;;
+  "api repos/o/r/contents/.github/policy/required-checks.json?ref=main") base64 < "$REPO_CHECKS" | tr -d '\n' ;;
   "api repos/o/r/check-runs") [ "${NEUTRALFAIL:-}" = 1 ] && exit 1; : ;;
   "pr view") echo "${ARMED99:-false}" ;;
-  "pr merge") [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;;
+  "pr merge") case "$*" in *--auto*) [ "${REARMFAIL:-}" = 1 ] && exit 1; : ;; *) [ "${DISARMFAIL:-}" = 1 ] && exit 1; : ;; esac ;;
   "run list") [ "${RUNLIST:-}" = fail ] && exit 1
               f=; while [ $# -gt 0 ]; do [ "$1" = --jq ] && f="$2"; shift; done
               jq -c "${f:-.}" <<<"${HISTORY:-[]}" ;;
@@ -510,7 +622,7 @@ EOF
 chmod +x "$w/bin/gh"
 cand() { # expected-candidates expected-rc; env PRIOR99 PRIOR91 LOOKUP99 FORCE
   local W="$w/cand"; rm -rf "$W"; mkdir -p "$W"; : > "$w/gh.log"
-  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSF:-$w/prs.json}" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" \
+  (cd "$repo" && env PATH="$w/bin:$PATH" GH_LOG="$w/gh.log" PRS_JSON="${PRSFILE:-${PRSF:-$w/prs.json}}" GITHUB_REPOSITORY=o/r RUNNER_TEMP="$W" REPO_CHECKS="$repo/.github/policy/required-checks.json" GUARD_RULES_JSON="${RULES:-$w/rules-match.json}" \
      GITHUB_OUTPUT="$W/output" APP_TOKEN=a APP_SLUG=fosterstack-automation MERGE_TOKEN=m RUN_URL=https://example.invalid/run \
      ONLY_PR="${ONLY:-}" FORCE="${FORCE:-false}" \
      bash --noprofile --norc -e -o pipefail "$w/cand.sh") > "$w/cand.out" 2>&1; local rc=$?
@@ -534,6 +646,42 @@ grep -q "disable-auto" "$w/gh.log" && { echo "FAIL: candidates: needless disarm"
 ARMED99=true DISARMFAIL=1 cand "" 1 "armed with no verdict and the disarm fails -> skipped, step fails"
 LOOKUP99=fail cand "91 none," 1 "a failed check lookup skips that PR and FAILS the step (round-2 P2)"
 ONLY=90 cand "" 0 "pr=90 (a patch) selects nothing"
+# REQ-DEP-001-AC10: a flagged non-major (real #400, codeql 4.38.2 -> 4.38.3, notes say 'Breaking change') is a candidate like a major
+PRSFILE="$w/prs-flagged.json" cand "99 none,91 none,400 none," 0 "a flagged non-major (#400) is selected beside the majors; the plain patch #90 is not"
+PRSFILE="$w/prs-flagged.json" PRIOR400=success cand "99 none,91 none," 0 "a flagged non-major with a success verdict is not reviewed again"
+PRSFILE="$w/prs-flagged.json" ARMED99=true cand "99 none,91 none,400 none," 0 "armed flagged non-major with no verdict -> disarmed up front like a major"
+grep -q "pr merge --disable-auto 400" "$w/gh.log" && { echo "ok: candidates: the armed flagged non-major was turned off up front"; pass=$((pass+1)); } || { echo "FAIL: candidates: flagged up-front disarm"; fail=$((fail+1)); }
+ONLY=400 PRSFILE="$w/prs-flagged.json" cand "400 none," 0 "pr=400 (flagged) selects it"
+# the hash-pinned act step names a hold by .major: a flagged update is written as major there, still flagged; a plain major is untouched
+[ "$(jq -r '[.[]|select(.major and .flagged)]|length' "$w/cand/work/updates-400.json")" = 4 ] \
+  && { echo "ok: candidates: flagged updates reach the act step as major+flagged (4 codeql members)"; pass=$((pass+1)); } || { echo "FAIL: candidates: flagged updates not marked for the act step"; fail=$((fail+1)); }
+ONLY=99 cand "99 none," 0 "pr=99 selects the plain major"
+[ "$(jq -r '[.[]|select(.major and (.flagged|not))]|length' "$w/cand/work/updates-99.json")" = 1 ] \
+  && { echo "ok: candidates: a plain major is left as it was (major, not flagged)"; pass=$((pass+1)); } || { echo "FAIL: candidates: plain major changed"; fail=$((fail+1)); }
+
+# The lane turned an arm off just as the reviewer approved the head (the reviewer arms, then publishes): a success verdict on the
+# head, no arm, and the LAST auto-merge event being a disable by github-actions (the workflow token) means put the arm back, after
+# the required-check guard; a person's disarm, an earlier lane disarm followed by a later enable, or no event at all stays.
+LANE_OFF='auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]\n'
+heal() { # <events> <rc> <expect-rearm yes|no> <name>   (PRIOR99=success; ARMED99, RULES, REARMFAIL, EVENTSFAIL from the environment)
+  PRIOR99=success EVENTS99="$1" cand "91 none," "$2" "$4"
+  if grep -q "pr merge --auto --squash --match-head-commit sha99 99" "$w/gh.log"; then got=yes; else got=no; fi
+  [ "$got" = "$3" ] && { echo "ok: candidates: $4 (re-arm: $got)"; pass=$((pass+1)); } || { echo "FAIL: candidates: $4 (re-arm: $got, want $3)"; fail=$((fail+1)); }
+}
+heal "$LANE_OFF" 0 yes "success + not armed + last event = disable by github-actions[bot] -> the arm is put back for exactly that head"
+heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled someone\n' 0 no "last event = a person's disable -> left alone"
+heal 'auto_merge_disabled github-actions[bot]\nauto_merge_enabled fosterstack-automation\nauto_merge_disabled someone\n' 0 no "an earlier lane disable, then a normal arm, then a person's disable -> left alone (round-4 B3)"
+heal 'auto_merge_disabled github-actions[bot]\nauto_merge_enabled fosterstack-automation\n' 0 no "an earlier lane disable followed by an enable (the PR is simply not armed in the stub) -> left alone"
+heal '' 0 no "no auto-merge event at all -> left alone"
+heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions-maintainer\n' 0 no "a login that only STARTS with github-actions (a person or app) is not the workflow token (round 5)"
+heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions[bot]x\n' 0 no "github-actions[bot] followed by anything else is not the workflow token"
+heal 'auto_merge_enabled fosterstack-automation\nauto_merge_disabled github-actions\n' 0 yes "the bare login github-actions is accepted too (the API names the bot either way)"
+ARMED99=true heal "$LANE_OFF" 0 no "already armed -> nothing to do"
+RULES="$w/rules-drift.json" heal "$LANE_OFF" 1 no "the required-check guard refuses -> no arm, the step fails (the approved arm stays off, retried next hour)"
+REARMFAIL=1 heal "$LANE_OFF" 1 yes "the re-arm cannot be made -> the step fails (retry next hour)"
+EVENTSFAIL=1 heal "$LANE_OFF" 1 no "the events cannot be read -> skipped, the step fails"
+PRIOR99=failure EVENTS99="$LANE_OFF" cand "91 none," 0 "a FAILURE verdict is never re-armed"
+grep -q "pr merge --auto" "$w/gh.log" && { echo "FAIL: candidates: a failure verdict was armed"; fail=$((fail+1)); } || { echo "ok: candidates: no arm for a failure verdict"; pass=$((pass+1)); }
 
 # the pinned tool module (tools/govulncheck: go.mod and go.sum, with the version also written in ci.yml) is held out of auto-merge and handled as a normal lane PR (a lane reviews it with both Codex seats and merges it): a bump there is never a candidate, never armed, and an
 # earlier arm is turned off (advisor Oct 12); a path that only looks like it is not held

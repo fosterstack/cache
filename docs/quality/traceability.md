@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 97 |
-| Acceptance criteria | 467 |
+| Active requirements | 98 |
+| Acceptance criteria | 471 |
 | Release-blocking ACs | 128 |
-| ACs with mapped evidence | 456 |
+| ACs with mapped evidence | 460 |
 | Release-blocking ACs with mapped evidence | 128 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
-| Confidence: implementation-only | 50 |
+| Confidence: implementation-only | 51 |
 
 ## Cache protocol
 
@@ -695,6 +695,7 @@ A Dependabot major version bump shall be judged by the Dependabot reviewer, not 
 | REQ-DEP-001-AC7 | Given the reviewer's readers failing three hourly runs in a row; when the third run ends; then it opens one issue for the ccode queue and posts nothing else | unit |  | approved | 1 item(s) |
 | REQ-DEP-001-AC8 | Given a reviewer run that is cancelled or superseded; when it ends; then it never posts a verdict over a newer one | unit |  | approved | 2 item(s) |
 | REQ-DEP-001-AC9 | Given a merge verdict on a Dependabot major; when auto-merge is armed, and when a new commit is pushed to the PR; then auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh | unit |  | approved | 2 item(s) |
+| REQ-DEP-001-AC10 | Given a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case; when the reviewer picks its candidates and gathers its evidence; then it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it; a bump whose notes say neither is left to the patch and minor lane | unit |  | approved | 2 item(s) |
 
 ### REQ-DEP-002 — The required-check guard runs everywhere
 
@@ -717,7 +718,8 @@ A Dependabot patch or minor bump shall merge on its own once every required chec
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-DEP-003-AC1 | Given a Dependabot patch or minor pull request; when the auto-merge lane runs; then it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer | ci-workflow |  | approved | 1 item(s) |
-| REQ-DEP-003-AC2 | Given a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged); when the auto-merge lane or the hourly reviewer sees it; then the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual | ci-workflow |  | approved | 2 item(s) |
+| REQ-DEP-003-AC2 | Given a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case; when the auto-merge lane runs; then it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing | ci-workflow |  | approved | 2 item(s) |
+| REQ-DEP-003-AC3 | Given a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged); when the auto-merge lane or the hourly reviewer sees it; then the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual | ci-workflow |  | approved | 2 item(s) |
 
 ### REQ-DEP-004 — A held bump or drift dispatches the fixer
 
@@ -778,12 +780,25 @@ The final image index that Sign signs and Release publishes shall carry our Open
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-REL-010-AC1 | Given Build's image layouts and the tag's .vex/ OpenVEX file; when Build writes digests.json; then each published index (production and fips) has exactly one attestation child per platform, carrying that file's content (the same OpenVEX document, which the in-toto statement of the attestation holds as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index) and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build | unit |  | approved | 2 item(s) |
+| REQ-REL-010-AC1 | Given Build's image layouts and the tag's .vex/ OpenVEX file; when Build writes digests.json; then each published index (production and fips) has exactly one attestation child per platform, carrying that file's content (the same OpenVEX document, which the in-toto statement of the attestation holds as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index) and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build | unit |  | approved | 3 item(s) |
 | REQ-REL-010-AC2 | Given the same inputs; when Build and Rebuild each make the final index; then the two are byte-identical (Rebuild's comparison covers it) | ci-workflow |  | approved | 1 item(s) |
-| REQ-REL-010-AC3 | Given the final index; when its attestation children are removed; then every platform image and the index's other entries are byte-identical to what Build made without them | unit |  | approved | 2 item(s) |
+| REQ-REL-010-AC3 | Given the final index; when its attestation children are removed; then every platform image and the index's other entries are byte-identical to what Build made without them | unit |  | approved | 3 item(s) |
 | REQ-REL-010-AC4 | Given Sign's digest list; when Release publishes; then the digest customers pull equals the digest the signature, provenance and release manifest name, and no step after Sign attaches, adds or changes an attestation (an attempt is refused) | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-010-AC5 | Given a changed OpenVEX for an already published version; when the pipeline runs; then it makes no change to that version's image; the change reaches images only through the next automatic patch release | unit |  | approved | 1 item(s) |
 | REQ-REL-010-AC6 | Given the published final index; when Docker Scout scans it by tag and by exact digest with our author; then it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image | acceptance-release-artifact |  | approved | none mapped |
+
+### REQ-REL-011 — A job that holds a credential never compiles, and each build is its own job
+
+A workflow job that holds a credential (a secret, an environment, an id-token or packages write grant) shall not build or compile anything, and no job shall run two builds: on GitHub-hosted runners the separate job is the isolation unit, each job a fresh virtual machine. Owner, Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): "the signer and the builder need hardware isolation and the builds in general need hardware isolation ... the best github actions can do for that, assuming we use github hosted runers, is to use separate jobs in the workflow." The rule: a job that holds the signing key or any publish credential never receives a build output other than the exact artifacts it signs or publishes; the Rebuild comparison runs in a job with no secrets and no publish permission; builds are isolated from each other the same way, each build its own job.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/auditor.yml; .github/workflows/go-freshness.yml; bin/job-isolation-test.sh*
+
+> Four jobs of the release chain on main (stage-build, stage-image, stage-promote, stage-reproducibility) still break AC1 and are listed exclusions in bin/job-isolation-test.sh with their reason: the chain-v030 landing (handoff 0634, cache#514) replaces those files. The exclusion list shrinks to nothing then. A tool that publishes no release binary (govulncheck) is built in its own job that holds no credential and reaches the credential-holding job as an artifact whose sha256 equals the build job's output.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-011-AC1 | Given any workflow job in the repository that holds a credential: a secrets.* reference, an environment, a permissions grant of id-token: write or packages: write; when bin/job-isolation-test.sh judges every workflow file; then none of the job's steps compiles or builds (go install, go build, goreleaser, docker build or buildx build, melange or apko build, make, cargo, npm run build); a tool the job needs is installed through bin/install-scanner.sh as a checksum-pinned release binary, and govulncheck, which has no release binary, is built in its own job with no credential and handed to auditor.yml's audit job as an artifact whose sha256 the audit job compares with the build job's output before it runs; the only jobs that may break this are the four listed release-chain exclusions, each with its reason, and a mutated copy of a workflow that adds a build to a credential-holding job fails the test | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-011-AC2 | Given any workflow job in the repository; when bin/job-isolation-test.sh judges every workflow file; then the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job | ci-workflow |  | approved | 2 item(s) |
 
 ## SCAN
 
