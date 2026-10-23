@@ -394,6 +394,26 @@ def load_index(data, final):
 
 
 # ---------------------------------------------------------------- the attestation of one platform
+def scout_form(vex):
+    """the VEX file in the form Docker Scout applies, which is what every attestation carries as its predicate. `docker scout attestation add` stores a statement whose products
+    are the vulnerable PACKAGES (the image is the in-toto subject, so the image purl is not repeated): a product that carries subcomponents is replaced by them, in order, once each;
+    a product without subcomponents stays. Scout read our attestation when it held the VEX file as it is (a product = the image purl, the package as its subcomponent) and did not
+    apply it (rescan run 39978435878, Oct 23 2026; the fixture is Scout's own output, held in bin/vex-index-test.sh). The published VEX file itself is not changed; this is a pure
+    function of its bytes, like everything else here."""
+    out = json.loads(json.dumps(vex))
+    for statement in out.get("statements", []):
+        products, seen = [], set()
+        for product in statement.get("products", []):
+            subcomponents = product.get("subcomponents")
+            for item in (subcomponents if isinstance(subcomponents, list) and subcomponents else [product]):
+                key = canonical(item)
+                if key not in seen:
+                    seen.add(key)
+                    products.append(item)
+        statement["products"] = products
+    return out
+
+
 def build_attestation(platform_digest, vex):
     """(index descriptor, {digest: bytes}) of the attestation manifest, config and statement for one platform"""
     statement = canonical({
@@ -534,7 +554,7 @@ def compute(index_bytes, vex_bytes):
         raise Refuse("the VEX mentions the built index's digest")
     descriptors, blobs, summary = [], {}, {}
     for name, entry in platforms:
-        descriptor, parts = build_attestation(entry["digest"], vex)
+        descriptor, parts = build_attestation(entry["digest"], scout_form(vex))
         descriptors.append(descriptor)
         blobs.update(parts)
         summary[name] = {"platform_digest": entry["digest"], "attestation_digest": descriptor["digest"]}
@@ -671,8 +691,8 @@ def check_final(final_bytes, blobs, vex, forbidden):
         except (KeyError, IndexError, TypeError):
             raise Refuse("an attestation manifest or its statement is malformed")
         check_vex(canonical(predicate))
-        if canonical(predicate) != canonical(vex):
-            raise Refuse("a statement's predicate is not the VEX file")
+        if canonical(predicate) != canonical(scout_form(vex)):
+            raise Refuse("a statement's predicate is not the VEX file in Scout's applied form")
         expected, parts = build_attestation(reference, predicate)
         if expected != entry:
             raise Refuse("the attestation for %s does not have the canonical shape" % reference)
