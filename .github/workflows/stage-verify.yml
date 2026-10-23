@@ -40,7 +40,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,11 +77,11 @@ jobs:
           name: images
           path: images
       - name: scanners under Witness
-        run: bash bin/witnessed.sh scanners bin/check-phase-scanners.sh
+        run: bash bin/witnessed-local.sh scanners bin/check-phase-scanners.sh
       - name: acceptance under Witness
-        run: bash bin/witnessed.sh acceptance bin/check-phase-acceptance.sh
+        run: bash bin/witnessed-local.sh acceptance bin/check-phase-acceptance.sh
       - name: runtime under Witness
-        run: bash bin/witnessed.sh runtime bin/check-phase-runtime.sh
+        run: bash bin/witnessed-local.sh runtime bin/check-phase-runtime.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-check
@@ -99,7 +98,6 @@ jobs:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -123,7 +121,7 @@ jobs:
           name: images
           path: images
       - name: arm64 under Witness
-        run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh
+        run: bash bin/witnessed-local.sh arm64 bin/check-phase-arm64.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-check-arm64
