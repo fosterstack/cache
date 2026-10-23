@@ -223,6 +223,11 @@ mkfake() { # mkfake NAME EXIT PACKAGES  -> a scanner that logs its argv and prin
 #!/usr/bin/env bash
 echo "$1 \$*" >> "\$FAKE_LOG"
 case "\${1:-}" in --version|version) echo "$1 9.9.9"; exit 0;; esac
+if [ "$1" = grype ]; then
+  gcfg=""; gprev2=""
+  for ga in "\$@"; do [ "\$gprev2" != -c ] || gcfg=\$ga; gprev2=\$ga; done
+  if [ -z "\$gcfg" ]; then echo "grype-config none" >> "\$FAKE_LOG"; elif [ -f "\$gcfg" ] && [ ! -s "\$gcfg" ]; then echo "grype-config empty" >> "\$FAKE_LOG"; else echo "grype-config other" >> "\$FAKE_LOG"; fi
+fi
 [ "\${1:-} \${2:-}" != "db update" ] || exit "\$FAKE_DB_RC"
 n=$3; name=$1
 for a in "\$@"; do case "\$a" in cyclonedx-json=*) python3 -c 'import json,sys; json.dump({"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"p%d" % i,"version":"1"} for i in range(int(sys.argv[2]))]}, open(sys.argv[1],"w"))' "\${a#cyclonedx-json=}" "\$n";; esac; done
@@ -257,7 +262,7 @@ if [ "\$name" = grype ]; then
   for ga in "\$@"; do case "\$ga" in oci-dir:*) gpath=\${ga#oci-dir:};; esac; [ "\$gprev" != --platform ] || gplat=\$ga; gprev=\$ga; done
   FAKE_MD=""; [ -z "\$gpath" ] || FAKE_MD=\$(python3 "$work/childdigest.py" "\$gpath" "\$gplat"); export FAKE_MD
   case " \$* " in *" --platform linux/arm64 "*) export FAKE_GRYPE_MATCHES="\${FAKE_GRYPE_ARM64_MATCHES-\${FAKE_GRYPE_MATCHES:-[]}}";; esac
-  python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({"matches":json.loads(os.environ.get("FAKE_GRYPE_MATCHES","[]")),"source":{"type":"image","target":({"manifestDigest":os.environ["FAKE_MD"]} if os.environ.get("FAKE_MD") else {})},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
+  python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({**({"ignoredMatches":json.loads(os.environ["FAKE_GRYPE_IGNORED"])} if "FAKE_GRYPE_IGNORED" in os.environ else {}),"matches":json.loads(os.environ.get("FAKE_GRYPE_MATCHES","[]")),"source":{"type":"image","target":({"manifestDigest":os.environ["FAKE_MD"]} if os.environ.get("FAKE_MD") else {})},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
 else
   eco=Debian:12; case " \$* " in *go.mod*) eco=Go;; esac
   python3 "$work/osvout.py" "\$n" "\$eco"
@@ -320,6 +325,30 @@ GM='[{"vulnerability":{"id":"CVE-2099-0002","severity":"Negligible"},"artifact":
 FAKE_GRYPE_MATCHES="$GM" want_fail "AC4 a grype finding of NEGLIGIBLE severity that exits 0 also fails" "does not except" "${SCAN[@]}"
 FAKE_GRYPE_MATCHES='"not a list"' want_fail "AC4 a grype result whose matches is not a list is a scan that did not run" "matches" "${SCAN[@]}"
 FAKE_GRYPE_MATCHES='[]' want_ok "AC4 grype with no match left after the VEX passes" "${SCAN[@]}"
+# "The VEX is the only exception" (register rows 18 and 38), as in cache#580 for the PR gate: grype runs with an EMPTY config file (no repo, home or XDG config), a GRYPE_* setting
+# other than GRYPE_DB_CACHE_DIR and GRYPE_DB_AUTO_UPDATE stops the pass, and everything grype left out (ignoredMatches) must come from a VEX rule (namespace vex and a vex-status
+# of not_affected or fixed). Real grype 0.118.0 behaviour of these shapes was probed for cache#580.
+want_ok "AC4 c grype with no ignored match passes and was run with an empty config on every call" "${SCAN[@]}"
+nc_=$(grep -c '^grype-config empty$' "$work/log" || true); nb_=$(grep -c -E '^grype-config (none|other)$' "$work/log" || true); ng_=$(grep -c -E '^grype (oci-dir:|file:|db update)' "$work/log" || true)
+if [ "$nb_" = 0 ] && [ "$nc_" = "$ng_" ] && [ "$ng_" -gt 0 ]; then ok "AC4 c every grype call ($ng_: the database update, images and archives) got -c with an empty file"; else bad "AC4 c grype config: $nc_ empty, $nb_ other or none, of $ng_ calls"; fi
+IG='{"vulnerability":{"id":"CVE-2099-0100"},"artifact":{"name":"pkgx","version":"1"}'
+FAKE_GRYPE_IGNORED='[]' want_ok "AC4 c ignoredMatches empty passes" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED='null' want_ok "AC4 c ignoredMatches null passes" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED="[$IG,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"not_affected\"}]},$IG,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"fixed\"}]}]" want_ok "AC4 c ignored matches that are all VEX rules (not_affected, fixed) pass" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED="[$IG,\"appliedIgnoreRules\":[{\"namespace\":\"\",\"fix-state\":\"unknown\"}]}]" want_fail "AC4 c a finding hidden by a config or environment ignore (not a VEX rule) fails and names it" "CVE-2099-0100" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED="[$IG,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":123}]}]" want_fail "AC4 c a vex-status that is a number fails" "other than the published VEX" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED="[$IG,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"under_investigation\"}]}]" want_fail "AC4 c a vex-status that is not not_affected or fixed fails" "other than the published VEX" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED="[$IG,\"appliedIgnoreRules\":{\"namespace\":\"vex\",\"vex-status\":\"fixed\"}}]" want_fail "AC4 c appliedIgnoreRules that is an object, not an array, fails" "other than the published VEX" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED="[$IG,\"appliedIgnoreRules\":[]}]" want_fail "AC4 c an ignored match with an empty rule list fails" "other than the published VEX" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED="[$IG}]" want_fail "AC4 c an ignored match with no rule list fails" "other than the published VEX" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED="[$IG,\"appliedIgnoreRules\":[{\"vex-status\":\"fixed\"}]}]" want_fail "AC4 c a rule with no namespace fails" "other than the published VEX" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED="[$IG,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"fixed\"},{\"namespace\":\"\",\"fix-state\":\"unknown\"}]}]" want_fail "AC4 c a VEX rule plus a config rule fails" "other than the published VEX" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED='["a string entry"]' want_fail "AC4 c a scalar ignored entry fails" "a malformed entry" "${SCAN[@]}"
+FAKE_GRYPE_IGNORED='"not a list"' want_fail "AC4 c ignoredMatches that is not a list is a scan that did not run" "ignoredMatches" "${SCAN[@]}"
+GRYPE_ONLY_FIXED=true want_rc "AC4 c a GRYPE_ONLY_FIXED setting stops the pass (exit 2)" 2 "${SCAN[@]}"
+if grep -Fq 'GRYPE_ONLY_FIXED' <<< "$out" && ! grep -Fq 'true' <<< "$out"; then ok "AC4 c the refused variable is named and its value is not printed"; else bad "AC4 c refused variable output: ${out:0:140}"; fi
+GRYPE_DB_VALIDATE_AGE=false want_rc "AC4 c a GRYPE_DB_VALIDATE_AGE setting stops the pass (exit 2)" 2 "${SCAN[@]}"
+GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_CACHE_DIR="$work/dbcache" want_ok "AC4 c GRYPE_DB_AUTO_UPDATE and GRYPE_DB_CACHE_DIR are allowed" "${SCAN[@]}"
 mkfake grype 0 120; mkfake osv-scanner 1 80
 want_fail "AC4 the second scanner reports findings: the script fails naming it" osv-scanner "${SCAN[@]}"
 mkfake osv-scanner 0 80; mkfake grype 0 0
@@ -485,7 +514,7 @@ mkfake osv-scanner 0 80
 printf '{"scanners":["grype"]}\n' > "$fx/.github/policy/scanners.json"; rm -f "$fx/out/scan-results.json"
 want_ok "AC15 a fresh grype database (built 17.5 h before now) from grype.anchore.io: the scan proceeds" "${SCAN[@]}"
 if [ -f "$fx/out/scan-results.json" ] && jq -e --arg u "$GDB_FROM" --arg s "sha256:$GDB_SUM" '.scanners[0] | .db_source_url == $u and .db_built_or_published == "2026-10-09T06:30:41Z" and .db_digest == $s and .db_source_basis == "observed"' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC15 the results carry grype's database source URL (basis: observed), build date and digest"; else bad "AC15 db fields in scan-results.json: $(jq -c '.scanners[0] | {db_source_url, db_built_or_published, db_digest}' "$fx/out/scan-results.json" 2>&1 | cut -c1-160)"; fi
-u=$(grep -n '^grype db update$' "$work/log" | head -1 | cut -d: -f1 || true); s=$(grep -n '^grype .*\(oci-dir\|file\):' "$work/log" | head -1 | cut -d: -f1 || true)
+u=$(grep -n '^grype db update' "$work/log" | head -1 | cut -d: -f1 || true); s=$(grep -n '^grype .*\(oci-dir\|file\):' "$work/log" | head -1 | cut -d: -f1 || true)
 if [ -n "$u" ] && [ -n "$s" ] && [ "$u" -lt "$s" ]; then ok "AC15 the database is fetched fresh (grype db update) before the first scan"; else bad "AC15 db update (line ${u:-none}) must come before the first scan (line ${s:-none})"; fi
 FAKE_DB_BUILT=2026-10-07T00:00:00Z want_fail "AC15 a database built 72 h before now fails closed" "older than 48 hours" "${SCAN[@]}"
 # round 1 F4 (Codex A3): the clock is the runner's. A CHECK_SCAN_NOW in the environment (an older `now` makes any database fresh) is refused, never read.
@@ -1163,7 +1192,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=360
+EXPECT=379
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
