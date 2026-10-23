@@ -1061,12 +1061,17 @@ def _container_inner(tool, args):
         k, unknown = _options(rest, RUN_VAL, RUN_BOOL)
         if unknown or k >= len(rest):
             return None
-        entry = None
-        for j, a in enumerate(rest[:k]):
+        entry, j = None, 0
+        while j < k:                       # walk the options: a value of another option (--label '--entrypoint=x') is not the entrypoint
+            a = rest[j]
             if a == "--entrypoint" and j + 1 < k:
-                entry = rest[j + 1]
+                entry, j = rest[j + 1], j + 2
             elif a.startswith("--entrypoint="):
-                entry = a.split("=", 1)[1]
+                entry, j = a.split("=", 1)[1], j + 1
+            elif a in RUN_VAL:
+                j += 2
+            else:
+                j += 1
         inner = rest[k + 1:]
         if entry:  # INNER-ENTRYPOINT
             inner = [entry] + inner

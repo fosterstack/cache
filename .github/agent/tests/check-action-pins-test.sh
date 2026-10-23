@@ -1782,6 +1782,8 @@ case_ run-inner-committed-name-ok ok "$(r 'docker run --rm -v x:y alpine@sha256:
 case_ exec-sh-c-script-as-before-bad bad "$(r "docker exec C sh -c 'bash evil.sh'")" "printf 'docker pull alpine:latest\\n' > evil.sh"
 case_ run-sh-c-script-as-before-bad  bad "$(r "docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 sh -c 'bash evil.sh'")" "printf 'docker pull alpine:latest\\n' > evil.sh"
 case_ exec-sh-c-inner-tool-bad      bad "$(r "docker exec C sh -c 'bash evil.sh; docker pull alpine:latest'")"
+case_ run-entrypoint-value-of-other-option-bad bad "$(r "docker run --entrypoint docker --label '--entrypoint=echo' alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest")"
+case_ run-entrypoint-last-wins-ok  ok  "$(r 'docker run --entrypoint echo alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 hello')"
 mutant_ exec-inner      'if verb == "exec":  # INNER-EXEC|||if False:  # INNER-EXEC' "$(r 'docker exec C docker pull alpine:latest')"
 mutant_ run-inner       'if verb in ("run", "create"):  # INNER-RUN|||if False:  # INNER-RUN' "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
 mutant_ entrypoint-inner 'if entry:  # INNER-ENTRYPOINT|||if False:  # INNER-ENTRYPOINT' "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
