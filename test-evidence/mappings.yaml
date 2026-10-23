@@ -207,8 +207,20 @@ mappings:
   - ac: REQ-STORE-001-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestRestartPersistence" }
+  - ac: REQ-STORE-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/cache:TestSameKeyConcurrentPutsKeepIndexEqualToBytes" }
+      - { type: go-test, ref: "internal/cache:TestReconcileCorrectsRecordedSizeMismatch" }
+      - { type: go-test, ref: "internal/cache:TestReconcileReportsSizeCorrectionFailure" }
+      - { type: go-test, ref: "internal/cache:TestEvictionDoesNotRaceAPutOfTheSameKey" }
+      - { type: go-test, ref: "internal/cache:TestEvictOneSkipsChangedAndReportsLookupFailure" }
+      - { type: go-test, ref: "internal/cache:TestPanickingReaderDoesNotLockTheKey" }
+      - { type: go-test, ref: "internal/cache:TestCaseAliasedKeysShareOneLock" }
+      - { type: go-test, ref: "internal/cache:TestEvictionDoesNotWaitForASlowUploadOfTheSelectedKey" }
+      - { type: go-test, ref: "internal/metadata:TestLookupFoundMissingAndCorrupt" }
   - ac: REQ-STORE-004-AC1
     evidence:
+      - { type: go-test, ref: "internal/cache:TestFailedOverwriteLeavesNoRecord" }
       - { type: go-test, ref: "internal/cache:TestPutFailsAndRemovesBlobWhenMetadataFails" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34638175962/job/103391097048 (test check red on 068d274 — the PUT reporting success on a failed metadata record, before the implementation commit)" }
   - ac: REQ-STORE-005-AC1
