@@ -799,6 +799,12 @@ requirements:
         then: it exits non-zero naming the serving or shutdown error; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles and adopts any blob that was stored but not indexed (adopted_blobs counted)
         verification: { method: component, release_blocking: true }
         status: approved
+      - id: REQ-STORE-005-AC6
+        given: a metadata record whose value is not exactly 16 bytes (on-disk corruption), at any key
+        when: the index is read for that key or scanned (touch, total size, least recently used, list)
+        then: the read returns a corrupt-record error naming the problem; it never indexes past the end of the value, so the process does not panic
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   # ── Eviction ──────────────────────────────────────────────────────────
 

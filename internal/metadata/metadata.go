@@ -67,6 +67,9 @@ func (s *Store) Close() error { return s.db.Close() }
 // encode/decode bounds-check explicitly rather than trusting the int64/
 // uint64 conversion, so a corrupt or crafted record is rejected instead of
 // silently wrapping into a negative size or a bogus timestamp.
+// recordLen is the exact length of a record.
+const recordLen = 16
+
 func encode(size int64, lastAccess time.Time) ([]byte, error) {
 	if size < 0 {
 		return nil, fmt.Errorf("metadata: negative size %d", size)
@@ -75,13 +78,16 @@ func encode(size int64, lastAccess time.Time) ([]byte, error) {
 	if nanos < 0 {
 		return nil, fmt.Errorf("metadata: negative timestamp %d", nanos)
 	}
-	buf := make([]byte, 16)
+	buf := make([]byte, recordLen)
 	binary.BigEndian.PutUint64(buf[0:8], uint64(size))   // #nosec G115 -- size validated >= 0 above
 	binary.BigEndian.PutUint64(buf[8:16], uint64(nanos)) // #nosec G115 -- nanos validated >= 0 above
 	return buf, nil
 }
 
 func decode(key string, buf []byte) (Entry, error) {
+	if len(buf) != recordLen {
+		return Entry{}, fmt.Errorf("metadata: corrupt record for key %q: %d bytes, want %d", key, len(buf), recordLen)
+	}
 	rawSize := binary.BigEndian.Uint64(buf[0:8])
 	rawNanos := binary.BigEndian.Uint64(buf[8:16])
 	if rawSize > math.MaxInt64 || rawNanos > math.MaxInt64 {
@@ -95,6 +101,9 @@ func decode(key string, buf []byte) (Entry, error) {
 }
 
 func decodeSize(buf []byte) (int64, error) {
+	if len(buf) != recordLen {
+		return 0, fmt.Errorf("metadata: corrupt record: %d bytes, want %d", len(buf), recordLen)
+	}
 	rawSize := binary.BigEndian.Uint64(buf[0:8])
 	if rawSize > math.MaxInt64 {
 		return 0, fmt.Errorf("metadata: corrupt record: size exceeds int64 range")
