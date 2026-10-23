@@ -687,7 +687,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "649171c73e1fe8489e8929ef85d31cdb5556eea6e2d07b58941c5eafe0feba27",
+      "sha256": "07d39f008d95fdc7596d3c142b2b3557d8e904c88219b0907c1bc16667d9c1f1",
       "tools": [
         "find",
         "python3",
@@ -737,20 +737,6 @@
           "rule": "deny",
           "line": "[ -z \"${CHECK_SCAN_NOW+x}\" ] || fail \"CHECK_SCAN_NOW is defined in the environment: the database age is judged by the runner's clock, which no variable can change\"",
           "line_sha256": "2ae0c195e21d2471ef18a310f97cc1229add47c0aeda6b64cad761bdda07bc7b",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "    if [ -n \"${OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY:-}\" ]; then",
-          "line_sha256": "1a4a1219de6345a09bc7fe13eb2fcb5e4605a3f28fcb61aa972aa020e6951407",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "      if [ -n \"$(find \"$osvcache\" -mindepth 1 -print -quit)\" ]; then",
-          "line_sha256": "4a3a47eac2c5b5eb85d6b5aef7ca16519682386af3cd44bbc37240b197cbe2b3",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
