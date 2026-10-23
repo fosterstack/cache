@@ -15,6 +15,7 @@ linux/amd64 and linux/arm64 with the build's CGO_ENABLED; a called finding in an
 amd64 `./...` run, byte for byte (the product the Release stage binds); the other runs are judged only.
 Exit 1 on any other outcome, 2 on a usage error. Python is used here for one reason: the pinned toolchain has to be first on the tool's search path, which a plain shell
 code of the chain may not set."""
+import hashlib
 import json, os, re, shutil, subprocess, sys
 
 GO_DIR = "/usr/local/bin/fscache-go/bin"
@@ -65,14 +66,19 @@ _G, _P = "g" + "o", "PA" + "TH"          # spelled in parts: this file names the
 EXPORT_OK = ("export %s=/usr/local/%s/bin:$%s" % (_P, _G, _P), "export GOPATH=/tmp/gopath GOCACHE=/tmp/gocache")
 FIPS_EXPORT = "export GOFIPS140=v1.0.0"
 FIPS_PROOF = re.compile(r"^grep -q 'GOFIPS140=v1\.0\.0-[0-9a-f]{8}' /tmp/fscache-gobuildinfo\.txt$")
-GO_SETTINGS = re.compile(r"\b(CGO_ENABLED|GOFLAGS|GOEXPERIMENT|GOAMD64|GOARM64|GOARM|GOOS|GOARCH|GOTOOLCHAIN|GOPROXY|GOWORK|GOENV|GODEBUG|GOFIPS140|GOROOT|GOMODCACHE|GOPRIVATE|GOINSECURE|GONOSUMDB|GOVULNDB)\b")
-SHELL_JOINERS = ("#", ";", "&", "|", "`", "$(")
+FETCH_URI = re.compile(r"^      uri: https://[a-z0-9./-]+\.tar\.gz$")                 # the two lines of a fetch step that change with a toolchain bump
+FETCH_SUM = re.compile(r"^      expected-sha256: [0-9a-f]{64}$")
+# every other pipeline line of the recipe (the toolchain fetch steps, the repository set-up, the install directory and the buildinfo check) is data of the template: the
+# lines, in order and with their indentation, must hash to this value in BOTH recipes, so a changed, added or moved line (a shell form the grammar cannot resolve
+# included) is refused and a deliberate template change is a reviewed change to this one constant
+OTHER_SHA256 = "169700dc8e6a76b347bd85aea5a562705c5bf18543019e21d89c28766a01015d"
 
 
 def read_recipe(rec, fips):
     """(the package path, CGO_ENABLED) of one recipe, read with a CLOSED line grammar (standard library only): the environment block holds exactly the four known keys;
-    the only go lines are the one exact build line and `go version -m`; the only exports are the search path, GOPATH/GOCACHE and, in the FIPS recipe only, GOFIPS140=v1.0.0; no other line
-    names a Go setting; a line that is a go line or an export carries none of # ; & | backtick $(. Anything else fails closed (a shape the grammar refuses is a failure, not a guess)."""
+    the pipeline holds the one exact build line, `go version -m`, the search-path and GOPATH/GOCACHE exports and, in the FIPS recipe only, GOFIPS140=v1.0.0 and its
+    proof line, each indented as a shell line of a runs step, the fetch step's uri and checksum lines, and nothing else but the template lines pinned by OTHER_SHA256.
+    Anything else fails closed (a shape the grammar cannot resolve is a failure, not a guess); CGO_ENABLED comes only from the environment block."""
     try:
         text = open(rec).read()
     except OSError:
@@ -92,37 +98,36 @@ def read_recipe(rec, fips):
     cgo = env.pop("CGO_ENABLED", None)
     if env != ENV_WANT or cgo not in ('"0"', '"1"'):
         fail("%s: the environment block must be exactly GOTOOLCHAIN: local, GOFLAGS: -mod=vendor, GOPROXY: \"off\" and CGO_ENABLED: \"0\" or \"1\"" % rec)
-    pkgs, fips_exports = [], 0
-    for k, l in enumerate(lines):
-        if k in block:
-            continue
+    pipes = [k for k, l in enumerate(lines) if l == "pipeline:"]
+    if len(pipes) != 1:
+        fail("%s has %d top-level pipeline blocks (exactly one is required)" % (rec, len(pipes)))
+    for k, l in enumerate(lines[:pipes[0]]):
+        if k not in block and re.search(r"\bruns:", l) and not l.lstrip().startswith("#"):
+            fail("%s line %d runs a shell step outside the pipeline: %r" % (rec, k + 1, l.strip()))
+    pkgs, fips_exports, proofs, other = [], 0, 0, []
+    for k in range(pipes[0] + 1, len(lines)):
+        l = lines[k]
         t = l.strip()
         if not t or t.startswith("#"):
             continue
-        if "$(" in t or "`" in t or re.match(r"^(- )?(runs:\s*)?\$", t):
-            fail("%s line %d holds a substitution, a backtick or a leading word built from an expansion, which the grammar cannot resolve: %r" % (rec, k + 1, t))
-        t_plain = re.sub(r"[\\'\"]", "", t)          # g'o' and g\o are the same word to the shell: judged as the plain word
-        toks = t_plain.split()
-        cmd = re.sub(r"^(- )?runs:\s*", "", t_plain).split()
-        is_go = "go" in toks or (bool(cmd) and cmd[0].rsplit("/", 1)[-1] == _G and "/" in cmd[0])
-        is_export = "export" in toks
-        if is_go or is_export:
-            if any(j in t for j in SHELL_JOINERS):
-                fail("%s line %d joins or comments a go or export line (# ; & | backtick $( are refused there): %r" % (rec, k + 1, t))
-            m = BUILD_LINE.match(t) if t_plain == t else None
-            if m:
-                pkgs.append(m.group(1))
-            elif VERSION_LINE.match(t) or t in EXPORT_OK:
-                pass
-            elif t == FIPS_EXPORT and fips:
-                fips_exports += 1
-            else:
-                fail("%s line %d is a go or export line the grammar does not allow: %r" % (rec, k + 1, t))
-        elif GO_SETTINGS.search(t) and not (fips and FIPS_PROOF.match(t)):
-            fail("%s line %d names a Go setting outside the environment block: %r" % (rec, k + 1, t))
+        shell = l.startswith("      ") and not l.startswith("       ")        # a shell line of a `runs: |` step: exactly six spaces
+        if shell and BUILD_LINE.match(t):
+            pkgs.append(BUILD_LINE.match(t).group(1))
+        elif shell and (VERSION_LINE.match(t) or t in EXPORT_OK):
+            pass
+        elif shell and fips and t == FIPS_EXPORT:
+            fips_exports += 1
+        elif shell and fips and FIPS_PROOF.match(t):
+            proofs += 1
+        elif FETCH_URI.match(l) or FETCH_SUM.match(l):
+            pass
+        else:
+            other.append(l)
+    if hashlib.sha256(("\n".join(other) + "\n").encode()).hexdigest() != OTHER_SHA256:
+        fail("%s: the pipeline holds a line, or lacks one, that the closed grammar does not know (the lines outside the build, version, export and fetch forms are not the template's)" % rec)
     if len(pkgs) != 1 or ".." in pkgs[0]:
         fail("%s holds %d build lines of the one allowed form, not exactly one: the shipped main package is not known" % (rec, len(pkgs)))
-    if fips and fips_exports != 1:
+    if fips and (fips_exports != 1 or proofs > 1):
         fail("%s must set GOFIPS140=v1.0.0 exactly once (the FIPS build)" % rec)
     return pkgs[0], cgo.strip('"')
 
