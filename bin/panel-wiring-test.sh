@@ -243,6 +243,16 @@ elif dst.startswith("docker://") and df:
                         out.append("the recorded %s (%s) is not the digest of the %s layout's index (%s)" % (key, dig.get(key), name, top[0]["digest"]))
                 if dig.get("fixture-before") == dig.get("fixture-ours"):
                     out.append("the two fixture digests are the same")
+                # every statement Scout applied in the root-cause round (Oct 23 run 39945154746) named the package as a subcomponent of the product; the self-check statement named none and the
+                # self-check failed (Scout kept the finding)
+                GLIBC = "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm&os_name=debian&os_version=12"
+                try:
+                    stm = json.load(open(os.path.join(t, "attach", "selfcheck-ours.json")))["statements"]
+                except (OSError, ValueError, KeyError) as e:
+                    return out + ["the step does not write attach/selfcheck-ours.json (%s)" % e]
+                want = [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [{"@id": GLIBC}]}]
+                if len(stm) != 1 or (stm[0].get("vulnerability") or {}).get("name") != "CVE-2023-4911" or stm[0].get("products") != want:
+                    out.append("the self-check statement is not CVE-2023-4911 on our published product with the fixture's glibc package as its subcomponent (Scout keeps a finding whose package the statement does not name): %s" % (stm,))
             return out
         bad.extend(fixture_problems(fxs[0]["run"]))
         lines_ = fxs[0]["run"].rstrip("\n").split("\n")
@@ -250,6 +260,8 @@ elif dst.startswith("docker://") and df:
             bad.append("the fixture step no longer ends with the jq line that records fixture-before and fixture-ours")
         elif not fixture_problems("\n".join(lines_[:-1])):
             bad.append("the fixture test does not notice when the step never records the fixture digests (a vacuous check)")
+        elif "subcomponents" not in fxs[0]["run"] or not fixture_problems(fxs[0]["run"].replace("subcomponents", "subcomps")):
+            bad.append("the fixture test does not notice when the self-check statement drops the subcomponent (a vacuous check)")
     for need in ("docker login ghcr.io", "-X DELETE", "14 days ago"):
         if need not in vt:
             bad.append("vex-attach lacks %s" % need)
