@@ -2930,8 +2930,10 @@ def run_scripts(doc):
                         wm = {key_of(k): v for k, v in w.value} if isinstance(w, yaml.MappingNode) else {}
                         ref, pth = wm.get("ref"), wm.get("path")
                         pdir = pth.value.strip() if isinstance(pth, yaml.ScalarNode) else "."
+                        lfs = wm.get("lfs")     # LFS objects are not the committed pointer text: not main's copy (618 round 2, seat B)
+                        lfs_on = lfs is not None and not (isinstance(lfs, yaml.ScalarNode) and lfs.value.strip().strip("\"'").lower() == "false")
                         if (isinstance(ref, yaml.ScalarNode) and ref.value.strip() == BASE_SHA_REF and "repository" not in wm
-                                and re.fullmatch(r"[\w][\w-]*", pdir)):
+                                and not lfs_on and re.fullmatch(r"[\w][\w-]*", pdir)):
                             if pdir not in base_dirs:
                                 base_dirs.append(pdir)
                         else:

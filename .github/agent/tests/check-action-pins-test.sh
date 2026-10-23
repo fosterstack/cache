@@ -2761,6 +2761,12 @@ fence_wf() {  # fence checkout into trusted, a writer step ($1), then the script
           path: trusted")" "$1"
 }
 case_ w-fence-then-nothing-ok ok "$(fence_wf '')" "$mk_fence"
+case_ w-fence-with-lfs-true-bad bad "$(printf '%s\n    steps:\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted
+          lfs: true")")" "$mk_fence"
+case_ w-fence-with-lfs-false-ok ok "$(printf '%s\n    steps:\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted
+          lfs: false")")" "$mk_fence"
 case_ w-fence-then-download-into-it-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
           path: trusted")")" "$mk_fence"
 case_ w-fence-then-download-into-it-slash-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
