@@ -41,7 +41,7 @@ cdx="$tmp/result.cdx.json"; js="$tmp/result.json"; cfg="$tmp/empty.yaml"; : > "$
 if jq -e . "$cdx" >/dev/null 2>&1; then
   # packages are the components that carry a package URL; grype also lists every file it catalogued as a component (946 of 965 on a real image), and a
   # file-only inventory is not a scan that ran (row 53; rc-5a C)
-  n=$(jq -e '[.components[]? | select((.purl // "") != "")] | length' "$cdx" 2>/dev/null) || n=0
+  n=$(jq -e '[.components[]? | select((.purl | type) == "string" and .purl != "")] | length' "$cdx" 2>/dev/null) || n=0
   f=$(jq -e 'if .vulnerabilities == null then 0 elif (.vulnerabilities | type) == "array" then (.vulnerabilities | length) else error("vulnerabilities is not a list") end' "$cdx" 2>/dev/null) || f="?"
 else
   n=0; f="?"
