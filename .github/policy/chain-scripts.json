@@ -367,7 +367,10 @@
       "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
       "sha256": "d7ab910fb31977158de648b4a352edcfe505dda2fe52f9121d6cd17ab4343a9c",
       "reads_env": [
-        "RUNNER_TEMP"
+        "GH_TOKEN",
+        "APK_RELEASE_SIGNING_KEY",
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN"
       ],
       "arg_map": {
         "apk": "bin/build-stage-apk.sh",
@@ -2714,8 +2717,8 @@
   "ambient_env": [
     {
       "name": "GH_TOKEN",
-      "script": "bin/witnessed.sh",
-      "why": "the Witness wrapper receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
+      "script": "bin/witnessed-local.sh",
+      "why": "the Witness wrapper of the building steps (bin/witnessed-local.sh) receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
       "file": ".github/workflows/stage-build.yml",
       "job": "apk"
     },
