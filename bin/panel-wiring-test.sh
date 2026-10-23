@@ -127,7 +127,14 @@ else:
 { printf 'gh'; printf ' %q' "$@"; printf '\n'; } >> "$STUB_LOG"
 jqx=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && jqx="$a"; prev="$a"; done
 case "$*" in
-  *"-X DELETE"*) if [ "$STUB_MODE" = del-fail ]; then echo "HTTP 403" >&2; exit 1; fi; exit 0 ;;
+  *"-X DELETE"*) if [ "$STUB_MODE" = del-fail ]; then echo "HTTP 403" >&2; exit 1; fi
+    R5000="gh: Publicly visible package versions with more than 5000 downloads cannot be deleted. Contact GitHub support for further assistance. (HTTP 400)"
+    case "$STUB_MODE:$*" in
+      del-5000:*) echo "$R5000" >&2; exit 1 ;;
+      del-5000-then-fail:*versions/11) echo "$R5000" >&2; exit 1 ;;
+      del-5000-then-fail:*) echo "HTTP 403" >&2; exit 1 ;;
+    esac
+    exit 0 ;;
   *"--paginate"*) case "$STUB_MODE" in
       list-404) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
       list-fail) echo "gh: boom (HTTP 500)" >&2; exit 1 ;;
@@ -169,6 +176,13 @@ exit 0
         rc, calls = run_prune("del-fail")
         if rc == 0 or len([l for l in calls if "-X DELETE" in l]) != 2:
             bad.append("the prune goes green when a delete fails, or stops at the first failure (rc=%s)" % rc)
+        # GitHub's own refusal (public version over 5000 downloads) is kept with a named warning; any other delete failure beside it still fails (REQ-REL-010)
+        rc, calls = run_prune("del-5000")
+        if rc != 0 or len([l for l in calls if "-X DELETE" in l]) != 2:
+            bad.append("the prune fails on a public version GitHub will not delete (over 5000 downloads), or stops at it (rc=%s)" % rc)
+        rc, calls = run_prune("del-5000-then-fail")
+        if rc == 0 or len([l for l in calls if "-X DELETE" in l]) != 2:
+            bad.append("the prune goes green when another delete fails beside a kept 5000-download version (rc=%s)" % rc)
         for need in ("vex=.vex/fosterstack-cache.openvex.json", 'python3 bin/vex-index.py layout --layout "${d}" --vex "${vex}"',
                      'python3 bin/vex-index.py verify-layout --layout "${d}" --vex "${vex}" --base-digest "${base}"',
                      'python3 bin/release-layout.py "${d}" "${final}"', 'tag="cand-${GITHUB_RUN_ID}-${v}"', "chmod -R go-w", "skopeo copy --all",
