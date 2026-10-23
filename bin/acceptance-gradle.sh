@@ -7,7 +7,7 @@
 # step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
 # the wrapper jar is the reviewed one before anything runs it (REQ-SUP-001-AC32): the expected file is exactly one line, the one for the jar, and the jar matches it; else refuse
-sed -n 1p .github/policy/gradle-wrapper-jar-sha256.txt | grep -qxE '[0-9a-f]{64}  bench/gradle-sample/gradle/wrapper/gradle-wrapper\.jar' && ! sed -n '2,$p' .github/policy/gradle-wrapper-jar-sha256.txt | grep -q '' \
+sed -n 1p .github/policy/gradle-wrapper-jar-sha256.txt | grep -qxE '[0-9a-f]{64}  bench/gradle-sample/gradle/wrapper/gradle-wrapper\.jar' && ! sed -n '2,$p' .github/policy/gradle-wrapper-jar-sha256.txt | grep '' > /dev/null \
   && sha256sum -c --status .github/policy/gradle-wrapper-jar-sha256.txt || { echo "acceptance-gradle: gradle-wrapper.jar does not match .github/policy/gradle-wrapper-jar-sha256.txt" >&2; exit 1; }
 
 # acceptance.yml, job acceptance-gradle, step 6: gradlew build (cold — populates the remote cache) (working-directory bench/gradle-sample)

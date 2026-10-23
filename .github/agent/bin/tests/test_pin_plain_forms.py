@@ -213,6 +213,7 @@ class AcceptanceScriptsCheckTheJar(unittest.TestCase):
                     return open(JAR_SUM_FILE).read() + "%s  bench/gradle-sample/gradlew\n" % hashlib.sha256(f.read()).hexdigest()
             r, ran = self.run_script(s, sum_text=with_valid_second_line)
             self.assertEqual(r.returncode, 1, "%s: %s" % (s, r.stderr))
+            self.assertIn("gradle-wrapper.jar", r.stderr)
             self.assertEqual(ran, "", "%s ran gradlew behind a two-line expected file" % s)
 
     def test_an_expected_file_with_the_jar_line_twice_or_a_blank_line_after_it_is_refused(self):
@@ -223,6 +224,14 @@ class AcceptanceScriptsCheckTheJar(unittest.TestCase):
                 self.assertEqual(r.returncode, 1, "%s with %s: %s" % (s, name, r.stderr))
                 self.assertIn("gradle-wrapper.jar", r.stderr)
                 self.assertEqual(ran, "", "%s ran gradlew behind an expected file with %s" % (s, name))
+
+    def test_a_long_tail_after_the_jar_line_is_refused(self):
+        line = open(JAR_SUM_FILE).read()
+        for s in SCRIPTS:   # more than a pipe buffer of tail: an early-exit reader must not turn a broken pipe into "no second line"
+            r, ran = self.run_script(s, sum_text=line + "#\n" * 40000)
+            self.assertEqual(r.returncode, 1, "%s: %s" % (s, r.stderr[-200:]))
+            self.assertIn("gradle-wrapper.jar", r.stderr)
+            self.assertEqual(ran, "", "%s ran gradlew behind a long tail" % s)
 
     def test_the_committed_jar_reaches_gradlew(self):
         for s in SCRIPTS:
