@@ -8,7 +8,7 @@
 # "The VEX is the only exception" is enforced three ways, because grype also drops findings through a config file (.grype.yaml `ignore:`, a home or XDG
 # config) and through GRYPE_* settings (GRYPE_ONLY_FIXED, GRYPE_IGNORE_WONTFIX, ...):
 #   1. grype runs with `-c` and an EMPTY config file, so no config of the repository, the home directory or XDG applies;
-#   2. any GRYPE_* variable other than GRYPE_DB_* (the database cache and update settings) stops the script with exit 2, naming the variable (never its value);
+#   2. any GRYPE_* variable other than GRYPE_DB_CACHE_DIR and GRYPE_DB_AUTO_UPDATE stops the script with exit 2, naming the variable (never its value);
 #   3. every entry of the native JSON's `ignoredMatches` must come from a VEX rule (namespace "vex" and a vex-status); an entry with no rule, no namespace
 #      or any other rule exits 1 and is named.
 #
@@ -21,9 +21,12 @@
 set -uo pipefail
 target="${1:?usage: grype-scan.sh <target> <label>}"; label="${2:?usage: grype-scan.sh <target> <label>}"
 here="$(cd "$(dirname "$0")" && pwd)"
-vex="${VEX:-${here}/../.vex/fosterstack-cache.openvex.json}"
+vex="${here}/../.vex/fosterstack-cache.openvex.json"   # the published document only: there is no override
 
-bad_env=$(compgen -e | grep -E '^GRYPE_' | grep -v -E '^GRYPE_DB_' | tr '\n' ' ')
+bad_env=""
+for v in "${!GRYPE_@}"; do
+  case "$v" in GRYPE_DB_CACHE_DIR|GRYPE_DB_AUTO_UPDATE) ;; *) bad_env="${bad_env}${v} " ;; esac
+done
 if [ -n "$bad_env" ]; then
   echo "::error::grype ${label}: ${bad_env}set in the environment: only the VEX document may hide a finding, and these settings can; refusing to run (names only, values are never printed)" >&2
   exit 2
@@ -32,6 +35,7 @@ fi
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 cdx="$tmp/result.cdx.json"; js="$tmp/result.json"; cfg="$tmp/empty.yaml"; : > "$cfg"   # $cfg stays empty: it is the one config grype reads (grype needs the extension)
 
+# GRYPE is a test seam (a stand-in for the grype binary); no workflow ever sets it, so CI always runs the pinned grype.
 "${GRYPE:-grype}" "$target" -c "$cfg" --fail-on negligible --vex "$vex" -o table -o "cyclonedx-json=${cdx}" -o "json=${js}"; rc=$?
 # A grype that failed before writing leaves a file that is empty or not one complete JSON document: that is 0 packages here ("did not run").
 if jq -e . "$cdx" >/dev/null 2>&1; then
@@ -70,9 +74,13 @@ if [ "$rc" -eq 0 ]; then
     echo "::error::grype ${label}: ${f} finding(s) in the CycloneDX output and ${m} in the matches list, of any severity, UNKNOWN included, that the VEX document does not except" >&2
     exit 1
   fi
-  # Everything grype left out must have been left out by the VEX: namespace "vex" and a vex-status on every applied rule, and at least one rule.
+  # Everything grype left out must have been left out by the VEX: absent or null is none; otherwise a list whose entries each have a non-empty LIST of rule
+  # OBJECTS, every one with namespace "vex" and a vex-status of not_affected or fixed. Known limit, pending the owner's ruling: grype's own distro
+  # exclusions (for example its built-in exclusion of some Debian findings) drop matches before results are built, so they are not in ignoredMatches
+  # and cannot be seen here; the images are assembled from Wolfi packages, where this has no known effect.
   nonvex=$(jq -r 'if .ignoredMatches == null then [] elif (.ignoredMatches | type) == "array" then
-      [.ignoredMatches[] | select(((.appliedIgnoreRules // []) | length) == 0 or ((.appliedIgnoreRules // []) | any(.namespace != "vex" or ((.["vex-status"] // "") == "")))) |
+      [.ignoredMatches[] | select(((.appliedIgnoreRules | type) != "array") or ((.appliedIgnoreRules | length) == 0) or
+          (.appliedIgnoreRules | any((type != "object") or (.namespace != "vex") or ((.["vex-status"] != "not_affected") and (.["vex-status"] != "fixed"))))) |
         "\(.vulnerability.id // "?") \(.artifact.name // "?")@\(.artifact.version // "?")"] else error("ignoredMatches is not a list") end | .[]' "$js" 2>/dev/null); jqrc=$?
   if [ "$jqrc" -ne 0 ]; then
     echo "::error::grype ${label}: its JSON output has no readable ignoredMatches list; nothing is judged behind a result that cannot be read" >&2

@@ -16,6 +16,10 @@ vex="$repo/.vex/fosterstack-cache.openvex.json"
 base="$repo/test-evidence/vex-scope/busybox-image.sbom.json"
 grype="${GRYPE:-$(command -v grype || true)}"   # PATH or $GRYPE only: no probing of a fixed system location
 [ -n "$grype" ] && [ -x "$grype" ] || { echo "::error::grype not found — install it (bin/install-scanner.sh grype) before this test" >&2; exit 1; }
+# The new probes assert real grype behaviour, so they must run against the pinned grype (bin/install-scanner.sh GRYPE_VER), not whatever is first on PATH.
+want_ver="$(sed -n 's/^GRYPE_VER=//p' "$repo/bin/install-scanner.sh" | head -1)"
+have_ver="$("$grype" version 2>/dev/null | sed -n 's/^Version:[[:space:]]*//p' | head -1)"
+[ -n "$want_ver" ] && [ "$have_ver" = "$want_ver" ] || { echo "::error::this test needs the pinned grype $want_ver (bin/install-scanner.sh grype); $grype is ${have_ver:-unknown}" >&2; exit 1; }
 "$grype" db update >/dev/null 2>&1 || true
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 pass=0; fail=0
@@ -97,13 +101,6 @@ PY
 exit 0
 SH
 chmod +x "$w/grype-unknown"
-# A grype that exits 0 and leaves a CycloneDX file the script cannot judge.
-cat > "$w/grype-badvulns" <<'SH'
-#!/usr/bin/env bash
-cdx=""; for a in "$@"; do case "$a" in cyclonedx-json=*) cdx="${a#cyclonedx-json=}";; esac; done
-printf '{"components":[{"name":"busybox","version":"1.36.0"}],"vulnerabilities":"not a list"}' > "$cdx"
-exit 0
-SH
 # Both outputs the script asks for, written by a fake grype that exits 0: $1 is the CycloneDX text, $2 the native JSON text.
 fake_grype() { # name cdx-text json-text
   cat > "$w/$1" <<SH
@@ -117,11 +114,11 @@ SH
 }
 OKCDX='{"components":[{"name":"busybox","version":"1.36.0"}],"vulnerabilities":[]}'
 OKJSON='{"matches":[],"ignoredMatches":[]}'
+fake_grype grype-badvulns '{"components":[{"name":"busybox","version":"1.36.0"}],"vulnerabilities":"not a list"}' "$OKJSON"
 fake_grype grype-garbage "$OKCDX trailing-garbage" "$OKJSON"
 fake_grype grype-jsongarbage "$OKCDX" "$OKJSON trailing-garbage"
 fake_grype grype-matchesnolist "$OKCDX" '{"matches":"oops","ignoredMatches":[]}'
 fake_grype grype-matchesmissing "$OKCDX" '{"ignoredMatches":[]}'
-chmod +x "$w/grype-badvulns"
 
 # (a) the exclusion is real: with --vex, grype's CycloneDX leaves out every VEX-covered finding and lists them as ignored in its own JSON.
 grype_sbom 1.37.0 "$w/g-cov.json"
@@ -143,7 +140,8 @@ out="$(REAL_GRYPE="$grype" GRYPE="$w/grype-unknown" bash "$here/grype-scan.sh" "
 
 # (d) fail closed: a CycloneDX file whose findings cannot be read is exit 2, never a pass.
 out="$(GRYPE="$w/grype-badvulns" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" badvulns 2>&1)"; rc=$?
-[ "$rc" -eq 2 ] && grep -q "badvulns" <<<"$out" && ok "grype: unreadable findings in the CycloneDX file fail closed, exit 2" || bad "grype: unreadable findings (rc $rc)" "$out"
+[ "$rc" -eq 2 ] && grep -q "the findings in its CycloneDX output cannot be read" <<<"$out" \
+  && ok "grype: unreadable findings in the CycloneDX file fail closed, exit 2 (the CycloneDX check, native JSON valid)" || bad "grype: unreadable findings (rc $rc)" "$out"
 for c in garbage:"a CycloneDX file with trailing garbage" jsongarbage:"a JSON result with trailing garbage" matchesnolist:"a matches entry that is not a list" matchesmissing:"a JSON result with no matches list"; do
   n=${c%%:*}; what=${c#*:}
   out="$(GRYPE="$w/grype-$n" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" "$n" 2>&1)"; rc=$?
@@ -156,14 +154,18 @@ done
 mkdir "$w/cfgdir"
 printf 'ignore:\n  - vulnerability: CVE-2022-48174\n  - vulnerability: CVE-2025-60876\n  - vulnerability: CVE-2025-46394\n  - vulnerability: CVE-2024-58251\n' > "$w/cfgdir/.grype.yaml"
 out="$(cd "$w/cfgdir" && GRYPE="$grype" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" cfg-ignore 2>&1)"; rc=$?
-[ "$rc" -ne 0 ] && grep -q "$CVE" <<<"$out" && ok "grype: a .grype.yaml ignore: in the working directory does not hide busybox 1.36.0, exit $rc" \
+[ "$rc" -ne 0 ] && grep -q "$CVE" <<<"$out" && ! grep -q "not a VEX" <<<"$out" && ok "grype: a .grype.yaml ignore: in the working directory does not hide busybox 1.36.0, exit $rc" \
   || bad "grype: .grype.yaml ignore in the working directory (rc $rc)" "$out"
 out="$(GRYPE_ONLY_FIXED=true GRYPE="$grype" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" env-only-fixed 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && grep -q "GRYPE_ONLY_FIXED" <<<"$out" && ! grep -q "=true" <<<"$out" \
   && ok "grype: GRYPE_ONLY_FIXED=true blocks busybox 1.36.0 (exit 2, the variable named, no value printed)" || bad "grype: GRYPE_ONLY_FIXED set (rc $rc)" "$out"
 out="$(GRYPE_DB_AUTO_UPDATE=false GRYPE="$grype" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" db-var 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && ! grep -q "GRYPE_DB_AUTO_UPDATE" <<<"$out" && grep -q "$CVE" <<<"$out" \
-  && ok "grype: a GRYPE_DB_* variable is allowed and busybox 1.36.0 still blocks, exit $rc" || bad "grype: GRYPE_DB_* variable (rc $rc)" "$out"
+  && ok "grype: GRYPE_DB_AUTO_UPDATE is allowed and busybox 1.36.0 still blocks, exit $rc" || bad "grype: GRYPE_DB_* variable (rc $rc)" "$out"
+for v in GRYPE_DB_VALIDATE_AGE GRYPE_DB_MAX_ALLOWED_BUILT_AGE GRYPE_DB_UPDATE_URL GRYPE_IGNORE_WONTFIX; do
+  out="$(env "$v=false" GRYPE="$grype" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" "env-$v" 2>&1)"; rc=$?
+  [ "$rc" -eq 2 ] && grep -q "$v" <<<"$out" && grep -q "refusing to run" <<<"$out" && ok "grype: $v is refused (exit 2, the variable named)" || bad "grype: $v set (rc $rc)" "$out"
+done
 # defence in depth: a grype that DID apply a non-VEX suppression (a wrapper drops -c and sets GRYPE_ONLY_FIXED / uses a config file) exits 0 with the
 # findings in ignoredMatches; the script must still block, and name them.
 cat > "$w/grype-onlyfixed" <<'SH'
@@ -185,6 +187,26 @@ for c in onlyfixed:"GRYPE_ONLY_FIXED" cfgfile:"a config-file ignore"; do
   [ "$rc" -eq 1 ] && grep -q "$CVE" <<<"$out" && grep -q "not a VEX" <<<"$out" \
     && ok "grype: findings hidden by $what (grype exit 0) block, exit 1, CVE named" || bad "grype: findings hidden by $what (rc $rc)" "$out"
 done
+# ignoredMatches shapes: absent or null is fine, a list of VEX-only entries is fine, everything else fails closed (exit 2 for a wrong type, 1 for an entry that is not a clean VEX rule).
+ENT='{"vulnerability":{"id":"CVE-2099-1"},"artifact":{"name":"pkg","version":"1.0"}'
+shape() { # name expected-rc json-text what
+  fake_grype "grype-shape-$1" "$OKCDX" "$3"
+  out="$(GRYPE="$w/grype-shape-$1" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" "shape-$1" 2>&1)"; rc=$?
+  [ "$rc" -eq "$2" ] && ok "grype: ignoredMatches $4 -> exit $2" || bad "grype: ignoredMatches $4 (rc $rc, want $2)" "$out"
+}
+shape absent 0 '{"matches":[]}' "absent"
+shape null 0 '{"matches":[],"ignoredMatches":null}' "null"
+shape vexok 0 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"not_affected\"}]},$ENT,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"fixed\"}]}]}" "two VEX-only entries (not_affected, fixed)"
+shape notlist 2 '{"matches":[],"ignoredMatches":"oops"}' "a string"
+shape statusnum 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":123}]}]}" "a vex-status that is a number"
+shape statusother 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"under_investigation\"}]}]}" "a vex-status that is not not_affected or fixed"
+shape objrules 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":{\"namespace\":\"vex\",\"vex-status\":\"fixed\"}}]}" "appliedIgnoreRules an object, not an array"
+shape norules 1 "{\"matches\":[],\"ignoredMatches\":[$ENT}]}" "an entry with no appliedIgnoreRules"
+shape emptyrules 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[]}]}" "an entry with an empty rule list"
+shape nonobjrule 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[\"vex\"]}]}" "a rule that is not an object"
+shape nons 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[{\"vex-status\":\"fixed\"}]}]}" "a rule with no namespace"
+shape mixed 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"fixed\"},{\"namespace\":\"\",\"fix-state\":\"unknown\"}]}]}" "a VEX rule plus a config rule"
+# These two depend on the live vulnerability database (busybox 1.36.0 having exactly these findings, none with a fix version); they fail loudly, never pass falsely.
 # the VEX itself still passes with the native JSON present: every ignoredMatches entry of the covered case is a VEX rule.
 out="$(GRYPE="$grype" bash "$here/grype-scan.sh" "sbom:$w/g-cov.json" cov-json 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && ok "grype: VEX-covered busybox 1.37.0 still passes with the native JSON checked (every ignored entry is a VEX rule)" || bad "grype: covered case with the JSON check (rc $rc)" "$out"
