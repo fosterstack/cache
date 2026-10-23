@@ -575,7 +575,7 @@ open(out, "w").write("\n".join(lines))
 PY
   cat >"$d/go" <<EOF
 #!/bin/bash
-{ echo "ARGS \$*"; echo "PWD-HAS-GOMOD \$([ -f go.mod ] && echo yes || echo no)"; for v in GOTOOLCHAIN GOFLAGS GOENV GOSUMDB GOPROXY GOPRIVATE GONOSUMDB GONOSUMCHECK GOINSECURE GOVCS GONOPROXY GOFIPS140 GODEBUG; do echo "ENV \$v=\${!v-unset}"; done; } >> "$d/go.log"
+{ echo "ARGS \$*"; echo "PWD-HAS-GOMOD \$([ -f go.mod ] && echo yes || echo no)"; for v in GOTOOLCHAIN GOFLAGS GOENV GOWORK GOSUMDB GOPROXY GOPRIVATE GONOSUMDB GONOSUMCHECK GOINSECURE GOVCS GONOPROXY GOFIPS140 GODEBUG; do echo "ENV \$v=\${!v-unset}"; done; } >> "$d/go.log"
 /bin/cat "$d/go-out.jsonl"
 exit \$(/bin/cat "$d/go-rc" 2>/dev/null || echo 0)
 EOF
@@ -625,8 +625,8 @@ PY
 t AC15 "the three files feed bin/vendor-provenance.py build, which writes the provenance" bash -c "cd '$d' && python3 '$bin_vp' build --vendor-dir vendor --go-sum go.sum --sumdb-record records/sumdb.json --origins records/origins.json --licenses records/licenses.json --out out.json && python3 '$bin_vp' check --vendor-dir vendor --go-sum go.sum --provenance out.json"
 t AC15 "it never writes dependency-provenance.json itself and writes nothing but the three files" bash -c "test \"\$(ls '$d/records' | tr '\n' ' ')\" = 'licenses.json origins.json sumdb.json ' && ! test -e '$d/dependency-provenance.json'"
 d="$work/f15-env"; mkrec "$d"
-GOSUMDB=off GOFLAGS=-insecure GOPRIVATE='*' GONOSUMDB='*' GOPROXY=direct GOTOOLCHAIN=go9.9.9 GOENV=/nonexistent GOINSECURE='*' GOVCS=off GONOPROXY='*' recs "$d" >/dev/null 2>&1
-for want in "ARGS mod download -json example.test/alpha@v1.2.3 example.test/beta@$BETA" "PWD-HAS-GOMOD yes" "ENV GOTOOLCHAIN=local" "ENV GOFLAGS=" "ENV GOENV=off" "ENV GOSUMDB=sum.golang.org" "ENV GOPROXY=https://proxy.golang.org" "ENV GOPRIVATE=unset" "ENV GONOSUMDB=unset" "ENV GONOSUMCHECK=unset" "ENV GOINSECURE=unset" "ENV GOVCS=unset" "ENV GONOPROXY=unset"; do
+GOWORK=/tmp/evil.work GOSUMDB=off GOFLAGS=-insecure GOPRIVATE='*' GONOSUMDB='*' GOPROXY=direct GOTOOLCHAIN=go9.9.9 GOENV=/nonexistent GOINSECURE='*' GOVCS=off GONOPROXY='*' recs "$d" >/dev/null 2>&1
+for want in "ARGS mod download -json example.test/alpha@v1.2.3 example.test/beta@$BETA" "PWD-HAS-GOMOD yes" "ENV GOTOOLCHAIN=local" "ENV GOFLAGS=" "ENV GOENV=off" "ENV GOWORK=off" "ENV GOSUMDB=sum.golang.org" "ENV GOPROXY=https://proxy.golang.org" "ENV GOPRIVATE=unset" "ENV GONOSUMDB=unset" "ENV GONOSUMCHECK=unset" "ENV GOINSECURE=unset" "ENV GOVCS=unset" "ENV GONOPROXY=unset"; do
   t AC15 "the go call gets: $want (a hostile caller environment changes nothing)" grep -qxF "$want" "$d/go.log"
 done
 r15 go-error       "alpha.*(boom|cannot be verified)"         "lines[0]['Error'] = 'boom: cannot be verified'"
@@ -644,6 +644,15 @@ r15 no-origin-alpha "alpha.*origin"                           "lines[0].pop('Ori
 r15 no-origin-beta  "beta.*origin"                            "lines[1].pop('Origin')"
 r15 no-licence      "alpha.*licen[sc]e"                       "d.pop('example.test/alpha@v1.2.3')" licenses.json
 r15 empty-licence   "alpha.*licen[sc]e"                       "d['example.test/alpha@v1.2.3'] = ''" licenses.json
+d="$work/f15-dash"; mkrec "$d"
+python3 - "$d" <<'PY'
+import sys
+d = sys.argv[1]
+m = open(d + "/vendor/modules.txt").read().replace("# example.test/alpha v1.2.3", "# -x=evil v1.2.3")
+open(d + "/vendor/modules.txt", "w").write(m)
+PY
+rc AC15 "a module path that begins with a dash is refused (exit 2) before the toolchain is run" 2 recs "$d"
+t AC15 "... and the toolchain was never run" test ! -s "$d/go.log"
 r15 no-sum          "beta.*(Sum|hash)"                        "lines[1].pop('Sum')"
 # a module with no Origin is filled only from the reviewed recorded-origins file, as build does
 d="$work/f15-rec"; mkrec "$d"

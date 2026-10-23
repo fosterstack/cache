@@ -42,8 +42,8 @@ refuse = vp.refuse
 
 
 def go_env(scratch):
-    """a closed environment: only these variables, the checksum database on at its default, nothing that opens a module to an opt-out"""
-    return {"GOTOOLCHAIN": "local", "GOFLAGS": "", "GOENV": "off", "GOSUMDB": LOG, "GOPROXY": "https://proxy.golang.org",
+    """a closed environment: only these variables, no workspace file (GOWORK=off: a parent directory's go.work could answer from its own checksums), the checksum database on at its default, nothing that opens a module to an opt-out"""
+    return {"GOTOOLCHAIN": "local", "GOFLAGS": "", "GOENV": "off", "GOWORK": "off", "GOSUMDB": LOG, "GOPROXY": "https://proxy.golang.org",
             "GOPATH": os.path.join(scratch, "gopath"), "GOMODCACHE": os.path.join(scratch, "gopath", "pkg", "mod"),
             "GOCACHE": os.path.join(scratch, "gocache"), "HOME": os.path.join(scratch, "home"), "TMPDIR": scratch}
 
@@ -110,6 +110,9 @@ def produce(a):
     if not isinstance(licences, dict):
         refuse("licenses is not an object")
     ordered = sorted(want)
+    for p, v in ordered:
+        if p.startswith("-") or v.startswith("-"):
+            refuse("module %s@%s: a path or version beginning with '-' would be read as an option by the toolchain" % (p, v))
     scratch = tempfile.mkdtemp(prefix="vendor-records-")
     try:
         r = run_go(ordered, scratch)
