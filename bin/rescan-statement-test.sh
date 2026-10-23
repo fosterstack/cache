@@ -720,5 +720,22 @@ assert_stmt "grype: a negative package count is an error" grype "$mf" error fals
 if python3 "$SCRIPT" statement --scanner grype --children "$D/pk2" "${STMT_EXTRA[@]}" --raw-out "$D/raw.json" --out "$D/stmt.json" --release v0.2.0 --variant production \
      --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00 2>&1 >/dev/null | grep -q "inventoried no package"; then ok; else bad "the zero-package error names what happened (inventoried no package)"; fi
 
+# ---- rc-5a D2 round 2 (first look): a manifest shorter than the children that were enumerated is an incomplete rescan, a zero-package child's findings
+# still count, and a JSON true is not a package count ------------------------------------------------------------------------------------------------
+stmt_expect() { # manifest expected-children  -> prints the verdict
+  python3 "$SCRIPT" statement --scanner grype --children "$1" "${STMT_EXTRA[@]}" --expect-children "$2" --raw-out "$D/raw.json" --out "$D/stmt.json" --release v0.2.0 \
+    --variant production --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00 2>/dev/null | jq -r .verdict
+}
+mf=$D/ec1; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 3
+[ "$(stmt_expect "$mf" 2)" = error ] && ok || bad "a manifest with one child where two were enumerated is an error, not clean (the second child's record is missing)"
+mf=$D/ec2; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 3; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+[ "$(stmt_expect "$mf" 2)" = clean ] && ok || bad "a manifest with every enumerated child is clean"
+[ "$(stmt_expect "$mf" 3)" = error ] && ok || bad "a manifest with fewer children than enumerated (3) is an error"
+mf=$D/pk8; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" true
+assert_stmt "grype: a package count of JSON true is an error, not 1" grype "$mf" error false 0
+GRYPE_FIND='{"matches":[{"vulnerability":{"id":"CVE-2099-0001","severity":"High","fix":{"versions":[],"state":"unknown"}},"artifact":{"name":"tzdata","version":"2026c","type":"deb","purl":"pkg:deb/debian/tzdata@2026c"}}],"descriptor":{"name":"grype","version":"0.118.0"}}'
+mf=$D/pk9; : >"$mf"; child "$mf" 1 linux/amd64 2 "$GRYPE_FIND" 0
+assert_stmt "grype: a finding in a child that inventoried no package still counts (verdict error, has_findings true)" grype "$mf" error true 1
+
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

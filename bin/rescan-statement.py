@@ -613,11 +613,16 @@ def cmd_statement(args):
             if line:
                 children.append(json.loads(line))
 
+    op_fail = False
+    if args.expect_children is not None and len(children) != args.expect_children:
+        # a child's record is written after its scan: a scan that died before writing its line leaves a manifest shorter than the enumeration
+        err("the manifest holds %d child record(s) but %d child(ren) were enumerated; the rescan is incomplete, never clean" % (len(children), args.expect_children))
+        op_fail = True
+
     findings = []
     consistent = True   # every child exited clean, or exited with the findings code AND the report really held findings
     valid_reports = []
     scanned_platforms = []
-    op_fail = False
     max_rc = 0
 
     for child in children:
@@ -810,6 +815,7 @@ def main(argv):
     ps.add_argument("--meta")
     ps.add_argument("--vex")
     ps.add_argument("--scope-file")
+    ps.add_argument("--expect-children", type=int, help="how many children the workflow enumerated; fewer records than that is an incomplete rescan")
     ps.add_argument("--release", default="")
     ps.add_argument("--variant", default="")
     ps.add_argument("--digest", default="")

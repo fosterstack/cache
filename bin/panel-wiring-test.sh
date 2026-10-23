@@ -297,6 +297,13 @@ else:
         bad.append("the published grype step does not refuse a GRYPE_* variable before it runs")
     if '-o "json=${out}"' not in g_ or '-o "cyclonedx-json=${sbom}"' not in g_:
         bad.append("the published grype step does not write both its JSON report and a CycloneDX inventory")
+    if "[[ \"${pk}\" =~ ^[0-9]+$ ]] || pk=0" not in g_ or "[[ \"${pk}\" =~ ^[0-9]+$ ]] || pk=0" not in o_:
+        bad.append("a published step records a package count that is not a plain integer (an empty or odd jq result would stop the loop before the child's record is written)")
+    st_ = [x.get("run") or "" for x in rs_ if x.get("id") == "statement"]
+    if len(st_) != 1 or '--expect-children "$(grep -c . /tmp/children.txt)"' not in st_[0]:
+        bad.append("the statement step does not pass the number of enumerated children (--expect-children): a shorter manifest must be an error")
+    if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in g_:
+        bad.append("the published grype step's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
     if "select((.purl // \"\") != \"\")" not in g_ or "packages:$k" not in g_.replace(" ", ""):
         bad.append("the published grype step does not record the child's package count (components with a package URL) in children-scanned.jsonl")
     if not re.search(r"osv-scanner scan image --config /tmp/empty-osv\.toml --all-packages --all-vulns --format json", o_) or not re.search(r': > /tmp/empty-osv\.toml', o_):
@@ -494,6 +501,8 @@ case_ pub-osv-all-packages-off bad "s=$(step_of rescan 'osv-scanner scan image')
 case_ pub-osv-all-vulns-off   bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --all-vulns', '')"
 case_ pub-osv-repo-config     bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --config /tmp/empty-osv.toml', '')"
 case_ pub-osv-no-env-refusal  bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(\"compgen -e | grep '^OSV_SCANNER_'\", 'echo')"
+case_ pub-pk-not-checked      bad "s=$(step_of rescan 'grype \"registry:'); s['run'] = s['run'].replace('[[ \"\${pk}\" =~ ^[0-9]+\$ ]] || pk=0', 'true')"
+case_ pub-no-expect-children  bad "s=$(step_of rescan 'rescan-statement.py statement'); s['run'] = s['run'].replace(' --expect-children \"\$(grep -c . /tmp/children.txt)\"', '')"
 case_ pub-osv-no-count        bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(', packages:\$k', '')"
 case_ panel-dl-same-id        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with']['artifact-ids'] = '\${{ needs.panel-grype.outputs.artifact-id }}'"
 case_ panel-dl-by-name        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'name': 'panel-scout', 'path': '/tmp/panel/panel-scout'}"
