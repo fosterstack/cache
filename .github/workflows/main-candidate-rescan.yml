@@ -98,11 +98,14 @@ jobs:
           else
             cat "$RUNNER_TEMP/prune.err" >&2; echo "::error::could not look up the scratch package, so it could not be pruned"; exit 1
           fi
-          n=0; failed=0
+          n=0; kept=0; failed=0
           for id in ${ids}; do
-            if gh api -X DELETE "${pkg}/versions/${id}" >/dev/null 2>"$RUNNER_TEMP/prune.err"; then n=$((n + 1)); else cat "$RUNNER_TEMP/prune.err" >&2; failed=$((failed + 1)); fi
+            if gh api -X DELETE "${pkg}/versions/${id}" >/dev/null 2>"$RUNNER_TEMP/prune.err"; then n=$((n + 1))
+            # GitHub never deletes a public package version with more than 5000 downloads (only its support can); that exact refusal is kept and named, any other failure still fails the job.
+            elif grep -q "Publicly visible package versions with more than 5000 downloads cannot be deleted" "$RUNNER_TEMP/prune.err"; then kept=$((kept + 1)); echo "::warning::scratch version ${id} kept: GitHub does not delete a public package version with more than 5000 downloads"
+            else cat "$RUNNER_TEMP/prune.err" >&2; failed=$((failed + 1)); fi
           done
-          echo "pruned ${n} scratch version(s) older than 14 days; ${failed} could not be deleted" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "pruned ${n} scratch version(s) older than 14 days; ${kept} kept (public, over 5000 downloads, GitHub will not delete them); ${failed} could not be deleted" | tee -a "$GITHUB_STEP_SUMMARY"
           [ "${failed}" -eq 0 ] || { echo "::error::${failed} scratch version(s) older than 14 days could not be deleted"; exit 1; }
       # Each candidate (a buildx OCI archive of one index, provenance and SBOM off) is unpacked to a layout, gets one attestation child per
       # platform carrying .vex/fosterstack-cache.openvex.json (bin/vex-index.py, REQ-REL-010-AC1/AC3: verify-layout checks the children
@@ -131,17 +134,26 @@ jobs:
             mv /tmp/attach/next.json /tmp/attach/digests.json
             echo "${v}: built ${base}, final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
           done
-      # The Scout self-check fixtures (rule 4): the pinned debian 12.0 index (public image bytes), plain as the control and with an attestation
-      # of OUR author that covers only CVE-2023-4911, in our published product form. Two tags, pruned like the rest.
+      # The Scout self-check fixtures (rule 4): the pinned debian 12.0 linux/amd64 image wrapped in a one-child index (public image bytes), plain as the control and with an attestation
+      # of OUR author that covers only CVE-2023-4911, in our published product form, with the fixture's glibc package as the subcomponent (every statement Scout applied in the Oct 23 root-cause round
+      # named the package as a subcomponent of the product; the self-check statement named none and the self-check failed). Two tags, pruned like the rest.
       - name: build the Scout self-check fixtures and push them
         run: |
           set -euo pipefail
-          rm -rf /tmp/layout/fixture; mkdir -p /tmp/layout
-          skopeo copy --all docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab oci:/tmp/layout/fixture
+          rm -rf /tmp/layout/fixture /tmp/layout/fixture-image; mkdir -p /tmp/layout
+          # the pinned digest is debian 12.0's linux/amd64 image manifest, not its index: skopeo's layout of it holds one IMAGE descriptor, so it is wrapped
+          # into a one-child OCI index here (the shape of the candidate layouts), and vex-index.py's check of the layout is not loosened
+          skopeo copy --all docker://docker.io/library/debian@sha256:60774985572749dc3c39147d43089d53e7ce17b844eebcf619d84467160217ab oci:/tmp/layout/fixture-image
+          cp -R /tmp/layout/fixture-image /tmp/layout/fixture
+          child=$(jq -ec '.manifests | if length == 1 then .[0] | {mediaType, digest, size} + {platform: {architecture: "amd64", os: "linux"}} else error("the fixture image layout is not one manifest") end' /tmp/layout/fixture-image/index.json)
+          jq -nc --argjson c "${child}" '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [$c]}' > /tmp/layout/fixture/index.tmp
+          idx=$(sha256sum /tmp/layout/fixture/index.tmp | cut -d' ' -f1)
+          mv /tmp/layout/fixture/index.tmp "/tmp/layout/fixture/blobs/sha256/${idx}"
+          jq -nc --arg d "sha256:${idx}" --argjson s "$(wc -c < "/tmp/layout/fixture/blobs/sha256/${idx}")" '{schemaVersion: 2, mediaType: "application/vnd.oci.image.index.v1+json", manifests: [{mediaType: "application/vnd.oci.image.index.v1+json", digest: $d, size: $s}]}' > /tmp/layout/fixture/index.json
           chmod -R go-w /tmp/layout/fixture
           jq --arg p "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" '.["@id"] = "https://github.com/fosterstack/cache/scout-selfcheck" | .timestamp = "2026-10-03T00:00:00Z" | .version = 1
             | .statements = [{"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected",
-                              "justification": "vulnerable_code_not_present", "products": [{"@id": $p}]}]' .vex/fosterstack-cache.openvex.json > /tmp/attach/selfcheck-ours.json
+                              "justification": "vulnerable_code_not_present", "products": [{"@id": $p, "subcomponents": [{"@id": "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm&os_name=debian&os_version=12"}]}]}]' .vex/fosterstack-cache.openvex.json > /tmp/attach/selfcheck-ours.json
           before=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the fixture is not one index") end' /tmp/layout/fixture/index.json)
           skopeo copy --all --digestfile /tmp/attach/before.pushed oci:/tmp/layout/fixture "docker://ghcr.io/fosterstack/cache-scout-probe:selfcheck-before-${GITHUB_RUN_ID}"
           [ "$(cat /tmp/attach/before.pushed)" = "${before}" ] || { echo "::error::the registry took $(cat /tmp/attach/before.pushed) for the plain fixture, not ${before}"; exit 1; }
@@ -258,8 +270,10 @@ jobs:
             done
           done
       # What the first runs must tell us (handoff 0521 read-back, 5a and 5b): does Scout honor the attestation per platform of an index
-      # (5a), by tag as well as by digest? Printed to the job summary, never deciding the job.
+      # (5a), by tag as well as by digest? Printed to the job summary, never deciding the job. It runs after a failed self-check too (!cancelled(), not always(): a cancelled run does not start five more scans): that is when its data is needed.
       - name: Scout attestation diagnostics (REQ-REL-010-AC6; printed, never decides)
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
         run: |
           set +e
           (
