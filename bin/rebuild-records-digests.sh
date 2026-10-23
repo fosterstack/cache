@@ -15,7 +15,10 @@ emit() {
     echo "rebuild-records-digests: not a plain folder: $dir" >&2
     return 1
   fi
-  for f in "$dir"/*; do
+  for f in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+      continue     # a pattern that matched nothing stays literal: skip it (hidden files are files of the folder too, as for Sign's own listing)
+    fi
     if [ ! -f "$f" ] || [ -L "$f" ]; then
       echo "rebuild-records-digests: not a regular file: $f" >&2
       return 1

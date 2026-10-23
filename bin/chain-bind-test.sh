@@ -835,8 +835,14 @@ rrd_case("rebuild-records-digests --check: the ubuntu-24.04-arm record swapped a
 t, outs = rrd_tree("rrd4"); put(t, "rec-rapk/ubuntu-24.04/extra.json", b"x")
 rrd_case("rebuild-records-digests --check: an extra file in a leg's folder is refused, naming it", 1, ("ubuntu-24.04:", "extra.json"), rrd_check(t, outs))
 t, outs = rrd_tree("rrd5"); os.remove(t + "/rec-rapk/ubuntu-24.04-arm/rapk-collection.local.json")
-rrd_case("rebuild-records-digests --check: a leg's folder with no file is refused", 1, ("not a regular file",), rrd_check(t, outs))
+rrd_case("rebuild-records-digests --check: a leg's folder with no file is refused", 1, ("no file in",), rrd_check(t, outs))
 t, outs = rrd_tree("rrd6"); shutil.rmtree(t + "/rec-rapk/ubuntu-24.04")
+t, outs = rrd_tree("rrd4b"); put(t, "rec-rapk/ubuntu-24.04/.hidden", b"x")
+rrd_case("rebuild-records-digests --check: a hidden extra file in a leg's folder is refused (it is a file of the folder)", 1, ("ubuntu-24.04:", ".hidden"), rrd_check(t, outs))
+rrd_case("rebuild-records-digests --rapk lists a hidden file too", 0, (), (lambda r: (0 if ".hidden" in r[1] else 1, r[1], r[2]))(rrd(["--rapk", "ubuntu-24.04", "rec-rapk/ubuntu-24.04"], t)))
+t, outs = rrd_tree("rrd5b"); os.remove(t + "/rec-rapk/ubuntu-24.04-arm/rapk-collection.local.json")
+rrd_case("rebuild-records-digests --check: an EMPTY leg folder is refused with 'no file in'", 1, ("no file in",), rrd_check(t, outs))
+t, outs = rrd_tree("rrd6b"); shutil.rmtree(t + "/rec-rapk/ubuntu-24.04")
 rrd_case("rebuild-records-digests --check: a missing leg folder is refused", 1, ("not a plain folder",), rrd_check(t, outs))
 t, outs = rrd_tree("rrd7")
 rrd_case("rebuild-records-digests --check: an empty job output is refused, naming the leg", 1, ("ubuntu-24.04:", "empty"), rrd_check(t, outs, x86=""))
@@ -871,7 +877,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 175
+EXPECT = 178
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
