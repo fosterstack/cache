@@ -3,8 +3,9 @@ name: Acceptance
 # The client acceptance suites (workflow consolidation 4 of 4, owner RATIFIED Oct 2): acceptance-gradle.yml and
 # acceptance-maven.yml merged, unchanged. Each job keeps its required check name (acceptance-gradle; acceptance-maven
 # (1.2.0) and (1.2.3) from its matrix), its permissions and its results output. Push to main and pull requests run
-# them from source; release.yml calls this file once with the candidate image and hands both results to the
-# acceptance predicate.
+# them from source; release.yml calls this file once with the candidate image (image-ref, the release-chain mode, which
+# refuses a reference that is not pinned by digest, REQ-SUP-001-AC29) and hands both results to the acceptance
+# predicate.
 
 on:
   push:
@@ -69,6 +70,24 @@ jobs:
           done
           echo "fscache never became healthy" >&2
           exit 1
+
+      - name: refuse an image-ref that is not pinned by digest
+        if: inputs.image-ref != ''
+        env:
+          IMAGE_REF: ${{ inputs.image-ref }}
+        run: |
+          set -euo pipefail
+          # the reference grammar: [host[:port]/]path[/path]...[:tag]@sha256:<64 hex>; path parts are lowercase
+          label='[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?'
+          host="${label}(\.${label})*(:[0-9]+)?"
+          part='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
+          tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
+          pin_re="^(${host}/)?${part}(/${part})*(:${tag})?@sha256:[0-9a-f]{64}"'$'
+          export LC_ALL=C   # ASCII classes only
+          if ! [[ "${IMAGE_REF}" =~ $pin_re ]]; then
+            printf 'image-ref must be name@sha256:<64 lowercase hex>, got: %q\n' "${IMAGE_REF}" >&2
+            exit 1
+          fi
 
       - name: start the exact candidate image (release-chain mode)
         if: inputs.image-ref != ''
@@ -452,6 +471,24 @@ jobs:
             curl -sf http://localhost:18098/healthz && exit 0; sleep 0.5
           done
           echo "server never became healthy" >&2; exit 1
+
+      - name: refuse an image-ref that is not pinned by digest
+        if: inputs.image-ref != ''
+        env:
+          IMAGE_REF: ${{ inputs.image-ref }}
+        run: |
+          set -euo pipefail
+          # the reference grammar: [host[:port]/]path[/path]...[:tag]@sha256:<64 hex>; path parts are lowercase
+          label='[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?'
+          host="${label}(\.${label})*(:[0-9]+)?"
+          part='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
+          tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
+          pin_re="^(${host}/)?${part}(/${part})*(:${tag})?@sha256:[0-9a-f]{64}"'$'
+          export LC_ALL=C   # ASCII classes only
+          if ! [[ "${IMAGE_REF}" =~ $pin_re ]]; then
+            printf 'image-ref must be name@sha256:<64 lowercase hex>, got: %q\n' "${IMAGE_REF}" >&2
+            exit 1
+          fi
 
       - name: start the exact candidate image WITH Basic Auth (release-chain mode)
         if: inputs.image-ref != ''
