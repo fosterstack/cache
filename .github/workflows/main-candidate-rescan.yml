@@ -270,9 +270,10 @@ jobs:
             done
           done
       # What the first runs must tell us (handoff 0521 read-back, 5a and 5b): does Scout honor the attestation per platform of an index
-      # (5a), by tag as well as by digest? Printed to the job summary, never deciding the job. It runs after a failed self-check too (always()): that is when its data is needed.
+      # (5a), by tag as well as by digest? Printed to the job summary, never deciding the job. It runs after a failed self-check too (!cancelled(), not always(): a cancelled run does not start five more scans): that is when its data is needed.
       - name: Scout attestation diagnostics (REQ-REL-010-AC6; printed, never decides)
-        if: ${{ always() }}
+        if: ${{ !cancelled() }}
+        timeout-minutes: 10
         run: |
           set +e
           (

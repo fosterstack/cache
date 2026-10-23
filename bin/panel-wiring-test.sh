@@ -328,9 +328,11 @@ if not diag:
     bad.append("no Scout attestation diagnostics (read-back 5a/5b)")
 else:
     # unconditional means it runs after a failed self-check too: a step without an `if` is skipped once an earlier step failed, which hid the 5a/5b data on the Oct 23 runs
-    if str(diag.get("if", "")).strip() != "${{ always() }}" or diag.get("continue-on-error"):
-        bad.append("the Scout diagnostics must carry exactly `if: ${{ always() }}` (they run after a failed self-check; a step with no if is skipped then) and be contained inside the step, not continue-on-error")
-    if scout_steps.index(diag) < scout_steps.index(sc):
+    if str(diag.get("if", "")).strip() != "${{ !cancelled() }}" or diag.get("continue-on-error"):
+        bad.append("the Scout diagnostics must carry exactly `if: ${{ !cancelled() }}` (they run after a failed self-check, where a step with no if is skipped, but not when the run is cancelled) and be contained inside the step, not continue-on-error")
+    if str(diag.get("timeout-minutes", "")) != "10":
+        bad.append("the Scout diagnostics must carry timeout-minutes: 10 (five Scout scans of a scratch image; a hung one must not hold the run)")
+    if sc and scout_steps.index(diag) < scout_steps.index(sc):
         bad.append("the Scout diagnostics come before the self-check")
     for failing in ("docker", "skopeo", "sudo"):   # a diagnostic failure never fails the step
         if run_block(diag.get("run", ""), "applies", failing)[0] != 0:
@@ -377,7 +379,7 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "pane
         bad.append(f"{j} is conditional")
     for st in jobs[j].get("steps", []):
         cond = str(st.get("if", "")).replace(" ", "")
-        if cond and not cond.startswith("${{always()") and "steps.judge" not in cond:
+        if cond and not cond.startswith("${{always()") and cond != "${{!cancelled()}}" and "steps.judge" not in cond:
             bad.append(f"{j}: step {st.get('name')!r} is conditional ({st.get('if')})")
         if str(st.get("continue-on-error", "false")) != "false" and "download-artifact" not in str(st.get("uses", "")):
             bad.append(f"{j}: step {st.get('name')!r} may fail quietly")
@@ -509,6 +511,9 @@ case_ scout-scan-wrong-digest bad "s = $(step_of panel-scout 'for v in'); s['run
 case_ scout-no-attach-need    bad "$J['panel-scout']['needs'] = ['build', 'assemble']"
 case_ scout-perms-write       bad "$J['panel-scout']['permissions']['packages'] = 'write'"
 case_ scout-diag-fails        bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['run'] = s['run'].replace('exit 0', 'exit \$rc')"
+case_ scout-diag-always       bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ always() }}'"
+case_ scout-diag-always-and   bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ always() && success() }}'"
+case_ scout-diag-no-timeout   bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s.pop('timeout-minutes', None)"
 case_ scout-diag-no-always    bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s.pop('if', None)"
 case_ scout-diag-success-only bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ success() }}'"
 case_ scout-diag-failure-only bad "s = [s for s in $J['panel-scout']['steps'] if 'diagnostics' in (s.get('name') or '')][0]; s['if'] = '\${{ failure() }}'"
