@@ -511,7 +511,7 @@
         "bin/apk-tool.py"
       ],
       "signs": false,
-      "reason": "the four Linux archives from the apks (PROPOSED layout)",
+      "reason": "the four Linux archives from the apks (REQ-PLAT-001)",
       "sha256": "bb0b6576ea8689acf052103f60343bdd9f5e4b2bad492448814b328ac4a9234c"
     },
     {

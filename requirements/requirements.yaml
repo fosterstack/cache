@@ -3261,7 +3261,8 @@ requirements:
       with bin/chain-verify.py bind --step apk|rapk --record R --dir D --as out (tested against the real subcommand in bin/chain-bind-test.sh); (f) the apk
       digest is cache's `apk-tool.py digest` BY NAME in its sha256:<hex> form, and the tests do not hard-code which sections it covers (cache is changing it
       from data only to control plus data, signature excluded): they only require that it differs from the whole-file sha256 and ignores the signature; (g)
-      digests.json adds the four Linux archives; (h) release candidate tags (cache-3f): the stage passes --version = the tag minus the leading v (0.3.0-rc.1, never stripped of -rc), cache's driver accepts X.Y.Z and X.Y.Z-rc.N
+      digests.json adds the four Linux archives; (h) release candidate tags (PROPOSED/UNVERIFIED until cache confirms,
+      cache-3f): the stage passes --version = the tag minus the leading v (0.3.0-rc.1, never stripped of -rc), cache's driver accepts X.Y.Z and X.Y.Z-rc.N
       and names the apk fscache-0.3.0_rc1-r0.apk, and the stage names no apk file, so both forms run in the behaviour cases; (i) the consumer of record-env
       is bin/chain-verify.py verify for build, rebuild and check records: PR 1 FOLLOW-UP (PR 1's engine learns it at merge on chain-v030; until then record-
       env is a subcommand this lane adds); (j) bin/witnessed.sh is a launcher whose last argument is the script, which PR 1's launcher rule refuses, and the
@@ -3395,7 +3396,7 @@ requirements:
       - id: REQ-CHAIN-004-AC7
         given: "a built binary and the tag and commit it was built from"
         when: "bin/build-version-check.py runs"
-        then: "it passes only when the binary's embedded module version equals the tag and its VCS revision equals the tagged commit; a version of (devel), a missing, doubled or different revision, a modified-tree marker, a second main-module line, or a version that differs from the tag exits non-zero naming which, and a dependency line that carries the tag does not count; the check runs on the binary of each variant (standard and fips), which it extracts from that variant's apk (the one apk of the variant in the directory; zero or two are refused), for a final tag and for a release candidate tag (cache-3f: the apk of 0.3.0-rc.1 is fscache-0.3.0_rc1-r0.apk)"
+        then: "it passes only when the binary's embedded module version equals the tag and its VCS revision equals the tagged commit; a version of (devel), a missing, doubled or different revision, a modified-tree marker, a second main-module line, or a version that differs from the tag exits non-zero naming which, and a dependency line that carries the tag does not count; the check runs on the binary of each variant (standard and fips), which it extracts from that variant's apk (the one apk of the variant in the directory; zero or two are refused), for a final tag and for a release candidate tag (PROPOSED/UNVERIFIED, cache-3f: the apk of 0.3.0-rc.1 is fscache-0.3.0_rc1-r0.apk)"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC8

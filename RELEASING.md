@@ -204,8 +204,8 @@ exception, no push.
 `--sumdb-record` (it refuses a module whose record is missing, not marked included, or whose hash
 differs from `go.sum`). No workflow or script runs `build`: a maintainer runs it by hand, with a
 fresh record, whenever `dependency-provenance.json` is regenerated (a module added, removed or
-bumped). CI runs `bin/vendor-provenance.py check`, which verifies the module set and the `go.sum`
-hashes only and does not re-verify the log, so the log claim is as current as the last run of
+bumped). CI runs `bin/vendor-provenance.py check`, which verifies the module set, the `go.sum`
+hashes and the form of each entry, and does not re-verify the log, so the log claim is as current as the last run of
 `build`.
 
 ## CI-only releases, verified in practice
