@@ -1750,12 +1750,13 @@ case_ run-flags-image-tag-bad      bad "$(r 'docker run --rm -v x:y -e A=b alpin
 case_ run-flags-image-digest-ok    ok  "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 make test')"
 case_ run-option-value-looks-pinned-bad  bad "$(r 'docker run --label alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 alpine:latest true')"
 # mutants: the checker with ONE branch cut must let the matching probe through (the probe depends on that branch)
-mutant_() {   # name, python replace (old|new), probe script
+mutant_() {   # name, python replace (old|||new), probe script, optional setup
   local name=$1 d="$work/mut-$1"
   take "mutant-$name" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
   mkdir -p "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
+  if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   python3 - "$here/../bin/check-action-pins.py" "$d/mut.py" "$2" <<'PY'
 import sys
 src = open(sys.argv[1]).read()
@@ -1770,14 +1771,19 @@ PY
 case_ run-entrypoint-attached-bad  bad "$(r 'docker run --entrypoint=docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
 case_ create-inner-pull-bad        bad "$(r 'docker create alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
 case_ exec-nested-too-deep-bad     bad "$(r 'docker exec C docker exec C docker exec C docker exec C docker exec C docker exec C true')"
-case_ run-inner-script-binding-bad bad "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 bash evil.sh')" "printf 'docker pull alpine:latest\\n' > evil.sh"
-# a path inside a container is not a committed file: refused (fails closed; the inner command is judged like a top-level one)
-case_ exec-inner-path-refused-bad  bad "$(r 'docker exec C ./run.sh')"
+case_ run-inner-script-not-bound-ok ok "$(r 'docker run --rm -v x:y -e A=b alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 bash evil.sh')" "printf 'docker pull alpine:latest\\n' > evil.sh"  # a same-name committed file is not what runs in the container
+# a script path inside a container names the container's file: it is never bound to a committed file of the checkout (the image is pinned by digest;
+# stage-acceptance-egress.yml runs ./configure and /trace/strace this way) and, as before, not read
+case_ exec-inner-path-not-bound-ok ok  "$(r 'docker exec C ./run.sh')"
 case_ run-optvar-inner-bad         bad "$(rb 'RUN_OPTS=--rm; docker run $RUN_OPTS alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pip install unpinned-pkg')"
 case_ exec-optvar-inner-bad        bad "$(rb 'EX_OPTS=-i; docker exec $EX_OPTS C pip install unpinned-pkg')"
+case_ container-create-inner-bad   bad "$(r 'docker container create --name c alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
+case_ exec-inner-committed-name-ok ok "$(r 'docker exec C bash safe.sh')" "printf 'echo safe\\n' > safe.sh"
+case_ run-inner-committed-name-ok ok "$(r 'docker run --rm -v x:y alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 bash bin/x.sh')" "mkdir -p bin; printf 'echo safe\\n' > bin/x.sh"
 mutant_ exec-inner      'if verb == "exec":  # INNER-EXEC|||if False:  # INNER-EXEC' "$(r 'docker exec C docker pull alpine:latest')"
 mutant_ run-inner       'if verb in ("run", "create"):  # INNER-RUN|||if False:  # INNER-RUN' "$(r 'docker run --rm alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
 mutant_ entrypoint-inner 'if entry:  # INNER-ENTRYPOINT|||if False:  # INNER-ENTRYPOINT' "$(r 'docker run --entrypoint docker alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 pull alpine:latest')"
+mutant_ container-create 'rest[:1] in (["exec"], ["run"], ["create"])|||rest[:1] in (["exec"], ["run"])' "$(r 'docker container create --name c alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 docker pull alpine:latest')"
 mutant_ run-flags-image 'k, unknown = _options(rest, val, boolean)
                 if unknown:
                     ev.append(("finding", "`docker %s` has an option this check does not know (%s): it cannot tell "|||k, unknown = next((i for i, a in enumerate(rest) if not a.startswith("-")), len(rest)), None

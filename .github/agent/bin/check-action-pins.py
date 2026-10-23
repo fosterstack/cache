@@ -1052,7 +1052,7 @@ def _container_inner(tool, args, optvars=frozenset()):
     if unknown or not rest:
         return None
     verb, rest = rest[0], rest[1:]
-    if verb == "container" and rest[:1] in (["exec"], ["run"]):
+    if verb == "container" and rest[:1] in (["exec"], ["run"], ["create"]):
         verb, rest = rest[0], rest[1:]
     rest = [a for a in rest if not _is_optvar(a, optvars)]  # INNER-OPTVARS  (a variable that holds OPTIONS is not the image or the container)
     if verb == "exec":  # INNER-EXEC
@@ -1179,7 +1179,11 @@ def _commands(script, depth=0):
                 if depth >= 4:
                     out.append(["__too_deep__", _base(toks[at])])
                 else:
-                    out += _commands(" ".join(shlex.quote(t) for t in inner), depth + 1)
+                    for c in _commands(" ".join(shlex.quote(t) for t in inner), depth + 1):
+                        # a script path inside a container names the container's file, never the checkout's: it is not bound to a committed
+                        # file (the bytes are the image's, which is pinned by digest) and, as before this change, not read
+                        if c[0] not in ("__script__", "__exec__", "__globexec__", "__foreign__"):
+                            out.append(c)
     return out
 
 
