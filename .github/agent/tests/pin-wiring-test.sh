@@ -158,8 +158,17 @@ if _dups:
     print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
 d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
 bad = []
-for k in sorted(set(d) - {"name", "on", "permissions", "jobs"}):
+for k in sorted(set(d) - {"name", "on", "permissions", "jobs", "concurrency"}):
     bad.append(f"the workflow sets `{k}`")
+# the one reviewed concurrency block (advisor, Oct 22; cache#583): a pull request's FIRST run attempt of a head shares a group with the pull request's other first attempts, so a newer
+# push cancels its older run; every other run (a re-run of any head, a push to main, a merge_group) gets a group of its own per run and attempt, so ci.yml itself never cancels it nor
+# replaces it as a pending run, and a re-run of an old head cancels nothing. Anything else is refused: a shared group or cancel-in-progress on other events could cancel a required check.
+# Concurrency groups are repository-wide: another workflow that picks a colliding group is not checked here (a computed group defeats a prefix check, and a cancel fails closed:
+# a cancelled check is not a success).
+if "concurrency" in d and d["concurrency"] != {
+        "group": "${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}:
+    bad.append("the workflow's concurrency is not the reviewed block")
 if d.get("permissions") != {"contents": "read"}:
     bad.append("the workflow permissions are not exactly {contents: read}")
 on = d.get("on", {})
@@ -173,6 +182,14 @@ if not isinstance(push, dict) or push.get("branches") != ["main"]:
     bad.append("not triggered on push to main")
 elif set(push) != {"branches"}:
     bad.append("push is filtered: " + ", ".join(sorted(set(push) - {"branches"})))
+# the only triggers ci.yml may have: push (main), pull_request and merge_group (the merge queue). workflow_call and workflow_dispatch are refused: a called or dispatched run
+# would carry another context into the reviewed concurrency group.
+if isinstance(on, dict) and sorted(set(on) - {"push", "pull_request", "merge_group"}):
+    bad.append("ci.yml has triggers beyond push, pull_request and merge_group: " + ", ".join(sorted(set(on) - {"push", "pull_request", "merge_group"})))
+# no job of ci.yml may carry a concurrency setting: a job group competes with its parent workflow's group and can cancel the whole run
+for _jid, _j in (d.get("jobs") or {}).items():
+    if isinstance(_j, dict) and "concurrency" in _j:
+        bad.append(f"the job {_jid} has `concurrency`")
 if "defaults" in d:
     bad.append("the workflow sets `defaults` (a shell override could skip every run)")
 job = d.get("jobs", {}).get("allowlist", {})
@@ -481,6 +498,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/panel-test.sh"
   },
   {
+   "name": "the final image index that carries our OpenVEX for Docker Scout \u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)",
+   "run": "bash bin/vex-index-test.sh </dev/null"
+  },
+  {
    "name": "the auditor's fixtures and tests follow the panel's image set \u2014 the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)",
    "run": "bash .github/agent/tests/auditor-variants-test.sh"
   },
@@ -542,8 +563,6 @@ SPLIT_STEPS = json.loads(r'''{
   }
  ]
 }''')
-VEX_NAME = "the final image index that carries our OpenVEX for Docker Scout \u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)"
-ISO_NAME = "a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)"
 for jid, want_steps in SPLIT_STEPS.items():
     sj = d.get("jobs", {}).get(jid)
     if not isinstance(sj, dict):
@@ -559,16 +578,6 @@ for jid, want_steps in SPLIT_STEPS.items():
     accepted = [want_steps]
     if jid == "allowlist-chain":      # the transition: the second exact form carries the chain's 25 suites (nothing between, nothing after)
         accepted.append(want_steps + json.loads(os.environ["PIN_WIRING_CHAIN25"]))
-    if jid == "allowlist-pins-auditor":   # the transition (cache#489 and #521's landings): exactly main's list, or it plus either new step, or both, each at its anchor
-        def _after(lst, anchor_run, step):
-            i = [k for k, x in enumerate(lst) if x.get("run") == anchor_run]
-            return lst[:i[0] + 1] + [step] + lst[i[0] + 1:] if len(i) == 1 else None
-        _vex = {"name": VEX_NAME, "run": "bash bin/vex-index-test.sh </dev/null"}
-        _iso = {"name": ISO_NAME, "run": "bash bin/job-isolation-test.sh"}
-        _a = _after(want_steps, "bash bin/panel-test.sh", _vex)
-        _b = _after(want_steps, "bash bin/workflow-consolidation-test.sh", _iso)
-        _ab = _after(_a, "bash bin/workflow-consolidation-test.sh", _iso) if _a else None
-        accepted += [x for x in (_a, _b, _ab) if x]
     if got not in accepted:
         have = [st.get("name") or st.get("uses") for st in got]
         want_n = [st.get("name") or st.get("uses") for st in want_steps]
@@ -821,18 +830,17 @@ for i in $(seq 0 24); do
   case_ "chain25-step-$i-continue"  bad "${C25}x = [dict(s) for s in c25]; x[$i]['continue-on-error'] = 'true'; cs.extend(x)"
   case_ "chain25-step-$i-shell"     bad "${C25}x = [dict(s) for s in c25]; x[$i]['shell'] = 'bash -c true {0}'; cs.extend(x)"
 done
-# The transition judge (cache#489 / #521's landings): allowlist-pins-auditor is accepted in EXACTLY four forms: main's list, + the VEX step after panel-test, + the isolation step after workflow-consolidation, or both
-PA="import json; ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; vex = {'name': 'the final image index that carries our OpenVEX for Docker Scout \\u2014 the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)', 'run': 'bash bin/vex-index-test.sh </dev/null'}; iso = {'name': 'a job that holds a credential never builds, each build its own job, govulncheck handed to the audit job by digest (REQ-REL-011; owner Oct 21)', 'run': 'bash bin/job-isolation-test.sh'}; "
-case_ pa-vex-form-accepted        ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
-case_ pa-iso-form-accepted        ok  "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-both-forms-accepted      ok  "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, vex); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-vex-at-end               bad "${PA}ps.append(vex)"
-case_ pa-iso-at-start             bad "${PA}ps.insert(0, iso)"
-case_ pa-iso-twice                bad "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso); ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-iso-or-true              bad "${PA}iso['run'] += ' || true'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-iso-renamed              bad "${PA}iso['name'] = 'x'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-iso-continue             bad "${PA}iso['continue-on-error'] = 'true'; ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, iso)"
-case_ pa-vex-env                  bad "${PA}vex['env'] = {'X': '1'}; ps.insert(ix('bash bin/panel-test.sh') + 1, vex)"
+# allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
+PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r][0]; "
+case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
+case_ pa-iso-removed              bad "${PA}del ps[ix('bash bin/job-isolation-test.sh')]"
+case_ pa-vex-twice                bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, dict(ps[ix('bash bin/vex-index-test.sh </dev/null')]))"
+case_ pa-iso-twice                bad "${PA}ps.insert(ix('bash bin/workflow-consolidation-test.sh') + 1, dict(ps[ix('bash bin/job-isolation-test.sh')]))"
+case_ pa-iso-at-start             bad "${PA}ps.insert(0, ps.pop(ix('bash bin/job-isolation-test.sh')))"
+case_ pa-vex-at-end               bad "${PA}ps.append(ps.pop(ix('bash bin/vex-index-test.sh </dev/null')))"
+case_ pa-iso-or-true              bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['run'] += ' || true'"
+case_ pa-iso-continue             bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['continue-on-error'] = 'true'"
+case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </dev/null')]['env'] = {'X': '1'}"
 case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
 case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
@@ -849,7 +857,18 @@ case_ name-expr-function      bad "d['jobs']['lint']['name'] = \"x \${{ format('
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ job-concurrency-test       bad "d['jobs']['test']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ job-concurrency-lint-same  bad "d['jobs']['lint']['concurrency'] = d['concurrency'] if 'concurrency' in d else {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
+case_ on-workflow-call           bad "d['on']['workflow_call'] = {}"
+case_ on-workflow-dispatch       bad "d['on']['workflow_dispatch'] = {}"
+case_ on-merge-group             ok  "d['on']['merge_group'] = {'types': ['checks_requested']}"
+case_ on-schedule                bad "d['on']['schedule'] = [{'cron': '0 0 * * *'}]"
 case_ wf-concurrency             bad "d['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ wf-concurrency-reviewed    ok  "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-cancel-all  bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
+case_ wf-concurrency-shared-ref  bad "d['concurrency'] = {'group': \"\${{ github.workflow }}-\${{ github.ref }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-rerun-shares bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-workflow-name bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}-{2}', github.workflow, github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ job-permissions            bad "d['jobs']['allowlist']['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-widened     bad "d['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-removed     bad "d.pop('permissions')"
