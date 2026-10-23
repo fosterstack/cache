@@ -294,16 +294,34 @@ printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-read: 99\nenviron-unr
 printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absentdupk.txt"
 printf '%s\nrequest-env: absent\nenviron-read: 31\n' "$TR" > "$work/tok_absentnc.txt"
 printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absenthold.txt"
-xexpect refuse "hostile-material: a transcript with unreadable files of the job's own user (a hosted runner has non-dumpable processes) is still graded isolated: the count is reported, not required to be zero" "proven by the static permission judge" -- hostile-material --kind token --file "$work/tok_absentbad.txt"
 xexpect refuse "hostile-material: no token request address in the job, with the corroborating lines, is graded isolated (refused at runner), and the refusal names the static permission judge as the proof" "proven by the static permission judge" -- hostile-material --kind token --file "$work/tok_absent.txt"
-for f in tok_absent0 tok_absentold tok_absentdup tok_absentdupk tok_absentnc tok_absenthold; do
+for f in tok_absent0 tok_absentbad tok_absentold tok_absentdup tok_absentdupk tok_absentnc tok_absenthold; do
   mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
-  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (absent address with no environ file read, an unreadable file of the job's own user, the old bare environ-files count, a repeated or missing count, or a process holding an address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (absent address with no environ file read, an unreadable environ among the step's own ancestors, the old bare environ-files count, a repeated or missing count, or a process holding an address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
 done
 # the REAL step's token attempt in a job with no request address: it writes the absence proof and no claims line (functions only: the cut drops the five calls at the end)
 mkdir -p "$work/stepnotok" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepnotok/fns.sh"
 (cd "$work/stepnotok" && env -i PATH="$PATH" bash -c '. ./fns.sh; attempt_read_sign_token')
-if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && grep -q '^environ-read: [0-9][0-9]*$' "$work/stepnotok/attempts/read_sign_token.txt" && { [ ! -r /proc/self/environ ] || grep -q '^environ-read: [1-9]' "$work/stepnotok/attempts/read_sign_token.txt"; } && grep -q '^environ-unreadable-same-user: [0-9][0-9]*$' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent, the count of environ files it read and no unreadable file of its own user, and no claims line"; else bad "hostile step: no-token transcript (got: $(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -c 600 | tr '\n' '|'); proc readable: $([ -r /proc/self/environ ] && echo yes || echo no))"; fi
+if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && grep -q '^environ-read: [0-9][0-9]*$' "$work/stepnotok/attempts/read_sign_token.txt" && { [ ! -r /proc/self/environ ] || grep -q '^environ-read: [1-9]' "$work/stepnotok/attempts/read_sign_token.txt"; } && grep -qx 'environ-unreadable-same-user: 0' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent, the count of environ files it read and no unreadable file of its own user, and no claims line"; else bad "hostile step: no-token transcript (got: $(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -c 600 | tr '\n' '|'); proc readable: $([ -r /proc/self/environ ] && echo yes || echo no))"; fi
+# Linux only (/proc/PID/environ): an UNRELATED process of the same user that denies its environ (dumpable off, as hosted runners have) must not change the grade; a non-dumpable
+# ANCESTOR of the step must be an error (it could hide a request variable). Skipped, with an ok line, where there is no /proc.
+if [ -r /proc/self/environ ]; then
+  mkdir -p "$work/stepproc"
+  cp "$work/stepnotok/fns.sh" "$work/stepproc/fns.sh"
+  python3 -c 'import ctypes, time; ctypes.CDLL(None).prctl(4, 0); time.sleep(40)' & unrel=$!
+  sleep 1
+  (cd "$work/stepproc" && env -i PATH="$PATH" HOME="$work" bash -c '. ./fns.sh; attempt_read_sign_token')
+  kill "$unrel" 2> /dev/null || true
+  mrc=0; cvx hostile-material --kind token --file "$work/stepproc/attempts/read_sign_token.txt" || mrc=$?
+  if [ "$mrc" = 1 ] && grep -qx 'environ-unreadable-same-user: 0' "$work/stepproc/attempts/read_sign_token.txt" && grep -F -q "static permission judge" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile step (Linux): an unrelated same-user process that denies its environ leaves the grade isolated (K counts the step's ancestors only)"; else bad "hostile step (Linux): unrelated non-dumpable process: rc $mrc, transcript $(tr '\n' '|' < "$work/stepproc/attempts/read_sign_token.txt" | head -c 400), err $(head -c 200 "$work/xerr")"; fi
+  mkdir -p "$work/stepanc"; cp "$work/stepnotok/fns.sh" "$work/stepanc/fns.sh"
+  (cd "$work/stepanc" && env -i PATH="$PATH" HOME="$work" python3 -c 'import ctypes, subprocess; ctypes.CDLL(None).prctl(4, 0); subprocess.run(["bash", "-c", ". ./fns.sh; attempt_read_sign_token"])')
+  mrc=0; cvx hostile-material --kind token --file "$work/stepanc/attempts/read_sign_token.txt" || mrc=$?
+  if [ "$mrc" = 2 ] && ! grep -qx 'environ-unreadable-same-user: 0' "$work/stepanc/attempts/read_sign_token.txt"; then ok "hostile step (Linux): a non-dumpable ANCESTOR of the step is counted and the transcript is an error (exit 2), never isolation"; else bad "hostile step (Linux): non-dumpable ancestor: rc $mrc, transcript $(tr '\n' '|' < "$work/stepanc/attempts/read_sign_token.txt" | head -c 400)"; fi
+else
+  ok "hostile step (Linux fixtures): skipped, this system has no /proc"
+  ok "hostile step (Linux fixtures): skipped, this system has no /proc (ancestor case)"
+fi
 # the REAL step's mint and forge attempts in a job with no token: both leave material (a record signed by a throwaway key), the REAL verifier refuses it at Sign naming stage-sign.yml,
 # and hostile-row turns that refusal into a counted row (a missing file would be an error, which is what the old cosign form produced without a token)
 mkdir -p "$work/stepsign" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepsign/fns.sh"
@@ -1410,7 +1428,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=279
+EXPECT=281
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -165,7 +165,7 @@ def grade_token(rest):
         reads = [int(m.group(1)) for line in rest for m in [re.fullmatch(r"environ-read: ([0-9]+)", line.strip())] if m]
         bads = [int(m.group(1)) for line in rest for m in [re.fullmatch(r"environ-unreadable-same-user: ([0-9]+)", line.strip())] if m]
         holders = [line for line in rest if "holds a token request address" in line]
-        if absent and len(reads) == 1 and len(bads) == 1 and reads[0] > 0 and not holders:     # the unreadable count is reported, not required to be zero: a hosted runner has non-dumpable processes of the same user
+        if absent and len(reads) == 1 and len(bads) == 1 and reads[0] > 0 and bads[0] == 0 and not holders:     # K counts only the step's own process ancestors
             refuse("runner", "nothing usable for Sign: the building job holds no id-token permission (proven by the static permission judge of the Build wiring), so it has no token to get; the transcript corroborates it (no request address, environ files read)")
         if absent and holders:
             print("error: a process on this runner holds a token request address although the job's own environment has none, so it cannot be graded", file=sys.stderr)
