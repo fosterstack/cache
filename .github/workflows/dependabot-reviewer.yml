@@ -135,14 +135,46 @@ jobs:
                    --body-file "$RUNNER_TEMP/work/body-$n.txt" > "$RUNNER_TEMP/work/updates-$n.json"; then
               echo "::error::PR #$n: could not read its updates"; lookup_failed=1; continue
             fi
-            majors=$(jq '[.[]|select(.major)]|length' "$RUNNER_TEMP/work/updates-$n.json") || { lookup_failed=1; continue; }
-            [ "$majors" != "0" ] || { echo "PR #$n: no major — the patch/minor lane's"; continue; }
+            majors=$(jq '[.[]|select(.major or .flagged)]|length' "$RUNNER_TEMP/work/updates-$n.json") || { lookup_failed=1; continue; }
+            [ "$majors" != "0" ] || { echo "PR #$n: no major and no breaking/deprecated release notes — the patch/minor lane's"; continue; }
+            # Inside this file "major" means "judged as a major": the act step below (its text is hash-pinned in the pin
+            # checker, so it stays as it is) names a hold by `.major`. A flagged update keeps `.flagged` so the bundle says FLAGGED.
+            jq 'map(if .flagged then .major = true else . end)' "$RUNNER_TEMP/work/updates-$n.json" > "$RUNNER_TEMP/work/updates-$n.tmp" \
+              && mv "$RUNNER_TEMP/work/updates-$n.tmp" "$RUNNER_TEMP/work/updates-$n.json" || { echo "::error::PR #$n: could not mark its flagged updates"; lookup_failed=1; continue; }
             if ! prior=$(GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/commits/${sha}/check-runs?check_name=dependabot-reviewer" \
                       --jq "[.check_runs[] | select(.app.slug == \"${APP_SLUG}\")] | sort_by(.id) | last | .conclusion // \"none\"") || [ -z "$prior" ]; then
               echo "::error::PR #$n ${sha:0:7}: could not read its reviewer checks — skipped this hour"; lookup_failed=1; continue
             fi
             if [ "$FORCE" != "true" ] && { [ "$prior" = success ] || [ "$prior" = failure ]; }; then
-              echo "PR #$n ${sha:0:7}: verdict already $prior"; continue
+              echo "PR #$n ${sha:0:7}: verdict already $prior"
+              if [ "$prior" = success ]; then
+                # The auto-merge lane turns an arm off when a head has no verdict (REQ-DEP-003-AC2); the reviewer arms and THEN publishes
+                # success, so the lane can cut in between and leave an approved head unarmed. GitHub records who turned auto-merge on or off:
+                # a success verdict, no arm, and the LAST auto-merge event being a disable by the workflow token (github-actions) means exactly
+                # that (a person's disarm, or any later enable, is not). Put the arm back for this head, after the same required-check
+                # guard as every other arm; the enable event that follows ends it. Nothing here reads a comment.
+                if ! armed_now=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
+                  echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
+                fi
+                if [ "$armed_now" = false ]; then
+                  if ! last_event=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${n}/events" --paginate \
+                        --jq '.[] | select(.event == "auto_merge_enabled" or .event == "auto_merge_disabled") | "\(.event) \(.actor.login)"' | tail -n 1; \
+                      [ "${PIPESTATUS[0]}" = 0 ]); then
+                    echo "::error::PR #$n ${sha:0:7}: could not read its auto-merge events — skipped this hour"; lookup_failed=1; continue
+                  fi
+                  case "$last_event" in
+                    "auto_merge_disabled github-actions[bot]"|"auto_merge_disabled github-actions")
+                      if gh api "repos/${GITHUB_REPOSITORY}/contents/.github/policy/required-checks.json?ref=main" --jq .content \
+                           | base64 -d > "$RUNNER_TEMP/work/heal-required-checks.json" \
+                         && bash bin/required-check-guard.sh "$RUNNER_TEMP/work/heal-required-checks.json"; then
+                        if GH_TOKEN="$MERGE_TOKEN" gh pr merge --auto --squash --match-head-commit "$sha" "$n" >/dev/null; then
+                          echo "PR #$n ${sha:0:7}: the lane turned the approved arm off meanwhile — put back"
+                        else echo "::error::PR #$n ${sha:0:7}: could not put the approved arm back — retried next hour"; lookup_failed=1; fi
+                      else echo "::error::PR #$n ${sha:0:7}: required-check guard refused — the approved arm stays off this hour"; lookup_failed=1; fi ;;
+                  esac
+                fi
+              fi
+              continue
             elif [ "$prior" = none ] || [ "$prior" = neutral ]; then
               # no verdict supports an armed merge on this head: turn it off before anything else
               if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
@@ -168,7 +200,7 @@ jobs:
               prior=neutral
             fi
             echo "$n $sha $prior" >> "$RUNNER_TEMP/work/candidates.txt"
-            echo "PR #$n ${sha:0:7}: major, latest verdict '$prior' — will review"
+            echo "PR #$n ${sha:0:7}: major or flagged, latest verdict '$prior' — will review"
           done < <(jq -c '.[]' "$RUNNER_TEMP/work/prs.json")
           count=$(wc -l < "$RUNNER_TEMP/work/candidates.txt" | tr -d ' ')
           echo "count=$count" >> "$GITHUB_OUTPUT"

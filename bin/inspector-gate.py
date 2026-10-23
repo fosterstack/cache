@@ -131,7 +131,7 @@ def vex_index(doc):
 
 def covered(idx, vid, pkg, image=None):
     """image = the scanned image's identity (image_identity(label)); None means the caller has already filtered the statements to
-    this image (bin/panel.py does, per image), so the scope is not applied a second time."""
+    this image (the panel's tally does, per image), so the scope is not applied a second time."""
     for subs, scope in idx.get(vid, []):
         if image is not None and not in_scope(scope, image):
             continue
