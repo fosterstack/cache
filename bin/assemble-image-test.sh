@@ -88,6 +88,7 @@ python3 "$work/mkcopy.py" "$root/bin/build-apk.sh" "$air/bin/build-apk.sh" \
   'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'SEALED_ENV=$TEST_SEALED_ENV' \
   'GO_TOOL=${TEST_GO:-'"$stubs"'/go}' 'SHA256SUM=${TEST_SHA256SUM:-'"$work"'/sha256sum}' 'ENVBIN='"$(command -v env)" \
   'RECIPE_STANDARD=${TEST_RECIPE:-$PWD/build/melange.yaml}' 'RECIPE_FIPS=${TEST_RECIPE:-$PWD/build/melange-fips.yaml}' \
+  'FIPS_MODULE=${TEST_FIPS_MODULE:-$PWD/build/locks/fips-module.txt}' \
   || { echo "FIXTURE SETUP FAILED: build-apk copy"; exit 1; }
 chmod +x "$air/bin/lock-proof.sh" "$air/bin/sealed-proof.sh" "$air/bin/build-apk.sh" "$air/bin/assemble-image.sh"
 cat >"$work/proofwrap.py" <<'PYW'
@@ -1381,13 +1382,14 @@ ALLOWED = {
     "lock-proof.sh": {"HOST_OS", "PY3", "SUDO", "BASHBIN"},
     "sealed-proof.sh": {"HOST_OS", "PY3", "SUDO", "UNSHARE", "BASHBIN"},
     "apko-lock.sh": {"PY3"},
-    "build-apk.sh": {"PY3", "GIT", "SUDO", "UNSHARE", "MELANGE", "GO_TOOL", "SHA256SUM", "ENVBIN", "SEALED_ENV", "RECIPE_STANDARD", "RECIPE_FIPS"},
+    "build-apk.sh": {"PY3", "GIT", "SUDO", "UNSHARE", "MELANGE", "GO_TOOL", "SHA256SUM", "ENVBIN", "SEALED_ENV", "RECIPE_STANDARD", "RECIPE_FIPS", "FIPS_MODULE"},
 }
 ABS = r"/[A-Za-z0-9_./+-]+"
 CLASS = {   # each variable has ITS OWN right-hand side: a tool is an absolute path, nothing else
     "PY3": ABS, "SUDO": ABS, "UNSHARE": ABS, "BASHBIN": ABS, "APKO": ABS, "ENVBIN": ABS, "GIT": ABS, "MELANGE": ABS, "GO_TOOL": ABS, "SHA256SUM": ABS,
     "WORKDIR": ABS, "RENDER_DIR": r"", "HOST_OS": r"\$\{BASH_VERSINFO\[5\]\}",
     "SEALED_ENV": r"build/[A-Za-z0-9_./+-]+", "RECIPE_STANDARD": r"\$PWD/build/[A-Za-z0-9_./+-]+", "RECIPE_FIPS": r"\$PWD/build/[A-Za-z0-9_./+-]+",
+    "FIPS_MODULE": r"\$PWD/build/[A-Za-z0-9_./+-]+",
 }
 LINE = re.compile(r"^([A-Z][A-Z0-9_]*)=(\S*)[ ]+# TEST-SUBST(?: .*)?$")
 def plain(line, allowed):
@@ -1963,7 +1965,8 @@ EXPECT = {
     "apko-lock.sh": {"PY3": "/usr/bin/python3"},
     "build-apk.sh": {"PY3": "/usr/bin/python3", "GIT": "/usr/bin/git", "SUDO": "/usr/bin/sudo", "UNSHARE": "/usr/bin/unshare", "MELANGE": "/usr/local/bin/melange",
                      "GO_TOOL": "/usr/local/bin/fscache-go/bin/go", "SHA256SUM": "/usr/bin/sha256sum", "ENVBIN": "/usr/bin/env", "SEALED_ENV": "build/sealed-env.json",
-                     "RECIPE_STANDARD": "$PWD/build/melange.yaml", "RECIPE_FIPS": "$PWD/build/melange-fips.yaml"},
+                     "RECIPE_STANDARD": "$PWD/build/melange.yaml", "RECIPE_FIPS": "$PWD/build/melange-fips.yaml",
+                     "FIPS_MODULE": "$PWD/build/locks/fips-module.txt"},
 }
 bad = []
 for name, want in EXPECT.items():

@@ -1747,6 +1747,12 @@ requirements:
         then: auto-merge is armed only for the exact head commit that was reviewed; a new push voids the verdict, turns auto-merge off, and the new head is reviewed afresh
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-DEP-001-AC10
+        given: a Dependabot patch or minor bump whose upstream release notes between old and new contain "breaking" or "deprecat", in any case
+        when: the reviewer picks its candidates and gathers its evidence
+        then: it is judged like a major, by the same two readers and the same mechanical decision, with the notes and our usage gathered for it; a bump whose notes say neither is left to the patch and minor lane
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-DEP-002
     title: The required-check guard runs everywhere
@@ -1799,6 +1805,12 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-DEP-003-AC2
+        given: a Dependabot patch or minor pull request whose upstream release notes contain "breaking" or "deprecat", in any case
+        when: the auto-merge lane runs
+        then: it does not arm auto-merge, turns off any auto-merge not backed by the reviewer's verdict on the current head, and leaves the bump to the reviewer; if the lane cannot tell, it arms nothing
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-003-AC3
         given: a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged)
         when: the auto-merge lane or the hourly reviewer sees it
         then: the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual
@@ -2060,6 +2072,43 @@ requirements:
         when: "Docker Scout scans it by tag and by exact digest with our author"
         then: "it applies our VEX; the customer guide makes the Scout claim only after this has passed on our real image"
         verification: { method: acceptance-release-artifact, release_blocking: false }
+        status: approved
+  - id: REQ-REL-011
+    title: A job that holds a credential never compiles, and each build is its own job
+    statement: >
+      A workflow job that holds a credential (a secret, an environment, an
+      id-token or packages write grant) shall not build or compile anything,
+      and no job shall run two builds: on GitHub-hosted runners the separate
+      job is the isolation unit, each job a fresh virtual machine. Owner,
+      Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md):
+      "the signer and the builder need hardware isolation and the builds in
+      general need hardware isolation ... the best github actions can do for
+      that, assuming we use github hosted runers, is to use separate jobs in
+      the workflow." The rule: a job that holds the signing key or any
+      publish credential never receives a build output other than the exact
+      artifacts it signs or publishes; the Rebuild comparison runs in a job
+      with no secrets and no publish permission; builds are isolated from
+      each other the same way, each build its own job.
+    source: [.github/workflows/auditor.yml, .github/workflows/go-freshness.yml, bin/job-isolation-test.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: owner ratification Oct 21 2026 (signer and builder never share a machine); advisor handoff 0637
+    confidence: implementation-only
+    notes: |
+      Four jobs of the release chain on main (stage-build, stage-image, stage-promote, stage-reproducibility) still break AC1 and are listed exclusions in bin/job-isolation-test.sh with their reason: the chain-v030 landing (handoff 0634, cache#514) replaces those files. The exclusion list shrinks to nothing then.
+      A tool that publishes no release binary (govulncheck) is built in its own job that holds no credential and reaches the credential-holding job as an artifact whose sha256 equals the build job's output.
+    acceptance_criteria:
+      - id: REQ-REL-011-AC1
+        given: "any workflow job in the repository that holds a credential: a secrets.* reference, an environment, a permissions grant of id-token: write or packages: write"
+        when: "bin/job-isolation-test.sh judges every workflow file"
+        then: "none of the job's steps compiles or builds (go install, go build, goreleaser, docker build or buildx build, melange or apko build, make, cargo, npm run build); a tool the job needs is installed through bin/install-scanner.sh as a checksum-pinned release binary, and govulncheck, which has no release binary, is built in its own job with no credential and handed to auditor.yml's audit job as an artifact whose sha256 the audit job compares with the build job's output before it runs; the only jobs that may break this are the four listed release-chain exclusions, each with its reason, and a mutated copy of a workflow that adds a build to a credential-holding job fails the test"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-011-AC2
+        given: "any workflow job in the repository"
+        when: "bin/job-isolation-test.sh judges every workflow file"
+        then: "the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job"
+        verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
   - id: REQ-SCAN-001
@@ -4100,7 +4149,7 @@ requirements:
       - id: REQ-BUILDAPK-001-AC1
         given: "the two committed recipes build/melange.yaml and build/melange-fips.yaml"
         when: "they are read"
-        then: "each builds ./cmd/fscache from the vendored source with -trimpath and no Dockerfile (rule 11), takes Go 1.27.2 from go.dev through one sha256-pinned fetch step per architecture with GOTOOLCHAIN=local, GOFLAGS=-mod=vendor, GOPROXY=off and CGO_ENABLED=0 (rule 12), uses only local repositories and name=version pins for its build environment (rule 15), writes go version -m to usr/share/fscache/buildinfo.txt (rule 20), stamps the tree and refuses a (devel) or modified binary (rule 24); only the FIPS recipe sets GOFIPS140=v1.0.0 and proves the binary records GOFIPS140=v1.0.0-c2097c7c (rule 13); bin/gen-recipes.py --check passes (both recipes equal the generator's output and the template matches its pin, rule 21)"
+        then: "each builds ./cmd/fscache from the vendored source with -trimpath and no Dockerfile (rule 11), takes Go 1.27.3 from go.dev through one sha256-pinned fetch step per architecture with GOTOOLCHAIN=local, GOFLAGS=-mod=vendor, GOPROXY=off and CGO_ENABLED=0 (rule 12), uses only local repositories and name=version pins for its build environment (rule 15), writes go version -m to usr/share/fscache/buildinfo.txt (rule 20), stamps the tree and refuses a (devel) or modified binary (rule 24); only the FIPS recipe sets GOFIPS140 to the version of the module build/locks/fips-module.txt names (v1.0.0 today) and proves the binary records GOFIPS140=<that module's id> (v1.0.0-c2097c7c today) (rule 13); bin/gen-recipes.py --check passes (both recipes equal the generator's output and the template matches its pin, rule 21)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDAPK-001-AC2
@@ -4118,7 +4167,7 @@ requirements:
       - id: REQ-BUILDAPK-001-AC4
         given: "a finished build"
         when: "the apk is checked"
-        then: "it is accepted only if its signature verifies against the committed build/keys/assembly.rsa.pub (the signature bytes are verified: a signature member's name alone is no signature, and the .PKGINFO datahash the signature covers must equal the sha256 of the data stream) and names assembly.rsa.pub, if its binary says neither (devel) nor vcs.modified=true, if its main module version is exactly v<version> (a pseudo-version or another tag is refused) and its vcs.revision is the source's HEAD (a missing or foreign revision is refused), if the fips variant records exactly one GOFIPS140 value, v1.0.0-c2097c7c, and the standard variant records none, if the buildinfo.txt in the apk equals go version -m of the packaged binary (checked when a Go toolchain is on PATH; otherwise the run says it is not verified), and if bin/go-module-sbom.py accepts the module list; it then writes the apk (version X.Y.Z, X.Y.Z_rcN for X.Y.Z-rcN, or 0.0.0_rc1 for the snapshot version) with an index, fscache-modules.spdx.json and inputs-manifest.json, and two builds of the same inputs give the same bytes (rules 13, 15, 20, 22, 24, 31)"
+        then: "it is accepted only if its signature verifies against the committed build/keys/assembly.rsa.pub (the signature bytes are verified: a signature member's name alone is no signature, and the .PKGINFO datahash the signature covers must equal the sha256 of the data stream) and names assembly.rsa.pub, if its binary says neither (devel) nor vcs.modified=true, if its main module version is exactly v<version> (a pseudo-version or another tag is refused) and its vcs.revision is the source's HEAD (a missing or foreign revision is refused), if the fips variant records exactly one GOFIPS140 value and it is the module build/locks/fips-module.txt names (v1.0.0-c2097c7c today; the file is read as one line vMAJOR.MINOR.PATCH-<8 lower-case hex> and a plain newline, and a missing, symlinked or malformed file is refused), and the standard variant records none, if the buildinfo.txt in the apk equals go version -m of the packaged binary (checked when a Go toolchain is on PATH; otherwise the run says it is not verified), and if bin/go-module-sbom.py accepts the module list; it then writes the apk (version X.Y.Z, X.Y.Z_rcN for X.Y.Z-rcN, or 0.0.0_rc1 for the snapshot version) with an index, fscache-modules.spdx.json and inputs-manifest.json, and two builds of the same inputs give the same bytes (rules 13, 15, 20, 22, 24, 31)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDAPK-001-AC5
@@ -4376,7 +4425,7 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REFRESH-001-AC36
-        given: "a host-tools package that fails a checksum, a committed host-tools.lock that names a package version the archive does not hold, or an archived host-tools package that is damaged"
+        given: "a host-tools package that fails a checksum, a committed host-tools.lock that names a package version the archive does not hold and live Wolfi no longer resolves (a version live Wolfi still resolves is downloaded again and checked under the repair of AC17 and AC32, and a first fill fetches the committed versions), or an archived host-tools package that is damaged"
         when: "bin/refresh-inputs.sh refresh runs"
         then: "it exits non-zero naming the package and the file, keeps nothing new in the archive, changes no lock and opens no pull request (the archive is the source of truth, as for the melange lock)"
         verification: { method: unit, release_blocking: false }

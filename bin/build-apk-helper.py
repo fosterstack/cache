@@ -14,11 +14,18 @@ interpreter run on a variable path).
       Nothing else is ever passed: there is no test mode, no inherited name and no prefix rule (REQ-BUILDAPK-001-AC3). DATAFILE is read as a
       closed object: any other key or value type is refused (exit 1).
 
+  build-apk-helper.py fips-module FILE
+      prints GOFIPS140=<the module id that FILE (build/locks/fips-module.txt) holds>, read with the grammar the daily refresh reads it with: plain
+      ASCII, exactly one line vMAJOR.MINOR.PATCH-<8 lower-case hex> (no leading zeros) and a plain newline; exit 1 for anything else
+      (REQ-BUILDAPK-001-AC4).
+
 Exit codes: 0 ok | 1 failed | 2 usage.
 """
 import datetime
 import json
 import os
+import re
+import stat
 import sys
 
 
@@ -73,6 +80,28 @@ def sealed_env(datafile):
     return 0
 
 
+def fips_module(path):
+    try:
+        # open without following a symlink, take the handle's own word that it is a regular file, and read THAT handle: the shell pre-check of the
+        # path cannot be raced between its test and this open (O_NONBLOCK so a fifo cannot hang the open)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return 1
+            raw = os.read(fd, 4097).decode("ascii")   # one byte over the longest line the grammar could ever allow: a longer file is refused, never cut
+            if len(raw) > 4096:
+                return 1
+        finally:
+            os.close(fd)
+    except (OSError, UnicodeDecodeError):
+        return 1
+    num = r"(?:0|[1-9][0-9]*)"
+    if not raw.endswith("\n") or raw.count("\n") != 1 or not re.fullmatch(r"v%s\.%s\.%s-[0-9a-f]{8}" % (num, num, num), raw[:-1]):
+        return 1
+    sys.stdout.write("GOFIPS140=" + raw[:-1])
+    return 0
+
+
 def main(argv):
     if len(argv) == 3 and argv[1] == "build-date":
         return build_date(argv[2])
@@ -80,7 +109,9 @@ def main(argv):
         return recipe_facts(argv[2], argv[3], argv[4])
     if len(argv) == 3 and argv[1] == "sealed-env":
         return sealed_env(argv[2])
-    print("usage: build-apk-helper.py build-date EPOCH | recipe-facts RECIPE GOARCH OUTFILE | sealed-env DATAFILE", file=sys.stderr)
+    if len(argv) == 3 and argv[1] == "fips-module":
+        return fips_module(argv[2])
+    print("usage: build-apk-helper.py build-date EPOCH | recipe-facts RECIPE GOARCH OUTFILE | sealed-env DATAFILE | fips-module FILE", file=sys.stderr)
     return 2
 
 

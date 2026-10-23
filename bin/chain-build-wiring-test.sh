@@ -217,6 +217,9 @@ jobs:
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [rebuild, check, sign]
+    concurrency:
+      group: release-publish
+      cancel-in-progress: false
     uses: ./.github/workflows/stage-promote.yml
   decide:
     if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
@@ -240,6 +243,7 @@ jobs:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
     needs: [build, sign, rebuild, check, release]
+    if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1004,6 +1008,15 @@ gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)
        "release must carry exactly the if"
 gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: build' \
        '  rebuild:\n    continue-on-error: true\n    needs: build' "keys outside"
+gr g13 "R3 release without its concurrency group (two publications could interleave and roll :X/:latest back)" '    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' '    uses: ./.github/workflows/stage-promote.yml' "release must hold exactly the concurrency"
+gr g14 "R3 the release concurrency group cancels in progress (a running publication would be killed half way)" 'cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' 'cancel-in-progress: true\n    uses: ./.github/workflows/stage-promote.yml' "release must hold exactly the concurrency"
+gr g15 "R3 the release concurrency group is shared with something else, or not constant" 'group: release-publish' 'group: ${{ github.ref }}' "release must hold exactly the concurrency"
+gr g16 "R3 a concurrency key on any other chain job is outside the allowed keys" '  rebuild:\n    needs: build' '  rebuild:\n    concurrency: x\n    needs: build' "keys outside"
+PF_IF="\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+PF_OLD="\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+gr r3a "R3 audit: patch-failed with the old failure()-only if (a cancelled/replaced pending release would open no issue)" "if: $PF_IF" "if: $PF_OLD" "patch-failed must carry exactly the if"
+gr r3b "R3 audit: patch-failed without any if" "    if: $PF_IF\n    runs-on: ubuntu-latest" "    runs-on: ubuntu-latest" "patch-failed must carry exactly the if"
+gr r3c "R3 audit: cancel-in-progress written as the quoted string (actionlint rejects it; the loader cannot tell it from the boolean)" 'cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' 'cancel-in-progress: "false"\n    uses: ./.github/workflows/stage-promote.yml' "unquoted line"
 gr g9 "005-AC5 check calls another stage file" 'uses: ./.github/workflows/stage-verify.yml' 'uses: ./.github/workflows/stage-promote.yml' \
        "check must call exactly"
 gr g10 "005-AC5 secrets: inherit on a stage call" 'uses: ./.github/workflows/stage-reproducibility.yml' \
@@ -1958,10 +1971,13 @@ import re, sys, yaml
 text = open(sys.argv[1]).read()
 d = yaml.load(text, Loader=yaml.BaseLoader)
 bad = []
+own = {(s.get("with") or {}).get("name") for jn, j in (d.get("jobs") or {}).items() for s in (j.get("steps") or []) if jn == "vex-attach" and str(s.get("uses", "")).startswith("actions/upload-artifact@")} & {"vex-attach"}      # what the rescan's own vex-attach job uploads (the digests of its scratch attestations), nothing else
 for jn, j in (d.get("jobs") or {}).items():
     for s in (j.get("steps") or []):
-        if str(s.get("uses", "")).startswith("actions/download-artifact@") and "pattern" not in (s.get("with") or {}) and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items"):
-            bad.append("%s downloads %r, which Build never uploads" % (jn, (s.get("with") or {}).get("name")))
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and "pattern" not in (s.get("with") or {}) and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items") + tuple(own):
+            bad.append("%s downloads %r, which neither Build nor this workflow's own vex-attach job uploads" % (jn, (s.get("with") or {}).get("name")))
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") in own and jn != "panel-scout":
+            bad.append("%s downloads %r, which only panel-scout may download" % (jn, (s.get("with") or {}).get("name")))
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
@@ -1976,6 +1992,8 @@ f1() { # f1 ok|caught LABEL FILE [sed-expr]
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC14/F1 $2${out:+ ($out)}"; else bad "AC14/F1 $2 -> $out"; fi; }
 for w in scan main-candidate-rescan; do f1 ok "the real $w.yml consumes only Build's artifacts, no debug, no .oci, no checksums output" "$root/.github/workflows/$w.yml"; done
 f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: oci-candidate/'
+f1 caught "the vex-attach artifact downloaded by a job other than panel-scout (here vex-attach itself) is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/name: vex-attach/'
+f1 caught "a download of vex-attach in a workflow whose own vex-attach job does not upload it (scan.yml) is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: vex-attach/'
 f1 caught "an old artifact name dist-snapshot is caught" "$root/.github/workflows/scan.yml" 's/name: dist$/name: dist-snapshot/'
 f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/scan.yml" 's/needs.build.outputs.digests }}$/needs.build.outputs.checksums }}/'
 f1 caught "the debug variant in a scan loop is caught" "$root/.github/workflows/scan.yml" 's/for v in production fips/for v in production debug fips/'
@@ -2471,13 +2489,17 @@ expect ok "AC3 the five real scripts are rows of .github/policy/chain-scripts.js
 # other mention in them, every other file in the whole tree (the prose directories docs/, requirements/ and test-evidence/ at its top excepted) and every link to the tool is
 # refused; a comment is no exemption (a #-led line can be live code to bash).
 cat > "$work/vi-named.py" <<'PY'
-import glob, hashlib, os, re
+import glob, hashlib, os, re, yaml
 BASE = {"bin/build-stage-assemble.sh", "bin/build-stage-rebuild-assemble.sh", "bin/build-stage-snapshot-assemble.sh", "bin/build-stage-snapshot-rebuild-assemble.sh",
         "bin/vex-index.py", "bin/vex-index-test.sh", "bin/chain-build-wiring-test.sh", "bin/chain-test-harness.py", "bin/chain-test-shape.py", ".github/policy/chain-scripts.json",
         "bin/check-file-allowlist.sh", ".github/workflows/ci.yml"}      # the allowlist only names the file (it admits it as a repository file; it runs nothing); ci.yml runs its test, checked below
 RUN, TEST = "bin/vex-live-run.sh", "bin/vex-live-test-test.sh"
-PINWIRE = (".github", "tests", "pin-wiring-test.sh")      # the pin-wiring judge is recognised by the SHAPE of its path, .github/<one directory>/tests/pin-wiring-test.sh, so this file never names the auditor directory (REQ-AUD-18 AC1: nothing outside it refers to it); the judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new or changed line is refused until a reviewed change updates the list. KNOWN LIMITS (round 3, both seats; stated, not hidden): a reviewed line can still be consumed by LATER lines of the same file that do not name vex-index (for example os.system on the dictionary's run value), which the two live-test files' alias checks do not allow for themselves, and the whole naming check is lexical (a spelling that never puts vex-index on one line is not seen, in every file, as before this change); the judge file is itself a reviewed, pinned security file, so a change to it is a reviewed change
+PINWIRE = (".github", "tests", "pin-wiring-test.sh")      # the pin-wiring judge is recognised by the SHAPE of its path, .github/<one directory>/tests/pin-wiring-test.sh, so this file never names the auditor directory (REQ-AUD-18 AC1: nothing outside it refers to it); the judge quotes ci.yml's step "bash bin/vex-index-test.sh </dev/null" (the test script, never the tool); in that ONE file every line that names vex-index must be, after strip(), one of the reviewed lines in PIN_LINES (sha256): the lines of main's judge (cache#489/#521/#540) and of the strict judge (cache#508). Erasing a quoted string was refused in review (adjacent literals or an eval-rewritten command ran it); a new or changed line is refused until a reviewed change updates the list. KNOWN LIMITS (round 3, both seats; stated, not hidden): a reviewed line can still be consumed by LATER lines of the same file that do not name vex-index (for example os.system on the dictionary's run value), which the two live-test files' alias checks do not allow for themselves, and the whole naming check is lexical (a spelling that never puts vex-index on one line is not seen, in every file, as before this change); the judge file is itself a reviewed, pinned security file, so a change to it is a reviewed change
 PIN_LINES = frozenset((
+    "da7e0d333bef74e866268a6724b75adb51173fc2428c94d79f687e941c5ecc60",
+    "dfc8b28ba0489c3e91555f19b62d1c2bc0a8623a3896a35711a66f467a35720a",
+    "3237e803c9ef9113386f75a589beb5ff29439494fc950e36c74a681cdf9f5dc0",
+    "4953659b48a4026c7420810bf06d5dd7f979f506ec2e0230e846e8db6108f375",
     "76dd2d9e0ddeb935a8e2715fe26fe325cbb168b0c63656a16a0e0f9588029091",
     "b7827728ad4015e730527cbbad9ff10f27f0e01b578d263b4aafac79b2638630",
     "ed9b7baf50c1a06493904a32858062357734918badcf226bc41eb6ecf4033be8",
@@ -2485,6 +2507,18 @@ PIN_LINES = frozenset((
     "7461149042047fd8d64d6d06d7f4f374f16b54a7151a0ea456525e0d80176cb8",
     "9ca61104b6e4518e5faca29e6733bfc150f90f2cdf5708258d192c44ee244f4f",
 ))
+RESCAN = ".github/workflows/main-candidate-rescan.yml"      # the daily rescan (cache#489, handoff 0521) attaches our OpenVEX to its own SCRATCH copies of the candidates (never a published version; its vex-attach job pushes only candidate and fixture tags to the scratch package, judged by bin/panel-wiring-test.sh): in that one file a line naming vex-index must be, after strip(), one of these reviewed lines (sha256), the call lines of that job and the comment above them
+RESCAN_LINES = frozenset((
+    "238f1cc11ed234ed6ed4396dac82934ef001e1193bd8891934c557fbf21b9ba4",
+    "2766fae27cbf871666460813d629a451a4b861a63f18bd64a55ca2d9e6c53bdf",
+))
+PANEL = "bin/panel-wiring-test.sh"      # the test that judges the rescan's vex-attach job quotes its calls as needles and mutation fixtures (data, never run as the tool): reviewed lines only, by sha256, in that one file
+PANEL_LINES = frozenset((
+    "0c58c87305a5593dd87bbbe04da7ef0dd1621782ed4cade1063828f7a875fd55",
+    "acf37cefa743a26b69d9172508b2ce2852040cff3570050effb1ad7cfaefbc8f",
+    "02370c2e7ed26850785448f26236801560e51c8a79aab599cacf3e2af66f9b57",
+))
+LINE_PINS = {RESCAN: RESCAN_LINES, PANEL: PANEL_LINES}
 RUN_CALL = 'python3 "$GITHUB_WORKSPACE/bin/vex-index.py" layout --layout scout-fixture --vex scout-fixture.vex.json >/dev/null || return 1'
 VI_RESULT_LINES = ('check("wrap-index: the real attestation tool accepts the wrapped layout and makes the final index from it", vi_run.returncode == 0, vi_run.stderr[-300:])',
                    'check("scout-vex: the attached document passes the attestation tool\'s own OpenVEX check (the tool is run, never loaded into this process)", vi_run.returncode == 0, vi_run.stderr[-300:])')
@@ -2510,6 +2544,20 @@ def stray(root):
             rel = os.path.relpath(path, root).split(os.sep)
             if len(rel) == 4 and (rel[0], rel[2], rel[3]) == PINWIRE:
                 if any("vex-index" in ln and hashlib.sha256(ln.strip().encode()).hexdigest() not in PIN_LINES for ln in text.splitlines()):
+                    named.add(os.path.relpath(path, root))
+                continue
+            pins = LINE_PINS.get(os.path.relpath(path, root))
+            if pins is not None:
+                nl = [ln.strip() for ln in text.splitlines() if "vex-index" in ln]
+                ok = all(hashlib.sha256(ln.encode()).hexdigest() in pins for ln in nl)
+                if ok and os.path.relpath(path, root) == RESCAN:      # cache#561 ruling: every admitted line exactly once, and the calls only inside jobs.vex-attach
+                    try:
+                        va = ((yaml.safe_load(text) or {}).get("jobs") or {}).get("vex-attach") or {}
+                        inside = {l.strip() for st in (va.get("steps") or []) for l in (st.get("run") or "").splitlines()}
+                    except (yaml.YAMLError, AttributeError):
+                        inside = None
+                    ok = inside is not None and len(nl) == len(set(nl)) and all(ln.startswith("#") or ln in inside for ln in nl)
+                if not ok:
                     named.add(os.path.relpath(path, root))
                 continue
             if "vex-index" in text:
@@ -2624,6 +2672,23 @@ vim p8 "REQ-REL-010-AC4 adjacent string literals around the quoted step string h
 vim p9 "REQ-REL-010-AC4 the step string put in a variable that later lines rewrite to the tool and eval is refused (round 2, seat B)" $PW '' $'cmd="bash bin/vex-index-test.sh </dev/null"\ncmd=${cmd/#bash/python3}\ncmd=${cmd/-test.sh/.py}\neval "$cmd layout --layout /fixture"\n'
 vim p10 "REQ-REL-010-AC4 a reviewed line with anything appended (a comment, a call) is refused" $PW '' "${L1%$'\n'}  # x"$'\n'
 vim p11 "REQ-REL-010-AC4 a reviewed line with a call appended after it on the same line is refused" $PW '' "${L1%$'\n'}; os.system(x)"$'\n'
+# the daily rescan (main-candidate-rescan.yml, cache#489, handoff 0521) attaches our OpenVEX to its own scratch copies of the candidates (never a published version): in THAT file, and only there, a line naming
+# vex-index is admitted only if it is one of the reviewed lines (RESCAN_LINES, by sha256 of the stripped line)
+RS=.github/workflows/main-candidate-rescan.yml
+RSHEAD=$'jobs:\n  vex-attach:\n    steps:\n      - run: |\n'
+R2=$'          python3 bin/vex-index.py layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json\n'
+R1=$'          python3 bin/vex-index.py verify-layout --layout /tmp/layout/fixture-ours --vex /tmp/attach/selfcheck-ours.json --base-digest "${before}"\n'
+vimok r1 "REQ-REL-010-AC4 the daily rescan's reviewed vex-index lines (the fixture calls on a scratch layout), once each inside jobs.vex-attach, are admitted in main-candidate-rescan.yml only" $RS "$RSHEAD$R1$R2"
+vim r2 "REQ-REL-010-AC5 the daily rescan naming vex-index in a line that is not a reviewed line (an attach to a published reference) is refused" $RS '' "$RSHEAD$R2"$'          python3 bin/vex-index.py attach ghcr.io/fosterstack/cache@sha256:0000000000000000000000000000000000000000000000000000000000000000\n'
+vim r3 "REQ-REL-010-AC4 a reviewed rescan line with the layout changed to Build's images is refused" $RS '' "$RSHEAD"$'          python3 bin/vex-index.py layout --layout /tmp/oci/production --vex /tmp/attach/selfcheck-ours.json\n'
+vim r4 "REQ-REL-010-AC4 a reviewed rescan line in another workflow file is refused" .github/workflows/other.yml '' "$RSHEAD$R2"
+vim r8 "REQ-REL-010-AC5 a reviewed rescan line twice (once more than reviewed) is refused (cache#561 ruling: each admitted line exactly once)" $RS '' "$RSHEAD$R2$R2"
+vim r9 "REQ-REL-010-AC5 a reviewed rescan line inside a job other than vex-attach is refused (R2 probe: the line steered at a published copy in scout-root-cause)" $RS '' "$RSHEAD$R2"$'  scout-root-cause:\n    steps:\n      - run: |\n'"$R1"
+PT=bin/panel-wiring-test.sh
+R3=$(printf '%s\n' '        if "vex-index" in att[0].get("run", ""):'); R3="$R3"$'\n'
+vimok r5 "REQ-REL-010-AC4 the panel wiring test's reviewed lines that name the tool (its checks and one mutation fixture) are admitted in bin/panel-wiring-test.sh only" $PT "$R3"
+vim r6 "REQ-REL-010-AC5 bin/panel-wiring-test.sh naming vex-index in a line that is not a reviewed line is refused" $PT '' "$R3"$'subprocess.run(["python3", "bin/vex-index.py", "attach", "ghcr.io/fosterstack/cache"])\n'
+vim r7 "REQ-REL-010-AC4 the panel wiring test's reviewed needle line in another test file is refused" bin/other-wiring-test.sh '' "$R3"
 # a link to the tool is the tool: refused wherever it sits
 ld="$work/vim-link"; rm -rf "$ld"; mkdir -p "$ld/bin" "$ld/.github/workflows" "$ld/.github/policy"; cp "$root/bin/vex-live-run.sh" "$root/bin/vex-live-test-test.sh" "$ld/bin/"
 printf 'x\n' > "$ld/bin/vex-index.py"; ln -s vex-index.py "$ld/bin/attach.py"
@@ -2675,7 +2740,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=927
+EXPECT=945
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

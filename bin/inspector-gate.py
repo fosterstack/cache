@@ -18,6 +18,10 @@
 # ignored — the generator may call busybox pkg:generic or pkg:apk; a
 # namespaced name such as a Go module path must match in full).
 #
+# Image scope (REQ-REL-004-AC1): a product with variant= and/or arch= qualifiers covers only the image whose label ends in
+# <variant>-<arch> (production|fips, amd64|arm64) and agrees on every qualifier it carries; a product with neither covers every
+# image. A scoped product never covers an image whose identity the label does not give, and a repeated qualifier is ambiguous: no cover.
+#
 # ScanSbom answers {"sbom": <CycloneDX document>}; the document is unwrapped
 # here, and a response that is neither that envelope nor a CycloneDX
 # document is "did not run" — never read as zero findings.
@@ -60,13 +64,55 @@ def same_pkg(a, b):
     return an.rsplit("/", 1)[-1] == bn.rsplit("/", 1)[-1]
 
 
+IMAGE = re.compile(r"cand-(production|fips)-(amd64|arm64)")   # the tag scan.yml loads every image under: cand-<variant>-<arch>, nothing before or after
+VARIANTS = ("production", "fips")
+ARCHES = ("amd64", "arm64")
+
+
+def image_identity(label):
+    m = IMAGE.fullmatch(label or "")
+    return {"variant": m.group(1), "arch": m.group(2)} if m else {}
+
+
+def scope_of(product_id):
+    """{'variant': .., 'arch': ..} the product names (only those present), read in the rescan statement's grammar: the query is split raw on '&' (no
+    percent-decoding), every part is key=value with a non-blank value, the keys are only repository_url, variant and arch, in lower case, each once, variant
+    is production or fips and arch is amd64 or arm64. Anything else is None: that product covers nothing (the finding blocks), the rest of the document is
+    unaffected."""
+    base, q, query = product_id.partition("?")
+    if base.startswith("pkg:golang/"):
+        return {} if not q and "@" not in base and "\n" not in product_id else None   # the Go product: unversioned, no qualifier (a pinned one never applies). A trailing newline (which OUR_PRODUCTS's $ lets through) is refused here although the rescan reads it as the Go product: the gate only ever blocks more, never suppresses more.
+    # only this gate's own repository: the images it scans are ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so a statement that names only the
+    # candidates repository covers none of them (bin/rescan-statement.py::_vex_match and bin/panel.py::_covers agree; REQ-REL-004-AC1)
+    repo = {"pkg:oci/cache": "ghcr.io/fosterstack/cache"}.get(base)
+    if repo is None or not q:
+        return None
+    scope, seen = {}, set()
+    for part in query.split("&"):
+        k, eq, v = part.partition("=")
+        if not eq or not v or k not in ("repository_url", "variant", "arch") or k in seen:
+            return None
+        seen.add(k)
+        if k == "repository_url" and v != repo:
+            return None
+        if k == "variant" and v not in VARIANTS or k == "arch" and v not in ARCHES:
+            return None
+        if k != "repository_url":
+            scope[k] = v
+    return scope if "repository_url" in seen else None
+
+
+def in_scope(scope, image):
+    return scope is not None and all(image.get(k) == v for k, v in scope.items())
+
+
 def load(path):
     with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def vex_index(doc):
-    """vulnerability id → list of subcomponent (name, ver) sets; an empty set
+    """vulnerability id → list of (subcomponent (name, ver) set, product scope); an empty set
     means the statement covers every package of our product."""
     idx = {}
     for st in doc.get("statements") or []:
@@ -81,12 +127,16 @@ def vex_index(doc):
             subs = {name_version(s.get("@id")) for s in p.get("subcomponents") or []}
             for i in ids:
                 if i:
-                    idx.setdefault(i, []).append(subs)
+                    idx.setdefault(i, []).append((subs, scope_of(pid)))
     return idx
 
 
-def covered(idx, vid, pkg):
-    for subs in idx.get(vid, []):
+def covered(idx, vid, pkg, image=None):
+    """image = the scanned image's identity (image_identity(label)); None means the caller has already filtered the statements to
+    this image (the panel's tally does, per image), so the scope is not applied a second time."""
+    for subs, scope in idx.get(vid, []):
+        if image is not None and not in_scope(scope, image):
+            continue
         if not subs or any(same_pkg(pkg, s) for s in subs):
             return True
     return False
@@ -117,6 +167,7 @@ def main(argv):
         if c.get("bom-ref"):
             by_ref[c["bom-ref"]] = c
     idx = vex_index(vex)
+    image = image_identity(label)
     blocking, suppressed = [], []
     for v in findings.get("vulnerabilities") or []:
         vid = v.get("id") or "?"
@@ -127,7 +178,7 @@ def main(argv):
             if not pkg[0]:
                 pkg = ((c.get("name") or "?").lower(), c.get("version") or "")
             row = f"{vid} {pkg[0]}@{pkg[1]} ({sev})"
-            (suppressed if covered(idx, vid, pkg) else blocking).append(row)
+            (suppressed if covered(idx, vid, pkg, image) else blocking).append(row)
     print(f"inspector {label}: {len(comps)} packages, {len(blocking)} finding(s), "
           f"{len(suppressed)} covered by the published VEX")
     for r in suppressed:

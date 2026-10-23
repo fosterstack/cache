@@ -78,7 +78,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "8f9cca7b3b6be118143ecea0346fa24c6952df0bf03147875e910482d46ed03f",
+      "sha256": "6bbc34ef5a13ddf74491a87c55b4a554a0ba00c29cdb754abb2120069b9245b2",
       "tools": [
         "at",
         "curl",
@@ -698,7 +698,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "ff28939bc293f498968880832fdef0715594340f9d3c09e6f8a9f2cb9da4bf5c",
+      "sha256": "649171c73e1fe8489e8929ef85d31cdb5556eea6e2d07b58941c5eafe0feba27",
       "tools": [
         "find",
         "python3",
@@ -1256,7 +1256,7 @@
     },
     {
       "path": "bin/acceptance-egress.sh",
-      "sha256": "2cb48402757c20362f4b6c3efa4dbbe5332b66e25e6c01c53972cf2206360119",
+      "sha256": "26294f50e61980b026f9439f6395ab0b2a91ed23e049a4580d2d05f06afdf06b",
       "tools": [
         "at",
         "awk",
@@ -1684,7 +1684,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "7562be1b5cbcd9d57a051d309ba07dfad02ccee935e817bb6e645052b29fb8b3",
+      "sha256": "2aaf3d0aebb74f8d79e2217825fa0d57d0757a8dfc956d7f4fb2dab315baee04",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -1718,13 +1718,6 @@
           "line_sha256": "1ef923e0855bd10ef7f6ad6275a077edae3c38f8a0fe88aabd831c065b0a679e",
           "count": 2,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        },
-        {
-          "rule": "deny",
-          "line": "  if [ \"$highest\" = \"$ver\" ]; then plan+=(\"production:${ver%%.*}\" \"production:latest\"); fi",
-          "line_sha256": "28601330ec12bb7daf5fe62e79a6cf8390227cc8b80121dfdf862ca888e98398",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
       ]
     },
@@ -2053,7 +2046,7 @@
     },
     {
       "path": "bin/check-osv-vex.py",
-      "sha256": "10f8ea45340cf5fb1f14b39a0a269e75c5c81c6497c66a00166f48f4ed382c30",
+      "sha256": "b4469b84e9822df6de8d5d29ebcffbcfab3d9816dd035b022a71b9cefcd118a2",
       "tools": [],
       "runs": [
         "bin/rescan-statement.py"
@@ -2106,12 +2099,14 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "25a0cdba9df3466d04296a8da3e3883961f280fbc8a8f6ea3b90be48eeb828d1",
+      "sha256": "21b40d6a082f6e5ba0724978f62d3de62e1ef48777dc95147ab0638959acaa4b",
       "tools": [
         "at",
         "python3"
       ],
-      "runs": [],
+      "runs": [
+        "bin/rescan-statement.py"
+      ],
       "signs": false,
       "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
     },
@@ -2186,7 +2181,7 @@
       "runs": [],
       "signs": false,
       "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
-      "sha256": "f589caa84302a03c3772cb2d315eba0bd53e525da99d67af60e17eaa057a8d0d"
+      "sha256": "6885b20ca04340219a59d92b35d6741aae93b177acb24567ee737fe24027bf2f"
     },
     {
       "path": "bin/release-sign-apks.sh",
@@ -2295,7 +2290,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "5136b1ef162888a4637e4f766eeff9a79762d72bf11e7b1f7ad5008a5c68e6d7",
+      "sha256": "0a5bff4d853b6e407eb37c994f5cbb8bf6f078651190268da1b14e9da3169232",
       "exceptions": [
         {
           "rule": "script-name",
@@ -2414,8 +2409,8 @@
         },
         {
           "rule": "deny",
-          "line": "  [ \"$fipsvals\" = \"GOFIPS140=v1.0.0-c2097c7c\" ] || die \"the fips binary must record exactly one GOFIPS140=v1.0.0-c2097c7c and nothing else (found: ${fipsvals:-none})\" 1",
-          "line_sha256": "d702c5f2fa63ec57010d630e165a2576ab4b77be29cbaf20885a78a771b5c05b",
+          "line": "  [ \"$fipsvals\" = \"$fipswant\" ] || die \"the fips binary must record exactly one $fipswant (the module build/locks/fips-module.txt names) and nothing else (found: ${fipsvals:-none})\" 1",
+          "line_sha256": "b683d12502b5ba1ff41a702cc87c40c38a0ed7bbe677193a20ecebed8abadec5",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line has a quote or backslash inside its brackets and a substitution or parameter expansion later on the line: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated line-bound waiver reviewed as one batch in PR 452, every waived line is a real test)"
         },
