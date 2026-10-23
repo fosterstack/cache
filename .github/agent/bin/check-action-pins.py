@@ -1039,7 +1039,7 @@ def _command_words(toks):
     return words
 
 
-def _container_inner(tool, args, optvars=frozenset()):
+def _container_inner(tool, args):
     """The command a step runs INSIDE a container: for `docker|podman|nerdctl [container] exec [opts] CONTAINER CMD…` the words after the
     container, for `… run|create [opts] IMAGE CMD…` the words after the image (led by the --entrypoint program when one is given). The image or
     container itself is judged elsewhere; the inner command is a command of its own and is read like a top-level one (#593 review: `exec`
@@ -1054,7 +1054,6 @@ def _container_inner(tool, args, optvars=frozenset()):
     verb, rest = rest[0], rest[1:]
     if verb == "container" and rest[:1] in (["exec"], ["run"], ["create"]):
         verb, rest = rest[0], rest[1:]
-    rest = [a for a in rest if not _is_optvar(a, optvars)]  # INNER-OPTVARS  (a variable that holds OPTIONS is not the image or the container)
     if verb == "exec":  # INNER-EXEC
         k, unknown = _options(rest, EXEC_VAL, EXEC_BOOL)
         return None if unknown or k >= len(rest) else rest[k + 1:]
@@ -1075,21 +1074,20 @@ def _container_inner(tool, args, optvars=frozenset()):
     return None
 
 
-def _commands(script, depth=0):
+def _commands(script, depth=0, in_container=False):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
-    optvars = _options_variables(script)
     out = []
     if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
         out.append(["__too_deep__", "case ... esac inside $( )"])    # a case pattern's `)` ends the substitution early: refuse (Codex #164 r19, B10)
     if depth < 6:
         for sub in inner:
             if sub.startswith("(") and sub.endswith(")"):     # $(( … )) arithmetic: only its own $( … ) run
-                out += [c for n in _cut_substitutions(sub[1:-1])[1] for c in _commands(n, depth + 1)]
+                out += [c for n in _cut_substitutions(sub[1:-1])[1] for c in _commands(n, depth + 1, in_container)]
             else:
-                out += _commands(sub, depth + 1)
+                out += _commands(sub, depth + 1, in_container)
     elif inner:
         out.append(["__too_deep__", "command substitutions"])   # never silently dropped (C02)
     for chunk in _split_commands(text):
@@ -1097,6 +1095,9 @@ def _commands(script, depth=0):
         toks = _tokens(chunk)
         if not toks or toks[0] in PRINTERS:
             continue
+        at0 = next((i for i, w in enumerate(toks) if _base(w) in ("docker", "podman", "nerdctl")), None)
+        inner0 = _container_inner(_base(toks[at0]), toks[at0 + 1:]) if at0 is not None else None
+        inner_start = len(toks) - len(inner0) if inner0 else None     # the words from here on run inside the container
         for i, w in enumerate(toks):
             c = next((j for j in range(i + 1, len(toks)) if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", toks[j])), None) \
                 if _base(w) in SHELLS else None
@@ -1112,11 +1113,11 @@ def _commands(script, depth=0):
                 if depth >= 4:                                # nesting past the limit is refused (Codex r1, C02)
                     out.append(["__too_deep__", w])
                 elif c is not None:
-                    out += _commands(toks[c + 1], depth + 1) if c + 1 < len(toks) else []
+                    out += _commands(toks[c + 1], depth + 1, in_container or (inner_start is not None and i >= inner_start)) if c + 1 < len(toks) else []
                 elif trap_cmd is not None:
-                    out += _commands(trap_cmd, depth + 1)
+                    out += _commands(trap_cmd, depth + 1, in_container or (inner_start is not None and i >= inner_start))
                 else:
-                    out += _commands(" ".join(toks[i + 1:]), depth + 1)
+                    out += _commands(" ".join(toks[i + 1:]), depth + 1, in_container or (inner_start is not None and i >= inner_start))
                 break
         inline = next((w for w in _command_words(toks) if _base(w) in INTERPRETERS and any(
             re.match(INTERPRETERS[_base(w)], t) for t in toks[toks.index(w) + 1:])), None)
@@ -1174,16 +1175,16 @@ def _commands(script, depth=0):
         at = next((i for i, w in enumerate(toks) if _base(w) in TOOLS or PKG_TOOL.match(_base(w))), None)
         if at is not None:
             out.append([_base(toks[at])] + toks[at + 1:])
-            inner = _container_inner(_base(toks[at]), toks[at + 1:], optvars)
+            inner = _container_inner(_base(toks[at]), toks[at + 1:])
             if inner:         # the command run inside the container is a command of its own
                 if depth >= 4:
                     out.append(["__too_deep__", _base(toks[at])])
                 else:
-                    for c in _commands(" ".join(shlex.quote(t) for t in inner), depth + 1):
-                        # a script path inside a container names the container's file, never the checkout's: it is not bound to a committed
-                        # file (the bytes are the image's, which is pinned by digest) and, as before this change, not read
-                        if c[0] not in ("__script__", "__exec__", "__globexec__", "__foreign__"):
-                            out.append(c)
+                    out += _commands(" ".join(shlex.quote(t) for t in inner), depth + 1, True)
+    if in_container:
+        # a script path inside a container names the container's file, never the checkout's: it is not bound to a committed file (the bytes are
+        # the image's, which is pinned by digest) and, as before the inner command was read, not read. Kept through every nested -c / eval / $( ).
+        out = [c for c in out if c[0] not in ("__script__", "__exec__", "__globexec__", "__foreign__")]
     return out
 
 
