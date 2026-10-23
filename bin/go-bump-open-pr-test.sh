@@ -54,6 +54,7 @@ g = open(w + "/bin/gen-recipes.py").read()
 open(w + "/bin/gen-recipes.py", "w").write(re.sub(r'^TEMPLATE_SHA256 = "[0-9a-f]{64}"', 'TEMPLATE_SHA256 = "' + h + '"', g, count=1, flags=re.M))
 PY
   ( cd "$work" && python3 bin/gen-recipes.py --write >/dev/null 2>&1 )
+  [ "${BUMP_TMPL:-ok}" = pinbad ] && sed -i.bak "s/^TEMPLATE_SHA256 = \"[0-9a-f]\{64\}\"/TEMPLATE_SHA256 = \"$(printf 'f%.0s' $(seq 64))\"/" "$work/bin/gen-recipes.py" && rm -f "$work/bin/gen-recipes.py.bak"
   # go.dev, over HTTPS: the published list (mode=json) and the two linux tarballs, served by a mock download program; BUMP_CURL=down|mismatch|nolist|badhex breaks it
   local amd arm; amd=$(printf 'go1.27.0 amd64 tarball' | sha256sum | cut -d' ' -f1); arm=$(printf 'go1.27.0 arm64 tarball' | sha256sum | cut -d' ' -f1)
   [ "${BUMP_CURL:-ok}" = mismatch ] && amd=$(printf 'c%.0s' $(seq 64))
@@ -156,11 +157,21 @@ BUMP_CURL=nolist run_case "a version go.dev does not publish -> fails closed" "$
 BUMP_CURL=badhex run_case "a published checksum that is not 64 hex -> fails closed" "$SUT" '[]' 0 0 "" 1 "$LIST"$'\n'"$LSR" old
 BUMP_TMPL=drift run_case "a template not pinned at the current Go -> fails closed, nothing changed or pushed" "$SUT" '[]' 0 0 "" 1 "$LIST"$'\n'"$LSR" old
 BUMP_TMPL=split run_case "a template whose uri and sha256 lines are apart -> fails closed before any file changes" "$SUT" '[]' 0 0 "" 1 "$LIST"$'\n'"$LSR" old
+BUMP_TMPL=pinbad run_case "a template that no longer equals its pin -> fails closed (a bump re-pins reviewed bytes only)" "$SUT" '[]' 0 0 "" 1 "$LIST"$'\n'"$LSR" old
+# the Go versions are plain release numbers: anything else is refused before a single call (they go into file names, a pattern and the template)
+vout=$(cd "$(mktemp -d)" && bash "$SUT" '1.26.6' '1.27.0; rm -rf x' 2>&1); vrc=$?
+if [ "$vrc" = 2 ] && grep -q 'must look like' <<<"$vout"; then echo "ok: a Go version that is not a plain release number is refused (exit 2) before any call"; pass=$((pass+1)); else echo "FAIL: a malformed version was not refused (rc=$vrc): ${vout:0:200}"; fail=$((fail+1)); fi
+# every interpreter this script starts runs without the App token and without site or working-directory imports
+loose=$(grep -n 'python3' "$SUT" | grep -v 'env -u GH_TOKEN /usr/bin/python3 -I -B' | grep -v '^[0-9]*:[[:space:]]*#' || true)
+if [ -z "$loose" ]; then echo "ok: every python3 the bump script starts is 'env -u GH_TOKEN /usr/bin/python3 -I -B'"; pass=$((pass+1)); else echo "FAIL: a python3 call without the token removed or isolated mode: $loose"; fail=$((fail+1)); fi
 # a standing consistency check (every run, not only on a bump): go.mod's toolchain version, tools/requirements/go.mod's and the installer's pin agree
 root="$(cd "$here/.." && pwd)"
 gv() { awk '$1 == "toolchain" && $2 ~ /^go[0-9]/ {sub(/^go/, "", $2); t = $2} $1 == "go" && g == "" {g = $2} END {print (t != "" ? t : g)}' "$1"; }
 a=$(gv "$root/go.mod"); b=$(gv "$root/tools/requirements/go.mod"); c=$(sed -n 's/^GO_VER=\([0-9.]*\).*/\1/p' "$root/bin/install-scanner.sh" | head -1)
 d=$(sed -n 's#^ *uri: https://go\.dev/dl/go\([0-9.]*\)\.linux-amd64\.tar\.gz$#\1#p' "$root/build/melange.yaml.tmpl" | head -1); e=$(sed -n 's#^ *uri: https://go\.dev/dl/go\([0-9.]*\)\.linux-arm64\.tar\.gz$#\1#p' "$root/build/melange.yaml.tmpl" | head -1)
+ts_a=$(sed -n '/linux-amd64\.tar\.gz$/{n;s/^ *expected-sha256: //p;}' "$root/build/melange.yaml.tmpl" | head -1); ts_r=$(sed -n '/linux-arm64\.tar\.gz$/{n;s/^ *expected-sha256: //p;}' "$root/build/melange.yaml.tmpl" | head -1)
+is_a=$(sed -n 's/.*go:x86_64|go:amd64) SUM=\([0-9a-f]*\) ;;/\1/p' "$root/bin/install-scanner.sh" | head -1); is_r=$(sed -n 's/.*go:aarch64|go:arm64) SUM=\([0-9a-f]*\) ;;/\1/p' "$root/bin/install-scanner.sh" | head -1)
+if [ -n "$ts_a" ] && [ "$ts_a" = "$is_a" ] && [ -n "$ts_r" ] && [ "$ts_r" = "$is_r" ]; then echo "ok: the template's two expected-sha256 values equal the installer's two sums"; pass=$((pass+1)); else echo "FAIL: the template's expected-sha256 values '$ts_a' '$ts_r' differ from the installer's '$is_a' '$is_r'"; fail=$((fail+1)); fi
 if [ -n "$a" ] && [ "$a" = "$b" ] && [ "$a" = "$c" ] && [ "$a" = "$d" ] && [ "$a" = "$e" ]; then echo "ok: go.mod ($a), tools/requirements/go.mod ($b), the installer's GO_VER ($c) and the recipe template's two go.dev pins ($d, $e) agree"; pass=$((pass+1))
 else echo "FAIL: go.mod '$a', tools/requirements/go.mod '$b', bin/install-scanner.sh GO_VER '$c' and the recipe template's pins '$d'/'$e' disagree (a Go bump must change all of them)"; fail=$((fail+1)); fi
 # the pull request shows the three changes side by side
