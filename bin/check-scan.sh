@@ -277,7 +277,7 @@ for s in "${scanners[@]}"; do
       # --all-vulns shows them; call analysis is OFF by default in 2.6.0 (probed) and no config or variable can turn it on here (the config is empty, OSV_SCANNER_* is refused),
       # so the scanner never decides not-affected on its own; the report is judged here whatever the exit code. Known limit, pending the owner: osv-scanner's container filter
       # drops a package named linux before matching, whatever the config or the VEX says.
-      nf=$(jq -e 'def lst(k): if has(k) then (if (.[k] | type) == "array" then .[k] else error("not a list") end) else [] end; [lst("results")[] | lst("packages")[] | lst("vulnerabilities") | length] | add // 0' "$tmp/out.json" 2> /dev/null) || nf=unreadable
+      nf=$(jq -e 'def lst(k): if type != "object" then error("not an object") elif has(k) then (if (.[k] | type) == "array" then .[k] else error("not a list") end) else [] end; [lst("results")[] | lst("packages")[] | lst("vulnerabilities") | length] | add // 0' "$tmp/out.json" 2> /dev/null) || nf=unreadable
       if [[ ! "$nf" =~ ^[0-9]+$ ]]; then
         echo "check-scan: osv-scanner's report for $name cannot be read: nothing is judged behind a result that cannot be read" >&2; rc=2
       elif [ "$nf" -gt 0 ]; then
