@@ -896,7 +896,7 @@ run env AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$BIN/auditor-run.py" --dry-run false
   baserb="$(grep -cE 'auditor/base-rebuild' "$shim" 2>/dev/null)"; baserb="${baserb:-0}"
   goget="$(grep -cE '^go get ' "$shim" 2>/dev/null)"; goget="${goget:-0}"
   tidy="$(grep -cE '^go mod tidy' "$shim" 2>/dev/null)"; tidy="${tidy:-0}"
-  addonly="$(grep -cE '^gh api graphql createCommitOnBranch auditor/bump-[^ ]+ -- go\.mod go\.sum$' "$shim" 2>/dev/null)"; addonly="${addonly:-0}"
+  addonly="$(grep -cE '^gh api graphql createCommitOnBranch auditor/bump-[^ ]+ -- go\.mod go\.sum vendor/\*\*$' "$shim" 2>/dev/null)"; addonly="${addonly:-0}"
   { [ "$bump" -ge 1 ] 2>/dev/null && [ "$baserb" -eq 0 ] 2>/dev/null && [ "$goget" -ge 1 ] 2>/dev/null && [ "$tidy" -ge 1 ] 2>/dev/null && [ "$addonly" -ge 1 ] 2>/dev/null; } \
     && ok || no "draft bump PR delivered via go get/tidy + a signed API commit of go.mod/go.sum only; base rebuild is not a PR" "bump=$bump base_rebuild_prs=$baserb goget=$goget tidy=$tidy signed_commit_gomod_gosum=$addonly"; }
 
@@ -4002,6 +4002,128 @@ o="$WORK/pm-contra3-run"; rm -rf "$o"; : > "$LEDGER"
 rc3=0; "$PY" "$BIN/auditor-run.py" --dry-run true --manifest "$WORK/pm-contra3/manifest.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --out "$o" >/dev/null 2>&1 || rc3=$?
 i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/null; } && echo yes || echo no)"       # an unparseable verdict stops the run (manifest invalid), never a complete day
 { eq "$i1" "yes" && eq "$i2" "yes" && eq "$n2" "yes" && eq "$i3" "yes"; } && ok || no "contradictory manifests: no verdict, an unparseable verdict, or a verdict with an uncounted image -> incomplete (naming the image)" "null-verdict=$i1 uncounted=$i2 names_image=$n2 unparseable=$i3"
+
+echo "=== rc-5b item 8 (A5): a bump PR carries vendor/, is a draft, never auto-merges, and says provenance is not regenerated ==="
+PROV_LINE='dependency provenance not regenerated; a lane regenerates it before merge'
+
+rc5b8_verdict() {   # <bin dir> <tag>: runs the shim delivery with auto-merge on and prints "yes" when every claim of the case below holds, else what failed
+  local bin="$1" tag="$2" o="$WORK/rc5b8-$2" shim="$WORK/rc5b8-$2.shim"; rm -rf "$o"; rm -f "$shim"; : > "$LEDGER"
+  env AUDITOR_AUTOMERGE=on AUDITOR_GIT_SHIM_LOG="$shim" "$PY" "$bin/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+  local t v c d a b order=no
+  t="$(grep -n '^go mod tidy' "$shim" | head -1 | cut -d: -f1)"; v="$(grep -n '^go mod vendor' "$shim" | head -1 | cut -d: -f1)"; c="$(grep -nE '^gh api graphql createCommitOnBranch auditor/bump-[^ ]+ -- go\.mod go\.sum vendor/\*\*$' "$shim" | head -1 | cut -d: -f1)"
+  [ -n "$t" ] && [ -n "$v" ] && [ -n "$c" ] && [ "$t" -lt "$v" ] && [ "$v" -lt "$c" ] && order=yes
+  d="$(grep -cE '^gh pr create --draft .*auditor/bump' "$shim")"; a="$(grep -cE 'pr merge --auto.*auditor/bump' "$shim")"; b="$(grep -cxF "PR_BODY_HAS $PROV_LINE" "$shim")"
+  if [ "$order" = yes ] && [ "$d" -ge 1 ] && [ "$a" = 0 ] && [ "$b" -ge 1 ]; then echo yes; else echo "order=$order (tidy=$t vendor=$v commit=$c) draft_prs=$d armed=$a body_lines=$b"; fi
+}
+
+begin "rc5b8-bump-vendors-stays-draft-and-names-the-missing-provenance" "after go mod tidy the bump runs go mod vendor and commits go.mod, go.sum and vendor/** through the signed API commit; the PR is a draft that is NEVER armed, even with the owner's auto-merge on; its body says the provenance is not regenerated"
+v8="$(rc5b8_verdict "$BIN" real)"
+eq "$v8" "yes" && ok || no "tidy < vendor < signed commit of go.mod go.sum vendor/**; draft PR; no auto-merge; body line" "$v8"
+
+begin "rc5b8-mutants-each-cut-of-the-new-code-is-caught" "with the vendor step, the draft flag, the vendor paths in the commit or the body line cut out of a copy of the driver, the case above fails (it depends on each)"
+mut_ok=yes; mut_detail=""
+cr="$WORK/rc5b8-mr-control"; rm -rf "$cr"; mkdir -p "$cr/.github/agent"; cp -R "$BIN" "$cr/.github/agent/bin"; cp -R bin "$cr/bin"
+cv8="$(rc5b8_verdict "$cr/.github/agent/bin" control)"
+[ "$cv8" = yes ] || { mut_ok=no; mut_detail=" [the unmutated copy does not pass: $cv8]"; }
+for m in "vendor|go mod vendor\",|XX\"," "draft|    draft = \"--draft \"|    draft = \"\"" "body|        if BUMP_PROVENANCE_LINE in body:|        if False:" "commit-paths|-- go.mod go.sum vendor/**|-- go.mod go.sum"; do
+  name="${m%%|*}"; rest="${m#*|}"; old="${rest%%|*}"; new="${rest#*|}"
+  mr="$WORK/rc5b8-mr-$name"; rm -rf "$mr"; mkdir -p "$mr/.github/agent"; cp -R "$BIN" "$mr/.github/agent/bin"; cp -R bin "$mr/bin"; mb="$mr/.github/agent/bin"   # the driver finds bin/panel.py from its own place in a tree
+  if ! "$PY" - "$mb/auditor-run.py" "$old" "$new" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+if src.count(sys.argv[2]) != 1:
+    sys.exit(1)
+open(sys.argv[1], "w").write(src.replace(sys.argv[2], sys.argv[3]))
+PY
+  then mut_ok=no; mut_detail="$mut_detail [$name: mutation site not found exactly once]"; continue; fi
+  mv8="$(rc5b8_verdict "$mb" "m-$name")"
+  [ "$mv8" = yes ] && { mut_ok=no; mut_detail="$mut_detail [$name: mutant still passes]"; }
+done
+eq "$mut_ok" "yes" && ok || no "every mutant fails the case" "$mut_detail"
+
+begin "rc5b8-real-path-stages-the-vendor-files-and-refuses-an-oversized-commit" "the real delivery path (fake git, go and gh) runs go mod vendor, hands the signed commit go.mod, go.sum and every changed vendor file (a deleted one as a deletion), creates a DRAFT with the provenance line, never arms it; a vendor change over the size cap is a delivery ERROR (run INCOMPLETE), never a partial commit"
+fb="$WORK/rc5b8r-bin"; rm -rf "$fb"; mkdir -p "$fb"; glog="$WORK/rc5b8r-gh.log"; gin="$WORK/rc5b8r-graphql.json"; golog="$WORK/rc5b8r-go.log"; rm -f "$glog" "$gin" "$golog"
+cat > "$fb/gh" <<EOF
+#!/usr/bin/env bash
+echo "ARGS=\$*" >> "$glog"
+if [ "\$1" = "pr" ] && [ "\$2" = "create" ]; then echo "https://github.com/OWNER/REPO/pull/7"; fi
+case "\$2" in */git/ref/heads/*) echo '{"object":{"sha":"cccccccccccccccccccccccccccccccccccccccc"}}';; esac
+if [ "\$1" = "api" ] && [ "\$2" = "graphql" ]; then cat > "$gin"; echo '{"data":{"createCommitOnBranch":{"commit":{"oid":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","signature":{"isValid":true,"state":"VALID"}}}}}'; fi
+exit 0
+EOF
+cat > "$fb/git" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$WORK/rc5b8r-git.log"
+case "\$1 \$2" in
+  "diff --cached") case "\$*" in *--quiet*) exit 1;; *--name-only*) printf 'go.mod\0go.sum\0vendor/example.org/lib/a.go\0vendor/example.org/lib/gone.go\0vendor/modules.txt\0'; [ -n "\${RC5B8_BIG:-}" ] && printf 'vendor/example.org/lib/big.bin\0';; esac;;
+  "fetch origin") [ "\$3" = "main" ] || exit 1;;
+  "rev-parse origin/main") echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;;
+esac
+exit 0
+EOF
+cat > "$fb/go" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$golog"
+case "\$1 \$2" in
+  "get "*) printf 'module x\n' > go.mod;;
+  "mod tidy") printf 'module x\n' > go.mod; printf 'sum\n' > go.sum;;
+  "mod vendor") [ -n "\${RC5B8_VENDOR_FAIL:-}" ] && { echo "go: vendor failed" >&2; exit 1; }; mkdir -p vendor/example.org/lib; printf 'package lib\n' > vendor/example.org/lib/a.go; printf '# example.org/lib v1.2.3\n' > vendor/modules.txt; [ -n "\${RC5B8_BIG:-}" ] && head -c 6000000 /dev/zero > vendor/example.org/lib/big.bin;;
+esac
+exit 0
+EOF
+chmod +x "$fb/gh" "$fb/git" "$fb/go"
+ws="$WORK/rc5b8r-ws"; rm -rf "$ws"; mkdir -p "$ws/vendor"; cp -R .vex "$ws/"
+o="$WORK/rc5b8r"; rm -rf "$o"
+env PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" GITHUB_REPOSITORY=OWNER/REPO AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP AUDITOR_ISSUES_TOKEN=JOB AUDITOR_AUTOMERGE=on \
+  "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$o" >/dev/null 2>&1
+vend="$(grep -c '^mod vendor' "$golog" 2>/dev/null)"
+paths="$("$PY" - "$gin" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    f = d["variables"]["input"]["fileChanges"] if "variables" in d else d["fileChanges"]
+    print(",".join(sorted([a["path"] for a in f.get("additions", [])] + ["-" + x["path"] for x in f.get("deletions", [])])))
+except Exception as e:
+    print("unreadable:" + type(e).__name__)
+PY
+)"
+draftline="$(grep -c '^ARGS=pr create --base main --head auditor/bump.* --draft\|^ARGS=pr create --draft' "$glog")"
+hasline="$(grep -cF "$PROV_LINE" "$glog")"
+armed="$(grep -c 'ARGS=pr merge --auto' "$glog")"
+want="-vendor/example.org/lib/gone.go,go.mod,go.sum,vendor/example.org/lib/a.go,vendor/modules.txt"
+big_o="$WORK/rc5b8r-big"; rm -rf "$big_o"; rm -f "$glog" "$gin"; rm -rf "$ws"; mkdir -p "$ws/vendor"; cp -R .vex "$ws/"
+env RC5B8_BIG=1 PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" GITHUB_REPOSITORY=OWNER/REPO AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP AUDITOR_ISSUES_TOKEN=JOB \
+  "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$big_o" >/dev/null 2>&1; bigrc=$?
+bigerr="$(grep -c 'bump PR delivery FAILED' "$big_o/report.md" 2>/dev/null)"; bigcommit="$(grep -c 'ARGS=api graphql' "$glog" 2>/dev/null)"; bigprs="$(grep -c 'ARGS=pr create.*auditor/bump' "$glog" 2>/dev/null)"
+{ [ "$vend" -ge 1 ] 2>/dev/null && eq "$paths" "$want" && [ "$draftline" -ge 1 ] 2>/dev/null && [ "$hasline" -ge 1 ] 2>/dev/null && eq "$armed" "0" && [ "$bigrc" -ne 0 ] 2>/dev/null && [ "$bigerr" -ge 1 ] 2>/dev/null && eq "$bigprs" "0"; } \
+  && ok || no "go mod vendor ran; the commit carries go.mod go.sum + changed vendor files + the deletion; draft with the line; never armed; an oversized vendor change fails the run with no PR" "vendor_runs=$vend paths=[$paths] draft=$draftline line=$hasline armed=$armed oversized: rc=$bigrc incomplete=$bigerr graphql_calls=$bigcommit bump_prs=$bigprs"
+
+begin "rc5b8-failed-vendor-and-an-unvendored-tree-and-the-staging-guards" "a failing go mod vendor is a delivery ERROR with no PR; a tree with no vendor/ runs no go mod vendor and stages only go.mod and go.sum; the staged-path guard refuses a path outside go.mod, go.sum and vendor/, a failing git diff, and a change over the file-count or byte caps"
+fb="$WORK/rc5b8r-bin"
+vf_o="$WORK/rc5b8v-fail"; rm -rf "$vf_o"; : > "$WORK/rc5b8r-gh.log"; rm -f "$WORK/rc5b8r-go.log"; ws="$WORK/rc5b8v-ws"; rm -rf "$ws"; mkdir -p "$ws/vendor"; cp -R .vex "$ws/"
+env RC5B8_VENDOR_FAIL=1 PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" GITHUB_REPOSITORY=OWNER/REPO AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP AUDITOR_ISSUES_TOKEN=JOB \
+  "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$vf_o" >/dev/null 2>&1
+vfail="$(grep -c 'bump PR delivery FAILED.*go mod vendor' "$vf_o/report.md" 2>/dev/null)"; vprs="$(grep -c 'ARGS=pr create.*auditor/bump' "$WORK/rc5b8r-gh.log" 2>/dev/null)"
+nv_o="$WORK/rc5b8v-none"; rm -rf "$nv_o"; : > "$WORK/rc5b8r-gh.log"; rm -f "$WORK/rc5b8r-go.log" "$WORK/rc5b8r-graphql.json"; ws="$WORK/rc5b8nv-ws"; rm -rf "$ws"; mkdir -p "$ws"; cp -R .vex "$ws/"
+env PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" GITHUB_REPOSITORY=OWNER/REPO AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP AUDITOR_ISSUES_TOKEN=JOB \
+  "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$nv_o" >/dev/null 2>&1
+novend="$(grep -c '^mod vendor' "$WORK/rc5b8r-go.log" 2>/dev/null)"; addp="$(grep -c '^add -A -- go.mod go.sum$' "$WORK/rc5b8r-git.log" 2>/dev/null)"
+guards="$("$PY" -c '
+import importlib.util, os, subprocess, sys, tempfile
+spec = importlib.util.spec_from_file_location("r", ".github/agent/bin/auditor-run.py"); R = importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+ws = tempfile.mkdtemp(); os.makedirs(ws + "/vendor/m"); open(ws + "/go.mod", "w").write("x"); open(ws + "/vendor/m/a.go", "w").write("12345678")
+def git(out, rc=0):
+    return lambda *a: subprocess.CompletedProcess(a, rc, out, "boom" if rc else "")
+good, e1 = R._bump_files(ws, git("go.mod\0vendor/m/a.go\0"))
+_, e2 = R._bump_files(ws, git("", 1))
+_, e3 = R._bump_files(ws, git("go.mod\0README.md\0"))
+R.BUMP_MAX_BYTES = 5
+_, e4 = R._bump_files(ws, git("go.mod\0vendor/m/a.go\0"))
+R.BUMP_MAX_BYTES = 10**9; R.BUMP_MAX_FILES = 1
+_, e5 = R._bump_files(ws, git("go.mod\0vendor/m/a.go\0"))
+print("OK" if good == ["go.mod", "vendor/m/a.go"] and e1 is None and e2 and "git diff" in e2 and e3 and "README.md" in e3 and e4 and "limit" in e4 and e5 and "limit" in e5 else "BAD %r" % ((good, e1, e2, e3, e4, e5),))' 2>&1 | tail -1)"
+{ [ "$vfail" -ge 1 ] 2>/dev/null && eq "$vprs" "0" && eq "$novend" "0" && [ "$addp" -ge 1 ] 2>/dev/null && eq "$guards" "OK"; } \
+  && ok || no "vendor failure -> error, no PR; unvendored tree -> no go mod vendor and go.mod go.sum only; guards" "vendor_fail_lines=$vfail prs=$vprs unvendored_vendor_runs=$novend add_gomod_gosum=$addp guards=$guards"
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"

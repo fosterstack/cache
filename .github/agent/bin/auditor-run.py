@@ -447,6 +447,30 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     return url, None
 
 
+# rc-5b A5 (option b, advisor Oct 23): a bump PR carries go.mod, go.sum and vendor/** (CI's vendored-dependencies check, ci.yml) but dependency-provenance.json
+# needs records (checksum-database, origins, licences) the auditor does not produce: the PR is a DRAFT that is never armed and says so.
+BUMP_PROVENANCE_LINE = "dependency provenance not regenerated; a lane regenerates it before merge"
+BUMP_MAX_FILES = 2000            # a signed API commit is a request body, not a git push: a bump that vendors more than this is refused, not cut short
+BUMP_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _bump_files(ws, git):
+    """(paths, None) of the staged changes of a bump, or (None, the failure text): go.mod, go.sum and everything under vendor/ (a deleted file included,
+    it is a deletion in the commit). Anything else staged, or a change over the size caps, is refused rather than delivered in part."""
+    r = git("diff", "--cached", "--name-only", "--no-renames", "-z")
+    if r.returncode != 0:
+        return None, "git diff --cached: " + (r.stderr or "").strip()
+    paths = sorted(p for p in (r.stdout or "").split("\0") if p)
+    other = [p for p in paths if p not in ("go.mod", "go.sum") and not p.startswith("vendor/")]
+    if other:
+        return None, "the bump staged a path outside go.mod, go.sum and vendor/: %s" % other[0]
+    total = sum(os.path.getsize(os.path.join(ws, p)) for p in paths if os.path.isfile(os.path.join(ws, p)))
+    if len(paths) > BUMP_MAX_FILES or total > BUMP_MAX_BYTES:
+        return None, ("the bump changes %d files / %d bytes under vendor/, over the %d-file / %d-byte limit of one signed API commit; it is not delivered in part"
+                      % (len(paths), total, BUMP_MAX_FILES, BUMP_MAX_BYTES))
+    return paths, None
+
+
 def _bump_target(fb):
     """The delivery TARGET of a bump: (module, version) — one PR per target, never per CVE
     (LR-32; owner, Sep 28: "one PR per bump, listing every CVE it fixes"). `0.22.0` and `v0.22.0`
@@ -502,7 +526,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     (LR-32), on a stable branch named after the target — never after a CVE or a commit — so a
     later run updates that PR (or leaves it alone when nothing changed) instead of opening a
     duplicate or overwriting another target's branch. `go get <module>@<version>` + `go mod tidy`,
-    committing ONLY go.mod and go.sum. `rows` are the §1/§3 rows sharing the target (a single row
+    committing ONLY go.mod, go.sum and vendor/ (rc-5b A5; always a DRAFT, never armed). `rows` are the §1/§3 rows sharing the target (a single row
     dict is accepted). Base rebuilds are NOT delivered here (REQ-AUD-2 AC3).
 
     Returns (pr_url, err, status). status is one of: 'delivered' (PR opened, updated or already
@@ -524,20 +548,18 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     runlink = ("%s/%s/actions/runs/%s" % (server, repo, rid)) if (server and repo and rid) else "the daily CVE auditor run report"
     body = ("Automated dependency bump from the daily CVE auditor. One PR per bump target, listing every "
             "vulnerability it fixes.\n\n- Module: %s\n- From: %s\n- To: %s\n- Vulnerabilities (%d): %s\n\n"
-            "Run report: %s" % (module, frm, to, len(cves), ", ".join(cves), runlink))
+            "Run report: %s\n\n%s" % (module, frm, to, len(cves), ", ".join(cves), runlink, BUMP_PROVENANCE_LINE))
     target = "%s %s -> %s" % (module, frm, to)
     if is_test:                                 # a test image is not shipped and always dry (AC9)
         _plan(would, "bump PR", target, cves, note="skipped: test image", key=branch)
         return None, None, "skipped-test"
-    # AC3/AC4: a bump PR touches only go.mod/go.sum (no prompt file), so it auto-merges when the
-    # owner turned auto-merge on; otherwise draft.
-    automerge = _automerge_allowed(["go.mod", "go.sum"])
-    draft = "" if automerge else "--draft "
+    # A bump PR is ALWAYS a draft and is never armed (rc-5b A5): its dependency-provenance.json is not regenerated, so it cannot pass CI until a lane does that.
+    draft = "--draft "
     if dry:
         _plan(would, "bump PR", target, cves,
               cmd="gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title)),
-              note="auto-merge" if automerge else "draft", key=branch)
-        print("dry-run would open %sbump PR on %s" % ("auto-merge " if automerge else "draft ", branch))
+              note="draft", key=branch)
+        print("dry-run would open draft bump PR on %s" % branch)
         return None, None, "would"
     log = os.environ.get("AUDITOR_GIT_SHIM_LOG")
     if log:
@@ -552,16 +574,17 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         seq = ["git checkout -B %s origin/main" % branch,
                "go get %s@%s" % (module, to),
                "go mod tidy",
-               "gh api graphql createCommitOnBranch %s -- go.mod go.sum" % branch]   # a signed commit made through the API: no git commit, no git push
+               "go mod vendor",
+               "gh api graphql createCommitOnBranch %s -- go.mod go.sum vendor/**" % branch]   # a signed commit made through the API: no git commit, no git push
         if ("SHIM_TARGET %s " % branch) in prior:
             seq.append("gh pr edit %s --title %s" % (branch, shlex.quote(title)))       # same PR, updated
         else:
             seq.append("gh pr create %s--base main --head %s --title %s" % (draft, branch, shlex.quote(title)))
-            if automerge:
-                seq.append("gh pr merge --auto --squash %s" % branch)
         open(log, "a").write("\n".join(seq) + "\n")
         if os.environ.get("AUDITOR_SHIM_PR_FAIL"):
             return None, "simulated: push to origin/%s rejected" % branch, "error"
+        if BUMP_PROVENANCE_LINE in body:
+            open(log, "a").write("PR_BODY_HAS %s\n" % BUMP_PROVENANCE_LINE)
         open(log, "a").write("%s\nPR_URL %s\n" % (mark, url))
         return url, None, "delivered"
     if not _real_gh_allowed():
@@ -591,10 +614,18 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     if t.returncode != 0:
         _git("reset", "--hard", "origin/main")
         return None, ("go mod tidy: " + (t.stderr or "").strip()), "error"
+    vendored = os.path.isdir(os.path.join(ws, "vendor"))      # the repository vendors its dependencies (ci.yml checks vendor/): the bump regenerates it
+    if vendored:
+        v = _go("mod", "vendor")  # RC5B-8-VENDOR
+        if v.returncode != 0:
+            _git("reset", "--hard", "origin/main")
+            return None, ("go mod vendor: " + (v.stderr or "").strip()), "error"
     staged = [f for f in ("go.mod", "go.sum") if os.path.exists(os.path.join(ws, f))]   # a module with no dependencies has no go.sum
     if "go.mod" not in staged:
         return None, "go.mod is missing after go get / go mod tidy: nothing to stage", "error"
-    r = _git("add", *staged)
+    if vendored:
+        staged.append("vendor")
+    r = _git("add", "-A", "--", *staged)
     if r.returncode != 0:                        # a staging failure is an error, never "nothing changed"
         return None, ("git add: " + (r.stderr or "").strip()), "error"
     if _git("diff", "--cached", "--quiet").returncode == 0:
@@ -607,7 +638,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     # legacy head, a head on an older main, a lookup that fails) -> the branch is rebuilt on main
     # and ONE signed commit is made on it, through the API.
     remote_same = (_git("fetch", "origin", branch).returncode == 0
-                   and _git("diff", "--quiet", "FETCH_HEAD", "--", "go.mod", "go.sum").returncode == 0)
+                   and _git("diff", "--quiet", "FETCH_HEAD", "--", *staged).returncode == 0)
     sha = _git("rev-parse", "origin/main")
     if sha.returncode != 0:
         return None, ("git rev-parse: " + (sha.stderr or "").strip()), "error"
@@ -615,7 +646,10 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     ex, err = _find_pr(ws, branch)
     if err:
         return None, err, "error"                # a discovery failure aborts BEFORE any ref write
-    files = [f for f in ("go.mod", "go.sum") if os.path.exists(os.path.join(ws, f))]    # a module with no dependencies has no go.sum
+    files, err = _bump_files(ws, _git)       # go.mod, go.sum and every changed vendor/ file, a deleted one as a deletion
+    if err:
+        _git("reset", "--hard", "origin/main")
+        return None, err, "error"
     oid = None
     if remote_same:                              # reuse = ONE verified commit on main changing only these files, with these exact bytes
         oid = signed_commit.branch_reusable(os.environ.get("GITHUB_REPOSITORY"), branch, base_sha, signed_commit.read_changes(ws, files))
@@ -627,13 +661,6 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         if err:
             return None, err, "error"
 
-    def _arm(u):
-        if automerge and u:
-            err = _head_is(ws, u, oid)           # EVERY path: the PR's actual head must be the verified one (made, or reused-and-verified)
-            if err:
-                return err
-            _arm_automerge(u, ws)
-        return None
     def _reuse(u):
         # the open PR is updated to this run's CVE list; a failed edit is a failed delivery (never
         # armed, never reported delivered) — whichever discovery path found the PR
@@ -641,13 +668,10 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
                            capture_output=True, text=True)
         if e.returncode != 0:
             return None, ("gh pr edit: " + (e.stderr or "").strip()), "error"
-        err = _arm(u)
-        return (None, err, "error") if err else (u, None, "delivered")
+        return u, None, "delivered"
     if ex:
         return _reuse(ex)
-    create = ["gh", "pr", "create", "--base", "main", "--head", branch, "--title", title, "--body", body]
-    if not automerge:
-        create.insert(3, "--draft")
+    create = ["gh", "pr", "create", "--draft", "--base", "main", "--head", branch, "--title", title, "--body", body]   # always a draft, never armed (rc-5b A5)
     r = subprocess.run(create, cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
         if "already exists" in (r.stderr or "").lower():
@@ -655,9 +679,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
             if ex:
                 return _reuse(ex)
         return None, ("gh pr create: " + (r.stderr or "").strip()), "error"
-    url = r.stdout.strip()
-    err = _arm(url)
-    return (None, err, "error") if err else (url, None, "delivered")
+    return r.stdout.strip(), None, "delivered"
 
 
 def _merge_suppressions(ws, supp):
@@ -1512,7 +1534,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
             lift_note += "; lift trigger met: %s embeds the fix" % pull.get("candidate_release")
         if gf["is_go"]:
             # A module WE BUILD: the auditor delivers the bump itself as a DRAFT PR through the
-            # App path (go get module@fixed + go mod tidy, go.mod/go.sum only) — the actual
+            # App path (go get module@fixed + go mod tidy + go mod vendor; go.mod, go.sum and vendor/ only) — the actual
             # delivery + honest action text are set in run() after routing (decision 2). Record
             # the bump intent here; an unresolvable fixed version stays in §3, never a broken PR.
             row["fix_bump"] = {"cve": c, "module": gf["package"], "from": gf["installed"], "to": gf["fixed"]}
@@ -1878,7 +1900,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     is_test = (m.get("provenance") or {}).get("source") == "test-image"
     pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test)
     # Decision 2: the auditor DELIVERS its own Go-module bumps as draft PRs through the App path
-    # (go get + go mod tidy, go.mod/go.sum only). Each §1/§3 row carrying a fix_bump gets one
+    # (go get + go mod tidy + go mod vendor; go.mod, go.sum and vendor/ only). Each §1/§3 row carrying a fix_bump gets one
     # draft PR; an unresolvable fixed version stays in §3 (never a broken PR); a git/gh/tidy
     # failure marks the run INCOMPLETE. Base rebuilds are NOT delivered here — they defer to
     # Dependabot's daily docker PR (REQ-AUD-2 AC3). The honest action text is set from the
