@@ -227,7 +227,7 @@ pass=0 failn=0
 ok()   { [ "${SEGON:-1}" = 1 ] || return 0; pass=$((pass+1)); echo "ok   $1"; }
 bad()  { [ "${SEGON:-1}" = 1 ] || return 0; failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
-check() { [ "${SEGON:-1}" = 1 ] || return 0; local e; if e=$("$@" 2>&1 >/dev/null); then ok "$CASE"; else bad "$CASE"; printf '     why: %s\n' "$(printf %s "$e" | tail -n 3 | cut -c1-500)" >&2; fi; }
+check() { local e; if e=$("$@" 2>&1 >/dev/null); then ok "$CASE"; else bad "$CASE"; printf '     why: %s\n' "$(printf %s "$e" | tail -n 3 | cut -c1-500)" >&2; fi; }
 # none_match <regex> <path...>: every path must EXIST and nothing in them may match (a read error is a failure, never a pass)
 none_match() { local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || return 2; done; local rc=0; grep -rqE "$re" "$@" || rc=$?; [ "$rc" -eq 1 ]; }
 
@@ -236,7 +236,7 @@ none_match() { local re=$1; shift; local p; for p in "$@"; do [ -e "$p" ] || ret
 # is the stretch of the script from one `# --- ` header to the next (`seg_begin <n>` then `seg_on` open it, plain commands: no compound statement, so the pin-age context rulings of the lines inside still hold). SEG_OWNER names the owner of every section
 # (sections that read what another section's driver run left stay in one shard; the sizes are balanced by measured seconds, the grouping by which sections read each
 # other's work directories). A section a shard does not own still runs in LIGHT mode, so the functions, files and variables it sets exist everywhere: no driver run is
-# made (run returns at once, $driver is /dev/null), no check runs, and a failing statement is ignored. Section 1 makes the `clean` run that most sections read, so
+# made (run returns at once, $driver is /dev/null), its checks run but count nothing (ok and bad ignore them; check() itself is a reviewed line of the pin checker and stays as it was), and a failing statement is ignored. Section 1 makes the `clean` run that most sections read, so
 # every shard REPLAYS it: its setup and driver run happen, its checks do not (a replayed section counts nothing). Every shard prints one `persona-uat-seg: <n> <pass> <fail>` line per section it owns; it refuses to start unless SEG_OWNER names each
 # section the script holds (counted from the `seg_begin <n>` lines of this file) exactly once, and it fails unless it ran exactly the sections it owns.
 SEG_OWNER=(3 2 3 1 1 1 3 3 3 3 3 2 2 3 3 3 3 2 3 2 2 1 2 1 2 1 1 2 2 2 3 3 2 1 3 2 2)
