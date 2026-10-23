@@ -211,7 +211,7 @@ def judge_sign(path):
                 else:
                     sinks = [n for n, rx in (("file", r">>?\s*\S|\btee\b|\bcp\b|\bmv\b"), ("log", r"\becho\b|\bprintf\b|\bcat\b|\bset\s+-\w*x"),
                                              ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", os.environ["SINK_ARTIFACT_RX"])) if re.search(rx, run)]
-                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the three allowed command lines (install cosign; write digests.json from env; chain-verify.py sign --check ... --out provenance)"
+                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install cosign or witness; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; the one chain-verify.py sign --check ... --out provenance)"
                     bad.append("AC2/AC3: run step %r %s" % (sn, why))
                 if "${{" in run or ".." in run: bad.append("AC2: run step %r interpolates an expression or uses `..`" % sn)
         want = EXPECT_STEPS.get(name)
@@ -3220,7 +3220,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='e8219eebfacdba4d761fef5d9d3f4c5eb75a590d7d33de789750354a99586f45'
+FX_PIN='0231e7318f882851e61d3172f502c3bbca6b3429493856d0133fb9056cf92324'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do

@@ -13,7 +13,7 @@ name: 'Stage: sign'
 #   sign-check:   receives the records of the Check jobs (witness-check, witness-check-arm64) and the results they name (check-results, check-results-arm64), nothing else and
 #                 nothing built by them (REQ-REL-011-AC1: the Check jobs build tools and run workloads, so they hold no identity token); checks the records against the results and
 #                 against the lists the Check jobs published as job outputs, and signs them.
-# The identity token is requested inside the signing process (cosign or Witness); only the signing steps and the records commands' env -u (below) mention its variables.
+# The identity token is requested by cosign for the provenance signature and by bin/witness-sign-staged.sh for the records; only those steps and the records commands' env -u (below) mention its variables.
 # The records command of each job that reads the building jobs' files runs under `env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL`, so the process that
 # parses those files does not receive the identity-token request variables in its own environment (the step's shell still holds them: the boundary stays the job and its
 # identity, not this command); the sign-wiring judge pins the exact command line.

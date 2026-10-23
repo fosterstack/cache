@@ -408,7 +408,7 @@ for k, v in FMT.items(): dj("digests-%s.json" % k, v)
 open(p("digests-dupkey.json"), "w").write('{"image-production":"sha256:%s","image-fips":"sha256:%s","apk":"sha256:%s","apk":"sha256:%s"}' % ("a" * 64, "b" * 64, "d" * 64, "c" * 64))
 open(p("digests-notobject.json"), "w").write('["sha256:%s"]' % ("a" * 64))
 FMT["dupkey"] = FMT["notobject"] = None
-# The Witness move (owner Oct 22): Build and Rebuild record under a throwaway key inside their jobs and Sign re-signs the records keyless, so a Build or Rebuild record
+# The Witness move (owner Oct 22): Build and Rebuild record under a throwaway key inside their jobs and Sign re-signs the records keyless, so a Build, Rebuild or Check record
 # is accepted only under stage-sign.yml's identity (the same file as Sign's provenance: the record TYPE and the collection name tell the stages apart). The old
 # identities (stage-build.yml, stage-reproducibility.yml) are refused for every stage; OLD_BUILD / OLD_REBUILD name them for those cases.
 OLD_BUILD, OLD_REBUILD, OLD_CHECK = "stage-build.yml", "stage-reproducibility.yml", "stage-verify.yml"
@@ -509,7 +509,7 @@ add("build_coll_wrongrepo", STAGES["build"], T, COLL, None, stmt="v0.1", coll_fi
 add("build_coll_noconfig", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", no_config=True)
 add("check_coll", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
 add("check_coll_old", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
-add("check_coll_oldb", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json")      # the same former identity under a Build collection name (offered as Build's)      # Check's former identity (the Check stage holds no token since the Witness move)
+add("check_coll_oldb", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json")      # the same former identity under a Build collection name (offered as Build's; Check's former identity, since the Check stage holds no token after the Witness move)
 add("rebuild_coll", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
 add("rebuild_coll_other", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild")
 add("build_coll_othertag", STAGES["build"], T2, COLL, None, stmt="v0.1", coll_file="digests.json")
