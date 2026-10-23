@@ -338,7 +338,8 @@ st s_ht_sudo    "AC17 the host-tools script run under sudo" "install-host-bwrap"
 st s_ht_root    "AC17 the host tools unpacked into another directory than host-tools" "install-host-bwrap" "--root host-tools" "--root /usr/local"
 st s_ht_lock    "AC17 the host tools read another lock than build/locks/host-tools.lock" "install-host-bwrap" "--lock build/locks/host-tools.lock" "--lock host-tools.lock"
 st s_ht_arch    "AC17 the host tools unpacked from another directory than archive" "install-host-bwrap" "--archive archive" "--archive /tmp/archive"
-st s_ht_apt     "AC17 the host tools taken from the distribution instead of the archive (a package manager line)" "install-host-bwrap" "run: $HTRUN" "run: sudo apt-get install -y bubblewrap"
+HT_APT_RUN='run: sudo apt-get install -y bubblewrap'
+st s_ht_apt     "AC17 the host tools taken from the distribution instead of the archive (a package manager line)" "install-host-bwrap" "run: $HTRUN" "$HT_APT_RUN"
 st s_ht_bash    "AC17 the host-tools script started with bash (it is a Python file)" "install-host-bwrap" "run: python3 -I bin/install-host-bwrap.py" "run: bash bin/install-host-bwrap.py"
 st s_ar_crane   "AC16 the crane install is missing (the pull needs the pinned tool)" "install-scanner.sh crane" "$CRANEINST" ''
 st s_ar_order   "AC16 the pull before the crane install" "install-scanner.sh crane" "$CRANEINST$PULLSTEP" "$PULLSTEP$CRANEINST"
@@ -769,7 +770,8 @@ expect caught "AC3 a script that is not a row of chain-scripts.json is refused" 
 # REQ-CHAIN-004-AC17 (advisor reading Oct 20, handoff 0524; rules 15 and 38a): the host tools (bubblewrap and what it needs) come out of the archive, never a package manager.
 # bin/install-host-bwrap.py is run against FIXTURE apks built here (a gzip control segment with .PKGINFO and a gzip data segment, the datahash being the sha256 of the data segment
 # as in Wolfi's packages), a lock and an archive directory; every refusal leaves NOTHING written (no host-tools directory, no wrapper).
-python3 -I - "$root" "$work" > "$work/ac17.out" <<'PY'
+NOWORDS='curl|wget|apt-get|apk add|sudo|pip install|urllib|socket|http.client|requests|subprocess|os.system|shutil.which|dpkg|yum|dnf'
+python3 -I - "$root" "$work" "$NOWORDS" > "$work/ac17.out" <<'PY'
 import gzip, hashlib, io, os, shutil, subprocess, sys, tarfile
 root, work = sys.argv[1:3]
 script = root + "/bin/install-host-bwrap.py"
@@ -932,7 +934,7 @@ case("AC17 a wrapper that cannot be published (bin/bwrap is a directory) is refu
      after=lambda d, r: (not os.path.exists(d + "/host-tools") and not os.path.exists(d + "/host-tools.staging") and not [f for f in os.listdir(d + "/bin") if f.startswith(".bwrap.")]) or (_ for _ in ()).throw(AssertionError("residue")))
 case("AC17 an unknown option is refused (exit 2)", extra_args=("--sudo",), want=2)
 text = open(script).read()
-for word in ("curl", "wget", "apt-get", "apk add", "sudo", "pip install", "urllib", "socket", "http.client", "requests", "subprocess", "os.system", "shutil.which", "dpkg", "yum", "dnf"):
+for word in sys.argv[3].split("|"):
     print(("ok   " if word not in text else "FAIL ") + "AC17 the host-tools script never names %r (no network, no package manager, no sudo, no other program)" % word)
 PY
 while IFS= read -r line; do case $line in "ok   "*) ok "${line#ok   }";; *) bad "${line#FAIL }";; esac; done < "$work/ac17.out"
