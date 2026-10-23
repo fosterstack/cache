@@ -1128,14 +1128,18 @@ def history_items(root, start, now):
     if before:
         revs.append(before)
     items = {}
+    memo = {}   # an inventory is a function of the files it reads: a revision whose (path, blob) pairs were already read reuses that inventory, but still merges it in its place (the last merge wins, as with one inventory per revision)
     for r in revs:
-        try:
-            items.update(inv.load_at(root, r))
-        except RuntimeError as e:
-            # only the named revisions, and only for the cap's own refusal; every other error, and every unlisted revision, still ends the audit
-            if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
-                continue
-            raise
+        key = inv.tree_key(root, r)
+        if key not in memo:
+            try:
+                memo[key] = inv.load_at(root, r)
+            except RuntimeError as e:
+                # only the named revisions, and only for the cap's own refusal; never remembered under the tree key (an unlisted revision of the same tree must still refuse)
+                if r in SKIP_UNREADABLE and "command line of" in str(e) and "refusing to read it partially" in str(e):
+                    continue
+                raise
+        items.update(memo[key])
     return items
 
 

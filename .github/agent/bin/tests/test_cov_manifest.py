@@ -114,7 +114,7 @@ class Harness(unittest.TestCase):
         self.source = os.path.join(self.tmp, "src"); os.makedirs(self.source)
         _wr(os.path.join(self.source, "go.mod"), "// c\nmodule github.com/fosterstack/cache\n\ngo 1.22\n")
         self.rescan = os.path.join(self.tmp, "rescan", "a", "b"); os.makedirs(self.rescan)
-        self.prod_oci = os.path.join(self.rescan, "production.oci"); _wr(self.prod_oci, "x")
+        self.prod_oci = os.path.join(self.rescan, "production"); os.makedirs(os.path.join(self.prod_oci, "blobs", "sha256")); _wr(os.path.join(self.prod_oci, "oci-layout"), "{}")   # the OCI layout directory of the images artifact
         self.kdl = os.path.join(self.tmp, "kdl.json"); _wr(self.kdl, "{}")
         self.out = os.path.join(self.tmp, "out", "manifest.json")
         self.oci = os.path.join(self.reports, "candidate.oci"); self.tar = os.path.join(self.reports, "candidate.tar")
@@ -160,9 +160,9 @@ class MainHappy(Harness):
         calls = self.argv()
         copies = [c for c in calls if c[:2] == ["skopeo", "copy"]]
         self.assertEqual(copies, [
-            ["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", "oci-archive:" + self.prod_oci,
+            ["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", "oci:" + self.prod_oci,
              "oci-archive:%s:%s" % (self.oci, M.TAG)],
-            ["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", "oci-archive:" + self.prod_oci,
+            ["skopeo", "copy", "--override-arch", "amd64", "--override-os", "linux", "oci:" + self.prod_oci,
              "docker-archive:%s:%s" % (self.tar, M.TAG)]])
         self.assertIn(["syft", "oci-archive:" + self.oci, "-o", "syft-json"], calls)
         self.assertIn(["govulncheck", "-json", "./..."], calls)
@@ -176,7 +176,7 @@ class MainHappy(Harness):
         self.assertEqual(m["candidate_digests"], {"production": "sha256:deadbeef"})
         self.assertEqual(m["known_defect_log"], self.kdl)
         self.assertEqual(m["kev_catalog"], "/k/kev.json")
-        self.assertEqual(m["provenance"], {"source": "own-scan", "candidate": "production.oci", "scanned": "docker-archive"})
+        self.assertEqual(m["provenance"], {"source": "own-scan", "candidate": "production", "scanned": "docker-archive"})
         self.assertEqual(m["scanner_set"], "panel")
         self.assertEqual(m["govulncheck"], {"path": os.path.join(self.reports, "govulncheck.json"),
                                             "module": "github.com/fosterstack/cache", "commit": "abc123",
@@ -256,7 +256,7 @@ class MainHappy(Harness):
         with self.assertRaises(SystemExit) as cm:
             self.run_main(self.base_args(), runner=lambda: runpy.run_path(SRC, run_name="__main__"))
         self.assertEqual(str(cm.exception),
-                         "auditor-manifest: cannot ingest the candidate — no production.oci in the rescan artifacts")
+                         "auditor-manifest: cannot ingest the candidate — no production OCI layout directory (images/production) in the rescan artifacts")
         self.assertEqual(self.argv(), [])
 
 
@@ -377,14 +377,14 @@ class Helpers(Harness):
 
     def test_archives_rescan_failure_paths(self):
         empty = os.path.join(self.tmp, "empty"); os.makedirs(empty)
-        self.assertEqual(M._archives(empty, "", self.oci, self.tar), (None, "no production.oci in the rescan artifacts"))
+        self.assertEqual(M._archives(empty, "", self.oci, self.tar), (None, "no production OCI layout directory (images/production) in the rescan artifacts"))
         self.rules([{"tool": "skopeo", "rc": 1}])
         with mock.patch.dict(os.environ, self.env), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(M._archives(os.path.join(self.tmp, "rescan"), "", self.oci, self.tar),
                              (None, "skopeo convert failed"))
             self.rules([{"tool": "skopeo", "has_prefix": ["docker-archive:"]}, {"tool": "skopeo", "rc": 1}])
             self.assertEqual(M._archives(os.path.join(self.tmp, "rescan"), "", self.oci, self.tar),
-                             ("production.oci", None))
+                             ("production", None))
 
     def test_norm_ref(self):
         self.assertEqual(M._norm_ref("debian:12.0@sha256:X"), "debian@sha256:X")

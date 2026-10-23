@@ -940,6 +940,65 @@ PY
 else
   ok "$CASE (skipped as root: file modes do not bind)"
 fi
+# --- cache#455 follow-up (handoff 0496 step 2): the 90-day history reads one inventory per DISTINCT set of files the inventory reads, not one per commit ---
+r="$work/r-histmemo"; mkrepo "$r" "100:$CLEANSHA" "40:$SHA1" "30:$SHA2"
+mkdir -p "$r/.github/agent/tests" "$r/docs"
+for n in 1 2 3 4 5 6; do   # commits that touch .github but nothing the inventory reads (.github/agent/ and docs are outside tree_files)
+  printf 'x%s\n' "$n" >"$r/.github/agent/tests/noise.txt"; git -C "$r" add -A
+  GIT_AUTHOR_DATE="$(dago $((20 - n)))" GIT_COMMITTER_DATE="$(dago $((20 - n)))" git -C "$r" -c user.name=t -c user.email=t@x commit -q -m "noise $n"
+done
+CASE="history memo: the same items as one inventory per commit (the verdicts do not change)"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+root, now = sys.argv[2], dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
+since = (now - dt.timedelta(days=pa.LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+revs = subprocess.run(["git", "-C", root, "log", f"--since={since}", "--format=%H", "--all"], capture_output=True, text=True).stdout.split()
+before = subprocess.run(["git", "-C", root, "rev-list", "-1", f"--before={since}", "HEAD"], capture_output=True, text=True).stdout.strip()
+revs += [before] if before else []
+ref = {}
+for r in revs:
+    ref.update(pa.inv.load_at(root, r))
+got = pa.history_items(root, "HEAD", now)
+assert set(got) == set(ref) and len(ref) > 0, (sorted(got), sorted(ref))
+PY
+rr="$work/r-histrevert"; mkrepo "$rr" "100:$CLEANSHA"
+for spec in "40:v3.0.0" "20:v4.1.0"; do   # same pin, a label that changes and then reverts: the same key at two trees, a different label in between
+  sed -i.bak "s|^\(      - uses: actions/checkout@[0-9a-f]*\) # .*|\1 # ${spec#*:}|" "$rr/.github/workflows/ci.yml"; rm -f "$rr/.github/workflows/ci.yml.bak"; git -C "$rr" add -A
+  GIT_AUTHOR_DATE="$(dago "${spec%%:*}")" GIT_COMMITTER_DATE="$(dago "${spec%%:*}")" git -C "$rr" -c user.name=t -c user.email=t@x commit -q -m "label ${spec#*:}"
+done
+CASE="history memo: the VALUES match one inventory per commit, not only the keys (a label that reverts: the oldest occurrence still wins, as before; seat A of cache#456)"
+check python3 - "$aud" "$rr" <<'PY'
+import datetime as dt, importlib.util, subprocess, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+root, now = sys.argv[2], dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc)
+since = (now - dt.timedelta(days=pa.LOOKBACK_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+revs = subprocess.run(["git", "-C", root, "log", f"--since={since}", "--format=%H", "--all"], capture_output=True, text=True).stdout.split()
+before = subprocess.run(["git", "-C", root, "rev-list", "-1", f"--before={since}", "HEAD"], capture_output=True, text=True).stdout.strip()
+revs += [before] if before else []
+ref = {}
+for r in revs:
+    ref.update(pa.inv.load_at(root, r))
+got = pa.history_items(root, "HEAD", now)
+f = lambda d: {k: (i.label, i.src, i.step, i.raw, i.version, i.path) for k, i in d.items()}
+assert f(got) == f(ref), (f(got), f(ref))
+assert any(i.label == "v4.1.0" for k, i in ref.items() if "checkout" in k), "the probe did not exercise a revert"
+PY
+CASE="history memo: commits that changed nothing the inventory reads cost no inventory (calls < commits) and the timing line is printed"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+calls = [0]; real = pa.inv.inventory
+def counting(files):
+    calls[0] += 1
+    return real(files)
+pa.inv.inventory = counting
+t = time.time()
+pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
+print(f"history scan: {calls[0]} inventories in {time.time() - t:.2f}s")
+assert calls[0] <= 4, calls[0]    # 9 commits in the lookback (3 pin commits + 6 noise), at most 4 distinct trees the inventory reads
+PY
+
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
 check none_match '[Cc]laude|[Oo]pus|[Ss]onnet|[Hh]aiku|[Ff]able|gpt-|[Gg]emini|[Ll]lama|anthropic|openai' "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" "$here/../supply-chain/pin-audit.py"
 
@@ -1056,6 +1115,35 @@ except RuntimeError as e:
     assert "some other failure" in str(e)
 else:
     raise SystemExit("an unrelated error of a listed revision was swallowed")
+PY
+
+# --- chain-v030 only: the history memo is keyed by the tree the inventory reads, so two revisions can share one key. A skipped revision must never be remembered under that key (seat A and
+# seat B of cache#520: the cases above never share a tree, so a memo that stored skipped revisions as empty passed them all).
+r="$work/r-oversize-shared"; rm -rf "$r"; mkdir -p "$r/.github/workflows" "$r/bin"; git -C "$r" init -q
+printf 'TRIVY_VER=0.74.0\n' >"$r/bin/install-scanner.sh"
+oversize_ci "$SHA2" 4100; SH_X=$(commit_at 60 "oversize X")
+oversize_ci "$SHA1" 0;    SH_M=$(commit_at 40 "readable M")
+oversize_ci "$SHA2" 4100; SH_Y=$(commit_at 20 "oversize Y (the same tree as X)")
+oversize_ci "$SHA1" 0;    SH_R1=$(commit_at 10 "readable R1")
+oversize_ci "$SHA4" 0;    SH_Q=$(commit_at 8 "readable Q")
+oversize_ci "$SHA1" 0;    SH_R2=$(commit_at 5 "readable R2 (the same tree as M and R1)")
+CASE="oversize history, shared tree: listing one of two revisions that share an unreadable tree never lets the other, unlisted one pass (a skip is not remembered under the tree key), in both orders"
+check python3 - "$aud" "$r" "$SH_X" "$SH_Y" <<PY
+$OVPY
+for listed in (sys.argv[3], sys.argv[4]):
+    items, err = hist({listed: "only one of the pair"})
+    assert items is None and "command line of" in err, (listed, items, err)
+items, err = hist({sys.argv[3]: "x", sys.argv[4]: "y"})
+assert err is None, err
+PY
+CASE="oversize history, shared tree: a listed revision whose tree was already read from a readable revision is read normally, in both orders (the list never hides a readable revision's pins)"
+check python3 - "$aud" "$r" "$SH_M" "$SH_R1" "$SH_R2" "$SH_X" "$SH_Y" "$SHA1" <<PY
+$OVPY
+both = {sys.argv[6]: "x", sys.argv[7]: "y"}
+for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
+    items, err = hist({**both, listed: "readable but listed"})
+    assert err is None, err
+    assert sys.argv[8] in " ".join(repr(k) for k in items)
 PY
 
 echo "pin-audit: $pass passed, $failn failed"

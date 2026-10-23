@@ -22,7 +22,7 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 tree = sys.argv[2]
 bad = []
 # Codex #157 r2 (SEC-157-02 A): the pin also binds what the privileged step EXECUTES — the bump script's bytes.
-REVIEWED_BUMP_SCRIPT = "9b233929890d339ab12c454d331bbcdf0458428b47637d0544bf48543f802f84"
+REVIEWED_BUMP_SCRIPT = "1b9c9a16c750e2f3fe207931daa3e7ae7db52e1eb8fe17140ee89a58144efcbb"
 got_script = hashlib.sha256(open(os.path.join(tree, "bin/go-bump-open-pr.sh"), "rb").read()).hexdigest()
 if got_script != REVIEWED_BUMP_SCRIPT:
     bad.append("bin/go-bump-open-pr.sh (run with the App token) differs from its reviewed form (%s)" % got_script[:12])
@@ -31,7 +31,7 @@ if got_script != REVIEWED_BUMP_SCRIPT:
 ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("auditor.yml", "audit"),
            ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"), ("go-freshness.yml", "refresh"),
            ("ci.yml", "drift-fixer-dispatch"), ("main-candidate-rescan.yml", "panel-scout"),
-           ("main-candidate-rescan.yml", "panel-google"), ("release.yml", "scans"), ("release.yml", "promotion"),
+           ("main-candidate-rescan.yml", "panel-google"),  # the release.yml promotion job (scans) is gone: Check holds no secret (PR 3), Release is the release job (PR 4)
            # the Scout root-cause round (#176): the agent environment for its own Docker Hub token, same reason as
            # panel-scout/panel-google above; it never mints or uses the auditor App's token
            ("main-candidate-rescan.yml", "scout-root-cause"), ("main-candidate-rescan.yml", "scout-older-versions"),

@@ -11,7 +11,7 @@ produces itself: the candidate's SBOM carriers and base OS (syft), govulncheck o
 the endoflife.date lookups, and the candidate digest, all taken off a CONTAINER ARCHIVE
 converted once with skopeo (no daemon).
 """
-import json, os, re, subprocess, sys, glob
+import hashlib, json, os, re, subprocess, sys, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
 from auditorlib import parsers as P
@@ -278,12 +278,25 @@ def _archives(rescan_dir, test_image, oci, tar):
         ok1 = _skopeo(ref, "oci-archive:%s:%s" % (oci, TAG))
         ok2 = _skopeo(ref, "docker-archive:%s:%s" % (tar, TAG))
         return (("test_image=%s" % test_image, None) if (ok1 or ok2) else (None, "skopeo could not pull %s" % ref))
-    named = glob.glob(os.path.join(rescan_dir, "**", "production.oci"), recursive=True)
+    # Build's images artifact: one OCI layout DIRECTORY per variant (images/production/ with oci-layout, index.json, blobs/): the digest is the one Build
+    # recorded. An archive file or a docker-save shape is not a candidate.
+    named = [p for p in glob.glob(os.path.join(rescan_dir, "**", "production"), recursive=True)
+             if os.path.isdir(p) and not os.path.islink(p) and os.path.isfile(os.path.join(p, "oci-layout"))]
     if not named:
-        return None, "no production.oci in the rescan artifacts"
-    # production.oci is a multi-arch index; select amd64 into a single-arch OCI archive that
+        return None, "no production OCI layout directory (images/production) in the rescan artifacts"
+    # every blob of the layout is re-hashed against its file name before skopeo reads it (fail closed): the candidate's identity is the digest Build recorded
+    blobs = os.path.join(named[0], "blobs", "sha256")
+    try:
+        for n in os.listdir(blobs):
+            p = os.path.join(blobs, n)
+            with open(p, "rb") as fh:
+                if os.path.islink(p) or hashlib.sha256(fh.read()).hexdigest() != n:
+                    return None, "blob %s of the production layout does not hash to its name" % n[:12]
+    except OSError as e:
+        return None, "the production layout's blobs cannot be read (%s)" % type(e).__name__
+    # production is a multi-arch index; select amd64 into a single-arch OCI archive that
     # syft can catalogue, and a docker-save tar for the digest lookup.
-    src = "oci-archive:%s" % named[0]
+    src = "oci:%s" % named[0]
     ok1 = _skopeo(src, "oci-archive:%s:%s" % (oci, TAG))
     ok2 = _skopeo(src, "docker-archive:%s:%s" % (tar, TAG))
     return (os.path.basename(named[0]), None) if (ok1 or ok2) else (None, "skopeo convert failed")

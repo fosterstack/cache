@@ -35,23 +35,68 @@ fi
 if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
   echo "branch ${branch} exists with no PR (orphaned by a prior push-success/create-failure) — creating the PR from the existing branch"
 else
-  echo "creating ${branch}: bumping the go directive in both modules"
+  echo "creating ${branch}: bumping the go directive in both modules and the installer's Go pin (GO_VER and both checksums)"
+  # the installer pin first, so that any doubt fails closed before a file changes or a branch exists: the two linux tarballs are downloaded over HTTPS from
+  # go.dev, their sha256 computed here and compared with the checksum go.dev publishes for them (https://go.dev/dl/?mode=json); the computed values are written
+  die() { echo "::error::$1" >&2; exit "${2:-1}"; }
+  dl="$(mktemp -d)"; trap 'rm -rf "$dl"' EXIT
+  jsonq='?mode=json&include=all'
+  curl -q -fsSL -g -o "${dl}/published.json" "https://go.dev/dl/${jsonq}" || die "go.dev is unreachable: cannot read the published checksums" 1
+  published="$(cat "${dl}/published.json")"
+  sum_amd64=""; sum_arm64=""
+  for arch in amd64 arm64; do
+    tarball="go${LATEST}.linux-${arch}.tar.gz"
+    want="$(jq -r --arg v "go${LATEST}" --arg f "$tarball" '.[] | select(.version==$v) | .files[] | select(.filename==$f) | .sha256' <<<"$published" 2>/dev/null | head -1)"
+    [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::go.dev publishes no valid sha256 for ${tarball}" >&2; exit 1; }
+    curl -q -fsSL -g -o "${dl}/${tarball}" "https://go.dev/dl/${tarball}" || die "cannot download the Go tarball from go.dev" 1
+    got="$(sha256sum "${dl}/${tarball}" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { echo "::error::${tarball} is ${got}, go.dev publishes ${want}" >&2; exit 1; }
+    printf -v "sum_${arch}" '%s' "$got"
+  done
+  bump_installer() {
+    local f=bin/install-scanner.sh
+    [ "$(grep -c '^GO_VER=' "$f")" = 1 ] && [ "$(grep -c 'go:x86_64|go:amd64) SUM=' "$f")" = 1 ] && [ "$(grep -c 'go:aarch64|go:arm64) SUM=' "$f")" = 1 ] \
+      || { echo "::error::${f} does not have exactly one Go pin (GO_VER and the two per-arch sums)" >&2; exit 1; }
+    sed -i.bak -E "s/^GO_VER=[0-9.]+/GO_VER=${LATEST}/; s/(go:x86_64[|]go:amd64[)] SUM=)[0-9a-f]{64}/\1${sum_amd64}/; s/(go:aarch64[|]go:arm64[)] SUM=)[0-9a-f]{64}/\1${sum_arm64}/" "$f"; rm -f "${f}.bak"      # -i.bak: portable between GNU and BSD sed
+    # the installer is a listed script of the release chain: its sha256 row in the policy follows its bytes, in the same commit (the policy validator
+    # refuses a row that differs from the file)
+    python3 - "$f" .github/policy/chain-scripts.json <<'PY' || { echo "::error::failed to update the installer's sha256 row in .github/policy/chain-scripts.json" >&2; exit 1; }
+import hashlib, re, sys
+inst, pol = sys.argv[1:3]
+h = hashlib.sha256(open(inst, "rb").read()).hexdigest()
+t = open(pol).read()
+t2, n = re.subn(r'("path": "bin/install-scanner\.sh",\s*"sha256": ")[0-9a-f]{64}(")', lambda m: m.group(1) + h + m.group(2), t)
+if n != 1:
+    t2, n = re.subn(r'("path": "bin/install-scanner\.sh",(?:(?!"path").)*?"sha256": ")[0-9a-f]{64}(")', lambda m: m.group(1) + h + m.group(2), t, count=1, flags=re.S)
+sys.exit(1) if n != 1 else open(pol, "w").write(t2)
+PY
+    grep -q "^GO_VER=${LATEST}\$" "$f" && grep -q "SUM=${sum_amd64} ;;" "$f" && grep -q "SUM=${sum_arm64} ;;" "$f" \
+      || { echo "::error::failed to bump the Go pin in ${f}" >&2; exit 1; }
+  }
   for f in go.mod tools/requirements/go.mod; do
     sed -i -E "s/^go ${CURRENT//./\\.}$/go ${LATEST}/" "$f"
     grep -q "^go ${LATEST}$" "$f" || { echo "::error::failed to bump go directive in $f" >&2; exit 1; }
   done
+  bump_installer
   # the auditor App's bot when go-freshness.yml runs it with the App's token (owner, Oct 2), else the Actions bot
   slug="${AUDITOR_APP_SLUG:-github-actions}"
   git config user.name  "${slug}[bot]"
   git config user.email "${slug}[bot]@users.noreply.github.com"
   git checkout -b "$branch"
-  git add go.mod tools/requirements/go.mod
+  git add go.mod tools/requirements/go.mod bin/install-scanner.sh .github/policy/chain-scripts.json
   git commit -q -m "chore(go): bump toolchain ${CURRENT} -> ${LATEST}"
   git push -u origin "$branch"
 fi
 
 body="$(cat <<EOF
-Automated Go-toolchain freshness bump: \`go ${CURRENT}\` -> \`go ${LATEST}\` in both modules (root and \`tools/requirements\`).
+Automated Go-toolchain freshness bump: \`go ${CURRENT}\` -> \`go ${LATEST}\`. Four files change together (the installer checks that go.mod and its pin agree):
+
+| file | change |
+| --- | --- |
+| \`go.mod\` | \`go ${CURRENT}\` -> \`go ${LATEST}\` |
+| \`tools/requirements/go.mod\` | \`go ${CURRENT}\` -> \`go ${LATEST}\` |
+| \`bin/install-scanner.sh\` | \`GO_VER\` and the sha256 of go${LATEST}.linux-amd64 and linux-arm64 tarballs, computed from the downloads and equal to go.dev's published checksums |
+| \`.github/policy/chain-scripts.json\` | the sha256 row of \`bin/install-scanner.sh\` (a listed script: the row follows the file's bytes) |
 
 This tracks the newest patch of a supported Go minor, so it may be a patch bump within the current line or a move to a newer supported minor (the case that let CVE-2026-46600 be fixed — no 1.25.x carried the fix). Merging keeps the shipped binary off disclosed stdlib CVEs — the failure mode that broke the v0.2.0 release scan.
 

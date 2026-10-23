@@ -79,10 +79,10 @@
 #     /work/archive/..., then git checkout -b refresh/..., commit, push that branch, gh pr create. Exit 3 = Wolfi key changed.
 # ---------------------------------------------------------------------------------------------------------------
 # RULE -> ASSERTION GROUP (the rules are the ratified v0.3.0 rules; the groups below say where each is asserted)
-#  11  recipes build fscache from source (no Dockerfile/FROM/buildx/goreleaser), native arch only (driver refuses a foreign arch)
+#  11  recipes build fscache from source (the recipes are the only build input), native arch only (driver refuses a foreign arch)
 #  12  Go from go.dev: fetch steps with checksums, no Wolfi go apk, GOTOOLCHAIN=local, go.mod go line <= archived Go, tarball
 #      pre-seeded from the archive into the cache dir, tamper/missing refused
-#  13  FIPS recipe: GOFIPS140=v1.0.0 and a proof that the binary records v1.0.0-c2097c7c; standard recipe has no GOFIPS140
+#  13  FIPS recipe: GOFIPS140 set to the version of the id build/locks/fips-module.txt names, and a proof that the binary records that id; standard recipe has no GOFIPS140
 #  14  binary in the archive == binary in the apk (apk-tool binary-check)
 #  15  inputs manifest = our melange lock + the .melange.yaml environment read back from the apk; recipe pinned == lock
 #  16  melange/apko installer: checksum pin per tool and arch, verified before extraction, no container digest
@@ -478,6 +478,14 @@ def names(c): return {p.split("=")[0] for p in pk(c)}
 def pipe(d): return "\n".join(str(s.get("runs", "")) for s in d.get("pipeline", []))
 def kv(blob, k, v): return re.search(r"%s\s*[=:]\s*[\"']?%s[\"']?(\s|$)" % (re.escape(k), re.escape(v)), blob)
 PINNED = r"[a-z0-9.+_-]+=\d[\w.+~-]*"
+def fipsmod():
+    """the module id the FIPS recipe must use: the one build/locks/fips-module.txt names (FIPS_LOCK names another lock file in a test), read as one line
+    vMAJOR.MINOR.PATCH-<8 lower-case hex> and a plain newline, the grammar the driver and the daily refresh read it with; anything else fails"""
+    f = os.environ.get("FIPS_LOCK") or os.path.join(root, "build/locks/fips-module.txt")
+    raw = open(f, "rb").read().decode("ascii")
+    num = r"(?:0|[1-9][0-9]*)"
+    assert raw.endswith("\n") and raw.count("\n") == 1 and re.fullmatch(r"v%s\.%s\.%s-[0-9a-f]{8}" % (num, num, num), raw[:-1]), "%s is not one module id line" % f
+    return raw[:-1]
 if mode == "mel-name":
     d = load(); assert d["package"]["name"] == arg, d["package"]["name"]
     assert d["package"]["version"] == "@VERSION@" and int(d["package"]["epoch"]) == 0 and d["package"].get("copyright")
@@ -491,10 +499,12 @@ elif mode == "mel-env":
     for x in ("-mod=mod", "-mod=readonly", "go mod download", "go get ", "curl ", "GOPROXY=http", "GOSUMDB=off"): assert x not in b, x
 elif mode == "mel-fips":
     b = text()
-    if arg == "fips": assert kv(b, "GOFIPS140", "v1.0.0"), "fips recipe does not set GOFIPS140=v1.0.0"
+    if arg == "fips":
+        v = fipsmod().split("-")[0]
+        assert kv(b, "GOFIPS140", v), "fips recipe does not set GOFIPS140=%s (the version of the module build/locks/fips-module.txt names)" % v
     else: assert "GOFIPS140" not in b, "standard recipe mentions GOFIPS140"
 elif mode == "mel-fipsproof":
-    p = pipe(load()); assert "go version -m" in p and "GOFIPS140=v1.0.0-c2097c7c" in p, "no proof of the recorded v1.0.0-c2097c7c"
+    m = fipsmod(); p = pipe(load()); assert "go version -m" in p and re.search(r"GOFIPS140=%s(['\"\s]|$)" % re.escape(m), p), "no proof of the recorded %s" % m   # the id ends at a quote, whitespace or the end: a longer id with this one as its prefix is another module
 elif mode == "mel-go":
     d = load(); ps = pk(d["environment"])
     assert not any(re.match(r"go([-=.]|$)", p) for p in ps), "a Wolfi go package is installed"
@@ -579,7 +589,7 @@ elif mode == "dependabot":
     d = load()
     for u in d["updates"]:
         assert not re.search(r"apko|melange|apk|lock|/build/locks", json.dumps(u), re.I), u
-        assert u["directory"] in ("/", "/build/docker", "/.github/agent"), u["directory"]   # build/docker stays until the Dockerfile goes
+        assert u["directory"] in ("/", "/.github/agent", "/tools/govulncheck"), u["directory"]   # /tools/govulncheck: the Check stage's pinned Go source scanner is its own module (advisor Oct 12, ruling G); it is not an apk, apko, melange or lock-file entry
 elif mode == "wf":
     d = load(); on = d.get(True) or d.get("on"); jobs = d["jobs"]; j = jobs[arg]; blob = json.dumps(j)
     if arg == "refresh":

@@ -18,7 +18,7 @@ permissions: {}
 jobs:
   pin-age:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       actions: read   # reads the tag observations of our scheduled runs (an action's age); read-only

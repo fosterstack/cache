@@ -3302,10 +3302,13 @@ import pathlib
 p = pathlib.Path('build/locks'); p.mkdir(parents=True, exist_ok=True)
 (p / 'archive-keys.sha256').write_text('wolfi-signing.rsa.pub sha256:' + 'a' * 64 + '\\n')
 (p / 'archive-index.sha256').write_text('x86_64 sha256:' + 'b' * 64 + '\\n')"
+# the checker's default list is the copy beside the script: a copy of the agent directory with an EMPTY policy list stands for "no list" (the tree itself may carry a real one)
+mkdir -p "$work/sc/.github/policy" && cp -R "$here/.." "$work/sc/.github/agent" && printf '%s' '{"base_inputs": []}' >"$work/sc/.github/policy/base-inputs.json"
+chk_nolist="$work/sc/.github/agent/supply-chain/pin-age-check.py"
 bick() { # LISTFILE-or-empty [extra] -> rc, $work/bi.out
   local lf=$1; shift; rc=0
   if [ -n "$lf" ]; then python3 "$chk" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --base-inputs "$lf" "$@" >"$work/bi.out" 2>&1 || rc=$?
-  else python3 "$chk" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" "$@" >"$work/bi.out" 2>&1 || rc=$?; fi
+  else python3 "$chk_nolist" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" "$@" >"$work/bi.out" 2>&1 || rc=$?; fi
 }
 printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", "build/locks/archive-index.sha256"]}' >"$work/bi-ok.json"
 printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256"]}' >"$work/bi-one.json"

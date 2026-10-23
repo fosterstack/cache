@@ -555,6 +555,93 @@ case_ container-options    bad "$head
       options: --cpus 1
     steps:
       - run: true"
+# a service may publish a port on the runner's loopback only, as three plain parts (the registry the release-candidate persona job loads Build's image into, REQ-UAT-001-AC1); anything else is spliced into the docker command
+case_ service-port-loopback-ok     ok  "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:5000:5000
+    steps:
+      - run: true"
+case_ service-port-all-interfaces  bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 5000:5000
+    steps:
+      - run: true"
+case_ service-port-any-address     bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 0.0.0.0:5000:5000
+    steps:
+      - run: true"
+case_ service-port-localhost-name  bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - localhost:5000:5000
+    steps:
+      - run: true"
+case_ service-port-injects-flag    bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - '127.0.0.1:5000:5000 --privileged'
+    steps:
+      - run: true"
+case_ service-port-expression      bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:\${{ vars.PORT }}:5000
+    steps:
+      - run: true"
+case_ service-port-not-a-list      bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports: 127.0.0.1:5000:5000
+    steps:
+      - run: true"
+case_ service-port-nested          bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - [127.0.0.1:5000:5000]
+    steps:
+      - run: true"
+case_ service-port-out-of-range    bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:99999:5000
+    steps:
+      - run: true"
+case_ service-port-zero            bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:0:5000
+    steps:
+      - run: true"
+case_ container-port-loopback      bad "$head
+    container:
+      image: alpine@$DIG
+      ports:
+        - 127.0.0.1:5000:5000
+    steps:
+      - run: true"
 
 # --- adversarial round 8 (audits/2026-09-30/pins/round8): only positively classified shapes pass
 case_ container-env-ok     ok  "$head

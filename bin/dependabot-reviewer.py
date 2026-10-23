@@ -382,7 +382,7 @@ USAGE_UNAVAILABLE = "(usage UNAVAILABLE for %s: the repository search failed (rc
 
 
 def our_usage(name):
-    """Every line of ours that names the dependency (workflows, go.mod, Dockerfiles, scripts);
+    """Every line of ours that names the dependency (workflows, go.mod, scripts);
     a workflow hit comes with its whole step, inputs included."""
     short = name.split("/")
     out, rc = _run(["git", "grep", "-n", "-I", "--", name])

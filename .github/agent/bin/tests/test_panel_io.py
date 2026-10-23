@@ -44,6 +44,16 @@ def tar_bytes(files, gz=True):
     return buf.getvalue()
 
 
+def write_layout(path, files):
+    """An OCI image LAYOUT directory (one per variant in Build's images artifact): oci-layout, index.json and the blobs."""
+    os.makedirs(path, exist_ok=True)
+    for name, data, _mode in [("oci-layout", b'{"imageLayoutVersion": "1.0.0"}', 0o644)] + list(files):
+        p = os.path.join(path, name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as fh:
+            fh.write(data)
+
+
 def oci_archive(path, layers, arch="arm64"):
     blobs = {}
 
@@ -62,8 +72,7 @@ def oci_archive(path, layers, arch="arm64"):
         {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": put(empty_index)},
         {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": put(inner)}]}).encode()
     files = [("index.json", index, 0o644)] + [("blobs/" + d.replace(":", "/"), b, 0o644) for d, b in blobs.items()]
-    with open(path, "wb") as fh:
-        fh.write(tar_bytes(files, gz=False))
+    write_layout(path, files)
 
 
 STATUS = b"Package: tzdata\nVersion: 2026c-0+deb13u1\nStatus: install ok installed\n\nPackage: base-files\nVersion: 13.8\n"
@@ -88,8 +97,8 @@ class Image(Tmp):
                         ("usr/bin/cache", GO_BIN, 0o755), ("usr/bin/tool", b"\x7fELF no go", 0o755),
                         ("etc/old-tzdata.conf", b"x", 0o644)])
         l2 = tar_bytes([("etc/.wh.old-tzdata.conf", b"", 0o644), ("var/lib/dpkg/status", b"Package: netbase\n", 0o644)])
-        oci_archive(os.path.join(self.d, "fips.oci"), [l1, l2])
-        return os.path.join(self.d, "fips.oci")
+        oci_archive(os.path.join(self.d, "fips"), [l1, l2])
+        return os.path.join(self.d, "fips")
 
     def test_layers_apply_in_order_and_whiteouts_remove(self):
         facts = P.read_image(self.make(), "arm64")
@@ -162,7 +171,7 @@ class Image(Tmp):
         B = P.Bundles(self.d, read=read, buildinfo=lambda g: {})
         f = {"image": "fips-arm64", "package": "tzdata", "version": "1", "seen_by": ["scout"]}
         B(f); B(f)
-        self.assertEqual(calls, [("fips.oci", "arm64")])
+        self.assertEqual(calls, [("fips", "arm64")])
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertIn("could not be read", B(dict(f, image="debug-amd64")))
         self.assertIn("no evidence from image debug-amd64", err.getvalue())
@@ -330,7 +339,7 @@ def args(**kw):
 
 HEAD = "a" * 40
 MAIN = "b" * 40
-DIGEST = "sha256:" + "c" * 64
+DIGEST = "sha256:" + hashlib.sha256(json.dumps({"layers": []}).encode()).hexdigest()      # the manifest blob rescan_oci() writes: a blob is named by its hash
 
 
 def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readable=True):
@@ -338,15 +347,11 @@ def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readab
     read_image() for `arch` (Codex #177 r2, B2: a present member alone proves nothing; the evidence must actually
     parse the same way Bundles() reads it), unless blob=False (no blob at all) or readable=False (present but not a
     real manifest — the getmember-only check of r1's fix passed this, r2 correctly still refuses it)."""
-    path = os.path.join(d, variant + ".oci")
+    path = os.path.join(d, variant)
     if not readable:
-        with tarfile.open(path, "w") as t:
-            ti = tarfile.TarInfo("index.json")
-            raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": digest}]}).encode()
-            ti.size = len(raw); t.addfile(ti, io.BytesIO(raw))
-            if blob:
-                bi = tarfile.TarInfo("blobs/" + digest.replace(":", "/")); bi.size = 1
-                t.addfile(bi, io.BytesIO(b"{"))   # present, but not parseable JSON
+        bad = "sha256:" + hashlib.sha256(b"{").hexdigest()        # a blob named by its own hash, whose bytes are not parseable JSON
+        raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": bad}]}).encode()
+        write_layout(path, [("index.json", raw, 0o644)] + ([("blobs/" + bad.replace(":", "/"), b"{", 0o644)] if blob else []))
         return
     man = json.dumps({"layers": []}).encode()
     man_digest = "sha256:" + hashlib.sha256(man).hexdigest()
@@ -354,8 +359,7 @@ def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readab
     files = [("index.json", index, 0o644), ("blobs/" + digest.replace(":", "/"), man, 0o644)]
     if digest != man_digest:
         files.append(("blobs/" + man_digest.replace(":", "/"), man, 0o644))
-    with open(path, "wb") as fh:
-        fh.write(tar_bytes(files, gz=False))
+    write_layout(path, files)
 
 
 def binding(d, **kw):
@@ -436,7 +440,7 @@ class Judge(Tmp):
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertEqual(P.cmd_judge(self.a(oci=empty)), 2)
         self.assertIn("no image digest", err.getvalue())
-        bad_oci = os.path.join(self.d, "bad"); os.makedirs(bad_oci); open(os.path.join(bad_oci, "x.oci"), "w").write("junk")
+        bad_oci = os.path.join(self.d, "bad"); os.makedirs(bad_oci); os.makedirs(os.path.join(bad_oci, "production")); open(os.path.join(bad_oci, "production", "manifest.json"), "w").write("[]")   # a docker-save shape
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertEqual(P.cmd_judge(self.a(oci=bad_oci)), 2)
         self.assertIn("no image digest", err.getvalue())
@@ -626,7 +630,7 @@ class Deliver(Tmp):
         vex = json.load(open(os.path.join(self.repo, P.VEX)))
         st = vex["statements"][0]
         self.assertEqual((st["status"], st["justification"], vex["version"]), ("not_affected", "component_not_present", 4))
-        self.assertEqual(st["products"][0]["subcomponents"], [{"@id": "pkg:deb/debian/tzdata@1"}])
+        self.assertEqual(st["products"][0]["subcomponents"], [{"@id": "pkg:generic/tzdata@1"}])   # the form the release generators accept (S3)
         for c in cmds:                                                         # no vendor or model name anywhere
             self.assertIsNone(P.VENDOR_WORDS.search(" ".join(c)))
 
@@ -1368,6 +1372,88 @@ class CarryForward(Tmp):
 
 sys.path.insert(0, os.path.join(BIN, "..", "fixtures", "testlib"))
 import pyyaml as yaml  # noqa: E402  (vendored, test-only)
+
+
+class VexRepresentable(unittest.TestCase):   # REQ-SCAN-009-AC1, REQ-SCAN-010-AC1, REQ-SCAN-010-AC2 (chain-v030 review S3)
+    """What the auditor proposes must be something the release generators (bin/vex-forms.py) accept: a distro package URL is written as the
+    generic package URL of its name and version (qualifiers, distro namespace and type dropped, as the panel and the gate already match), and a
+    package the forms cannot represent is not proposed at all (no blanket statement, no statement that stops release generation)."""
+
+    def forms(self):
+        spec = importlib.util.spec_from_file_location("vex_forms_s3", os.path.join(REPO, "bin", "vex-forms.py"))
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        return m
+
+    def images(self):
+        n = iter(range(1, 99))
+        d = lambda: "sha256:" + ("%064x" % next(n))
+        return {v: {"index": d(), "children": {"linux/amd64": d(), "linux/arm64": d()}} for v in ("production", "fips")}
+
+    def write(self, purls_list, packages=None):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, ".vex"))
+        json.dump({"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://x/vex", "statements": [], "version": 1},
+                  open(os.path.join(root, P.VEX), "w"))
+        packages = packages or [("example", "1.2.3")] * len(purls_list)
+        vex = [{"image": "production-amd64", "id": "CVE-2099-%04d" % i, "package": pkg, "version": ver, "status": "not_affected",
+                "purls": purls, "impact_statement": "absent"} for i, (purls, (pkg, ver)) in enumerate(zip(purls_list, packages), 1)]
+        P.apply_files(root, {"version": 1}, {"vex": vex, "profiles": []}, "2026-10-22")
+        return json.load(open(os.path.join(root, P.VEX)))
+
+    def test_vex_package_turns_a_distro_purl_into_its_generic_name_and_version(self):
+        f = P.vex_package
+        self.assertEqual(f("pkg:apk/wolfi/example@1.2.3?arch=amd64"), "pkg:generic/example@1.2.3")
+        self.assertEqual(f("pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1?distro=debian-12&arch=all"), "pkg:generic/tzdata@2026c-0%2Bdeb12u1")
+        self.assertEqual(f("pkg:rpm/redhat/openssl@3.0.7"), "pkg:generic/openssl@3.0.7")
+        self.assertEqual(f("pkg:generic/busybox@1.37.0"), "pkg:generic/busybox@1.37.0")
+
+    def test_vex_package_refuses_what_the_forms_cannot_represent(self):
+        for bad in ("pkg:golang/github.com/acme/busybox@v1.0.0", "pkg:npm/foo@1.0.0", "pkg:apk/wolfi/example", "pkg:apk/wolfi/example@",
+                    "pkg:apk/wolfi/a/b@1", "pkg:generic/ns/x@1", "pkg:apk/wolfi/example@1#sub", "not a purl", "", None, "pkg:apk//x@1"):
+            self.assertIsNone(P.vex_package(bad), bad)
+
+    def test_a_proposal_with_qualified_distro_purls_passes_the_release_generators(self):
+        doc = self.write([["pkg:apk/wolfi/example@1.2.3?arch=amd64"], ["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1?distro=debian-12"],
+                          ["pkg:apk/wolfi/example@1.2.3?arch=amd64", "pkg:apk/wolfi/example@1.2.3?arch=arm64"]],
+                         [("example", "1.2.3"), ("tzdata", "2026c-0+deb12u1"), ("example", "1.2.3")])
+        V = self.forms()
+        subs = [[x["@id"] for x in st["products"][0]["subcomponents"]] for st in doc["statements"]]
+        self.assertEqual(subs, [["pkg:generic/example@1.2.3"], ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"], ["pkg:generic/example@1.2.3"]])
+        out = V.inspector(doc, self.images(), "0.3.0")        # raises ValueError "cannot be represented" before the fix
+        self.assertEqual(len(out["filters"]), 3)
+        V.csaf(doc, self.images(), "0.3.0")
+
+    def test_a_package_the_forms_cannot_represent_is_not_proposed_and_the_owner_hears_of_it(self):
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        f = {"image": "production-amd64", "id": "CVE-2099-0100", "package": "jwt", "version": "v1.0.0",
+             "purls": ["pkg:golang/github.com/acme/jwt@v1.0.0"]}
+        self.assertEqual(P.vex_package(f["purls"][0]), None)
+        self.assertEqual(P.vex_subcomponents(f["purls"]), None)
+        self.assertEqual(P.vex_subcomponents(["pkg:apk/wolfi/example@1.2.3", "pkg:npm/foo@1"]), None)    # one unrepresentable purl refuses the set
+        self.assertEqual(P.vex_subcomponents([]), None)                                                  # never a blanket statement
+
+    def test_the_decoded_name_and_version_must_be_the_findings_own(self):    # S3 ruling (1): the generators decode what is written
+        v = P.vex_subcomponents
+        self.assertEqual(v(["pkg:deb/debian/libstdc%2B%2B6@1"], "libstdc++6", "1"), ["pkg:generic/libstdc%2B%2B6@1"])
+        self.assertIsNone(v(["pkg:deb/debian/libstdc%2B%2B6@1"], "libstdc%2B%2B6", "1"))      # the finding's name left encoded: it never matched the bundle
+        self.assertIsNone(v(["pkg:deb/debian/libstdc%2B%2B6@1"], "libstdc", "1"))
+        self.assertEqual(v(["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb12u1"), ["pkg:generic/tzdata@2026c-0%2Bdeb12u1"])
+        self.assertIsNone(v(["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb13u1"))
+        self.assertIsNone(v(["pkg:deb/debian/tzdata@2026c-0%2Bdeb12u1", "pkg:deb/debian/other@2026c-0%2Bdeb12u1"], "tzdata", "2026c-0+deb12u1"))
+        self.assertEqual(P.vex_package("pkg:deb/debian/libstdc%2B%2B6@1"), "pkg:generic/libstdc%2B%2B6@1")
+        doc = self.write([["pkg:deb/debian/libstdc%2B%2B6@1"]], [("libstdc%2B%2B6", "1")])      # an encoded finding name is not proposed at all
+        self.assertEqual(doc["statements"], [])
+        doc = self.write([["pkg:deb/debian/libstdc%2B%2B6@1"]], [("libstdc++6", "1")])
+        self.assertEqual(doc["statements"][0]["products"][0]["subcomponents"], [{"@id": "pkg:generic/libstdc%2B%2B6@1"}])
+        self.forms().inspector(doc, self.images(), "0.3.0")
+
+    def test_the_statement_id_is_stable_across_qualifier_variants_of_one_package(self):
+        a = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.3?arch=amd64"]})
+        b = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.3?arch=arm64"]})
+        c = P.statement_id({"id": "CVE-2099-0001", "purls": ["pkg:apk/wolfi/example@1.2.4?arch=amd64"]})
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, c)
 
 
 class Wiring(unittest.TestCase):                                            # REQ-SCAN-008-AC10, REQ-SCAN-009-AC5

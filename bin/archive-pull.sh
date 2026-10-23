@@ -15,19 +15,21 @@ SELF=archive-pull.sh
 die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 
 
-pointer= out= want=
+pointer= out= want= have=
 while [ $# -gt 0 ]; do
   case $1 in
     --pointer) [ $# -ge 2 ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"; pointer=$2; shift 2;;
     --out) [ $# -ge 2 ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"; out=$2; shift 2;;
-    --digest) [ $# -ge 2 ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"; want=$2; shift 2;;
+    --digest) [ $# -ge 2 ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"; want=$2; have=1; shift 2;;
     *) die "unknown argument: $1";;
   esac
 done
 [ -n "$pointer" ] && [ -n "$out" ] || die "usage: $SELF --pointer FILE --out DIR [--digest sha256:HEX]"
-if [ -n "$want" ]; then
+if [ -n "$have" ]; then
   case $want in
-    sha256:*) hex=${want#sha256:}; [ "${#hex}" -eq 64 ] && [ -z "${hex//[0-9a-f]/}" ] || die "--digest must be sha256:<64 lower-case hex>";;
+    sha256:*) hex=${want#sha256:}
+      case $hex in *[!0-9a-f]*) die "--digest must be sha256:<64 lower-case hex>";; esac
+      test "${#hex}" -eq 64 || die "--digest must be sha256:<64 lower-case hex>";;
     *) die "--digest must be sha256:<64 lower-case hex>";;
   esac
 fi
