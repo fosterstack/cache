@@ -750,10 +750,7 @@ def _merge_suppressions(ws, supp):
     # run's items win; carry an old item forward for any affected CVE still in the merged
     # document; drop acceptances whose statement is no longer affected.
     def _loadj(p):
-        try:
-            return json.load(open(p))
-        except Exception:
-            return None
+        return _read_reviewed_json(p)               # the run's own inventory too: absent = none, unreadable or mis-shaped = the run is broken and stops (never a delivery without its inventory)
     aip = os.path.join(ws, ".auditor", "accepted-items.json")
     new_ai = _loadj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))
     out_ai = {}

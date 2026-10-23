@@ -427,6 +427,14 @@ class MergeConsolidate(Base):
             R._merge_suppressions(ws, supp)
         self.assertFalse(os.path.exists(vp))                                # the VEX was not written ahead of the stop
 
+    def test_corrupt_run_inventory_stops_the_delivery_merge(self):
+        # the run's OWN accepted-items.json (beside its suppressions) that does not parse must not let the VEX ride without its inventory
+        ws = self.d("ws")
+        _out, supp = self._supp([self._stmt("CVE-2099-20", ["pkg:deb/a@1"])], version=4)
+        self.wj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"), "{bad")
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._merge_suppressions(ws, supp)
+
     def test_read_reopened_is_strict(self):
         for bad in ({"reopened": [0, None, ""]}, {"reopened": [["CVE", 5, 6]]}, {"reopened": [["CVE", "prod", "purl"]]}, {"reopened": [[["x"], [], []]]}, {"reopened": "x"}, [1]):
             p = os.path.join(self.d("ro"), "reopened-expired.json"); self.wj(p, bad)
