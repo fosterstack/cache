@@ -609,6 +609,7 @@ FAKE_OSV_ZIP=nomodified want_fail "AC15 an osv database whose records carry no m
 FAKE_OSV_ZIP=broken want_fail "AC15 an unreadable osv database zip fails closed" "unreadable" "${SCAN[@]}"
 FAKE_OSV_ECOS="Go Debian:12 PyPI" want_fail "AC15 an osv database for an ecosystem the scan does not target fails closed" "not one the scan targets" "${SCAN[@]}"
 FAKE_OSV_ZIP_DIRS="Go Debian" want_ok "AC15 rc-5a E: a reported Debian:12 is covered by the zip directory of its family (Debian/all.zip): the family match is used" "${SCAN[@]}"
+FAKE_OSV_ZIP_DIRS="Go Debian Debian:11" want_fail "AC15 rc-5a E: a stray zip for another release (Debian:11) beside the covering Debian zip is still refused as not a target" "not one the scan targets" "${SCAN[@]}"
 FAKE_OSV_ZIP_DIRS="Go Debian:11" want_fail "AC15 rc-5a E: a zip for another release of the family (Debian:11) does not cover a reported Debian:12" "no osv database zip for" "${SCAN[@]}"
 FAKE_OSV_ECOS="Go" want_fail "AC15 rc-5a E: a reported ecosystem (Debian:12) with no osv database zip fails closed, even when another ecosystem has one" "no osv database zip for" "${SCAN[@]}"
 rm -f "$fx/out/scan-results.json"; FAKE_OSV_DB_RC=3 run "${SCAN[@]}"
@@ -1260,7 +1261,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=416
+EXPECT=417
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
