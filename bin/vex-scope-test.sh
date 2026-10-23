@@ -67,6 +67,57 @@ check "foreign vendor, different product"                 ghcr.io/another-vendor
 check "foreign vendor, SAME basename (cache)"             ghcr.io/another-vendor/cache         ghcr.io/another-vendor/cache:1.0                     ""                                              1.37.0 FLAG
 check "changed component version (busybox 1.36.0)"        ghcr.io/fosterstack/cache            ghcr.io/fosterstack/cache:v0.2.1                     ""                                              1.36.0 FLAG no
 check "missing image identity (no tags, no digests)"      ghcr.io/fosterstack/cache            ""                                                   ""                                              1.37.0 FLAG
+# rc-5a I (handoff 0666, ruling R1): the CHECK stage's own path. Real grype scans each image child of an OCI layout (bin/check-scan.sh, the script Check runs), and a
+# VEX statement for the cache image must apply there exactly as it does in the cases above. An oci-dir: layout carries no tag and no repo digest, so grype derives no
+# image identity from it and applies no statement (probed on the pinned 0.118.0: ref.name, containerd name, with and without --platform); a docker-archive carrying
+# RepoTags ghcr.io/fosterstack/cache:cand-<variant>-<arch> does. The layouts here hold one real apk package (busybox 1.37.0-r0 on alpine 3.21), so the three BusyBox
+# findings are real database matches.
+chk="$work/check-path"; mkdir -p "$chk"
+python3 - "$chk" <<'PY'
+import hashlib, io, json, os, sys, tarfile
+W = sys.argv[1]
+def mk(variant):
+    root = os.path.join(W, "images", variant)
+    def blob(b):
+        h = hashlib.sha256(b).hexdigest(); os.makedirs(root + "/blobs/sha256", exist_ok=True); open(root + "/blobs/sha256/" + h, "wb").write(b); return "sha256:" + h
+    tb = io.BytesIO()
+    with tarfile.open(fileobj=tb, mode="w") as t:
+        def add(n, c):
+            i = tarfile.TarInfo(n); i.size = len(c); t.addfile(i, io.BytesIO(c))
+        add("etc/alpine-release", b"3.21.0\n"); add("etc/os-release", b'NAME="Alpine Linux"\nID=alpine\nVERSION_ID=3.21.0\n')
+        add("lib/apk/db/installed", b"C:Q1xxxxxxxxxxxxxxxxxxxxxxxxxxx=\nP:busybox\nV:1.37.0-r0\nA:x86_64\nS:1\nI:1\nT:x\nU:x\nL:GPL-2.0-only\no:busybox\nm:x\nt:0\nc:0\n\n")
+    layer = tb.getvalue(); ld = blob(layer); kids = []
+    for arch in ("amd64", "arm64"):
+        cfg = json.dumps({"architecture": arch, "os": "linux", "rootfs": {"type": "layers", "diff_ids": [ld]}, "v": variant}).encode(); cd = blob(cfg)
+        man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cd, "size": len(cfg)},
+                          "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": ld, "size": len(layer)}]}, sort_keys=True).encode()
+        kids.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": blob(man), "size": len(man), "platform": {"os": "linux", "architecture": arch}})
+    idx = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": kids}, sort_keys=True).encode(); ix = blob(idx)
+    open(root + "/oci-layout", "w").write('{"imageLayoutVersion":"1.0.0"}')
+    json.dump({"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": ix, "size": len(idx)}]}, open(root + "/index.json", "w"))
+    return ix
+d = {"image-production": mk("production"), "image-fips": mk("fips")}
+os.makedirs(W + "/dist"); os.makedirs(W + "/.vex"); os.makedirs(W + "/.github/policy"); os.makedirs(W + "/tools/requirements")
+for a in ("amd64", "arm64"):
+    for n, k in (("fscache", "archive-linux-"), ("fscache-fips", "archive-fips-linux-")):
+        f = "%s/dist/%s_0.3.0_linux_%s.tar.gz" % (W, n, a)
+        with tarfile.open(f, "w:gz") as t:
+            i = tarfile.TarInfo("f.txt"); c = b"x\n"; i.size = len(c); t.addfile(i, io.BytesIO(c))
+        d[k + a] = "sha256:" + hashlib.sha256(open(f, "rb").read()).hexdigest()
+json.dump(d, open(W + "/digests.json", "w"))
+json.dump({"scanners": ["grype"]}, open(W + "/.github/policy/scanners.json", "w"))
+for g in ("go.mod", "tools/requirements/go.mod"): open(W + "/" + g, "w").write("module github.com/fosterstack/cache\n\ngo 1.22\n")
+st = [{"vulnerability": {"name": c}, "status": "not_affected", "justification": "vulnerable_code_not_in_execute_path",
+       "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]} for c in ("CVE-2025-60876", "CVE-2025-46394", "CVE-2024-58251")]
+json.dump({"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://example.test/vex", "author": "t", "timestamp": "2026-10-23T00:00:00Z", "version": 1, "statements": st}, open(W + "/.vex/fosterstack-cache.openvex.json", "w"))
+PY
+ln -s "$here" "$chk/bin"
+( cd "$chk" && PATH="$(dirname "$grype"):$PATH" bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests digests.json --images images --archives dist --out out > run.log 2>&1 ) || true
+for v in production fips; do for a in amd64 arm64; do
+  r=$(jq -c --arg n "$v/linux/$a" '[.scanners[0].subjects[]? | select(.name == $n)][0] | {verdict, packages}' "$chk/out/scan-results.json" 2>/dev/null || echo null)
+  if [ "$(jq -r '[.verdict, .packages] | @csv' <<<"$r" 2>/dev/null)" = '"pass",3' ]; then echo "PASS check path: the $v image's linux/$a child is scanned by real grype and the cache VEX applies (its 3 findings are excepted)"; pass=$((pass+1))
+  else echo "FAIL check path: the $v image's linux/$a child (got $r; want pass over 3 packages): $(tail -2 "$chk/run.log" | cut -c1-200 | tr '\n' ' ')"; fail=$((fail+1)); fi
+done; done
 echo "----"
 echo "vex-scope: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
