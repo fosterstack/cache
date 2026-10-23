@@ -509,6 +509,25 @@ FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}, {"pkg": "lib
 printf '{"statements": "not a list"}\n' > "$fx/.vex/fosterstack-cache.openvex.json"
 FAKE_OSV_VULNS="$VBUSY" want_fail "AC4 F3 an unreadable VEX document excepts nothing (fail closed)" osv-scanner "${SCAN[@]}"
 cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+# a statement scoped to ONE architecture excepts the finding on that platform child only: osv-scanner scans each child, and the child's platform reaches the matcher
+archvex() { python3 - "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json" "$@" <<'PYV'
+import copy, json, sys
+d = json.load(open(sys.argv[1])); base = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+prod = d["statements"][1]["products"][0]; assert prod["@id"] == base
+out = []
+for a in sys.argv[3:]:
+    q = copy.deepcopy(prod); q["@id"] = base + "&arch=" + a; q["identifiers"] = {"purl": q["@id"]}; out.append(q)
+d["statements"][1]["products"] = out + d["statements"][1]["products"][1:]
+json.dump(d, open(sys.argv[2], "w"))
+PYV
+}
+archvex amd64
+FAKE_OSV_VULNS="$VBUSY" want_fail "AC4 F3 a statement scoped to arch amd64 does not except the same finding on the arm64 child" linux/arm64 "${SCAN[@]}"
+if jq -e '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | select(.name | test("^production/linux/"))] | map({(.name): .verdict}) | add | .["production/linux/amd64"] == "pass" and .["production/linux/arm64"] == "fail"' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 F3 the amd64-scoped statement excepts the finding on the amd64 child and not on the arm64 child"; else bad "AC4 F3 per-arch verdicts wrong: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | {name, verdict}]' "$fx/out/scan-results.json" 2>&1 | head -c 300)"; fi
+archvex amd64 arm64
+FAKE_OSV_VULNS="$VBUSY" want_fail "AC4 F3 statements scoped to each architecture do not except the finding on the go.mod sources (no platform)" go.mod "${SCAN[@]}"
+if jq -e '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | select(.name | test("^(production|fips)/linux/"))] | length == 4 and all(.[]; .verdict == "pass" and .vex_suppressed == 1)' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 F3 one statement scoped to each architecture excepts the finding on both platform children of each image"; else bad "AC4 F3 per-arch verdicts wrong: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | {name, verdict}]' "$fx/out/scan-results.json" 2>&1 | head -c 300)"; fi
+cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
 mkfake osv-scanner 0 80
 # ---- REQ-CHAIN-006-AC15: fresh vulnerability databases from the scanner's own host --------------------------------------------
 printf '{"scanners":["grype"]}\n' > "$fx/.github/policy/scanners.json"; rm -f "$fx/out/scan-results.json"
@@ -1186,7 +1205,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=379
+EXPECT=383
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
