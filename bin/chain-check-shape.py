@@ -44,7 +44,7 @@ collection holds); PR 2's bin/chain-test-shape.py (the same flag allowlist, the 
 import hashlib, json, os, re, shlex, sys, yaml
 
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
-DOWN = {"witness-build", "digests", "dist", "locks", "images", "govulncheck"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
+DOWN = {"witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
 UP = {"witness-check": RECORD_DIRS, "check-results": "check-results"}   # artifact name -> the path(s) it may carry
 KIND_STEP = "bash bin/install-kind.sh"
@@ -55,7 +55,8 @@ GV_BUILD = "govulncheck-build"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness rev
 GV_BUILD_LINE = "bash bin/install-scanner.sh govulncheck"
 GV_PACK_LINE = "bash bin/pack-govulncheck.sh"   # the one build step; the artifact it uploads is the hand-over (download-artifact fails the step on a digest mismatch; no override is allowed)
 GV_HAND_LINE = "bash bin/unpack-govulncheck.sh"
-GV_OUTPUT = {"digest": "${{ steps.upload.outputs.artifact-digest }}"}
+GV_OUTPUT = {"artifact-id": "${{ steps.upload.outputs.artifact-id }}"}   # the Check job downloads by this id, so an artifact another job uploads under the same name is not the one it gets
+GV_IDS = "${{ needs.govulncheck-build.outputs.artifact-id }}"
 SOURCE_SCANNERS = ["govulncheck"]   # ruling G (advisor Oct 12): the source scanners of .github/policy/scanners.json `source_scanners`, installed after Go, run by bin/check-govulncheck.py
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
 STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # PR 2's + PR 3's three
@@ -196,6 +197,9 @@ def exact_steps(label, steps, want, what):
         elif kind == "run":
             if u or r != arg:
                 bad.append("%s step %d must be exactly `run: %s`, found %r" % (label, i, arg, (r or u)[:80]))
+        elif kind == "downid":
+            if not u.startswith("actions/download-artifact@") or not PIN.match(u.split(" ")[0]) or w != {"artifact-ids": GV_IDS, "path": arg} or "run" in s:
+                bad.append("%s step %d must be a digest-pinned download-artifact with exactly artifact-ids %s and path %s (no name, pattern, merge-multiple or digest-mismatch)" % (label, i, GV_IDS, arg))
         elif kind in ("down", "up", "upid"):
             if kind == "upid" and s.get("id") != "upload":
                 bad.append("%s step %d must carry `id: upload` (its artifact-digest is the job output)" % (label, i))
@@ -230,7 +234,7 @@ def arm_job(j):
 def gv_job(j):
     """REQ-REL-011-AC1: govulncheck-build holds contents read only (no id-token, no secret, no environment, no other key), runs on ubuntu-24.04 and has EXACTLY these steps: a digest-pinned
     checkout without persisted credentials, the checksum-pinned Go install, the one build step (the pinned installer arm) and the digest-pinned upload of the binary as the artifact
-    govulncheck (`id: upload`). Its one output is that upload's artifact-digest (it proves the artifact arrived intact; the guarantee is that this job holds no credential)."""
+    govulncheck (`id: upload`). Its one output is that upload's artifact-id: the Check job downloads by it, so a same-name artifact another job uploads is not the one it gets (the guarantee that no build runs in a job holding a credential is the rule itself)."""
     if not isinstance(j, dict):
         return ["%s is not a job" % GV_BUILD]
     bad = []
@@ -241,7 +245,7 @@ def gv_job(j):
     if j.get("permissions") != {"contents": "read"}:
         bad.append("%s permissions must be exactly contents read (it holds no credential): %s" % (GV_BUILD, j.get("permissions")))
     if j.get("outputs") != GV_OUTPUT:
-        bad.append("%s must expose exactly the output digest, the artifact-digest of its upload step: %s" % (GV_BUILD, j.get("outputs")))
+        bad.append("%s must expose exactly the output artifact-id, the artifact-id of its upload step: %s" % (GV_BUILD, j.get("outputs")))
     want = [("checkout", None), ("run", GO_INSTALL), ("run", GV_BUILD_LINE), ("run", GV_PACK_LINE), ("upid", ("govulncheck", "govulncheck-out/govulncheck"))]
     bad += exact_steps(GV_BUILD, j.get("steps") or [], want, "checkout, Go install, the one build step, the upload (id: upload)")
     return bad
@@ -284,8 +288,11 @@ def stage(path):
                 bad.append("checkout must be digest-pinned with persist-credentials: false only")
         elif u.startswith("actions/download-artifact@"):
             w = s.get("with") or {}
-            kinds.append("gvdown" if w.get("name") == "govulncheck" else "down")
-            if not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".")):
+            kinds.append("gvdown" if "artifact-ids" in w else "down")
+            if "artifact-ids" in w:
+                if not PIN.match(u.split(" ")[0]) or w != {"artifact-ids": GV_IDS, "path": "govulncheck-dl"}:
+                    bad.append("a download by artifact id must be digest-pinned with exactly artifact-ids %s and path govulncheck-dl: %s" % (GV_IDS, w))
+            elif not PIN.match(u.split(" ")[0]) or w.get("name") not in DOWN or set(w) != {"name", "path"} or re.match(r"^(bin|\.github|\.|/|\.\.)(/|$)", w.get("path", ".")):
                 bad.append("download-artifact must be digest-pinned, name in %s, an explicit path outside bin/ and .github/: %s" % (sorted(DOWN), w))
         elif u.startswith("actions/upload-artifact@"):
             kinds.append("up")
@@ -317,7 +324,7 @@ def stage(path):
         bad.append("steps must be checkout, install Witness, install each listed scanner, install kind (bash bin/install-kind.sh), downloads, THREE witnessed steps, uploads (in that order); got %s" % kinds)
     if "kind" in kinds and "down" in kinds and kinds.index("down") < kinds.index("kind"):
         bad.append("the downloads come after the installs")
-    want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", GO_INSTALL)] + [("down", ("govulncheck", "govulncheck-dl")), ("run", GV_HAND_LINE)] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
+    want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", GO_INSTALL)] + [("downid", "govulncheck-dl"), ("run", GV_HAND_LINE)] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
              [("run", "bash bin/witnessed.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS] + [("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))]
     bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, kind install, four downloads, the three witnessed steps, the two uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]

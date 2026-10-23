@@ -42,12 +42,40 @@ def installer_args(txt):
                 continue
         out.append(a)
     return out
-def unresolved_arg(a):
-    return a.startswith("$") or a.startswith("`") or a.startswith("{{")
 def builds_govulncheck(a):
     return a == "govulncheck" or a.startswith("govulncheck")
-# a credential job may give install-scanner.sh a word it cannot read only here, each with its reason (the tool word is then one of a closed list read from the policy file)
-EXCLUDED_UNRESOLVED = {("scan.yml", "scanner"): "the matrix tool is read from the pr_gate list of .github/policy/scanners.json (jq -c '.pr_gate'); that list must not hold govulncheck (checked below)"}
+# In a job that holds a credential, a line that names install-scanner.sh passes ONLY as exactly `bash bin/install-scanner.sh TOOL` (or `./bin/install-scanner.sh TOOL`), optionally
+# followed by one quoted destination word (no command substitution) and a trailing comment, where TOOL is a literal word that is not govulncheck, or a literal prefix ending in a dash and
+# a variable (docker-scout-$v: a word with a dash cannot be govulncheck). Every other form is refused: a quoted or backslash-continued path or word, a tool word from a variable,
+# a loop or stdin, a redirection, a pipe, a wrapper (bash -c, xargs, env), a second command on the line. The few real lines outside the grammar are listed below, each exact, with the
+# lines the same step must also carry; a new line outside the grammar needs a new row here, in review.
+ALLOWED = re.compile(r'(?:bash bin/|\./bin/)install-scanner\.sh (?P<tool>[a-z0-9][a-z0-9.-]*|"?[a-z0-9][a-z0-9.-]*-\$\{?[A-Za-z_]\w*\}?"?)(?: "(?:[^"`\\$]|\$(?!\())*")?(?:[ \t]+#.*)?')
+EXCLUDED_INSTALLER = {
+    ("auditor.yml", "audit"): {"lines": ['./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \\'], "needs": [], "why": "the syft install whose failure is a warning (the line continues on the next line)"},
+    ("main-candidate-rescan.yml", "scout-root-cause"): {"lines": ['./bin/install-scanner.sh "$t" "$RUNNER_TEMP/$t"'], "needs": ["for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do"], "forbid": r"(?<![\w$])t=", "why": "a loop over three literal docker-scout names, t assigned nowhere else in the step"},
+    ("scan.yml", "scanner"): {"lines": ["./bin/install-scanner.sh '${{ matrix.scanner == 'inspector' && 'inspector-sbomgen' || matrix.scanner }}'"], "needs": [], "why": "the matrix tool comes from the pr_gate list of .github/policy/scanners.json (checked below)"},
+}
+def installer_problems(txt, key):
+    """Lines of this step text that name install-scanner but are outside the grammar and the listed exceptions."""
+    out = []
+    exc = EXCLUDED_INSTALLER.get(key)
+    for raw in txt.split("\n"):
+        line = raw.strip()
+        if "install-scanner" not in line or line.startswith("#"):
+            continue
+        head = re.split(r"\s#", line, maxsplit=1)[0]   # a name only in a trailing comment (quotes balanced before it) is prose, not a command
+        if "install-scanner" not in head and head.count('"') % 2 == 0 and head.count("'") % 2 == 0:
+            continue
+        m = ALLOWED.fullmatch(line)
+        if m:
+            tool = re.sub(r'["\\]', "", m.group("tool"))
+            if builds_govulncheck(tool):
+                out.append(line)
+            continue
+        if exc and line in exc["lines"] and all(n in txt for n in exc["needs"]) and not (exc.get("forbid") and re.search(exc["forbid"], txt.replace(exc["needs"][0], "") if exc["needs"] else txt)):
+            continue
+        out.append(line)
+    return out
 def steps_text(s):
     t = (s.get("run") or "") + " " + (s.get("uses") or "") + " " + yaml.safe_dump(s.get("env") or {})
     return "\n".join(l for l in t.split("\n") if not l.strip().startswith("#"))
@@ -83,26 +111,30 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
             for a in installer_args(txt):
                 if builds_govulncheck(a):
                     n += 1
-                elif unresolved_arg(a):
-                    unresolved.append(s.get("name") or "?")
+            if holds(d, j) and key not in EXCLUDED_AC1:
+                unresolved += [(s.get("name") or "?", l) for l in installer_problems(s.get("run") or "", key)]
             comp += [s.get("name") or s.get("uses") or "?"] * n
         w = holds(d, j)
         if w and comp and key not in EXCLUDED_AC1:
             bad.append("%s/%s holds %s and builds in the step %r" % (key[0], jn, ", ".join(w), comp[0]))
-        if w and unresolved and key not in EXCLUDED_AC1 and key not in EXCLUDED_UNRESOLVED:
-            bad.append("%s/%s holds %s and gives install-scanner.sh a tool argument that is not a literal word in the step %r (it could name the govulncheck build)" % (key[0], jn, ", ".join(w), unresolved[0]))
+        if w and unresolved:
+            bad.append("%s/%s holds %s and runs the line %r in the step %r: a credential job may name install-scanner.sh only as exactly `bash bin/install-scanner.sh TOOL` (TOOL a literal word, not govulncheck) or a listed exception" % (key[0], jn, ", ".join(w), unresolved[0][1], unresolved[0][0]))
         if len(comp) >= 2 and key not in EXCLUDED_AC2:
             bad.append("%s/%s runs two builds: %r and %r" % (key[0], jn, comp[0], comp[1]))
-# the one unresolved tool word: scan.yml's matrix, read from scanners.json pr_gate, must be that jq read and the list must not hold govulncheck
-for key in EXCLUDED_UNRESOLVED:
+# a listed installer exception must name a job that exists, and scan.yml's matrix (the one tool word read from a list) must be exactly the pr_gate-driven shape
+for key in EXCLUDED_INSTALLER:
     if key not in jobs_seen:
-        bad.append("the unresolved-tool exclusion %s/%s names a job that does not exist (remove the row)" % key)
+        bad.append("the installer exception %s/%s names a job that does not exist (remove the row)" % key)
 sc = json.load(open(os.environ.get("ISO_SCANNERS") or os.path.join(os.path.dirname(os.path.abspath(wf)), "policy", "scanners.json")))
 if "govulncheck" in (sc.get("pr_gate") or []):
     bad.append("scanners.json pr_gate holds govulncheck: scan.yml's credential-holding matrix job would build it")
+scan_d = yaml.safe_load(open(os.path.join(wf, "scan.yml"))) or {}
 scan_txt = open(os.path.join(wf, "scan.yml")).read()
 if "jq -c '.pr_gate' .github/policy/scanners.json" not in scan_txt:
     bad.append("scan.yml no longer reads its matrix list from scanners.json pr_gate")
+sj_ = ((scan_d.get("jobs") or {}).get("scanner") or {})
+if (sj_.get("strategy") or {}).get("matrix") != {"scanner": "${{ fromJSON(needs.scanners.outputs.list) }}"}:
+    bad.append("scan.yml scanner: the matrix must be exactly scanner from the scanners job's list (no include, exclude or other axis): %s" % (sj_.get("strategy") or {}).get("matrix"))
 # an exclusion must still name a job that exists (a stale row hides nothing but must not rot)
 for key in list(EXCLUDED_AC1) + list(EXCLUDED_AC2):
     if key not in jobs_seen:
@@ -139,7 +171,8 @@ if re.search(r"go\s+install\s+golang\.org/x/vuln", atxt):
     bad.append("the audit job still builds govulncheck itself")
 # the Check stage (stage-verify.yml): govulncheck is built by `install-scanner.sh govulncheck` (a Go module, no release binary), so its build gets its own job with no credential;
 # the `check` job (id-token: write, for Witness) downloads the artifact with download-artifact's own digest check left on (it fails the step when the digest differs from the one GitHub
-# recorded at upload) and installs it. That check, and the build job's artifact-digest output, prove only that the artifact arrived intact; the guarantee is that no build runs in a job
+# recorded at upload) and installs it. The download is by the artifact id the build job exports, not by name, so a same-name artifact another job uploads is not the one it gets. The check
+# and the id prove only that the artifact arrived intact and is the one that job uploaded; the guarantee is that no build runs in a job
 # that holds a credential (AC1 above, which sees this installer arm as a build).
 sv = yaml.safe_load(open(os.path.join(wf, "stage-verify.yml"))) or {}
 sj = sv.get("jobs") or {}
@@ -152,8 +185,8 @@ else:
         bad.append("stage-verify.yml govulncheck-build holds a credential: %s" % holds(sv, gb))
     if not any("govulncheck" in installer_args(steps_text(st)) for st in gb.get("steps") or []):
         bad.append("stage-verify.yml govulncheck-build does not build govulncheck")
-    if gb.get("outputs") != {"digest": "${{ steps.upload.outputs.artifact-digest }}"}:
-        bad.append("stage-verify.yml govulncheck-build must expose exactly the output digest, the artifact-digest of its upload step: %s" % gb.get("outputs"))
+    if gb.get("outputs") != {"artifact-id": "${{ steps.upload.outputs.artifact-id }}"}:
+        bad.append("stage-verify.yml govulncheck-build must expose exactly the output artifact-id, the artifact-id of its upload step: %s" % gb.get("outputs"))
     ups = [st for st in gb.get("steps") or [] if str(st.get("uses") or "").startswith("actions/upload-artifact@")]
     if len(ups) != 1 or ups[0].get("id") != "upload" or ups[0].get("with") != {"name": "govulncheck", "path": "govulncheck-out/govulncheck"}:
         bad.append("stage-verify.yml govulncheck-build must have exactly one upload-artifact step, with id: upload, carrying the artifact govulncheck from govulncheck-out/govulncheck")
@@ -165,13 +198,13 @@ cneeds = [cneeds] if isinstance(cneeds, str) else (cneeds or [])
 if "govulncheck-build" not in cneeds:
     bad.append("stage-verify.yml check does not need govulncheck-build")
 csteps = chk.get("steps") or []
-dls = [st for st in csteps if str(st.get("uses") or "").startswith("actions/download-artifact@") and (st.get("with") or {}).get("name") == "govulncheck"]
+dls = [st for st in csteps if str(st.get("uses") or "").startswith("actions/download-artifact@") and ("artifact-ids" in (st.get("with") or {}) or (st.get("with") or {}).get("name") == "govulncheck")]
 if len(dls) != 1:
-    bad.append("stage-verify.yml check must download the govulncheck artifact exactly once")
+    bad.append("stage-verify.yml check must download the govulncheck artifact exactly once, by the artifact id of govulncheck-build")
 else:
     # the digest check of download-artifact stays on: the step carries only uses and with {name, path} (no digest-mismatch input, no continue-on-error, no if), and nothing in the file sets digest-mismatch
-    if set(dls[0]) - {"name", "uses", "with"} or set(dls[0].get("with") or {}) != {"name", "path"} or (dls[0].get("with") or {}).get("path") != "govulncheck-dl":
-        bad.append("stage-verify.yml check: the govulncheck download must carry only uses and with name and path govulncheck-dl (no digest-mismatch input, no continue-on-error, no if): %s" % sorted(dls[0]))
+    if set(dls[0]) - {"name", "uses", "with"} or (dls[0].get("with") or {}) != {"artifact-ids": "${{ needs.govulncheck-build.outputs.artifact-id }}", "path": "govulncheck-dl"}:
+        bad.append("stage-verify.yml check: the govulncheck download must carry only uses and with exactly artifact-ids ${{ needs.govulncheck-build.outputs.artifact-id }} and path govulncheck-dl (no name, no digest-mismatch input, no continue-on-error, no if): %s" % sorted(dls[0]))
 if "digest-mismatch" in open(os.path.join(wf, "stage-verify.yml")).read():
     bad.append("stage-verify.yml sets digest-mismatch (download-artifact's default, error, must stand untouched)")
 HAND = "bash bin/unpack-govulncheck.sh"
@@ -257,6 +290,27 @@ gf "install-scanner.sh with an unresolved tool word in a credential job" 'bash b
 gf "install-scanner.sh govulncheck with extra spaces" 'bash bin/install-scanner.sh     govulncheck'
 gf "install-scanner.sh govulncheck inside a bash -c wrapper" "bash -c 'bash bin/install-scanner.sh govulncheck'"
 gf "install-scanner.sh with a govulncheck-prefixed tool word" 'bash bin/install-scanner.sh govulncheck-x'
+gf "install-scanner.sh with a quoted script path" 'bash "bin/install-scanner.sh" govulncheck'
+gf "install-scanner.sh with a single-quoted script path" "bash 'bin/install-scanner.sh' govulncheck"
+gf "install-scanner.sh fed the tool word on stdin through xargs" 'echo govulncheck | xargs bash bin/install-scanner.sh'
+gf "install-scanner.sh with a redirection before the tool word" 'bash bin/install-scanner.sh >/dev/null govulncheck'
+gf "install-scanner.sh with a command substitution in the tool word" 'bash bin/install-scanner.sh gov$(echo ulncheck)'
+gf "install-scanner.sh with a brace-expanded tool word" 'bash bin/install-scanner.sh {govulncheck,crane}'
+gf "install-scanner.sh after a second loop that assigns govulncheck" 'for t in grype; do bash bin/install-scanner.sh "$t"; done; for t in govulncheck; do bash bin/install-scanner.sh "$t"; done'
+gf "install-scanner.sh reading a variable assigned after an unrelated loop" 'for tool in crane; do echo "$tool"; done; tool=govulncheck; bash bin/install-scanner.sh "$tool"'
+gf "install-scanner.sh with a second command on the line" 'bash bin/install-scanner.sh crane && bash bin/install-scanner.sh govulncheck'
+gf "install-scanner.sh run through env" 'env bash bin/install-scanner.sh govulncheck'
+gf "install-scanner.sh with a command substitution in the destination" 'bash bin/install-scanner.sh crane "$(echo /tmp)"'
+gf "install-scanner.sh with a trailing comment that hides nothing (still the build)" 'bash bin/install-scanner.sh govulncheck # crane'
+gf "install-scanner.sh in a bash -c string with the build" "bash -c 'bash bin/install-scanner.sh crane; bash bin/install-scanner.sh govulncheck'"
+mutate "scan.yml scanner job gets a second installer line with a variable" '
+edit("scan.yml", lambda s: s.replace("        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n", "        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n      - name: extra\n        run: |\n          tool=govulncheck\n          bash bin/install-scanner.sh \"$tool\"\n", 1))'
+mutate "scan.yml scanner job adds a matrix.include entry naming govulncheck" '
+edit("scan.yml", lambda s: s.replace("        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}\n", "        scanner: ${{ fromJSON(needs.scanners.outputs.list) }}\n        include:\n          - scanner: govulncheck\n", 1))'
+mutate "scan.yml scanner job gets a pinned Go install and a variable installer line" '
+edit("scan.yml", lambda s: s.replace("        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n", "        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n      - name: go\n        run: bash bin/install-scanner.sh go\n      - name: extra\n        run: |\n          TOOL=govulncheck; bash bin/install-scanner.sh \"$TOOL\"\n", 1))'
+mutate "scan.yml matrix list taken from another key of scanners.json (scanners)" '
+edit("scan.yml", lambda s: s.replace("jq -c \x27.pr_gate\x27 .github/policy/scanners.json", "jq -c \x27.source_scanners\x27 .github/policy/scanners.json", 1))'
 mutate "pr_gate-driven matrix job loses its exclusion (scan.yml reads another key)" '
 edit("scan.yml", lambda s: s.replace("jq -c \x27.pr_gate\x27 .github/policy/scanners.json", "jq -c \x27.scanners\x27 .github/policy/scanners.json", 1))'
 echo '{"scanners": ["grype"], "source_scanners": ["govulncheck"], "pr_gate": ["grype", "govulncheck"]}' > "$work/sc-bad.json"
@@ -269,24 +323,38 @@ mutate "govulncheck-build is granted id-token: write" '
 edit("stage-verify.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    permissions:\n      contents: read\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
 mutate "govulncheck-build reads a secret" '
 edit("stage-verify.yml", lambda s: re.sub(r"(  govulncheck-build:.*?    steps:\n)", lambda m: m.group(1) + "      - name: leak\n        env:\n          K: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}\n        run: echo x\n", s, count=1, flags=re.S))'
-mutate "govulncheck-build has no digest output" '
-edit("stage-verify.yml", lambda s: s.replace("    outputs:\n      digest: ${{ steps.upload.outputs.artifact-digest }}\n", "", 1))'
-mutate "govulncheck-build's output is not the upload's artifact-digest" '
-edit("stage-verify.yml", lambda s: s.replace("steps.upload.outputs.artifact-digest", "steps.upload.outputs.other", 1))'
+mutate "govulncheck-build has no artifact-id output" '
+edit("stage-verify.yml", lambda s: s.replace("    outputs:\n      artifact-id: ${{ steps.upload.outputs.artifact-id }}\n", "", 1))'
+mutate "govulncheck-build's output is not the upload's artifact-id" '
+edit("stage-verify.yml", lambda s: s.replace("steps.upload.outputs.artifact-id", "steps.upload.outputs.artifact-digest", 1))'
 mutate "the upload step has no id (the output would be empty)" '
 edit("stage-verify.yml", lambda s: s.replace("      - id: upload\n        uses:", "      - uses:", 1))'
 mutate "the Check job turns the digest check off (digest-mismatch: ignore)" '
-edit("stage-verify.yml", lambda s: s.replace("          name: govulncheck\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: ignore\n", 1))'
+edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: ignore\n", 1))'
 mutate "the Check job only warns on a digest mismatch (digest-mismatch: warn)" '
-edit("stage-verify.yml", lambda s: s.replace("          name: govulncheck\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: warn\n", 1))'
+edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: warn\n", 1))'
 mutate "the Check job sets digest-mismatch even to the default (error): the default must stand untouched" '
-edit("stage-verify.yml", lambda s: s.replace("          name: govulncheck\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: error\n", 1))'
+edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "          name: govulncheck\n          path: govulncheck-dl\n          digest-mismatch: error\n", 1))'
 mutate "the Check job's govulncheck download may fail without stopping the job (continue-on-error)" '
-edit("stage-verify.yml", lambda s: s.replace("        with:\n          name: govulncheck\n          path: govulncheck-dl\n", "        continue-on-error: true\n        with:\n          name: govulncheck\n          path: govulncheck-dl\n", 1))'
+edit("stage-verify.yml", lambda s: s.replace("        with:\n          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "        continue-on-error: true\n        with:\n          name: govulncheck\n          path: govulncheck-dl\n", 1))'
 mutate "the Check job's govulncheck download is conditional (if: always())" '
-edit("stage-verify.yml", lambda s: s.replace("        with:\n          name: govulncheck\n          path: govulncheck-dl\n", "        if: always()\n        with:\n          name: govulncheck\n          path: govulncheck-dl\n", 1))'
+edit("stage-verify.yml", lambda s: s.replace("        with:\n          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          path: govulncheck-dl\n", "        if: always()\n        with:\n          name: govulncheck\n          path: govulncheck-dl\n", 1))'
 mutate "the Check job's govulncheck download goes to another path" '
 edit("stage-verify.yml", lambda s: s.replace("path: govulncheck-dl\n", "path: dl\n", 1))'
+mutate "the Check job downloads by name again (no artifact-ids)" '
+edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n", "          name: govulncheck\n", 1))'
+mutate "the Check job's artifact-ids is another expression" '
+edit("stage-verify.yml", lambda s: s.replace("needs.govulncheck-build.outputs.artifact-id }}", "needs.govulncheck-build.outputs.other }}", 1))'
+mutate "the Check job's artifact-ids is a literal number" '
+edit("stage-verify.yml", lambda s: s.replace("artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}", "artifact-ids: 123456", 1))'
+mutate "the Check job adds the name beside artifact-ids" '
+edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n", "          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          name: govulncheck\n", 1))'
+mutate "the Check job adds a pattern beside artifact-ids" '
+edit("stage-verify.yml", lambda s: s.replace("          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n", "          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}\n          pattern: govulncheck*\n", 1))'
+mutate "govulncheck-build has no id on its upload (the output would be empty)" '
+edit("stage-verify.yml", lambda s: s.replace("      - id: upload\n        uses:", "      - uses:", 1))'
+mutate "govulncheck-build's upload overwrites an existing artifact" '
+edit("stage-verify.yml", lambda s: s.replace("          path: govulncheck-out/govulncheck\n", "          path: govulncheck-out/govulncheck\n          overwrite: true\n", 1))'
 mutate "the upload carries another path than govulncheck-out/govulncheck" '
 edit("stage-verify.yml", lambda s: s.replace("path: govulncheck-out/govulncheck\n", "path: govulncheck-out\n", 1))'
 mutate "govulncheck-build no longer places the binary (pack step removed)" '

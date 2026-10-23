@@ -4,8 +4,9 @@
 # then runs its checks as listed plain scripts. No registry login, no packages permission, no secret: the stage only reads what the earlier stages made.
 # govulncheck publishes no release binary, so it is built from the committed tools/govulncheck module (go.sum is the pin) in its own job, govulncheck-build, which holds no
 # credential (REQ-REL-011-AC1: a job that holds a credential never builds). The check job, which holds id-token: write for Witness, downloads that binary and installs it only
-# after download-artifact's own digest check passed (it fails the step when the downloaded artifact's digest differs from the one GitHub recorded at upload; no override is set). That check
-# and the build job's artifact-digest output prove only that the artifact arrived intact; the guarantee is that no build runs in a job that holds a credential.
+# after download-artifact's own digest check passed (it fails the step when the downloaded artifact's digest differs from the one GitHub recorded at upload; no override is set). The download
+# is by the artifact id that govulncheck-build exports, not by name, so an artifact another job of the run uploads under the same name is not the one it gets. The digest check and the id prove
+# only that the artifact arrived intact and is the one that job uploaded; the guarantee is that no build runs in a job that holds a credential.
 # The shape of this file is judged by bin/chain-check-wiring-test.sh (an exact grammar).
 name: 'Stage: check'
 on:
@@ -18,7 +19,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      digest: ${{ steps.upload.outputs.artifact-digest }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -54,7 +55,7 @@ jobs:
         run: bash bin/install-scanner.sh go
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: govulncheck
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
           path: govulncheck-dl
       - name: install govulncheck from its build job (its download was digest-checked)
         run: bash bin/unpack-govulncheck.sh

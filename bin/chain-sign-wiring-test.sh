@@ -1079,6 +1079,98 @@ jobs:
     steps:
       - uses: actions/checkout@SHA
 EOF
+ycase y_idsok "download-artifact by the one literal artifact id of govulncheck-build, in the Check job (REQ-REL-011-AC1: the artifact cannot be swapped by name)" ok <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: govulncheck-dl
+EOF
+ycase y_idsother "download-artifact by artifact-ids with another expression" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.digest }}
+          path: govulncheck-dl
+EOF
+ycase y_idsnum "download-artifact by a literal numeric artifact id" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: 123456
+          path: govulncheck-dl
+EOF
+ycase y_idsname "download-artifact by artifact-ids with the name added again" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: govulncheck
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: govulncheck-dl
+EOF
+ycase y_idspattern "download-artifact by artifact-ids with a pattern beside it" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          pattern: '*'
+          path: govulncheck-dl
+EOF
+ycase y_idsmerge "download-artifact by artifact-ids with merge-multiple beside it" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          merge-multiple: true
+          path: govulncheck-dl
+EOF
+ycase y_idsjob "download-artifact by the artifact-ids literal in a job that is not the Check job" <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: govulncheck-dl
+EOF
+ycase y_idsmore "download-artifact by artifact-ids with a second id" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }},1
+          path: govulncheck-dl
+EOF
+ycase y_idsbin "download-artifact by the artifact-ids literal into bin/" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+          path: bin
+EOF
+ycase y_idsnopath "download-artifact by the artifact-ids literal with no path" <<'EOF'
+jobs:
+  check:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          artifact-ids: ${{ needs.govulncheck-build.outputs.artifact-id }}
+EOF
 ycase y_dlbin "download-artifact into bin (Opus P6): the downloaded content is not the hashed file" <<'EOF'
 jobs:
   j:
