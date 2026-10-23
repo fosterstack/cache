@@ -271,6 +271,20 @@
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
     },
     {
+      "file": ".github/workflows/release.yml",
+      "form": "a local reusable workflow call",
+      "key": "162c91ba5e95c4df3567466794764f0d93d6b30d720af45c87bba1deaca9309e",
+      "line": "162c91ba5e95c4df3567466794764f0d93d6b30d720af45c87bba1deaca9309e",
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586: the stage input of the Sign call and the Sign-rebuild call); advisor ruling Oct 23"
+    },
+    {
+      "file": ".github/workflows/release.yml",
+      "form": "a local reusable workflow call",
+      "key": "b49f5db9ac9502afd613edb1041a3dd3754fff06283962ccd3e42c992f42a060",
+      "line": "b49f5db9ac9502afd613edb1041a3dd3754fff06283962ccd3e42c992f42a060",
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586: the stage input of the Sign call and the Sign-rebuild call); advisor ruling Oct 23"
+    },
+    {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
       "key": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
