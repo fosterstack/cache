@@ -13,7 +13,7 @@ on:
   workflow_call:
     inputs:
       hostile:
-        description: dry run only
+        description: release-candidate tag runs only (the hostile Build step)
         type: boolean
         default: false
       mode:

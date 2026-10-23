@@ -127,7 +127,7 @@ jobs:
       - id: records
         name: expose the record digests as the stage output
         if: ${{ inputs.mode == 'release' }}
-        run: echo "records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)" >> "$GITHUB_OUTPUT"
+        run: r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"
       # always(): the verdict (snapshot-verdict.json in snapshot mode) is the only place the per-image digests and the differing items are readable, failed comparison or not
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

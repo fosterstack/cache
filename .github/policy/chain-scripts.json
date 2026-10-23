@@ -143,7 +143,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "a0fcde92bdabcd4ee3126d3bf13838e13a75d0bf08c9e072bca182ad0f1d2178",
+      "sha256": "48911f51abbd52c8d3b20097aa9c1d07adbd090422c72d240afa7830a79be35a",
       "tools": [
         "at",
         "bash",
@@ -156,7 +156,7 @@
         "bin/loopback-get.sh"
       ],
       "signs": "other",
-      "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)",
+      "reason": "the dry run's hostile Build step: signs forged material with a throwaway key made in this job (no token, no cosign) only to prove the verifiers refuse it; runs only when the dry run asks (if: inputs.hostile)",
       "exceptions": [
         {
           "rule": "deny",
@@ -2798,7 +2798,7 @@
       "file": ".github/workflows/stage-reproducibility.yml",
       "job": "assemble",
       "id": "records",
-      "run": "echo \"records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)\" >> \"$GITHUB_OUTPUT\"",
+      "run": "r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-005-AC4 (adversarial pass R2): the stage output Sign checks Rebuild's records against (the sha256 of its record, verdict and rapk records); a job output only the Rebuild assemble job can write"
     }
   ]

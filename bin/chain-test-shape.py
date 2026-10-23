@@ -275,7 +275,7 @@ HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 # Rebuild's assemble job exposes the sha256 of every record and of the verdict it made or consumed, for Sign (the Witness move, adversarial pass R2): a job output only that job can write
-EXPOSE_RECORDS = 'echo "records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)" >> "$GITHUB_OUTPUT"'
+EXPOSE_RECORDS = 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"'
 RECORDS_STAGE_OUTPUT = "${{ jobs.assemble.outputs.records }}"
 RECORDS_JOB_OUTPUT = "${{ steps.records.outputs.records }}"
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).

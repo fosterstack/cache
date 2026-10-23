@@ -484,10 +484,11 @@ rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" 
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
 rb r_out "005-AC1 Rebuild exposes a second stage output (its only output is the record digests)" "on: must be" '    outputs:\n      records:' \
              '    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n      records:'
-rb r_recgone "R2 the record-digest step is gone from Rebuild's assemble job" "must be exactly id: records" '      - id: records\n        name: expose the record digests as the stage output\n        if: ${{ inputs.mode == '"'"'release'"'"' }}\n        run: echo "records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)" >> "$GITHUB_OUTPUT"\n' ''
+rb r_recgone "R2 the record-digest step is gone from Rebuild's assemble job" "must be exactly id: records" '      - id: records\n        name: expose the record digests as the stage output\n        if: ${{ inputs.mode == '"'"'release'"'"' }}\n        run: r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"\n' ''
 rb r_recid "R2 the record-digest step has another id" "must be exactly id: records" '      - id: records' '      - id: other'
+rb r_recmask "R2 (round 6) the records step masks a failing helper (an echo of the substitution loses its exit status)" "must be exactly id: records" 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r"' 'echo "records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)"'
 rb r_recdir "R2 the record-digest step reads another rapk directory" "must be exactly id: records" 'rec-rapk/ubuntu-24.04-arm)' 'rec-rapk/ubuntu-24.04)'
-rb r_recif "R2 the record-digest step runs in snapshot mode too" "must be exactly id: records" "        if: \${{ inputs.mode == 'release' }}\n        run: echo \"records=" '        run: echo "records='
+rb r_recif "R2 the record-digest step runs in snapshot mode too" "must be exactly id: records" "        if: \${{ inputs.mode == 'release' }}\n        run: r=" '        run: r='
 rb r_recjob "R2 the assemble job exposes the records of another step" "must expose exactly" 'steps.records.outputs.records }}\n    steps' 'steps.other.outputs.records }}\n    steps'
 rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" '    inputs:\n      mode:' \
              '    inputs:\n      hostile:\n        type: boolean\n        default: false\n      mode:'
@@ -936,6 +937,8 @@ gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: [build, si
 gr g3  "005-AC5 release does not need rebuild" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign]' "release must need exactly"
 gr g3b "005-AC5 release does not need Sign's second call (Rebuild's records would be unsigned)" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign, rebuild]' "release must need exactly"
 gr g3c "005-AC5 sign-rebuild does not wait for rebuild" '  sign-rebuild:\n    needs: [build, rebuild]' '  sign-rebuild:\n    needs: build' "sign-rebuild must need exactly"
+gr g3e "R2 (round 6) sign-rebuild drops the records input (it would sign whatever arrives under the artifact names)" '      records: ${{ needs.rebuild.outputs.records }}\n' '' "sign-rebuild must pass exactly"
+gr g3f "R2 (round 6) sign-rebuild takes its records from Build's output" 'records: ${{ needs.rebuild.outputs.records }}' 'records: ${{ needs.build.outputs.digests }}' "sign-rebuild must pass exactly"
 gr g3d "005-AC5 sign-rebuild signs the build stage (the wrong records)" '      stage: rebuild' '      stage: build' "sign-rebuild must pass exactly"
 gr g3e "005-AC5 sign without the stage input" '      stage: build\n  rebuild:' '  rebuild:' "sign must pass exactly"
 gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: $GATE\n    needs: check" \
@@ -2683,7 +2686,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=919
+EXPECT=922
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
