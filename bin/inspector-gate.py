@@ -75,7 +75,7 @@ def image_identity(label):
 
 
 def scope_of(product_id):
-    """{'variant': .., 'arch': ..} the product names (only those present), read in bin/rescan-statement.py's grammar: the query is split raw on '&' (no
+    """{'variant': .., 'arch': ..} the product names (only those present), read in the rescan statement's grammar: the query is split raw on '&' (no
     percent-decoding), every part is key=value with a non-blank value, the keys are only repository_url, variant and arch, in lower case, each once, variant
     is production or fips and arch is amd64 or arm64. Anything else is None: that product covers nothing (the finding blocks), the rest of the document is
     unaffected."""

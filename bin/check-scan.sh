@@ -92,41 +92,35 @@ child_digest() {   # child_digest LAYOUT ARCH -> sha256:<child manifest digest>,
 }
 PLATFORMS=(amd64 arm64)
 other_platforms() {   # other_platforms LAYOUT -> one os/arch per line for every index descriptor that is neither linux/amd64, linux/arm64 nor the unknown/unknown provenance descriptor
-  local idx blob d out line; idx=$(jq -r '.manifests[0].digest // empty' "$1/index.json" 2> /dev/null) || return 0
+  local idx blob d mf out line prog pprog; idx=$(jq -r '.manifests[0].digest // empty' "$1/index.json" 2> /dev/null) || return 0
   [[ "$idx" =~ ^sha256:[0-9a-f]{64}$ ]] || return 0
   blob="$1/blobs/sha256/${idx#sha256:}"; [ -f "$blob" ] || return 0
   # unknown/unknown is buildkit's descriptor for one of the two children: annotations vnd.docker.reference.type (a string) and
   # vnd.docker.reference.digest (a string equal to a linux/amd64 or linux/arm64 child digest), AND its own manifest holds only JSON layers
   # (application/...+json, no filesystem layer) (an ordinary image manifest carrying the annotations is a third image nobody scanned). Anything else is named and fails.
-  # Go's decoders (containerd, go-containerregistry, stereoscope) match JSON keys without regard to case, jq does not: an object whose keys collide once
-  # lower-cased reads one way here and another way there, so it is refused; so is any key outside printable ASCII (Go also folds U+017F and U+212A to s and k).
-  # Each file is exactly ONE JSON value (jq reads them all and answers for the last; Go's decoders read the first and ignore the rest).
+  # Golang's decoders (containerd, go-containerregistry, stereoscope) match JSON keys without regard to case, jq does not: an object whose keys collide once
+  # lower-cased reads one way here and another way there, so it is refused; so is any key outside printable ASCII (Golang also folds U+017F and U+212A to s and k).
+  # Each file is exactly ONE JSON value (jq reads them all and answers for the last; Golang's decoders read the first and ignore the rest).
   if ! jq -s -e 'length == 1 and ([.[0] | .. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not)' "$blob" > /dev/null 2>&1 \
      || ! jq -s -e 'length == 1 and ([.[0] | .. | objects | keys | any(.[]; test("^[ -~]+$") | not)] | any | not)' "$1/index.json" > /dev/null 2>&1; then
     echo "index descriptors with keys that differ only in case, with a key outside printable ASCII, or that cannot be read"; return 0
   fi
-  out=$(jq -r 'def obj: if type == "object" then . else {} end;
-         ([.manifests[]? | select((.platform | obj).os == "linux" and ((.platform | obj).architecture == "amd64" or (.platform | obj).architecture == "arm64")) | .digest]) as $kids
-         | .manifests[]? | (((.platform | obj) as $q | "\($q.os // "none")/\($q.architecture // "none")")) as $p
-         | (.annotations | obj) as $a
-         | if $p == "unknown/unknown" and ($a["vnd.docker.reference.type"] | type) == "string"
-              and ($a["vnd.docker.reference.digest"] | type) == "string" and ($kids | index($a["vnd.docker.reference.digest"])) != null
-              and (.digest | type) == "string" then "@@check " + .digest
-           elif $p == "unknown/unknown" then "unknown/unknown (not a descriptor of one of the two children)" else $p end
-         | select(. != "linux/amd64" and . != "linux/arm64")' "$blob" 2> /dev/null) || out="unreadable index descriptors"
-  while IFS= read -r line; do
+  prog='def obj: if type == "object" then . else {} end; ([.manifests[]? | select((.platform | obj).os == "linux" and ((.platform | obj).architecture == "amd64" or (.platform | obj).architecture == "arm64")) | .digest]) as $kids | .manifests[]? | (((.platform | obj) as $q | "\($q.os // "none")/\($q.architecture // "none")")) as $p | (.annotations | obj) as $a | if $p == "unknown/unknown" and ($a["vnd.docker.reference.type"] | type) == "string" and ($a["vnd.docker.reference.digest"] | type) == "string" and ($kids | index($a["vnd.docker.reference.digest"])) != null and (.digest | type) == "string" then "@@check " + .digest elif $p == "unknown/unknown" then "unknown/unknown (not a descriptor of one of the two children)" else $p end | select(. != "linux/amd64" and . != "linux/arm64")'
+  out=$(jq -r "$prog" "$blob" 2> /dev/null) || out="unreadable index descriptors"
+  local -a lines_
+  mapfile -t lines_ <<< "$out"   # the lines are read byte for byte: a trailing space or tab on a digest or a platform string is not trimmed away
+  for line in "${lines_[@]}"; do
     case "$line" in
       "@@check "*)
         d=${line#@@check }
-        if [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] && [ -f "$1/blobs/sha256/${d#sha256:}" ] \
-           && jq -s -e 'length == 1 and (.[0] | ([.. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not)
-                     and .mediaType == "application/vnd.oci.image.manifest.v1+json" and (.layers | type) == "array" and (.layers | length) > 0
-                     and all(.layers[]; (.mediaType | type) == "string" and (.mediaType | test("^application/[a-z0-9.+-]+[+]json\\z"))))' "$1/blobs/sha256/${d#sha256:}" > /dev/null 2>&1; then :
+        pprog='length == 1 and (.[0] | ([.. | objects | keys | (map(ascii_downcase) | length != (unique | length)) or any(.[]; test("^[ -~]+$") | not)] | any | not) and .mediaType == "application/vnd.oci.image.manifest.v1+json" and (.layers | type) == "array" and (.layers | length) > 0 and all(.layers[]; (.mediaType | type) == "string" and (.mediaType | test("^application/[a-z0-9.+-]+[+]json\\z"))))'
+        mf="$1/blobs/sha256/${d#sha256:}"
+        if [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] && [ -f "$mf" ] && jq -s -e "$pprog" "$mf" > /dev/null 2>&1; then :
         else echo "unknown/unknown (its own manifest is not a provenance manifest)"; fi ;;
       "") ;;
       *) echo "$line" ;;
     esac
-  done <<< "$out"
+  done
 }
 # osv_archive LAYOUT CHILD_DIGEST ARCHIVE: the tar osv-scanner's "scan image --archive" can read. It wants a docker-save style tar (a manifest.json naming the config
 # and layer files) and fails "file manifest.json not found in tar" on a tar of an OCI layout as it is (probed on the pinned 2.6.0, Oct 22). The archive is built from
@@ -181,12 +175,13 @@ for s in "${scanners[@]}"; do
   tname=() tdigest=() tpath=() tplat=()
   for v in production fips; do
     if [ "$s" = grype ]; then
-      while IFS= read -r o; do
+      mapfile -t others_ < <(other_platforms "$images/$v")
+      for o in "${others_[@]}"; do
         [ -n "$o" ] || continue
-        echo "check-scan: grype: the $v image index lists a platform other than linux/amd64 and linux/arm64 ($o): it would go unscanned, so it is not scanned clean" >&2
+        echo "check-scan: grype: the $v image index lists a platform other than linux/amd64 and linux/arm64 ($o): it would be left unscanned, so it is not scanned clean" >&2
         verdict=fail
         subjects=$(jq -c --arg n "$v/$o" '. + [{name: $n, digest: null, packages: 0, verdict: "fail"}]' <<< "$subjects")
-      done < <(other_platforms "$images/$v")
+      done
       for a in "${PLATFORMS[@]}"; do
         cd_=$(child_digest "$images/$v" "$a")
         if [[ "$cd_" =~ ^sha256:[0-9a-f]{64}$ ]]; then add_target "$v/linux/$a" "$cd_" "$images/$v" "linux/$a"
