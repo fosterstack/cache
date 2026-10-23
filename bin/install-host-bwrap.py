@@ -144,9 +144,11 @@ def unpack(data, stage, owner, owners, what):
             die("%s: the path %s is also in %s" % (what, norm, owners[norm]))
         if m.issym():
             target = m.linkname
-            if target.startswith("/") or not target or "\0" in target:
-                die("%s: the symlink %s has an absolute or empty target %r" % (what, norm, target))
-            if not inside(norm.split("/")[:-1] + target.split("/")):
+            if not target or "\0" in target:
+                die("%s: the symlink %s has an empty target" % (what, norm))
+            # an ABSOLUTE target (wolfi-baselayout's etc/mtab -> /proc/mounts) is kept as the text the package gave and never followed: the link is created inside the root, nothing
+            # is placed through it (check_place) and no other link may walk through it (escapes); a relative target must stay inside the root
+            if not target.startswith("/") and not inside(norm.split("/")[:-1] + target.split("/")):
                 die("%s: the symlink %s leaves the directory (target %r)" % (what, norm, target))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             os.symlink(target, dest)
@@ -193,7 +195,7 @@ def check_links(stage):
     for dirpath, dirs, files in os.walk(stage):
         for n in dirs + files:
             p = os.path.join(dirpath, n)
-            if os.path.islink(p) and escapes(stage, os.path.relpath(p, stage)):
+            if os.path.islink(p) and not os.readlink(p).startswith("/") and escapes(stage, os.path.relpath(p, stage)):
                 die("the symlink %s leaves the directory once the other links are followed" % os.path.relpath(p, stage))
 
 
