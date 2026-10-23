@@ -43,7 +43,7 @@
  "pin-age-check-test.sh": 161,
  "pin-audit-go-major-test.sh": 78,
  "pin-audit-test.sh": 149,
- "pin-wiring-test.sh": 522,
+ "pin-wiring-test.sh": 535,
  "pip-pin-test.sh": 263,
  "refresh-inputs-test.sh": 342,
  "release-notes-signed-test.sh": 11,
