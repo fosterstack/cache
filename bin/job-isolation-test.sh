@@ -132,7 +132,7 @@ for key in EXCLUDED_INSTALLER:
         bad.append("the installer exception %s/%s names a job that does not exist (remove the row)" % key)
 sc = json.load(open(os.environ.get("ISO_SCANNERS") or os.path.join(os.path.dirname(os.path.abspath(wf)), "policy", "scanners.json")))
 if "govulncheck" in (sc.get("pr_gate") or []):
-    bad.append("scanners.json pr_gate holds govulncheck: scan.yml's credential-holding matrix job would build it")
+    bad.append("scanners.json pr_gate holds govulncheck: scan.yml's matrix job would build it (it holds no credential now, but the list is still the scanner set)")
 scan_d = yaml.safe_load(open(os.path.join(wf, "scan.yml"))) or {}
 scan_txt = open(os.path.join(wf, "scan.yml")).read()
 if "jq -c '.pr_gate' .github/policy/scanners.json" not in scan_txt:

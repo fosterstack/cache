@@ -897,6 +897,7 @@ run_step() {
   ( cd "$sim/repo" && PATH="$sim/bin:$PATH" FAKE_SBOMS="$sim/sboms" FAKE_AWS_LOG="$sim/aws.log" FAKE_AWS_FAIL="${3:-}" \
       FAKE_DAY="$2" FAKE_NEXT_DAY="${4:-}" FAKE_CACHE="$sim/tmp/inspector-cache" FAKE_VULN="${FAKE_VULN:-}" \
       FAKE_SHAPE="$w/shape.py" FAKE_AWS_MODE="${FAKE_AWS_MODE:-}" FAKE_FLIP_FLAG="${FAKE_FLIP_FLAG:-}" \
+      EXPECTED_REFS="${EXPECTED_REFS:-3}" \
       GITHUB_STEP_SUMMARY="$sim/summary.md" GITHUB_OUTPUT="$sim/out.txt" bash "$1" ) > "$sim/log.txt" 2>&1
 }
 calls() { wc -l < "$sim/aws.log" | tr -d ' '; }
@@ -1171,10 +1172,10 @@ kcol1=$(python3 "$prog" key "$sim/col1.json"); kcol2=$(python3 "$prog" key "$sim
 collide_scan() { # script -> "rc calls"
   reset_scan; printf 'ghcr.io/fosterstack/cache:cand-production-amd64\n' > "$sim/tmp/refs.txt"
   cp "$sim/col1.json" "$sim/sboms/cand-production-amd64.json"
-  run_step "${SCRIPT:-$sim/scan-step.sh}" 2026-10-06
+  EXPECTED_REFS=1 run_step "${SCRIPT:-$sim/scan-step.sh}" 2026-10-06
   mkdir -p "$sim/tmp/inspector-cache/2026-10-06"; cp "$sim/tmp/inspector-cache/2026-10-06/$kcol1.findings.json" "$sim/tmp/inspector-cache/2026-10-06/$kcol2.findings.json"
   cp "$sim/col2.json" "$sim/sboms/cand-production-amd64.json"
-  run_step "${SCRIPT:-$sim/scan-step.sh}" 2026-10-06; r=$?
+  EXPECTED_REFS=1 run_step "${SCRIPT:-$sim/scan-step.sh}" 2026-10-06; r=$?
   echo "$r $(calls)"
 }
 expect "scan.yml collision: col1's stored answer planted under col2's key is NOT reused for col2 (one ScanSbom call)" "0 1" "$(collide_scan)"
@@ -1206,10 +1207,30 @@ sandbox < "$sim/saveday-raw.sh" > "$sim/saveday.sh"
 expect "rescan save-time day step: outputs the clock's day at that moment" "date=2026-10-07" "$(cat "$sim/out.txt")"
 
 # ---------------------------------------------------------------------------------------------------------------
+# --- the Inspector step refuses to run on fewer than the four expected image references (ruling, cache#603): an emptied load loop must not become a clean pass
+reset_scan; : > "$sim/tmp/refs.txt"
+EXPECTED_REFS=4 run_step "$sim/scan-step.sh" 2026-10-06; rc=$?
+expect "scan.yml an empty refs file: the step exits 2 (did not run), no ScanSbom call, no verdict" "2 0 0" "$rc $(calls) $(gate_lines)"
+reset_scan
+EXPECTED_REFS=4 run_step "$sim/scan-step.sh" 2026-10-06; rc=$?
+expect "scan.yml three refs where four are expected: exits 2, nothing scanned" "2 0" "$rc $(calls)"
+# --- the aggregate scan job: success only when both legs succeeded (truth table over success/failure/skipped/cancelled)
+python3 - "$root/.github/workflows/scan.yml" > "$sim/agg-raw.sh" <<'PY'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+print("\n".join(st["run"] for st in d["jobs"]["scan"]["steps"] if st.get("run")))
+PY
+for r in success failure skipped cancelled; do for i in success failure skipped cancelled; do
+  sed "s/\${{ needs.scanner.result }}/$r/; s/\${{ needs.inspector.result }}/$i/" "$sim/agg-raw.sh" > "$sim/agg.sh"
+  want=1; [ "$r:$i" = success:success ] && want=0
+  bash "$sim/agg.sh" > /dev/null 2>&1; got=$?
+  expect "aggregate scan: scanner=$r inspector=$i -> exit $want" "$want" "$got"
+done; done
+
 # ---------------------------------------------------------------------------------------------------------------
 # C. wiring
-judge() { python3 - "$1" "$2" <<'PY'
-import json, re, sys, yaml
+judge() { INSP_ROOT="$root" python3 - "$1" "$2" <<'PY'
+import json, os, re, sys, yaml
 path, which = sys.argv[1], sys.argv[2]
 raw = open(path).read()
 d = yaml.load(raw, Loader=yaml.BaseLoader)
@@ -1249,6 +1270,36 @@ got.update({j: v.get("permissions") for j, v in d["jobs"].items()})
 if got != perms:
     bad.append("permissions changed: %s" % json.dumps(got))
 if which == "scan":
+    # (ruling, cache#603) the load step still produces the four refs and the scan step refuses to run on fewer; the aggregate needs both jobs and asserts Inspector's result;
+    # the evidence upload exists and the role assumption comes before the scan; the matrix list is the real pr_gate minus inspector
+    isteps = d["jobs"]["inspector"]["steps"]
+    ld = [st for st in isteps if "load every variant/platform child" in (st.get("name") or "")]
+    if len(ld) != 1 or "for v in production fips; do" not in ld[0].get("run", "") or "for arch in amd64 arm64; do" not in ld[0].get("run", ""):
+        bad.append("the Inspector job's load step no longer loops over production and fips on amd64 and arm64 (four refs)")
+    sc_ = [st for st in isteps if st.get("id") == "insp-scan"]
+    if len(sc_) != 1 or (sc_[0].get("env") or {}) != {"EXPECTED_REFS": "4"} or 'grep -c . /tmp/refs.txt' not in sc_[0].get("run", "") or '-ne "${EXPECTED_REFS}"' not in sc_[0].get("run", ""):
+        bad.append("the Inspector scan step does not refuse to run unless it was given exactly the four expected image references (EXPECTED_REFS 4)")
+    ev = [st for st in isteps if str(st.get("uses", "")).startswith("actions/upload-artifact@") and (st.get("with") or {}).get("name") == "inspector-evidence" and norm(st.get("if")) == "always()"]
+    if len(ev) != 1:
+        bad.append("the Inspector job's evidence upload (inspector-evidence, if always()) is gone")
+    role = [i for i, st in enumerate(isteps) if str(st.get("uses", "")).startswith("aws-actions/configure-aws-credentials@")]
+    scani = [i for i, st in enumerate(isteps) if st.get("id") == "insp-scan"]
+    if len(role) != 1 or len(scani) != 1 or not role[0] < scani[0]:
+        bad.append("the Inspector role assumption does not come, exactly once, before the scan step")
+    aj = d["jobs"]["scan"]
+    arun = " ".join((st.get("run") or "") for st in aj["steps"])
+    if aj.get("needs") != ["scanner", "inspector"] or norm(aj.get("if")) != "always()" or "needs.inspector.result" not in arun or d["jobs"]["inspector"].get("name") != "scan (inspector)":
+        bad.append("the aggregate scan job must need scanner and inspector, run under always(), assert the Inspector result, and the Inspector job must be named scan (inspector)")
+    import subprocess as _sp
+    sc_text = " ".join((st.get("run") or "") for st in d["jobs"]["scanners"]["steps"])
+    mj = re.search(r'\$\((jq -c .*?)\)" >> "\$GITHUB_OUTPUT"', sc_text)
+    if not mj:
+        bad.append("the scanners job's list line is not a jq pipeline over scanners.json")
+    else:
+        got_list = _sp.run(["bash", "-c", mj.group(1)], cwd=os.environ.get("INSP_ROOT", "."), capture_output=True, text=True).stdout.strip()
+        pr_gate = json.load(open(os.path.join(os.environ.get("INSP_ROOT", "."), ".github/policy/scanners.json")))["pr_gate"]
+        if got_list != json.dumps([x for x in pr_gate if x != "inspector"], separators=(",", ":")):
+            bad.append("running the scanners job's jq line on pr_gate does not give exactly the non-inspector list: %s" % got_list)
     rd = " ".join((st.get("run") or "") for st in d["jobs"]["scanners"]["steps"])
     if "map(select(. != \"inspector\"))" not in rd:
         bad.append("the scanner matrix list still holds inspector: it has its own job, the matrix holds no token")
@@ -1394,9 +1445,6 @@ mut_def W_SAVE_NO_PARENS <<'EOF'
 import os
 f = os.environ["FORKX"]; i = t.rfind("&& (" + f + ")"); t = t[:i] + "&& " + f + t[i + len(f) + 5:]
 EOF
-mut_def W_RESTORE_NO_SCANNER <<'EOF'
-t = t.replace("if: matrix.scanner == 'inspector' && (github.event_name", "if: (github.event_name", 1)
-EOF
 mut_def W_SAVE_ALWAYS_OR <<'EOF'
 import re
 t = re.sub(r"if: always\(\) && ((?:matrix\.scanner == 'inspector' && )?steps\.insp-scan\.outputs\.fresh)", r"if: always() || \1", t, count=1)
@@ -1438,7 +1486,10 @@ mut_def W_SAVE_DAY_STEP_GONE <<'EOF'
 t = t.replace("id: insp-save-day", "id: insp-save-dayx", 1)
 EOF
 mut_def W_INSPECTOR_DAY_BACK <<'EOF'
-t = t.replace("      - name: Amazon Inspector scan every loaded image\n", "      - name: Amazon Inspector scan every loaded image\n        env:\n          INSPECTOR_DAY: x\n", 1) if "scan every loaded" in t else t.replace("        id: insp-scan\n", "        id: insp-scan\n        env:\n          INSPECTOR_DAY: x\n", 1)
+if 'EXPECTED_REFS: "4"' in t:
+    t = t.replace('          EXPECTED_REFS: "4"', '          EXPECTED_REFS: "4"\n          INSPECTOR_DAY: x', 1)
+else:
+    t = t.replace("      - name: Amazon Inspector scan every loaded image\n", "      - name: Amazon Inspector scan every loaded image\n        env:\n          INSPECTOR_DAY: x\n", 1) if "scan every loaded" in t else t.replace("        id: insp-scan\n", "        id: insp-scan\n        env:\n          INSPECTOR_DAY: x\n", 1)
 EOF
 for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   set -- $pair; f=$1; k=$2
@@ -1482,6 +1533,14 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
     wf "$f" "$k" inspector-job-loses-id-token bad "i = t.index('  inspector:\n'); j = t.index('      id-token: write\n', i); t = t[:j] + t[j+len('      id-token: write\n'):]"
     wf "$f" "$k" inspector-back-in-the-matrix bad "t = t.replace('map(select(. != \"inspector\"))', 'map(.)', 1)"
     wf "$f" "$k" gate-fed-the-unscanned-sbom bad "$W_GATE_UNSCANNED"
+    wf "$f" "$k" load-loop-emptied bad "i = t.index('  inspector:\n'); j = t.index('for v in production fips; do', i); t = t[:j] + 'for v in; do' + t[j+len('for v in production fips; do'):]"
+    wf "$f" "$k" expected-refs-zero bad "t = t.replace('EXPECTED_REFS: \"4\"', 'EXPECTED_REFS: \"0\"', 1)"
+    wf "$f" "$k" aggregate-needs-scanner-only bad "t = t.replace('    needs: [scanner, inspector]\n    if: always()', '    needs: scanner\n    if: always()', 1)"
+    wf "$f" "$k" aggregate-loses-always bad "t = t.replace('    needs: [scanner, inspector]\n    if: always()\n', '    needs: [scanner, inspector]\n', 1)"
+    wf "$f" "$k" inspector-job-renamed bad "t = t.replace('    name: scan (inspector)\n', '    name: inspector scan\n', 1)"
+    wf "$f" "$k" evidence-upload-removed bad "t = t.replace('name: inspector-evidence', 'name: inspector-evidence-gone', 1)"
+    wf "$f" "$k" role-assumed-after-the-scan bad "t = t.replace('      - name: Amazon Inspector - the UTC day at save time', '      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0\n        with:\n          role-to-assume: x\n      - name: Amazon Inspector - the UTC day at save time', 1)"
+    wf "$f" "$k" matrix-list-gets-inspector-back bad "t = t.replace('map(select(. != \"inspector\"))', 'map(select(. != \"inspector\")) + [\"inspector\"]', 1)"
   fi
 done
 # the gate is still fed after the call site, and the tally still reads the result

@@ -22,7 +22,7 @@ name: scan
 # run, or that inventories zero packages (row 53), is a PIPELINE failure
 # (red), never a silent clean pass (bin/install-scanner.sh).
 #
-# Inspector needs no stored secret: the scanner job alone requests
+# Inspector needs no stored secret: the inspector job alone requests
 # id-token: write and assumes a ScanSbom-only role by OIDC on pull requests
 # (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as
 # ratified Sep 29, decision row 73; the role's trust names those subjects).
@@ -41,8 +41,8 @@ on:
 # startup_failure with zero jobs (the former release-chain-pr.yml learned this the hard way);
 # checks/statuses/pull-requests read are requested by Build's admission step, which snapshot mode
 # does not run, but they are static job permissions of the called stage. The callers' grants
-# are a static ceiling (REQ-CHAIN-004-AC14): no write but id-token. The scanner job requests
-# id-token: write for the Inspector leg's role assumption. Dependabot-
+# are a static ceiling (REQ-CHAIN-004-AC14): no write but id-token. The inspector job requests
+# id-token: write for the role assumption; the scanner (grype) matrix holds no token. Dependabot-
 # triggered runs get a read-only token that the permissions key can raise
 # (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork
 # events are downgraded and need none of this to build and scan.
@@ -112,9 +112,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Both gate scanners read the OCI images; only grype scans the
-      # release archives. So: the image download + daemon load run for
-      # both; the archive download + verify run for grype only.
+      # grype reads the OCI images and scans the release archives: the image download + daemon load,
+      # the archive download and the archive verify all run in this job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: images
@@ -143,7 +142,7 @@ jobs:
 
       # Load every (variant, platform) child into the docker daemon. The
       # candidate is an OCI layout the scanners do not read directly, so each
-      # single-arch child is loaded by ref. Both gate scanners scan these
+      # single-arch child is loaded by ref. The gate scanners scan these
       # four children by ref.
       - name: load every variant/platform child into the docker daemon
         run: |
@@ -185,9 +184,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Both gate scanners read the OCI images; only grype scans the
-      # release archives. So: the image download + daemon load run for
-      # both; the archive download + verify run for grype only.
+      # Inspector reads the same OCI images (no archives): the image download + daemon load run here too.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: images
@@ -198,7 +195,7 @@ jobs:
 
       # Load every (variant, platform) child into the docker daemon. The
       # candidate is an OCI layout the scanners do not read directly, so each
-      # single-arch child is loaded by ref. Both gate scanners scan these
+      # single-arch child is loaded by ref. The gate scanners scan these
       # four children by ref.
       - name: load every variant/platform child into the docker daemon
         run: |
@@ -238,8 +235,15 @@ jobs:
 
       - name: Amazon Inspector scan every loaded image
         id: insp-scan
+        env:
+          EXPECTED_REFS: "4"      # production and fips, each on amd64 and arm64: a load step that left fewer must not turn into a clean pass
         run: |
           set +e -uo pipefail   # the runner starts bash with -e; every image must be scanned before the verdict
+          nrefs=$(grep -c . /tmp/refs.txt 2>/dev/null)
+          if [ "${nrefs:-0}" -ne "${EXPECTED_REFS}" ]; then
+            echo "::error::Amazon Inspector was given ${nrefs:-0} image references, expected ${EXPECTED_REFS} — did not run on every image, not a clean pass" >&2
+            exit 2
+          fi
           # inspector-sbomgen inventories each child on the runner; only the
           # SBOM leaves the runner. bin/inspector-reuse.py keys the inventory
           # (package names and versions only): an inventory Inspector already
@@ -282,6 +286,7 @@ jobs:
             echo "${out}"; echo "- ${out%%$'\n'*}" >> "$GITHUB_STEP_SUMMARY"
             [ "$c" -gt "$rc" ] && rc=$c
           done < /tmp/refs.txt
+          [ "$(grep -c . /tmp/refs.txt)" -eq "${EXPECTED_REFS}" ] || rc=2
           echo "fresh=${stored}" >> "$GITHUB_OUTPUT"
           echo "- SBOMs assessed: ${sent} sent to Inspector, ${reused} reused (same inventory, same UTC day)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -eq 1 ]; then
