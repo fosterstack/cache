@@ -2835,7 +2835,13 @@ requirements:
       - id: REQ-SUP-001-AC31
         given: "the sample project's committed Gradle wrapper jar (bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar)"
         when: "the offline tests run, and when a pull request changes the wrapper jar or properties (CI then also runs the online test)"
-        then: "the jar's sha256 equals the reviewed value committed in the test and, in the online test, the sha256 Gradle publishes for the wrapper of the version the distribution URL names, so a changed or substituted jar fails; this is the owner's plain form for a tool download: exact version and checksum"
+        then: "the jar's sha256 equals the reviewed value committed beside it (.github/policy/gradle-wrapper-jar-sha256.txt, one sha256sum line) and, in the online test, the sha256 Gradle publishes for the wrapper of the version the distribution URL names, so a changed or substituted jar fails; this is the owner's plain form for a tool download: exact version and checksum"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC32
+        given: "bin/acceptance-gradle.sh and bin/acceptance-gradle-capped.sh, which run the sample project's ./gradlew"
+        when: "either starts"
+        then: "before any ./gradlew it checks gradle-wrapper.jar against the committed .github/policy/gradle-wrapper-jar-sha256.txt (sha256sum -c) and refuses with exit 1, naming the jar, when the jar differs, the expected file is missing, or the expected file is for another jar; no gradlew runs behind a refusal (the owner's plain form for a tool download: exact version and checksum)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-UAT-001
