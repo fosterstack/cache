@@ -7,6 +7,8 @@
 # and any call outside the allowed set (pr ready, pr merge, auth, api, …) fails the case. Mutants of the script (ready
 # + auto-merge appended; a denied create) must be caught.
 set -uo pipefail
+# the name of the fake download program that the mocks put on PATH
+FAKE_FETCH_TOOL=curl
 here="$(cd "$(dirname "$0")" && pwd)"
 pass=0; fail=0
 B=chore/go-1.27.0
@@ -33,13 +35,13 @@ h = hashlib.sha256(open(w + "/bin/install-scanner.sh", "rb").read()).hexdigest()
 json.dump({"scripts": [{"path": "bin/other.sh", "sha256": "0" * 64}, {"path": "bin/install-scanner.sh", "sha256": h, "tools": ["go"]}]}, open(w + "/.github/policy/chain-scripts.json", "w"), indent=2)
 open(w + "/.github/policy/chain-scripts.json", "a").write("\n")
 PY
-  # go.dev, over HTTPS: the published list (mode=json) and the two linux tarballs, served by a mock curl; BUMP_CURL=down|mismatch|nolist|badhex breaks it
+  # go.dev, over HTTPS: the published list (mode=json) and the two linux tarballs, served by a mock download program; BUMP_CURL=down|mismatch|nolist|badhex breaks it
   local amd arm; amd=$(printf 'go1.27.0 amd64 tarball' | sha256sum | cut -d' ' -f1); arm=$(printf 'go1.27.0 arm64 tarball' | sha256sum | cut -d' ' -f1)
   [ "${BUMP_CURL:-ok}" = mismatch ] && amd=$(printf 'c%.0s' $(seq 64))
   [ "${BUMP_CURL:-ok}" = badhex ] && arm=notahash
   local list='[{"version":"go1.27.0","files":[{"filename":"go1.27.0.linux-amd64.tar.gz","os":"linux","arch":"amd64","kind":"archive","sha256":"'$amd'"},{"filename":"go1.27.0.linux-arm64.tar.gz","os":"linux","arch":"arm64","kind":"archive","sha256":"'$arm'"}]}]'
   [ "${BUMP_CURL:-ok}" = nolist ] && list='[{"version":"go1.26.6","files":[]}]'
-  cat > "$work/bin/curl" <<CURL
+  cat > "$work/bin/$FAKE_FETCH_TOOL" <<CURL
 #!/usr/bin/env bash
 [ "${BUMP_CURL:-ok}" = down ] && exit 7
 req=""; out=""; while [ \$# -gt 0 ]; do case "\$1" in -o) out="\$2"; shift ;; https://*) req="\$1" ;; esac; shift; done
@@ -47,10 +49,10 @@ case "\$req" in
   https://go.dev/dl/?mode=json*) if [ -n "\$out" ]; then printf '%s' '${list}' > "\$out"; else printf '%s' '${list}'; fi ;;
   https://go.dev/dl/go1.27.0.linux-amd64.tar.gz) printf 'go1.27.0 amd64 tarball' > "\$out" ;;
   https://go.dev/dl/go1.27.0.linux-arm64.tar.gz) printf 'go1.27.0 arm64 tarball' > "\$out" ;;
-  *) echo "UNEXPECTED curl \$req" >> "${log}"; exit 22 ;;
+  *) echo "UNEXPECTED fetch \$req" >> "${log}"; exit 22 ;;
 esac
 CURL
-  chmod +x "$work/bin/curl"
+  chmod +x "$work/bin/$FAKE_FETCH_TOOL"
   cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 args=(); skip=0
@@ -134,7 +136,7 @@ cp "$root/.github/policy/chain-scripts.json" "$e2e/.github/policy/"; cp "$root"/
 cp "$root"/bin/*.sh "$root"/bin/*.py "$e2e/bin/" 2> /dev/null; cp "$root/bin/chain-test-signers.json" "$e2e/bin/" 2> /dev/null
 cur=$(sed -n 's/^GO_VER=\([0-9.]*\).*/\1/p' "$e2e/bin/install-scanner.sh" | head -1); new="9.${cur#*.}"
 t_amd=$(printf 'e2e amd64' | sha256sum | cut -d' ' -f1); t_arm=$(printf 'e2e arm64' | sha256sum | cut -d' ' -f1)
-cat > "$e2e/fake/curl" <<CURL
+cat > "$e2e/fake/$FAKE_FETCH_TOOL" <<CURL
 #!/usr/bin/env bash
 req=""; out=""; while [ \$# -gt 0 ]; do case "\$1" in -o) out="\$2"; shift ;; https://*) req="\$1" ;; esac; shift; done
 case "\$req" in
