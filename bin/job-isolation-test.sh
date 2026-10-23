@@ -240,7 +240,7 @@ export ISO_SCANNERS="$root/.github/policy/scanners.json"   # the policy file the
 check "the real workflows" ok "$root/.github/workflows"
 # AC1: a build added to a job that holds a credential
 mutate "go install added to go-freshness refresh (App key, packages: write)" '
-edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1\n\n      - name: log in", 1))'
+edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1\n", 1))'
 mutate "go build added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: s.replace("  panel-probe:\n", "  panel-probe:\n", 1).replace("    environment: agent\n", "    environment: agent\n    # mutated\n", 1))
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: go build ./...\n", s, count=1, flags=re.S))'
@@ -283,7 +283,7 @@ edit("auditor.yml", lambda s: s.replace("needs: [govulncheck-build]", "needs: []
 
 # the same hidden build written in the other ordinary shell forms, in a credential-holding job that is not the Check job (go-freshness refresh: App key, packages: write)
 gf() { local name=$1; GFLINE=$2 mutate "$name" '
-edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "./bin/install-scanner.sh crane\n          " + os.environ["GFLINE"] + "\n\n      - name: log in", 1))'; }
+edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n", "./bin/install-scanner.sh crane\n          " + os.environ["GFLINE"] + "\n", 1))'; }
 gf "install-scanner.sh \"govulncheck\" (double-quoted tool word)" 'bash bin/install-scanner.sh "govulncheck"'
 gf "install-scanner.sh 'govulncheck' (single-quoted tool word)" "bash bin/install-scanner.sh 'govulncheck'"
 gf "install-scanner.sh govu\"\"lncheck (quotes inside the word)" 'bash bin/install-scanner.sh govu""lncheck'
@@ -395,7 +395,7 @@ edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.
 mutate "install-scanner.sh govulncheck added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
 mutate "install-scanner.sh govulncheck added to go-freshness refresh (App key, packages: write)" '
-edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n\n      - name: log in", 1))'
+edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n", 1))'
 
 echo "job-isolation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -182,13 +182,13 @@ if not re.search(r"(^|\s)\./bin/archive-pull\.sh --pointer build/archive\.json -
 if "./bin/refresh-inputs.sh refresh " not in run_of(ORDER[1]) or "./bin/refresh-inputs.sh fips-module " not in run_of(ORDER[2]) \
         or "--plan-dir" not in run_of(ORDER[1]) or "--plan-dir" not in run_of(ORDER[2]):
     bad.append("AC26: the refresh steps do not call refresh-inputs.sh refresh and fips-module with --plan-dir (the pull request is opened after the archive is stored)")
-# rc-3 Fable R5: the certified-module check asks about OUR toolchain, so it reads the checksum-pinned one (bin/install-scanner.sh go), never the floating setup-go
+# rc-3 R5: the certified-module check asks about OUR toolchain, so it reads the checksum-pinned one (bin/install-scanner.sh go), never the floating setup-go
 GO_NAME = "install the pinned Go toolchain"
 GO_ROOT = "/usr/local/bin/fscache-go"
 if GO_NAME not in rnames or ORDER[2] not in rnames or rnames.index(GO_NAME) > rnames.index(ORDER[2]) or rnames.index(GO_NAME) < 2:
     bad.append("AC26: the pinned Go toolchain is not installed (after the key check, before the certified-module check)")
-elif "./bin/install-scanner.sh go /usr/local/bin" not in run_of(GO_NAME) or any(x.get("if") for x in rsteps if x.get("name") == GO_NAME):
-    bad.append("AC26: the pinned Go toolchain step does not run bin/install-scanner.sh go /usr/local/bin unconditionally")
+elif "./bin/install-scanner.sh go" not in run_of(GO_NAME) or any(x.get("if") for x in rsteps if x.get("name") == GO_NAME):
+    bad.append("AC26: the pinned Go toolchain step does not run bin/install-scanner.sh go unconditionally")
 if ("--go-root " + GO_ROOT) not in run_of(ORDER[2]) or "go env" in run_of(ORDER[2]):
     bad.append("AC26: the certified-module check does not read the pinned toolchain (--go-root %s), or asks `go env`" % GO_ROOT)
 if [x for x in rsteps if str(x.get("uses", "")).startswith("actions/setup-go@")]:

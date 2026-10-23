@@ -337,7 +337,7 @@ jobs:
       - name: install the pinned Go toolchain
         run: |
           set -euo pipefail
-          ./bin/install-scanner.sh go /usr/local/bin
+          ./bin/install-scanner.sh go
 
       - name: log in to our registry with the job's own token
         env:
