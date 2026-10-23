@@ -1214,6 +1214,24 @@ expect "scan.yml an empty refs file: the step exits 2 (did not run), no ScanSbom
 reset_scan
 EXPECTED_REFS=4 run_step "$sim/scan-step.sh" 2026-10-06; rc=$?
 expect "scan.yml three refs where four are expected: exits 2, nothing scanned" "2 0" "$rc $(calls)"
+# each of the two reference-count checks holds on its own (a mutant without the pre-loop guard still exits 2 on an empty file; one without the post-loop check too; without both it exits 0)
+mut_def M_NO_PRE <<'EOF'
+t = t.replace('if [ "${nrefs:-0}" -ne "${EXPECTED_REFS}" ]; then', 'if false; then', 1)
+EOF
+mut_def M_NO_POST <<'EOF'
+t = t.replace('[ "$(grep -c . /tmp/refs.txt)" -eq "${EXPECTED_REFS}" ] || rc=2', 'true', 1)
+EOF
+mut_def M_NO_PRE_POST <<'EOF'
+t = t.replace('if [ "${nrefs:-0}" -ne "${EXPECTED_REFS}" ]; then', 'if false; then', 1)
+t = t.replace('[ "$(grep -c . /tmp/refs.txt)" -eq "${EXPECTED_REFS}" ] || rc=2', 'true', 1)
+EOF
+for m in M_NO_PRE M_NO_POST M_NO_PRE_POST; do
+  mutate "${!m}" < "$sim/scan-raw.sh" | sandbox > "$sim/scan-$m.sh" || bad "scan.yml mutation $m did not apply"
+  reset_scan; : > "$sim/tmp/refs.txt"
+  EXPECTED_REFS=4 run_step "$sim/scan-$m.sh" 2026-10-06; rc=$?
+  want=2; [ "$m" = M_NO_PRE_POST ] && want=0
+  expect "scan.yml reference-count checks: $m on an empty refs file exits $want" "$want" "$rc"
+done
 # --- the aggregate scan job: success only when both legs succeeded (truth table over success/failure/skipped/cancelled)
 python3 - "$root/.github/workflows/scan.yml" > "$sim/agg-raw.sh" <<'PY'
 import sys, yaml
@@ -1277,7 +1295,7 @@ if which == "scan":
     if len(ld) != 1 or "for v in production fips; do" not in ld[0].get("run", "") or "for arch in amd64 arm64; do" not in ld[0].get("run", ""):
         bad.append("the Inspector job's load step no longer loops over production and fips on amd64 and arm64 (four refs)")
     sc_ = [st for st in isteps if st.get("id") == "insp-scan"]
-    if len(sc_) != 1 or (sc_[0].get("env") or {}) != {"EXPECTED_REFS": "4"} or 'grep -c . /tmp/refs.txt' not in sc_[0].get("run", "") or '-ne "${EXPECTED_REFS}"' not in sc_[0].get("run", ""):
+    if len(sc_) != 1 or (sc_[0].get("env") or {}) != {"EXPECTED_REFS": "4"} or 'grep -c . /tmp/refs.txt' not in sc_[0].get("run", "") or '-ne "${EXPECTED_REFS}"' not in sc_[0].get("run", "") or sc_[0].get("run", "").count('[ "$(grep -c . /tmp/refs.txt)" -eq "${EXPECTED_REFS}" ] || rc=2') != 1:
         bad.append("the Inspector scan step does not refuse to run unless it was given exactly the four expected image references (EXPECTED_REFS 4)")
     ev = [st for st in isteps if str(st.get("uses", "")).startswith("actions/upload-artifact@") and (st.get("with") or {}).get("name") == "inspector-evidence" and norm(st.get("if")) == "always()"]
     if len(ev) != 1:
@@ -1534,6 +1552,7 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
     wf "$f" "$k" inspector-back-in-the-matrix bad "t = t.replace('map(select(. != \"inspector\"))', 'map(.)', 1)"
     wf "$f" "$k" gate-fed-the-unscanned-sbom bad "$W_GATE_UNSCANNED"
     wf "$f" "$k" load-loop-emptied bad "i = t.index('  inspector:\n'); j = t.index('for v in production fips; do', i); t = t[:j] + 'for v in; do' + t[j+len('for v in production fips; do'):]"
+    wf "$f" "$k" post-loop-ref-check-removed bad "t = t.replace('[ \"\$(grep -c . /tmp/refs.txt)\" -eq \"\${EXPECTED_REFS}\" ] || rc=2', 'true', 1)"
     wf "$f" "$k" expected-refs-zero bad "t = t.replace('EXPECTED_REFS: \"4\"', 'EXPECTED_REFS: \"0\"', 1)"
     wf "$f" "$k" aggregate-needs-scanner-only bad "t = t.replace('    needs: [scanner, inspector]\n    if: always()', '    needs: scanner\n    if: always()', 1)"
     wf "$f" "$k" aggregate-loses-always bad "t = t.replace('    needs: [scanner, inspector]\n    if: always()\n', '    needs: [scanner, inspector]\n', 1)"
