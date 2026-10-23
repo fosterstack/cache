@@ -9,7 +9,7 @@ which is RED until PR 4 is implemented. Finite grammars and allowlists only, no 
                       witnessed steps, uploads.
   credentials FILE    REQ-CHAIN-007-AC2  no env up to and including release-verify; each credential only in the steps listed in WHO.
   others ROOT         REQ-CHAIN-007-AC3  nothing outside stage-promote.yml's release job holds packages write, a credential or the environment.
-  graph FILE          REQ-CHAIN-007-AC11 release.yml: the job release needs exactly check, rebuild, sign (rule 70; build through check); no skip,
+  graph FILE          REQ-CHAIN-007-AC11 release.yml: the job release needs exactly check, sign, sign-rebuild (rule 70 as amended by the Witness move; build through check); rebuild needs build and sign, sign-rebuild build and rebuild; no skip,
                       no secrets, no tag.
   verify FILE         REQ-CHAIN-007-AC4  bin/release-verify.sh is `set -euo pipefail` and then EXACTLY the commands of VERIFY, in order.
   scan FILE JSON      REQ-CHAIN-007-AC6..AC10  a release script is plain: only its listed tools, no other script, no build command, no tag
@@ -30,9 +30,9 @@ PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
 MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-AC1 (Astra R4): the one build tool Release needs, for release-sign-apks.sh; the fourth install, after crane
-DOWN = {"witness-build", "witness-rebuild", "witness-check", "witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "apk-compare"}   # the artifacts the verify and release jobs may download: Build's real names (AC17) and the compare job's small result; NEVER a rapk (the owner's rule of Oct 21 2026)
+DOWN = {"signed-witness-build", "signed-witness-rebuild", "witness-check", "witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "apk-compare"}   # the artifacts the verify and release jobs may download: Build's real names (AC17) and the compare job's small result; NEVER a rapk (the owner's rule of Oct 21 2026)
 COMPARE_PAIRS = {"apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm", "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm"}   # the compare job: Build's apks and Rebuild's, nothing else
-VERIFY_PAIRS = {"witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "witness-rebuild": "witness-rebuild",
+VERIFY_PAIRS = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "signed-witness-rebuild": "witness-rebuild",
                 "witness-check": "witness-check", "witness-check-arm64": "witness-check/witness-arm64", "check-results": "check-results", "provenance": "provenance",
                 "apk-compare": "apk-compare"}   # what release-verify reads, and where (the last: the compare job's result file, the only trace of Rebuild's apks that reaches these jobs)
 RELEASE_PAIRS = dict(VERIFY_PAIRS, **{"dist": "dist", "images": "images", "apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm"})   # the release job: the ten above, then what the later steps use; Build's artifacts only
@@ -46,8 +46,8 @@ CREDS = {"APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
-IFS_OF = {"build": GATE_G, "sign": GATE_G, "release": "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}
-CHAIN_JOBS = ["build", "sign", "rebuild", "check", "release"]   # the last stage is Release (the ratified rules' name; Q9)
+IFS_OF = {"build": GATE_G, "sign": GATE_G, "sign-rebuild": GATE_G, "release": "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}
+CHAIN_JOBS = ["build", "sign", "rebuild", "sign-rebuild", "check", "release"]   # the last stage is Release (the ratified rules' name; Q9)
 # the tag rule (REQ-CHAIN-007-AC14, advisor 0383/0386): vX.Y.Z or a release candidate vX.Y.Z-rcN, exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (the -rc.N form is gone)
 TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(-rc\[0-9\]\+\)\?\$ \]\] \|\| '
            r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z or vX\.Y\.Z-rcN" >&2; exit 1; \}')
@@ -399,8 +399,13 @@ def graph(path):
     p = jobs["release"]
     needs = p.get("needs", [])
     needs = {needs} if isinstance(needs, str) else set(needs)
-    if needs != {"check", "rebuild", "sign"}:   # exactly PR 2's set (3e883b3), rule 70: build is reached through check
-        bad.append("the release job must need exactly check, rebuild and sign (rule 70; it reaches build through check), found %s" % sorted(needs))
+    if needs != {"check", "sign", "sign-rebuild"}:   # rule 70 as amended by the Witness move: Sign signs Build's records, sign-rebuild Rebuild's; build is reached through check
+        bad.append("the release job must need exactly check, sign and sign-rebuild (rule 70 as amended by the Witness move; it reaches build through check and rebuild through sign-rebuild), found %s" % sorted(needs))
+    for who, want in (("rebuild", {"build", "sign"}), ("sign-rebuild", {"build", "rebuild"})):
+        got = jobs[who].get("needs", [])
+        got = {got} if isinstance(got, str) else set(got)
+        if got != want:
+            bad.append("%s must need exactly %s, found %s" % (who, " and ".join(sorted(want)), sorted(got)))
     if p.get("uses") != "./.github/workflows/stage-promote.yml":
         bad.append("the release job must call ./.github/workflows/stage-promote.yml")
     if p.get("permissions") != {"contents": "write", "packages": "write", "id-token": "write"}:
