@@ -65,6 +65,7 @@ mappings:
     evidence:
       - { type: go-test, ref: "internal/server:TestMetricsEndpointExposesFscacheMetrics" }
       - { type: go-test, ref: "internal/server:TestMetricsReportsStoreBytesAndEntries" }
+      - { type: go-test, ref: "internal/server:TestMethodLabelIsBounded" }
   - ac: REQ-OBS-003-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetrics" }
