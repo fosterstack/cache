@@ -651,15 +651,47 @@ plant_stray() { # LAYOUT: a root manifest.json (docker would read a layout holdi
   printf '[{"Config":"blobs/sha256/%s","RepoTags":null,"Layers":[]}]' "$(printf '%064d' 1)" > "$1/manifest.json"; printf 'a layer of somebody else' > "$1/fake.tar"; printf orphan > "$1/blobs/sha256/$orphan"
 }
 unplant_stray() { rm -f "$1/manifest.json" "$1/fake.tar" "$1/blobs/sha256/$orphan"; }
-members_only() { # FILE (what the fake docker was given): oci-layout and index.json, then blobs by name; nothing else, and not the unreferenced blob
-  [ -s "$1" ] && grep -qx 'oci-layout' "$1" && grep -qx 'index.json' "$1" && ! grep -qvxE 'oci-layout|index\.json|blobs/sha256/[0-9a-f]{64}' "$1" && ! grep -q "$orphan" "$1"
+members_only() { # FILE LAYOUT-DIR: what the fake docker was given is EXACTLY oci-layout, index.json and the blobs the layout's index and its two linux children name (read here from the layout itself)
+  [ -s "$1" ] || { MO_WHY="no list"; return 1; }
+  MO_WHY=$(diff <(python3 - "$2" <<'PYX' | sort
+import json, os, sys
+root = sys.argv[1]
+def blob(d): return json.load(open(os.path.join(root, "blobs", "sha256", d.split(":")[1])))
+print("oci-layout"); print("index.json")
+idx = json.load(open(os.path.join(root, "index.json")))["manifests"][0]["digest"]
+print("blobs/sha256/" + idx.split(":")[1])
+for m in blob(idx)["manifests"]:   # every descriptor of the index: its manifest, that manifest's config and layers
+    man = blob(m["digest"]); print("blobs/sha256/" + m["digest"].split(":")[1])
+    for d in [man["config"]["digest"]] + [l["digest"] for l in man["layers"]]: print("blobs/sha256/" + d.split(":")[1])
+PYX
+) <(sort "$1") | tr '\n' ' ') && [ -z "$MO_WHY" ]
 }
 plant_stray "$fx/images/production"; plant_stray "$fx/images/fips"
 resetf; want_ok "AC33 fips: a layout holding a stray manifest.json, a fake.tar and an unreferenced blob still passes" "${FIPS[@]}"
 for v in production fips; do
-  if members_only "$work/fakedir/members-$v"; then ok "AC33 check-fips loads the $v layout from its named members only"; else bad "AC33 check-fips handed docker load: $(tr '\n' ' ' < "$work/fakedir/members-$v" 2> /dev/null | cut -c1-200)"; fi
+  if members_only "$work/fakedir/members-$v" "$fx/images/$v"; then ok "AC33 check-fips loads the $v layout from its named members only"; else bad "AC33 check-fips handed docker load [$MO_WHY]: $(tr '\n' ' ' < "$work/fakedir/members-$v" 2> /dev/null | cut -c1-200)"; fi
 done
 unplant_stray "$fx/images/production"; unplant_stray "$fx/images/fips"
+# check-bind.py itself: the member list it writes, no list for a layout it refuses, a refusal when the list cannot be written, and an index that names more than the two children
+bind() { (cd "$fx" && python3 bin/check-bind.py --digests digests.json --images images "$@" 2>&1); }
+rm -rf "$work/ml"; mkdir -p "$work/ml"; out=$(bind --members-out "$work/ml") && rc=0 || rc=$?
+if [ "$rc" = 0 ] && members_only "$work/ml/production.members" "$fx/images/production" && members_only "$work/ml/fips.members" "$fx/images/fips"; then ok "AC33 check-bind --members-out writes exactly the named members of each layout"; else bad "AC33 check-bind member lists (rc=$rc): $out"; fi
+rm -rf "$work/keep-ml"; cp -R "$fx/images/production" "$work/keep-ml"; printf 'tampered' >> "$fx/images/production/blobs/sha256/$(jq -r .amd64.layer "$fx/images/production.map")"
+rm -rf "$work/ml"; mkdir -p "$work/ml"; out=$(bind --members-out "$work/ml") && rc=0 || rc=$?
+rm -rf "$fx/images/production"; cp -R "$work/keep-ml" "$fx/images/production"
+if [ "$rc" = 1 ] && [ -z "$(ls "$work/ml")" ]; then ok "AC33 check-bind refuses a layout that is not Build's and writes no member list"; else bad "AC33 check-bind on a tampered layout rc=$rc, lists: $(ls "$work/ml" | tr '\n' ' ')"; fi
+out=$(bind --members-out "$work/no-such-dir") && rc=0 || rc=$?
+if [ "$rc" = 1 ] && grep -Fq 'member list could not be written' <<< "$out"; then ok "AC33 check-bind refuses when the member list cannot be written"; else bad "AC33 check-bind with an unwritable list directory rc=$rc: $out"; fi
+rm -rf "$work/keep-f3"; cp -R "$fx/images/fips" "$work/keep-f3"; cp "$fx/images/fips.map" "$work/keep-f3.map"; cp "$fx/digests.json" "$work/dig.f3"
+# a third descriptor (buildkit's provenance manifest, unknown/unknown): the scan judges it; the load gets its manifest, config and layers too
+rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" fips linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+resetf; want_ok "AC33 an index with a third descriptor passes the bind" "${FIPS[@]}"
+if members_only "$work/fakedir/members-fips" "$fx/images/fips"; then ok "AC33 the third descriptor's manifest, config and layer are archived with the two children"; else bad "AC33 members with a third descriptor [$MO_WHY]"; fi
+# ... and one whose blob is gone is refused before any load
+rm -f "$fx/images/fips/blobs/sha256/$(jq -r .unknown.manifest "$fx/images/fips.map")"
+resetf; want_fail "AC33 an index naming a descriptor whose blob the layout lacks is refused before any load" "check-bind" "${FIPS[@]}"
+if ! grep -q '^docker load' "$work/log"; then ok "AC33 nothing was loaded behind the index with a missing descriptor blob"; else bad "AC33 docker load ran behind an index with a missing descriptor blob"; fi
+rm -rf "$fx/images/fips"; cp -R "$work/keep-f3" "$fx/images/fips"; cp "$work/keep-f3.map" "$fx/images/fips.map"; cp "$work/dig.f3" "$fx/digests.json"
 resetf; st fips '{"fips140":false,"fips140_note":"off"}'
 want_fail "AC6 the -fips image reporting off fails naming fips" fips "${FIPS[@]}"
 resetf; st fips '{"fips140":true,"fips140_note":"active (fips140 mode forced at runtime; not the validated-module build)"}'
@@ -808,7 +840,7 @@ arun -- "${ART[@]}"; if grep -Fq 'FSCACHE_USERNAME' "$work/log" && ls "$work"/fa
 plant_stray "$fa/images/production"; plant_stray "$fa/images/fips"
 aok "AC33 artifacts: a layout holding a stray manifest.json, a fake.tar and an unreferenced blob still passes" -- "${ART[@]}"
 for v in production fips; do
-  if members_only "$work/fakedir/members-$v"; then ok "AC33 check-artifacts loads the $v layout from its named members only"; else bad "AC33 check-artifacts handed docker load: $(tr '\n' ' ' < "$work/fakedir/members-$v" 2> /dev/null | cut -c1-200)"; fi
+  if members_only "$work/fakedir/members-$v" "$fa/images/$v"; then ok "AC33 check-artifacts loads the $v layout from its named members only"; else bad "AC33 check-artifacts handed docker load [$MO_WHY]: $(tr '\n' ' ' < "$work/fakedir/members-$v" 2> /dev/null | cut -c1-200)"; fi
 done
 unplant_stray "$fa/images/production"; unplant_stray "$fa/images/fips"
 mkarch "$fa/dist"; rm "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz"
@@ -1081,7 +1113,7 @@ for sc in acceptance-serve acceptance-gradle; do printf '#!/usr/bin/env bash\nex
 printf '#!/usr/bin/env bash\necho "results=[{\\"ac\\":\\"AC33\\",\\"result\\":\\"pass\\"}]" >> "${GITHUB_OUTPUT:-/dev/null}"\n' > "$fx/bin/acceptance-gradle-capped.sh"
 plant_stray "$fx/images/production"; rm -rf "$work/fakedir"; mkdir -p "$work/fakedir"
 run check-acceptance.sh gradle --digests digests.json --images images --out out
-if [ "$rc" = 0 ] && members_only "$work/fakedir/members-production"; then ok "AC33 check-acceptance loads the production layout from its named members only (a stray manifest.json, fake.tar and unreferenced blob stay out)"; else bad "AC33 check-acceptance rc=$rc handed docker load: $(tr '\n' ' ' < "$work/fakedir/members-production" 2> /dev/null | cut -c1-200) $out"; fi
+if [ "$rc" = 0 ] && members_only "$work/fakedir/members-production" "$fx/images/production"; then ok "AC33 check-acceptance loads the production layout from its named members only (a stray manifest.json, fake.tar and unreferenced blob stay out)"; else bad "AC33 check-acceptance rc=$rc handed docker load [$MO_WHY]: $(tr '\n' ' ' < "$work/fakedir/members-production" 2> /dev/null | cut -c1-200) $out"; fi
 unplant_stray "$fx/images/production"; rm -f "$fx/bin/acceptance-serve.sh" "$fx/bin/acceptance-gradle.sh" "$fx/bin/acceptance-gradle-capped.sh"
 # ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed.sh and its 9-minute cap -------------------------------------------
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
@@ -1287,7 +1319,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=420
+EXPECT=427
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -58,6 +58,31 @@ def bind_layout(images, variant, digest, members_out=None):
             fail("%s: the blob %s does not hash to its name (the layout is not the digest Build recorded)" % (key, e.name))
         names.add(e.name)
     members = {digest}
+    # REQ-SUP-001-AC33: a descriptor beyond the two linux children (buildkit's provenance manifest, say) is judged by the scan, not here; what is archived for it is its
+    # manifest blob and that manifest's config and layers, and the layout must hold each of them (the blobs the index points to)
+    try:
+        with open(os.path.join(blobs, digest.split(":", 1)[1]), "rb") as f:
+            listed = json.loads(f.read())["manifests"]
+        extras = [m["digest"] for m in listed if isinstance(m, dict) and m.get("digest") not in children.values()]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        fail("%s: the index %s cannot be read for its descriptors (%s)" % (key, digest, e))
+    for d in extras:
+        if not isinstance(d, str) or not DIGEST.fullmatch(d):
+            continue                    # not a digest: nothing to archive for it (the scan names it)
+        if d.split(":", 1)[1] not in names:
+            fail("%s: the index names a descriptor %s whose blob the layout does not hold" % (key, d))
+        members.add(d)
+        try:
+            with open(os.path.join(blobs, d.split(":", 1)[1]), "rb") as f:
+                man = json.loads(f.read())
+            refs = [man["config"]["digest"]] + [layer["digest"] for layer in man["layers"]]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue                    # not an image manifest: its blob alone is archived
+        for r in refs:
+            if isinstance(r, str) and DIGEST.fullmatch(r):
+                if r.split(":", 1)[1] not in names:
+                    fail("%s: the descriptor %s names %s, which the layout does not hold" % (key, d, r))
+                members.add(r)
     for arch, child in sorted(children.items()):
         try:
             with open(os.path.join(blobs, child.split(":", 1)[1]), "rb") as f:
