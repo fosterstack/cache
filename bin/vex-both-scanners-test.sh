@@ -204,6 +204,7 @@ shape objrules 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\
 shape norules 1 "{\"matches\":[],\"ignoredMatches\":[$ENT}]}" "an entry with no appliedIgnoreRules"
 shape emptyrules 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[]}]}" "an entry with an empty rule list"
 shape nonobjrule 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[\"vex\"]}]}" "a rule that is not an object"
+shape scalar 1 '{"matches":[],"ignoredMatches":["malformed-entry"]}' "an entry that is a string, not an object"
 shape nons 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[{\"vex-status\":\"fixed\"}]}]}" "a rule with no namespace"
 shape mixed 1 "{\"matches\":[],\"ignoredMatches\":[$ENT,\"appliedIgnoreRules\":[{\"namespace\":\"vex\",\"vex-status\":\"fixed\"},{\"namespace\":\"\",\"fix-state\":\"unknown\"}]}]}" "a VEX rule plus a config rule"
 # These two depend on the live vulnerability database (busybox 1.36.0 having exactly these findings, none with a fix version); they fail loudly, never pass falsely.

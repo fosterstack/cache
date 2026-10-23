@@ -79,9 +79,9 @@ if [ "$rc" -eq 0 ]; then
   # exclusions (for example its built-in exclusion of some Debian findings) drop matches before results are built, so they are not in ignoredMatches
   # and cannot be seen here; the images are assembled from Wolfi packages, where this has no known effect.
   nonvex=$(jq -r 'if .ignoredMatches == null then [] elif (.ignoredMatches | type) == "array" then
-      [.ignoredMatches[] | select(((.appliedIgnoreRules | type) != "array") or ((.appliedIgnoreRules | length) == 0) or
+      [.ignoredMatches[] | select((type != "object") or ((.appliedIgnoreRules | type) != "array") or ((.appliedIgnoreRules | length) == 0) or
           (.appliedIgnoreRules | any((type != "object") or (.namespace != "vex") or ((.["vex-status"] != "not_affected") and (.["vex-status"] != "fixed"))))) |
-        "\(.vulnerability.id // "?") \(.artifact.name // "?")@\(.artifact.version // "?")"] else error("ignoredMatches is not a list") end | .[]' "$js" 2>/dev/null); jqrc=$?
+        (if type == "object" then "\(.vulnerability.id // "?") \(.artifact.name // "?")@\(.artifact.version // "?")" else "a malformed entry" end)] else error("ignoredMatches is not a list") end | .[]' "$js" 2>/dev/null); jqrc=$?
   if [ "$jqrc" -ne 0 ]; then
     echo "::error::grype ${label}: its JSON output has no readable ignoredMatches list; nothing is judged behind a result that cannot be read" >&2
     exit 2
