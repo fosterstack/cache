@@ -73,12 +73,24 @@ mkdir -p "$out"
 VEX=.vex/fosterstack-cache.openvex.json
 # The clock is the runner's (round 1 F4): the age of a database is judged against `date +%s` and nothing the environment says. A CHECK_SCAN_NOW in the
 # environment (an older `now` would pass any database as fresh) is refused, defined or empty, never read; the tests give the clock by a fake date command.
+# "The VEX is the only exception" (register rows 18 and 38; cache#580 for the PR gate): grype also drops findings through GRYPE_* settings (GRYPE_ONLY_FIXED, GRYPE_IGNORE_WONTFIX, ...)
+# and through a config file, so any GRYPE_* variable other than the database cache and update settings stops the pass (names only, values are never printed), and
+# grype runs with -c and an EMPTY config file ($tmp/empty.yaml) so no repository, home or XDG config applies.
+bad_env=""
+for v in "${!GRYPE_@}"; do
+  case "$v" in GRYPE_DB_CACHE_DIR|GRYPE_DB_AUTO_UPDATE) ;; *) bad_env="${bad_env}${v} " ;; esac
+done
+if [ -n "$bad_env" ]; then
+  echo "check-scan: $bad_env found in the environment: only the VEX document may hide a finding, and these settings can; refusing to run (names only, values are never printed)" >&2
+  exit 2
+fi
 [ -z "${CHECK_SCAN_NOW+x}" ] || fail "CHECK_SCAN_NOW is defined in the environment: the database age is judged by the runner's clock, which no variable can change"
 now=$(date +%s)
 [[ "$now" =~ ^[0-9]+$ ]] || fail "the runner's clock did not give epoch seconds: $now"
 GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json)
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+: > "$tmp/empty.yaml"   # the one config grype reads (it needs the extension)
 
 add_target() { tname+=("$1"); tdigest+=("$2"); tpath+=("$3"); tplat+=("${4:-}"); }   # one scan target: its name, its digest, the file the scanner reads and (grype on an image) the platform it must scan
 # The platform children of an image layout (S1, chain-v030 review): grype on the multi-platform index with no platform scans only the runner's own
@@ -213,8 +225,8 @@ for s in "${scanners[@]}"; do
     rc=0
     : > "$tmp/out.json"; rm -f "$tmp/sbom.json"
     case "$s:$path" in
-      grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
-      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" ${plat:+--platform "$plat"} --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
+      grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
+      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" ${plat:+--platform "$plat"} -c "$tmp/empty.yaml" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*)
         arc="$tmp/img-${name//\//-}.tar"
@@ -244,6 +256,17 @@ for s in "${scanners[@]}"; do
         echo "check-scan: grype's result for $name has no readable matches list: nothing is judged behind a result that cannot be read" >&2; rc=2
       elif [ "$um" -gt 0 ]; then
         echo "check-scan: grype reported $um finding(s) in $name ($digest) of any severity, UNKNOWN included, that the VEX document does not except" >&2; rc=1
+      else
+        # Everything grype left out must have been left out by the VEX: absent or null is none, otherwise a list whose entries each carry a non-empty list of rule objects, every one
+        # namespace "vex" with a vex-status of not_affected or fixed (a config or environment ignore carries another namespace). Known limit, pending the owner's ruling: grype's own
+        # distro exclusions drop matches before results are built and are not in ignoredMatches; the images are assembled from Wolfi packages, where this has no known effect.
+        igrc=0; ig=$(jq -r 'if .ignoredMatches == null then [] elif (.ignoredMatches | type) == "array" then [.ignoredMatches[] | select((type != "object") or ((.appliedIgnoreRules | type) != "array") or ((.appliedIgnoreRules | length) == 0) or (.appliedIgnoreRules | any((type != "object") or (.namespace != "vex") or ((.["vex-status"] != "not_affected") and (.["vex-status"] != "fixed"))))) | (if type == "object" then ((.vulnerability.id // "?") + " " + (.artifact.name // "?") + "@" + (.artifact.version // "?")) else "a malformed entry" end)] else error("ignoredMatches is not a list") end | .[]' "$tmp/out.json" 2> /dev/null) || igrc=$?
+        if [ "$igrc" -ne 0 ]; then
+          echo "check-scan: grype's result for $name has no readable ignoredMatches list: nothing is judged behind a result that cannot be read" >&2; rc=2
+        elif [ -n "$ig" ]; then
+          igl=$(printf '%s' "$ig" | tr '\n' ',')
+          echo "check-scan: grype hid finding(s) in $name ($digest) by something other than the published VEX document (not a VEX rule): $igl" >&2; rc=1
+        fi
       fi
     fi
     if [ "$s" = grype ] && [ -n "$plat" ] && [ "$rc" = 0 ]; then
