@@ -242,6 +242,36 @@ for name, kw in (("an actor who is not a dispatcher", dict(actor="someone")), ("
 for name, kw in (("a pull request number that is not digits", dict(number="7; rm -rf /")), ("a head that is not 40 hex", dict(head="abc")), ("a repository that is not owner/name", dict(repo="o/r x"))):
     r, calls, f = prepare(**kw); check("prepare refused: %s -> exit 1, nothing called" % name, r.returncode == 1 and calls == "" and f is None, (r.returncode, calls, f))
 
+# the request script the lane runs after the review clears: a fake gh answers `pr view` and records `workflow run`
+REQ_SH = os.path.join(os.path.dirname(JUDGE_SH), "audit-record-request.sh")
+open(fake + "/gh", "w").write('''#!/usr/bin/env bash
+echo "gh $*" >> "$CALLS"
+case "$1 $2" in
+  "pr view") [ -f "$FAKE/view.err" ] && { cat "$FAKE/view.err" >&2; exit 1; }; cat "$FAKE/view.txt" ;;
+  "workflow run") [ -n "$WF_FAIL" ] && { echo "HTTP 403" >&2; exit 1; }; exit 0 ;;
+  *) echo "UNEXPECTED $*" >> "$CALLS"; exit 9 ;;
+esac
+''')
+def request(view="main %s OPEN" % HEAD, pr="7", head=HEAD, view_err=None, wf_fail=False, repo=None):
+    fk = tempfile.mkdtemp(dir=d)
+    if view_err: open(os.path.join(fk, "view.err"), "w").write(view_err)
+    else: open(os.path.join(fk, "view.txt"), "w").write(view + "\n")
+    calls = os.path.join(fk, "calls"); open(calls, "w").close()
+    env = dict(os.environ, PATH=fake + ":" + os.environ["PATH"], FAKE=fk, CALLS=calls, WF_FAIL=("1" if wf_fail else ""))
+    if repo: env["GITHUB_REPOSITORY"] = repo
+    r = subprocess.run(["bash", REQ_SH, pr, head], capture_output=True, text=True, env=env)
+    return r, open(calls).read()
+r, c = request(); check("request: an open pull request into main at this head -> the record job is started once, with the two inputs, on main",
+    r.returncode == 0 and c.count("gh workflow run agent-review-gate.yml -R fosterstack/cache --ref main -f audit_pr=7 -f audit_head=" + HEAD) == 1, (r.returncode, r.stdout, r.stderr, c))
+r, c = request(view="chain-v030 %s OPEN" % HEAD); check("request: a pull request not into main -> nothing requested, exit 0", r.returncode == 0 and "workflow run" not in c, (r.returncode, r.stdout, c))
+r, c = request(view="main %s OPEN" % ("c" * 40)); check("request: a head that moved -> nothing requested, exit 1", r.returncode == 1 and "workflow run" not in c, (r.returncode, r.stderr, c))
+r, c = request(view="main %s CLOSED" % HEAD); check("request: a closed pull request -> nothing requested, exit 1", r.returncode == 1 and "workflow run" not in c, (r.returncode, r.stderr, c))
+r, c = request(view_err="gh: HTTP 502"); check("request: an API error reading the pull request -> nothing requested, exit 1", r.returncode == 1 and "workflow run" not in c, (r.returncode, r.stderr, c))
+r, c = request(wf_fail=True); check("request: a failing dispatch -> exit 1 saying so", r.returncode == 1 and "could not be started" in r.stderr, (r.returncode, r.stderr))
+r, c = request(pr="7; rm -rf /"); check("request: a pull request number that is not digits -> nothing called", r.returncode == 1 and c == "", (r.returncode, c))
+r, c = request(head="abc"); check("request: a head that is not 40 hex -> nothing called", r.returncode == 1 and c == "", (r.returncode, c))
+r, c = request(repo="o/r x"); check("request: a repository that is not owner/name -> nothing called", r.returncode == 1 and c == "", (r.returncode, c))
+
 print("audit-record: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
