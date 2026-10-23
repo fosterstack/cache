@@ -108,12 +108,17 @@ def inside(root_parts_target):
     return True
 
 
+SKIPPED = set()   # the paths of absolute links that were not created
+
+
 def check_place(stage, norm, what, kind):
     """Nothing is written through a symlink or over something that is not what the entry is: every directory above the entry must be a real directory inside the
     staging directory (never a symlink an earlier entry made), and the entry's own place must be free (a directory entry may meet a real directory)."""
     cur = stage
     for part in norm.split("/")[:-1]:
         cur = os.path.join(cur, part)
+        if os.path.relpath(cur, stage) in SKIPPED:
+            die("%s: %s is written below %s, an absolute symlink that was not created" % (what, norm, os.path.relpath(cur, stage)))
         if os.path.islink(cur) or (os.path.lexists(cur) and not os.path.isdir(cur)):
             die("%s: %s is written below %s, which is a symlink or a file, not a directory" % (what, norm, os.path.relpath(cur, stage)))
     dest = os.path.join(stage, norm)
@@ -146,9 +151,14 @@ def unpack(data, stage, owner, owners, what):
             target = m.linkname
             if not target or "\0" in target:
                 die("%s: the symlink %s has an empty target" % (what, norm))
-            # an ABSOLUTE target (wolfi-baselayout's etc/mtab -> /proc/mounts) is kept as the text the package gave and never followed: the link is created inside the root, nothing
-            # is placed through it (check_place) and no other link may walk through it (escapes); a relative target must stay inside the root
-            if not target.startswith("/") and not inside(norm.split("/")[:-1] + target.split("/")):
+            if target.startswith("/"):
+                # an ABSOLUTE link is never created (wolfi-baselayout's etc/mtab -> /proc/mounts): it would be resolved on the host by whatever reads the root later (the
+                # extracted loader looks up libraries and the wrapper runs usr/bin/bwrap through it). The path stays held by the package that named it, and nothing is placed below it.
+                print("install-host-bwrap.py: skipped absolute link %s -> %s" % (norm, target))
+                SKIPPED.add(norm)
+                owners[norm] = owner
+                continue
+            if not inside(norm.split("/")[:-1] + target.split("/")):
                 die("%s: the symlink %s leaves the directory (target %r)" % (what, norm, target))
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             os.symlink(target, dest)
@@ -195,7 +205,7 @@ def check_links(stage):
     for dirpath, dirs, files in os.walk(stage):
         for n in dirs + files:
             p = os.path.join(dirpath, n)
-            if os.path.islink(p) and not os.readlink(p).startswith("/") and escapes(stage, os.path.relpath(p, stage)):
+            if os.path.islink(p) and escapes(stage, os.path.relpath(p, stage)):
                 die("the symlink %s leaves the directory once the other links are followed" % os.path.relpath(p, stage))
 
 

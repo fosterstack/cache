@@ -891,8 +891,7 @@ case("AC17 a noarch package is accepted", setup=lambda d: apk(d + "/archive/" + 
 case("AC17 a file that is not an apk (not gzip) is refused", setup=lambda d: open(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "wb").write(b"not an apk"), want=1)
 case("AC17 an apk that is a symlink instead of a file is refused", setup=lambda d: (os.remove(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk"), os.symlink(d + "/archive/" + ARCH + "/glibc-2.43-r13.apk", d + "/archive/" + ARCH + "/libcap-2.78-r4.apk")), want=1)
 for label, ent in (("an absolute path", [("/etc/evil", "file", b"E", None)]), ("a .. part", [("usr/../../evil", "file", b"E", None)]),
-                   ("a symlink with an empty target", [("usr/lib/x", "sym", "", None)]), ("a member placed through an absolute symlink (etc/mtab -> /proc/mounts ; etc/mtab/x)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab/x", "file", b"E", None)]), ("a relative link whose walk goes through an absolute link (m -> /proc/mounts ; r -> m/x)", [("m", "sym", "/proc/mounts", None), ("r", "sym", "m/x", None)]), ("the same, the second named first (r -> m/x ; m -> /proc/mounts)", [("r", "sym", "m/x", None), ("m", "sym", "/proc/mounts", None)]), ("a symlink that leaves the directory", [("usr/lib/x", "sym", "../../../etc/passwd", None)]),
-                   ("a hard link", [("usr/lib/x", "hard", "usr/lib/libcap.so.2.78", None)]), ("a device", [("usr/lib/dev", "dev", None, None)]),
+                   ("a symlink with an empty target", [("usr/lib/x", "sym", "", None)]), ("a member placed through an absolute symlink (etc/mtab -> /proc/mounts ; etc/mtab/x)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab/x", "file", b"E", None)]), ("a hard link", [("usr/lib/x", "hard", "usr/lib/libcap.so.2.78", None)]), ("a device", [("usr/lib/dev", "dev", None, None)]),
                    ("a path that another package also holds", [("usr/lib/libc.so.6", "file", b"OTHER", None)]),
                    ("a chain of symlinks that writes outside the staging directory (a -> . ; a/b -> .. ; a/b/probe)", [("a", "sym", ".", None), ("a/b", "sym", "..", None), ("a/b/probe", "file", b"P", None)]),
                    ("two symlinks that together leave the directory (a -> . ; b -> a/../probe)", [("a", "sym", ".", None), ("b", "sym", "a/../probe", None)]),
@@ -906,19 +905,39 @@ for label, ent in (("an absolute path", [("/etc/evil", "file", b"E", None)]), ("
          setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
 def s_abs_link(d):
     os.makedirs(d + "/outside")
-    apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("etc/mtab", "sym", d + "/outside", None), ("etc/proc-mounts", "sym", "/proc/mounts", None)])
+    apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("etc/mtab", "sym", d + "/outside", None), ("var/spool/mail", "sym", "/var/mail", None)])
 
 
 def a_abs_link(d, r):
     a_basic(d, r)
-    assert os.path.islink(d + "/host-tools/etc/mtab") and os.readlink(d + "/host-tools/etc/mtab") == d + "/outside", "the absolute link is kept as the text the package gave"
-    assert os.readlink(d + "/host-tools/etc/proc-mounts") == "/proc/mounts"
-    assert os.listdir(d + "/outside") == [], "the unpack followed the absolute link and wrote through it"
-    assert not os.path.exists(d + "/host-tools/proc") and not os.path.exists(d + "/host-tools/etc/mtab/x"), "nothing is created below an absolute link"
+    for p in ("etc/mtab", "var/spool/mail"):
+        assert not os.path.lexists(d + "/host-tools/" + p), "an absolute link is never created: " + p
+    assert "skipped absolute link etc/mtab -> " + d + "/outside" in r.stdout, r.stdout
+    assert "skipped absolute link var/spool/mail -> /var/mail" in r.stdout, r.stdout
+    assert os.listdir(d + "/outside") == [], "something was written at the target of an absolute link"
+    assert os.path.isfile(d + "/host-tools/usr/lib/libcap.so.2.78"), "the files stay"
 
 
-case("AC17 a symlink with an ABSOLUTE target is kept as the text the package gave (it is created inside the root) and the unpack never follows it: nothing is written at its target", setup=s_abs_link, after=a_abs_link)
-case("AC17 a relative symlink that leaves the root is still refused when an absolute link is in the same package", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("etc/mtab", "sym", "/proc/mounts", None), ("usr/lib/x", "sym", "../../../etc/passwd", None)]), want=1)
+def a_abs_loader_path(d, r):
+    # an absolute link on a library path of the loader is skipped: the real files stay real and the host is never reached
+    a_basic(d, r)
+    h = d + "/host-tools"
+    assert not os.path.lexists(h + "/usr/lib/libcap.so.2.x") and not os.path.lexists(h + "/lib"), "an absolute link was created"
+    assert "skipped absolute link usr/lib/libcap.so.2.x -> /tmp/x" in r.stdout and "skipped absolute link lib -> /usr/lib" in r.stdout, r.stdout
+
+
+case("AC17 an ABSOLUTE symlink (wolfi-baselayout's etc/mtab -> /proc/mounts, var/spool/mail -> /var/mail) is never created: it is skipped and logged, nothing is written at its target, the relative links stay", setup=s_abs_link, after=a_abs_link)
+case("AC17 an absolute link on the loader's library path (usr/lib/libcap.so.2.x -> /tmp/x, lib -> /usr/lib) is skipped: nothing is created there, so the loader never meets a host path", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("usr/lib/libcap.so.2.x", "sym", "/tmp/x", None), ("lib", "sym", "/usr/lib", None)]), after=a_abs_loader_path)
+for label, ent in (("an absolute link at the place of a real directory the loader and bwrap live in (usr -> /external)", [("usr", "sym", "/external", None)]),
+                   ("an absolute link at the place of the directory holding bwrap (usr/bin -> /outside/bin)", [("usr/bin", "sym", "/outside/bin", None)])):
+    case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
+         setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
+for label, ent in (("a member placed below an absolute link that was skipped (usr/lib/y -> /tmp ; usr/lib/y/z)", [("usr/lib/y", "sym", "/tmp", None), ("usr/lib/y/z", "file", b"E", None)]),
+                   ("a file at the place of a skipped absolute link in another entry of the same package (etc/mtab -> /proc/mounts ; etc/mtab as a file)", [("etc/mtab", "sym", "/proc/mounts", None), ("etc/mtab", "file", b"E", None)]),
+                   ("a relative link that leaves the root next to an absolute link (etc/mtab -> /proc/mounts ; usr/lib/x -> ../../../etc/passwd)", [("etc/mtab", "sym", "/proc/mounts", None), ("usr/lib/x", "sym", "../../../etc/passwd", None)])):
+    case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
+         setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
+case("AC17 a member of a LATER package placed below the path of a skipped absolute link is refused (the path is held by the package that named it)", setup=lambda d: (apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("etc/mtab", "sym", "/proc/mounts", None)]), apk(d + "/archive/" + ARCH + "/libpsx-2.78-r4.apk", "libpsx", "2.78-r4", [("etc/mtab/x", "file", b"E", None)])), lock=LOCK + "libpsx=2.78-r4\n", want=1)
 case("AC17 no loader in the unpacked tree is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/other", "file", b"x", None)]), want=1)
 case("AC17 two loaders in the unpacked tree are refused (the wrapper must name exactly one)", setup=lambda d: apk(d + "/archive/" + ARCH + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755), ("lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755)]), want=1)
 case("AC17 no usr/bin/bwrap in the unpacked tree is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/bubblewrap-0.13.0-r0.apk", "bubblewrap", "0.13.0-r0", [("usr/bin/other", "file", b"x", 0o755)]), want=1)
@@ -2769,7 +2788,7 @@ for action in ("download-artifact", "upload-artifact"):
 PY
 # AC17 (the absolute symlink ruling): the unpacked host-tools root is only ever USED by the wrapper (the extracted loader run with --library-path); no script or stage file
 # chroots into it, bind-mounts it, pivots into it or hands it to bwrap/unshare as a root, so an absolute link inside it (etc/mtab -> /proc/mounts) is never resolved against the host
-python3 - "$root" <<'PY' && ok "AC17 nothing chroots into, bind-mounts or pivots into the host-tools root: an absolute link kept inside it is never resolved on the host"
+python3 - "$root" <<'PY' && ok "AC17 nothing chroots into, bind-mounts or pivots into the host-tools root (and an absolute link is never created in it)" || bad "AC17 something chroots into, bind-mounts or pivots into the host-tools root"
 import glob, re, sys
 root = sys.argv[1]
 files = sorted(glob.glob(root + "/.github/workflows/stage-*.yml") + glob.glob(root + "/bin/build-stage-*.sh") + [root + "/bin/install-host-bwrap.py"])
@@ -2783,7 +2802,7 @@ for f in files:
             assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
-EXPECT=951
+EXPECT=954
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
