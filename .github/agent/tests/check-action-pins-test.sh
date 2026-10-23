@@ -96,6 +96,31 @@ case_ pinned-quoted        ok  "$head
 case_ pinned-subpath       ok  "$head
     steps:
       - uses: github/codeql-action/init@$SHA # v4.1.0"
+# actions/cache (restore and save subactions, REQ-REL-004-AC8 on the release chain): a node action, pinned like every other
+case_ cache-restore-pinned ok  "$head
+    steps:
+      - uses: actions/cache/restore@$SHA # v5.0.5"
+case_ cache-save-pinned    ok  "$head
+    steps:
+      - uses: actions/cache/save@$SHA # v5.0.5"
+case_ cache-root-pinned    ok  "$head
+    steps:
+      - uses: actions/cache@$SHA # v5.0.5"
+case_ cache-restore-tag    bad "$head
+    steps:
+      - uses: actions/cache/restore@v5"
+case_ cache-save-short-sha bad "$head
+    steps:
+      - uses: actions/cache/save@3d3c42e # v5.0.5"
+case_ cache-restore-no-comment bad "$head
+    steps:
+      - uses: actions/cache/restore@$SHA"
+case_ cache-lookalike-subpath bad "$head
+    steps:
+      - uses: actions/cachex/restore@$SHA # v5.0.5"
+case_ cache-lookalike-name bad "$head
+    steps:
+      - uses: actions/cache-evil@$SHA # v1.0.0"
 case_ remote-reusable      bad "on: push
 jobs:
   j:
@@ -553,6 +578,100 @@ case_ container-options    bad "$head
     container:
       image: alpine@$DIG
       options: --cpus 1
+    steps:
+      - run: true"
+# a service may publish a port on the runner's loopback only, as three plain parts (the registry the release-candidate persona job loads Build's image into, REQ-UAT-001-AC1); anything else is spliced into the docker command
+case_ container-port-refused  bad "$head
+    container:
+      image: alpine@$DIG
+      ports:
+        - 127.0.0.1:5000:5000
+    steps:
+      - run: true"
+case_ service-port-loopback-ok     ok  "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:5000:5000
+    steps:
+      - run: true"
+case_ service-port-all-interfaces  bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 5000:5000
+    steps:
+      - run: true"
+case_ service-port-any-address     bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 0.0.0.0:5000:5000
+    steps:
+      - run: true"
+case_ service-port-localhost-name  bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - localhost:5000:5000
+    steps:
+      - run: true"
+case_ service-port-injects-flag    bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - '127.0.0.1:5000:5000 --privileged'
+    steps:
+      - run: true"
+case_ service-port-expression      bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:\${{ vars.PORT }}:5000
+    steps:
+      - run: true"
+case_ service-port-not-a-list      bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports: 127.0.0.1:5000:5000
+    steps:
+      - run: true"
+case_ service-port-nested          bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - [127.0.0.1:5000:5000]
+    steps:
+      - run: true"
+case_ service-port-out-of-range    bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:99999:5000
+    steps:
+      - run: true"
+case_ service-port-zero            bad "$head
+    services:
+      registry:
+        image: alpine@$DIG
+        ports:
+          - 127.0.0.1:0:5000
+    steps:
+      - run: true"
+case_ container-port-loopback      bad "$head
+    container:
+      image: alpine@$DIG
+      ports:
+        - 127.0.0.1:5000:5000
     steps:
       - run: true"
 
