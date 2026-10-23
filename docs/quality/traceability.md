@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 90 |
-| Acceptance criteria | 380 |
+| Active requirements | 91 |
+| Acceptance criteria | 384 |
 | Release-blocking ACs | 54 |
-| ACs with mapped evidence | 360 |
+| ACs with mapped evidence | 364 |
 | Release-blocking ACs with mapped evidence | 54 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 44 |
+| Confidence: implementation-only | 45 |
 
 ## Cache protocol
 
@@ -797,6 +797,21 @@ A workflow job that holds a credential (a secret, an environment, an id-token or
 |---|---|---|---|---|---|
 | REQ-REL-011-AC1 | Given any workflow job in the repository that holds a credential: a secrets.* reference, an environment, a permissions grant of id-token: write or packages: write; when bin/job-isolation-test.sh judges every workflow file; then none of the job's steps compiles or builds (go install, go build, goreleaser, docker build or buildx build, melange or apko build, make, cargo, npm run build); a tool the job needs is installed through bin/install-scanner.sh as a checksum-pinned release binary, and govulncheck, which has no release binary, is built in its own job with no credential and handed to auditor.yml's audit job as an artifact whose sha256 the audit job compares with the build job's output before it runs; the only jobs that may break this are the four listed release-chain exclusions, each with its reason, and a mutated copy of a workflow that adds a build to a credential-holding job fails the test | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-011-AC2 | Given any workflow job in the repository; when bin/job-isolation-test.sh judges every workflow file; then the job has at most one build step (a second compile step in the same job fails), the one listed exclusion being stage-build's predicate step that only names goreleaser; each build is its own job | ci-workflow |  | approved | 2 item(s) |
+
+### REQ-REL-012 — A pull request into the release carries a passed-audit record for its exact head
+
+A pull request into the release carries a passed-audit record for its exact head, or it cannot merge (release process rule 6, owner RATIFIED Oct 23 2026, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md: "once we agree on this if it can be coded it should be"). The release is main. The record is the branch audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in .github/policy/audit-writers.json of the base checkout, changing no file. Nothing is stored in the pull request's own files, and a new push changes the head sha, so an earlier record no longer applies.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/ci.yml; bin/audit-record.py; .github/policy/audit-writers.json*
+
+> The required check `audit-record` is added to the main ruleset and to .github/policy/required-checks.json on the landing day, together with the ruleset rule that only the writer creates branches under audit/**, by the owner; until then the job runs and reports but does not block. The record branch is written by a job that holds the writer's credential (a later pull request); this one is the judge.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-REL-012-AC1 | Given a pull request whose base is main, and the head sha it has now; when the audit-record job of ci.yml judges it with bin/audit-record.py; then it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the base checkout authored (login and numeric id, a bot), and that changes no file; otherwise it fails, so the pull request carries a passed-audit record for its exact head or it cannot merge | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-012-AC2 | Given a record that is missing, for another head, stale (a parent that is not the head, two parents, none), changing a file, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), or any answer that is malformed, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base; when the judge decides; then it fails closed and says why; no doubt passes | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-012-AC3 | Given a pull request whose base is not main; when the audit-record job runs; then it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate) | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-012-AC4 | Given the audit-record job; when bin/audit-record-test.sh judges ci.yml; then the job has read permission only, no secret and no environment, checks out the BASE sha with no persisted credential, reads the judge and the writers policy from that checkout, swallows no failure, and every mutated copy of it is refused | ci-workflow |  | approved | 2 item(s) |
 
 ## SCAN
 

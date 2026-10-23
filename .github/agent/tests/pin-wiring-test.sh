@@ -510,6 +510,10 @@ SPLIT_STEPS = json.loads(r'''{
    "run": "bash bin/patch-decide-test.sh"
   },
   {
+   "name": "gate 6 of the release process \u2014 a pull request into main needs a passed-audit record for its exact head (REQ-REL-012, owner Oct 23)",
+   "run": "bash bin/audit-record-test.sh"
+  },
+  {
    "name": "admission's tag signer \u2014 the owner's SSH key on any tag, the release workflow's keyless identity on patch tags only (owner Oct 2)",
    "run": "bash bin/admission-tag-signer-test.sh"
   },

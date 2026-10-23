@@ -2091,6 +2091,51 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
+  - id: REQ-REL-012
+    title: A pull request into the release carries a passed-audit record for its exact head
+    statement: >
+      A pull request into the release carries a passed-audit record for its exact head, or it cannot merge (release
+      process rule 6, owner RATIFIED Oct 23 2026, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md:
+      "once we agree on this if it can be coded it should be"). The release is main. The record is the branch
+      audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in
+      .github/policy/audit-writers.json of the base checkout, changing no file. Nothing is stored in the pull request's
+      own files, and a new push changes the head sha, so an earlier record no longer applies.
+    source: [.github/workflows/ci.yml, bin/audit-record.py, .github/policy/audit-writers.json]
+    tier: community
+    introduced: v0.3.0
+    origin: release process rule 6 (owner Oct 23 2026); advisor handoff 0668, read-backs 2026-10-23-payments-readback-release-audit-gates and -v2
+    confidence: implementation-only
+    notes: >
+      The required check `audit-record` is added to the main ruleset and to .github/policy/required-checks.json on the
+      landing day, together with the ruleset rule that only the writer creates branches under audit/**, by the owner;
+      until then the job runs and reports but does not block. The record branch is written by a job that holds the
+      writer's credential (a later pull request); this one is the judge.
+    acceptance_criteria:
+      - id: REQ-REL-012-AC1
+        given: "a pull request whose base is main, and the head sha it has now"
+        when: "the audit-record job of ci.yml judges it with bin/audit-record.py"
+        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the base checkout authored (login and numeric id, a bot), and that changes no file; otherwise it fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC2
+        given: "a record that is missing, for another head, stale (a parent that is not the head, two parents, none), changing a file, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), or any answer that is malformed, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base"
+        when: "the judge decides"
+        then: "it fails closed and says why; no doubt passes"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC3
+        given: "a pull request whose base is not main"
+        when: "the audit-record job runs"
+        then: "it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC4
+        given: "the audit-record job"
+        when: "bin/audit-record-test.sh judges ci.yml"
+        then: "the job has read permission only, no secret and no environment, checks out the BASE sha with no persisted credential, reads the judge and the writers policy from that checkout, swallows no failure, and every mutated copy of it is refused"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >
