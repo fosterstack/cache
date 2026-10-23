@@ -10,7 +10,7 @@ name: Daily CVE auditor
 # gh pr create / gh issue create; adjudicator (real|stub, default real) chooses the model
 # client. adjudicator=stub uses the checked-in test double and SKIPS the OIDC mint, so the
 # workflow can be dispatched green on a feature branch where the federation rule refuses a
-# token. Schedule runs are always real and never dry.
+# token. A schedule run is dry unless the repository variable AUDITOR_SCHEDULE_MODE is exactly "live" (see the driver step).
 #
 # The federated identity is minted AFTER installs and scans, immediately before the driver,
 # and refreshed in the background for long runs. The six model/workspace identifiers are
