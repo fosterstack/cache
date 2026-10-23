@@ -51,7 +51,7 @@ environment:
       - libbrotlienc1=1.2.1-r0
       - libcom_err=1.47.4-r3
       - libcrypt1-2.44=2.44-r9
-      - libcurl-openssl4=8.23.0-r1
+      - libcurl-openssl4=8.23.0-r2
       - libexpat1=2.9.0-r0
       - libgcc=16.2.0-r1
       - libidn2=2.3.8-r10
