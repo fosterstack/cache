@@ -158,6 +158,34 @@ good["statements"] = bad["statements"] + good["statements"]; json.dump(good, ope
 PYX
 check "a malformed statement beside a good one: the good one still covers"     0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-mixed.json"
 
+# The index itself (the #564 follow-up, Haiku out-of-diff note): covered() with NO image (the panel's per-image tally, which filters the statements first) must not be
+# satisfied by a product whose scope the grammar cannot read or that is not this gate's repository, so vex_index drops such a product at index time.
+IDXOUT="$(python3 - "$sut" <<'PYI'
+import importlib.util, sys
+sp = importlib.util.spec_from_file_location("g", sys.argv[1]); G = importlib.util.module_from_spec(sp); sp.loader.exec_module(G)
+OCI = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+def doc(*pids, subs=None):
+    prods = [dict({"@id": p}, **({"subcomponents": [{"@id": x} for x in subs]} if subs else {})) for p in pids]
+    return {"statements": [{"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": prods}]}
+PKG = ("busybox", "1.37.0")
+def cov(pid, image=None, subs=("pkg:generic/busybox@1.37.0",)):
+    return G.covered(G.vex_index(doc(pid, subs=list(subs))), "CVE-9999-1", PKG, image)
+def row(name, ok): print(("ok: " if ok else "FAIL: ") + name)
+row("index: the cache image product covers, with no image given", cov(OCI) is True)
+row("index: a variant/arch-scoped product covers, with no image given", cov(OCI + "&variant=production&arch=amd64") is True)
+row("index: the Go product covers, with no image given", cov("pkg:golang/github.com/fosterstack/cache") is True)
+row("index: a candidates-only product covers nothing, with no image given", cov("pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates") is False)
+row("index: a candidates-only product covers nothing, with an image given", cov("pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates", G.image_identity("cand-production-amd64")) is False)
+for q in ("&variant=debug", "&arch=riscv64", "&VARIANT=production", "&variant=%70roduction", "&variant=production&variant=production", "&arch", "&color=red"):
+    row("index: a malformed-scope product %r covers nothing, with no image given" % q, cov(OCI + q) is False)
+    row("index: a malformed-scope product %r covers nothing, with an image given" % q, cov(OCI + q, G.image_identity("cand-production-amd64")) is False)
+row("index: a malformed product beside a good one: the good one still covers", G.covered(G.vex_index(doc(OCI + "&variant=debug", OCI, subs=["pkg:generic/busybox@1.37.0"])), "CVE-9999-1", PKG, None) is True)
+row("index: the dropped product leaves no entry at all", G.vex_index(doc(OCI + "&variant=debug")) == {})
+PYI
+)"
+echo "$IDXOUT" | sed 's/^/  /'
+pass=$((pass + $(grep -c '^ok:' <<<"$IDXOUT"))); fail=$((fail + $(grep -c '^FAIL:' <<<"$IDXOUT")))
+
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

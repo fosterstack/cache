@@ -124,10 +124,13 @@ def vex_index(doc):
             pid = p.get("@id") or (p.get("identifiers") or {}).get("purl") or ""
             if not OUR_PRODUCTS.match(pid):
                 continue
+            scope = scope_of(pid)
+            if scope is None:          # not this gate's repository, or a scope the grammar rejects: it covers nothing, with or without an image (covered(.., image=None) trusts the index)
+                continue
             subs = {name_version(s.get("@id")) for s in p.get("subcomponents") or []}
             for i in ids:
                 if i:
-                    idx.setdefault(i, []).append((subs, scope_of(pid)))
+                    idx.setdefault(i, []).append((subs, scope))
     return idx
 
 
