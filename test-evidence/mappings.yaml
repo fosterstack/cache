@@ -46,10 +46,12 @@ mappings:
       - { type: go-test, ref: "internal/server:TestStatusSurfacesRespectBasicAuth" }
   - ac: REQ-AUTH-002-AC1
     evidence:
-      - { type: inspection, ref: "internal/server/server.go withAuth: crypto/subtle.ConstantTimeCompare (digestEqual) over the sha256 digests of each field, configured digests computed once; both fields always evaluated (re-verified 2026-10-23)" }
+      - { type: inspection, ref: "internal/server/server.go withAuth: crypto/subtle.ConstantTimeCompare (digestEqual) over the per-process-keyed HMAC-SHA256 digests of each field, configured digests computed once; both fields always evaluated (re-verified 2026-10-23)" }
       - { type: go-test, ref: "internal/server:TestCredentialDigestIsFixedSize" }
       - { type: go-test, ref: "internal/server:TestDigestEqualDecidesOnContent" }
       - { type: go-test, ref: "internal/server:TestConfiguredDigestsAreComputedFromTheCredentials" }
+      - { type: go-test, ref: "internal/server:TestCredentialDigestIsKeyedPerHasher" }
+      - { type: go-test, ref: "internal/server:TestEmptySecretAgainstUnset" }
   - ac: REQ-AUTH-003-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestMetricsAndHealthzStayOpenWhenAuthEnabled" }

@@ -9,6 +9,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
@@ -244,13 +246,25 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// credDigest is the fixed-size form a credential is compared in: the
-// sha256 of its bytes, so the comparison never sees inputs of differing
-// length (crypto/subtle.ConstantTimeCompare returns early on those, which
-// would make the configured credential's length measurable).
-func credDigest(s string) []byte {
-	d := sha256.Sum256([]byte(s))
-	return d[:]
+// credHasher makes the fixed-size form a credential is compared in: an
+// HMAC-SHA256 of its bytes under a key drawn from crypto/rand when the
+// hasher is built, so the comparison never sees inputs of differing length
+// (crypto/subtle.ConstantTimeCompare returns early on those, which would
+// make the configured credential's length measurable). The digest is a
+// comparison aid and is never stored or logged; the key lives only in this
+// process.
+type credHasher struct{ key [32]byte }
+
+func newCredHasher() *credHasher {
+	h := &credHasher{}
+	_, _ = rand.Read(h.key[:]) // crypto/rand.Read does not return an error since Go 1.24
+	return h
+}
+
+func (h *credHasher) digest(s string) []byte {
+	m := hmac.New(sha256.New, h.key[:])
+	m.Write([]byte(s))
+	return m.Sum(nil)
 }
 
 // credDigests are the digests of one configured credential pair.
@@ -258,8 +272,8 @@ type credDigests struct{ user, pass []byte }
 
 // digestsOf digests a configured pair; withAuth does it once, when it is
 // built, not on every request.
-func digestsOf(c Credentials) credDigests {
-	return credDigests{user: credDigest(c.Username), pass: credDigest(c.Password)}
+func digestsOf(h *credHasher, c Credentials) credDigests {
+	return credDigests{user: h.digest(c.Username), pass: h.digest(c.Password)}
 }
 
 // digestEqual compares two credential digests in constant time
@@ -286,10 +300,11 @@ func withAuth(creds, ro Credentials, next http.Handler) http.Handler {
 	if !creds.enabled() {
 		return next
 	}
-	rw, roD := digestsOf(creds), digestsOf(ro)
+	hasher := newCredHasher()
+	rw, roD := digestsOf(hasher, creds), digestsOf(hasher, ro)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		pu, pp := credDigest(user), credDigest(pass)
+		pu, pp := hasher.digest(user), hasher.digest(pass)
 		rwUserOK := digestEqual(pu, rw.user)
 		rwPassOK := digestEqual(pp, rw.pass)
 		roUserOK := digestEqual(pu, roD.user)
