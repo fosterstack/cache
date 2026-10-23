@@ -311,16 +311,12 @@
         "DOCKERHUB_TOKEN"
       ],
       "arg_map": {
-        "scanners": "bin/check-phase-scanners.sh",
-        "acceptance": "bin/check-phase-acceptance.sh",
-        "runtime": "bin/check-phase-runtime.sh",
         "release-verify": "bin/release-verify.sh",
         "release-apks": "bin/release-apks.sh",
         "release-publish": "bin/release-publish.sh",
         "release-sign": "bin/release-sign.sh",
         "release-assets": "bin/release-assets.sh",
-        "release-postverify": "bin/release-postverify.sh",
-        "arm64": "bin/check-phase-arm64.sh"
+        "release-postverify": "bin/release-postverify.sh"
       },
       "exceptions": [
         {
@@ -375,7 +371,11 @@
         "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
         "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
         "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
-        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh"
+        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
+        "scanners": "bin/check-phase-scanners.sh",
+        "acceptance": "bin/check-phase-acceptance.sh",
+        "runtime": "bin/check-phase-runtime.sh",
+        "arm64": "bin/check-phase-arm64.sh"
       },
       "exceptions": [
         {
