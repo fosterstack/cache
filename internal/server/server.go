@@ -9,6 +9,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"errors"
@@ -243,9 +244,24 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// credDigest is the fixed-size form a credential is compared in: the
+// sha256 of its bytes, so the comparison never sees inputs of differing
+// length (crypto/subtle.ConstantTimeCompare returns early on those, which
+// would make the configured credential's length measurable).
+func credDigest(s string) []byte {
+	d := sha256.Sum256([]byte(s))
+	return d[:]
+}
+
+// credEqual compares two credential fields in constant time over their
+// fixed-size digests (REQ-AUTH-002).
+func credEqual(presented, configured string) bool {
+	return subtle.ConstantTimeCompare(credDigest(presented), credDigest(configured)) == 1
+}
+
 // withAuth wraps h with HTTP Basic Auth when Credentials are configured.
-// Constant-time comparison avoids leaking password length/prefix via
-// timing (COMMIT-REQ style hygiene: this is exactly the kind of small
+// Constant-time comparison of fixed-size digests avoids leaking the
+// password length or prefix via timing (COMMIT-REQ style hygiene: this is exactly the kind of small
 // correctness detail the addendum's algorithm-discipline section expects
 // applied to all code, not just the crypto module choice).
 //
@@ -261,10 +277,10 @@ func withAuth(creds, ro Credentials, next http.Handler) http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		rwUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(creds.Username)) == 1
-		rwPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(creds.Password)) == 1
-		roUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(ro.Username)) == 1
-		roPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(ro.Password)) == 1
+		rwUserOK := credEqual(user, creds.Username)
+		rwPassOK := credEqual(pass, creds.Password)
+		roUserOK := credEqual(user, ro.Username)
+		roPassOK := credEqual(pass, ro.Password)
 		isRW := rwUserOK && rwPassOK
 		isRO := ro.enabled() && roUserOK && roPassOK
 		if !ok || (!isRW && !isRO) {
