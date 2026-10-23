@@ -337,7 +337,7 @@ case_ refresh-go-root-lookalike bad "[s.__setitem__('run', s['run'].replace('/us
 case_ refresh-pinned-go-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'install the pinned Go toolchain']"
 case_ refresh-pinned-go-late bad "a = $R['steps']; n = [s.get('name') for s in a]; a.insert(n.index('check for a newer certified crypto module') + 1, a.pop(n.index('install the pinned Go toolchain')))"
 case_ refresh-setup-go-back bad "$R['steps'].insert(2, {'uses': 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e', 'with': {'go-version': '1.27'}})"
-case_ refresh-pinned-go-unpinned-install bad "[s.__setitem__('run', 'curl -fsSL https://go.dev/dl/x | tar -xz -C /usr/local/bin') for s in $R['steps'] if s.get('name') == 'install the pinned Go toolchain']"
+case_ refresh-pinned-go-unlisted-install bad "[s.__setitem__('run', 'tar -xzf \"\$RUNNER_TEMP/go.tgz\" -C /usr/local/bin') for s in $R['steps'] if s.get('name') == 'install the pinned Go toolchain']"
 case_ refresh-keycheck-late bad "a = $R['steps']; n = [s.get('name') for s in a]; i = n.index('check the live Wolfi key against the pinned one'); a.insert(n.index('pull the archive by its recorded digest'), a.pop(i))"
 case_ refresh-keycheck-if bad "[s.__setitem__('if', 'always()') for s in $R['steps'] if s.get('name') == 'check the live Wolfi key against the pinned one']"
 case_ refresh-bootstrap-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'bootstrap the archive from the pinned Wolfi key']"
