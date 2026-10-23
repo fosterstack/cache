@@ -404,7 +404,7 @@ def conj(cond):
         if "(" in body or ")" in body: return None
         out.append(body.replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("ALWAYSCALL", "always()").replace("RCCALL", "contains(github.ref_name, '-rc')"))
     return out
-OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "sign-rebuild": "stage-sign.yml", "check": "stage-verify.yml"}
+OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "sign-rebuild": "stage-sign.yml", "sign-check": "stage-sign.yml", "check": "stage-verify.yml"}
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
 import importlib.util as _ilu

@@ -3214,7 +3214,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='40639dff62eef23a740b105f8e5fa67f38651fe21355884d498b3193378af109'
+FX_PIN='9199976447cc12c5388f9fac3cd8cdb90a17fa49415830440c95ec4990330c41'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
