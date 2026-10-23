@@ -1469,6 +1469,41 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
     return step, payload, [n for n in names if n != fname]
 
 
+def sr_expected(stage, path):
+    """The list of the records the Rebuild assemble job made, as a job output: {record folder: {file: "sha256:<hex>"}}. Returns {folder: {file: hex}}."""
+    try:
+        with open(path, "rb") as f:
+            exp = strict_json(f.read())
+    except (OSError, ValueError) as ex:
+        refuse(stage, "expect-digests: %s is missing or not JSON (%s)" % (path, type(ex).__name__))
+    ok = isinstance(exp, dict) and bool(exp)
+    for folder, files in (exp.items() if isinstance(exp, dict) else []):
+        ok = ok and isinstance(files, dict) and bool(files) and all(isinstance(h, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", h) for h in files.values())
+    if not ok:
+        refuse(stage, "expect-digests: %s is not {record folder: {file: sha256:<64 hex>}} (non-empty)" % path)
+    return {folder: {n: h[len("sha256:"):] for n, h in files.items()} for folder, files in exp.items()}
+
+
+def sr_check_expected(stage, expected, rec_dirs):
+    """Every record folder Sign received must be exactly what the producing job listed: same folders, same files, same sha256 (no extra, no missing)."""
+    names = {os.path.basename(d.rstrip("/")) for d in rec_dirs}
+    if names != set(expected):
+        refuse(stage, "expect-digests: the record folders received (%s) are not the ones the Rebuild job listed (%s)" % (" ".join(sorted(names)) or "none", " ".join(sorted(expected))))
+    for d in rec_dirs:
+        name = os.path.basename(d.rstrip("/"))
+        if not os.path.isdir(d) or os.path.islink(d):
+            refuse(stage, "record: %r is not a distinct plain record directory" % d)
+        have = sorted(os.listdir(d))
+        if have != sorted(expected[name]):
+            refuse(stage, "expect-digests: %s holds %s, the Rebuild job listed %s" % (name, " ".join(have) or "no file", " ".join(sorted(expected[name]))))
+        for n in have:
+            path = os.path.join(d, n)
+            if os.path.islink(path) or not os.path.isfile(path):
+                refuse(stage, "record: %s/%s is not a regular file (a link or a folder in a record directory)" % (name, n))
+            if _sha256_bytes_of(path, stage, n) != expected[name][n]:
+                refuse(stage, "expect-digests: %s/%s is not the file the Rebuild job made (sha256 differs)" % (name, n))
+
+
 def cmd_sign_records(a):
     stage = a.stage
     require_fresh_out(a.out)
@@ -1477,6 +1512,10 @@ def cmd_sign_records(a):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         refuse(stage, "commit: GITHUB_SHA is not a 40-hex commit")
     digests_sha = _sha256_bytes_of(a.digests, stage, "--digests")
+    if stage == "rebuild" and not a.expect_digests:
+        refuse(stage, "expect-digests: --expect-digests FILE is required for the rebuild stage (the Rebuild job's list of the records it made)")
+    if stage == "rebuild":
+        sr_check_expected(stage, sr_expected(stage, a.expect_digests), a.record_dir)   # before any record is read: a folder that is not what the Rebuild job made is never parsed
     seen, plan = set(), []
     for rec_dir in a.record_dir:
         name = os.path.basename(rec_dir.rstrip("/"))
@@ -1751,6 +1790,7 @@ def build_parser():
     sr.add_argument("--out", required=True)
     sr.add_argument("--record-dir", action="append", required=True)
     sr.add_argument("--artifacts-dir")
+    sr.add_argument("--expect-digests")
     for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
         sr.add_argument("--" + n)
     st = sub.add_parser("stage-start")

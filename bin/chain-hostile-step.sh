@@ -4,12 +4,12 @@
 # It writes only the RAW MATERIAL of each attempt (a file under attempts/) and never says whether an attempt worked: the verify
 # job judges every attempt with the real verifier, so this step cannot grade itself.
 #
-#   attempt_mint_sign_cert                       ask Fulcio for a certificate and sign a provenance statement with it; the only
-#                                                certificate this job can get names the Build stage file, never Sign's
+#   attempt_mint_sign_cert                       sign a provenance statement that claims Sign's identity with a throwaway key (this job holds no
+#                                                identity token, so no certificate can be had at all)
 #   attempt_read_sign_token                      look for Sign's identity token on this runner (Sign runs on another machine)
 #   attempt_read_sign_key                        look for Sign's signing key material on this runner
 #   attempt_hand_sign_code                       give Sign a digest list that carries code instead of digests
-#   attempt_forge_provenance                     write provenance for different digests and sign it with this job's own identity
+#   attempt_forge_provenance                     write provenance for different digests and sign it with a throwaway key as Build's own
 #   (the sixth case of rule 52a, a second workflow calling stage-sign.yml, is not a runtime case: no second workflow file exists; Sign's
 #   caller check in the static judge and the offline hostile test prove it, a stated limit of the proof, REQ-CHAIN-001-AC5)
 #
@@ -38,18 +38,17 @@ statement() {
        predicate: {buildDefinition: {buildType: "hostile", externalParameters: {}, internalParameters: {}, resolvedDependencies: []}, runDetails: {builder: {id: $b}}}}'
 }
 
-# forged_record STATEMENT-FILE: a DSSE envelope of the verify shape (on stdout) over that statement, signed with THIS job's own
-# certificate (cosign signs the PAE bytes as a blob; the certificate it gets names stage-build.yml, never stage-sign.yml)
+# forged_record STATEMENT-FILE: a DSSE envelope of the verify shape (on stdout) over that statement, signed with a THROWAWAY ed25519 key made here, the only kind of
+# signature a Build job can produce now that it holds no identity token (no certificate can be had from Fulcio without one). The envelope is {payloadType, payload,
+# signatures: [{keyid, sig}]}, the shape of a building job's own Witness record; the verifier must refuse it because it is not Sign's keyless signature.
 forged_record() {
-  local pt="application/vnd.in-toto+json" pem
-  [ -x hostile-work/cosign ] || bash bin/install-scanner.sh cosign hostile-work > /dev/null || return 1
+  local pt="application/vnd.in-toto+json" kid
+  openssl genpkey -algorithm ed25519 -out hostile-work/throwaway.pem > /dev/null 2>&1 || return 1
   { printf 'DSSEv1 %d %s %d ' "${#pt}" "$pt" "$(wc -c < "$1")"; cat "$1"; } > hostile-work/pae.bin
-  hostile-work/cosign sign-blob --yes --bundle hostile-work/forged.bundle.json hostile-work/pae.bin > /dev/null 2>&1 || return 1
-  pem=$(jq -r '.verificationMaterial.certificate.rawBytes' hostile-work/forged.bundle.json | base64 -d | openssl x509 -inform DER) || return 1
-  jq -n --arg pt "$pt" --arg payload "$(base64 < "$1" | tr -d '\n')" --arg sig "$(jq -r '.messageSignature.signature' hostile-work/forged.bundle.json)" \
-        --arg cert "$(printf '%s\n' "$pem" | base64 | tr -d '\n')" \
-        --argjson stamps "$(jq '[(.verificationMaterial.timestampVerificationData.rfc3161Timestamps // [])[] | {type: "tsp", data: .signedTimestamp}]' hostile-work/forged.bundle.json)" \
-        '{payloadType: $pt, payload: $payload, signatures: [{keyid: "", sig: $sig, certificate: $cert, intermediates: [], timestamps: $stamps}]}'
+  openssl pkeyutl -sign -rawin -inkey hostile-work/throwaway.pem -in hostile-work/pae.bin -out hostile-work/forged.sig > /dev/null 2>&1 || return 1
+  kid=$(openssl pkey -in hostile-work/throwaway.pem -pubout -outform DER 2> /dev/null | openssl dgst -sha256 -r | cut -d' ' -f1)
+  jq -n --arg pt "$pt" --arg payload "$(base64 < "$1" | tr -d '\n')" --arg sig "$(base64 < hostile-work/forged.sig | tr -d '\n')" --arg kid "$kid" \
+        '{payloadType: $pt, payload: $payload, signatures: [{keyid: $kid, sig: $sig}]}'
 }
 
 attempt_mint_sign_cert() {

@@ -671,9 +671,25 @@ def sr_tree(name, stage="build"):
     return root, pays
 
 
-def sr_args(stage, root, dirs=None, out="staged", artifacts=True):
+def sr_expect(tree, name="expected-records.json"):
+    """The Rebuild assemble job's list of its records, made by the REAL bin/rebuild-records-digests.sh from the tree as it is now (its rec-rapk/<runner> folders are the
+    witness-rapk-<runner> folders Sign receives). Returns the file's name."""
+    rr = tree + "/rec-rapk-listing"
+    shutil.rmtree(rr, ignore_errors=True)
+    legs = sorted(x[len("witness-rapk-"):] for x in os.listdir(tree) if x.startswith("witness-rapk-"))
+    for leg in legs:
+        shutil.copytree(tree + "/witness-rapk-" + leg, rr + "/" + leg)
+    out = subprocess.run(["bash", REPO_ROOT + "/bin/rebuild-records-digests.sh", tree + "/witness-rebuild"] + [rr + "/" + leg for leg in legs], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    open(tree + "/" + name, "w").write(out.stdout)
+    return name
+
+
+def sr_args(stage, root, dirs=None, out="staged", artifacts=True, expect=True):
     dirs = dirs or (["witness-build", "witness-apk-ubuntu-24.04"] if stage == "build" else ["witness-rapk-ubuntu-24.04", "witness-rebuild"])
     a = ["sign-records", "--stage", stage, "--template", REPO_TEMPLATE, "--digests", "digests.json", "--out", out]
+    if stage == "rebuild" and expect:
+        a += ["--expect-digests", expect if isinstance(expect, str) else sr_expect(root)]
     if artifacts and stage == "build":
         a += ["--artifacts-dir", "artifacts"]
     elif artifacts and os.path.isdir(root + "/artifacts"):
@@ -683,6 +699,7 @@ def sr_args(stage, root, dirs=None, out="staged", artifacts=True):
     return a
 
 
+REPO_ROOT = root
 REPO_TEMPLATE = root + "/.github/policy/release-policy.template.json"
 
 
@@ -759,6 +776,29 @@ d, _ = sr_tree("sr23", "rebuild"); put(d, "digests.json", b'{"apk":"sha256:' + b
 sr("sign-records rebuild: a record whose material digests.json is not Build's attested list (--digests) is refused", d, "rebuild", 1, ["material", "digests"])
 d, _ = sr_tree("sr24", "rebuild"); os.remove(d + "/witness-rebuild/verdict.json")
 sr("sign-records rebuild: Rebuild's record without the verdict.json it names is refused", d, "rebuild", 1, ["verdict.json"])
+# the Rebuild job's list of the records it made (--expect-digests): Sign's second call refuses any record folder that differs from it (row-78 pass, R2)
+d, _ = sr_tree("sr32", "rebuild"); ex = sr_expect(d)
+rc, out, err = sr("sign-records rebuild: the folders match the Rebuild job's list (made by the real bin/rebuild-records-digests.sh) -> accepted", d, "rebuild", 0, args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr33", "rebuild"); ex = sr_expect(d); put(d, "witness-rebuild/verdict.json", b'{"verdict":"swapped after the job listed it"}')
+sr("sign-records rebuild: a verdict.json swapped after the Rebuild job listed its records is refused", d, "rebuild", 1, ["expect-digests", "verdict.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr34", "rebuild"); ex = sr_expect(d); coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"witness-rebuild/verdict.json": b'{"verdict":"pass"}', "other": b"x"}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
+sr("sign-records rebuild: a rebuild record other than the one the Rebuild job listed (a forged record under the artifact name) is refused", d, "rebuild", 1, ["expect-digests", "rebuild-collection.local.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr35", "rebuild"); ex = sr_expect(d); coll_record(d + "/witness-rapk-ubuntu-24.04/rapk-collection.local.json", "rapk", {"out/x86_64/evil.apk": b"evil"}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
+sr("sign-records rebuild: a rapk record other than the one the Rebuild job listed is refused", d, "rebuild", 1, ["expect-digests", "rapk-collection.local.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr36", "rebuild"); ex = sr_expect(d); put(d, "witness-rebuild/items.json", b"{}")
+sr("sign-records rebuild: an extra file in a record folder is refused", d, "rebuild", 1, ["expect-digests", "items.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr37", "rebuild"); ex = sr_expect(d); os.remove(d + "/witness-rebuild/verdict.json")
+sr("sign-records rebuild: a file the Rebuild job listed but the folder lacks is refused", d, "rebuild", 1, ["expect-digests", "verdict.json"], args=sr_args("rebuild", d, expect=ex))
+d, _ = sr_tree("sr38", "rebuild"); ex = sr_expect(d); shutil.copytree(d + "/witness-rapk-ubuntu-24.04", d + "/witness-rapk-ubuntu-24.04-arm")
+sr("sign-records rebuild: an extra record folder the Rebuild job did not list is refused", d, "rebuild", 1, ["expect-digests", "folders"], args=sr_args("rebuild", d, dirs=["witness-rapk-ubuntu-24.04", "witness-rapk-ubuntu-24.04-arm", "witness-rebuild"], expect=ex))
+d, _ = sr_tree("sr39", "rebuild"); ex = sr_expect(d)
+sr("sign-records rebuild: a folder the Rebuild job listed but Sign was not given is refused", d, "rebuild", 1, ["expect-digests", "folders"], args=sr_args("rebuild", d, dirs=["witness-rebuild"], expect=ex))
+d, _ = sr_tree("sr40", "rebuild")
+sr("sign-records rebuild: without --expect-digests the rebuild stage is refused", d, "rebuild", 1, ["expect-digests", "required"], args=sr_args("rebuild", d, expect=False))
+d, _ = sr_tree("sr41", "rebuild"); open(d + "/bad.json", "w").write("{not json")
+sr("sign-records rebuild: a list that is not JSON is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
+d, _ = sr_tree("sr42", "rebuild"); open(d + "/bad.json", "w").write('{"witness-rebuild":{"verdict.json":"abc"}}')
+sr("sign-records rebuild: a list whose digest is not sha256:<64 hex> is refused", d, "rebuild", 1, ["expect-digests"], args=sr_args("rebuild", d, expect="bad.json"))
 d, _ = sr_tree("sr25", "rebuild"); coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"verdict.json": b'{"verdict":"pass"}'}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
 sr("sign-records rebuild: a record that names the verdict by its bare file name is refused (the product is witness-rebuild/verdict.json, matched in full)", d, "rebuild", 1, ["witness-rebuild/verdict.json"])
 d, _ = sr_tree("sr26"); os.makedirs(d + "/artifacts/witness-build/dist/locked"); put(d, "artifacts/witness-build/dist/locked/f", b"x"); os.chmod(d + "/artifacts/witness-build/dist/locked", 0)
@@ -774,11 +814,12 @@ sr("sign-records build: a Rebuild record (rebuild-collection.local.json) passed 
 d, _ = sr_tree("sr31"); os.rename(d + "/witness-apk-ubuntu-24.04/apk-collection.local.json", d + "/witness-apk-ubuntu-24.04/rapk-collection.local.json")
 sr("sign-records build: a rapk record (Rebuild's apk leg) passed off as Build's apk leg is refused", d, "build", 1, ["step"])
 d, _ = sr_tree("sr25");
-sr("sign-records: --stage rebuild given Build's apk/build records is refused (a record's step must be a step of the stage)", d, "rebuild", 1, ["step"], args=sr_args("rebuild", d, ["witness-build", "witness-apk-ubuntu-24.04"]))
+open(d + "/own-list.json", "w").write(json.dumps({x: {f: "sha256:" + hashlib.sha256(open(d + "/" + x + "/" + f, "rb").read()).hexdigest() for f in os.listdir(d + "/" + x)} for x in ("witness-build", "witness-apk-ubuntu-24.04")}))
+sr("sign-records: --stage rebuild given Build's apk/build records (listed as they are) is refused (a record's step must be a step of the stage)", d, "rebuild", 1, ["step"], args=sr_args("rebuild", d, ["witness-build", "witness-apk-ubuntu-24.04"], expect="own-list.json"))
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 145
+EXPECT = 156
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
