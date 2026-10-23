@@ -108,7 +108,7 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
-python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (apt install python3-yaml)"; exit 1; }
+python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (install the python3-yaml package)"; exit 1; }
 attempts="mint_sign_cert read_sign_token read_sign_key hand_sign_code forge_provenance"
 python3 - "$work" $attempts <<'PY'
 import copy, json, sys
