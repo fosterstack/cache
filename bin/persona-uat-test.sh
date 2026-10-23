@@ -255,9 +255,15 @@ if [ -n "${PERSONA_UAT_SHARD:-}" ]; then
   seg_verify || { echo "the shard split is not a partition of the sections" >&2; exit 2; }
   for k in "${!SEG_OWNER[@]}"; do [ "${SEG_OWNER[$k]}" = "${PERSONA_UAT_SHARD%/*}" ] && SEG_MINE="$SEG_MINE $((k+1))"; done; SEG_MINE="$SEG_MINE "
 fi
-seg_close() { [ "$SEGON" = 1 ] && echo "persona-uat-seg: $SEG $((pass-SEGP0)) $((failn-SEGF0))" || true; }
+seg_close() {
+  if [ "$SEGON" = 1 ]; then
+    echo "persona-uat-seg: $SEG $((pass-SEGP0)) $((failn-SEGF0))"
+    local d; for d in "$work"/*/; do [ -f "${d}docker.log" ] && [ "${d}docker.log" -nt "$work/.segstart" ] && : >"${d}.owned"; done   # the runs this owned section made (run() rewrites docker.log)
+  fi
+  return 0
+}
 seg_begin() {
-  set -euo pipefail; driver="$DRIVER_REAL"; seg_close; SEG=$1; SEGP0=$pass; SEGF0=$failn; SEGON=1
+  set -euo pipefail; driver="$DRIVER_REAL"; seg_close; SEG=$1; SEGP0=$pass; SEGF0=$failn; SEGON=1; : >"$work/.segstart"
   [ -z "${PERSONA_UAT_SHARD:-}" ] && return 0
   case "$SEG_MINE" in *" $1 "*) SEG_RAN="$SEG_RAN$1 ";; *) case "$SEG_REPLAY" in *" $1 "*) SEGON=2;; *) SEGON=0;; esac;; esac
 }
@@ -1299,8 +1305,7 @@ mkprocnet "$work/procnet"
 # run <name> <plan-json> <mode> [VAR=val ...]  (sets rc; dirs under $work/<name>/)
 run() {
   local name=$1 plan=$2 mode=$3; shift 3
-  [ "${SEGON:-1}" != 0 ] || { rc=0; return 0; }
-  mkdir -p "$work/plain" "$work/$name" "$work/$name/tmp"; [ "${SEGON:-1}" != 1 ] || : >"$work/$name/.owned"; : >"$work/$name/summary.md"; echo "$plan" >"$work/$name/plan.json"; : >"$work/$name/log"; : >"$work/$name/docker.log"; : >"$work/$name/gh.log"
+  mkdir -p "$work/plain" "$work/$name" "$work/$name/tmp"; : >"$work/$name/summary.md"; echo "$plan" >"$work/$name/plan.json"; : >"$work/$name/log"; : >"$work/$name/docker.log"; : >"$work/$name/gh.log"
   # the stub's failure switches are baked into the case's own docker script (the driver passes the docker client only its allowlisted DOCKER_* variables)
   sed "s#__LOG__#$work/$name/docker.log#" "$work/docker.tmpl" >"$work/$name/docker"; chmod +x "$work/$name/docker"
   { echo "DOCKER_FAIL_MATCH=$(printf %q "${DOCKER_FAIL_MATCH:-}"); DOCKER_INSPECT_FALSE=$(printf %q "${DOCKER_INSPECT_FALSE:-}"); DOCKER_NOISE=$(printf %q "${DOCKER_NOISE:-}"); DOCKER_RUNNER_DEAD=$(printf %q "${DOCKER_RUNNER_DEAD:-}"); DOCKER_IMAGE_DEAD=$(printf %q "${DOCKER_IMAGE_DEAD:-}"); DOCKER_PS_FAIL_AT=$(printf %q "${DOCKER_PS_FAIL_AT:-}"); DOCKER_RM_FAIL_AT=$(printf %q "${DOCKER_RM_FAIL_AT:-}")"; } >"$work/$name/docker.env"
