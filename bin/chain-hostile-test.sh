@@ -286,19 +286,22 @@ done
 mrc=0; GITHUB_REPOSITORY=other/repo cvx hostile-material --kind token --file "$work/tok_yes.txt" || mrc=$?
 if [ "$mrc" = 1 ] && grep -F -q "refused at runner" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: the repository is read from GITHUB_REPOSITORY: Sign's file of another repository is not this repository's Sign"; else bad "hostile-material: GITHUB_REPOSITORY=other/repo must refuse fosterstack/cache's Sign token, got $mrc"; fi
 # a Build job with no id-token permission has no token request address (the Witness move): isolated, but only with the step's proof
-printf '%s\nrequest-env: absent\nenviron-files: 31\n' "$TR" > "$work/tok_absent.txt"
-printf '%s\nrequest-env: absent\nenviron-files: 0\n' "$TR" > "$work/tok_absent0.txt"
-printf '%s\nrequest-env: absent\n' "$TR" > "$work/tok_absentnc.txt"
-printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\nenviron-files: 31\n' "$TR" > "$work/tok_absenthold.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absent.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 0\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absent0.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 2\n' "$TR" > "$work/tok_absentbad.txt"
+printf '%s\nrequest-env: absent\nenviron-files: 31\n' "$TR" > "$work/tok_absentold.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 31\nenviron-read: 99\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absentdup.txt"
+printf '%s\nrequest-env: absent\nenviron-read: 31\n' "$TR" > "$work/tok_absentnc.txt"
+printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\nenviron-read: 31\nenviron-unreadable-same-user: 0\n' "$TR" > "$work/tok_absenthold.txt"
 xexpect refuse "hostile-material: no token request address in the job, with the proof lines, is isolation: refused at runner (nothing usable for Sign)" "refused at runner" -- hostile-material --kind token --file "$work/tok_absent.txt"
-for f in tok_absent0 tok_absentnc tok_absenthold; do
+for f in tok_absent0 tok_absentbad tok_absentold tok_absentdup tok_absentnc tok_absenthold; do
   mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
-  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (absent address with no files searched, no file count, or a process holding an address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (absent address with no environ file read, an unreadable file of the job's own user, the old bare environ-files count, a repeated or missing count, or a process holding an address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
 done
 # the REAL step's token attempt in a job with no request address: it writes the absence proof and no claims line (functions only: the cut drops the five calls at the end)
 mkdir -p "$work/stepnotok" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepnotok/fns.sh"
 (cd "$work/stepnotok" && env -i PATH="$PATH" bash -c '. ./fns.sh; attempt_read_sign_token')
-if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && grep -q '^environ-files: [0-9]*$' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent and a file count, and no claims line"; else bad "hostile step: no-token transcript" "$(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -3)"; fi
+if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && grep -q '^environ-read: [0-9][0-9]*$' "$work/stepnotok/attempts/read_sign_token.txt" && { [ ! -r /proc/self/environ ] || grep -q '^environ-read: [1-9]' "$work/stepnotok/attempts/read_sign_token.txt"; } && grep -qx 'environ-unreadable-same-user: 0' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent, the count of environ files it read and no unreadable file of its own user, and no claims line"; else bad "hostile step: no-token transcript" "$(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -3)"; fi
 xexpect ok "hostile-material: a key found on the runner whose public key IS the key in Sign's certificate means the attempt got Sign's key" - -- hostile-material --kind key --file "$work/key_yes.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's key is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_other.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a search that looked at files and found no key is refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_none.txt" --sign-record "$work/signrec.json"
@@ -1289,7 +1292,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=259
+EXPECT=262
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
