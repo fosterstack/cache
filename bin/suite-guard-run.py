@@ -4,7 +4,11 @@
 # the one literal command line in ci.yml and not a shell script whose suite path is a variable.
 #   run [--count-only] FLOORS SUITE PATH   runs `bash PATH` with stdin closed, requires a case count at or above the floor of SUITE, and (unless
 #                                          --count-only, for a suite with known reds) a zero exit; prints `suite-guard: SUITE: count N (floor F) rc=R`
-#   all [--count-only] FLOORS [ROOT]       runs every suite the floors file names (key = file name, found once under ROOT) through `run`; any failure fails
+#   all [--count-only] FLOORS [ROOT]       runs every suite the floors file names (key = file name, found once under ROOT) through `run`; any failure fails.
+#                                          A suite that a counting step of ROOT/.github/workflows/ci.yml already runs (REQ-CI-005) is not run again here: that step
+#                                          is `python3 -I bin/suite-guard-run.py run FLOORS NAME PATH` (NAME the file name of PATH), runs the suite once, shows its
+#                                          output, and holds it to its floor and to exit 0 itself. `all` also fails when such a step names an unfloored suite or a
+#                                          NAME that is not the file name of its PATH (REQ-CI-005-AC2).
 # What this runs: only files named by key in the committed floors file, each found exactly once as a regular file (never a symlink) under ROOT; the pin
 # checker reads this file's one literal command line in ci.yml, not the suites it dispatches (the documented other-language boundary: the suites are
 # the repository's committed tests, each held by the suite guard's floors and by their own review).
@@ -37,7 +41,13 @@ def cmd_run(floors, name, path, count_only):
         print("suite-guard: suite %s: %s is empty or missing" % (name, path), file=sys.stderr)
         return 1
     with tempfile.NamedTemporaryFile("w+b", prefix="suite-guard-") as log:
-        rc = subprocess.run(["bash", path], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT).returncode
+        proc = subprocess.Popen(["bash", path], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for chunk in iter(lambda: proc.stdout.read1(65536), b""):   # the suite's own output stays in the step log as it would have under `bash PATH`
+            log.write(chunk)
+            sys.stdout.buffer.write(chunk)
+            sys.stdout.buffer.flush()
+        rc = proc.wait()
+        log.flush()
         grc, n = guard("count", log.name)
     if grc != 0:
         print("suite-guard: suite %s: %s (rc=%d)" % (name, n, rc), file=sys.stderr)
@@ -67,6 +77,45 @@ def suite_names(floors):
     return list(d)
 
 
+COUNTING = re.compile(r"(?:[A-Z][A-Z0-9_]*=[A-Za-z0-9_.-]+ )*python3 -I bin/suite-guard-run\.py run (\S+) (\S+) (\S+)(?: </dev/null)?")
+
+
+def counting_steps(root, floors, names):
+    """The suite names that an unconditional counting step of ROOT/.github/workflows/ci.yml runs (REQ-CI-005); a malformed one is a failure (the list, the bad count)."""
+    wf = os.path.join(root, ".github", "workflows", "ci.yml")
+    if not os.path.isfile(wf):
+        return set(), 0
+    try:
+        import yaml
+        with open(wf) as f:
+            doc = yaml.safe_load(f)
+        jobs = doc["jobs"]
+    except Exception as e:
+        die("%s cannot be read as a workflow (%s)" % (wf, e))
+    got, bad = set(), 0
+    for jname, job in jobs.items():
+        if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
+            continue
+        for st in job["steps"]:
+            for line in str((st or {}).get("run") or "").split("\n"):
+                m = COUNTING.fullmatch(line.strip())
+                if not m:
+                    if "suite-guard-run.py run" in line and not line.lstrip().startswith("#"):
+                        print("suite-guard: job %s: the line %r runs the suite runner in a form that is not `run FLOORS NAME PATH`" % (jname, line.strip()), file=sys.stderr)
+                        bad = 1
+                    continue
+                fl, name, path = m.groups()
+                if fl != floors or name not in names or os.path.basename(path) != name:
+                    print("suite-guard: job %s: the counting step %r names a floors file other than %s, an unfloored suite, or a NAME that is not the file name of its PATH" % (jname, line.strip(), floors), file=sys.stderr)
+                    bad = 1
+                    continue
+                # a suite that a conditional step or job may skip is not counted: it stays in the residual run below
+                if job.get("if") is not None or st.get("if") is not None or job.get("continue-on-error") is not None or st.get("continue-on-error") is not None:
+                    continue
+                got.add(name)
+    return got, bad
+
+
 def cmd_all(floors, root, count_only):
     if not os.path.isfile(floors) or os.path.getsize(floors) == 0:
         die("the floors file %s is empty or missing" % floors)
@@ -77,7 +126,12 @@ def cmd_all(floors, root, count_only):
     if os.path.islink(root) or not os.path.isdir(root):   # ROOT is a real directory, as `find ROOT` (physical) required: a link would lead outside it
         die("the suite root %s is not a real directory (a symlink or missing)" % root)
     bad = 0
-    for s in suite_names(floors):
+    names = suite_names(floors)
+    counted, cbad = counting_steps(root, floors, set(names))
+    bad = cbad
+    for s in names:
+        if s in counted:
+            continue   # run, counted and held to its floor and exit 0 by its own step (REQ-CI-005-AC1)
         found = []
         for dp, dn, fn in os.walk(root):
             dn[:] = [d for d in dn if d != ".git"]
