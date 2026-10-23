@@ -2,7 +2,7 @@
 # bin/witnessed.sh STEP SCRIPT...  --  run one stage script under Witness (v0.3.0 rule 68; REQ-CHAIN-004-AC2).
 # The one place that holds the Witness flags for the jobs that carry an identity token. STEP is one of a CLOSED list: Check's three steps scanners, acceptance and
 # runtime and the arm64 job's arm64 (REQ-CHAIN-006-AC11, AC17), and Release's six steps release-verify, release-apks, release-publish, release-sign, release-assets and
-# release-postverify (REQ-CHAIN-007-AC1). The building steps (apk, build, rapk, rebuild and their snapshot- forms) run under bin/witnessed-local.sh, which holds no identity
+# release-postverify (REQ-CHAIN-007-AC1). The building steps (apk, build, rapk, rebuild and their snapshot- forms) run under the local wrapper (the one beside this file whose name ends in -local.sh), which holds no identity
 # token (owner Oct 22 2026, REQ-CHAIN-004-AC2). Anything else exits 2 before Witness runs.
 # The record is witness-DIR/STEP-collection.json, where DIR is STEP without a leading snapshot-: a snapshot job uploads the same directory as a release job,
 # and the snapshot marker is the step name inside the signed collection (every verifier refuses a snapshot- name, REQ-CHAIN-004-AC13).

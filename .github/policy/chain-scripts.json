@@ -300,7 +300,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "ca54f95c39f8b356e8ca433559f5f138760c45be3ffea17abe5a4c8e9efb3aad",
+      "sha256": "35addb3527cc550c1dd56655d44540759d93cb643ef4859f31ae34a868caabed",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -2716,10 +2716,13 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "561e4059bd2c99dc9af3d4a71361be72a610c687d7e6fcb327f923feaa988589",
-      "tools": [],
+      "sha256": "ee65db258704b1a243eb01e9d500ebff5711df460180b7a376aa2e18b0466a38",
+      "tools": [
+        "make"
+      ],
       "runs": [
-        "bin/apk-tool.py"
+        "bin/apk-tool.py",
+        "bin/chain-verify.py"
       ],
       "signs": false,
       "reason": "the work of Release's comparison (the compare job, no key, no secret, no id-token, nothing signed): it checks the layout, the signer and the signature of every apk on both sides with bin/apk-tool.py, compares them, and writes the small result file apk-compare/apk-compare.json"
