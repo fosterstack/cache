@@ -2857,7 +2857,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='63c14fe8ec60c411cf78c70e7186d7f1b0f852a0f5fdf588feb586924f8fd038'
+FX_PIN='d151c86336236b0f618ebfa4037f2e71bb1c9f02c09cdea037b20cd5adbe308e'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -3657,42 +3657,42 @@ d=$(crr sl_g "${H}x='a b'"$'\n# note\necho ok\n'); expm ok "$d" - "strip_line: c
 d=$(crr sl_h "${H}x='a\\'"$'\n'"# it's a comment"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a backslash inside single quotes is literal, so the quote closes and the next # line is a comment"
 d=$(crr sl_i "${H}x=\$'a\\'b'"$'\necho ok\n'); expm ok "$d" - "strip_line: control: a closed ANSI-C quote with an escaped quote"
 d=$(crr sl_j "${H}cat <<EOF"$'\ndon'"'t"$'\n# x\nEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a heredoc body is data, an apostrophe and a # line in it open no quote"
-d=$(crr sl_k "${H}cat <<'EOF'"$'\n# x \' y\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data"
+d=$(crr sl_k "${H}cat <<'EOF'"$'\n# x '"'"$' y\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data"
 d=$(crr sl_l "${H}cat <<-EOF"$'\n\tit'"'s"$'\n\tEOF\n# real comment\necho ok\n'); expm ok "$d" - "strip_line: control: a <<- heredoc ends at its tab-indented delimiter"
-d=$(crr sl_m "${H}echo \$((1<<EOF))"$'\nx=\'\n# \'; /tmp/evil\nEOF\n'); expm caught "$d" 'not resolved' "strip_line: a << inside (( )) is no heredoc: the quote after it is still judged"
-d=$(crr sl_n $'#!/usr/bin/env python3\nx = "it\'s"\n# it\'s fine\n\'\'\'doc\n# it\'s\n\'\'\'\n'); expm ok "$d" - "strip_line: control: a Python file is not read with the shell quote model (apostrophes in prose and docstrings)"
-d=$(crr sl_o "${H}echo '<<EOF'"$'\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed single quote starts no heredoc (seat B, PR 436): the open quote after it is still refused"
-d=$(crr sl_p "${H}echo \"a <<EOF\""$'\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed double quote starts no heredoc"
-d=$(crr sl_q "${H}cat <<E\"O\"F"$'\nbody\nEOF\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a heredoc delimiter quoted in the middle of a word is refused, not guessed"
+d=$(crr sl_m "${H}echo \$((1<<EOF))"$'\nx='"'"$'\n# '"'"$'; /tmp/evil\nEOF\n'); expm caught "$d" 'not resolved' "strip_line: a << inside (( )) is no heredoc: the quote after it is still judged"
+d=$(crr sl_n $'#!/usr/bin/env python3\nx = "it'"'"$'s"\n# it'"'"$'s fine\n'"'"$''"'"$''"'"$'doc\n# it'"'"$'s\n'"'"$''"'"$''"'"$'\n'); expm ok "$d" - "strip_line: control: a Python file is not read with the shell quote model (apostrophes in prose and docstrings)"
+d=$(crr sl_o "${H}echo '<<EOF'"$'\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed single quote starts no heredoc (seat B, PR 436): the open quote after it is still refused"
+d=$(crr sl_p "${H}echo \"a <<EOF\""$'\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a << inside a closed double quote starts no heredoc"
+d=$(crr sl_q "${H}cat <<E\"O\"F"$'\nbody\nEOF\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a heredoc delimiter quoted in the middle of a word is refused, not guessed"
 d=$(crr sl_r "${H}y=a"$'\n'"echo \${y/ #/}; /tmp/evil"$'\n'); expm caught "$d" 'absolute path' "strip_line: a # after a space inside \${..} is no comment"
 d=$(crr sl_s "${H}"$'out=x\nif ! grep -q a <<<"$out"; then fail=$((fail+1)); fi\n'); expm ok "$d" - "strip_line: control: a here-string next to \$((..)) on one line is no heredoc and no shift"
-d=$(crr sl_t "${H}cat <<\"EOF\""$'\n# it\'s\nEOF\ncat <<\\EOF\n# it\'s\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a double-quoted and a backslashed delimiter"
+d=$(crr sl_t "${H}cat <<\"EOF\""$'\n# it'"'"$'s\nEOF\ncat <<\\EOF\n# it'"'"$'s\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a double-quoted and a backslashed delimiter"
 d=$(crr sl_u "${H}x=\$((1<<2))"$'\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$((..)) is refused"
-d=$(crr sl_v "${H}cat <<EOF-X"$'\ndata\nEOF-X\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter the judge reads only in part is refused (seat A, PR 436)"
-d=$(crr sl_w "${H}cat <<'E-F'"$'\n\'\nE-F\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a quoted delimiter that is not a plain word is refused"
-d=$(crr sl_x "${H}echo \"\$(: ')\""$'\n#\')" ; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a quote inside \$( ) inside double quotes is read as shell"
-d=$(crr sl_y "${H}x=\$[1<<y]"$'\nx=\'\n#\' ; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$[ ] is refused"
-d=$(crr sl_z "${H}echo \"\${x:-'}\""$'\n#\'}" ; /tmp/evil\n'); expm caught "$d" 'single quote inside' "strip_line: a single quote inside \${ } inside double quotes is refused"
+d=$(crr sl_v "${H}cat <<EOF-X"$'\ndata\nEOF-X\nx='"'"$'\n#'"'"$' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter the judge reads only in part is refused (seat A, PR 436)"
+d=$(crr sl_w "${H}cat <<'E-F'"$'\n'"'"$'\nE-F\nx='"'"$'\n#'"'"$' ; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a quoted delimiter that is not a plain word is refused"
+d=$(crr sl_x "${H}echo \"\$(: ')\""$'\n#'"'"$')" ; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a quote inside \$( ) inside double quotes is read as shell"
+d=$(crr sl_y "${H}x=\$[1<<y]"$'\nx='"'"$'\n#'"'"$' ; /tmp/evil\n'); expm caught "$d" 'not resolved' "strip_line: a << inside \$[ ] is refused"
+d=$(crr sl_z "${H}echo \"\${x:-'}\""$'\n#'"'"$'}" ; /tmp/evil\n'); expm caught "$d" 'single quote inside' "strip_line: a single quote inside \${ } inside double quotes is refused"
 d=$(crr sl_za "${H}cat <<EOF"$'\nx\n'); expm caught "$d" 'heredoc is still open' "strip_line: a heredoc still open at the end of the script is refused"
-d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit\'s\nEOF\n)\n'); expm caught "$d" 'closes a multi-line' "strip_line: a heredoc in a multi-line \$( ) closes on its own line: default deny"
+d=$(crr sl_zb "${H}"$'x=$(cat <<EOF\nit'"'"$'s\nEOF\n)\n'); expm caught "$d" 'closes a multi-line' "strip_line: a heredoc in a multi-line \$( ) closes on its own line: default deny"
 d=$(crr sl_zb2 "${H}"$'echo "$(echo "a")" # d\n(cd x; ls) # e\ncase x in a) y;; esac\n'); expm ok "$d" - "strip_line: control: nested double quotes in \\$( ), a subshell and a case arm on single lines"
-d=$(crr sl_zc "${H}cat <<EOF#x"$'\nEOF\nit\'s\nEOF#x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by # (bash reads the whole word EOF#x) is refused (seat B, PR 436 round 2)"
-d=$(crr sl_zd "${H}cat <<EOF.x"$'\nEOF\nit\'s\nEOF.x\nx=\'\n# \'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by a dot is refused"
-d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit\'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, | or > is read whole"
-d=$(crr sl_zf "${H}(( z = 1<<true ))"$'\nx=\'\n#\' ; echo MARK; /tmp/evil\ntrue\n'); expm caught "$d" 'not resolved' "strip_line: a << inside a bare (( )) is refused (seat A, PR 436 round 2)"
-d=$(crr sl_zg "${H}x=\"\$(case a in a) echo '"$'\n\'"\n# x" ;; esac)" ; echo MARK; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a case arm's ) inside \$( ) does not end the substitution (seat A, PR 436 round 2)"
+d=$(crr sl_zc "${H}cat <<EOF#x"$'\nEOF\nit'"'"$'s\nEOF#x\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by # (bash reads the whole word EOF#x) is refused (seat B, PR 436 round 2)"
+d=$(crr sl_zd "${H}cat <<EOF.x"$'\nEOF\nit'"'"$'s\nEOF.x\nx='"'"$'\n# '"'"$'; /tmp/evil\n'); expm caught "$d" 'not a plain word' "strip_line: a delimiter followed by a dot is refused"
+d=$(crr sl_ze "${H}cat <<EOF >/dev/null; echo a"$'\nit'"'"$'s\nEOF\n# c\ncat <<EOF|cat\nx\nEOF\n'); expm ok "$d" - "strip_line: control: a delimiter followed by a blank, ;, | or > is read whole"
+d=$(crr sl_zf "${H}(( z = 1<<true ))"$'\nx='"'"$'\n#'"'"$' ; echo MARK; /tmp/evil\ntrue\n'); expm caught "$d" 'not resolved' "strip_line: a << inside a bare (( )) is refused (seat A, PR 436 round 2)"
+d=$(crr sl_zg "${H}x=\"\$(case a in a) echo '"$'\n'"'"$'"\n# x" ;; esac)" ; echo MARK; /tmp/evil\n'); expm caught "$d" 'still open' "strip_line: a case arm's ) inside \$( ) does not end the substitution (seat A, PR 436 round 2)"
 d=$(crr sl_zh "${H}echo a\\"$'\n#; echo MARK; /tmp/evil\n'); expm caught "$d" 'absolute path' "strip_line: a # line after a backslash-newline is part of the joined word, never a comment"
 d=$(crr sl_zi "${H}echo a \\"$'\n  # a real comment in the joined line\n  b\n'); expm ok "$d" - "strip_line: control: a continuation line that has a blank before # is a comment after the join"
 d=$(crr sl_zj "${H}cat <<EOF >/dev/null"$'\n# $(/tmp/evil)\nEOF\n'); expm caught "$d" 'absolute path' "strip_line: an unquoted heredoc body still runs \$( ) after a #, so the body is kept whole (seat B, PR 436 round 3)"
 d=$(crr sl_zk "${H}cat <<EOF >/dev/null"$'\nx # `/tmp/evil`\nEOF\n'); expm caught "$d" 'absolute path' "strip_line: the same with backticks"
 d=$(crr sl_zl "${H}cat <<'EOF' >/dev/null"$'\n# $(/tmp/evil)\nEOF\necho ok\n'); expm ok "$d" - "strip_line: control: a quoted-delimiter heredoc body is data, \$( ) in it runs nothing"
-d=$(crr sl_zm "${H}cat <<EOF"$'\nE\\\nOF\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line that ends in a backslash is refused (bash joins it, so the delimiter may be another line; seat A, PR 436 round 3)"
-d=$(crr sl_zn "${H}cat <<EOF"$'\nx $(echo \'\n#\' ; /tmp/evil)\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line whose \$( ) runs on to the next line is refused"
-d=$(crr sl_zo "${H}cat <<EOF"$'\ndon\'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm caught "$d" 'holds a substitution and a quote' "strip_line: an unquoted heredoc body with quotes and substitutions on one line is refused (default deny)"
+d=$(crr sl_zm "${H}cat <<EOF"$'\nE\\\nOF\nx='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line that ends in a backslash is refused (bash joins it, so the delimiter may be another line; seat A, PR 436 round 3)"
+d=$(crr sl_zn "${H}cat <<EOF"$'\nx $(echo '"'"$'\n#'"'"$' ; /tmp/evil)\nEOF\n'); expm caught "$d" 'heredoc body line' "strip_line: an unquoted heredoc body line whose \$( ) runs on to the next line is refused"
+d=$(crr sl_zo "${H}cat <<EOF"$'\ndon'"'"$'t "q" $(date) `id` ${x:-a} $((1+2))\nEOF\necho ok # c\n'); expm caught "$d" 'holds a substitution and a quote' "strip_line: an unquoted heredoc body with quotes and substitutions on one line is refused (default deny)"
 d=$(crr sl_zp "${H}"$'x=`echo a # c` ; /tmp/evil x\ny=`echo b # c`\n'); expm caught "$d" 'absolute path' "strip_line: a # inside backticks does not cut the line (bash ends the comment at the closing backtick; seat B, PR 436 round 4)"
 d=$(crr sl_zq "${H}"$'x=`date` # a comment after the pair\necho ok\n'); expm ok "$d" - "strip_line: control: a # after a closed backtick pair is a comment"
-d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
-d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny=\'\n#\' ; /tmp/evil\nEOF\n'); expm caught "$d" 'opens a heredoc inside' "strip_line: a << inside backticks is refused (bash gives it no body)"
+d=$(crr sl_zr "${H}: <<'EOF' \\"$'\nx='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n'); expm caught "$d" 'ends in a backslash' "strip_line: a heredoc opened on a line that ends in a backslash is refused (seat A, PR 436 round 4)"
+d=$(crr sl_zs "${H}x=\`: <<'EOF' \`"$'\ny='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n'); expm caught "$d" 'opens a heredoc inside' "strip_line: a << inside backticks is refused (bash gives it no body)"
 d=$(crr sl_zt "${H}"$'x=`echo a\n#` ; /tmp/evil\ny=`echo b\n#`\n'); expm caught "$d" 'still open' "strip_line: a # line inside backticks open from an earlier line is refused (bash ends the pair at the first backtick; seat A, PR 436 round 5)"
 for sep in $'\x0c' $'\x0b' $'\x1c' $'\xc2\x85' $'\xe2\x80\xa8'; do
   d=$(crr "sl_sep_$RANDOM" "${H}: ${sep}#; /tmp/evil"$'\n'); expm caught "$d" 'line separator' "strip_line: a line separator bash does not read as one is refused (seat A, PR 436 round 5)"
@@ -3735,10 +3735,10 @@ d=$(crr dq_za "${H}x=\"\$(declare -A a=([)]=1) ; /tmp/evil)\""$'\n'); expm caugh
 d=$(crr dq_zb "${H}x=\"\$(declare -A a; echo \$[ a[)] ] ; /tmp/evil)\""$'\n'); expm caught "$d" 'bracket' "quoted \$( ): a ) in \$[ ]"
 d=$(crr dq_zc "${H}x=\"\$(declare -A a; a[k]=1 ; [[ -n \$x ]] && echo \${a[k]})\""$'\n'); expm ok "$d" - "control: balanced subscripts and [[ ]] in a quoted \$( )"
 # seat B, PR 439 round 2: a quote that spans lines: the command reader read every line alone, so a line that begins inside a double quote and holds a lone ' hid what followed
-d=$(crr ml_a "${H}x=\""$'\n\'" ; /tmp/evil ; echo "\'"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a line that starts inside the quote is not read as plain shell"
-d=$(crr ml_b "${H}x='a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'closes a multi-line' "multi-line single quote: the line that closes it holds a command"
-d=$(crr ml_c "${H}x=\$'a"$'\nb\' ; /tmp/evil ; echo \'c\'\n'); expm caught "$d" 'closes a multi-line' "multi-line ANSI-C quote: the same"
-d=$(crr ml_d "${H}echo \"first line"$'\nsecond line"; echo ok\necho \'one\ntwo (still data)\nthree\'\n'); expm caught "$d" 'closes a multi-line' "control: ordinary multi-line double-quoted and single-quoted strings"
+d=$(crr ml_a "${H}x=\""$'\n'"'"$'" ; /tmp/evil ; echo "'"'"$'"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a line that starts inside the quote is not read as plain shell"
+d=$(crr ml_b "${H}x='a"$'\nb'"'"$' ; /tmp/evil ; echo '"'"$'c'"'"$'\n'); expm caught "$d" 'closes a multi-line' "multi-line single quote: the line that closes it holds a command"
+d=$(crr ml_c "${H}x=\$'a"$'\nb'"'"$' ; /tmp/evil ; echo '"'"$'c'"'"$'\n'); expm caught "$d" 'closes a multi-line' "multi-line ANSI-C quote: the same"
+d=$(crr ml_d "${H}echo \"first line"$'\nsecond line"; echo ok\necho '"'"$'one\ntwo (still data)\nthree'"'"$'\n'); expm caught "$d" 'closes a multi-line' "control: ordinary multi-line double-quoted and single-quoted strings"
 # seat B, PR 439 round 3: a substitution inside the quoted prefix of the line that closes a multi-line double quote runs in bash and must stay visible
 d=$(crr ml_e "${H}x=\""$'\n$(/tmp/evil)"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a \$( ) on the closing line runs"
 d=$(crr ml_f "${H}x=\""$'\n`/tmp/evil`"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: backticks on the closing line run"
@@ -3746,14 +3746,14 @@ d=$(crr ml_g "${H}x=\""$'\n${y:-$(/tmp/evil)}"\n'); expm caught "$d" 'closes a m
 d=$(crr ml_h "${H}x=\"a"$'\n$(/tmp/evil)" ; echo\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: a \$( ) before the closing quote, code after it"
 d=$(crr ml_i "${H}x=\"\$(echo \""$'\n$(/tmp/evil)" )"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote nested in a \$( )"
 d=$(crr ml_j "${H}echo \""$'\nfoo $(/tmp/evil) bar"\n'); expm caught "$d" 'closes a multi-line' "multi-line double quote: text then a \$( ) then the closing quote"
-d=$(crr ml_k "${H}x=\$'"$'\n$(/tmp/evil)\'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside an ANSI-C quote is data (bash runs nothing)"
-d=$(crr ml_l "${H}x='"$'\n$(/tmp/evil)\'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside a single quote is data"
+d=$(crr ml_k "${H}x=\$'"$'\n$(/tmp/evil)'"'"$'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside an ANSI-C quote is data (bash runs nothing)"
+d=$(crr ml_l "${H}x='"$'\n$(/tmp/evil)'"'"$'\necho ok\n'); expm caught "$d" 'closes a multi-line' "control: a \$( ) inside a single quote is data"
 # seat A, PR 439 round 3: a line that begins inside SEVERAL contexts (a quote in a $( ) in a quote) and closes them: the command reader must start inside all of them
 d=$(crr ml_m "${H}y=\"\$(echo \""$'\na")" ; /tmp/evil ; z="x"\n'); expm caught "$d" 'closes a multi-line' "line closes a quote, a \$( ) and the outer quote, code follows"
 d=$(crr ml_n "${H}y=\"\$(echo \""$'\na")" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same, with a quote left open after the code"
 d=$(crr ml_o "${H}y=\"\${v:-\$(echo \""$'\na")}" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same through \${ }"
 d=$(crr ml_p "${H}y=\"\$(echo a"$'\nb)" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "a line that begins inside a \$( ) inside a quote and closes both"
-d=$(crr ml_q "${H}y=\"\$(echo '"$'\na\')" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same with a single quote inside the \$( )"
+d=$(crr ml_q "${H}y=\"\$(echo '"$'\na'"'"$')" ; /tmp/evil ; z="\n"\n'); expm caught "$d" 'closes a multi-line' "the same with a single quote inside the \$( )"
 d=$(crr ml_r "${H}y=\"\$(echo a"$'\nb)" ; echo ok\n'); expm caught "$d" 'closes a multi-line' "control: the same without a command after it"
 # seat B, PR 439 round 4: after a carried assignment context closes, the next word is the COMMAND (y=$(...) EVIL runs EVIL); after a carried argument context it is an operand
 d=$(crr ml_s "${H}y=\$("$'\n:\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a multi-line \$( ): the word after the closing ) is the command"
@@ -3762,7 +3762,7 @@ d=$(crr ml_u "${H}x=\$(cat <<F"$'\nbody\nF\n) /tmp/evil\n'); expm caught "$d" 'c
 d=$(crr ml_v "${H}x=\$("$'\n# c\n) /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a comment line inside a multi-line \$( )"
 d=$(crr ml_w "${H}y=\"\$("$'\n:\n)" /tmp/evil\n'); expm caught "$d" 'closes a multi-line' "assignment with a quoted multi-line \$( ): the word after the closing quote is the command"
 d=$(crr ml_x "${H}echo \$("$'\n:\n) /tmp/out.txt\n'); expm caught "$d" 'closes a multi-line' "control: the word after a multi-line \$( ) that is an ARGUMENT is an operand, not a command"
-d=$(crr ml_y "${H}echo 'a"$'\nb\' "/tmp/out.txt" > /tmp/o\n'); expm caught "$d" 'closes a multi-line' "control: the word after a multi-line quote that is an argument is an operand"
+d=$(crr ml_y "${H}echo 'a"$'\nb'"'"$' "/tmp/out.txt" > /tmp/o\n'); expm caught "$d" 'closes a multi-line' "control: the word after a multi-line quote that is an argument is an operand"
 # seat A, PR 439 round 4: a line that closes a carried ( ) group or case begins at a command position: the stand-in word must not stick to its first word
 d=$(crr ml_z "${H}( true"$'\n/tmp/evil )\n'); expm caught "$d" 'absolute path' "a line closing a multi-line ( ) group starts a command"
 d=$(crr ml_za "${H}case a in a) true"$'\n/tmp/evil ;; esac\n'); expm caught "$d" 'absolute path' "a line inside a multi-line case arm starts a command"
@@ -3818,13 +3818,13 @@ d=$(crr ml_zzq "${H}export y=\$("$'\n:\n) /tmp/out\n'); expm caught "$d" 'closes
 # under the `deny` rule (waivable only by a reviewed line-bound exception); no bash grammar is emulated for it. Every form below was a hidden command in a round.
 cl() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "closing line: $5"; }
 cl cl_a $'x="\na"\n' caught 'closes a multi-line' 'a double quote closed on a later line'
-cl cl_b $'x=\'a\nb\'\n' caught 'closes a multi-line' 'a single quote'
-cl cl_c $'x=$\'a\nb\'\n' caught 'closes a multi-line' 'an ANSI-C quote'
+cl cl_b $'x='"'"$'a\nb'"'"$'\n' caught 'closes a multi-line' 'a single quote'
+cl cl_c $'x=$'"'"$'a\nb'"'"$'\n' caught 'closes a multi-line' 'an ANSI-C quote'
 cl cl_d $'x=$(\n:\n)\n' caught 'closes a multi-line' 'a substitution'
 cl cl_e $'x=`\n:\n`\n' caught 'closes a multi-line' 'backticks'
 cl cl_f $'x=${y:-\n}\n' caught 'closes a multi-line' 'a ${ } '
 cl cl_g $'y="$(echo "\na")" ; /tmp/evil ; z="x"\n' caught 'closes a multi-line' 'a quote in a substitution in a quote (round 3)'
-cl cl_h $'x="\n\'" ; /tmp/evil ; echo "\'"\n' caught 'closes a multi-line' 'the first multi-line quote hole (round 2)'
+cl cl_h $'x="\n'"'"$'" ; /tmp/evil ; echo "'"'"$'"\n' caught 'closes a multi-line' 'the first multi-line quote hole (round 2)'
 cl cl_i $'y=$(\n:\n) /tmp/evil\n' caught 'closes a multi-line' 'a command after the closing ) (round 4)'
 cl cl_j $'> f > $(\necho g\n) /tmp/evil\n' caught 'closes a multi-line' 'a redirection target before the opener (round 8)'
 cl cl_k $'f() { a="\ng" /tmp/evil; }\n' caught 'closes a multi-line' 'a function body assignment (round 8)'
@@ -3832,59 +3832,59 @@ cl cl_l $'a="$( ( : \n: );/tmp/evil )"\n' caught 'closes a multi-line' 'a group 
 cl cl_m $'echo ` z=$( : `\n/tmp/evil ` ) \\\n: /tmp/evil ` : `\n' caught 'closes a multi-line' 'backtick pairing (round 8)'
 cl cl_n $'x=\\\ny="a\nb" /tmp/evil\n' caught 'closes a multi-line' 'a continuation then a multi-line quote'
 cl cl_o $'a[ $(\n:\n) ]=1 /tmp/evil\n' caught 'closes a multi-line' 'a subscript with a blank (round 7)'
-cl cl_p $'echo "a\nb" ; echo ok\necho \'c\nd\'\n' caught 'closes a multi-line' 'ordinary multi-line strings are refused too: they need their reviewed waiver'
-cl cl_q $'x="a b"\ny=$(echo c)\necho \'d\'\n' ok - 'control: single-line quotes and substitutions are untouched'
-cl cl_r $'x=\'a\nb\nc\'\n' caught 'closes a multi-line' 'a quote across three lines is refused once, at the line that closes it'
+cl cl_p $'echo "a\nb" ; echo ok\necho '"'"$'c\nd'"'"$'\n' caught 'closes a multi-line' 'ordinary multi-line strings are refused too: they need their reviewed waiver'
+cl cl_q $'x="a b"\ny=$(echo c)\necho '"'"$'d'"'"$'\n' ok - 'control: single-line quotes and substitutions are untouched'
+cl cl_r $'x='"'"$'a\nb\nc'"'"$'\n' caught 'closes a multi-line' 'a quote across three lines is refused once, at the line that closes it'
 cl cl_s $'f() (\n echo a\n)\necho ok\n' ok - 'control: a ( ) function body is not a quote or a substitution'
 cl cl_t $'case a in\n a) echo 1 ;;\nesac\n' ok - 'control: a case block spanning lines'
-cl cl_u $'cat <<EOF\nit\'s\nEOF\necho ok\n' ok - 'control: a heredoc body is data'
+cl cl_u $'cat <<EOF\nit'"'"$'s\nEOF\necho ok\n' ok - 'control: a heredoc body is data'
 # seat A, PR 439 round 9: in an UNQUOTED heredoc body bash runs $( ) and backticks and reads ' " $' as plain characters; the command reader must not read them as quotes
 hd() { local d; d=$(crr "$1" "${H}$2"); expm caught "$d" 'unquoted heredoc body line that holds a substitution and a quote' "unquoted heredoc body: $3"; }
-hd hd_a $'cat <<EOF >/dev/null\n\'$(/tmp/evil)\'\nEOF\n' "a \$( ) between single quotes"
-hd hd_b $'cat <<EOF >/dev/null\n\'`/tmp/evil`\'\nEOF\n' "backticks between single quotes"
-hd hd_c $'cat <<EOF >/dev/null\n$\'$(/tmp/evil)\'\nEOF\n' "an ANSI-C looking quote around a \$( )"
-hd hd_d $'cat <<EOF >/dev/null\n\'${y:-$(/tmp/evil)}\'\nEOF\n' "a \${ :- \$( ) } between single quotes"
-hd hd_e $'cat <<-X >/dev/null\n\t\'$(/tmp/evil)\'\n\tX\n' "a <<- body, tab indented"
+hd hd_a $'cat <<EOF >/dev/null\n'"'"$'$(/tmp/evil)'"'"$'\nEOF\n' "a \$( ) between single quotes"
+hd hd_b $'cat <<EOF >/dev/null\n'"'"$'`/tmp/evil`'"'"$'\nEOF\n' "backticks between single quotes"
+hd hd_c $'cat <<EOF >/dev/null\n$'"'"$'$(/tmp/evil)'"'"$'\nEOF\n' "an ANSI-C looking quote around a \$( )"
+hd hd_d $'cat <<EOF >/dev/null\n'"'"$'${y:-$(/tmp/evil)}'"'"$'\nEOF\n' "a \${ :- \$( ) } between single quotes"
+hd hd_e $'cat <<-X >/dev/null\n\t'"'"$'$(/tmp/evil)'"'"$'\n\tX\n' "a <<- body, tab indented"
 hd hd_f $': <<EOF\n"$(/tmp/evil)"\nEOF\n' "double quotes around a \$( ) with : as the command"
-hd hd_g $'cat <<EOF >/dev/null\nit\'s $(/tmp/evil) done\nEOF\n' "an apostrophe in prose before a \$( )"
-cl hd_h $'cat <<\'EOF\' >/dev/null\n\'$(/tmp/evil)\'\nEOF\necho ok\n' caught 'compound assignment' 'a quoted opener is refused as data even in a quoted-delimiter heredoc body (default deny, nothing is resolved: fragments of a compound value can be joined at run time; a listed line needs a reviewed waiver)'
+hd hd_g $'cat <<EOF >/dev/null\nit'"'"$'s $(/tmp/evil) done\nEOF\n' "an apostrophe in prose before a \$( )"
+cl hd_h $'cat <<'"'"$'EOF'"'"$' >/dev/null\n'"'"$'$(/tmp/evil)'"'"$'\nEOF\necho ok\n' caught 'compound assignment' 'a quoted opener is refused as data even in a quoted-delimiter heredoc body (default deny, nothing is resolved: fragments of a compound value can be joined at run time; a listed line needs a reviewed waiver)'
 # seat A, PR 439 fix check: inside a $( ) or backticks of an unquoted body bash reads quotes as quotes again: replacing them must not hide a quoted command word
 hd hd_i $'cat <<EOF >/dev/null\nx $("/tmp/evil")\nEOF\n' "a double-quoted command word in a \$( )"
-hd hd_j $'cat <<EOF >/dev/null\nx $(\'/tmp/evil\')\nEOF\n' "a single-quoted command word in a \$( )"
+hd hd_j $'cat <<EOF >/dev/null\nx $('"'"$'/tmp/evil'"'"$')\nEOF\n' "a single-quoted command word in a \$( )"
 hd hd_k $'cat <<EOF >/dev/null\nx `"/tmp/evil"`\nEOF\n' "a quoted command word in backticks"
 hd hd_l $'cat <<EOF >/dev/null\nx $(: ; "/tmp/evil")\nEOF\n' "a quoted command word after a separator in a \$( )"
 hd hd_m $'cat <<EOF >/dev/null\nx $(""/tmp/evil)\nEOF\n' "an empty quoted string before the path in a \$( )"
 # seat A, PR 439 second fix check (a known pre-existing form, follow-up PR): a line that opens MORE THAN ONE heredoc, or a heredoc inside a $( ) / backticks that closes on the same line,
 # is refused (bash reads the substitution's heredoc body first and runs its $( ); the reader queues the bodies in written order). Default deny, waivable by a reviewed line-bound exception.
 hm() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "heredoc order: $5"; }
-hm hm_a $': <<\'A\' $(cat <<B)\n\'$(/tmp/evil)\'\nB\nx\nA\n: <<\'Z\'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'two heredocs, one inside a $( ) on the same line (the reproducer)'
-hm hm_b $': <<\'A\'; x=$(cat <<B)\n\'$(/tmp/evil)\'\nB\nx\nA\n: <<\'Z\'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'the same after a ;'
+hm hm_a $': <<'"'"$'A'"'"$' $(cat <<B)\n'"'"$'$(/tmp/evil)'"'"$'\nB\nx\nA\n: <<'"'"$'Z'"'"$'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'two heredocs, one inside a $( ) on the same line (the reproducer)'
+hm hm_b $': <<'"'"$'A'"'"$'; x=$(cat <<B)\n'"'"$'$(/tmp/evil)'"'"$'\nB\nx\nA\n: <<'"'"$'Z'"'"$'\nB\nZ\necho ok\n' caught 'opens a heredoc inside' 'the same after a ;'
 hm hm_c $'cat <<A <<B\na\nA\nb\nB\n' caught 'opens more than one heredoc' 'two heredocs on one line'
-hm hm_d $': <<\'A\' <<\'B\'\nx\nA\ny\nB\n' caught 'opens more than one heredoc' 'two quoted heredocs on one line'
+hm hm_d $': <<'"'"$'A'"'"$' <<'"'"$'B'"'"$'\nx\nA\ny\nB\n' caught 'opens more than one heredoc' 'two quoted heredocs on one line'
 hm hm_e $'x=$(cat <<B)\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc opened inside a $( ) that closes on its line'
 hm hm_f $'x=`cat <<B`\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc inside backticks'
 hm hm_g $'( cat <<B )\nb\nB\n' caught 'opens a heredoc inside' 'a heredoc inside a ( ) group on one line'
-hm hm_h $'cat <<EOF\nb\nEOF\ncat <<\'EOF\'\nplain\nEOF\necho ok\n' ok - 'control: two heredocs on separate lines'
+hm hm_h $'cat <<EOF\nb\nEOF\ncat <<'"'"$'EOF'"'"$'\nplain\nEOF\necho ok\n' ok - 'control: two heredocs on separate lines'
 hm hm_i $'cat <<EOF >/dev/null\nplain text\nEOF\necho ok\n' ok - 'control: one plain heredoc'
 hm hm_j $'f() (\n cat <<EOF\n a\nEOF\n)\necho ok\n' ok - 'control: a heredoc inside a multi-line function body ( ) is a normal heredoc'
 # seat A, PR 449 round 1: a heredoc inside a bash 5.3 ${ cmd; } / ${| cmd; } command substitution; a heredoc inside backticks has no body in bash, so it must not be queued (a waiver would hide the lines after it)
-hm hm_k $': <<\'A\' ${ cat <<B; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${ cmd; } substitution'
-hm hm_l $': <<\'A\' ${| cat <<B >/dev/null; : }\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${| cmd; } substitution'
-hm hm_m $'x=`: <<\'EOF\' `\ny=\'\n#\' ; /tmp/evil\nEOF\n' caught 'opens a heredoc inside' 'a heredoc in backticks is not queued: the lines after it are read as code'
+hm hm_k $': <<'"'"$'A'"'"$' ${ cat <<B; : }\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${ cmd; } substitution'
+hm hm_l $': <<'"'"$'A'"'"$' ${| cat <<B >/dev/null; : }\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'opens a heredoc inside' 'a heredoc in a ${| cmd; } substitution'
+hm hm_m $'x=`: <<'"'"$'EOF'"'"$' `\ny='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n' caught 'opens a heredoc inside' 'a heredoc in backticks is not queued: the lines after it are read as code'
 hm hm_n $'(\ncat <<EOF)\ny\nEOF\necho ok\n' ok - 'control: a delimiter ending at ) when the group was opened on an earlier line'
 # seat A, PR 449 round 2: bash 5.3 ${ cmd; } / ${| cmd; } ends at a } in COMMAND position, not at the first }: default deny for the opener itself; and hm_m now also asserts the lines after a backtick heredoc are read as code
-hm hm_o $'x=`: <<\'EOF\' `\ny=\'\n#\' ; /tmp/evil\nEOF\n' caught 'absolute path' 'a heredoc in backticks is not queued: /tmp/evil is read as code'
-hm hm_p $': <<\'A\' ${ : # }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } inside a comment does not end a ${ cmd; }'
-hm hm_q $': <<\'A\' ${ echo }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } as an argument does not end it'
-hm hm_r $': <<\'A\' ${| : # }\ncat <<B >/dev/null\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'the ${| form'
-hm hm_s $': <<\'A\' ${ : ${x:-a} }\ncat <<B\n\'$(/tmp/evil)\'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'an inner ${x:-a} closing before it'
+hm hm_o $'x=`: <<'"'"$'EOF'"'"$' `\ny='"'"$'\n#'"'"$' ; /tmp/evil\nEOF\n' caught 'absolute path' 'a heredoc in backticks is not queued: /tmp/evil is read as code'
+hm hm_p $': <<'"'"$'A'"'"$' ${ : # }\ncat <<B\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } inside a comment does not end a ${ cmd; }'
+hm hm_q $': <<'"'"$'A'"'"$' ${ echo }\ncat <<B\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'a } as an argument does not end it'
+hm hm_r $': <<'"'"$'A'"'"$' ${| : # }\ncat <<B >/dev/null\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'the ${| form'
+hm hm_s $': <<'"'"$'A'"'"$' ${ : ${x:-a} }\ncat <<B\n'"'"$'$(/tmp/evil)'"'"$'\nB\n}\nx\nA\necho ok\n' caught 'a ${ command substitution' 'an inner ${x:-a} closing before it'
 hm hm_t $'x=${y:-a}\necho "${y#a} ${#y}"\necho ${z%%b}\n' ok - 'control: ordinary parameter expansions are untouched'
 # seat B, PR 449 round 3: the ${ cmd; } refusal also applies to a line of an UNQUOTED heredoc body (bash runs it there too)
 hm hm_u $'cat <<B >/dev/null\n${ /tmp/evil; }\nB\n' caught 'a ${ command substitution' 'a funsub in an unquoted heredoc body'
 hm hm_v $'cat <<B >/dev/null\n${| /tmp/evil; }\nB\n' caught 'a ${ command substitution' 'the ${| form in an unquoted body'
 hm hm_w $'cat <<-B >/dev/null\n\t${ /tmp/evil; }\n\tB\n' caught 'a ${ command substitution' 'a tab-indented body of a <<- heredoc'
 hm hm_x $'cat <<B >/dev/null\n${ /tmp/evil; }\n${x}\nB\n' caught 'a ${ command substitution' 'followed by an ordinary expansion line'
-hm hm_y $'cat <<\'B\' >/dev/null\n${ /tmp/evil; }\nB\necho ok\n' ok - 'control: in a quoted-delimiter body it is data'
+hm hm_y $'cat <<'"'"$'B'"'"$' >/dev/null\n${ /tmp/evil; }\nB\necho ok\n' ok - 'control: in a quoted-delimiter body it is data'
 hm hm_z $'cat <<B >/dev/null\n${x} ${y:-a} ${#z} ${w%%b}\nB\necho ok\n' ok - 'control: ordinary expansions in an unquoted body'
 # seat B, PR 449 round 4: a ${ cmd; } opener split by a backslash-newline on a code line
 hm hm_za $'echo $\\\n{ /tmp/evil; }\n' caught 'a ${ command substitution' 'the $ and the { split by a continuation'
@@ -3892,14 +3892,14 @@ hm hm_zb $'echo ${\\\n /tmp/evil; }\n' caught 'a ${ command substitution' 'the $
 hm hm_zc $'echo ${\\\n| /tmp/evil; }\n' caught 'a ${ command substitution' 'the ${ and the | split by a continuation'
 hm hm_zd $'echo "price: 5$"\necho $x\\\n+1\n' ok - 'control: a $ at the end of a string and an ordinary continuation'
 # seat A, PR 449 round 4: bash reads << inside an assignment subscript a[x<<y ]=1 as an arithmetic shift, not a heredoc; the judge queued a fake heredoc and read the next lines as its body
-hm hm_ze $'y() { :; }\na[x<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'has a << inside a [ ] subscript' 'a fake heredoc from a shift in an assignment subscript'
+hm hm_ze $'y() { :; }\na[x<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'has a << inside a [ ] subscript' 'a fake heredoc from a shift in an assignment subscript'
 hm hm_zf $'a[x<<y ]+=1\nz=1\n' caught 'has a << inside a [ ] subscript' 'the += form'
 hm hm_zg $'z=1 a[x<<y ]=1\nz=1\n' caught 'has a << inside a [ ] subscript' 'after another assignment'
 hm hm_zh $'cat <<EOF\n[ not a subscript\nEOF\necho "$((1<<2))"\n' caught 'a << inside' 'control-ish: a $(( )) shift is already refused'
 hm hm_zi $'[ a = b ] && cat <<EOF\nx\nEOF\necho ok\n' ok - 'control: a closed [ ] test before a heredoc'
 # seat A, PR 449 round 5: an assignment subscript spans physical lines (a newline or a backslash-newline inside a[ ... ]), and a # inside it is no comment: default deny for a NAME[ subscript left open at the end of a line, for a # inside one, and for a line that starts with # while one is open
-hm hm_zj $'y() { :; }\na[x\\\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a backslash-newline'
-hm hm_zk $'y() { :; }\na[x\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a newline'
+hm hm_zj $'y() { :; }\na[x\\\n<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a backslash-newline'
+hm hm_zk $'y() { :; }\na[x\n<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'assignment subscript' 'a subscript spanning a newline'
 hm hm_zl $'b=2 a[x\n<<y ]=1\nz=1\n' caught 'assignment subscript' 'after another assignment'
 hm hm_zm $'declare -A a\na[k #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a # inside an assignment subscript is no comment'
 hm hm_zn $'declare -A a\na[k #]=1 /tmp/evil\necho end\n' caught 'assignment subscript' 'the temp-env form'
@@ -3907,8 +3907,8 @@ hm hm_zo $'declare -A a\na[k\n#]=1; /tmp/evil\necho end\n' caught 'assignment su
 hm hm_zp $'a[1]=1\nb[$i]+=2\nx=${a[1]}\n[ a = b ] && echo ok\necho "a[ b ]"\n# a [ comment\n' ok - 'control: balanced subscripts, a test, a quoted [ and a comment with [ are untouched'
 # seat A, PR 449 round 6: a ] inside a $( ) or backticks inside an assignment subscript does not end the subscript
 hm hm_zq $'declare -A a\na[$(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a #'
-hm hm_zr $'declare -A a\ny() { :; }\na[$(echo ])\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a << on the next line'
-hm hm_zs $'declare -A a\ny() { :; }\na[`echo ]`\n<<y ]=1\nz="\n\'"; /tmp/evil; z=\'\n\'\ny\necho end\n' caught 'assignment subscript' 'the same with backticks'
+hm hm_zr $'declare -A a\ny() { :; }\na[$(echo ])\n<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'assignment subscript' 'a ] in a $( ) inside the subscript, then a << on the next line'
+hm hm_zs $'declare -A a\ny() { :; }\na[`echo ]`\n<<y ]=1\nz="\n'"'"$'"; /tmp/evil; z='"'"$'\n'"'"$'\ny\necho end\n' caught 'assignment subscript' 'the same with backticks'
 hm hm_zt $'declare -A a\na[(echo ]) #]=1; /tmp/evil\necho end\n' caught 'assignment subscript' 'the same with a ( ) group'
 hm hm_zu $'a[$(echo x)]=1\nb[`echo y`]=2\nc[1]=3\necho ok\n' caught 'holds a substitution' 'substitutions inside a closed subscript are refused (default deny, a reviewed waiver per line)'
 # seat B, PR 449 round 6: NAME[ is an assignment subscript also right after a ) (a case pattern) or any other character
@@ -3924,13 +3924,13 @@ hm hm_zzc $'echo x \\\n[ ok ]\necho y\n' ok - 'control: an ordinary continuation
 # DEFAULT DENY (advisor Oct 18, closing the builtin-evaluated-subscript class): a NAME[ whose subscript text holds a substitution ($( , ${ , a backtick, \$ or a backslash-backtick) is refused in a LISTED shell script
 # wherever it sits (code, quotes, a string assignment, a comment: the listed text is scanned raw), waivable by a reviewed line-bound `deny` exception. Builtins evaluate such a string as an arithmetic subscript at run time.
 sb() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "subscript: $5"; }
-sb sb_a $'printf -v \'a[$(/tmp/evil)]\' x\n' caught 'holds a substitution' "printf -v with a single-quoted subscript"
-sb sb_b $'let \'a[$(/tmp/evil)]\'\n' caught 'holds a substitution' 'let'
-sb sb_c $'read \'a[$(/tmp/evil)]\' <<< x\n' caught 'holds a substitution' 'read'
-sb sb_d $'[[ -v \'a[$(/tmp/evil)]\' ]]\n' caught 'holds a substitution' '[[ -v ]]'
-sb sb_e $'typeset -n r=\'a[$(/tmp/evil)]\'\n' caught 'holds a substitution' 'typeset -n'
-sb sb_f $'x=\'a[$(/tmp/evil)]\'; echo ${!x}\n' caught 'holds a substitution' 'a string assignment used through ${!x}'
-sb sb_g $'echo $(( \'a[$(/tmp/evil)]\' ))\n' caught 'holds a substitution' 'inside $(( ))'
+sb sb_a $'printf -v '"'"$'a[$(/tmp/evil)]'"'"$' x\n' caught 'holds a substitution' "printf -v with a single-quoted subscript"
+sb sb_b $'let '"'"$'a[$(/tmp/evil)]'"'"$'\n' caught 'holds a substitution' 'let'
+sb sb_c $'read '"'"$'a[$(/tmp/evil)]'"'"$' <<< x\n' caught 'holds a substitution' 'read'
+sb sb_d $'[[ -v '"'"$'a[$(/tmp/evil)]'"'"$' ]]\n' caught 'holds a substitution' '[[ -v ]]'
+sb sb_e $'typeset -n r='"'"$'a[$(/tmp/evil)]'"'"$'\n' caught 'holds a substitution' 'typeset -n'
+sb sb_f $'x='"'"$'a[$(/tmp/evil)]'"'"$'; echo ${!x}\n' caught 'holds a substitution' 'a string assignment used through ${!x}'
+sb sb_g $'echo $(( '"'"$'a[$(/tmp/evil)]'"'"$' ))\n' caught 'holds a substitution' 'inside $(( ))'
 sb sb_h $'printf -v "a[\\$(/tmp/evil)]" x\n' caught 'holds a substitution' 'escaped in double quotes'
 sb sb_i $'printf -v a[\\$\\(/tmp/evil\\)] x\n' caught 'holds a substitution' 'escaped bare'
 sb sb_j $'a[`/tmp/evil`]=1\n' caught 'holds a substitution' 'backticks in a bare assignment subscript'
@@ -3939,97 +3939,97 @@ sb sb_l $'# a comment mentioning a[$(x)] is scanned raw like the rest of a liste
 sb sb_m $'[ "$(echo a)" = a ] && echo ok\n[[ -n "$(echo b)" ]] && echo ok\nx=(1 2); echo "${x[1]} ${x[@]}"\na[$i]=1\na[1]=$(echo c)\necho ok\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): tests with substitutions, ordinary subscripts, a substitution outside the subscript'
 sb sb_n $'a[1]=1\nb[$((1+1))]=2\necho "${a[1]}"\necho ok\n' caught 'holds a substitution' 'arithmetic in a subscript is refused too (a \$(( that does not close as arithmetic is a command substitution); a real one needs a reviewed line waiver'
 # seat B, PR 452 round 1: the opener built from quotes or escapes, and a subscript that starts with a substitution without a NAME before the [
-sb sb_o $'let \'a[$\'\'(/usr/bin/touch mk)]\'\n' caught 'builds a substitution opener' 'the opener split by adjacent single quotes ($'"''"'()'
-sb sb_p $'printf -v \'a[$\'\'(/bin/sh -c /usr/bin/touch\\ mk)]\' x\n' caught 'builds a substitution opener' 'printf -v with a split opener running /bin/sh -c'
+sb sb_o $'let '"'"$'a[$'"'"$''"'"$'(/usr/bin/touch mk)]'"'"$'\n' caught 'builds a substitution opener' 'the opener split by adjacent single quotes ($'"''"'()'
+sb sb_p $'printf -v '"'"$'a[$'"'"$''"'"$'(/bin/sh -c /usr/bin/touch\\ mk)]'"'"$' x\n' caught 'builds a substitution opener' 'printf -v with a split opener running /bin/sh -c'
 sb sb_q $'let "a[$""(/usr/bin/touch mk)]"\n' caught 'builds a substitution opener' 'the opener split by adjacent double quotes'
-sb sb_r $'let $\'a[\\x24(/usr/bin/touch mk)]\'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the $'
-sb sb_s $'let $\'a[\\x60/usr/bin/touch mk\\x60]\'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the backtick'
-sb sb_t $'let a[$\'\\x24\\x28/usr/bin/touch mk)\']\n' caught 'builds a substitution opener' 'an ANSI-C string builds the whole opener'
-sb sb_u $'x=$\'\\044(/usr/bin/touch mk)\'; let "a[$x]"\n' caught 'builds a substitution opener' 'an ANSI-C octal escape'
-sb sb_v $'let \'a\'[\\$\\(/usr/bin/touch\\ mk\\)]\n' caught 'holds a substitution' 'a quote between the name and [ with an escaped opener'
-sb sb_x $'n=a; x="$n"\'[$(/usr/bin/touch mk)]\'; let "$x"\n' caught 'holds a substitution' 'a name built by an expansion, the subscript text starts with the opener'
+sb sb_r $'let $'"'"$'a[\\x24(/usr/bin/touch mk)]'"'"$'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the $'
+sb sb_s $'let $'"'"$'a[\\x60/usr/bin/touch mk\\x60]'"'"$'\n' caught 'builds a substitution opener' 'an ANSI-C hex escape builds the backtick'
+sb sb_t $'let a[$'"'"$'\\x24\\x28/usr/bin/touch mk)'"'"$']\n' caught 'builds a substitution opener' 'an ANSI-C string builds the whole opener'
+sb sb_u $'x=$'"'"$'\\044(/usr/bin/touch mk)'"'"$'; let "a[$x]"\n' caught 'builds a substitution opener' 'an ANSI-C octal escape'
+sb sb_v $'let '"'"$'a'"'"$'[\\$\\(/usr/bin/touch\\ mk\\)]\n' caught 'holds a substitution' 'a quote between the name and [ with an escaped opener'
+sb sb_x $'n=a; x="$n"'"'"$'[$(/usr/bin/touch mk)]'"'"$'; let "$x"\n' caught 'holds a substitution' 'a name built by an expansion, the subscript text starts with the opener'
 sb sb_y $'if [ ${#arr[@]} -gt 0 ]; then echo "${#arr[@]}"; fi\n[[ ${X:-} =~ ^[0-9]+$ ]] && echo ok\n[ "$(echo a)" = a ]\necho ok\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a length expansion in a test, [[ ${X} ]], a quoted substitution in a test'
-sb sb_z $'echo $\'plain\\n text\' $"msg" \'\' ""\necho ok\n' ok - 'control: ANSI-C with plain escapes, $"..." and empty strings are untouched'
+sb sb_z $'echo $'"'"$'plain\\n text'"'"$' $"msg" '"'"$''"'"$' ""\necho ok\n' ok - 'control: ANSI-C with plain escapes, $"..." and empty strings are untouched'
 # seat A, PR 452 round 1: a nested subscript's ] before the opener; a quote, backslash or } before the [; a continuation between NAME and [ or between [ and the opener
-sb sb_aa $'let \'a[b[0]+$(/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'a nested subscript closes before the opener'
-sb sb_ab $'printf -v \'a[b[1]$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'the opener right after a nested ]'
-sb sb_ac $'x=\'a[c[0]*0+`/usr/bin/touch mk`]\'; echo ${!x}\n' caught 'holds a substitution' 'backticks after a nested subscript, through ${!x}'
+sb sb_aa $'let '"'"$'a[b[0]+$(/usr/bin/touch mk)]'"'"$'\n' caught 'holds a substitution' 'a nested subscript closes before the opener'
+sb sb_ab $'printf -v '"'"$'a[b[1]$(/usr/bin/touch mk)]'"'"$' x\n' caught 'holds a substitution' 'the opener right after a nested ]'
+sb sb_ac $'x='"'"$'a[c[0]*0+`/usr/bin/touch mk`]'"'"$'; echo ${!x}\n' caught 'holds a substitution' 'backticks after a nested subscript, through ${!x}'
 sb sb_ad $'printf -v "a""[\\$(/usr/bin/touch mk)]" x\n' caught 'holds a substitution' 'a name quote-split from the [ with an escaped opener'
-sb sb_ae $'printf -v \'a\'\'[$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'adjacent single-quoted parts, the subscript starts with the opener'
-sb sb_af $'let "a"\'[$(/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'a double-quoted name then a single-quoted subscript'
+sb sb_ae $'printf -v '"'"$'a'"'"$''"'"$'[$(/usr/bin/touch mk)]'"'"$' x\n' caught 'holds a substitution' 'adjacent single-quoted parts, the subscript starts with the opener'
+sb sb_af $'let "a"'"'"$'[$(/usr/bin/touch mk)]'"'"$'\n' caught 'holds a substitution' 'a double-quoted name then a single-quoted subscript'
 sb sb_ag $'printf -v a\\[\\$\\(/usr/bin/touch\\ mk\\)\\] x\n' caught 'holds a substitution' 'every character backslash-escaped'
 sb sb_ah $'n=a; printf -v "${n}[\\$(/usr/bin/touch mk)]" x\n' caught 'holds a substitution' 'a name from a parameter expansion, then [ and an escaped opener'
 sb sb_ai $'printf -v a\\\n[\\$\\(/usr/bin/touch\\ mk\\)] x\n' caught 'holds a substitution' 'a continuation between the name and the ['
-sb sb_aj $'printf -v \'a[\'\\\n\'$(/usr/bin/touch mk)]\' x\n' caught 'holds a substitution' 'a continuation between the [ and the quoted opener'
+sb sb_aj $'printf -v '"'"$'a['"'"$'\\\n'"'"$'$(/usr/bin/touch mk)]'"'"$' x\n' caught 'holds a substitution' 'a continuation between the [ and the quoted opener'
 sb sb_ak $'[ "${#a[@]}" -gt 0 ] && echo ok\necho "done"\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a length expansion in a test'
 # seat B, PR 452 round 2: a quoted or split name with a non-opener character between the [ and the opener
-sb sb_al $'let "a"\'[x$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a quoted name, a character before the opener'
-sb sb_am $'let a\'[0$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a digit before the opener'
-sb sb_an $'let \'a\'"[x"\'$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'the [ in a different quoted part than the opener'
-sb sb_ao $'printf -v "a"\'[ x$(/usr/bin/touch mk)]\' %s 1\n' caught 'holds a substitution' 'a blank after the [ and a character before the opener'
+sb sb_al $'let "a"'"'"$'[x$(/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'a quoted name, a character before the opener'
+sb sb_am $'let a'"'"$'[0$(/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'a digit before the opener'
+sb sb_an $'let '"'"$'a'"'"$'"[x"'"'"$'$(/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'the [ in a different quoted part than the opener'
+sb sb_ao $'printf -v "a"'"'"$'[ x$(/usr/bin/touch mk)]'"'"$' %s 1\n' caught 'holds a substitution' 'a blank after the [ and a character before the opener'
 sb sb_ap $'echo [ok]; [ -n "$(echo b)" ] && echo ok; if [ "$(echo c)" = c ]; then echo ok; fi; [[ -n "$(echo d)" ]]\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): test commands with substitutions (the [ is at a command position and followed by a blank)'
 # seat A, PR 452 round 2: a quote, escape or brace between the name and the [ (static quoting and brace expansion build the name), with a non-opener prefix or a quote switch after the [
-sb sb_aq $'let a"["\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a"[" then a single-quoted opener'
-sb sb_ar $'let a\'[\'"\\$(/usr/bin/touch MARK)]"\n' caught 'holds a substitution' "a'[' then a double-quoted escaped opener"
-sb sb_as $'let a\\[\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a backslash-escaped [ then a quoted opener'
-sb sb_at $'let a\\[0+\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'an escaped [ and a prefix before the opener'
-sb sb_au $'let \'a\'[0+\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a quoted name, [ and a prefix'
+sb sb_aq $'let a"["'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a"[" then a single-quoted opener'
+sb sb_ar $'let a'"'"$'['"'"$'"\\$(/usr/bin/touch MARK)]"\n' caught 'holds a substitution' "a'[' then a double-quoted escaped opener"
+sb sb_as $'let a\\['"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a backslash-escaped [ then a quoted opener'
+sb sb_at $'let a\\[0+'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'an escaped [ and a prefix before the opener'
+sb sb_au $'let '"'"$'a'"'"$'[0+'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a quoted name, [ and a prefix'
 sb sb_av $'let "a"[0+\\$\\(/usr/bin/touch\\ MARK\\)]\n' caught 'holds a substitution' 'a quoted name, [ , a prefix and an escaped opener'
-sb sb_aw $'printf -v "a"[0+\'`/usr/bin/touch MARK`]\' z\n' caught 'holds a substitution' 'backticks after a prefix'
-sb sb_ax $'let a{[,[}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a brace expansion builds the [ '
-sb sb_ay $'let a{\\[,\\[}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a brace expansion of escaped ['
-sb sb_az $'printf -v a{\\[,}\'$(/usr/bin/touch MARK)]\' z z\n' caught 'holds a substitution' 'a brace expansion with an empty alternative'
-sb sb_ba $'let a{"[",x}\'$(/usr/bin/touch MARK)]\'\n' caught 'holds a substitution' 'a quoted [ inside a brace expansion'
+sb sb_aw $'printf -v "a"[0+'"'"$'`/usr/bin/touch MARK`]'"'"$' z\n' caught 'holds a substitution' 'backticks after a prefix'
+sb sb_ax $'let a{[,[}'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a brace expansion builds the [ '
+sb sb_ay $'let a{\\[,\\[}'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a brace expansion of escaped ['
+sb sb_az $'printf -v a{\\[,}'"'"$'$(/usr/bin/touch MARK)]'"'"$' z z\n' caught 'holds a substitution' 'a brace expansion with an empty alternative'
+sb sb_ba $'let a{"[",x}'"'"$'$(/usr/bin/touch MARK)]'"'"$'\n' caught 'holds a substitution' 'a quoted [ inside a brace expansion'
 # seat A, PR 452 round 3: a brace expansion builds a[[ and the test-command exemption skipped both brackets
-sb sb_bb $'let a{[[,}\'$(/usr/bin/touch MARK)]]\'\n' caught 'holds a substitution' 'a{[[,} builds a[[ ; the exemption must not skip it'
-sb sb_bc $'printf -v a{[[,}\'$(/usr/bin/touch MARK)]]\' %s 1\n' caught 'holds a substitution' 'the same through printf -v'
-sb sb_bd $'read a{[[,}\'$(/usr/bin/touch MARK)]]\' <<< 1 || true\n' caught 'holds a substitution' 'the same through read'
-sb sb_be $'let a{[[,}0+\'$(/usr/bin/touch MARK)]]\'\n' caught 'holds a substitution' 'with a prefix before the opener'
+sb sb_bb $'let a{[[,}'"'"$'$(/usr/bin/touch MARK)]]'"'"$'\n' caught 'holds a substitution' 'a{[[,} builds a[[ ; the exemption must not skip it'
+sb sb_bc $'printf -v a{[[,}'"'"$'$(/usr/bin/touch MARK)]]'"'"$' %s 1\n' caught 'holds a substitution' 'the same through printf -v'
+sb sb_bd $'read a{[[,}'"'"$'$(/usr/bin/touch MARK)]]'"'"$' <<< 1 || true\n' caught 'holds a substitution' 'the same through read'
+sb sb_be $'let a{[[,}0+'"'"$'$(/usr/bin/touch MARK)]]'"'"$'\n' caught 'holds a substitution' 'with a prefix before the opener'
 sb sb_bf $'{ [ -n "$(echo a)" ]; }\nif [[ "$(echo b)" = b ]]; then echo ok; fi\n(( 1 )) && [[ -n "$(echo c)" ]] && echo ok\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a group before a test, [[ ]] after if, [[ ]] after &&'
 # seat A, PR 452 round 4: $! expands to nothing or a PID, so the ! before [ is no command position when a $ precedes it
-sb sb_bg $'let "a$![ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' '$![ : the ! ends $!'
-sb sb_bh $'let "a$![ "\'`/usr/bin/touch MARK` ]\'\n' caught 'holds a substitution' 'the same with backticks'
-sb sb_bi $'sleep 0 & let "a$![ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' 'with a background job'
-sb sb_bj $'declare -n r="a$![ "\'$(/usr/bin/touch MARK) ]\'; : "$r"\n' caught 'holds a substitution' 'through a nameref'
-sb sb_bk $'let "a$$[ "\'$(/usr/bin/touch MARK) ]\'\n' caught 'holds a substitution' 'the PID of the shell before the ['
+sb sb_bg $'let "a$![ "'"'"$'$(/usr/bin/touch MARK) ]'"'"$'\n' caught 'holds a substitution' '$![ : the ! ends $!'
+sb sb_bh $'let "a$![ "'"'"$'`/usr/bin/touch MARK` ]'"'"$'\n' caught 'holds a substitution' 'the same with backticks'
+sb sb_bi $'sleep 0 & let "a$![ "'"'"$'$(/usr/bin/touch MARK) ]'"'"$'\n' caught 'holds a substitution' 'with a background job'
+sb sb_bj $'declare -n r="a$![ "'"'"$'$(/usr/bin/touch MARK) ]'"'"$'; : "$r"\n' caught 'holds a substitution' 'through a nameref'
+sb sb_bk $'let "a$$[ "'"'"$'$(/usr/bin/touch MARK) ]'"'"$'\n' caught 'holds a substitution' 'the PID of the shell before the ['
 sb sb_bl $'if ! [ -n "$(echo a)" ]; then echo ok; fi\nx=$([ -n y ] && echo z)\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): a real negated test, and a test inside $( ) without a substitution in it'
 # seat B, PR 452 round 5: [ ... ]= inside a compound assignment a=( [ '...' ]=1 ) is a subscript after a blank or (; a bracket expression whose closing ] is directly followed by = is never a test
-sb sb_bm $'a=( [ \'$(/usr/bin/touch M1)\' ]=1 )\n' caught 'holds a substitution' 'a compound assignment element after a blank'
-sb sb_bn $'a=([ \'$(/usr/bin/touch M1)\' ]=1)\n' caught 'holds a substitution' 'right after the ('
-sb sb_bo $'a=(x [ \'$(/usr/bin/touch M1)\' ]=1 )\n' caught 'holds a substitution' 'after another element'
-sb sb_bp $'declare -a a; a=( [ \'x$(/usr/bin/touch M1)\' ]+=1 )\n' caught 'holds a substitution' 'the += form with a prefix'
+sb sb_bm $'a=( [ '"'"$'$(/usr/bin/touch M1)'"'"$' ]=1 )\n' caught 'holds a substitution' 'a compound assignment element after a blank'
+sb sb_bn $'a=([ '"'"$'$(/usr/bin/touch M1)'"'"$' ]=1)\n' caught 'holds a substitution' 'right after the ('
+sb sb_bo $'a=(x [ '"'"$'$(/usr/bin/touch M1)'"'"$' ]=1 )\n' caught 'holds a substitution' 'after another element'
+sb sb_bp $'declare -a a; a=( [ '"'"$'x$(/usr/bin/touch M1)'"'"$' ]+=1 )\n' caught 'holds a substitution' 'the += form with a prefix'
 sb sb_bq $'if [ a = b ]; then echo ok; fi\n[ -n x ] && [ y = y ]\n[[ a == b ]]\na=( [0]=1 [1]=2 )\n' ok - 'control: tests whose ] is followed by ; or a blank or &&, and plain compound elements'
 # seat A, PR 452 round 6: a ] inside ${x//]/} (or ${x%]}, ${x#]}) is not the closing bracket; any ]= or ]+= later on the line makes an earlier [ a candidate subscript (scanned), never a test
-sb sb_br $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//]/} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} before the real closing ]'
-sb sb_bs $'a=( [ \'$(/usr/bin/touch MARK)\'${x%]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
-sb sb_bt $'a=( [ \'$(/usr/bin/touch MARK)\' ${x#]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x#]}'
+sb sb_br $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x//]/} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} before the real closing ]'
+sb sb_bs $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$'${x%]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
+sb sb_bt $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x#]} ]=1 )\n' caught 'holds a substitution' 'a ] inside ${x#]}'
 sb sb_bu $'[ -n x ] && [ y = y ]\nif [ a = b ]; then echo ok; fi\nb[1]=2; [ -n "$b" ] && echo ok\n' ok - 'control: tests, and a later ]= on another line or after a test that holds no substitution'
 # seat A, PR 452 round 7: a [ left unclosed at the end of its logical line is never a test (a test does not span lines): in a compound assignment bash reads the subscript across the newline
-sb sb_bv $'a=( [ \'$(/usr/bin/touch MARK)\'\n]=1 )\n' caught 'holds a substitution' 'the ]= on the next physical line'
-sb sb_bw $'a=(\n[ \'$(/usr/bin/touch MARK)\'\n]=1\n)\n' caught 'holds a substitution' 'every element on its own line'
+sb sb_bv $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$'\n]=1 )\n' caught 'holds a substitution' 'the ]= on the next physical line'
+sb sb_bw $'a=(\n[ '"'"$'$(/usr/bin/touch MARK)'"'"$'\n]=1\n)\n' caught 'holds a substitution' 'every element on its own line'
 sb sb_bx $'a=( [ "`/usr/bin/touch MARK`"\n]+=1 )\n' caught 'holds a substitution' 'backticks and +='
 sb sb_by $'if [ -n x ]; then\n  echo ok\nfi\n[[ -n y ]] &&\n  echo ok\n' ok - 'control: tests closed on their own line, with the && continuing on the next'
 # seat B, PR 452 round 8: a ] inside ${x//]/} (or a quoted span) counted as the matching bracket while the real ]= sits on the next physical line: the exemption needs the matching ] to be followed by a blank, ; & | ) or the end of the line
-sb sb_bz $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//]/}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} on the first line, ]= on the next'
-sb sb_ca $'a=( [ \'$(/usr/bin/touch MARK)\' "${x//]/}"\n]=1 )\n' caught 'holds a substitution' 'the same inside double quotes'
-sb sb_cb $'a=( [ \'$(/usr/bin/touch MARK)\' ${x%]}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
+sb sb_bz $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x//]/}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x//]/} on the first line, ]= on the next'
+sb sb_ca $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' "${x//]/}"\n]=1 )\n' caught 'holds a substitution' 'the same inside double quotes'
+sb sb_cb $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x%]}\n]=1 )\n' caught 'holds a substitution' 'a ] inside ${x%]}'
 sb sb_cc $'[ -n "$(echo a)" ] && echo ok\n[ -n "$(echo b)" ];\n[ -n "$(echo c)" ]|| echo ok\n( [ -n "$(echo d)" ] )\n' caught 'holds a substitution' 'tests are not exempt (a reviewed waiver per line): tests whose matching ] is followed by a blank, ; | or )'
 # seat B, PR 452 round 9 (the cap): the exemption's escape-aware bracket count can be fooled by a ] followed by a blank inside ${x//] /}: advisor ruling: DROP the test-command exemption entirely (fail closed): every [ is scanned, a real test that holds a substitution needs a reviewed waiver
-sb sb_cd $'a=( [ \'$(/usr/bin/touch MARK)\' ${x//] /}\n]=1 )\n' caught 'holds a substitution' 'a ] followed by a blank inside ${x//] /} then ]= on the next line'
+sb sb_cd $'a=( [ '"'"$'$(/usr/bin/touch MARK)'"'"$' ${x//] /}\n]=1 )\n' caught 'holds a substitution' 'a ] followed by a blank inside ${x//] /} then ]= on the next line'
 sb sb_ce $'[ "$(echo a)" = a ] && echo ok\n' caught 'holds a substitution' 'a real test that holds a substitution is refused (needs a waiver): no exemption'
 sb sb_cf $'[[ -n "$(echo b)" ]] && echo ok\n' caught 'holds a substitution' 'the same for [[ ]]'
 sb sb_cg $'if [ "${#a[@]}" -gt 0 ]; then echo ok; fi\n' caught 'holds a substitution' 'a ${#a[@]} in a test is refused too (no exemption, a reviewed waiver)'
 sb sb_ch $'[ -n x ] && echo ok\n[[ a == b ]] || echo ok\nif [ -f /etc/hosts ]; then echo "$((1+1))"; fi\nx=(1 2); echo "${x[0]}"\n' ok - 'control: tests, arithmetic and a plain array element with no substitution in any bracket are untouched'
 # seat B, PR 452 fix check: a ] inside a QUOTED span closes the raw bracket count early while bash's subscript parser skips quoted text and keeps reading
-sb sb_ci $'let \'a["]"$(/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a double-quoted ] before the opener'
-sb sb_cj $'printf -v \'a["]"$(/usr/bin/touch mk)]\' z\n' caught 'holds a substitution' 'printf -v'
-sb sb_ck $'read \'a["]"$(/usr/bin/touch mk)]\' <<<1\n' caught 'holds a substitution' 'read'
-sb sb_cl $'let \'a["]"`/usr/bin/touch mk`]=1\'\n' caught 'holds a substitution' 'backticks'
-sb sb_cm $'let a[\']\'$(/usr/bin/touch mk)]=1\n' caught 'holds a substitution' 'a single-quoted ]'
+sb sb_ci $'let '"'"$'a["]"$(/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'a double-quoted ] before the opener'
+sb sb_cj $'printf -v '"'"$'a["]"$(/usr/bin/touch mk)]'"'"$' z\n' caught 'holds a substitution' 'printf -v'
+sb sb_ck $'read '"'"$'a["]"$(/usr/bin/touch mk)]'"'"$' <<<1\n' caught 'holds a substitution' 'read'
+sb sb_cl $'let '"'"$'a["]"`/usr/bin/touch mk`]=1'"'"$'\n' caught 'holds a substitution' 'backticks'
+sb sb_cm $'let a['"'"$']'"'"$'$(/usr/bin/touch mk)]=1\n' caught 'holds a substitution' 'a single-quoted ]'
 sb sb_cn $'x=(1 2); echo "${x[0]}" "a]b"; [ "a]b" = c ] || echo ok\n' ok - 'control: a quoted ] with no opener anywhere in the brackets'
 # seat B, PR 452 narrow verification: an ESCAPED quote inside a double-quoted word becomes a real quote for the builtin that parses the subscript: \"]\" hides the ]
 sb sb_co $'let "a[\\"]\\"\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substitution' 'an escaped double-quoted ] before the opener'
-sb sb_cp $'let "a[\\\'] \\\'\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substitution' 'an escaped single-quoted ] before the opener'
+sb sb_cp $'let "a[\\'"'"$'] \\'"'"$'\\$(/usr/bin/touch mk)]=1"\n' caught 'holds a substitution' 'an escaped single-quoted ] before the opener'
 sb sb_cq $'printf -v "a[\\"]\\"\\$(/usr/bin/touch mk)]" z\n' caught 'holds a substitution' 'printf -v'
 sb sb_cr $'let "a[\\"]\\"`/usr/bin/touch mk`]=1"\n' caught 'holds a substitution' 'backticks'
 sb sb_cs $'echo "x=\\"a]b\\" y"; [ -n "a\\"b" ] && echo ok\n' ok - 'control: escaped quotes in plain strings with no opener in any bracket'
@@ -4044,313 +4044,313 @@ sb sb_cz $'let a[\\"\\\\"]\\$(/usr/bin/touch mk)"]\n' caught 'holds a substituti
 sb sb_da $'let a[\\"x\\\\"]\\$(/usr/bin/touch mk)"]\n' caught 'holds a substitution' 'same with text before the double backslash'
 sb sb_db $'let a[\\"\\\\"]\\`/usr/bin/touch mk\\`"]\n' caught 'holds a substitution' 'backtick form'
 sb sb_dc $'let a[\\"\\\\"]"\\$(/usr/bin/touch mk)"]\n' caught 'holds a substitution' 'opener inside the later quote'
-sb sb_dd $'let \'a[$((/usr/bin/touch mk) )]=1\'\n' caught 'holds a substitution' '$(( that does not close as arithmetic is a command substitution'
-sb sb_de $'printf -v \'a[$((/usr/bin/touch mk);id)]\' z\n' caught 'holds a substitution' 'printf -v, $(( then ;'
-sb sb_df $'read \'a[$((/usr/bin/touch mk) )]\' <<< x\n' caught 'holds a substitution' 'read'
-sb sb_dg $'[[ -v \'a[$((/usr/bin/touch mk)|(id))]\' ]]\n' caught 'holds a substitution' '[[ -v, closes with ))'
+sb sb_dd $'let '"'"$'a[$((/usr/bin/touch mk) )]=1'"'"$'\n' caught 'holds a substitution' '$(( that does not close as arithmetic is a command substitution'
+sb sb_de $'printf -v '"'"$'a[$((/usr/bin/touch mk);id)]'"'"$' z\n' caught 'holds a substitution' 'printf -v, $(( then ;'
+sb sb_df $'read '"'"$'a[$((/usr/bin/touch mk) )]'"'"$' <<< x\n' caught 'holds a substitution' 'read'
+sb sb_dg $'[[ -v '"'"$'a[$((/usr/bin/touch mk)|(id))]'"'"$' ]]\n' caught 'holds a substitution' '[[ -v, closes with ))'
 sb sb_dh $'let a[$((i+1))]=2\n' caught 'holds a substitution' 'even real arithmetic in a subscript is refused (default deny; waive by line)'
 sb sb_di $'i=1; x=$((i+1)); echo "$x"; [ -n "$x" ] && echo ok\n' ok - 'control: arithmetic outside any bracket'
 dc() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "declare-family compound assignment: $5"; }
-dc dc_a $'declare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'declare -a, single-quoted, $( )'
-dc dc_b $'local -a \'a=(x `/usr/bin/touch mk`)\'\n' caught 'compound assignment' 'local, backticks'
+dc dc_a $'declare -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'declare -a, single-quoted, $( )'
+dc dc_b $'local -a '"'"$'a=(x `/usr/bin/touch mk`)'"'"$'\n' caught 'compound assignment' 'local, backticks'
 dc dc_c $'typeset -a "a=(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'typeset, escaped $ in double quotes'
-dc dc_d $'readonly -a \'a=(x ${y:-z})\'\n' caught 'compound assignment' 'readonly, ${ }'
-dc dc_e $'export -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'export'
-dc dc_f $'declare -A \'m=([k]=$(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'declare -A, an associative element'
-dc dc_g $'declare -a "a="\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'quotes between = and ('
-dc dc_h $'declare -a a+=\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'append form +='
+dc dc_d $'readonly -a '"'"$'a=(x ${y:-z})'"'"$'\n' caught 'compound assignment' 'readonly, ${ }'
+dc dc_e $'export -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'export'
+dc dc_f $'declare -A '"'"$'m=([k]=$(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'declare -A, an associative element'
+dc dc_g $'declare -a "a="'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'quotes between = and ('
+dc dc_h $'declare -a a+='"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'append form +='
 dc dc_i $'declare -a arr=(1 2 3)\nlocal -a files=("$@")\nexport XX=1\nlocal n=$(date +%s)\necho ok\n' ok - 'control: unquoted compound assignments with no opener after the (, and an opener on its own line'
 dc dc_j $'x=$(date +%s); declare -a a=(1 2)\necho "$x"\n' ok - 'control: an opener BEFORE the =( on the line'
-dc dc_k $'declare -a \'a=(x $\'"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split across a quote boundary ($ in one segment, ( in the next)'
-dc dc_l $'declare -a \'a=(x \'"$"\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'opener split: a double-quoted $ between single-quoted parts'
-dc dc_m $'declare -a \'a=(x \'$"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split with a $"..." segment'
+dc dc_k $'declare -a '"'"$'a=(x $'"'"$'"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split across a quote boundary ($ in one segment, ( in the next)'
+dc dc_l $'declare -a '"'"$'a=(x '"'"$'"$"'"'"$'(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'opener split: a double-quoted $ between single-quoted parts'
+dc dc_m $'declare -a '"'"$'a=(x '"'"$'$"(/usr/bin/touch mk))"\n' caught 'compound assignment' 'opener split with a $"..." segment'
 dc dc_n $'declare -a "a=${e}(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'an expansion between = and ('
-dc dc_o $'declare -a a=$e\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a bare $e between = and ('
-dc dc_p $'declare -a a=$\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' "$'...' value"
-dc dc_q $'declare -a a=$(:)\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a substitution between = and ('
-dc dc_r $'declare -a \'a=(x <(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'process substitution <( as the opener'
-dc dc_s $'declare -a \'a=(x >(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'process substitution >( as the opener'
-dc dc_t $'de\'\'clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by an empty quote pair'
-dc dc_u $'de\\clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'builtin name split by a backslash'
-dc dc_v $'loc\\al -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'local split by a backslash'
+dc dc_o $'declare -a a=$e'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a bare $e between = and ('
+dc dc_p $'declare -a a=$'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' "$'...' value"
+dc dc_q $'declare -a a=$(:)'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a substitution between = and ('
+dc dc_r $'declare -a '"'"$'a=(x <(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'process substitution <( as the opener'
+dc dc_s $'declare -a '"'"$'a=(x >(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'process substitution >( as the opener'
+dc dc_t $'de'"'"$''"'"$'clare -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'builtin name split by an empty quote pair'
+dc dc_u $'de\\clare -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'builtin name split by a backslash'
+dc dc_v $'loc\\al -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'local split by a backslash'
 dc dc_w $'declare -a a=\\(x\\ $\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'pure-escape form: $\\( and \\( split by backslashes'
-dc dc_x $'declare -a \'a=(x $\'\\(\'/usr/bin/touch mk))\'\n' caught 'compound assignment' 'quoted, the opener split by \\( '
+dc dc_x $'declare -a '"'"$'a=(x $'"'"$'\\('"'"$'/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'quoted, the opener split by \\( '
 dc dc_y $'declare -a a=\\(x\\ $\\{y:-z\\}\\)\n' caught 'compound assignment' '${ split by a backslash'
-dc dc_z $'declare -a \'a=(x <\'\\(\'/usr/bin/touch mk))\'\n' caught 'compound assignment' '<( split by a backslash'
-dc dc_za $'declare -a \'a=(x $\'$@\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an empty $@ between $ and ('
-dc dc_zb $'de$*clare -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an empty $* inside the builtin name'
-dc dc_zc $'for v in \'a=(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'the value before the builtin on the line (loop)'
+dc dc_z $'declare -a '"'"$'a=(x <'"'"$'\\('"'"$'/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' '<( split by a backslash'
+dc dc_za $'declare -a '"'"$'a=(x $'"'"$'$@'"'"$'(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an empty $@ between $ and ('
+dc dc_zb $'de$*clare -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an empty $* inside the builtin name'
+dc dc_zc $'for v in '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'the value before the builtin on the line (loop)'
 dc dc_zd $'w() { declare -a "$1"; }
-w \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a function wrapper: builtin and value on different lines'
+w '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a function wrapper: builtin and value on different lines'
 dc dc_ze $'shopt -s expand_aliases
 alias d=declare
-d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an alias: builtin and value on different lines'
+d -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an alias: builtin and value on different lines'
 dc dc_zf $'d -a a=\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'escaped compound value with no builtin word on the line'
-dc dc_zg $'for v in \'a=(1 2)\' \'b=(3)\'; do declare -a "$v"; done
-ll=\'ls -l\'\n' ok - 'control: quoted compound values with no opener, a plain assignment with no compound value (was an alias; aliases are refused here, cache#433)'
-dc dc_zh $'for v in "a=("\'$(/usr/bin/touch mk)\'")"; do declare -a "$v"; done\n' caught 'compound assignment' 'the opener split across two quote segments, the builtin after the value'
+dc dc_zg $'for v in '"'"$'a=(1 2)'"'"$' '"'"$'b=(3)'"'"$'; do declare -a "$v"; done
+ll='"'"$'ls -l'"'"$'\n' ok - 'control: quoted compound values with no opener, a plain assignment with no compound value (was an alias; aliases are refused here, cache#433)'
+dc dc_zh $'for v in "a=("'"'"$'$(/usr/bin/touch mk)'"'"$'")"; do declare -a "$v"; done\n' caught 'compound assignment' 'the opener split across two quote segments, the builtin after the value'
 dc dc_zi $'f(){ declare -a "$1"; }
-f "a=("\'$(/usr/bin/touch mk)\'")"\n' caught 'compound assignment' 'split segments, function wrapper'
+f "a=("'"'"$'$(/usr/bin/touch mk)'"'"$'")"\n' caught 'compound assignment' 'split segments, function wrapper'
 dc dc_zj $'alias d=declare
-d -a "a=("\'$(/usr/bin/touch mk)\'")"\n' caught 'compound assignment' 'split segments, alias'
+d -a "a=("'"'"$'$(/usr/bin/touch mk)'"'"$'")"\n' caught 'compound assignment' 'split segments, alias'
 dc dc_zk $'alias d=declare
-d -a a=\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' '= outside the quote and ( inside it, alias'
-dc dc_zl $'x=\\\'; for v in \'a=(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an escaped quote earlier on the line misaligns the quote pairing, loop'
+d -a a='"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' '= outside the quote and ( inside it, alias'
+dc dc_zl $'x=\\'"'"$'; for v in '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'an escaped quote earlier on the line misaligns the quote pairing, loop'
 dc dc_zm $'w() { declare -a "$1"; }
-x=\\\'; w \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'escaped quote earlier, function wrapper'
+x=\\'"'"$'; w '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'escaped quote earlier, function wrapper'
 dc dc_zn $'alias d=declare
 d -a a="(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'double-quoted value after = with an escaped $, alias'
 dc dc_zo $'arr=(a "b c")\nv=$(date +%s)
-x=\\\'; echo "$x"\n' ok - 'control: a plain unquoted-name array assignment, a substitution on its own line and an escaped quote on another line'
+x=\\'"'"$'; echo "$x"\n' ok - 'control: a plain unquoted-name array assignment, a substitution on its own line and an escaped quote on another line'
 dc dc_zp $'alias d=declare
-d -a a=$e\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'alias: an expansion between = and a quoted ('
+d -a a=$e'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'alias: an expansion between = and a quoted ('
 dc dc_zq $'w() { declare -a "$1"; }
-w a=${e}\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'function wrapper: ${e} between = and a quoted ('
+w a=${e}'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'function wrapper: ${e} between = and a quoted ('
 dc dc_zr $'alias d=declare
 d -a a=${e}\\(x\\ \\$\\(/usr/bin/touch mk\\)\\)\n' caught 'compound assignment' 'alias: ${e} then an escaped compound value'
 dc dc_zs $'alias d=declare
-d -a a=$(true)\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'alias: a substitution between = and ('
-dc dc_zt $'for v in \'a\'{=,}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion builds the ='
+d -a a=$(true)'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'alias: a substitution between = and ('
+dc dc_zt $'for v in '"'"$'a'"'"$'{=,}'"'"$'(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion builds the ='
 dc dc_zu $'f(){ declare -a "$1"; }
-f \'a\'{=,}\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'brace expansion, function wrapper'
+f '"'"$'a'"'"$'{=,}'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'brace expansion, function wrapper'
 dc dc_zv $'for v in a{=,}\\(x\\ \\$\\(/usr/bin/touch\\ mk\\)\\); do declare -a "$v"; done\n' caught 'compound assignment' 'brace expansion, escaped value'
-dc dc_zw $'for v in \'a=\'${@}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an empty ${@} between = and ('
-dc dc_zx $'for v in \'a=\'${HOME:0:0}\'(x $(/usr/bin/touch mk))\'; do declare -a "$v"; done\n' caught 'compound assignment' 'an always-empty ${HOME:0:0} between = and ('
+dc dc_zw $'for v in '"'"$'a='"'"$'${@}'"'"$'(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'an empty ${@} between = and ('
+dc dc_zx $'for v in '"'"$'a='"'"$'${HOME:0:0}'"'"$'(x $(/usr/bin/touch mk))'"'"$'; do declare -a "$v"; done\n' caught 'compound assignment' 'an always-empty ${HOME:0:0} between = and ('
 dc dc_zy $'alias d=declare
 d -a a=$e
-x=${e}\'plain\'\n' caught 'shell aliases' 'an expansion after =, no ( and no opener: refused for the alias that sets it up (aliases are refused here, cache#433)'
-dc dc_zz $'for v in a=; do declare -a "$v"\'(x $(/usr/bin/touch mk))\'; done\n' caught 'compound assignment' 'the NAME= part in a variable, the quoted value literal on the same line'
+x=${e}'"'"$'plain'"'"$'\n' caught 'shell aliases' 'an expansion after =, no ( and no opener: refused for the alias that sets it up (aliases are refused here, cache#433)'
+dc dc_zz $'for v in a=; do declare -a "$v"'"'"$'(x $(/usr/bin/touch mk))'"'"$'; done\n' caught 'compound assignment' 'the NAME= part in a variable, the quoted value literal on the same line'
 dc dc_zza $'n=a=
-declare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the NAME= part in a variable on an earlier line'
+declare -a "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the NAME= part in a variable on an earlier line'
 dc dc_zzb $'w() { declare -a "$1$2"; }
-w \'a=\' \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the function wrapper joins two literal words'
+w '"'"$'a='"'"$' '"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the function wrapper joins two literal words'
 dc dc_zzc $'w() { declare -a "a=$1"; }
-w \'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the = is inside the builtin string, the value arrives as a word'
+w '"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the = is inside the builtin string, the value arrives as a word'
 dc dc_zze $'echo "plain text (${x}) here"
 v=$(date +%s)\n' ok - 'control: a quoted ( then a simple ${x} is a message: a simple expansion can be empty and is not an opener'
 dc dc_zzf $'n=a=
-dec""lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by an empty quote pair, NAME= in a variable'
+dec""lare -a "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the builtin word hidden by an empty quote pair, NAME= in a variable'
 dc dc_zzg $'n=a=
-de\\clare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'the builtin word hidden by a backslash'
+de\\clare -a "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'the builtin word hidden by a backslash'
 dc dc_zzh $'n=a=
-f() { dec\'\'lare -ga "$@"; }
-f "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a hidden builtin word in a wrapper'
+f() { dec'"'"$''"'"$'lare -ga "$@"; }
+f "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a hidden builtin word in a wrapper'
 dc dc_zzi $'n=a=
-d=dec; ${d}lare -a "$n"\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a builtin name built from a variable, the opener literal'
+d=dec; ${d}lare -a "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a builtin name built from a variable, the opener literal'
 dc dc_zzj $'n=a=
-a=("$n"\'(x$(/usr/bin/touch mk))\')
+a=("$n"'"'"$'(x$(/usr/bin/touch mk))'"'"$')
 declare -a "${a[0]}"\n' caught 'compound assignment' 'a plain NAME=( word that carries a quoted element reaching the builtin'
 dc dc_zzk $'n=a=
-a=(\\$\'z\\\' "$n"\'(x $(/usr/bin/touch mk))\')
+a=(\\$'"'"$'z\\'"'"$' "$n"'"'"$'(x $(/usr/bin/touch mk))'"'"$')
 declare -a "${a[1]}"\n' caught 'compound assignment' 'an escaped $ before a quote is not an ANSI-C quote'
 dc dc_zzl $'n=a=
-declare -a "$n"$\'(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an ANSI-C prefix leaves a $ before the ('
+declare -a "$n"$'"'"$'(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an ANSI-C prefix leaves a $ before the ('
 dc dc_zzm $'n=a=
 declare -a "$n"$"(x \\$(/usr/bin/touch mk))"\n' caught 'compound assignment' 'a locale $" prefix leaves a $ before the ('
-dc dc_zzn $'a=("one two" \'three (4)\')
-x=$\'\\n\'
+dc dc_zzn $'a=("one two" '"'"$'three (4)'"'"$')
+x=$'"'"$'\\n'"'"$'
 echo "${a[@]}" $x\n' ok - 'control: plain array with quoted elements, an ANSI-C newline, a quoted ( with no opener'
 dc dc_zzo $'shopt -s expand_aliases
 alias d=declare
-x="$(printf \'"\')"; d -a \'a=(x $(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'a quote inside a nested substitution upsets the word splitter'
+x="$(printf '"'"$'"'"'"$')"; d -a '"'"$'a=(x $(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'a quote inside a nested substitution upsets the word splitter'
 dc dc_zzp $'w() { declare -a "a=$1$2"; }
-w \'(x \' \'$(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'fragments of one compound value in separate words: the opener fragment is quoted data'
+w '"'"$'(x '"'"$' '"'"$'$(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'fragments of one compound value in separate words: the opener fragment is quoted data'
 dc dc_zzq $'w() { declare -a "a=$1$2"; }
-w \'(\' \'`/usr/bin/touch mk`)\'\n' caught 'compound assignment' 'fragments, a backtick opener in single quotes'
+w '"'"$'('"'"$' '"'"$'`/usr/bin/touch mk`)'"'"$'\n' caught 'compound assignment' 'fragments, a backtick opener in single quotes'
 dc dc_zzr $'w() { declare -a "a=$1$2"; }
-w \'(\' \'<(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'fragments, a process-substitution opener in single quotes'
-dc dc_zzs $'a=\'a=(\'
-b=\'$(/usr/bin/touch mk))\'
+w '"'"$'('"'"$' '"'"$'<(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'fragments, a process-substitution opener in single quotes'
+dc dc_zzs $'a='"'"$'a=('"'"$'
+b='"'"$'$(/usr/bin/touch mk))'"'"$'
 declare -a "$a$b"\n' caught 'compound assignment' 'fragments held in two variables, the opener fragment in single quotes'
 dc dc_zzt $'e=
-declare -a \'a=(x $\'$e\'(/usr/bin/touch mk))\'\n' caught 'compound assignment' 'an expansion that can be empty between the literal $ and ('
-dc dc_zzu $'x=\'plain data\'
-y=\'cost: 5 (approx)\'
+declare -a '"'"$'a=(x $'"'"$'$e'"'"$'(/usr/bin/touch mk))'"'"$'\n' caught 'compound assignment' 'an expansion that can be empty between the literal $ and ('
+dc dc_zzu $'x='"'"$'plain data'"'"$'
+y='"'"$'cost: 5 (approx)'"'"$'
 echo "$x $y"\n' ok - 'control: single-quoted data with no opener'
 dc dc_zzv $'w() { declare -a "a=$1$2"; }
-w \'(\' \'$\'"(printf audit))"\n' caught 'compound assignment' 'round 9: an opener built across quote segments, $ in single quotes'
+w '"'"$'('"'"$' '"'"$'$'"'"$'"(printf audit))"\n' caught 'compound assignment' 'round 9: an opener built across quote segments, $ in single quotes'
 dc dc_zzw $'w() { declare -a "a=$1$2"; }
-w \'(\' \\$\\(printf\\ audit\\)\\)\n' caught 'compound assignment' 'round 9: an escaped opener as an argument word'
+w '"'"$'('"'"$' \\$\\(printf\\ audit\\)\\)\n' caught 'compound assignment' 'round 9: an escaped opener as an argument word'
 dc dc_zzx $'w() { declare -a "a=$1$2"; }
-w \'(\' "<(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted <( is data'
+w '"'"$'('"'"$' "<(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted <( is data'
 dc dc_zzy $'w() { declare -a "a=$1$2"; }
-w \'(\' ">(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted >( is data'
+w '"'"$'('"'"$' ">(printf audit))"\n' caught 'compound assignment' 'round 9: a double-quoted >( is data'
 dc dc_zzz $'w() { declare -a "a=$1$2"; }
-w \'(\' \'<\'"(printf audit))"\n' caught 'compound assignment' 'round 9: <( split across quote segments'
+w '"'"$'('"'"$' '"'"$'<'"'"$'"(printf audit))"\n' caught 'compound assignment' 'round 9: <( split across quote segments'
 dc dc_zzza $'w() { declare -a "a=$1$2"; }
-w \'(\' \'$\'"{y})"\n' caught 'compound assignment' 'round 9: ${ split across quote segments'
+w '"'"$'('"'"$' '"'"$'$'"'"$'"{y})"\n' caught 'compound assignment' 'round 9: ${ split across quote segments'
 dc dc_zzzb $'set --
-declare -a \'a=(x $\'$1\'(printf audit))\'\n' caught 'quote-segment boundary' 'round 9: a possibly-empty positional between $ and ('
+declare -a '"'"$'a=(x $'"'"$'$1'"'"$'(printf audit))'"'"$'\n' caught 'quote-segment boundary' 'round 9: a possibly-empty positional between $ and ('
 dc dc_zzzc $'w() { declare -a "a=$1$2"; }
-x="$(printf \'"\')"; w \'$(printf marker)\'\n' caught 'compound assignment' 'round 9: a nested-quote line leaves the splitter uncertain, quoted data still refused'
-dc dc_zzzd $'echo "$(date)" "${x:-y}" "a$(b)c" "$1" "${name}" \'plain\'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$(printf marker)'"'"$'\n' caught 'compound assignment' 'round 9: a nested-quote line leaves the splitter uncertain, quoted data still refused'
+dc dc_zzzd $'echo "$(date)" "${x:-y}" "a$(b)c" "$1" "${name}" '"'"$'plain'"'"$'
 v="$(dirname "$0")"\n' ok - 'control: live substitutions in double quotes and unquoted, simple expansions, plain single-quoted data'
 bd() { local d; d=$(crr "$1" "${H}$2"); expm "$3" "$d" "$4" "dollar at a quote-segment boundary: $5"; }
 bd bd_a $'w() { declare -a "a=$1$2"; }
-w \'(\' \'$\'"(printf x))"\n' caught 'quote-segment boundary' '$ closes a single-quoted segment, ( opens a double-quoted one'
+w '"'"$'('"'"$' '"'"$'$'"'"$'"(printf x))"\n' caught 'quote-segment boundary' '$ closes a single-quoted segment, ( opens a double-quoted one'
 bd bd_b $'e=
 w() { declare -a "a=$1$2"; }
-w \'$\'${e:-}\'(printf x)\'\n' caught 'quote-segment boundary' 'an empty-producing ${e:-} between the literal $ and ('
+w '"'"$'$'"'"$'${e:-}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'an empty-producing ${e:-} between the literal $ and ('
 bd bd_c $'set --
 w() { declare -a "a=$1$2"; }
-w \'$\'${1}\'(printf x)\'\n' caught 'quote-segment boundary' 'a ${1} between the literal $ and ('
+w '"'"$'$'"'"$'${1}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a ${1} between the literal $ and ('
 bd bd_d $'w() { declare -a "a=$1$2"; }
-w \'$\'$(true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a $(true) between the literal $ and ('
+w '"'"$'$'"'"$'$(true)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a $(true) between the literal $ and ('
 bd bd_e $'w() { declare -a "a=$1$2"; }
-w \'$\'$e\'(printf x)\'\n' caught 'quote-segment boundary' 'a $e between the literal $ and ('
+w '"'"$'$'"'"$'$e'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a $e between the literal $ and ('
 bd bd_f $'w() { declare -a "a=$1$2"; }
-w \'<\'${e:-}\'(printf x)\'\n' caught 'quote-segment boundary' 'a process-substitution fragment, < then an expansion then ('
+w '"'"$'<'"'"$'${e:-}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a process-substitution fragment, < then an expansion then ('
 bd bd_g $'w() { declare -a "a=$1$2"; }
-x="$(printf \'"\')"; w \'$\'"(printf x)"\n' caught 'quote-segment boundary' 'a nested-quote line: the raw line is still scanned'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$'"'"$'"(printf x)"\n' caught 'quote-segment boundary' 'a nested-quote line: the raw line is still scanned'
 bd bd_h $'w() { declare -a "a=$1$2"; }
-w \'$\'"{y}"\n' caught 'quote-segment boundary' '$ then a quote boundary then {'
+w '"'"$'$'"'"$'"{y}"\n' caught 'quote-segment boundary' '$ then a quote boundary then {'
 bd bd_i $'w() { declare -a "a=$1$2"; }
 w $"(printf x)"\n' caught 'quote-segment boundary' 'a locale-quote $" before ('
 bd bd_j $'echo "$(date)" "${x}" "$1" "${x:-y}"
-printf \'%s\\n\' \'{print $1}\' \'a $5 b\'
+printf '"'"$'%s\\n'"'"$' '"'"$'{print $1}'"'"$' '"'"$'a $5 b'"'"$'
 v=$(cmd)\n' ok - 'control: live substitutions, simple expansions, $1 and $5 in single-quoted text, no quote-segment boundary'
 bd bd_k $'# the $(cmd) form and ${x} and "$(y)" are fine in a comment
 echo ok\n' ok - 'control: a comment line with ordinary substitution text'
-bd bd_l $'cat <<\'EOF\' >/dev/null
+bd bd_l $'cat <<'"'"$'EOF'"'"$' >/dev/null
 price $5, ${x}, "$(y)" and a $1}
 EOF
 echo ok\n' ok - 'control: a quoted-heredoc body with ordinary text that never runs'
-bd bd_m $'# note: \'$\'"(printf x)" is what to avoid
+bd bd_m $'# note: '"'"$'$'"'"$'"(printf x)" is what to avoid
 echo ok\n' caught 'quote-segment boundary' 'by design a comment line holding the boundary form is refused, like every raw-line rule (a line-bound waiver clears it)'
-bd bd_n $'cat <<\'EOF\' >/dev/null
-\'$\'"(printf x)"
+bd bd_n $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'$'"'"$'"(printf x)"
 EOF
 echo ok\n' caught 'quote-segment boundary' 'by design a heredoc body holding the boundary form is refused (a line-bound waiver clears it)'
 bd bd_o $'w() { declare -a "a=($1)"; }
-w \'$\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'nested braces in the expansion between the literal $ and ('
+w '"'"$'$'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'nested braces in the expansion between the literal $ and ('
 bd bd_p $'w() { declare -a "a=($1)"; }
-w \'$\'${e:+${f}}\'(printf x)\'\n' caught 'quote-segment boundary' 'nested braces with a + operator'
+w '"'"$'$'"'"$'${e:+${f}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'nested braces with a + operator'
 bd bd_q $'w() { declare -a "a=($1)"; }
-w \'<\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a < fragment, nested braces'
+w '"'"$'<'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a < fragment, nested braces'
 bd bd_r $'w() { declare -a "a=($1)"; }
-w \'>\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a > fragment, nested braces'
+w '"'"$'>'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a > fragment, nested braces'
 bd bd_s $'w() { declare -a "a=($1)"; }
-w \'$\'$( (true) )\'(printf x)\'\n' caught 'quote-segment boundary' 'a command substitution holding a subshell'
+w '"'"$'$'"'"$'$( (true) )'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a command substitution holding a subshell'
 bd bd_t $'w() { declare -a "a=($1)"; }
-w \'$\'$(printf \')\')\'(printf x)\'\n' caught 'quote-segment boundary' 'a command substitution holding a quoted delimiter'
+w '"'"$'$'"'"$'$(printf '"'"$')'"'"$')'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a command substitution holding a quoted delimiter'
 bd bd_u $'w() { declare -a "a=($1)"; }
-w \'$\'$(printf ")")\'(printf x)\'\n' caught 'quote-segment boundary' 'a command substitution holding a double-quoted delimiter'
+w '"'"$'$'"'"$'$(printf ")")'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a command substitution holding a double-quoted delimiter'
 bd bd_v $'w() { declare -a "a=($1)"; }
-w \'$\'${e:-\'}\'}\'(printf x)\'\n' caught 'quote-segment boundary' 'a brace expansion holding a quoted delimiter'
+w '"'"$'$'"'"$'${e:-'"'"$'}'"'"$'}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a brace expansion holding a quoted delimiter'
 bd bd_w $'w() { declare -a "a=($1)"; }
-w \'$\'$((0))\'(printf x)\'\n' caught 'quote-segment boundary' 'an arithmetic expansion between'
+w '"'"$'$'"'"$'$((0))'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'an arithmetic expansion between'
 bd bd_x $'w() { declare -a "a=($1)"; }
-w \'$\'$[0]\'(printf x)\'\n' caught 'quote-segment boundary' 'a bracket arithmetic expansion between'
+w '"'"$'$'"'"$'$[0]'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a bracket arithmetic expansion between'
 bd bd_y $'w() { declare -a "a=($1)"; }
-w \'$\'$!\'(printf x)\'\n' caught 'quote-segment boundary' 'the special parameter $! between'
+w '"'"$'$'"'"$'$!'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the special parameter $! between'
 bd bd_z $'w() { declare -a "a=($1)"; }
-w \'$\'$-\'(printf x)\'\n' caught 'quote-segment boundary' 'the special parameter $- between'
+w '"'"$'$'"'"$'$-'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the special parameter $- between'
 bd bd_za $'w() { declare -a "a=($1)"; }
-w \'$\'$$\'(printf x)\'\n' caught 'quote-segment boundary' 'the special parameter $$ between'
+w '"'"$'$'"'"$'$$'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the special parameter $$ between'
 bd bd_zb $'w() { declare -a "a=($1)"; }
-x="$(printf \'"\')"; w \'$\'$!\'(printf x)\'\n' caught 'quote-segment boundary' 'a nested-quote line, $! between'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$'"'"$'$!'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a nested-quote line, $! between'
 bd bd_zc $'w() { declare -a "a=($1)"; }
-x="$(printf \'"\')"; w \'$\'$[0]\'(printf x)\'\n' caught 'quote-segment boundary' 'a nested-quote line, $[0] between'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$'"'"$'$[0]'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a nested-quote line, $[0] between'
 bd bd_zd $'w() { declare -a "a=($1)"; }
-x="$(printf \'"\')"; w \'$\'${e:-${f:-}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a nested-quote line, nested braces between'
+x="$(printf '"'"$'"'"'"$')"; w '"'"$'$'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a nested-quote line, nested braces between'
 bd bd_ze $'w() { declare -a "a=($1)"; }
 w "$(date)" "${e:-${f:-}}" "$(printf x)" "$((1+2))" "$[3]" "$!" "$-" "$$"\n' ok - 'control: live expansions of every form in double quotes are not boundaries'
 bd bd_zf $'w() { declare -a "a=($1)"; }
-w ${e:-\'$(printf x)\'}\n' caught 'compound assignment' 'quoted opener data inside an expansion is still inspected (the earlier refusal is kept)'
+w ${e:-'"'"$'$(printf x)'"'"$'}\n' caught 'compound assignment' 'quoted opener data inside an expansion is still inspected (the earlier refusal is kept)'
 bd bd_zg $'w() { declare -a "a=($1)"; }
-echo $(w \'$\'${e:-${f:-}}\'(printf x)\')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution is still inspected'
+echo $(w '"'"$'$'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution is still inspected'
 bd bd_zh $'w() { declare -a "a=($1)"; }
-w $(printf \'%s\' \'$\'${e:-${f:-}}\'(printf x)\')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution with quotes'
+w $(printf '"'"$'%s'"'"$' '"'"$'$'"'"$'${e:-${f:-}}'"'"$'(printf x)'"'"$')\n' caught 'quote-segment boundary' 'a boundary inside a command substitution with quotes'
 bd bd_zi $'w() { declare -a "a=($1)"; }
-w \'$\'${e+${f:-{}}\'(printf x)\'\n' caught 'quote-segment boundary' 'a bare { inside a brace expansion is literal'
+w '"'"$'$'"'"$'${e+${f:-{}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a bare { inside a brace expansion is literal'
 bd bd_zj $'w() { declare -a "a=($1)"; }
-w \'<\'${e+${f:-{}}\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a < fragment'
+w '"'"$'<'"'"$'${e+${f:-{}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the same after a < fragment'
 bd bd_zk $'w() { declare -a "a=($1)"; }
-w \'>\'${e+${f:-{}}\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a > fragment'
+w '"'"$'>'"'"$'${e+${f:-{}}'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the same after a > fragment'
 bd bd_zl $'w() { declare -a "a=($1)"; }
-w \'$\'$(printf %s ${e+)})\'(printf x)\'\n' caught 'quote-segment boundary' 'a ) inside a nested brace expansion is literal'
+w '"'"$'$'"'"$'$(printf %s ${e+)})'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a ) inside a nested brace expansion is literal'
 bd bd_zm $'w() { declare -a "a=($1)"; }
-w \'<\'$(printf %s ${e+)})\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a < fragment'
+w '"'"$'<'"'"$'$(printf %s ${e+)})'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the same after a < fragment'
 bd bd_zn $'w() { declare -a "a=($1)"; }
-w \'>\'$(printf %s ${e+)})\'(printf x)\'\n' caught 'quote-segment boundary' 'the same after a > fragment'
-bd bd_zo $'# \'<$!(\'
+w '"'"$'>'"'"$'$(printf %s ${e+)})'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'the same after a > fragment'
+bd bd_zo $'# '"'"$'<$!('"'"$'
 echo ok\n' caught 'quote-segment boundary' 'a special parameter in single quotes inside a comment'
-bd bd_zp $'cat <<\'EOF\' >/dev/null
-\'<$!(\'
+bd bd_zp $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'<$!('"'"$'
 EOF
 echo ok\n' caught 'quote-segment boundary' 'a special parameter in single quotes inside a heredoc body'
 bd bd_zq $'w() { declare -a "a=($1)"; }
-w \'$\'${e:-${f
+w '"'"$'$'"'"$'${e:-${f
 echo ok\n' caught 'quote-segment boundary' 'an unterminated expansion is refused (fail closed)'
-bd bd_zr $'echo \'<$[0](\'\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes'
-bd bd_zs $'# \'<$[0](\'
+bd bd_zr $'echo '"'"$'<$[0]('"'"$'\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes'
+bd bd_zs $'# '"'"$'<$[0]('"'"$'
 echo ok\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes in a comment'
-bd bd_zt $'cat <<\'EOF\' >/dev/null
-\'<$[0](\'
+bd bd_zt $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'<$[0]('"'"$'
 EOF
 echo ok\n' caught 'quote-segment boundary' 'bracket arithmetic inside single quotes in a heredoc body'
-bd bd_zu $'# $(echo \'$\'${e:-${f:-}}(true))
+bd bd_zu $'# $(echo '"'"$'$'"'"$'${e:-${f:-}}(true))
 echo ok\n' caught 'quote-segment boundary' 'a boundary before a bare ( inside a command substitution'
-bd bd_zv $'echo "$(printf \'"\')"${e}\n' caught 'compound assignment' 'an earlier refusal is kept: a uncertain quote pattern next to an expansion'
+bd bd_zv $'echo "$(printf '"'"$'"'"'"$')"${e}\n' caught 'compound assignment' 'an earlier refusal is kept: a uncertain quote pattern next to an expansion'
 bd bd_zw $'# $(printf \\$(x))
 echo ok\n' caught 'compound assignment' 'an earlier refusal is kept: an escaped opener behind a bare ('
 bd bd_zx $'w() { declare -a "a=($1)"; }
-w \'$\'$(# )
-:)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment inside a command substitution makes its closer uncertain'
+w '"'"$'$'"'"$'$(# )
+:)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a comment inside a command substitution makes its closer uncertain'
 bd bd_zy $'w() { declare -a "a=($1)"; }
-w \'$\'$(true;# )
-true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after a ; inside a command substitution'
+w '"'"$'$'"'"$'$(true;# )
+true)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a comment after a ; inside a command substitution'
 bd bd_zz $'w() { declare -a "a=($1)"; }
-w \'$\'$(true|# )
-true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after a | inside a command substitution'
+w '"'"$'$'"'"$'$(true|# )
+true)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a comment after a | inside a command substitution'
 bd bd_zza $'w() { declare -a "a=($1)"; }
-w \'$\'$(true&&# )
-true)\'(printf x)\'\n' caught 'quote-segment boundary' 'a comment after && inside a command substitution'
-bd bd_zzb $'echo \'<\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets inside $[ ]'
-bd bd_zzc $'echo \'<$[1+$[0]](\'\n' caught 'quote-segment boundary' 'a nested $[ ] in single quotes'
-bd bd_zzd $'echo \'$\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets, a $ prefix'
-bd bd_zze $'echo \'>\'$[a[0]]\'(\'\n' caught 'quote-segment boundary' 'nested brackets, a > prefix'
+w '"'"$'$'"'"$'$(true&&# )
+true)'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a comment after && inside a command substitution'
+bd bd_zzb $'echo '"'"$'<'"'"$'$[a[0]]'"'"$'('"'"$'\n' caught 'quote-segment boundary' 'nested brackets inside $[ ]'
+bd bd_zzc $'echo '"'"$'<$[1+$[0]]('"'"$'\n' caught 'quote-segment boundary' 'a nested $[ ] in single quotes'
+bd bd_zzd $'echo '"'"$'$'"'"$'$[a[0]]'"'"$'('"'"$'\n' caught 'quote-segment boundary' 'nested brackets, a $ prefix'
+bd bd_zze $'echo '"'"$'>'"'"$'$[a[0]]'"'"$'('"'"$'\n' caught 'quote-segment boundary' 'nested brackets, a > prefix'
 bd bd_zzf $'w() { declare -a "a=($1)"; }
-w \'$\'`true`\'(printf x)\'\n' caught 'quote-segment boundary' 'a backtick substitution is a gap'
+w '"'"$'$'"'"$'`true`'"'"$'(printf x)'"'"$'\n' caught 'quote-segment boundary' 'a backtick substitution is a gap'
 bd bd_zzg $'# $$((0))(
 echo ok\n' caught 'quote-segment boundary' 'a $$ before an arithmetic expansion and ('
 bd bd_zzh $'# $${x:-${y:-}}(
 echo ok\n' caught 'quote-segment boundary' 'a $$ before a brace expansion and ('
-bd bd_zzi $'# \'<\'$(case x in x) :;; esac)\'(x)\'
+bd bd_zzi $'# '"'"$'<'"'"$'$(case x in x) :;; esac)'"'"$'(x)'"'"$'
 echo ok\n' caught 'quote-segment boundary' 'a case-arm ) inside a command substitution in a comment'
-bd bd_zzj $'cat <<\'EOF\' >/dev/null
-\'<\'$(case x in x) :;; esac)\'(x)\'
+bd bd_zzj $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'<'"'"$'$(case x in x) :;; esac)'"'"$'(x)'"'"$'
 EOF
 echo ok\n' caught 'quote-segment boundary' 'a case-arm ) inside a command substitution in a heredoc body'
-bd bd_zzk $'echo \'<$[a[b[0]]](x)\'\n' caught 'quote-segment boundary' 'deeply nested brackets inside single quotes'
-bd bd_zzl $'echo \'<$[1+$[1+$[0]]](x)\'\n' caught 'quote-segment boundary' 'nested $[ ] three deep inside single quotes'
-bd bd_zzm $'echo \'<$["]"](x)\'\n' caught 'quote-segment boundary' 'a quoted ] inside $[ ] is uncertain'
-bd bd_zzn $'# \'<$[a[b[0]]](x)\'
+bd bd_zzk $'echo '"'"$'<$[a[b[0]]](x)'"'"$'\n' caught 'quote-segment boundary' 'deeply nested brackets inside single quotes'
+bd bd_zzl $'echo '"'"$'<$[1+$[1+$[0]]](x)'"'"$'\n' caught 'quote-segment boundary' 'nested $[ ] three deep inside single quotes'
+bd bd_zzm $'echo '"'"$'<$["]"](x)'"'"$'\n' caught 'quote-segment boundary' 'a quoted ] inside $[ ] is uncertain'
+bd bd_zzn $'# '"'"$'<$[a[b[0]]](x)'"'"$'
 echo ok\n' caught 'quote-segment boundary' 'deep brackets in a comment'
-bd bd_zzo $'cat <<\'EOF\' >/dev/null
-\'<$[a[b[0]]](x)\'
+bd bd_zzo $'cat <<'"'"$'EOF'"'"$' >/dev/null
+'"'"$'<$[a[b[0]]](x)'"'"$'
 EOF
 echo ok\n' caught 'quote-segment boundary' 'deep brackets in a heredoc body'
-bd bd_zzp $'echo \'<$[1+$[1+$[0]]](\'\n' caught 'quote-segment boundary' 'unbalanced-looking nested $[ ] then ('
+bd bd_zzp $'echo '"'"$'<$[1+$[1+$[0]]]('"'"$'\n' caught 'quote-segment boundary' 'unbalanced-looking nested $[ ] then ('
 bd bd_zzq $'echo "<$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a$a>"
 echo ok\n' ok - 'control: 28 adjacent simple expansions must scan in linear time and are not a boundary'
-bd bd_zzr $'echo <$(echo \'<$!(x)\')z\n' caught 'quote-segment boundary' 'a boundary inside a quoted span inside an expansion (the outer candidate fails first)'
-bd bd_zzs $'echo <$(echo \'<$[0](x)\')z\n' caught 'quote-segment boundary' 'a $[ ] boundary inside a quoted span inside an expansion'
-bd bd_zzt $'# <${x:-<\'\'{}
+bd bd_zzr $'echo <$(echo '"'"$'<$!(x)'"'"$')z\n' caught 'quote-segment boundary' 'a boundary inside a quoted span inside an expansion (the outer candidate fails first)'
+bd bd_zzs $'echo <$(echo '"'"$'<$[0](x)'"'"$')z\n' caught 'quote-segment boundary' 'a $[ ] boundary inside a quoted span inside an expansion'
+bd bd_zzt $'# <${x:-<'"'"$''"'"$'{}
 echo ok\n' caught 'quote-segment boundary' 'a quote-only boundary inside a brace expansion in a comment'
-bd bd_zzu $'# <$(echo <\'\'{)
+bd bd_zzu $'# <$(echo <'"'"$''"'"$'{)
 echo ok\n' caught 'quote-segment boundary' 'a quote-only boundary inside a command substitution in a comment'
-bd bd_zzv $'# <`echo <\'\'{`
+bd bd_zzv $'# <`echo <'"'"$''"'"$'{`
 echo ok\n' caught 'quote-segment boundary' 'a quote-only boundary inside a backtick span in a comment'
-bd bd_zzw $'cat <<\'EOF\' >/dev/null
-<${x:-<\'\'{}
+bd bd_zzw $'cat <<'"'"$'EOF'"'"$' >/dev/null
+<${x:-<'"'"$''"'"$'{}
 EOF
 echo ok\n' caught 'quote-segment boundary' 'the brace-expansion form in a heredoc body'
-bd bd_zzy $'# <"${x:-"${y:-"}"}"}\'(x)
+bd bd_zzy $'# <"${x:-"${y:-"}"}"}'"'"$'(x)
 echo ok\n' caught 'quote-segment boundary' 'a nested expansion inside double quotes inside an expansion: the end is uncertain'
-bd bd_zzz $'# <"${x:-$\'\\\'}\'}\'(x)
+bd bd_zzz $'# <"${x:-$'"'"$'\\'"'"$'}'"'"$'}'"'"$'(x)
 echo ok\n' caught 'quote-segment boundary' 'an ANSI-C quote with an escaped quote inside an expansion'
-bd bd_zzza $'echo \'<$(printf "%s" "$(printf ")")")(x)\'\n' caught 'quote-segment boundary' 'a nested quoted substitution inside a command substitution'
+bd bd_zzza $'echo '"'"$'<$(printf "%s" "$(printf ")")")(x)'"'"$'\n' caught 'quote-segment boundary' 'a nested quoted substitution inside a command substitution'
 # the boundary scan must stay linear on deeply nested input (Codex seats A and B, PR 459 round 7): each case builds its line in python and asserts the scan of one line takes under 2 seconds
 tmscan() { # tmscan LABEL PYEXPR : PYEXPR builds the line; the judge's dollar_boundary must finish in time and refuse nothing
   local label="$1" out rc=0
@@ -4371,8 +4371,8 @@ tmscan "16000 nested arithmetic brackets after <" '"# " + "<$[" * 16000 + "x" + 
 tmscan "64000 braces in a comment" '"# " + "{" * 64000'
 tmscan "16000 escaped backticks after <" '"# " + ("<" + chr(92) + "`") * 16000 + "`z"'
 tmscan "16000 dollar pairs after a nested substitution" '"echo \"$(true)\" " + "$$a " * 16000'
-sb sb_dj $'let \'b[$\'\\(\'/usr/bin/touch mk)]=1\'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
-sb sb_dk $'declare -i x=\'b[$\'\\(\'/usr/bin/touch mk)]\'\n' caught 'holds a substitution' 'the same in a declare -i value'
+sb sb_dj $'let '"'"$'b[$'"'"$'\\('"'"$'/usr/bin/touch mk)]=1'"'"$'\n' caught 'holds a substitution' 'a backslash splits the opener inside a let subscript'
+sb sb_dk $'declare -i x='"'"$'b[$'"'"$'\\('"'"$'/usr/bin/touch mk)]'"'"$'\n' caught 'holds a substitution' 'the same in a declare -i value'
 dl sb_w1 'echo "x[${y}]"' '[D("echo \"x[${y}]\"")]' ok -
 dl sb_w2 'echo "x[${y}]"' '[]' caught 'holds a substitution'
 # the waiver: the existing line-bound deny exception mechanism, nothing new
@@ -4550,3 +4550,4 @@ EXPECT=2031
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
+

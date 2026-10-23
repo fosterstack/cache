@@ -1137,7 +1137,7 @@
     },
     {
       "path": "bin/acceptance-maven.sh",
-      "sha256": "0fe30c0c7c1e7e666c36c7952a5d1294991e985f43cd72b5814cb32c00d8c503",
+      "sha256": "bd10fd3badd0a4f8fe1ba9e014446266b9adf02de8b4d5e319cc968fde7407ae",
       "tools": [
         "awk",
         "bash",
@@ -1151,7 +1151,7 @@
     },
     {
       "path": "bin/acceptance-maven-capped.sh",
-      "sha256": "5f2769061c9fffc466f694072c43c9a06c7f13c25158164171eb7b880e18ea38",
+      "sha256": "5afe2ee9a14d189953385b36f9a0c7ffbbf32f383b2e7ea17b7fdb0e4fecbd84",
       "tools": [
         "awk",
         "bash",
