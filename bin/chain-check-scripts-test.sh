@@ -1311,6 +1311,8 @@ gvcases_=(
   'a template line added in a second step|printf "  - runs: true\n" >> "$gvt/build/melange.yaml"'
   'an extra subpackage with a quoted runs key before the pipeline|sed -i.bak "s#^pipeline:#subpackages:\n  - name: audit-extra\n    pipeline:\n      - \"runs\": |\n          export GOFLAGS=-mod=mod\npipeline:#" "$gvt/build/melange.yaml"'
   'an extra subpackage with an unquoted runs key before the pipeline|sed -i.bak "s#^pipeline:#subpackages:\n  - name: audit-extra\n    pipeline:\n      - runs: |\n          export GOFLAGS=-mod=mod\npipeline:#" "$gvt/build/melange.yaml"'
+  'a second package key after the pipeline holding nested content|printf "package:\n  extra: |\n    export GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
+  'a second environment key after the pipeline|printf "environment:\n  contents:\n    packages:\n      - x=1\n" >> "$gvt/build/melange.yaml"'
   'a subpackages key after the pipeline|printf "subpackages:\n  - name: x\n" >> "$gvt/build/melange.yaml"'
   'a pipeline key under the package keys|sed -i.bak "s#^  epoch: 0#  epoch: 0\n  pipeline: x#" "$gvt/build/melange.yaml"'
   'a package list line that is not a package|sed -i.bak "s#^      - busybox=#      - evil; true\n      - busybox=#" "$gvt/build/melange.yaml"'
@@ -1382,7 +1384,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=471
+EXPECT=473
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

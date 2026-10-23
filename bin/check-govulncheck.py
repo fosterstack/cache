@@ -112,9 +112,9 @@ def read_recipe(rec, fips):
             continue
         if not (l in ("package:", "environment:", "pipeline:") or PRE_LINE.fullmatch(l)):
             fail("%s line %d is outside the pipeline and is not one of the recipe's package, licence and package-list lines: %r" % (rec, k + 1, l.strip()))
-    for l in lines:
-        if l and not l.startswith((" ", "#")) and l not in ("package:", "environment:", "pipeline:"):
-            fail("%s has a top-level key other than package, environment and pipeline: %r" % (rec, l))
+    tops = [l for l in lines if l and not l.startswith((" ", "#"))]
+    if tops != ["package:", "environment:", "pipeline:"]:
+        fail("%s has top-level keys %r, not exactly package, environment and pipeline once each, in that order (a repeated key would hide nested content from the pipeline-only reading)" % (rec, tops))
     pkgs, fips_exports, proofs, other = [], 0, 0, []
     for k in range(pipes[0] + 1, len(lines)):
         l = lines[k]
