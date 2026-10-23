@@ -82,3 +82,22 @@ reader is entitled to check:
 
 State the evidence in `impact_statement` as a command a reader can run. A statement
 that cannot be independently reproduced is an assertion, not an attestation.
+
+## Which images a statement covers (one grammar)
+
+A statement's image product is `pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache`, with at most two
+more qualifiers: `variant=production` or `variant=fips`, and `arch=amd64` or `arm64`. Every reader of this
+file (the pull-request gate, the scanner panel, the rescan's matcher and the generator of the three forms)
+reads it the same way: the query is split on `&` as written (no percent-decoding), every part is `key=value`
+with a value, the keys are only `repository_url`, `variant` and `arch` in lower case, each at most once. A
+product written any other way (a blank, repeated, upper-case, encoded or unknown qualifier, `variant=debug`,
+an unknown architecture) is not accepted: the readers that skip a product cover nothing with it and the
+readers that refuse a document stop, so a malformed statement never widens a suppression.
+
+- `variant=` covers the index and both children of that variant; `arch=` covers the children of that
+  architecture in both variants (an index has no one architecture); both together name one child.
+- Prefer scoping a statement by the package it names (a `subcomponents` entry) over scoping it by image: a
+  package-scoped statement is applied by every scanner.
+- **Known limit:** Grype, and through the attestation Docker Scout, never see the `variant=` / `arch=`
+  qualifiers, so a statement scoped by them is applied by Inspector, Google and osv-scanner but not by Grype.
+  That is the safe direction (Grype keeps blocking). No statement is scoped this way today.

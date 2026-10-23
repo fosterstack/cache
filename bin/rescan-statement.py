@@ -141,7 +141,7 @@ def cmd_find_issue(args):
 
 
 OUR_OCI_REPOS = ("ghcr.io/fosterstack/cache", "ghcr.io/fosterstack/cache-candidates")
-VEX_VARIANTS = ("production", "debug", "fips")
+VEX_VARIANTS = ("production", "fips")   # v0.3.0 ships no :debug image (rc-5a H)
 VEX_ARCHS = ("amd64", "arm64")
 _PURL_TYPE = re.compile(r"[a-z][a-z0-9.+-]*")
 _OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
