@@ -158,7 +158,17 @@ def grade_key(rest, sign_record):
 def grade_token(rest):
     claims = [line[len("claims: "):] for line in rest if line.startswith("claims: ")]
     if not claims:
-        print("error: the attempt wrote no claims of the token it fetched, so it cannot be graded", file=sys.stderr)
+        # no token request address in the job (Build holds no id-token permission): isolated, but only on the step's own proof that the address is absent,
+        # that it looked at /proc environ files (a count above zero), and that no process on the runner held a request address
+        absent = any(line.strip() == "request-env: absent" for line in rest)
+        counts = [int(m.group(1)) for line in rest for m in [re.fullmatch(r"environ-files: ([0-9]+)", line.strip())] if m]
+        holders = [line for line in rest if "holds a token request address" in line]
+        if absent and counts and counts[0] > 0 and not holders:
+            refuse("runner", "nothing usable for Sign: the job has no token request address (ACTIONS_ID_TOKEN_REQUEST_URL and _TOKEN unset), so no token can be obtained")
+        if absent and holders:
+            print("error: a process on this runner holds a token request address although the job's own environment has none, so it cannot be graded", file=sys.stderr)
+            sys.exit(2)
+        print("error: the attempt wrote no claims of the token it fetched and no proof that no token request address exists, so it cannot be graded", file=sys.stderr)
         sys.exit(2)
     m = re.fullmatch(r"[A-Za-z0-9_-]+\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]*", claims[0].strip())
     if not m:

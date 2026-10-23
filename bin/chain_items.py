@@ -472,7 +472,7 @@ def check_record_env(stage, envelope, payload):
         refuse(stage, "env: the record names " + " ".join(found))
     if re.search(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*", text):
         refuse(stage, "env: the record holds a compact JWT")
-    if re.search(r"\bgh[pousr]_[A-Za-z0-9]{20,}", text):
+    if re.search(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}", text):
         refuse(stage, "env: the record holds a GitHub token")
 
 

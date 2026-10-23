@@ -300,6 +300,7 @@ if a[:2] == ["policy", "make"]:
 if a[:1] == ["verify"]:
     rec = a[a.index("--record") + 1]
     if not os.path.isfile(rec): print("refused at rebuild: record missing", file=sys.stderr); sys.exit(1)
+    if os.path.exists(os.path.join(os.path.dirname(rec), "not-signed-by-sign")): print("refused at rebuild: the record carries no signature", file=sys.stderr); sys.exit(1)
     print("ok"); sys.exit(0)
 sys.exit(subprocess.call([sys.executable, "-I", "-B", "$root/bin/chain-verify.py"] + a))
 WRAP
@@ -368,6 +369,18 @@ cmpmk "$work/cmw3"; cp "$fx/pair/a.apk" "$work/cmw3/rapks/ubuntu-24.04/x86_64/fs
 NOREC=1 cmpexpect "the signed record names a Rebuild apk that is not there (a product with no file) -> refused (exit 2)" 2 'bind of Rebuild.*digest|digest' "$work/cmw3"
 cmpmk "$work/cmw4"; cmprec "$work/cmw4"; cp "$fx/pair/a.apk" "$work/cmw4/rapks/ubuntu-24.04/x86_64/fscache-extra-0.3.0-r0.apk"
 NOREC=1 cmpexpect "a Rebuild apk the signed record does not name (a file with no product) -> refused (exit 2)" 2 'bind of Rebuild.*digest|digest' "$work/cmw4"
+cmpmk "$work/cmw5"; cmprec "$work/cmw5"; for r in ubuntu-24.04 ubuntu-24.04-arm; do : >"$work/cmw5/witness-rapk-$r/not-signed-by-sign"; done
+NOREC=1 cmpexpect "a record Sign did not sign (the verify double finds it unsigned) -> refused (exit 2) at the verify call" 2 'verify.*record|no signature' "$work/cmw5"
+# Mutation: the same tree with the verify call cut out of release-compare.py must NOT refuse the unsigned record, which proves the case above is held by that call and nothing else.
+cmpmk "$work/cmw6"; cmprec "$work/cmw6"; cp -R "$work/cmw5/witness-rapk-ubuntu-24.04" "$work/cmw5/witness-rapk-ubuntu-24.04-arm" "$work/cmw6/" 2>/dev/null
+python3 - "$work/cmw6/bin/release-compare.py" <<'PYMUT'
+import sys
+p = sys.argv[1]; s = open(p).read(); cut = 'for args in (["verify", "--policy", "policy.json", "--stage", "rebuild", "--record", rec],\n                     ["bind"'
+assert cut in s, "the verify call moved: update this mutation"
+open(p, "w").write(s.replace(cut, 'for args in (["policy", "make", "--template", ".github/policy/release-policy.template.json", "--ref", ref, "--out", "policy.json"],\n                     ["bind"'))
+PYMUT
+NOREC=1 cmprun "$work/cmw6"
+t "rule 22" "release-compare mutation: with the verify call removed the unsigned record is accepted (so the case above fails if the call is dropped)" bash -c "test \"\$(cat '$work/rc')\" = 0"
 cmpmk "$work/cm10"; cp "$pr/b.apk" "$work/cm10/apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
 cmpexpect "a Build apk already signed by anything but assembly.rsa.pub -> refused (exit 2), naming the signer" 2 'assembly\.rsa\.pub' "$work/cm10"
 cmpmk "$work/cm11"; cp "$pr/b.apk" "$work/cm11/rapks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"
