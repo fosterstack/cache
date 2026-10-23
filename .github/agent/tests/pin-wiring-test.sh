@@ -868,9 +868,20 @@ case_ ps4-ifs-prompt            bad "d['jobs']['allowlist']['env'] = {'IFS': 'x'
 case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.so'}"
 
 # the release chain's required steps (REQ-CHAIN-001..003 and the suites that followed), all in the allowlist-chain job: each mutation of each step is caught
-csteps='d["jobs"]["allowlist-chain"]["steps"]'
+# the chain suites live in the four shards (REQ-CI-001): each case below mutates the shard that holds the suite (found in the real ci.yml)
+shard_of() { python3 - "$here/.github/workflows/ci.yml" "$1" "$2" <<'PYF'
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])); mode, key = sys.argv[2], sys.argv[3]
+for k in ("allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowlist-chain-4"):
+    for st in d["jobs"][k]["steps"]:
+        r = (st.get("run") or "")
+        if (mode == "exact" and r.strip() == key) or (mode == "has" and key in r):
+            print(k); sys.exit(0)
+sys.exit(1)
+PYF
+}
 for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash bin/inspector-reuse-test.sh" "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/vex-index-test.sh </dev/null" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh" "bash bin/chain-check-scripts-test.sh" "bash bin/chain-check-wiring-test.sh" "bash bin/verify-release-guide-test.sh </dev/null" "bash bin/chain-install-crane-test.sh" "bash bin/chain-release-wiring-test.sh" "bash bin/chain-release-scripts-test.sh" "bash bin/chain-release-metadata-test.sh" "bash bin/vex-guide-test.sh" "bash bin/vex-live-test-test.sh" "bash .github/agent/tests/vex-live-pins-test.sh"; do
-  n=$(basename "${r##* }" .sh); cs="[s for s in $csteps if (s.get('run') or '').strip() == '$r'][0]"
+  n=$(basename "${r##* }" .sh); csteps="d[\"jobs\"][\"$(shard_of exact "$r")\"][\"steps\"]"; cs="[s for s in $csteps if (s.get('run') or '').strip() == '$r'][0]"
   case_ "$n-removed"     bad "$csteps[:] = [s for s in $csteps if (s.get('run') or '').strip() != '$r']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
   case_ "$n-continue"    bad "$cs['continue-on-error'] = 'true'"
@@ -886,7 +897,7 @@ for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash b
 done
 # the two suite-floor guard steps (an `if` or an `env` on purpose): every key and value is judged
 for g in "floors-vs-base" "suite-guard-run.py"; do
-  gs="[s for s in $csteps if '$g' in (s.get('run') or '')][0]"
+  csteps="d[\"jobs\"][\"$(shard_of has "$g")\"][\"steps\"]"; gs="[s for s in $csteps if '$g' in (s.get('run') or '')][0]"
   case_ "guard-$g-removed"  bad "$csteps[:] = [s for s in $csteps if '$g' not in (s.get('run') or '')]"
   case_ "guard-$g-if"       bad "$gs['if'] = 'false'"
   case_ "guard-$g-env"      bad "$gs['env'] = {'CHAIN_TEST_REQUIRE_NETCUT': '0'}"
@@ -896,6 +907,7 @@ for g in "floors-vs-base" "suite-guard-run.py"; do
   case_ "guard-$g-continue" bad "$gs['continue-on-error'] = 'true'"
   case_ "guard-$g-in-allowlist" bad "x = $gs; $csteps.remove(x); $steps.append(x)"
 done
+csteps="d[\"jobs\"][\"$(shard_of has chain-verify-test.sh)\"][\"steps\"]"
 case_ chain-verify-no-netcut bad "[s for s in $csteps if 'chain-verify-test.sh' in (s.get('run') or '')][0]['run'] = 'bash bin/chain-verify-test.sh'"
 
 # judge mode (the trusted gate, .github/workflows/agent-review-gate.yml): PIN_WIRING_JUDGE_GIT=<commit> judges THAT
@@ -935,14 +947,14 @@ case_ split-job-runs-on       bad "d['jobs']['allowlist-persona']['runs-on'] = '
 case_ split-job-continue      bad "d['jobs']['allowlist-chain']['steps'][-1]['continue-on-error'] = 'true'"
 case_ split-step-if           bad "d['jobs']['allowlist-persona']['steps'][-1]['if'] = 'false'"
 case_ split-step-shell        bad "d['jobs']['allowlist-pins-auditor']['steps'][-2]['shell'] = 'bash -c true {0}'"
-case_ split-anchor-gone       bad "st = d['jobs']['allowlist-chain']['steps']; st[:] = [x for x in st if 'assemble-image-test' not in (x.get('run') or '')]"
+case_ split-anchor-gone       bad "st = d['jobs']['allowlist-chain-1']['steps']; st[:] = [x for x in st if 'assemble-image-test' not in (x.get('run') or '')]"
 case_ split-no-checkout       bad "d['jobs']['allowlist-persona']['steps'].pop(0)"
 case_ split-job-env           bad "d['jobs']['allowlist-chain']['env'] = {'X': '1'}"
 case_ split-env-bash-env      bad "d['jobs']['allowlist-chain']['steps'][-1]['env'] = {'BASH_ENV': '/tmp/x'}"
 case_ split-env-shellopts     bad "d['jobs']['allowlist-persona']['steps'][-1]['env'] = {'SHELLOPTS': 'noexec'}"
 case_ split-suite-deleted     bad "st = d['jobs']['allowlist-persona']['steps']; st[:] = [x for x in st if 'persona-uat-agent-test' not in (x.get('run') or '')]"
 case_ split-suite-or-true     bad "x = [x for x in d['jobs']['allowlist-persona']['steps'] if 'persona-uat-agent-test' in (x.get('run') or '')][0]; x['run'] += ' || true'"
-case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain']['steps']; st[-1], st[-2] = st[-2], st[-1]"
+case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain-4']['steps']; st[-1], st[-2] = st[-2], st[-1]"
 case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append({'name': 'x', 'run': 'true'})"
 # REQ-CI-001 (advisor Oct 23: CI speed, no check dropped, exactly once): allowlist-chain is ALSO accepted split into four parallel jobs
 # (allowlist-chain-1..4) plus a gate job that keeps the name allowlist-chain. This helper builds that form from the real ci.yml's own job, independently of the judge:
@@ -952,6 +964,8 @@ import copy
 GROUPS = [["bash bin/assemble-image-test.sh"], ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
           ["bash bin/build-apk-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"]]   # the rest is the fourth shard (it keeps the grype installer with its consumers)
 def split_chain(d):
+    if "allowlist-chain-1" in d["jobs"]:   # ci.yml is already split: the cases then mutate the real shards and gate
+        return
     old = d["jobs"]["allowlist-chain"]
     steps = old["steps"]
     pre, suites = steps[:5], steps[5:]
