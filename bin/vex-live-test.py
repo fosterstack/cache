@@ -600,7 +600,7 @@ def scout_vex(vex, images, fixture_digest, cve, repository):
 
 def scout_author_pattern(vex):
     """The anchored, escaped author of the file, as the --vex-author pattern: Scout applies only statements whose author matches (its default is Docker's own).
-    The same computation as bin/scout-vex-scan.sh."""
+    This is the pattern the rescan's Scout commands pass as --vex-author."""
     author = vex.get("author") if isinstance(vex, dict) else None
     if not isinstance(author, str) or not author.strip():
         raise ValueError("the OpenVEX file has no author")

@@ -795,7 +795,7 @@ check("scout-vex: the shipped statements unchanged plus one not_affected stateme
       and sadded[0]["vulnerability"]["name"] == "CVE-2023-9999"
       and sadded[0]["products"] == [{"@id": "pkg:oci/cache@%s?repository_url=%s" % (FIX, DHREPO)}], sadded)
 check("scout-vex: the document keeps our author (Scout applies only statements of an author the scan names)", sv["author"] == real_vex["author"])
-check("scout author pattern: the anchored, escaped author of the shipped file (the same as bin/scout-vex-scan.sh)", L.scout_author_pattern(real_vex) == "^FosterStack LLC$", L.scout_author_pattern(real_vex))
+check("scout author pattern: the anchored, escaped author of the shipped file", L.scout_author_pattern(real_vex) == "^FosterStack LLC$", L.scout_author_pattern(real_vex))
 check("scout author pattern: regex characters of the author are escaped",
       L.scout_author_pattern({"author": "A.B (x) [y]*"}) == r"^A\.B \(x\) \[y\]\*$", L.scout_author_pattern({"author": "A.B (x) [y]*"}))
 for why, doc in (("no author", {}), ("a blank author", {"author": "  "}), ("a non-string author", {"author": 5})):
@@ -806,7 +806,7 @@ for why, doc in (("no author", {}), ("a blank author", {"author": "  "}), ("a no
     check("scout author pattern refuses %s" % why, got == "refused", got)
 sh_author = subprocess.run(["bash", "-c", 'author=$(jq -er .author "$0/.vex/fosterstack-cache.openvex.json"); printf "^%s\\$" "$(printf %s "$author" | sed \'s/[][\\.*^$+?(){}|/]/\\\\&/g\')"', root],
                            capture_output=True, text=True).stdout
-check("scout author pattern equals the shell script's computation", L.scout_author_pattern(real_vex) == sh_author, sh_author)
+check("scout author pattern equals the jq and sed computation", L.scout_author_pattern(real_vex) == sh_author, sh_author)
 
 # wrap-index: a single-platform image pulled as an OCI layout becomes the one-child index the attestation tool needs (the pinned fixture is a single image)
 import hashlib as _h

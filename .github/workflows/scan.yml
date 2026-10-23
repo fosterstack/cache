@@ -147,7 +147,7 @@ jobs:
       - name: load every variant/platform child into the docker daemon
         run: |
           set -euo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image" >&2; exit 1; }   # on the runner image; no package install at run time
           : > /tmp/refs.txt
           for v in production fips; do
             for arch in amd64 arm64; do

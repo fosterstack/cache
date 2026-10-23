@@ -101,7 +101,6 @@ ALLOW_PATTERNS=(
   '^bin/dependabot-reviewer-test\.sh$'
   '^bin/dependency-lanes-test\.sh$'
   '^bin/panel\.py$'
-  '^bin/scout-vex-scan\.sh$'
   '^bin/scout-selfcheck\.py$'
   '^bin/scout-root-cause(\.py|\.sh|-test\.sh)$'
   '^bin/scout-older-versions(\.sh|-test\.sh)$'
