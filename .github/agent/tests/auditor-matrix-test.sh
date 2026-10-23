@@ -2473,7 +2473,7 @@ pc="$("$PY" -c "
 import importlib.util,os
 os.environ['AUDITOR_MODEL_PRIMARY']='m'
 spec=importlib.util.spec_from_file_location('c','.github/agent/bin/auditor-adjudicator-client.py'); C=importlib.util.module_from_spec(spec); spec.loader.exec_module(C)
-class B: text='Analysis: '+'{\"pullable\": false, \"hold\": \"upstream-held\", \"component_fixed\": \"3.0.13\", \"lift_trigger\": \"nodejs >= 20.11.0 embeds openssl >= 3.0.13\", \"candidate_release\": null}'
+class B: text='Analysis: '+'{\"pullable\": false, \"hold\": \"upstream-held\", \"component_fixed\": \"3.0.13\", \"lift_trigger\": {\"carrier\": \"nodejs\", \"min_version\": \"20.11.0\"}, \"candidate_release\": null}'
 class Msg: content=[B()]; usage=None
 class _M:
     @staticmethod
@@ -2481,7 +2481,7 @@ class _M:
 class Client: messages=_M()
 req={'kind':'pullability','finding_id':'CVE-X','component':'openssl','component_fixed':'3.0.13','carrier':{'carrier':'nodejs','carrier_version':'18.19.0'}}
 ans=C._handle(req,Client())
-good=ans.get('pullable') is False and ans.get('hold')=='upstream-held' and 'nodejs' in (ans.get('lift_trigger') or '')
+good=ans.get('pullable') is False and ans.get('hold')=='upstream-held' and (ans.get('lift_trigger') or {}).get('carrier')=='nodejs'
 print('OK' if good else 'BAD:%r'%ans)" 2>/dev/null | tail -1)"
 { eq "$pc" "OK"; } && ok || no "production client answers pullability" "$pc"
 

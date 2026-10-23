@@ -396,9 +396,10 @@ class LiftTrigger(Base):
     def test_the_shape_is_checked(self):
         self.assertEqual(R._lift_trigger(self.GOOD), self.GOOD)
         self.assertEqual(R._lift_trigger({"carrier": " nodejs ", "min_version": " v20.2.1 "}), {"carrier": "nodejs", "min_version": "v20.2.1"})
+        self.assertEqual(R._lift_trigger({"carrier": "openssl", "min_version": "1.1.1n"}), {"carrier": "openssl", "min_version": "1.1.1n"})        # a letter suffix is a real version
         for bad in ("nodejs >= 20.2 embeds libz 1.1", "", None, 5, [], {}, {"carrier": "nodejs"}, {"min_version": "20.2"},
                     {"carrier": "nodejs", "min_version": "20.2", "extra": 1}, {"carrier": "", "min_version": "20.2"}, {"carrier": "nodejs", "min_version": ""},
-                    {"carrier": "nodejs", "min_version": "soon"}, {"carrier": "nodejs", "min_version": "20.2; rm"}, {"carrier": 5, "min_version": "20.2"},
+                    {"carrier": "nodejs", "min_version": "soon"}, {"carrier": "nodejs", "min_version": "\u0662\u0660"}, {"carrier": "nodejs", "min_version": "20.2; rm"}, {"carrier": 5, "min_version": "20.2"},
                     {"carrier": "node\njs", "min_version": "20.2"}, {"carrier": "x" * 201, "min_version": "20.2"}, {"carrier": "nodejs", "min_version": "9" * 65}):
             self.assertIsNone(R._lift_trigger(bad), repr(bad))
 
@@ -428,6 +429,21 @@ class LiftTrigger(Base):
             row2, _ = R._dispose(c, [f], [c], self.env(carriers=[carrier]), [])
         self.assertNotEqual(row2["section"], 2)                                                                       # no acceptance without a machine-checkable trigger
         self.assertNotIn("lift_trigger", row2)
+
+    def test_a_trigger_the_carrier_already_meets_is_no_acceptance(self):
+        c = "CVE-2099-24"; f = F(c, self.PURL, "libz", fixed="1.1")
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.3"}              # already at the trigger's version
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": False, "lift_trigger": self.GOOD, "token_usage": 1}):
+            row, _ = R._dispose(c, [f], [c], self.env(carriers=[carrier]), [])
+        self.assertNotEqual(row["section"], 2); self.assertNotIn("lift_trigger", row)
+
+    def test_a_base_held_scope_is_not_skipped_by_the_carrier_comparison(self):
+        c = "CVE-2099-25"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))
+        carrier = {"component_purl": self.PURL, "carrier": "nodejs", "carrier_version": "20.1"}
+        env = self.env(carriers=[carrier], base_policy_held=True, carried_not_pullable={key}, carried_expiry={key: "2026-12-01"}, carried_lift_trigger={key: self.GOOD})
+        with mock.patch.object(R.cli, "ask_model", return_value={"pullable": True, "component_fixed": "1.1", "candidate_release": "debian 12.6", "token_usage": 1}) as ask:
+            row, mi = R._dispose(c, [f], [c], env, [])
+        self.assertEqual(ask.call_args.kwargs["attempt"], "pullability"); self.assertEqual(row["disposition"], "lifted (fix now pullable)")        # the base release can still lift it
 
     def _recheck(self, version, trigger, ask_answer=None):
         c = "CVE-2099-22"; f = F(c, self.PURL, "libz", fixed="1.1"); key = (c, scope([self.PURL]))

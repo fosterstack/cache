@@ -449,7 +449,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
 
 # rc-5b R1 (REQ-AUD-14 AC3/AC4): the lift trigger is {carrier, min_version}, validated by shape and compared with the SBOM's carrier version on
 # the daily recheck before the model is asked. A free-text trigger is no acceptance (the finding stays visible), exactly like a missing one.
-_LIFT_VERSION = re.compile(r"^v?\d+(?:\.\d+)*(?:[-+.~][0-9A-Za-z.+~-]*)?$")
+_LIFT_VERSION = re.compile(r"^v?[0-9]+(?:\.[0-9]+)*[0-9A-Za-z.+~:-]*$")
 
 
 def _lift_trigger(t):
@@ -463,7 +463,7 @@ def _lift_trigger(t):
 
 
 def _version_numbers(v):
-    m = re.match(r"^v?(\d+(?:\.\d+)*)", str(v or "").strip())
+    m = re.match(r"^v?([0-9]+(?:\.[0-9]+)*)", str(v or "").strip())
     return tuple(int(x) for x in m.group(1).split(".")) if m else None
 
 
@@ -1433,7 +1433,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         pull = None
         # rc-5b R1: a carried structured trigger the SBOM's carrier version has not reached needs no model call (and no new verdict): the suppression is re-carried
         carried_trig = env.get("carried_lift_trigger", {}).get((c, this_scope))
-        trig_unmet = ((c, this_scope) in env.get("carried_not_pullable", set()) and carrier is not None
+        trig_unmet = ((c, this_scope) in env.get("carried_not_pullable", set()) and carrier is not None and not base_hold      # a base-held scope can also lift through a base release the carrier says nothing about
                       and _trigger_state(carried_trig, carrier) == "unmet")
         if (carrier or base_hold) and not gf["is_go"] and not trig_unmet:
             pctx = {"kind": "pullability", "finding_id": c, "component": gf["package"],
@@ -1448,7 +1448,8 @@ def _dispose(c, findings, aliases, env, would, name=None):
         # ({"pullable": false} with no lift trigger) must NOT create a silent suppression — it falls
         # through to the normal fixable routing, so the finding stays visible (Codex R1 residual 3).
         _lt = _lift_trigger(pull.get("lift_trigger")) if pull else None
-        _not_pullable = bool(pull and pull.get("pullable") is False and _lt)
+        # a trigger the SBOM's carrier ALREADY meets contradicts "not pullable": no acceptance (the finding stays visible), never a suppression that reads "lifts when X" beside "carried at X or later"
+        _not_pullable = bool(pull and pull.get("pullable") is False and _lt and _trigger_state(_lt, carrier) != "met")
         if _not_pullable:
             hold = pull.get("hold") or ("policy-held" if (base_hold and not carrier) else "upstream-held")
             # An expired carried acceptance for THIS scope reopens into §3 BEFORE re-accepting — a
