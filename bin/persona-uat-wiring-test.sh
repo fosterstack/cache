@@ -1785,7 +1785,7 @@ def gate(script, outs, rcs=None):
     return r.returncode, r.stdout + r.stderr
 def shard_out(secs, passed_n=5, failed_n=0, fixtures=(0, 0)):
     return f"persona-uat-seg: 0 {fixtures[0]} {fixtures[1]}\n" + "".join(f"persona-uat-seg: {k} 1 0\n" for k in secs) + f"persona-uat: {passed_n} passed, {failed_n} failed\n"
-fake = tempfile.mktemp(); open(fake, "w").write('x\nSEG_CASES="5 5"\nseg_begin 1\nif seg_on; then\nfi\nseg_begin 2\nseg_begin 3\nseg_begin 4\n')
+fake = tempfile.mktemp(); open(fake, "w").write('x\nSEG_CASES="5 5"\nseg_begin 1\nseg_on\nseg_begin 2\nseg_begin 3\nseg_begin 4\n')
 fake1 = tempfile.mktemp(); open(fake1, "w").write('x\nSEG_CASES="5"\nseg_begin 1\nseg_begin 2\nseg_begin 3\nseg_begin 4\n')
 fake0 = tempfile.mktemp(); open(fake0, "w").write("x\nseg_begin 1\nseg_begin 2\nseg_begin 3\nseg_begin 4\n")
 rc, o = gate(fake, [shard_out([1, 4]), shard_out([2, 3])])
