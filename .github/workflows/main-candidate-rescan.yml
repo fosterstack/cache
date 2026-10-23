@@ -135,7 +135,8 @@ jobs:
             echo "${v}: built ${base}, final index ${final} (ghcr.io/fosterstack/cache-scout-probe:${tag})"
           done
       # The Scout self-check fixtures (rule 4): the pinned debian 12.0 linux/amd64 image wrapped in a one-child index (public image bytes), plain as the control and with an attestation
-      # of OUR author that covers only CVE-2023-4911, in our published product form. Two tags, pruned like the rest.
+      # of OUR author that covers only CVE-2023-4911, in our published product form, with the fixture's glibc package as the subcomponent (Scout applies a statement only when it names the package
+      # the finding is on: the Oct 23 root-cause round suppressed with the subcomponent and kept the finding without it). Two tags, pruned like the rest.
       - name: build the Scout self-check fixtures and push them
         run: |
           set -euo pipefail
@@ -152,7 +153,7 @@ jobs:
           chmod -R go-w /tmp/layout/fixture
           jq --arg p "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" '.["@id"] = "https://github.com/fosterstack/cache/scout-selfcheck" | .timestamp = "2026-10-03T00:00:00Z" | .version = 1
             | .statements = [{"vulnerability": {"name": "CVE-2023-4911"}, "status": "not_affected",
-                              "justification": "vulnerable_code_not_present", "products": [{"@id": $p}]}]' .vex/fosterstack-cache.openvex.json > /tmp/attach/selfcheck-ours.json
+                              "justification": "vulnerable_code_not_present", "products": [{"@id": $p, "subcomponents": [{"@id": "pkg:deb/debian/glibc@2.36-9?os_distro=bookworm&os_name=debian&os_version=12"}]}]}]' .vex/fosterstack-cache.openvex.json > /tmp/attach/selfcheck-ours.json
           before=$(jq -er '.manifests | if length == 1 then .[0].digest else error("the fixture is not one index") end' /tmp/layout/fixture/index.json)
           skopeo copy --all --digestfile /tmp/attach/before.pushed oci:/tmp/layout/fixture "docker://ghcr.io/fosterstack/cache-scout-probe:selfcheck-before-${GITHUB_RUN_ID}"
           [ "$(cat /tmp/attach/before.pushed)" = "${before}" ] || { echo "::error::the registry took $(cat /tmp/attach/before.pushed) for the plain fixture, not ${before}"; exit 1; }
