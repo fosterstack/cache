@@ -51,6 +51,17 @@ class GradleWrapperSum(unittest.TestCase):
         self.assertEqual(p.get("validateDistributionUrl"), "true")
 
 
+@unittest.skipUnless(os.environ.get("GRADLE_SUM_ONLINE") == "1", "set GRADLE_SUM_ONLINE=1 to hash the real distribution")
+class GradleWrapperSumOnline(unittest.TestCase):
+    def test_the_sum_is_the_sha256_of_the_zip_the_url_names(self):
+        import hashlib, urllib.request
+        p = wrapper_props()
+        url = p["distributionUrl"].replace("\\:", ":")
+        self.assertTrue(url.startswith("https://services.gradle.org/distributions/"))
+        h = hashlib.sha256(urllib.request.urlopen(url, timeout=120).read()).hexdigest()
+        self.assertEqual(p["distributionSha256Sum"], h)
+
+
 class ImageRefRefusal(unittest.TestCase):
     def run_step(self, ref, script):
         d = tempfile.mkdtemp()
@@ -65,6 +76,19 @@ class ImageRefRefusal(unittest.TestCase):
         r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60)
         ran = open(calls).read() if os.path.exists(calls) else ""
         return r, ran
+
+    def test_every_job_that_receives_the_ref_has_the_refusal(self):
+        for name, job in jobs().items():
+            if "inputs.image-ref" in yaml.safe_dump(job["steps"]).replace("inputs.image-ref == ''", "").replace("inputs.image-ref != ''", ""):
+                self.assertIsNotNone(refusal_step(job)[1], "job %s receives inputs.image-ref with no refusal step" % name)
+
+    def test_the_refusal_names_the_ref_it_refused(self):
+        for name, job in jobs().items():
+            i, step = refusal_step(job)
+            if step is None:
+                continue
+            r, _ = self.run_step("ghcr.io/x/y:latest", step["run"])
+            self.assertIn("ghcr.io/x/y", r.stderr)
 
     def test_every_job_that_starts_an_image_refuses_a_bad_ref_first(self):
         n = 0
@@ -91,6 +115,10 @@ class ImageRefRefusal(unittest.TestCase):
                 "ghcr.io/fosterstack/cache",
                 "ghcr.io/fosterstack/cache@sha256:" + "a" * 63,
                 "ghcr.io/fosterstack/cache@sha256:" + "A" * 64,
+                "/@sha256:" + "a" * 64,
+                "-v/:/host@sha256:" + "a" * 64,
+                "ghcr.io/fosterstack/cache/@sha256:" + "a" * 64,
+                "@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/cache@sha256:" + "a" * 64 + "x",
                 "ghcr.io/fosterstack/cache:v1@sha256:" + "g" * 64,
                 DIGEST + " --privileged",

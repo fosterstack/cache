@@ -76,8 +76,8 @@ jobs:
           IMAGE_REF: ${{ inputs.image-ref }}
         run: |
           set -euo pipefail
-          if ! [[ "${IMAGE_REF}" =~ ^[A-Za-z0-9._/:-]+@sha256:[0-9a-f]{64}$ ]]; then
-            echo "image-ref must be name@sha256:<64 lowercase hex>, got: ${IMAGE_REF}" >&2
+          if ! [[ "${IMAGE_REF}" =~ ^[a-z0-9]([a-z0-9._/:-]*[a-z0-9])?@sha256:[0-9a-f]{64}$ ]]; then
+            printf 'image-ref must be name@sha256:<64 lowercase hex>, got: %q\n' "${IMAGE_REF}" >&2
             exit 1
           fi
 
@@ -204,8 +204,8 @@ jobs:
           IMAGE_REF: ${{ inputs.image-ref }}
         run: |
           set -euo pipefail
-          if ! [[ "${IMAGE_REF}" =~ ^[A-Za-z0-9._/:-]+@sha256:[0-9a-f]{64}$ ]]; then
-            echo "image-ref must be name@sha256:<64 lowercase hex>, got: ${IMAGE_REF}" >&2
+          if ! [[ "${IMAGE_REF}" =~ ^[a-z0-9]([a-z0-9._/:-]*[a-z0-9])?@sha256:[0-9a-f]{64}$ ]]; then
+            printf 'image-ref must be name@sha256:<64 lowercase hex>, got: %q\n' "${IMAGE_REF}" >&2
             exit 1
           fi
 
