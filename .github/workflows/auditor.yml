@@ -3,7 +3,7 @@ name: Daily CVE auditor
 # The sealed daily CVE auditor. It consumes the day's main-candidate-rescan artifacts
 # (selected by TODAY'S main head, regardless of the rescan's conclusion — a red rescan is
 # exactly the day that needs adjudication), installs the pinned scanners, scans the
-# candidate image and the checked-out source ON THE RUNNER, builds a validated run
+# candidate image and the source of the rescan's scanned head ON THE RUNNER, builds a validated run
 # manifest, audits the findings and (when not dry) opens the PRs and owner-decision issues.
 #
 # Two dispatch knobs (workflow_dispatch only): dry_run (default true) does everything except
@@ -228,11 +228,11 @@ jobs:
           # No scanner runs here: the manifest takes the four panel scanners' results from the rescan's verdict.json
           # (the panel directory option), and a scanner that did not run is recorded 'did not run', never clean.
           # the source scan is bound to the scanned head: with a valid head the manifest reads that checkout and stamps that head; with
-          # none it gets no source dir (and the run's own sha), so the scan is recorded 'did not run'
+          # none it gets neither a source dir nor a commit, so the scan is recorded 'did not run'
           if [ -n "${SOURCE_HEAD}" ]; then
             src=(--source-dir "${GITHUB_WORKSPACE}/scanned-source" --commit "${SOURCE_HEAD}")
           else
-            src=(--commit "${GITHUB_SHA}")
+            src=()   # no head to stamp, so the manifest says "unknown" (never this run's own sha) and records the source scan 'did not run'
           fi
           python3 .github/agent/bin/auditor-manifest.py \
             --rescan-dir "${RUNNER_TEMP}/rescan" \

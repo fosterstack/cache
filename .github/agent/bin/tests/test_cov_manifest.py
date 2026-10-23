@@ -29,6 +29,7 @@ def _rj(path):
     return json.loads(_rd(path))
 
 
+C40 = "c" * 40
 TOOLS = ("grype", "trivy", "osv-scanner", "syft", "snyk", "govulncheck", "skopeo")
 
 FAKE = r'''#!%s
@@ -39,7 +40,7 @@ with open(os.environ["FAKE_LOG"], "a") as fh:
 if os.environ.get("FAKE_ENVLOG"):
     with open(os.environ["FAKE_ENVLOG"], "a") as fh:
         fh.write(json.dumps({"tool": tool, "args": args, "cwd": os.path.realpath(os.getcwd()),
-                             "GOTOOLCHAIN": os.environ.get("GOTOOLCHAIN"), "GOFLAGS": os.environ.get("GOFLAGS")}) + "\n")
+                             "GOTOOLCHAIN": os.environ.get("GOTOOLCHAIN"), "GOFLAGS": os.environ.get("GOFLAGS"), "GOPROXY": os.environ.get("GOPROXY"), "CGO_ENABLED": os.environ.get("CGO_ENABLED"), "GOENV": os.environ.get("GOENV")}) + "\n")
 TAG = ":ghcr.io/fosterstack/cache:cand-production"
 for r in json.load(open(os.environ["FAKE_CFG"])):
     if r["tool"] != tool:
@@ -160,7 +161,7 @@ class MainHappy(Harness):
     def test_full_run_rescan_dir(self):
         self.rules(GOOD_RULES)
         pd = self.panel_dir()
-        out = self.run_main(self.base_args("--kev", "/k/kev.json", "--panel-dir", pd), env_extra={"GITHUB_SHA": "abc123"})
+        out = self.run_main(self.base_args("--kev", "/k/kev.json", "--panel-dir", pd, "--commit", C40))
         m = _rj(self.out)
         calls = self.argv()
         copies = [c for c in calls if c[:2] == ["skopeo", "copy"]]
@@ -175,7 +176,7 @@ class MainHappy(Harness):
         inspects = [c for c in calls if c[:2] == ["skopeo", "inspect"]]
         self.assertEqual(inspects, [["skopeo", "inspect", "--format", "{{.Digest}}", "docker-archive:" + self.tar]])
         # manifest content
-        self.assertEqual(m["commit"], "abc123")
+        self.assertEqual(m["commit"], C40)
         self.assertEqual(m["module"], "github.com/fosterstack/cache")
         self.assertEqual(m["base_os"], "debian 12.0")
         self.assertEqual(m["candidate_digests"], {"production": "sha256:deadbeef"})
@@ -184,7 +185,7 @@ class MainHappy(Harness):
         self.assertEqual(m["provenance"], {"source": "own-scan", "candidate": "production", "scanned": "docker-archive"})
         self.assertEqual(m["scanner_set"], "panel")
         self.assertEqual(m["govulncheck"], {"path": os.path.join(self.reports, "govulncheck.json"),
-                                            "module": "github.com/fosterstack/cache", "commit": "abc123",
+                                            "module": "github.com/fosterstack/cache", "commit": C40,
                                             "complete": True, "scan_level": "symbol"})
         self.assertEqual(m["carriers"], [{"component": "openssl", "component_purl": "pkg:generic/openssl@3.0.2",
                                           "component_version": "3.0.2", "carrier": "node",
@@ -220,7 +221,7 @@ class MainHappy(Harness):
         # 0600 option A, PR 2b-1: with --panel-dir the auditor reads the panel's four scanners from the rescan's verdict and runs none of its own
         self.rules([r for r in GOOD_RULES if r["tool"] in ("skopeo", "syft", "govulncheck")])
         pd = self.panel_dir()
-        self.run_main(self.base_args("--panel-dir", pd), env_extra={"GITHUB_SHA": "abc123"})
+        self.run_main(self.base_args("--panel-dir", pd, "--commit", C40))
         m = _rj(self.out)
         tools = {c[0] for c in self.argv()}
         self.assertFalse(tools & {"grype", "trivy", "osv-scanner", "snyk"}, tools)
@@ -290,14 +291,31 @@ class SourceBinding(Harness):
         self.rules(GOOD_RULES)
         self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
         (call,) = self.gv()
-        self.assertEqual((call["GOTOOLCHAIN"], call["GOFLAGS"]), ("local", "-mod=vendor"))
+        self.assertEqual((call["GOTOOLCHAIN"], call["GOFLAGS"], call["GOPROXY"], call["CGO_ENABLED"], call["GOENV"]), ("local", "-mod=vendor", "off", "0", "off"))
 
     def test_a_commit_that_is_not_40_hex_is_refused(self):
         self.rules(GOOD_RULES)
-        for bad in ("abc123", "", "unknown", HEAD40.upper(), HEAD40 + "0", HEAD40[:-1] + "g", "HEAD", HEAD40[:-1] + "\n"):
+        for bad in ("abc123", "", HEAD40.upper(), HEAD40 + "0", HEAD40[:-1] + "g", "HEAD", HEAD40[:-1] + "\n"):
             with self.assertRaises(SystemExit, msg=repr(bad)):
                 self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", bad))
         self.assertFalse(os.path.exists(self.out))
+
+    def test_the_runs_own_sha_is_never_the_stamped_head(self):
+        self.rules(GOOD_RULES)
+        self.run_main(self.args_without_source_or_commit(), env_extra={"GITHUB_SHA": "f" * 40})
+        m = _rj(self.out)
+        self.assertEqual(m["commit"], "unknown")
+        self.assertIsNone(m["govulncheck"])
+
+    def test_a_scan_that_fails_says_why(self):
+        self.rules([r for r in GOOD_RULES if r.get("has") != ["-json"]] + [{"tool": "govulncheck", "has": ["-json"], "stdout": "", "stderr": "go: inconsistent vendoring in /src", "rc": 1}])
+        out = self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
+        self.assertIsNone(_rj(self.out)["govulncheck"])
+        self.assertIn("govulncheck did not complete (rc 1)", out)
+        self.assertIn("inconsistent vendoring", out)
+
+    def args_without_source_or_commit(self):
+        return self.base_args("--panel-dir", self.panel_dir())
 
     def args_without_source(self):
         a = self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40)
@@ -386,7 +404,7 @@ class MainDegraded(Harness):
             def today(cls):
                 raise OSError("no clock")
         with mock.patch("datetime.date", _NoToday), mock.patch.object(M, "_lifecycle", wraps=M._lifecycle) as lc:
-            out = self.run_main(self.base_args(), env_extra={}, drop=("AUDITOR_TODAY",))
+            out = self.run_main(self.base_args("--commit", C40), env_extra={}, drop=("AUDITOR_TODAY",))
         self.assertEqual(lc.call_args.args[3], "1970-01-01")
         self.assertEqual(lc.call_args.args[0], "debian")
         m = _rj(self.out)
