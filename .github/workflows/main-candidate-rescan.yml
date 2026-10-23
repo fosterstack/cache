@@ -551,13 +551,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: the four scanners' outputs (a missing one is "did not run")
+      - name: the four scanners' outputs, one folder per artifact (a missing one is "did not run"; one scanner's artifact never carries another's)
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         continue-on-error: true
         with:
           pattern: panel-*
           path: /tmp/panel/
-          merge-multiple: true
       - name: tally the day's findings — counts, quorum, seen by N of M (rules 3-6; unique findings go to the auditor)
         id: judge
         run: |

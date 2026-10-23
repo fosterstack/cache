@@ -365,6 +365,62 @@ for name, root in SCEN.items():
         bad = str(e)
     check("the auditor's strict verdict validator accepts the tally's real output: %s" % name, bad == "", bad)
 
+
+# --- one folder per scanner artifact (the Witness adversarial pass): the rescan's panel job downloads panel-<scanner> artifacts WITHOUT merging, so each lands in <in>/panel-<scanner>/<scanner>/<image>/;
+# the tally refuses a layout where one artifact holds another scanner's output, a second copy of an artifact, an artifact from an unexpected job, or a stray file
+import shutil, subprocess
+def as_artifacts(root, extra=None):
+    """the tree() layout (<scanner>/<image>) as the download lays it out: <in>/panel-<scanner>/<scanner>/<image>"""
+    out = tempfile.mkdtemp()
+    for s in P.EXPECTED:
+        if os.path.isdir(os.path.join(root, s)):
+            shutil.copytree(os.path.join(root, s), os.path.join(out, "panel-" + s, s))
+    return out
+def layout_error(d):
+    try:
+        P.scanner_dirs(d)
+        return ""
+    except P.LayoutError as e:
+        return str(e)
+def tally_cli(d):
+    o = tempfile.mkdtemp()
+    p = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(P.__file__)), "panel.py"), "tally", "--in", d, "--vex", VEX, "--out", o], capture_output=True, text=True)
+    return p.returncode, p.stdout + p.stderr
+good = as_artifacts(tree())
+check("artifact layout: the normal download (one panel-<scanner> folder each) is accepted", layout_error(good) == "", layout_error(good))
+dirs = P.scanner_dirs(good)
+check("artifact layout: the tally of the downloaded layout equals the tally of the direct tree",
+      json.dumps(P.tally(good, P.load_vex(VEX), dirs), sort_keys=True) == json.dumps(judge(tree()), sort_keys=True))
+rc, out = tally_cli(good)
+check("artifact layout: the tally command reads the download layout (exit 0 on a clean day)", rc == 0, "exit %s %s" % (rc, out[-200:]))
+miss = as_artifacts(tree()); shutil.rmtree(os.path.join(miss, "panel-google"))
+check("artifact layout: a scanner whose artifact is missing is not a layout refusal (the tally calls it did-not-run)", layout_error(miss) == "")
+vm = P.tally(miss, P.load_vex(VEX), P.scanner_dirs(miss))
+check("artifact layout: with the google artifact missing the tally records google as did-not-run on its images and exits 2", "google" in vm["images"]["production-amd64"]["did_not_run"] and vm["exit"] == 2, str(vm["images"]["production-amd64"]))
+mix = as_artifacts(tree()); shutil.copytree(os.path.join(mix, "panel-scout", "scout"), os.path.join(mix, "panel-grype", "scout"))
+e = layout_error(mix)
+check("artifact layout: panel-grype that also holds scout's output is refused, naming the folder and the other scanner", "panel-grype" in e and "scout" in e, e)
+rc, out = tally_cli(mix)
+check("artifact layout: the tally command refuses it with exit 2 and an ::error:: line, never a clean result", rc == 2 and "::error::" in out, "exit %s %s" % (rc, out[-200:]))
+twice = as_artifacts(tree()); shutil.copytree(os.path.join(twice, "panel-grype"), os.path.join(twice, "panel-grype-2"))
+e = layout_error(twice)
+check("artifact layout: a second copy of an artifact named for scanner A (panel-grype-2) is refused", "panel-grype-2" in e, e)
+evil = as_artifacts(tree()); shutil.copytree(os.path.join(evil, "panel-grype"), os.path.join(evil, "panel-evil"))
+e = layout_error(evil)
+check("artifact layout: an artifact from an unexpected job (panel-evil) is refused", "panel-evil" in e, e)
+wrongname = as_artifacts(tree()); os.rename(os.path.join(wrongname, "panel-scout", "scout"), os.path.join(wrongname, "panel-scout", "grype"))
+e = layout_error(wrongname)
+check("artifact layout: panel-scout holding a folder named grype (a scanner's output under another scanner's artifact) is refused", "panel-scout" in e and "grype" in e, e)
+stray = as_artifacts(tree()); open(os.path.join(stray, "panel-grype", "note.txt"), "w").write("x")
+e = layout_error(stray)
+check("artifact layout: a stray file inside an artifact folder is refused", "note.txt" in e, e)
+strayf = as_artifacts(tree()); open(os.path.join(strayf, "panel-evidence"), "w").write("x")
+e = layout_error(strayf)
+check("artifact layout: a plain file beside the artifact folders is refused", "panel-evidence" in e, e)
+lnk = as_artifacts(tree()); shutil.rmtree(os.path.join(lnk, "panel-google")); os.symlink(os.path.join(lnk, "panel-grype"), os.path.join(lnk, "panel-google"))
+e = layout_error(lnk)
+check("artifact layout: a symlinked artifact folder is refused", "panel-google" in e, e)
+
 print("panel: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

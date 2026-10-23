@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """The daily rescan's scanner panel tally (scanner-panel rules 3-6, ratified by the owner Oct 2; REQ-SCAN-003..006).
-Each scanner job leaves its raw output per image under <in>/<scanner>/<image>/:
+Each scanner job leaves its raw output per image under <scanner>/<image>/ in its own artifact panel-<scanner>; the download lays them out as <in>/panel-<scanner>/<scanner>/<image>/ (one folder per artifact, never merged):
 
   grype      result.cdx.json   CycloneDX from `grype --vex <our VEX> -o cyclonedx-json` (VEX applied by Grype)
   scout      sbom.json         `docker scout sbom --format json`
@@ -282,12 +282,40 @@ def render_issue(reported):
     return "\n".join(lines) + "\n"
 
 
-def tally(root, vexidx):
+class LayoutError(Exception):
+    pass
+
+
+def scanner_dirs(inp):
+    """The downloaded artifacts laid out as <inp>/panel-<scanner>/<scanner>/<image>/ (one folder per artifact, never merged): {scanner: the folder holding its images}.
+    A folder that is not panel-<one of the panel's scanners>, a plain file or a link there, an artifact folder holding anything but its own scanner's folder (another scanner's
+    output, a stray file) is refused: one scanner's job can never write another scanner's result. A scanner with no artifact is simply absent (the tally calls it did-not-run)."""
+    dirs = {}
+    try:
+        names = sorted(os.listdir(inp))
+    except OSError as ex:
+        raise LayoutError("the panel artifacts folder %s cannot be read (%s)" % (inp, type(ex).__name__))
+    for n in names:
+        path = os.path.join(inp, n)
+        scanner = n[len("panel-"):] if n.startswith("panel-") else None
+        if scanner not in EXPECTED or os.path.islink(path) or not os.path.isdir(path):
+            raise LayoutError("%s is not the artifact of a panel scanner (expected a plain folder panel-%s)" % (n, "|".join(sorted(EXPECTED))))
+        inner = sorted(os.listdir(path))
+        if inner != [scanner]:
+            raise LayoutError("%s holds %s, not only %s: one scanner's artifact never carries another scanner's output" % (n, " ".join(inner) or "nothing", scanner))
+        sub = os.path.join(path, scanner)
+        if os.path.islink(sub) or not os.path.isdir(sub):
+            raise LayoutError("%s/%s is not a plain folder" % (n, scanner))
+        dirs[scanner] = sub
+    return dirs
+
+
+def tally(root, vexidx, dirs=None):
     images, findings, covered_log = {}, {}, []
     for s, imgs in EXPECTED.items():
         for img in imgs:
             st = images.setdefault(img, {"counts": {}, "did_not_run": [], "ran": []})
-            d = os.path.join(root, s, img)
+            d = os.path.join(root, s, img) if dirs is None else os.path.join(dirs[s], img) if s in dirs else None     # no artifact for the scanner: it did not run
             try:
                 n, found = READ[s](d)
             except (OSError, ValueError, AttributeError, TypeError):
@@ -368,7 +396,12 @@ def main(argv=None):
         with open(a.log, errors="replace") as f:
             json.dump(google_packages(f.read()), sys.stdout)
         return 0
-    v = tally(a.inp, load_vex(a.vex))
+    try:
+        dirs = scanner_dirs(a.inp)
+    except LayoutError as ex:
+        print("::error::scanner panel: %s — a pipeline failure, never a clean result" % ex)
+        return 2
+    v = tally(a.inp, load_vex(a.vex), dirs)
     os.makedirs(a.out, exist_ok=True)
     json.dump(v, open(os.path.join(a.out, "verdict.json"), "w"), indent=1)
     open(os.path.join(a.out, "summary.md"), "w").write(summary(v))

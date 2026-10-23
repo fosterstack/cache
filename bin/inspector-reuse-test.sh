@@ -1347,6 +1347,8 @@ if which == "rescan":
         bad.append("the panel tally step is gone")
     if "pattern: panel-*" not in raw:
         bad.append("the tally no longer reads the panel-* artifacts")
+    if "merge-multiple" in raw[raw.index("pattern: panel-*") - 400: raw.index("pattern: panel-*") + 200]:
+        bad.append("the panel artifacts are merged into one folder (merge-multiple): each scanner's artifact must keep its own folder panel-<scanner>")
 if bad:
     print("; ".join(bad)); sys.exit(1)
 print("wired")
@@ -1474,6 +1476,8 @@ for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   fi
 done
 # the gate is still fed after the call site, and the tally still reads the result
+wf main-candidate-rescan.yml rescan panel-artifacts-separate ok ""
+wf main-candidate-rescan.yml rescan panel-artifacts-merged bad "t = t.replace('pattern: panel-*\n          path: /tmp/panel/\n', 'pattern: panel-*\n          path: /tmp/panel/\n          merge-multiple: true\n', 1)"
 wf scan.yml scan gate-before-call bad "t = t.replace('python3 bin/inspector-gate.py', 'true bin/inspector-gate.py', 1) + '\n# python3 bin/inspector-gate.py'"
 
 echo "inspector-reuse: $pass passed, $failn failed"
