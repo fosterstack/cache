@@ -786,6 +786,8 @@ def inventory(files):
                         arm = _arm_of(text, rawln)
                         if arm:
                             it.sums = _scanner_sums(text, arm, "")      # a literal release download inside the installer's `<tool>)` arm carries that tool's pinned sums
+                        if not it.sums and it.path and _CASE_SUM.search(text):      # a sum-pinned installer: a download with none found is not trusted
+                            it.step = "file:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()      # no sums found for a literal download (an arm label the text scan could not trust): fail closed, any edit of the script moves the item
         elif path == PERSONA_TOOLS:
             found = _persona_tool_items(path, text)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):

@@ -4402,5 +4402,16 @@ b = inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("cc")}
 assert inv.moved(a, b), "a hash change in the second file was hidden by the first"
 assert not inv.moved(a, inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("bb")}))
 PY
+CASE="sum: a decoy arm label inside a heredoc (xq) cannot hide the crane arm's sums: with no sums found for a literal download the identity is the whole script, so a sum-only edit is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+def files(sm, decoy=True):
+    d = "    : <<'EOF'\n  xq)\nEOF\n" if decoy else ""
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:x86_64|crane:amd64) SUM=' + sm + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n' + d + '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n    ;;\nesac\n'}
+assert inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("b" * 64))), "a sum-only edit behind a decoy arm label was not seen"
+assert not inv.moved(inv.inventory(files("a" * 64)), inv.inventory(files("a" * 64)))
+PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
