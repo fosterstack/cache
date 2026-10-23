@@ -85,7 +85,9 @@ that cannot be independently reproduced is an assertion, not an attestation.
 
 ## Which images a statement covers (one grammar)
 
-A statement's image product is `pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache`, with at most two
+A statement's image product is `pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache` (`repository_url`
+first and written out, not percent-encoded; the generator of the three forms refuses the same product
+spelled any other way, because the other readers would ignore it), with at most two
 more qualifiers: `variant=production` or `variant=fips`, and `arch=amd64` or `arm64`. Every reader of this
 file (the pull-request gate, the scanner panel, the rescan's matcher and the generator of the three forms)
 reads it the same way: the query is split on `&` as written (no percent-decoding), every part is `key=value`

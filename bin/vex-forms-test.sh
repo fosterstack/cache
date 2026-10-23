@@ -461,8 +461,11 @@ for pid in ("pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache#bin/foo" 
     except ValueError:
         ok = True
     check("SEC-165-01 our image's purl with an unrepresentable part stops generation: " + pid, ok)
-check("SEC-165-01 a percent-encoded repository_url without subpath is still our image",
-      V._scopes(scoped("CVE-ENC", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io%%2Ffosterstack%%2Fcache" % D1}]), [D("1")]) == [([D("1")], None)])
+try:
+    V._scopes(scoped("CVE-ENC", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io%%2Ffosterstack%%2Fcache" % D1}]), [D("1")]); got = "accepted"
+except ValueError:
+    got = "refused"
+check("SEC-165-01 a percent-encoded repository_url is ours only after decoding, which the other readers do not do: refused, not honoured", got == "refused", got)
 check("SEC-165-01 a fork whose name extends ours is another repository, not ours",
       V._scopes(scoped("CVE-FORK", "affected", [{"@id": "pkg:oci/cache-fork?repository_url=ghcr.io/fosterstack/cache-fork#x"}]), [D("1")]) == [])
 # Codex #165 r3 (SEC-165-01): identity is never discarded — a namespaced package and an identifiers-only product stop
@@ -551,6 +554,22 @@ for q in OKQ + BADQ:
     want = q in OKQ
     got = {n: f(BASE_Q + q) for n, f in (("gate", r_gate), ("rescan", r_resc), ("panel", r_panel), ("forms", r_forms))}
     check("H one grammar: %r is %s by every reader" % (q, "accepted" if want else "refused"), set(got.values()) == {want}, got)
+# rc-5a H review (round 1, finding 1/2): a product the gate, panel and rescan ignore must never be honoured by the forms. Three outcomes per form: accept / ignore / refuse.
+OURS_ENC = "pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache"
+for pid in ("pkg:oci/cache?arch=amd64&repository_url=ghcr.io/fosterstack/cache", OURS_ENC + "&variant=production", "pkg:oci/cache?repository_url=ghcr.io%252Ffosterstack%252Fcache",
+            "pkg:oci/ca%63he?repository_url=ghcr.io/fosterstack/cache"):
+    try:
+        got = "honoured" if V._scopes(scoped("CVE-H5", "not_affected", [{"@id": pid, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)) else "ignored"
+    except ValueError:
+        got = "refused"
+    check("H the forms never honour a product the other readers ignore: %s is %s" % (pid, got), got != "honoured", got)
+    check("H ...and for %s the gate really ignores it (OUR_PRODUCTS first)" % pid, GATE.OUR_PRODUCTS.match(pid) is None, pid)
+try:
+    V._scopes(scoped("CVE-H6", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache&variant=fips" % sorted(ALL6)[0].replace(":", "%3A"), "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)); got = "accepted"
+except ValueError:
+    got = "refused"
+fips_or_not = META(IMAGES)[sorted(ALL6)[0]][0]
+check("H a pinned digest that its own variant qualifier excludes stops generation (%s digest, variant=fips)" % fips_or_not, (got == "refused") == (fips_or_not != "fips"), got)
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

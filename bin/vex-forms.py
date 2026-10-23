@@ -150,11 +150,17 @@ def _purl_of(component, cve):
     return purls.pop()
 
 
+# Our image as the OTHER readers recognise it (inspector-gate.py OUR_PRODUCTS): repository_url is the FIRST qualifier and spelled out, not percent-encoded; an optional
+# @digest may stand between the name and the query (a digest-scoped product, which only these forms read).
+RAW_OURS = re.compile(r"pkg:oci/cache(?:@[^?#]*)?\?repository_url=" + re.escape(REPO) + r"(?:&|$|#)")
+
+
 def _qualifiers(pid, qs, cve):
     """The one scope grammar (rc-5a H; the same as inspector-gate.py::scope_of, rescan-statement.py::_parse_product and panel.py::_covers): the
     query is split RAW on '&' (no percent-decoding of keys or of variant/arch), every part is key=value with a non-blank value, the keys are only
-    repository_url, variant and arch in lower case, each once, variant is production or fips, arch is amd64 or arm64. Returns (repository_url,
-    variant|None, arch|None); anything else is ValueError (generation stops: a form that could be read wider must not be)."""
+    repository_url, variant and arch in lower case, each once, variant is production or fips, arch is amd64 or arm64. repository_url is the first
+    qualifier and carries the repository unencoded (the shape every other reader recognises, RAW_OURS); the caller has already checked that.
+    Returns (repository_url, variant|None, arch|None); anything else is ValueError (generation stops: a form that could be read wider must not be)."""
     seen = {}
     for part in qs.split("&") if qs else []:
         k, eq, v = part.partition("=")
@@ -187,12 +193,16 @@ def _scopes(statement, digests, meta=None):
             continue                                     # another repository's image
         if subpath or (at and not version) or "@" in version:
             raise ValueError("%s: product %s has a part these forms cannot represent" % (_cve(statement), pid))
+        if not RAW_OURS.match(pid):                      # ours only after decoding or reordering: the gate, panel and rescan would ignore it, so these forms must not honour it
+            raise ValueError("%s: product %s names our image in a form the other readers do not recognise (repository_url first, unencoded)" % (_cve(statement), pid))
         _, variant, arch = _qualifiers(pid, qs, _cve(statement))
         want = urllib.parse.unquote(version) if at else None
         if (variant or arch) and meta is None:
             raise ValueError("%s: product %s is scoped by variant or architecture, which needs the digest file to place" % (_cve(statement), pid))
         ds = [d for d in digests if (want is None or d == want)
               and (variant is None or meta[d][0] == variant) and (arch is None or meta[d][1] == "linux/" + arch)]
+        if (variant or arch) and want in digests and not ds:
+            raise ValueError("%s: product %s pins a digest that its own variant/arch qualifier excludes" % (_cve(statement), pid))
         subs = prod.get("subcomponents") or []
         if not subs:
             out.append((ds, None))
