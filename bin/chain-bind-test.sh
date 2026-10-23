@@ -671,7 +671,7 @@ def sr_tree(name, stage="build"):
         for folder, step, prods, art in (("witness-scanners", "scanners", CHECK_PRODS["scanners"], "check-results"), ("witness-acceptance", "acceptance", CHECK_PRODS["acceptance"], "check-results"),
                                          ("witness-runtime", "runtime", CHECK_PRODS["runtime"], "check-results"), ("witness-arm64", "arm64", CHECK_PRODS["arm64"], "check-results-arm64")):
             os.makedirs(root + "/" + folder)
-            pays[folder] = coll_record(root + "/" + folder + "/" + step + "-collection.local.json", step, {"check-results/" + n: d for n, d in prods.items()}, mat if step == "scanners" else ())
+            pays[folder] = coll_record(root + "/" + folder + "/" + step + "-collection.local.json", step, {"check-results/" + n: d for n, d in prods.items()}, mat)
             for n, d in prods.items():
                 put(root, "artifacts/" + art + "/" + n, d)
     else:
@@ -896,7 +896,7 @@ d, _ = sr_tree("ck3", "check"); put(d, "artifacts/check-results/extra.txt", b"x"
 sr("sign-records check: a received file no record names is refused", d, "check", 1, ["check-results/extra.txt"])
 d, _ = sr_tree("ck4", "check"); os.remove(d + "/artifacts/check-results/acceptance.json")
 sr("sign-records check: a check-results product a record names but Sign did not receive is refused", d, "check", 1, ["check-results/acceptance.json"])
-d, _ = sr_tree("ck5", "check"); coll_record(d + "/witness-acceptance/acceptance-collection.local.json", "acceptance", {"check-results/govulncheck.json": CHECK_PRODS["scanners"]["govulncheck.json"], "check-results/acceptance.json": CHECK_PRODS["acceptance"]["acceptance.json"]})
+d, _ = sr_tree("ck5", "check"); coll_record(d + "/witness-acceptance/acceptance-collection.local.json", "acceptance", {"check-results/govulncheck.json": CHECK_PRODS["scanners"]["govulncheck.json"], "check-results/acceptance.json": CHECK_PRODS["acceptance"]["acceptance.json"]}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
 sr("sign-records check: a product named by two records of the same group is refused", d, "check", 1, ["named twice"])
 d, _ = sr_tree("ck6", "check"); put(d, "artifacts/check-results-arm64/arm64.json", b'{"arch":"arm64"}'); put(d, "artifacts/check-results/arm64.json", b'{"arch":"arm64"}')
 sr("sign-records check: arm64's result inside the check artifact (not named by the check group's records) is refused", d, "check", 1, ["check-results/arm64.json"])
@@ -930,6 +930,13 @@ d, _ = sr_tree("ck20", "check"); coll_record(d + "/witness-acceptance/acceptance
 sr("sign-records check: a Check record that names a token variable is refused (record-env)", d, "check", 1, ["env", "GH_TOKEN"])
 d, _ = sr_tree("ck21", "check"); coll_record(d + "/witness-arm64/arm64-collection.local.json", "arm64", {"check-results/arm64.json": CHECK_PRODS["arm64"]["arm64.json"]}, env_vars={"X": "github_pat_" + "A" * 30})
 sr("sign-records check: a Check record that holds a github_pat_ token value is refused (record-env)", d, "check", 1, ["env", "token"])
+d, _ = sr_tree("ck22", "check"); put(d, "witness-runtime/digests.json", b"{}")
+sr("sign-records check: a data file in a Check record folder (digests.json) is refused: the folder holds only its record", d, "check", 1, ["witness-runtime", "digests.json"])
+for step_, prods_ in (("acceptance", CHECK_PRODS["acceptance"]), ("runtime", CHECK_PRODS["runtime"]), ("arm64", CHECK_PRODS["arm64"])):
+    d, _ = sr_tree("ck23" + step_, "check"); coll_record(d + "/witness-%s/%s-collection.local.json" % (step_, step_), step_, {"check-results/" + n: dd for n, dd in prods_.items()}, [("witness-build/digests.json", b"another list")])
+    sr("sign-records check: the %s record's material must be Build's attested digests.json as well (not only scanners)" % step_, d, "check", 1, ["material", step_])
+d, _ = sr_tree("ck24", "check"); coll_record(d + "/witness-acceptance/acceptance-collection.local.json", "acceptance", {"check-results/acceptance.json": CHECK_PRODS["acceptance"]["acceptance.json"]})
+sr("sign-records check: a Check record with no material at all is refused", d, "check", 1, ["material"])
 d, _ = sr_tree("sr25", "rebuild"); coll_record(d + "/witness-rebuild/rebuild-collection.local.json", "rebuild", {"verdict.json": b'{"verdict":"pass"}'}, [("witness-build/digests.json", BUILD_DATA["digests.json"])])
 sr("sign-records rebuild: a record that names the verdict by its bare file name is refused (the product is witness-rebuild/verdict.json, matched in full)", d, "rebuild", 1, ["witness-rebuild/verdict.json"])
 d, _ = sr_tree("sr26"); os.makedirs(d + "/artifacts/witness-build/dist/locked"); put(d, "artifacts/witness-build/dist/locked/f", b"x"); os.chmod(d + "/artifacts/witness-build/dist/locked", 0)
@@ -950,7 +957,7 @@ sr("sign-records: --stage rebuild given Build's apk/build records (listed as the
 d, _ = sr_tree("sr26", "rebuild"); put(d, "artifacts/witness-rapk-ubuntu-24.04/out/x86_64/fscache-0.3.0-r0.apk", b"apk-x")
 sr("sign-records rebuild: Rebuild's apks must never reach Sign: an artifact dir for a rapk record is refused", d, "rebuild", 1, ["rapk"])
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 179
+EXPECT = 184
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

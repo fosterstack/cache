@@ -1416,6 +1416,8 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
         refuse(stage, "step: %s/%s is not a record of the %s stage (%s-collection.local.json)" % (name, fname, stage, " or ".join(steps)))
     step = m.group(1)
     for n in names:
+        if stage == "check" and n != fname:
+            refuse(stage, "record: %s holds %s: a Check record folder holds only its record (%s), nothing else is staged or signed" % (name, n, fname))
         if n != fname and n not in SR_DATA:
             refuse(stage, "record: %s holds %s, which is neither the record (%s) nor a data file (%s)" % (name, n, fname, " ".join(SR_DATA)))
     try:
@@ -1457,10 +1459,9 @@ def sr_check_record(stage, rec_dir, name, art_dir, commit, digests_sha):
     if stage == "check":
         if SR_CHECK_FOLDER.get(name) != step:
             refuse(stage, "record: the folder %s holds the %s record; Check's folders are %s, each named for its step" % (name, step, " ".join(sorted(SR_CHECK_FOLDER))))
-        if step == "scanners":
-            mats = [x for x in subs if x["name"] == MATERIAL]
-            if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
-                refuse(stage, "material: the scanners record's file:witness-build/digests.json is not Build's attested digests.json (--digests)")
+        mats = [x for x in subs if x["name"] == MATERIAL]
+        if len(mats) != 1 or mats[0]["digest"].get("sha256") != digests_sha:
+            refuse(stage, "material: the %s record's file:witness-build/digests.json is not Build's attested digests.json (--digests)" % step)
         return step, payload, [n for n in names if n != fname], {k: v for k, v in products.items() if k.startswith(SR_CHECK_PREFIX)}
     received = sr_received(stage, rec_dir, art_dir, name)
     wrong = sorted(n for n, h in received.items() if products.get(n) != [h])

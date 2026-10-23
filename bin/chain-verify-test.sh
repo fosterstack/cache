@@ -507,8 +507,9 @@ add("build_coll_badissuer", STAGES["build"], T, COLL, None, stmt="v0.1", coll_fi
 add("build_coll_wrongroot", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot")
 add("build_coll_wrongrepo", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", repo="attacker/cache")
 add("build_coll_noconfig", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", no_config=True)
-add("check_coll", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json")
-add("check_coll_old", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json")      # Check's former identity (the Check stage holds no token since the Witness move)
+add("check_coll", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
+add("check_coll_old", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")
+add("check_coll_oldb", OLD_CHECK, T, COLL, None, stmt="v0.1", coll_file="digests.json")      # the same former identity under a Build collection name (offered as Build's)      # Check's former identity (the Check stage holds no token since the Witness move)
 add("rebuild_coll", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild")
 add("rebuild_coll_other", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests-other.json", coll_name="rebuild")
 add("build_coll_othertag", STAGES["build"], T2, COLL, None, stmt="v0.1", coll_file="digests.json")
@@ -522,8 +523,8 @@ add("sign_cfg_rc", STAGES["sign"], T, PROV, D, config_ref="refs/tags/v0.3.0-rc1"
 add("sign_san_repoevil", STAGES["sign"], T, PROV, D, repo="fosterstack/cache-evil", config_repo="fosterstack/cache")
 # the extension checks are not Sign-only: Rebuild, Check and Release must each refuse a wrong top-level workflow and a wrong issuer
 for s in ("rebuild", "check"):
-    add(s + "_cfg", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", config_wf="scan.yml", coll_name="rebuild" if s == "rebuild" else None)
-    add(s + "_issuer", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", issuer="https://accounts.google.com", coll_name="rebuild" if s == "rebuild" else None)
+    add(s + "_cfg", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", config_wf="scan.yml", coll_name={"rebuild": "rebuild", "check": "scanners"}.get(s))
+    add(s + "_issuer", STAGES[s], T, COLL, None, stmt="v0.1", coll_file="digests.json", issuer="https://accounts.google.com", coll_name={"rebuild": "rebuild", "check": "scanners"}.get(s))
 _c = json.load(open(p("build_coll.json")))
 t = json.loads(json.dumps(_c)); st = json.loads(base64.b64decode(t["payload"])); st["subject"][0]["digest"]["sha256"] = "e" * 64
 t["payload"] = b64(json.dumps(st).encode()); json.dump(t, open(p("build_coll_tampered.json"), "w"))
@@ -556,8 +557,8 @@ add("release_stmt_policy", STAGES["release"], T, "https://in-toto.io/attestation
 # ATTACK shape: the field = a self-made certificate with the RIGHT identity (issued by an attacker root) followed by a GENUINE certificate of
 # ANY identity (chains to the policy root, and its key signed the payload); a reader that takes the first DER for the identity and openssl
 # that skips to the genuine block both say yes. ATK is that self-made certificate; each record below is a genuine record or the attack.
-add("atk_cert", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot")
-add("check_as_build", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json")   # genuine chain and key, BUILD's identity
+add("atk_cert", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot", coll_name="scanners")
+add("check_as_build", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="scanners")   # genuine chain and key, BUILD's identity
 def cert_text(name): return base64.b64decode(json.load(open(p(name + ".json")))["signatures"][0]["certificate"]).decode()
 def pem_der(text): return base64.b64decode("".join(l for l in text.splitlines() if not l.startswith("-----")))
 def to_pem(der): b = base64.b64encode(der).decode(); return "-----BEGIN CERTIFICATE-----\n" + "\n".join(b[i:i + 64] for i in range(0, len(b), 64)) + "\n-----END CERTIFICATE-----\n"
@@ -600,7 +601,7 @@ WINDOW_MID = gmt(now - dt.timedelta(minutes=90))   # inside the certificate wind
 INJ = "x\nTime stamp: " + WINDOW_MID
 add("build_sa", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
 add("rebuild_sa", STAGES["rebuild"], T, COLL, None, stmt="v0.1", coll_file="digests.json", coll_name="rebuild", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
-add("check_sa", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60))
+add("check_sa", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", start=now - dt.timedelta(minutes=120), end=now - dt.timedelta(minutes=60), coll_name="scanners")
 restamp("sign_stampafter", "sign_sa_inj", "rfc3161-response", inject=INJ)          # a genuine post-expiry stamp with a backdated TEXT in its status string
 for s in ("build", "rebuild", "check"):
     restamp(s + "_sa", s + "_sa_inj", "rfc3161-response", inject=INJ)                 # the same injection on a Witness record that (wrongly) carries a response
@@ -1375,7 +1376,7 @@ for c in sha512:"a sha512 value" 63:"63 hex characters" upper:"upper-case hex" n
 done
 expect_refuse "001-AC2 Build's record unsigned is refused before the digests are read" "build|signature" $(S build_coll_unsigned) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record tampered after signing (the file hash still equal) is refused" "build|signature" $(S build_coll_tampered) --digests "$work/digests.json"
-expect_refuse "001-AC2 Build's record signed by another stage's identity (Check's former stage-verify.yml) is refused" "build|stage-verify.yml" $(S check_coll_old) --digests "$work/digests.json"
+expect_refuse "001-AC2 Build's record signed by another stage's identity (Check's former stage-verify.yml) is refused" "build|stage-verify.yml" $(S check_coll_oldb) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record from another tag is refused" "build|v0.3.1" $(S build_coll_othertag) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record run from a calling workflow that is not release.yml is refused" "build|scan.yml" $(S build_coll_scan) --digests "$work/digests.json"
 expect_refuse "001-AC2 Build's record with no timestamp is refused" "build|timestamp" $(S build_coll_nostamp) --digests "$work/digests.json"
@@ -1579,7 +1580,7 @@ expect_refuse "003-AC1 other digests: names build and the digest cause" "build|d
 expect_refuse "003-AC1 a SUBSET of the record's digests is refused" "build|digest" $(ST rebuild build) $(rec build_coll) --digests "$work/digests-subset.json"
 expect_refuse "003-AC1 a SUPERSET of the record's digests is refused" "build|digest" $(ST rebuild build) $(rec build_coll) --digests "$work/digests-extra.json"
 expect_refuse "003-AC1 a record with more subjects than the given list is refused" "build|digest" $(ST rebuild build) $(rec build_coll_plus) --digests "$work/digests.json"
-expect_refuse "003-AC1 wrong signer stage (a record under Check's former identity offered as Build's): names build and identity" "build|stage-verify.yml" $(ST rebuild build) $(rec check_coll_old) --digests "$work/digests.json"
+expect_refuse "003-AC1 wrong signer stage (a record under Check's former identity offered as Build's): names build and identity" "build|stage-verify.yml" $(ST rebuild build) $(rec check_coll_oldb) --digests "$work/digests.json"
 expect_refuse "003-AC1 an unsigned record: names build and signature" "build|signature" $(ST rebuild build) $(rec build_coll_unsigned) --digests "$work/digests.json"
 expect_refuse "003-AC1 tamper through stage-start: payload changed after signing" "build|signature" $(ST rebuild build) $(rec build_coll_tampered) --digests "$work/digests.json"
 expect_refuse "003-AC1 wrong tag through stage-start" "build|v0.3.1" $(ST rebuild build) $(rec build_coll_othertag) --digests "$work/digests.json"
@@ -1748,6 +1749,8 @@ expect_refuse "WM a Rebuild record under the FORMER identity stage-reproducibili
 expect_refuse "WM a Build record signed only by the building job's throwaway key (a key id, no certificate) is refused with the plain reason" "throwaway key" verify $(V) --stage build $(rec build_coll_throwaway) $(R)
 expect_refuse "WM a Rebuild record signed only by the throwaway key is refused with the plain reason" "throwaway key" verify $(V) --stage rebuild $(rec rebuild_coll_throwaway) $(R)
 expect_refuse "WM the throwaway-only form is refused at the other stages too, with the same plain reason" "throwaway key" verify $(V) --stage check $(rec check_coll_throwaway) $(R)
+expect_refuse "WM a Build record (collection build) presented as Check's is refused by its collection name now that the identities are one" "collection name" verify $(V) --stage check $(rec build_coll) $(R)
+expect_refuse "WM a Rebuild record (collection rebuild) presented as Check's is refused by its collection name" "collection name" verify $(V) --stage check $(rec rebuild_coll) $(R)
 expect_refuse "WM a Check record under the former stage-verify.yml identity is refused: only stage-sign.yml signs Check's records" "stage-verify.yml" verify $(V) --stage check $(rec check_coll_old) $(R)
 expect_ok     "WM a Check record signed by stage-sign.yml (the identity that signs Check's records) is accepted" verify $(V) --stage check $(rec check_coll) $(R)
 expect_ok     "WM a key id alongside a real certificate is not the throwaway form (the certificate decides)" verify $(V) --stage build $(rec build_coll_keyid_and_cert) $(R)
@@ -2344,7 +2347,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=853
+EXPECT=855
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
