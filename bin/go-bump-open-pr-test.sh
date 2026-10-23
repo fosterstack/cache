@@ -243,6 +243,10 @@ mutant "template pins left behind" "template pins left behind" "$mut" '[]' 0 0 "
 sed 's#^  *env -u GH_TOKEN /usr/bin/python3 -I -B bin/gen-recipes.py --write.*#  true#' "$SUT" > "$mut"
 mutant "recipes not regenerated" "recipes not regenerated" "$mut" '[]' 0 0 "" 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_GIT"$'\n'"$CREATE" new
 
+# the action-pin checker reads this script when go-freshness.yml runs it: a variable at command position (a test `[[ .. && "$V" =~ .. ]]` reads as one) is a finding on every PR
+pins_out=$(cd "$here/.." && python3 .github/agent/bin/check-action-pins.py 2>&1) && pins_rc=0 || pins_rc=$?
+if [ "$pins_rc" = 0 ] && grep -q ' 0 finding(s)' <<<"$pins_out"; then echo "ok: the pin checker reads the bump script with no finding"; pass=$((pass+1)); else echo "FAIL: the pin checker has a finding over the repository: ${pins_out: -300}"; fail=$((fail+1)); fi
+
 echo "----"
 echo "go-bump-open-pr: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
