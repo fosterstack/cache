@@ -121,6 +121,10 @@ def check_place(stage, norm, what, kind):
             die("%s: %s is written below %s, an absolute symlink that was not created" % (what, norm, os.path.relpath(cur, stage)))
         if os.path.islink(cur) or (os.path.lexists(cur) and not os.path.isdir(cur)):
             die("%s: %s is written below %s, which is a symlink or a file, not a directory" % (what, norm, os.path.relpath(cur, stage)))
+    if norm in SKIPPED:
+        die("%s: %s is the path of an absolute symlink that was not created: nothing of any kind is placed there" % (what, norm))
+    if kind != "dir" and any(sk.startswith(norm + "/") for sk in SKIPPED):
+        die("%s: %s is not a directory but an absolute symlink that was not created lies below it" % (what, norm))
     dest = os.path.join(stage, norm)
     if os.path.lexists(dest) and not (kind == "dir" and os.path.isdir(dest) and not os.path.islink(dest)):
         die("%s: the place of %s is already taken" % (what, norm))
@@ -154,7 +158,7 @@ def unpack(data, stage, owner, owners, what):
             if target.startswith("/"):
                 # an ABSOLUTE link is never created (wolfi-baselayout's etc/mtab -> /proc/mounts): it would be resolved on the host by whatever reads the root later (the
                 # extracted loader looks up libraries and the wrapper runs usr/bin/bwrap through it). The path stays held by the package that named it, and nothing is placed below it.
-                print("install-host-bwrap.py: skipped absolute link %s -> %s" % (norm, target))
+                print("install-host-bwrap.py: skipped absolute link %s -> %s (%s)" % (norm, target, what))
                 SKIPPED.add(norm)
                 owners[norm] = owner
                 continue

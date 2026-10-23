@@ -928,8 +928,8 @@ def a_abs_loader_path(d, r):
 
 case("AC17 an ABSOLUTE symlink (wolfi-baselayout's etc/mtab -> /proc/mounts, var/spool/mail -> /var/mail) is never created: it is skipped and logged, nothing is written at its target, the relative links stay", setup=s_abs_link, after=a_abs_link)
 case("AC17 an absolute link on the loader's library path (usr/lib/libcap.so.2.x -> /tmp/x, lib -> /usr/lib) is skipped: nothing is created there, so the loader never meets a host path", setup=lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("usr/lib/libcap.so.2.x", "sym", "/tmp/x", None), ("lib", "sym", "/usr/lib", None)]), after=a_abs_loader_path)
-for label, ent in (("an absolute link at the place of a real directory the loader and bwrap live in (usr -> /external)", [("usr", "sym", "/external", None)]),
-                   ("an absolute link at the place of the directory holding bwrap (usr/bin -> /outside/bin)", [("usr/bin", "sym", "/outside/bin", None)])):
+for label, ent in (("an absolute link at the place of a real directory (usr -> /external): the place is already taken, the link is not skipped over it", [("usr", "sym", "/external", None)]),
+                   ("an absolute link at the place of the real directory holding bwrap (usr/bin -> /outside/bin): the place is already taken", [("usr/bin", "sym", "/outside/bin", None)])):
     case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
          setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
 for label, ent in (("a member placed below an absolute link that was skipped (usr/lib/y -> /tmp ; usr/lib/y/z)", [("usr/lib/y", "sym", "/tmp", None), ("usr/lib/y/z", "file", b"E", None)]),
@@ -938,6 +938,25 @@ for label, ent in (("a member placed below an absolute link that was skipped (us
     case("AC17 a data segment with %s is refused (exit 1), nothing written" % label,
          setup=(lambda e: lambda d: apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + e))(ent), want=1)
 case("AC17 a member of a LATER package placed below the path of a skipped absolute link is refused (the path is held by the package that named it)", setup=lambda d: (apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None), ("etc/mtab", "sym", "/proc/mounts", None)]), apk(d + "/archive/" + ARCH + "/libpsx-2.78-r4.apk", "libpsx", "2.78-r4", [("etc/mtab/x", "file", b"E", None)])), lock=LOCK + "libpsx=2.78-r4\n", want=1)
+
+def two_pk(first, second, second_first=False):
+    def setup(d):
+        apk(d + "/archive/" + ARCH + "/libcap-2.78-r4.apk", "libcap", "2.78-r4", [("usr/lib/libcap.so.2.78", "file", b"CAP", None)] + first)
+        apk(d + "/archive/" + ARCH + "/libpsx-2.78-r4.apk", "libpsx", "2.78-r4", second)
+    return setup
+
+
+SKIP = [("etc/mtab", "sym", "/proc/mounts", None)]
+for label, first, second, rev in (
+        ("a directory entry at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "dir", None, None)], False),
+        ("a directory entry at the path of a skipped absolute link in the same package", SKIP + [("etc/mtab", "dir", None, None)], [("usr/lib/other", "file", b"x", None)], False),
+        ("a file at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "file", b"E", None)], False),
+        ("a relative link at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "sym", "../x", None)], False),
+        ("a second absolute link at the path of a skipped absolute link in a LATER package", SKIP, [("etc/mtab", "sym", "/proc/self/mounts", None)], False),
+        ("a symlink at an ANCESTOR of a skipped absolute link in a LATER package (opt/bin -> /external ; opt -> payload)", [("opt/bin", "sym", "/external", None)], [("opt", "sym", "payload", None), ("payload/bin/bwrap", "file", b"E", None)], False),
+        ("a symlink at an ancestor of a skipped absolute link in the same package, after it", [("opt/bin", "sym", "/external", None), ("opt", "sym", "payload", None)], [("usr/lib/other", "file", b"x", None)], False),
+        ("a symlink at an ancestor named by an EARLIER package, the skipped link below it (opt -> payload ; opt/bin -> /external)", [("opt/bin", "sym", "/external", None)], [("opt", "sym", "payload", None)], True)):
+    case("AC17 %s is refused (exit 1), nothing written" % label, setup=two_pk(first, second), lock=(("libpsx=2.78-r4\n" + LOCK) if rev else (LOCK + "libpsx=2.78-r4\n")), want=1)
 case("AC17 no loader in the unpacked tree is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/other", "file", b"x", None)]), want=1)
 case("AC17 two loaders in the unpacked tree are refused (the wrapper must name exactly one)", setup=lambda d: apk(d + "/archive/" + ARCH + "/ld-linux-2.43-r13.apk", "ld-linux", "2.43-r13", [("usr/lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755), ("lib/ld-linux-x86-64.so.2", "file", LOADER, 0o755)]), want=1)
 case("AC17 no usr/bin/bwrap in the unpacked tree is refused", setup=lambda d: apk(d + "/archive/" + ARCH + "/bubblewrap-0.13.0-r0.apk", "bubblewrap", "0.13.0-r0", [("usr/bin/other", "file", b"x", 0o755)]), want=1)
@@ -2802,7 +2821,7 @@ for f in files:
             assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
-EXPECT=954
+EXPECT=962
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

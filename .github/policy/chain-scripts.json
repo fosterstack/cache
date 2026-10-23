@@ -49,7 +49,7 @@
       "runs": [],
       "signs": false,
       "reason": "the apk jobs' host-tools step: unpacks bubblewrap and what it needs from the archive just pulled (the packages build/locks/host-tools.lock names, checked against the datahash of each apk) into host-tools/ and writes the bwrap wrapper melange's bubblewrap runner calls; no network, no package manager, no sudo, no other program (REQ-CHAIN-004-AC17); the listed tools are words in its messages and comments that the text scan over-reports (the script starts no program: the archive format is read with the Python library)",
-      "sha256": "efea34cb6f88d636e33ceb4ffd4af9cfb8b5bbe6de4d519882b59bbb9f3099d1"
+      "sha256": "b0d980cbf3c46c2cb757021cec510d38be73199c8ca77d9aca688d190c95def4"
     },
     {
       "path": "bin/chain-verify.py",
