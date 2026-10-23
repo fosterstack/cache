@@ -2698,10 +2698,10 @@ def check_runs(where_job, scripts, bad, tree=None):
         # what writes it before it runs: the job's own text or ANOTHER script it runs (its own later writes do not count)
         # a harness's own text is fixture data here as everywhere (documented); a write TO a harness still counts
         others = [read(c) for r, c in read_scripts.items() if r != rel and not TEST_HARNESS.search(r)]
-        lines = job0.split("\n")                        # only what runs before the script's first RUN
+        lines = job0.split("\n")                        # only what runs before the script's last RUN
         norm = lambda p: re.sub(r"^(\$\{?GITHUB_WORKSPACE\}?/|\./)", "", p)
-        k = next((n for n, ln in enumerate(lines) if any(t[0] in ("__script__", "__exec__") and norm(t[1]) == rel
-                                                          for t in _commands(ln))), len(lines))
+        runs = [n for n, ln in enumerate(lines) if any(t[0] in ("__script__", "__exec__") and norm(t[1]) == rel for t in _commands(ln))]
+        k = runs[-1] if runs else len(lines)           # the LAST run: a writer between two runs changes what the second one executes (618 fix, seat D)
         before = "\n".join(lines[:k + 1])               # the run's own line too (printf … > x; bash x)
         if any(_writes(t, rel, src) for src in [before] + others for t in _all_texts(src)):   # each in its own context
             bad.append(f"{scripts[0][0] if scripts else where_job}: {rel} is changed by the job before it runs; the "
@@ -2848,7 +2848,7 @@ def _writer_dir(value):
     v = str(value).strip().strip("\"'")
     if not v:
         return "."
-    m = re.match(r"(?:\$\{\{\s*runner\.temp\s*\}\}|\$RUNNER_TEMP|\$\{RUNNER_TEMP\})(/.*)?$", v)
+    m = re.match(r"\$\{\{\s*runner\.temp\s*\}\}(/.*)?$", v)      # only the expression: the runner does not expand $RUNNER_TEMP in a with: value, so that is a relative directory
     if m:
         rest = m.group(1) or ""
         if "${{" in rest or "$" in rest or ".." in rest or "'" in rest or '"' in rest:
@@ -2875,6 +2875,8 @@ def _uses_writes(uses, with_node, key_of):
     empty = with_node is None or (isinstance(with_node, yaml.ScalarNode) and with_node.value.strip() in ("", "~", "null"))
     if not empty and not isinstance(with_node, yaml.MappingNode):
         return ["."]                                     # GitHub rejects it, but this check does not read it as "no inputs"
+    if isinstance(with_node, yaml.MappingNode) and len({key_of(k) for k, _ in with_node.value}) != len(with_node.value):
+        return ["."]                                     # path / Path / "path " name one input after case and space are folded: which copy the runner reads is not read here
     wm = {key_of(k): v for k, v in with_node.value} if isinstance(with_node, yaml.MappingNode) else {}
     val = lambda k: wm[k].value if isinstance(wm.get(k), yaml.ScalarNode) else ("${{" if k in wm else None)
     if name == "actions/checkout":

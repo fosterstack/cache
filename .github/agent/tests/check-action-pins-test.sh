@@ -2796,8 +2796,36 @@ case_ w-checkout-lfs-false-ok ok "$(uw "$(us actions/checkout "          lfs: fa
 case_ w-checkout-with-list-bad bad "$(uw "$(us actions/checkout "          - ref")")" "$mk_tool"
 case_ w-download-artifact-with-list-bad bad "$(uw "$(us actions/download-artifact "          - x")")" "$mk_tool"
 case_ w-cache-with-list-bad bad "$(uw "$(us actions/cache/restore "          - bin")")" "$mk_tool"
-# 10. the finding is the write-before-run finding, not some other rule (case_ above reads the exit status only)
 wmsg='is changed by the job before it runs'
+# D4-D6 (seat D of the first look, ruled by the advisor): the script is judged at its LAST run; case-folded duplicate with: keys; a literal $RUNNER_TEMP
+case_ w-writer-between-two-runs-bad bad "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: bin")
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-writer-between-two-runs-elsewhere-ok ok "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: out")
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-two-runs-no-writer-ok ok "$head
+    steps:
+      - run: bash bin/tool.sh
+      - run: bash bin/tool.sh" "$mk_tool"
+case_ w-duplicate-path-keys-bad bad "$(uw "$(us actions/download-artifact "          path: bin
+          Path: out")")" "$mk_tool"
+case_ w-duplicate-path-keys-spaced-bad bad "$(uw "$(us actions/download-artifact "          path: bin
+          'path ': out")")" "$mk_tool"
+case_ w-download-artifact-literal-runner-temp-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \$RUNNER_TEMP/x")")" "$mk_tool"
+case_ w-download-artifact-literal-braced-runner-temp-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${RUNNER_TEMP}")")" "$mk_tool"
+case_out w-out-writer-between-two-runs bad "$head
+    steps:
+      - run: bash bin/tool.sh
+$(us actions/download-artifact "          path: bin")
+      - run: bash bin/tool.sh" "$wmsg" '' "$mk_tool"
+# 10. the finding is the write-before-run finding, not some other rule (case_ above reads the exit status only)
 case_out w-out-cache-restore-glob bad "$(uw "$(us actions/cache/restore "          path: bi*
           key: k")")" "$wmsg" '' "$mk_tool"
 case_out w-out-download-artifact-parent-of-workspace bad "$(uw "$(us actions/download-artifact "          name: x
