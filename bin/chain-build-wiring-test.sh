@@ -686,8 +686,8 @@ for a in "$@"; do
   prev=$a
 done
 [ -f "$key" ] || { echo "stub: no key file" >&2; exit 41; }
-{ stat -f '%Lp' "$key" || stat -c '%a' "$key"; } > "$STUB_KEEP/keymode" 2>/dev/null
-{ stat -f '%Lp' "$(dirname "$key")" || stat -c '%a' "$(dirname "$key")"; } > "$STUB_KEEP/dirmode" 2>/dev/null
+{ stat -c '%a' "$key" 2>/dev/null || stat -f '%Lp' "$key"; } > "$STUB_KEEP/keymode" 2>/dev/null
+{ stat -c '%a' "$(dirname "$key")" 2>/dev/null || stat -f '%Lp' "$(dirname "$key")"; } > "$STUB_KEEP/dirmode" 2>/dev/null
 cp "$key" "$STUB_KEEP/keycopy"; echo "$key" > "$STUB_KEEP/keypath"; env | grep -E '^(ACTIONS_|SIGSTORE_)' > "$STUB_KEEP/envtokens" || true
 case "${STUB_MODE:-ok}" in
   fail) exit 3 ;;
