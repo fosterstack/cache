@@ -73,10 +73,11 @@ attempt_read_sign_token() {
         if cat "$f" > /dev/null 2> /dev/null; then echo r >> hostile-work/environ-read.txt; fi
       done
       # the unreadable count is about THIS step's own process ancestors (its process tree up to init): another process of the same user on a hosted runner may deny its
-      # environ (dumpable off) and says nothing about this job; an ancestor of ours that denies it could hide a request variable
+      # environ (dumpable off) and says nothing about this job; an ancestor of ours that denies it could hide a request variable (no ownership test: the kernel hands the
+      # files of a non-dumpable process to root)
       pid=$$
       while [ "$pid" -gt 1 ] && [ -r "/proc/$pid/stat" ]; do
-        if test -O "/proc/$pid/environ" && ! cat "/proc/$pid/environ" > /dev/null 2> /dev/null; then echo "$pid" >> hostile-work/environ-bad.txt; fi
+        if ! cat "/proc/$pid/environ" > /dev/null 2> /dev/null; then echo "$pid" >> hostile-work/environ-bad.txt; fi
         pid=$(sed -e 's/^.*) [A-Za-z] //' -e 's/ .*//' "/proc/$pid/stat")
       done
       echo "request-env: absent"
