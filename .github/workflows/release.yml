@@ -377,7 +377,6 @@ jobs:
   # Sign's second call (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): the same file, the stage rebuild: it checks and signs Rebuild's records
   # and receives no Rebuild apk or image. Its identity is the first call's (one workflow file, release.yml on top).
   sign-rebuild:
-    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     needs: [build, rebuild]
     permissions:
       contents: read

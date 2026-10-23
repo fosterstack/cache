@@ -207,15 +207,25 @@ jobs:
     uses: ./.github/workflows/stage-sign.yml
     with:
       digests: ${{ needs.build.outputs.digests }}
+      stage: build
   rebuild:
-    needs: build
+    needs: [build, sign]
     uses: ./.github/workflows/stage-reproducibility.yml
+  sign-rebuild:
+    needs: [build, rebuild]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      stage: rebuild
   check:
-    needs: build
+    needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
-    needs: [rebuild, check, sign]
+    needs: [check, sign, sign-rebuild]
     concurrency:
       group: release-publish
       cancel-in-progress: false
@@ -241,7 +251,7 @@ jobs:
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
-    needs: [build, sign, rebuild, check, release]
+    needs: [build, sign, rebuild, sign-rebuild, check, release]
     if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     permissions:
@@ -464,7 +474,7 @@ rb r_step "005-AC1 Rebuild's assemble Witness step is named build (Build's recor
        'witnessed-local.sh build bin'
 rb r_up   "005-AC4 Rebuild uploads anything but its verdict directory" "upload-artifact" 'name: witness-rebuild' 'name: dist'
 rb r_dl "005-AC4 Rebuild downloads Build's dist (it takes only the record and the lists)" "download-artifact" \
-       'name: witness-build\n          path: witness-build' 'name: dist\n          path: witness-build'
+       "name: \${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}\n          path: witness-build" 'name: dist\n          path: witness-build'
 rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" '      - name: rapk under Witness' \
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
 rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its verdict artifact)" "on: must be" 'workflow_call:\n' \
@@ -713,11 +723,12 @@ probe assemble "AC11 --melange-repo pointing at an unverified download" \
 probe apk              "AC6 a source dir other than the checkout (another commit)"  '[l.replace("--source-dir . ", "--source-dir /tmp/other ") for l in L]'
 probe apk "AC3 the version check on a directory other than the built one" '[l.replace("--apk-dir \"out/$(uname -m)\"", "--apk-dir /bin") for l in L]'
 probe apk              "AC3 the version check missing for the fips apk (rule 24 covers both)" '[l for l in L if "--variant fips --tag" not in l]'
-probe assemble         "AC3 an apk record not verified"                             '[l for i, l in enumerate(L) if i != 3]'
+probe assemble         "AC3 one apk directory not bound (a bind line missing)"      '[l for i, l in enumerate(L) if i != 1]'
 probe assemble         "AC3 the files not bound to the record (the bind lines missing)" '[l for l in L if "chain-verify.py bind" not in l]'
-probe assemble         "AC3 bound with the Rebuild step name (a Rebuild record can stand in)" '[l.replace("bind --step apk", "bind --step rapk") for l in L]'
-probe assemble         "AC3 the records verified AFTER the files are bound"         'L[:2] + L[4:6] + L[2:4] + L[6:]'
-probe assemble "AC3 verified as the wrong stage" '[l.replace("verify --stage build", "verify --stage rebuild", 1) for l in L]'
+probe assemble         "AC3 bound with the Rebuild step name (a Rebuild record can stand in)" '[l.replace("bind --local --step apk", "bind --local --step rapk") for l in L]'
+probe assemble         "AC3 the admission baseline written BEFORE the files are bound" 'L[:1] + L[3:4] + L[1:3] + L[4:]'
+probe assemble "AC3 bound as a signed record (the building job's record is local and unsigned)" '[l.replace("bind --local ", "bind ") for l in L]'
+probe assemble "AC3 bound to a record named like a signed one" '[l.replace("apk-collection.local.json", "apk-collection.json") for l in L]'
 probe assemble         "AC9 digests.json forged by a plain write after the merge"   'L + ["printf \x27{}\x27 > digests.json"]'
 probe assemble         "AC9 digests.json written by hand instead of by the merge"   '[l for l in L if "items-merge" not in l] + ["echo {} > digests.json"]'
 probe assemble         "AC9 the archives built after the merge (their digests would not be in digests.json)" 'L[:-2] + L[-1:] + L[-2:-1]'
@@ -899,33 +910,37 @@ RELIF="\${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
 BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
 BUILD_HEAD="    if: $GATE\n$BUILD_USES"
-REL_HEAD="  release:\n    if: $RELIF\n    needs: [rebuild, check, sign]"
-gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: build' '  rebuild:\n    needs: [build, check]' "rebuild must need exactly"
-gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: build' '  check:\n    needs: [build, rebuild]' "check must need exactly"
-# REQ-CHAIN-005-AC5: Rebuild and Check each need only Build, so they run side by side (Codex B r2 R3: the earlier edge Check -> Sign is gone).
-gr g2b "005-AC5 check also needs sign (AC5: Check needs only Build)" '  check:\n    needs: build' '  check:\n    needs: [build, sign]' \
+REL_HEAD="  release:\n    if: $RELIF\n    needs: [check, sign, sign-rebuild]"
+gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: [build, sign]' '  rebuild:\n    needs: [build, sign, check]' "rebuild must need exactly"
+gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: [build, sign]' '  check:\n    needs: [build, sign, rebuild]' "check must need exactly"
+# REQ-CHAIN-005-AC5 (Witness move): Rebuild and Check each need Build and Sign (they start from Build's record as Sign signed it) and run side by side.
+gr g2b "005-AC5 check starts without Sign (it would read an unsigned local record)" '  check:\n    needs: [build, sign]' '  check:\n    needs: build' \
        "check must need exactly"
-gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: build' '  check:\n    needs: sign' "check must need exactly"
-gr g3  "005-AC5 release does not need rebuild" 'needs: [rebuild, check, sign]' 'needs: [check, sign]' "release must need exactly"
+gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: [build, sign]' '  check:\n    needs: sign' "check must need exactly"
+gr g3  "005-AC5 release does not need rebuild" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign]' "release must need exactly"
+gr g3b "005-AC5 release does not need Sign's second call (Rebuild's records would be unsigned)" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign, rebuild]' "release must need exactly"
+gr g3c "005-AC5 sign-rebuild does not wait for rebuild" '  sign-rebuild:\n    needs: [build, rebuild]' '  sign-rebuild:\n    needs: build' "sign-rebuild must need exactly"
+gr g3d "005-AC5 sign-rebuild signs the build stage (the wrong records)" '      stage: rebuild' '      stage: build' "sign-rebuild must pass exactly"
+gr g3e "005-AC5 sign without the stage input" '      stage: build\n  rebuild:' '  rebuild:' "sign must pass exactly"
 gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: $GATE\n    needs: check" \
     "sign must need exactly"
-gr g5  "005-AC5 rebuild with an if (it runs after build through needs; an if could skip it)" '  rebuild:\n    needs: build' \
-       '  rebuild:\n    needs: build\n    if: always()' "rebuild may not carry an if"
-gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: build' "  check:\n    needs: build\n    if: $GATE" "check may not carry an if"
-gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [rebuild, check, sign]' \
+gr g5  "005-AC5 rebuild with an if (it runs after build through needs; an if could skip it)" '  rebuild:\n    needs: [build, sign]' \
+       '  rebuild:\n    needs: [build, sign]\n    if: always()' "rebuild may not carry an if"
+gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: [build, sign]' "  check:\n    needs: [build, sign]\n    if: $GATE" "check may not carry an if"
+gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [check, sign, sign-rebuild]' \
        "release must carry exactly the if"
-gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [rebuild, check, sign]' \
+gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [check, sign, sign-rebuild]' \
        "release must carry exactly the if"
-gr g7  "005-AC5 release runs when a stage failed (!cancelled())" "$REL_HEAD" "  release:\n    if: \${{ !cancelled() }}\n    needs: [rebuild, check, sign]" \
+gr g7  "005-AC5 release runs when a stage failed (!cancelled())" "$REL_HEAD" "  release:\n    if: \${{ !cancelled() }}\n    needs: [check, sign, sign-rebuild]" \
        "release must carry exactly the if"
-gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)" "$REL_HEAD" "  release:\n    if: $GATE\n    needs: [rebuild, check, sign]" \
+gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)" "$REL_HEAD" "  release:\n    if: $GATE\n    needs: [check, sign, sign-rebuild]" \
        "release must carry exactly the if"
-gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: build' \
-       '  rebuild:\n    continue-on-error: true\n    needs: build' "keys outside"
+gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: [build, sign]' \
+       '  rebuild:\n    continue-on-error: true\n    needs: [build, sign]' "keys outside"
 gr g13 "R3 release without its concurrency group (two publications could interleave and roll :X/:latest back)" '    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' '    uses: ./.github/workflows/stage-promote.yml' "release must hold exactly the concurrency"
 gr g14 "R3 the release concurrency group cancels in progress (a running publication would be killed half way)" 'cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' 'cancel-in-progress: true\n    uses: ./.github/workflows/stage-promote.yml' "release must hold exactly the concurrency"
 gr g15 "R3 the release concurrency group is shared with something else, or not constant" 'group: release-publish' 'group: ${{ github.ref }}' "release must hold exactly the concurrency"
-gr g16 "R3 a concurrency key on any other chain job is outside the allowed keys" '  rebuild:\n    needs: build' '  rebuild:\n    concurrency: x\n    needs: build' "keys outside"
+gr g16 "R3 a concurrency key on any other chain job is outside the allowed keys" '  rebuild:\n    needs: [build, sign]' '  rebuild:\n    concurrency: x\n    needs: [build, sign]' "keys outside"
 PF_IF="\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 PF_OLD="\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 gr r3a "R3 audit: patch-failed with the old failure()-only if (a cancelled/replaced pending release would open no issue)" "if: $PF_IF" "if: $PF_OLD" "patch-failed must carry exactly the if"
@@ -936,7 +951,7 @@ gr g9 "005-AC5 check calls another stage file" 'uses: ./.github/workflows/stage-
 gr g10 "005-AC5 secrets: inherit on a stage call" 'uses: ./.github/workflows/stage-reproducibility.yml' \
        'uses: ./.github/workflows/stage-reproducibility.yml\n    secrets: inherit' "keys outside"
 gr g11 "005-AC5 the Rebuild job is not named rebuild (a failure would not name the stage)" '  rebuild:' '  reproducibility:' "rebuild is missing"
-gr g12 "005-AC5 release without sign" 'needs: [rebuild, check, sign]' 'needs: [rebuild, check]' "release must need exactly"
+gr g12 "005-AC5 release without sign" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign-rebuild]' "release must need exactly"
 FAST='  release-fast:\n    needs: [build, sign]\n    uses: ./.github/workflows/stage-promote.yml\n    secrets: inherit\n  decide:'
 EARLY='  publish-early:\n    needs: [build, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n'
 EARLY="$EARLY"'    steps:\n      - run: gh release create v1 dist/*\n  decide:'
@@ -975,8 +990,8 @@ HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissi
 gr g28 "005-AC5 hostile-verify with an app-token step" "$HV []" "$HV\n      - run: echo \${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" "may not use secrets."
 gr g29 "005-AC5 patch-notes needing sign as well as decide" "  patch-notes:\n    needs: decide" "  patch-notes:\n    needs: [decide, sign]" \
     "patch-notes must need exactly"
-gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, check, release]" \
-    "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, check, release]" "may not name an environment"
+gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, sign-rebuild, check, release]" \
+    "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, sign-rebuild, check, release]" "may not name an environment"
 gr g31 "005-AC5 decide whose if is widened (it would run on a tag)" "github.ref == 'refs/heads/main' && " "" "must carry exactly the if"
 gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: agent" \
        "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
@@ -1004,12 +1019,12 @@ gr g51 "AC12 release.yml's build call passes mode: snapshot (the live chain neve
     "build must pass exactly with"
 gr g52 "AC12 release.yml's build call passes mode: release (a second input: the call is exactly hostile)" "$BHOST" "$BHOST\n      mode: release" \
     "build must pass exactly with"
-gr g53 "AC12 release.yml's rebuild call passes an input (Rebuild takes none; mode: snapshot would be a snapshot Rebuild)" "  rebuild:\n    needs: build" \
-       "  rebuild:\n    needs: build\n    with:\n      mode: snapshot" "rebuild may not pass"
+gr g53 "AC12 release.yml's rebuild call passes an input (Rebuild takes none; mode: snapshot would be a snapshot Rebuild)" "  rebuild:\n    needs: [build, sign]" \
+       "  rebuild:\n    needs: [build, sign]\n    with:\n      mode: snapshot" "rebuild may not pass"
 gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "if: $PNIF" "if: always()" "must carry exactly the if"
 gr g43 "005-AC5 patch-notes without its if" "    needs: decide\n    if: $PNIF" "    needs: decide" "must carry exactly the if"
 gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a stage it does not watch)" \
-       "    needs: [build, sign, rebuild, check, release]" "    needs: [build]" "patch-failed must need exactly"
+       "    needs: [build, sign, rebuild, sign-rebuild, check, release]" "    needs: [build]" "patch-failed must need exactly"
 gr g45 "005-AC5 the dry-run dispatch input is a string (inputs.dry-run == true would be false and skip the dry run)" \
        "      dry-run:\n        type: boolean" "      dry-run:\n        type: string" "must be type: boolean"
 # REQ-SCAN-012 (the rule-12 live tests of our VEX files): release.yml may hold exactly three non-chain jobs: the two that federate into the dedicated live-test accounts and persona-uat (the release candidate's persona run, REQ-UAT-001-AC1: needs Build only, publishes nothing).
@@ -1413,10 +1428,10 @@ beh_apk() { # beh_apk TAGNAME SCRIPT MODE VERSIONTAG
 beh_assemble() { # beh_assemble TAGNAME SCRIPT MODE VERSIONTAG
   local t=$1 s=$2 mode=$3 v=$4 d="$work/b-asm-$1-$4" rc calls nv nb ni gd gi
   mk "$d" assemble "$s" "$mode" "$v"; rc=$(run_stage "$d" assemble "$mode" "$v"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  nv=$(line_of 'verify verify --stage build' "$d"); nb=$(line_of 'verify bind ' "$d"); ni=$(line_of '^image ' "$d")
-  if [ "$rc" = 0 ] && [ "$(n_calls 'verify verify --stage build' "$d")" = 2 ] && [ "$(n_calls 'verify bind --step apk' "$d")" = 2 ] && [ -n "$nv" ] \
-     && [ -n "$nb" ] && [ -n "$ni" ] && [ "$nv" -lt "$nb" ] && [ "$nb" -lt "$ni" ]; then
-    ok "AC3 $t assemble $v: both records are verified, then both artifact directories are bound, then the repo is built, then the images"
+  nv=$(line_of 'verify verify ' "$d"); nb=$(line_of 'verify bind ' "$d"); ni=$(line_of '^image ' "$d")
+  if [ "$rc" = 0 ] && [ -z "$nv" ] && [ "$(n_calls 'verify bind --local --step apk' "$d")" = 2 ] \
+     && [ -n "$nb" ] && [ -n "$ni" ] && [ "$nb" -lt "$ni" ]; then
+    ok "AC3 $t assemble $v: no verify (the apk records are local, unsigned), both artifact directories are bound to them, then the repo is built, then the images"
   else
     bad "AC3 $t assemble $v: rc=$rc verify=$nv bind=$nb image=$ni"
   fi
@@ -1505,7 +1520,7 @@ PY
     done
   fi
   if [ "$v" = v0.3.0 ]; then
-    mk "$d" assemble "$s" "$mode" "$v"; rc=$(run_stage "$d" assemble "$mode" "$v" FAKE_VERIFY_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+    mk "$d" assemble "$s" "$mode" "$v"; rc=$(run_stage "$d" assemble "$mode" "$v" FAKE_BIND_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
     if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls" && [ ! -e "$d/digests.json" ]; then
       ok "AC3 $t assemble: a refused apk record stops the job before any image"
     else
@@ -1564,15 +1579,15 @@ beh_rebuild_assemble() { # beh_rebuild_assemble TAGNAME SCRIPT MODE VERSIONTAG
   else
     bad "005-AC2 $t rebuild-assemble $v: no byte-identical root digests.json (rc=$rc, $(ls "$d" 2> /dev/null | tr '\n' ' ' | head -c 120))"
   fi
-  n1=$(line_of 'verify verify ' "$d")
-  n2=$(line_of 'verify stage-start' "$d")
+  n1=$(line_of 'verify stage-start' "$d")
+  n2=$(line_of 'verify policy' "$d")
   n3=$(line_of 'verify bind ' "$d")
   n4=$(line_of '^image ' "$d")
   n5=$(line_of 'verify items-merge' "$d")
   n6=$(line_of 'verify rebuild-compare' "$d")
   if [ "$rc" = 0 ] && [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$n3" ] && [ -n "$n4" ] && [ -n "$n5" ] && [ -n "$n6" ] && [ "$n2" -lt "$n1" ] \
      && [ "$n1" -lt "$n3" ] && [ "$n3" -lt "$n4" ] && [ "$n4" -lt "$n5" ] && [ "$n5" -lt "$n6" ]; then
-    ok "005-AC2 $t rebuild-assemble $v: stage-start, records verified, binds, images, merge, compare in that order"
+    ok "005-AC2 $t rebuild-assemble $v: policy, stage-start (Build's signed record), local binds, images, merge, compare in that order"
   else
     bad "005-AC2 $t rebuild-assemble $v: rc=$rc order=$n1 $n2 $n3 $n4 $n5 $n6"
   fi
@@ -1605,7 +1620,7 @@ PY
       bad "REQ-REL-010-AC2 $t rebuild-assemble: a different VEX file -> rc=$rc"
     fi
     mk "$d" rebuild-assemble "$s" "$mode" "$v"
-    rc=$(run_stage "$d" rebuild-assemble "$mode" "$v" FAKE_VERIFY_RC=1)
+    rc=$(run_stage "$d" rebuild-assemble "$mode" "$v" FAKE_BIND_RC=1)
     calls=$(cat "$d/calls.log" 2> /dev/null || true)
     if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls"; then
       ok "005-AC2 $t rebuild-assemble: a refused record stops the job before any image"
@@ -1730,7 +1745,7 @@ beh_snapshot_assemble() { # beh_snapshot_assemble TAGNAME SCRIPT MODE
   local t=$1 s=$2 mode=$3 d="$work/b-sasm-$1" rc calls tampered
   REF_NAME=123/merge; mk "$d" snapshot-assemble "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" snapshot-assemble "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls" && [ "$(n_calls 'verify bind --step snapshot-apk' "$d")" = 2 ] \
+  if [ "$rc" = 0 ] && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls" && [ "$(n_calls 'verify bind --local --step snapshot-apk' "$d")" = 2 ] \
      && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" -ge 3 ]; then
     ok \
         "AC12 $t snapshot-assemble: no policy, no verify, no stage-start (a snapshot record is refused by them); both directories bound as snapshot-apk"
@@ -1790,10 +1805,10 @@ beh_snapshot_rebuild_assemble() { # beh_snapshot_rebuild_assemble TAGNAME SCRIPT
   local t=$1 s=$2 mode=$3 d="$work/b-srbs-$1" rc calls n1 n2 n3 n4
   REF_NAME=123/merge; mk "$d" snapshot-rebuild-assemble "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" snapshot-rebuild-assemble "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  n1=$(line_of 'verify bind --step snapshot-rapk' "$d"); n2=$(line_of '^image ' "$d"); n3=$(line_of 'verify items-merge' "$d")
-  n4=$(line_of 'verify rebuild-compare --snapshot --build-record witness-build/snapshot-build-collection.json' "$d")
+  n1=$(line_of 'verify bind --local --step snapshot-rapk' "$d"); n2=$(line_of '^image ' "$d"); n3=$(line_of 'verify items-merge' "$d")
+  n4=$(line_of 'verify rebuild-compare --snapshot --build-record witness-build/snapshot-build-collection.local.json' "$d")
   if [ "$rc" = 0 ] && [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$n3" ] && [ -n "$n4" ] && [ "$n1" -lt "$n2" ] && [ "$n2" -lt "$n3" ] && [ "$n3" -lt "$n4" ] \
-     && [ "$(n_calls 'verify bind --step snapshot-rapk' "$d")" = 2 ] && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls"; then
+     && [ "$(n_calls 'verify bind --local --step snapshot-rapk' "$d")" = 2 ] && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls"; then
     ok \
         "005-AC7 $t snapshot-rebuild-assemble: bind (twice), images, merge, then the --snapshot compare with Build's snapshot-build record; no policy or verify"
   else
@@ -1917,12 +1932,14 @@ f1 caught "a download of an artifact Build never uploads is caught" "$root/.gith
 # harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; a near-miss tag stops at the policy, before any build
 for kind in assemble rebuild-assemble; do
   rd="$work/rcp-$kind"; mk "$rd" "$kind" "$root/bin/build-stage-$kind.sh" real v0.3.0-rc1; rc=$(run_stage "$rd" "$kind" real v0.3.0-rc1)
-  if [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" else 1)' "$rd/policy.json" 2> /dev/null; then
+  if [ "$kind" = assemble ] && [ "$rc" = 0 ] && [ ! -e "$rd/policy.json" ]; then
+    ok "AC12/rc $kind: the tag v0.3.0-rc1 completes with no policy (the apk records are local; the REAL admission-baseline reads the full tag)"
+  elif [ "$kind" = rebuild-assemble ] && [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" else 1)' "$rd/policy.json" 2> /dev/null; then
     ok "AC12/rc $kind: the tag v0.3.0-rc1 passes the REAL policy make and the policy carries the full tag"
   else bad "AC12/rc $kind: v0.3.0-rc1 through the real policy make: rc=$rc $(head -c 160 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   for nm in v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x; do
     rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$root/bin/build-stage-$kind.sh" real v0.3.0-rc1; rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
-    if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q 'refused at policy' "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the real policy make, before any image is built"
+    if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at $([ "$kind" = assemble ] && echo 'build: tag' || echo policy)" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the real policy make, before any image is built"
     else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   done
 done
@@ -2656,7 +2673,7 @@ for action in ("download-artifact", "upload-artifact"):
     assert len(found) == 1, "stage files pin %d different %s digests: %s" % (len(found), action, sorted(found))
     assert "actions/" + action + "@" + next(iter(found)) in allowed, "the pinned %s digest is not on the allowlist" % action
 PY
-EXPECT=911
+EXPECT=916
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
