@@ -35,6 +35,7 @@ import json
 import re
 import datetime
 import sys
+import urllib.parse
 
 OUR_PRODUCTS = re.compile(
     r"^pkg:(oci/cache\?repository_url=ghcr\.io/fosterstack/cache"
@@ -123,36 +124,63 @@ def _stamp(value):
     return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
 
 
+def _product_key(pid):
+    """What the readers match a product on, not how it is spelled: the scope (variant, architecture; the query's order and nothing else decides nothing) of this
+    gate's own image or of the exact Go product; any other string (a product the readers drop or refuse) is compared as written."""
+    sc = scope_of(pid) if isinstance(pid, str) else None
+    if sc is None:
+        return ("raw", pid)
+    return ("go",) if pid.startswith("pkg:golang/") else ("oci", sc.get("variant"), sc.get("arch"))
+
+
+def _package_key(sid):
+    """A subcomponent the way the matchers see it, widened on purpose: percent-decoded, case-folded, the purl type and any namespace ignored (the last path segment),
+    with its version. Treating two spellings as one package only ever retracts MORE (a fail-closed direction)."""
+    s = urllib.parse.unquote(str(sid)).split("?", 1)[0].split("#", 1)[0]
+    s = s[4:].split("/", 1)[-1] if s.startswith("pkg:") else s
+    name, _, ver = s.rpartition("@") if "@" in s else (s, "", "")
+    return (name.rsplit("/", 1)[-1].lower(), ver)
+
+
 def superseded(statements):
-    """{(statement index, product index)} that a LATER statement for the same vulnerability (its name or an alias), product and subcomponent set replaces: the latest
-    statement of such a pair is the current one, whatever its status, so a later `affected` retracts an earlier `not_affected`. 'Later' is by timestamp when both
-    parse (equal timestamps: the later in the document), else by document order. Statements of another product or another subcomponent set are other pairs."""
-    seen = {}
+    """{(statement index, product index)} that a LATER statement for the same vulnerability, product and subcomponent set replaces: the latest statement of such a
+    pair is the current one, whatever its status, so a later `affected` retracts an earlier `not_affected`. The vulnerability is the whole alias class (a statement
+    that names CVE and GHSA ids links them for the whole document); the product and the packages are compared by what the readers match on (_product_key,
+    _package_key), not by spelling. 'Later' is one total order per pair: by timestamp when EVERY statement of the pair carries a readable one (equal times: document
+    order), else by document order for the whole pair."""
+    parent = {}
+    def find(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    named = []
+    for st in statements:
+        v = (st.get("vulnerability") or {}) if isinstance(st, dict) else {}
+        ids = [x for x in ([v.get("name")] + list(v.get("aliases") or [])) if isinstance(x, str) and x]
+        named.append(ids)
+        for x in ids[1:]:
+            parent[find(x)] = find(ids[0])
+    groups = {}
     for i, st in enumerate(statements):
-        if not isinstance(st, dict):
+        if not isinstance(st, dict) or not named[i]:
             continue
-        v = st.get("vulnerability") or {}
-        ids = {x for x in ({v.get("name")} | set(v.get("aliases") or [])) if isinstance(x, str) and x}
         for pi, p in enumerate(st.get("products") or []):
             if not isinstance(p, dict):
                 continue
             at = p.get("@id")
             pid = at if at is not None else (p.get("identifiers") or {}).get("purl") or ""
-            subs = frozenset(str(s.get("@id")) for s in p.get("subcomponents") or [] if isinstance(s, dict))
-            for vid in ids:
-                seen.setdefault((vid, pid, subs), []).append((i, pi, _stamp(st.get("timestamp")), ids))
+            subs = frozenset(_package_key(s.get("@id")) for s in p.get("subcomponents") or [] if isinstance(s, dict))
+            groups.setdefault((find(named[i][0]), _product_key(pid), subs), []).append((i, pi, _stamp(st.get("timestamp"))))
     dead = set()
-    for entries in seen.values():
-        for a in entries:
-            for b in entries:
-                if b[0] == a[0]:
-                    continue
-                if a[2] is not None and b[2] is not None and a[2] != b[2]:
-                    later = b[2] > a[2]          # both timestamps read and different: the time decides
-                else:
-                    later = b[0] > a[0]          # otherwise (missing, unreadable or equal): the document order decides
-                if later:
-                    dead.add((a[0], a[1]))
+    for entries in groups.values():
+        if len({e[0] for e in entries}) < 2:
+            continue
+        timed = all(e[2] is not None for e in entries)
+        order = sorted(entries, key=(lambda e: (e[2], e[0], e[1])) if timed else (lambda e: (e[0], e[1])))
+        winner = order[-1]
+        for e in entries:
+            if e[0] != winner[0]:
+                dead.add((e[0], e[1]))
     return dead
 
 
