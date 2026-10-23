@@ -2685,6 +2685,7 @@ case_ r25-mixed-tag-destination-ok ok "$(rb "docker tag $PIN localhost/fa-\${v}"
 # is not the committed bytes. Closed list: actions/checkout (with repository, path or a ref other than the base sha), actions/download-artifact,
 # actions/cache and actions/cache/restore; the action name is read in any letter case; a path with ${{ }}, .. or an absolute path writes everywhere.
 # The plain default checkout, the base-sha fence form, upload-only steps and actions/cache/save write nothing into the tree.
+BASE_REF='${{ github.event.pull_request.base.sha }}'    # rc-5b 618 fix: assigned BEFORE the w-* cases that use it (under set -u an unset name made two cases test an empty fixture)
 mk_tool='mkdir -p bin && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
 us() { printf '      - uses: %s@%s # v7.0.1\n%s\n' "$1" "$SHA" "${2:+        with:
 $2}"; }
@@ -2725,12 +2726,90 @@ case_ w-cache-restore-list-bad bad "$(uw "$(us actions/cache/restore "          
           key: k")")" "$mk_tool"
 case_ w-cache-restore-upper-bad bad "$(uw "$(us Actions/Cache/Restore "          path: bin
           key: k")")" "$mk_tool"
-case_ w-cache-restore-elsewhere-ok ok "$(uw "$(us actions/cache/restore "          path: out
+case_ w-cache-restore-elsewhere-bad bad "$(uw "$(us actions/cache/restore "          path: out
           key: k")")" "$mk_tool"
-case_ w-cache-restore-home-ok ok "$(uw "$(us actions/cache/restore "          path: ~/.cache/go-build
+case_ w-cache-restore-home-bad bad "$(uw "$(us actions/cache/restore "          path: ~/.cache/go-build
           key: k")")" "$mk_tool"
 case_ w-cache-restore-expression-bad bad "$(uw "$(us actions/cache/restore "          path: \${{ env.D }}
           key: k")")" "$mk_tool"
+# --- rc-5b 618 fix round (Fable ruling, ops/audits/reviews/cache-618.md): everything tightens
+# 1. every actions/cache and cache/restore step writes everywhere (the glob and the file-path forms are not parsed)
+n=0
+for p in 'bi*' 'bin?' '[b]in' 'bin/tool.sh' '.github/agent/bi*' '~' '~/work/x/x/bin' '/home/runner/work/x/x/bin' '/tmp/x'; do
+  n=$((n+1)); case_ "w-cache-path-$n-bad" bad "$(uw "$(us actions/cache/restore "          path: $p
+          key: k")")" "$mk_tool"
+done
+case_ w-cache-save-still-ok ok "$(uw "$(us actions/cache/save "          path: bi*
+          key: k")")" "$mk_tool"
+# 2. a parent of the workspace, the home directory and /github are the workspace; outside is /tmp, runner.temp and ~/<not work>
+n=0
+for p in / /home /home/runner /github '~' '~/work/x/x/bin' '~/work' /opt/x; do
+  n=$((n+1)); case_ "w-download-artifact-path-$n-bad" bad "$(uw "$(us actions/download-artifact "          name: x
+          path: $p")")" "$mk_tool"
+done
+case_ w-download-artifact-home-cache-ok ok "$(uw "$(us actions/download-artifact "          name: x
+          path: ~/.cache/x")")" "$mk_tool"
+# 3. runner.temp is outside only when what follows has no expression, no $ and no ..
+case_ w-download-artifact-runner-temp-expression-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/\${{ '..' }}/x/bin")")" "$mk_tool"
+case_ w-download-artifact-runner-temp-variable-bad bad "$(uw "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}/\$D")")" "$mk_tool"
+# 4. a later writer into the base-sha fence directory itself (or over it) makes the script no longer main's copy
+mk_fence='mkdir -p bin && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
+fence_wf() {  # fence checkout into trusted, a writer step ($1), then the script run from trusted
+  printf '%s\n    steps:\n%s\n%s\n      - run: bash trusted/bin/tool.sh\n' "$head" "$(us actions/checkout "          ref: $BASE_REF
+          path: trusted")" "$1"
+}
+case_ w-fence-then-nothing-ok ok "$(fence_wf '')" "$mk_fence"
+case_ w-fence-then-download-into-it-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted")")" "$mk_fence"
+case_ w-fence-then-download-into-it-slash-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted/")")" "$mk_fence"
+case_ w-fence-then-download-into-it-subdir-bad bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted/bin")")" "$mk_fence"
+case_ w-fence-then-cache-restore-bad bad "$(fence_wf "$(us actions/cache/restore "          path: trusted
+          key: k")")" "$mk_fence"
+case_ w-fence-then-download-elsewhere-ok ok "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: /tmp/oci")")" "$mk_fence"
+# 5. a writer into /tmp or runner.temp replaces the copy of main's script a `git show` step wrote there
+tmp_copy() {  # the git show copy step, a writer step ($1), the run of the copy
+  printf '%s\n    steps:\n      - run: |\n          mkdir -p /tmp/policy\n          git show origin/main:bin/tool.sh > /tmp/policy/tool.sh\n%s\n      - run: bash /tmp/policy/tool.sh\n' "$head" "$1"
+}
+case_ w-tmp-copy-alone-ok ok "$(tmp_copy '')" "$mk_tool"
+case_ w-tmp-copy-then-download-over-it-bad bad "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp/policy")")" "$mk_tool"
+case_ w-tmp-copy-then-download-over-its-parent-bad bad "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp")")" "$mk_tool"
+case_ w-tmp-copy-then-download-elsewhere-ok ok "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp/oci")")" "$mk_tool"
+rt_copy() {
+  printf '%s\n    steps:\n      - run: |\n          git show origin/main:bin/tool.sh > "$RUNNER_TEMP/tool.sh"\n%s\n      - run: bash "$RUNNER_TEMP/tool.sh"\n' "$head" "$1"
+}
+case_ w-runner-temp-copy-alone-ok ok "$(rt_copy '')" "$mk_tool"
+case_ w-runner-temp-copy-then-download-bad bad "$(rt_copy "$(us actions/download-artifact "          name: x
+          path: \${{ runner.temp }}")")" "$mk_tool"
+# 7. a checkout with lfs not false puts the LFS objects' bytes where the committed pointer files are
+case_ w-checkout-lfs-true-bad bad "$(uw "$(us actions/checkout "          lfs: true")")" "$mk_tool"
+case_ w-checkout-lfs-expression-bad bad "$(uw "$(us actions/checkout "          lfs: \${{ inputs.lfs }}")")" "$mk_tool"
+case_ w-checkout-lfs-false-ok ok "$(uw "$(us actions/checkout "          lfs: false")")" "$mk_tool"
+# 9. a `with:` that is not a mapping on a writer writes everywhere
+case_ w-checkout-with-list-bad bad "$(uw "$(us actions/checkout "          - ref")")" "$mk_tool"
+case_ w-download-artifact-with-list-bad bad "$(uw "$(us actions/download-artifact "          - x")")" "$mk_tool"
+case_ w-cache-with-list-bad bad "$(uw "$(us actions/cache/restore "          - bin")")" "$mk_tool"
+# 10. the finding is the write-before-run finding, not some other rule (case_ above reads the exit status only)
+wmsg='is changed by the job before it runs'
+case_out w-out-cache-restore-glob bad "$(uw "$(us actions/cache/restore "          path: bi*
+          key: k")")" "$wmsg" '' "$mk_tool"
+case_out w-out-download-artifact-parent-of-workspace bad "$(uw "$(us actions/download-artifact "          name: x
+          path: /home/runner")")" "$wmsg" '' "$mk_tool"
+case_out w-out-checkout-repository bad "$(uw "$(us actions/checkout "          repository: other/x")")" "$wmsg" '' "$mk_tool"
+case_out w-out-checkout-lfs bad "$(uw "$(us actions/checkout "          lfs: true")")" "$wmsg" '' "$mk_tool"
+case_out w-out-fence-overwritten bad "$(fence_wf "$(us actions/download-artifact "          name: x
+          path: trusted")")" "runs trusted/bin/tool.sh, which is not a committed file" '' "$mk_fence"   # no longer main's copy: the path is read as a plain one
+case_out w-out-tmp-copy-overwritten bad "$(tmp_copy "$(us actions/download-artifact "          name: x
+          path: /tmp/policy")")" "$wmsg|copy|policy" '' "$mk_tool"
+case_out w-out-with-list bad "$(uw "$(us actions/checkout "          - ref")")" "$wmsg" '' "$mk_tool"
+case_out w-out-ok-plain-checkout ok "$(uw "$(us actions/checkout)")" '0 finding' "$wmsg" "$mk_tool"
 case_ w-download-artifact-tmp-ok ok "$(uw "$(us actions/download-artifact "          name: images
           path: /tmp/oci/")")" "$mk_tool"
 case_ w-download-artifact-runner-temp-ok ok "$(uw "$(us actions/download-artifact "          name: x
@@ -2768,7 +2847,6 @@ $(us actions/download-artifact "          path: bin")
 # --- advisor 0198 (option A, fenced): a directory that an EARLIER step of the SAME job filled with actions/checkout of THIS repository at
 # exactly the pull request's base sha (`ref: ${{ github.event.pull_request.base.sha }}`, a literal path) is main's copy: a committed script
 # under it runs at a literal path in any interpreter (REQ-SUP-001's trusted checker). Every other shape stays refused.
-BASE_REF='${{ github.event.pull_request.base.sha }}'
 mk_trusted='mkdir -p bin && printf "print(1)\n" > bin/tool.py && printf "#!/usr/bin/env bash\necho hi\n" > bin/tool.sh'
 co() { printf '      - uses: actions/checkout@%s # v7.0.1\n        with:\n%s\n' "$SHA" "$1"; }
 case_ a-base-checkout-python-ok ok "$head

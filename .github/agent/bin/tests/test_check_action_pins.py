@@ -986,7 +986,7 @@ class NonUtf8Names(unittest.TestCase):
     same entry and one workflow went unread. A name under .github/ that is not valid UTF-8 is refused, each one named, and no
     file is skipped. The trees are made with git plumbing (the index takes any bytes; a macOS file system would not)."""
 
-    def commit_with(self, extra):
+    def commit_with(self, extra, content=b"x\n"):
         d = gate_tree(gate_variants()[1])
         self.addCleanup(shutil.rmtree, d)
         env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
@@ -998,7 +998,7 @@ class NonUtf8Names(unittest.TestCase):
         git("init", "-q")
         git("add", "-A")
         info = _index_info(git("ls-files", "-z", "-s"))          # the whole valid tree, then the extra entries as raw bytes
-        blob = git("hash-object", "-w", "--stdin", inp=b"x\n").decode().strip().encode()
+        blob = git("hash-object", "-w", "--stdin", inp=content).decode().strip().encode()
         for name in extra:
             info += b"100644 " + blob + b"\t" + name + b"\0"
         git("update-index", "-z", "--add", "--index-info", inp=info, e=idx)
@@ -1029,6 +1029,15 @@ class NonUtf8Names(unittest.TestCase):
         code, out = run(["--git", c], cwd=d)
         self.assertEqual(code, 1, out)
         self.assertIn("not valid UTF-8", out)
+
+    def test_a_finding_that_names_a_non_utf8_path_is_printed_escaped_not_a_traceback(self):
+        # rc-5b 618 fix: a name outside .github/ is read (action.yml), and a finding that holds it must print under a strict stdout
+        d, c = self.commit_with([b"x/\xff/action.yml"], b"runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n")
+        p = subprocess.run([sys.executable, SRC, "--git", c], cwd=d, capture_output=True,
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+        self.assertNotIn(b"Traceback", p.stderr, p.stderr)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn(b"\\xff", p.stdout)
 
     def test_a_non_utf8_name_outside_github_is_not_this_checkers_business(self):
         d, c = self.commit_with([b"docs/\xff.md"])

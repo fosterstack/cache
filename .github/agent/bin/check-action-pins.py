@@ -2250,13 +2250,18 @@ def _resolve_script(path, text, entries, bases=()):
         # the pull request's base sha is main's copy; the script runs from it at a literal path. Nothing else in the job may write under it.
         d = re.escape(mb.group(1))
         for ln in re.sub(r"\\\n", " ", text).splitlines():
-            if re.search(r"(?<![\w.-])" + d + r"/", ln) and (re.search(_BASE_WRITE, ln) or re.search(r">>?\s*[\"']?(\./)?" + d + r"/", ln)):
+            if re.search(r"(?<![\w.-])" + d + r"(?:/|[\"']|\s|$)", ln) and (re.search(_BASE_WRITE, ln) or re.search(r">>?\s*[\"']?(\./)?" + d + r"/", ln)):
                 return None
         return mb.group(2)
     m = re.match(r"^(\$\{?RUNNER_TEMP\}?|/tmp(?:/[\w.-]+)*)/([\w.-]+)$", path)
     if not m:
         return None
     d, base = m.group(1), m.group(2)
+    dn = "$RUNNER_TEMP" if d.startswith("$") else d
+    for wm_ in re.finditer(r"tar -x -C '([^']*)'", text):    # a writer step (or an extraction) into the copy's directory or a parent of it
+        w_ = "$RUNNER_TEMP" + wm_.group(1)[len("$RUNNER_TEMP"):] if wm_.group(1).startswith("$RUNNER_TEMP") else wm_.group(1)
+        if w_ == "." or dn == w_ or dn.startswith(w_.rstrip("/") + "/"):
+            return None
     dpat = r"\$\{?RUNNER_TEMP\}?" if d.startswith("$") else re.escape(d)
     dst = r">\s*\"?" + dpat + r"/(" + re.escape(base) + r"|\$\(basename[^)]*\))"
     writes = len(re.findall(dst + r"\"?", text))
@@ -2837,52 +2842,55 @@ def _default_shell(node):
 
 
 def _writer_dir(value):
-    """The directory (relative to the workspace) that a step's `path:` fills, or None when it fills nothing inside the
-    workspace (an absolute path elsewhere, or under the runner's temp directory). Anything this check cannot place by
-    reading it ("${{ }}", "..", a quote, the workspace's own absolute path) writes everywhere, written ".", fail closed."""
+    """The directory that a step's `path:` fills: relative to the workspace, or an absolute directory ("/tmp/x", "$RUNNER_TEMP/x",
+    "~/.cache/x") that is provably not the workspace. Anything this check cannot place by reading it writes everywhere, written ".",
+    fail closed: "${{ }}", a "$", a quote, "..", the workspace's own absolute path and every parent of it ("/", "/home", "/home/runner",
+    "/github", "~", "~/work/..."). Outside means exactly /tmp, runner.temp and ~/<anything but work> (rc-5b 618 fix, Fable ruling)."""
     v = str(value).strip().strip("\"'")
     if not v:
         return "."
-    if v.startswith(("/home/runner/work", "/github/workspace")):
-        return "."                                       # the workspace's own absolute path
-    if v.startswith(("${{ runner.temp }}", "${{runner.temp}}", "$RUNNER_TEMP", "${RUNNER_TEMP}")) and ".." not in v.split("/"):
-        return None                                      # under the runner's temp directory: outside the workspace
-    if "${{" in v or "'" in v or ".." in v.split("/"):
+    m = re.match(r"(?:\$\{\{\s*runner\.temp\s*\}\}|\$RUNNER_TEMP|\$\{RUNNER_TEMP\})(/.*)?$", v)
+    if m:
+        rest = m.group(1) or ""
+        if "${{" in rest or "$" in rest or ".." in rest or "'" in rest or '"' in rest:
+            return "."                                   # an expression or a variable after the prefix can resolve to anything
+        return "$RUNNER_TEMP" + (os.path.normpath(rest) if rest.strip("/") else "")
+    if "${{" in v or "$" in v or "'" in v or '"' in v or ".." in v:
         return "."
-    if v.startswith("/"):
-        return None                                      # an absolute path outside the workspace cannot hold a committed script
+    if v == "/tmp" or v.startswith("/tmp/") or re.match(r"~/(?!work(/|$))[^/]", v):
+        return os.path.normpath(v)                       # outside the workspace: still a directory a /tmp copy of a script can live in
+    if v.startswith(("/", "~")):
+        return "."                                       # the workspace, a parent of it, or somewhere this check cannot place
     return os.path.normpath(v)
 
 
 def _uses_writes(uses, with_node, key_of):
-    """rc-5b B2 (handoff 0663): the workspace directories a `uses:` step fills, from a CLOSED list of writers; [] for any
-    other action. actions/checkout with `repository`, `path` or a `ref` (the plain default checkout and the base-sha fence
-    form are not writers), actions/download-artifact, actions/cache and actions/cache/restore (save and the upload actions
-    write nothing into the tree). The action name is read in any letter case."""
+    """rc-5b B2 (handoff 0663): the directories a `uses:` step fills, from a CLOSED list of writers; [] for any other action.
+    actions/checkout with `repository`, `path`, a `ref` or `lfs` other than false (the plain default checkout and the base-sha fence
+    form are not writers), actions/download-artifact, actions/cache and actions/cache/restore (save and the upload actions write
+    nothing into the tree). The action name is read in any letter case. A `with:` that is not a mapping writes everywhere. Every
+    cache step writes everywhere: a cache entry's own paths are not read (618 fix, Fable ruling)."""
     name = uses.strip().split("@")[0].lower()
+    if name not in ("actions/checkout", "actions/download-artifact", "actions/cache", "actions/cache/restore"):
+        return []
+    empty = with_node is None or (isinstance(with_node, yaml.ScalarNode) and with_node.value.strip() in ("", "~", "null"))
+    if not empty and not isinstance(with_node, yaml.MappingNode):
+        return ["."]                                     # GitHub rejects it, but this check does not read it as "no inputs"
     wm = {key_of(k): v for k, v in with_node.value} if isinstance(with_node, yaml.MappingNode) else {}
     val = lambda k: wm[k].value if isinstance(wm.get(k), yaml.ScalarNode) else ("${{" if k in wm else None)
     if name == "actions/checkout":
-        ref, pth = val("ref"), val("path")
-        if "repository" not in wm and ref is not None and ref.strip() == BASE_SHA_REF and \
+        ref, pth, lfs = val("ref"), val("path"), val("lfs")
+        lfs_on = lfs is not None and lfs.strip().strip("\"'").lower() != "false"
+        if "repository" not in wm and not lfs_on and ref is not None and ref.strip() == BASE_SHA_REF and \
                 re.fullmatch(r"[\w][\w-]*", (pth or ".").strip()):
             return []                                    # the base-sha fence: main's copy, handled as a base directory
-        if "repository" in wm or ref is not None or pth is not None:
-            return [d for d in [_writer_dir(pth if pth is not None else ".")] if d]
+        if "repository" in wm or ref is not None or pth is not None or lfs_on:
+            return [_writer_dir(pth if pth is not None else ".")]
         return []
     if name == "actions/download-artifact":
         pth = val("path")
-        return [d for d in [_writer_dir(pth if pth is not None else ".")] if d]
-    if name in ("actions/cache", "actions/cache/restore"):
-        lines = [ln.strip() for ln in (val("path") or "").splitlines() if ln.strip() and not ln.strip().startswith("!")]
-        out = []
-        for ln in lines or ["."]:
-            if ln.startswith(("~", "/")) and not ln.startswith(("/home/runner/work", "/github/workspace")):
-                continue                                 # outside the workspace: cannot hold a committed script
-            ln = re.sub(r"/?\*.*$", "", ln) or "."
-            out.append(_writer_dir(ln))
-        return [d for d in out if d]
-    return []
+        return [_writer_dir(pth if pth is not None else ".")]
+    return ["."]
 
 
 def run_scripts(doc):
@@ -2914,6 +2922,9 @@ def run_scripts(doc):
                         if wdirs:                        # rc-5b B2: a step that puts bytes into the tree is a writer, in step order
                             groups.setdefault(group, []).append((f"{base}[{i}].uses", "\n".join(f"tar -x -C '{d_}'" for d_ in wdirs),
                                                                   None, None, "if" in m, "", tuple(base_dirs)))
+                            for d_ in list(base_dirs):   # a LATER writer into (or over) a base-sha directory: it is no longer main's copy
+                                if any(w_ == "." or w_ == d_ or w_.startswith(d_ + "/") or d_.startswith(w_ + "/") for w_ in wdirs):
+                                    base_dirs.remove(d_)
                     if isinstance(uses, yaml.ScalarNode) and re.match(r"^actions/checkout@", uses.value.strip(), re.I):
                         wm = {key_of(k): v for k, v in w.value} if isinstance(w, yaml.MappingNode) else {}
                         ref, pth = wm.get("ref"), wm.get("path")
@@ -3195,7 +3206,7 @@ def main():
     if verify:
         bad += verify_pins(pins)
     for b in bad:
-        print(b)
+        print(b.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace"))   # a name that is not UTF-8 prints escaped, never a traceback
     print(f"check-action-pins: {len(files)} YAML file(s), {len(pins)} pinned action(s)"
           f"{' verified against their tags' if verify else ''}, {len(bad)} finding(s)")
     sys.exit(1 if bad else 0)
