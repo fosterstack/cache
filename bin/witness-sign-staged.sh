@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the building jobs' Witness records (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4).
-# `bin/chain-verify.py sign-records` has already checked every local record against the artifacts Sign received and staged, under STAGED/<record-dir>/, each
+# the records step of the verifier (its sign-records subcommand) has already checked every local record against the artifacts Sign received and staged, under STAGED/<record-dir>/, each
 # record's payload bytes (STEP-collection.payload) and its data files; it printed nothing to sign on any refusal. This helper signs each payload keyless
 # (the job's identity token, audience sigstore, held in a shell variable and handed to Witness through a one-read process substitution; the request
 # variables are unset first) into SIGNED/<record-dir>/STEP-collection.json with the Sigstore timestamp, copies the data files unchanged, and then runs the
