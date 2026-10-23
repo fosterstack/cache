@@ -2182,7 +2182,7 @@ for jn, j in (d.get("jobs") or {}).items():
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
-if re.search(r"(?<!vnd)\.oci\b|\.tar\b(?!\.gz)|oci-archive:", text): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
+if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", re.sub(r"application/vnd\.oci\.[a-z0-9.+-]+", "", text)): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
 if "/tmp/oci/" in text and not re.search(r"\boci:/tmp/oci/\$\{v\}|\boci:%s", text): bad.append("does not read the layout with skopeo oci:")
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
@@ -2192,6 +2192,8 @@ f1() { # f1 ok|caught LABEL FILE [sed-expr]
   out=$(python3 "$work/f1.py" "$f") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC14/F1 $2${out:+ ($out)}"; else bad "AC14/F1 $2 -> $out"; fi; }
 for w in scan main-candidate-rescan; do f1 ok "the real $w.yml consumes only Build's artifacts, no debug, no .oci, no checksums output" "$root/.github/workflows/$w.yml"; done
+f1 caught "an archive path that only looks like a media type (/tmp/oci/vnd.oci) is caught (take 30, Codex sol B4 and terra B1)" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf \/tmp\/oci\/vnd.oci/'
+f1 caught "an archive file production.oci is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: images # tar -xf production.oci/'
 f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: oci-candidate/'
 f1 caught "the vex-attach artifact downloaded by a job other than panel-scout (here vex-attach itself) is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/name: vex-attach/'
 f1 caught "a download of vex-attach in a workflow whose own vex-attach job does not upload it (scan.yml) is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: vex-attach/'
@@ -2965,7 +2967,7 @@ for f in files:
             assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
-EXPECT=1031
+EXPECT=1033
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

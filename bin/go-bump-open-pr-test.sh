@@ -53,10 +53,13 @@ run_case() {
   # the policy row of the installer (.github/policy/chain-scripts.json): its sha256 must follow the installer's bytes in the same commit (Codex A r5 #3)
   mkdir -p "$work/.github/policy"
   python3 - "$work" <<'PY'
-import hashlib, json, sys
+import hashlib, json, os, sys
 w = sys.argv[1]
 h = hashlib.sha256(open(w + "/bin/install-scanner.sh", "rb").read()).hexdigest()
-json.dump({"scripts": [{"path": "bin/other.sh", "sha256": "0" * 64}, {"path": "bin/install-scanner.sh", "sha256": h, "tools": ["go"]}]}, open(w + "/.github/policy/chain-scripts.json", "w"), indent=2)
+rows = [{"path": "bin/other.sh", "sha256": "0" * 64}, {"path": "bin/install-scanner.sh", "sha256": h, "tools": ["go"]}]
+if os.environ.get("BUMP_POLICYPAD") == "1":      # the real policy is 150 KB: its base64 is over Linux's 128 KiB limit for ONE argument, so the request must not pass it through argv
+    rows += [{"path": "bin/pad%d.sh" % n, "sha256": "%064x" % n, "reason": "x" * 400} for n in range(400)]
+json.dump({"scripts": rows}, open(w + "/.github/policy/chain-scripts.json", "w"), indent=2)
 open(w + "/.github/policy/chain-scripts.json", "a").write("\n")
 PY
   # go.dev, over HTTPS: the published list (mode=json) and the two linux tarballs, served by a mock download program; BUMP_CURL=down|mismatch|nolist|badhex breaks it
@@ -77,6 +80,9 @@ case "\$req" in
 esac
 CURL
   chmod +x "$work/bin/$FAKE_FETCH_TOOL"
+  # an encoder that fails on demand (BUMP_B64=fail): the request must not be made from an empty file
+  local realb64; realb64="$(command -v base64)"
+  printf '#!/usr/bin/env bash\n[ "${BUMP_B64:-ok}" = fail ] && exit 74\nexec %s "$@"\n' "$realb64" > "$work/bin/base64"; chmod +x "$work/bin/base64"
   cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 args=(); skip=0; inp=0
@@ -159,56 +165,56 @@ run_case "open PR -> dedup, nothing else"           "$SUT" '[{"number":42,"state
 run_case "merged PR -> landed, nothing else"        "$SUT" '[{"number":40,"state":"MERGED","mergedAt":"2026-09-01T00:00:00Z"}]' 1 0 0 "$LIST" old
 run_case "closed-not-merged -> respected"           "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null}]' 1 0 0 "$LIST" old
 run_case "orphaned branch with a verified tip -> draft PR, no push, no commit" "$SUT" '[]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
-run_case "AC8: orphaned branch with an unverified tip -> exit 1, no PR, nothing deleted or committed" \
+run_case "AC9: orphaned branch with an unverified tip -> exit 1, no PR, nothing deleted or committed" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 false
-run_case "AC8: orphaned branch whose tip cannot be checked -> exit 1, no PR, nothing deleted" \
+run_case "AC9: orphaned branch whose tip cannot be checked -> exit 1, no PR, nothing deleted" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 fail
-run_case "AC8: an answer that is neither true nor false (null) -> exit 1, nothing deleted" \
+run_case "AC9: an answer that is neither true nor false (null) -> exit 1, nothing deleted" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 null
-run_case "AC8: a verified tip that is not a bump commit (the base a failed run pushed) -> exit 1, no PR, nothing deleted" \
+run_case "AC9: a verified tip that is not a bump commit (the base a failed run pushed) -> exit 1, no PR, nothing deleted" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 basehead
-run_case "AC8: an empty answer -> exit 1, nothing deleted" \
+run_case "AC9: an empty answer -> exit 1, nothing deleted" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 empty
-run_case "AC8: a version that is not a Go version is refused before any call (injection)" \
+run_case "AC9: a version that is not a Go version is refused before any call (injection)" \
                                                      "$SUT" '[]' 0 0 2 "" old ok true 0 true '1.26.6/g;s/^module .*/module evil/;s/x 1.27.0'
-run_case "AC8: a latest that is not a Go version is refused before any call" \
+run_case "AC9: a latest that is not a Go version is refused before any call" \
                                                      "$SUT" '[]' 0 0 2 "" old ok true 0 true '1.26.6 1.27.0;rm'
 run_case "fresh -> both modules bumped, one API commit verified, draft PR (REQ-REL-004-AC9)" \
                                                      "$SUT" '[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW" new ok true 1
 run_case "a denied create fails the run (42)"        "$SUT" '[]' 1 42 42 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE" old ok true 0 true
-run_case "AC8: a commit the API does not report verified -> branch deleted, no PR, exit 1" \
+run_case "AC9: a commit the API does not report verified -> branch deleted, no PR, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok false
-run_case "AC8: the verification question failing -> branch deleted, no PR, exit 1" \
+run_case "AC9: the verification question failing -> branch deleted, no PR, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok fail
-run_case "AC8: the commit API failing -> branch deleted, no PR, exit 1" \
+run_case "AC9: the commit API failing -> branch deleted, no PR, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$DEL_B" skip fail
-run_case "AC8: a cleanup that fails says the branch remains, and still exits 1 with no PR" \
+run_case "AC9: a cleanup that fails says the branch remains, and still exits 1 with no PR" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$DEL_O" skip ok false 0 true '1.26.6 1.27.0' 1 'remove it by hand'
-run_case "AC8: the API made the commit but its answer was lost -> the remote tip is ours (parent and headline), the leased delete uses it" \
+run_case "AC9: the API made the commit but its answer was lost -> the remote tip is ours (parent and headline), the leased delete uses it" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_O"$'\n'"$DEL_O" skip fail true 0 true '1.26.6 1.27.0' 0 '' oid
-run_case "AC8: the remote tip is someone else's commit -> left in place, said so, exit 1" \
+run_case "AC9: the remote tip is someone else's commit -> left in place, said so, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_X" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' other
-run_case "AC8: the remote tip cannot be read -> left in place, said so, exit 1" \
+run_case "AC9: the remote tip cannot be read -> left in place, said so, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' lsfail
-run_case "AC8: after a failed API commit the branch is not on the remote -> nothing to remove, exit 1" \
+run_case "AC9: after a failed API commit the branch is not on the remote -> nothing to remove, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM" skip fail true 0 true '1.26.6 1.27.0' 0 'nothing to remove' empty
-run_case "AC8: a branch push whose answer was lost but made the branch at the base -> leased delete, exit 1, no PR" \
+run_case "AC9: a branch push whose answer was lost but made the branch at the base -> leased delete, exit 1, no PR" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$LSREM"$'\n'"$DEL_B" skip ok true 0 true '1.26.6 1.27.0' 0 'the push of' base match 0 1
-run_case "AC8: a branch push that failed and left nothing -> exit 1, nothing to remove, no PR" \
+run_case "AC9: a branch push that failed and left nothing -> exit 1, nothing to remove, no PR" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$LSREM" skip ok true 0 true '1.26.6 1.27.0' 0 'nothing to remove' empty match 0 1
-run_case "AC8: the remote tip is another run's commit (same parent and headline, other run marker) -> left in place" \
+run_case "AC9: the remote tip is another run's commit (same parent and headline, other run marker) -> left in place" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$INFO_R" skip fail true 0 true '1.26.6 1.27.0' 0 'leaving it' rival
-run_case "AC8: the branch moved after the commit was verified -> the PR is closed, exit 1" \
+run_case "AC9: the branch moved after the commit was verified -> the PR is closed, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE" new ok true 0 true '1.26.6 1.27.0' 0 'closing it' base differ
-run_case "AC8: a pull request that cannot be closed is retried three times and reported (close it by hand), exit 1" \
+run_case "AC9: a pull request that cannot be closed is retried three times and reported (close it by hand), exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE"$'\n'"$PRCLOSE"$'\n'"$PRCLOSE" new ok true 0 true '1.26.6 1.27.0' 0 'close it by hand' base differ 1
-run_case "AC8: a pull request this script closed itself is not a human's decline -> recovery goes on" \
+run_case "AC9: a pull request this script closed itself is not a human's decline -> recovery goes on" \
                                                      "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"comments":[{"body":"closed by go-bump-open-pr.sh: the branch moved after its commit was verified"}]}]' 1 0 0 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW" old ok true 0 true
 run_case "a closed pull request with someone else's comment is still a decline" \
                                                      "$SUT" '[{"number":41,"state":"CLOSED","mergedAt":null,"comments":[{"body":"not now"}]}]' 1 0 0 "$LIST" old
-run_case "AC8: an orphan's branch moved after its tip was verified -> the PR is closed, exit 1" \
+run_case "AC9: an orphan's branch moved after its tip was verified -> the PR is closed, exit 1" \
                                                      "$SUT" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV"$'\n'"$CREATE"$'\n'"$PRVIEW"$'\n'"$PRCLOSE" old ok true 0 true '1.26.6 1.27.0' 0 'closing it' base differ
-run_case "AC8: an id that is not a commit id -> branch deleted, no PR, exit 1" \
+run_case "AC9: an id that is not a commit id -> branch deleted, no PR, exit 1" \
                                                      "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP"$'\n'"$PUSH"$'\n'"$COMMIT"$'\n'"$LSREM"$'\n'"$DEL_B" skip badoid
 
 # the checksums come from go.dev's published list over HTTPS and are checked against the downloaded tarballs; any doubt fails closed BEFORE a branch exists
@@ -272,6 +278,11 @@ mutant() {
   else echo "ok: mutant caught: $name"; pass=$((pass+1)); fail=$((fail-1)); fi
 }
 FRESH_CASE=('[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW" new ok true 1)
+# round 1 of take 30 (Codex sol B1/B2): the request is built from FILES (jq --rawfile), never from an argument (the real policy's base64 is over Linux's 128 KiB limit for one argument), and an encoder
+# that fails stops the bump before anything is pushed (no empty installer in a signed commit)
+BUMP_POLICYPAD=1 run_case "a 200 KB policy file -> the request still carries the four files exactly (built from files, not arguments)" "$SUT" "${FRESH_CASE[@]}"
+BUMP_B64=fail run_case "an encoder that fails -> nothing pushed, no API commit, no PR, exit 1" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP" skip
+if grep -Eq -- '--arg +[A-Za-z_]+ +"\$\((base64|cat)' "$SUT"; then echo "FAIL: the bump script passes file contents through jq --arg"; fail=$((fail+1)); else echo "ok: the bump script passes no file contents through jq --arg"; pass=$((pass+1)); fi
 { cat "$SUT"; printf '\ngh pr ready "$branch"\ngh pr merge --squash --auto "$branch"\n'; } > "$mut"
 mutant "draft readied and auto-merge armed" "draft readied and auto-merge armed" "$mut" "${FRESH_CASE[@]}"
 sed 's/gh pr create --draft /gh pr create /' "$SUT" > "$mut"
@@ -313,7 +324,7 @@ mutant "ownership without the run marker" "ownership without the run marker" "$m
 sed 's/ \&\& \[ "\$tip_head" = "\$headline" \]//' "$SUT" > "$mut"; cmp -s "$SUT" "$mut" && { echo "FAIL: mutant not built (headline)"; fail=$((fail+1)); }
 mutant "an orphan tip that is not a bump commit is taken" "an orphan tip that is not a bump commit is taken" "$mut" '[]' 1 0 1 "$LIST"$'\n'"$LSR"$'\n'"$TIPV" old ok true 0 basehead
 
-# AC8, the repository guard, in the plain forms only (advisor ruling, the same scope as the owner's pin-checker ruling of Oct 3): no workflow, composite
+# AC9, the repository guard, in the plain forms only (advisor ruling, the same scope as the owner's pin-checker ruling of Oct 3): no workflow, composite
 # action or script outside the tests runs git commit, git commit-tree or git merge, written out as a shell command (options allowed, quoted or after ;
 # and &&) or as a Python argument list ("git", "commit"). A deliberately disguised form (an alias, --config-env, split or concatenated words, escaped
 # quotes, redirections spread through the command, git fast-import) is information, not a blocker: main's signed-commits rule stops an unsigned commit
@@ -353,7 +364,7 @@ for f in files:
 guard_scan() { python3 -I -c "$GUARD_PY" "$@"; }   # guard_scan <repo root> [allowed sha256 ...]
 ALLOW=(93abf67cf317408498df34dd65e1f7af0ddef77dc3be75c3e22107424f6575b9 4ecf328cb07ea2e678cec7c6bda8aaf5d45a4569d93a92439cc0e65caf40425f 214234061c415ef2a41afd9c51fe8503b0645b31679d08fb6a06f7ddce85ffb0 5268fb8e50f332bb34b20260158a11e3169918db862866888a14e63996042130 809e4cd3d001b8f260e59002af8ee8c4bc14a7b0aee7a746bdf1a45fe260894d 2449244a68f1430fd2adeda5e9baf812b46470c590b9e77a9b60b2db11fd950f 7c3e3df9b151afb150c82b8a64eb67d69d60c0c2ccbf0b9ac97f54624218f818)
 bad_lines="$(guard_scan "$root" "${ALLOW[@]}")" || bad_lines="the guard itself failed"
-if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC8, plain forms)"; pass=$((pass+1))
+if [ -z "$bad_lines" ]; then echo "ok: no workflow or script outside the tests makes a commit with git (AC9, plain forms)"; pass=$((pass+1))
 else echo "FAIL: a commit-making git call outside the tests:"; printf '%s\n' "$bad_lines" | sed 's/^/    /'; fail=$((fail+1)); fi
 # the guard must catch each plain form on its own, in a throwaway repository
 g="$(mktemp -d)"; ( cd "$g" && git init -q && mkdir -p bin .github/workflows .githooks tools/requirements ) >/dev/null 2>&1

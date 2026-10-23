@@ -77,7 +77,7 @@ if [ "$fresh" = 1 ]; then
     sed -i.bak -E "s/^GO_VER=[0-9.]+/GO_VER=${LATEST}/; s/(go:x86_64[|]go:amd64[)] SUM=)[0-9a-f]{64}/\1${sum_amd64}/; s/(go:aarch64[|]go:arm64[)] SUM=)[0-9a-f]{64}/\1${sum_arm64}/" "$f"; rm -f "${f}.bak"      # -i.bak: portable between GNU and BSD sed
     # the installer is a listed script of the release chain: its sha256 row in the policy follows its bytes, in the same commit (the policy validator
     # refuses a row that differs from the file)
-    python3 - "$f" .github/policy/chain-scripts.json <<'PY' || { echo "::error::failed to update the installer's sha256 row in .github/policy/chain-scripts.json" >&2; exit 1; }
+    env -u GH_TOKEN python3 -I -B - "$f" .github/policy/chain-scripts.json <<'PY' || { echo "::error::failed to update the installer's sha256 row in .github/policy/chain-scripts.json" >&2; exit 1; }
 import hashlib, re, sys
 inst, pol = sys.argv[1:3]
 h = hashlib.sha256(open(inst, "rb").read()).hexdigest()
@@ -102,14 +102,20 @@ PY
   case "$base" in *[!0-9a-f]*|'') echo "::error::could not read the commit the job started from" >&2; exit 1;; esac
   [ "${#base}" -eq 40 ] || { echo "::error::could not read the commit the job started from" >&2; exit 1; }
   marker="go-bump-run: ${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"   # unique to this run: two overlapping runs of one bump share parent and headline
-  input="$(mktemp)"
+  input="$(mktemp)"; enc="$(mktemp -d)"
+  # each file's contents are encoded into a file of its own, every encoding checked (a failing encoder must not become an empty file in a signed commit), and the
+  # request is built from those files with --rawfile: the policy's base64 alone is over Linux's 128 KiB limit for one argument
+  for pair in go.mod:r tools/requirements/go.mod:t bin/install-scanner.sh:i .github/policy/chain-scripts.json:c; do
+    { base64 < "${pair%:*}" | tr -d '\n' > "${enc}/${pair##*:}"; } || { echo "::error::could not encode ${pair%:*}; opening no pull request" >&2; rm -rf "$enc" "$input"; exit 1; }
+    [ -s "${enc}/${pair##*:}" ] || { echo "::error::the encoding of ${pair%:*} is empty; opening no pull request" >&2; rm -rf "$enc" "$input"; exit 1; }
+  done
   jq -n --arg repo "${GITHUB_REPOSITORY:-fosterstack/cache}" --arg b "$branch" --arg base "$base" \
         --arg head "$headline" --arg mark "$marker" \
-        --arg r "$(base64 < go.mod | tr -d '\n')" --arg t "$(base64 < tools/requirements/go.mod | tr -d '\n')" \
-        --arg i "$(base64 < bin/install-scanner.sh | tr -d '\n')" --arg c "$(base64 < .github/policy/chain-scripts.json | tr -d '\n')" \
+        --rawfile r "${enc}/r" --rawfile t "${enc}/t" --rawfile i "${enc}/i" --rawfile c "${enc}/c" \
     '{query: "mutation($input: CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}",
       variables: {input: {branch: {repositoryNameWithOwner: $repo, branchName: $b}, message: {headline: $head, body: $mark}, expectedHeadOid: $base,
                           fileChanges: {additions: [{path: "go.mod", contents: $r}, {path: "tools/requirements/go.mod", contents: $t}, {path: "bin/install-scanner.sh", contents: $i}, {path: ".github/policy/chain-scripts.json", contents: $c}]}}}}' > "$input"
+  rm -rf "$enc"
   # Cleanup removes only what this run owns: the delete is leased on the tip this run last knew (the commit it pushed, then the one the API made),
   # so a branch someone else advanced is kept. A cleanup that fails is its own loud message: the branch remains and a person must remove it.
   owned="$base"
