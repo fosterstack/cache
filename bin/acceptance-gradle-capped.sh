@@ -2,7 +2,7 @@
 # bin/acceptance-gradle-capped.sh: the Gradle capped-server suite (REQ-EVICT-002-AC3) and the suite's results line, extracted
 # unchanged from acceptance.yml (advisor ruling Q7; REQ-CHAIN-006-AC5). The capped server is already listening on localhost:18096.
 # Its last step writes the asserted ACs to $GITHUB_OUTPUT (the results step of acceptance.yml; the Check acceptance wrapper reads it).
-# Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
+# Before the steps, the wrapper jar is checked (preamble, not from acceptance.yml). Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail

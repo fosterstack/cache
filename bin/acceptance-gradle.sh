@@ -2,7 +2,7 @@
 # bin/acceptance-gradle.sh: the Gradle remote-cache suite (REQ-GRADLE-001-AC1..AC4), extracted unchanged from acceptance.yml
 # (advisor ruling Q7; REQ-CHAIN-006-AC5). The server is already listening on localhost:18095: acceptance.yml starts it (from source,
 # or the candidate image), and in Check the Check acceptance wrapper starts the candidate from Build's tarball.
-# Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
+# Before the steps, the wrapper jar is checked (preamble, not from acceptance.yml). Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail

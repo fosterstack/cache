@@ -186,7 +186,7 @@ class AcceptanceScriptsCheckTheJar(unittest.TestCase):
             self.assertIn("gradle-wrapper.jar", r.stderr)
             self.assertEqual(ran, "", "%s ran gradlew with no expected sum" % s)
 
-    def test_an_expected_file_for_another_jar_is_refused(self):
+    def test_an_expected_file_with_the_wrong_hash_for_the_jar_is_refused(self):
         for s in SCRIPTS:
             r, ran = self.run_script(s, sum_text="%s  %s\n" % ("0" * 64, JAR_REL))
             self.assertEqual(r.returncode, 1, "%s: %s" % (s, r.stderr))

@@ -903,7 +903,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "8d11929dd6956b48ccc6ecd8e81cc92cd31b8915474bfb617476741296d9d93d",
+      "sha256": "0b7352b005a4ccb2f2e8c53205af65cf789bea85fd5e12cf3286f3d15ab86aa9",
       "tools": [
         "at",
         "awk",
@@ -1007,7 +1007,7 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "517060dd787de4bac5d41b09e092c69047ca2a86b94951f105b2fb7eb8ba6469",
+      "sha256": "3b550f184d336e58a9627bab92f2cedb00d5c0ac95234db6f658aa10ec1b1db3",
       "tools": [
         "awk",
         "bash",
