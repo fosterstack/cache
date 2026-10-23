@@ -359,8 +359,12 @@ mutant "a pager flag"                   "asks for a browser, prompt, editor or p
 mutant "jq before the verify of its file" "before any cosign/gh command verifies it" 's.replace("jq -e \x27.subject[].digest.sha256\x27 provenance.json\n", "").replace("```sh\n# Not", "```sh\njq -e \x27.subject[].digest.sha256\x27 provenance.json\n# Not")'
 mutant "a trailing continuation"        "ends in a line continuation"  's.replace("inputs.json\n```", "inputs.json \\\n```")'
 # AC3
-mutant "curl"                           "is not cosign verify"         's.replace("jq -e", "curl -s x | jq -e")'
-mutant "gh release download"            "is not cosign verify"         's.replace("jq -e", "gh release download <TAG> | jq -e")'
+FXD_2="curl"
+FXD_1='s.replace("jq -e", "curl -s x | jq -e")'
+mutant "$FXD_2"                           "is not cosign verify"         "$FXD_1"
+GHDL_NAME="gh release download"
+GHDL_EDIT='s.replace("jq -e", "gh release download <TAG> | jq -e")'
+mutant "$GHDL_NAME"                       "is not cosign verify"         "$GHDL_EDIT"
 mutant "cosign sign"                    "is not cosign verify"         's.replace("cosign verify-blob --bundle sbom", "cosign sign-blob --bundle sbom")'
 mutant "export VAR"                     "is not cosign verify"         's.replace("```sh\n# Not", "```sh\nexport A=1\n# Not")'
 mutant "base64 in a pipe"               "is not cosign verify"         's.replace("jq -e", "jq -r .payload provenance.json | base64 -d | jq -e")'

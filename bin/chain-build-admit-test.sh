@@ -234,7 +234,7 @@ mkkeys() { mkdir -p "$W/keys"; for k in owner attacker; do ssh-keygen -q -t ed25
   gpg --batch --quiet --passphrase '' --quick-gen-key "other <other@example.com>" ed25519 sign never 2> /dev/null
   OTHERID=$(gpg --list-keys --with-colons other@example.com | awk -F: '/^pub/{print $5; exit}'); unset GNUPGHOME; }
 mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagged commit, policy on main
-  local b="$W/base"; mkdir -p "$b"; git init -q --bare "$b/origin.git"; git clone -q "$b/origin.git" "$b/repo" 2> /dev/null
+  local b="$W/base"; mkdir -p "$b"; git init -q --bare "$b/origin.git"; git init -q "$b/repo"; git -C "$b/repo" remote add origin "$b/origin.git"
   cd "$b/repo"; git config user.name t; git config user.email t@example.com; git config gpg.format ssh; git config user.signingkey "$W/keys/owner"
   git config tag.gpgsign false; git checkout -q -b main
   mkdir -p .github/policy bin requirements/releases tools/requirements
@@ -317,7 +317,7 @@ EOF
 chmod +x "$FB/gh" "$FB/gitsign"
 # case DIR runner: each case gets a fresh copy of the base repo
 n_cases=0
-fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origin.git"; git clone -q "$W/c/origin.git" "$W/c/repo" 2> /dev/null
+fresh() { rm -rf "$W/c"; mkdir -p "$W/c"; cp -a "$W/base/origin.git" "$W/c/origin.git"; git init -q "$W/c/repo"; git -C "$W/c/repo" remote add origin "$W/c/origin.git"
   (cd "$W/c/repo";
   git config user.name t;
   git config user.email t@example.com;
@@ -425,8 +425,9 @@ if [ -f "$W/c/repo/admission.json" ]; then
       || bad \
       "AC4 gh calls are not exactly GETs of the commits API (count $(grep -c '^gh api' "$W/c/calls.log")): $(grep NON-GET "$W/c/calls.log" | head -1)"
 else for l in "canonical" "content" "sources" "token" "deterministic" "GET only"; do bad "AC4 admission.json $l (no admission.json: RED)"; done; fi
+FXD_1='\b(curl|wget)\b|api\.github\.com'
 if [ -f "$BA" ];
-then ! grep -Eq '\b(curl|wget)\b|api\.github\.com' "$BA" && ok "AC4 the script makes no network call of its own (only gh api)" || bad \
+then ! grep -Eq "$FXD_1" "$BA" && ok "AC4 the script makes no network call of its own (only gh api)" || bad \
     "AC4 build-admit.py calls the network itself";
 else bad "AC4 no network of its own (bin/build-admit.py missing: RED)";
 fi
