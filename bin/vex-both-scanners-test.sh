@@ -8,7 +8,8 @@
 #   Inspector : bin/inspector-gate.py over a CycloneDX SBOM + a ScanSbom-shaped
 #               response (the gate applies VEX itself; nothing in AWS)
 # busybox 1.37.0 is covered (suppressed, exit 0); 1.36.0 is not (blocks); a
-# zero-package inventory fails both. Needs the pinned grype (hygiene installs it).
+# zero-package inventory fails both. An UNKNOWN-severity finding that survives the VEX blocks too (grype's --fail-on does not fire on it); unreadable
+# findings fail closed. Needs the pinned grype (hygiene installs it).
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/.." && pwd)"
 vex="$repo/.vex/fosterstack-cache.openvex.json"
@@ -76,6 +77,64 @@ out="$(GRYPE="$grype" bash "$here/grype-scan.sh" "sbom:$w/does-not-exist.json" c
 insp_inputs 1.37.0 i-empty empty
 out="$(python3 "$here/inspector-gate.py" empty "$w/i-empty.sbom.json" "$w/i-empty.resp.json" "$vex" 2>&1)"; rc=$?
 [ "$rc" -eq 2 ] && grep -q "0 packages.*did not run" <<<"$out" && ok "inspector: zero packages fails (exit 2)" || bad "inspector: zero packages (rc $rc)" "$out"
+
+# REQ-REL-004-AC1 "Both block at any severity": `grype --fail-on negligible` exits 0 on a finding of UNKNOWN severity (grype ranks unknown below
+# negligible), so grype-scan.sh must judge the surviving findings itself, as bin/check-scan.sh does for the release Check (register rows 18 and 38).
+# The wrapper runs the REAL grype (same arguments, so the VEX is applied by grype itself), then relabels every finding that SURVIVED the VEX to
+# severity "unknown" in the CycloneDX file and exits 0, which is what grype does when the only findings are UNKNOWN. Nothing the VEX removed is ever
+# put back, so the VEX'd case below passes only because grype's output really leaves VEX-covered findings out.
+cat > "$w/grype-unknown" <<'SH'
+#!/usr/bin/env bash
+"$REAL_GRYPE" "$@" > /dev/null 2>&1
+cdx=""; for a in "$@"; do case "$a" in cyclonedx-json=*) cdx="${a#cyclonedx-json=}";; esac; done
+python3 - "$cdx" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+for v in d.get("vulnerabilities") or []:
+    v["ratings"] = [{"severity": "unknown", "method": "other"}]
+json.dump(d, open(p, "w"))
+PY
+exit 0
+SH
+chmod +x "$w/grype-unknown"
+# A grype that exits 0 and leaves a CycloneDX file the script cannot judge.
+cat > "$w/grype-badvulns" <<'SH'
+#!/usr/bin/env bash
+cdx=""; for a in "$@"; do case "$a" in cyclonedx-json=*) cdx="${a#cyclonedx-json=}";; esac; done
+printf '{"components":[{"name":"busybox","version":"1.36.0"}],"vulnerabilities":"not a list"}' > "$cdx"
+exit 0
+SH
+cat > "$w/grype-garbage" <<'SH'
+#!/usr/bin/env bash
+cdx=""; for a in "$@"; do case "$a" in cyclonedx-json=*) cdx="${a#cyclonedx-json=}";; esac; done
+printf 'this is not json' > "$cdx"
+exit 0
+SH
+chmod +x "$w/grype-badvulns" "$w/grype-garbage"
+
+# (a) the exclusion is real: with --vex, grype's CycloneDX leaves out every VEX-covered finding and lists them as ignored in its own JSON.
+grype_sbom 1.37.0 "$w/g-cov.json"
+"$grype" "sbom:$w/g-cov.json" --fail-on negligible --vex "$vex" -o "cyclonedx-json=$w/cov.cdx.json" -o json > "$w/cov.json" 2> /dev/null
+cv=$(jq '[.vulnerabilities[]?] | length' "$w/cov.cdx.json" 2> /dev/null); ig=$(jq '.ignoredMatches | length' "$w/cov.json" 2> /dev/null)
+[ "$cv" = 0 ] && [ "${ig:-0}" -ge 1 ] 2> /dev/null && ok "grype: VEX-covered findings are absent from the CycloneDX output ($ig ignored by the VEX, $cv in the output)" \
+  || bad "grype: VEX-covered findings in the CycloneDX output (output $cv, ignored ${ig:-?})"
+
+# (b) an UNKNOWN-severity finding that the VEX does not cover blocks (grype itself exits 0 here).
+grype_sbom 1.36.0 "$w/g-unc.json"
+out="$(REAL_GRYPE="$grype" GRYPE="$w/grype-unknown" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" unknown-uncovered 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && grep -q "unknown-uncovered: [1-9][0-9]* packages, [1-9][0-9]* finding" <<<"$out" && grep -q "any severity, UNKNOWN included" <<<"$out" \
+  && ok "grype: an uncovered UNKNOWN-severity finding (busybox 1.36.0) blocks, exit 1" || bad "grype: uncovered UNKNOWN finding (rc $rc)" "$out"
+
+# (c) the same finding covered by the VEX passes, because grype leaves it out (see (a)).
+out="$(REAL_GRYPE="$grype" GRYPE="$w/grype-unknown" bash "$here/grype-scan.sh" "sbom:$w/g-cov.json" unknown-covered 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && grep -q "unknown-covered: [1-9][0-9]* packages, 0 finding" <<<"$out" \
+  && ok "grype: the same finding covered by the VEX (busybox 1.37.0) passes, exit 0" || bad "grype: VEX-covered UNKNOWN case (rc $rc)" "$out"
+
+# (d) fail closed: a CycloneDX file whose findings cannot be read is exit 2, never a pass.
+out="$(GRYPE="$w/grype-badvulns" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" badvulns 2>&1)"; rc=$?
+[ "$rc" -eq 2 ] && grep -q "badvulns" <<<"$out" && ok "grype: unreadable findings in the CycloneDX file fail closed, exit 2" || bad "grype: unreadable findings (rc $rc)" "$out"
+out="$(GRYPE="$w/grype-garbage" bash "$here/grype-scan.sh" "sbom:$w/g-unc.json" garbage 2>&1)"; rc=$?
+[ "$rc" -eq 2 ] && ok "grype: an unreadable CycloneDX file fails closed, exit 2" || bad "grype: unreadable CycloneDX file (rc $rc)" "$out"
 
 echo "----"
 echo "vex-both-scanners: ${pass} passed, ${fail} failed"
