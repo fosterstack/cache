@@ -55,16 +55,21 @@ EXCLUDED_INSTALLER = {
     ("main-candidate-rescan.yml", "scout-root-cause"): {"lines": ['./bin/install-scanner.sh "$t" "$RUNNER_TEMP/$t"'], "needs": ["for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do"], "forbid": r"(?<![\w$])t=", "why": "a loop over three literal docker-scout names, t assigned nowhere else in the step"},
     ("scan.yml", "scanner"): {"lines": ["./bin/install-scanner.sh '${{ matrix.scanner == 'inspector' && 'inspector-sbomgen' || matrix.scanner }}'"], "needs": [], "why": "the matrix tool comes from the pr_gate list of .github/policy/scanners.json (checked below)"},
 }
+def names_installer(line):
+    """True when the line could name bin/install-scanner.sh: the name with its quote and backslash characters removed (install-"scanner".sh is the same word to the shell), or an
+    install-* word built with a variable, a glob or a substitution (fail closed: such a line is outside the grammar and is refused in a credential job)."""
+    norm = re.sub(r"[\"'\\]", "", line)
+    return "install-scanner" in norm or re.search(r"install-[^\s/]*[$*?\[{`]", norm) is not None
 def installer_problems(txt, key):
     """Lines of this step text that name install-scanner but are outside the grammar and the listed exceptions."""
     out = []
     exc = EXCLUDED_INSTALLER.get(key)
     for raw in txt.split("\n"):
         line = raw.strip()
-        if "install-scanner" not in line or line.startswith("#"):
+        if not names_installer(line) or line.startswith("#"):
             continue
         head = re.split(r"\s#", line, maxsplit=1)[0]   # a name only in a trailing comment (quotes balanced before it) is prose, not a command
-        if "install-scanner" not in head and head.count('"') % 2 == 0 and head.count("'") % 2 == 0:
+        if not names_installer(head) and head.count('"') % 2 == 0 and head.count("'") % 2 == 0:
             continue
         m = ALLOWED.fullmatch(line)
         if m:
@@ -303,6 +308,17 @@ gf "install-scanner.sh run through env" 'env bash bin/install-scanner.sh govulnc
 gf "install-scanner.sh with a command substitution in the destination" 'bash bin/install-scanner.sh crane "$(echo /tmp)"'
 gf "install-scanner.sh with a trailing comment that hides nothing (still the build)" 'bash bin/install-scanner.sh govulncheck # crane'
 gf "install-scanner.sh in a bash -c string with the build" "bash -c 'bash bin/install-scanner.sh crane; bash bin/install-scanner.sh govulncheck'"
+gf "install-scanner.sh written with a quoted fragment in its name (install-\"scanner\".sh)" 'bash bin/install-"scanner".sh govulncheck'
+gf "install-scanner.sh written with a single-quoted fragment in its name" "bash bin/inst'all-scan'ner.sh govulncheck"
+gf "install-scanner.sh written with an empty quoted pair in its name" 'bash bin/install-scan""ner.sh govulncheck'
+gf "install-scanner.sh written with a backslash in its name" 'bash bin/install\-scanner.sh govulncheck'
+gf "install-scanner.sh name built from a variable (install-\$x.sh)" 'x=scanner; bash "bin/install-$x.sh" govulncheck'
+gf "install-scanner.sh name built from a glob (install-s*.sh)" 'bash bin/install-s*.sh govulncheck'
+gf "install-scanner.sh name held in a variable" 'S=install-scanner; bash bin/$S.sh govulncheck'
+mutate "an extra installer line with a quoted name inside the scout-root-cause exception step" '
+edit("main-candidate-rescan.yml", lambda s: s.replace("          for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do\n", "          bash bin/install-\"scanner\".sh govulncheck\n          for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do\n", 1))'
+mutate "an extra installer line in the auditor syft exception step" '
+edit("auditor.yml", lambda s: s.replace("          ./bin/install-scanner.sh syft \"${RUNNER_TEMP}/gobin\" \\\n", "          bash bin/install-\"scanner\".sh govulncheck\n          ./bin/install-scanner.sh syft \"${RUNNER_TEMP}/gobin\" \\\n", 1))'
 mutate "scan.yml scanner job gets a second installer line with a variable" '
 edit("scan.yml", lambda s: s.replace("        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n", "        run: ./bin/install-scanner.sh \x27${{ matrix.scanner == \x27inspector\x27 && \x27inspector-sbomgen\x27 || matrix.scanner }}\x27\n      - name: extra\n        run: |\n          tool=govulncheck\n          bash bin/install-scanner.sh \"$tool\"\n", 1))'
 mutate "scan.yml scanner job adds a matrix.include entry naming govulncheck" '
