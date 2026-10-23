@@ -144,6 +144,11 @@ def cmd_bind(a):
         usage("--step must be one of %s" % ", ".join(BIND_STAGE))
     check_relative(a.dir, a.prefix)
     stage = BIND_STAGE[a.step]
+    # The Witness move (owner Oct 22): the building jobs' own records are made with a throwaway key and are untrusted until Sign re-signs them. They are named
+    # *.local.json, and only --local reads one; without --local such a name is refused, and with --local any other name is, so neither form passes as the other.
+    if a.local != a.record.endswith(".local.json"):
+        refuse(stage, "record: " + ("%s is not a *.local.json (--local binds only the building job's untrusted local record)" % os.path.basename(a.record) if a.local
+                                    else "%s is an unsigned local record, not a trusted record (use bind --local)" % os.path.basename(a.record)))
     name, subjects = read_collection(a.record)
     if name is None:
         refuse(stage, "record: not a DSSE envelope of a Witness collection")
@@ -542,6 +547,7 @@ def add_parsers(sub):
     b.add_argument("--record", required=True)
     b.add_argument("--dir", required=True)
     b.add_argument("--as", dest="prefix", required=True)
+    b.add_argument("--local", action="store_true")
     i = sub.add_parser("items-apk")
     i.add_argument("--out-dir", required=True)
     i.add_argument("--result", required=True)

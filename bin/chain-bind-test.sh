@@ -25,6 +25,14 @@
 #                dotfile in out/ would be a product with no file after the upload: refused here instead of relied on
 #       record   the file is not a DSSE envelope of a Witness collection
 #     Exit 2 (usage, never a pass): an unreadable record, a missing option, --dir or --as absolute or holding `..`, an unknown --step.
+#   chain-verify.py bind --local --step apk|rapk --record STEP-collection.local.json --dir DIR --as PREFIX      (the Witness move, owner Oct 22)
+#     Build and Rebuild's Witness records are made inside the building job with a throwaway key, so they are UNTRUSTED until Sign re-signs them
+#     keyless. The building jobs' assemble steps still bind their files to the record they just made: --local says the record is such a file. It is a
+#     DSSE envelope of a Witness collection whose NAME ends in .local.json (the throwaway-key form: signatures [{keyid, sig}], no certificate), and the
+#     product binding is the same as without --local; no signature or identity is checked (there is nothing to check). WITHOUT --local a record whose name
+#     ends in .local.json is refused (cause record: an unsigned local record is not a trusted record), and WITH --local a record whose name does not end in
+#     .local.json is refused (cause record) too, so a signed record can never pass as a local one nor the reverse. Step names, snapshot steps and the other
+#     causes are as without --local.
 #   chain-verify.py items-apk --out-dir out/ARCH --result FILE
 #     reads the apks in out/ARCH by their names (fscache-VERSION-r0.apk for standard, fscache-fips-VERSION-r0.apk for fips; exactly one each) and
 #     writes the fragment {"arch","items"}. The apk item is `python3 bin/apk-tool.py digest APK`, run from the working directory (cache's tool, by
@@ -104,11 +112,11 @@ def good_subjects(files=FILES):
     return [subject("out/" + rel, data) for rel, data in files.items()]
 
 
-def bind(label, d, want_rc, cause=None, names=None, step="apk", **override):
+def bind(label, d, want_rc, cause=None, names=None, step="apk", flags=(), **override):
     """Run bind from the root d with relative paths, and judge the exit code, the first line and the exact set of paths it names."""
     args = {"--step": step, "--record": "rec.json", "--dir": "dir", "--as": "out"}
     args.update({"--" + k: v for k, v in override.items()})
-    rc, out, err = run(["bind"] + [x for kv in args.items() for x in kv], d)
+    rc, out, err = run(["bind"] + list(flags) + [x for kv in args.items() for x in kv], d)
     first = err.split("\n", 1)[0]
     ok = rc == want_rc and "Traceback" not in err
     if want_rc == 1:
@@ -549,8 +557,44 @@ for label, ver in (("v0.3.0-rc", "v0.3.0-rc"), ("v0.3.0-RC1", "v0.3.0-RC1"), ("v
     adm("admission-baseline: the malformed candidate spelling %s is refused (baseline)" % label, adm_tree("adm24", dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver), dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver)), 1, "baseline", tag=ver)
 rc, out, err = run(["admission-baseline", "--admission", "a.json", "--admission", "b.json", "--tag", "v0.3.1", "--out", "out.json"], adm_tree("adm15"))
 check("admission-baseline: a missing --sha is a usage error (exit 2)", rc == 2 and "Traceback" not in err, "exit %s" % rc)
+# ---- bind --local (the Witness move: a Build/Rebuild record made with a throwaway key, untrusted until Sign) ---------------------------------------------
+def local_record(path, subjects, name="apk"):
+    """The throwaway-key form Witness 0.12.0 writes with a file key: signatures [{keyid, sig}], no certificate (pipeline-cc's probe)."""
+    record(path, subjects, name)
+    env = json.load(open(path))
+    env["signatures"] = [{"keyid": "ab" * 32, "sig": base64.b64encode(b"x" * 64).decode()}]
+    json.dump(env, open(path, "w"))
+
+
+d = tree("loc1")
+local_record(d + "/apk-collection.local.json", good_subjects())
+bind("bind --local: a throwaway-key record named *.local.json binds the files as without --local", d, 0, flags=["--local"], record="apk-collection.local.json")
+d = tree("loc2")
+local_record(d + "/rapk-collection.local.json", good_subjects(), "rapk")
+bind("bind --local: the Rebuild step (rapk) accepts its own local record", d, 0, flags=["--local"], step="rapk", record="rapk-collection.local.json")
+d = tree("loc3")
+local_record(d + "/apk-collection.local.json", good_subjects(), "rapk")
+bind("bind --local: a rapk local record given to the apk step is refused as another step", d, 1, "step", ["rapk"], flags=["--local"], record="apk-collection.local.json")
+d = tree("loc4")
+local_record(d + "/apk-collection.local.json", good_subjects())
+open(d + "/dir/" + "x86_64/fscache-0.3.0-r0.apk", "ab").write(b"!")
+bind("bind --local: a changed file is refused by digest exactly as without --local", d, 1, "digest", [APK], flags=["--local"], record="apk-collection.local.json")
+d = tree("loc5")
+local_record(d + "/apk-collection.local.json", good_subjects())
+bind("bind WITHOUT --local: a record named *.local.json is refused (an unsigned local record is not a trusted record)", d, 1, "record", None, record="apk-collection.local.json")
+d = tree("loc6")
+local_record(d + "/rec.json", good_subjects())
+bind("bind --local: a record whose name does not end in .local.json is refused (a signed record cannot pass as a local one)", d, 1, "record", None, flags=["--local"])
+d = tree("loc7")
+local_record(d + "/apk-collection.local.json", good_subjects())
+j = json.load(open(d + "/apk-collection.local.json")); j["payload"] = base64.b64encode(json.dumps({"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://slsa.dev/provenance/v1", "subject": [], "predicate": {}}).encode()).decode(); json.dump(j, open(d + "/apk-collection.local.json", "w"))
+bind("bind --local: a *.local.json whose payload is not a Witness collection (a provenance statement) is refused", d, 1, "record", None, flags=["--local"], record="apk-collection.local.json")
+d = tree("loc8")
+open(d + "/apk-collection.local.json", "w").write("not json at all")
+rc, out, err = run(["bind", "--local", "--step", "apk", "--record", "apk-collection.local.json", "--dir", "dir", "--as", "out"], d)
+check("bind --local: a *.local.json that is not JSON is a usage error, never a pass", rc == 2 and "Traceback" not in err, "exit %s" % rc)
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 97
+EXPECT = 105
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
