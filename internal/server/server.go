@@ -14,6 +14,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -366,7 +367,7 @@ func handleGet(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 		cfg.Metrics.BytesRead.Add(float64(n))
 	}
 	if err != nil {
-		cfg.Log.Warn("server: GET: short write to client", "key", key, "error", err)
+		cfg.Log.Warn("server: GET: short write to client", "key", key, "error", loggableErr(err))
 	}
 }
 
@@ -447,7 +448,7 @@ func writeStoreError(w http.ResponseWriter, cfg Config, err error, method, key s
 			http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
 			return
 		}
-		cfg.Log.Error("server: store error", "method", method, "key", key, "error", err)
+		cfg.Log.Error("server: store error", "method", method, "key", key, "error", loggableErr(err))
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
 }
@@ -533,4 +534,19 @@ func classifyPutError(err, ctxErr error) (reason string, counted bool) {
 		return "client_aborted", true
 	}
 	return "other", true
+}
+
+// loggableErr is the text a failure log may carry for err. A *net.OpError
+// formats the local and remote socket addresses, so a dropped client would
+// put its IP:port in the log; REQ-OBS-006 forbids that. An error whose
+// chain holds one is reduced to its operation and underlying cause.
+func loggableErr(err error) string {
+	var op *net.OpError
+	if errors.As(err, &op) {
+		if op.Err == nil {
+			return "net " + op.Op
+		}
+		return "net " + op.Op + ": " + op.Err.Error()
+	}
+	return err.Error()
 }
