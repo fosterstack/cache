@@ -221,26 +221,35 @@ if src.startswith("docker://") and dst.startswith("oci:"):
 elif dst.startswith("docker://") and df:
     open(df, "w").write(json.load(open(os.path.join(src[4:], "index.json")))["manifests"][0]["digest"])
 """
-        with tempfile.TemporaryDirectory() as t0:
-            t = os.path.realpath(t0)      # vex-index.py refuses any path through a symlink (macOS /var)
-            os.makedirs(os.path.join(t, "stub")); os.makedirs(os.path.join(t, "attach"))
-            with open(os.path.join(t, "stub", "skopeo"), "w") as fh:
-                fh.write(SKOPEO)
-            os.chmod(os.path.join(t, "stub", "skopeo"), 0o755)
-            json.dump(DIG, open(os.path.join(t, "attach", "digests.json"), "w"))
-            block = fxs[0]["run"].replace("/tmp/", t + "/")
-            env = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], RUNNER_TEMP=t, GITHUB_RUN_ID="42")
-            r = subprocess.run(["bash", "-e", "-c", block], cwd=ROOT, env=env, capture_output=True, text=True)
-            if r.returncode != 0:
-                bad.append("the fixture step does not run to the end on a single-image layout (rc %d): %s" % (r.returncode, (r.stdout + r.stderr)[-400:]))
-            else:
-                for name in ("fixture", "fixture-ours"):
+        def fixture_problems(run_text):
+            out = []
+            with tempfile.TemporaryDirectory() as t0:
+                t = os.path.realpath(t0)      # vex-index.py refuses any path through a symlink (macOS /var)
+                os.makedirs(os.path.join(t, "stub")); os.makedirs(os.path.join(t, "attach"))
+                with open(os.path.join(t, "stub", "skopeo"), "w") as fh:
+                    fh.write(SKOPEO)
+                os.chmod(os.path.join(t, "stub", "skopeo"), 0o755)
+                json.dump({k: v for k, v in DIG.items() if not k.startswith("fixture-")}, open(os.path.join(t, "attach", "digests.json"), "w"))   # the step must RECORD the two fixture digests itself
+                env = dict(os.environ, PATH=os.path.join(t, "stub") + ":" + os.environ["PATH"], RUNNER_TEMP=t, GITHUB_RUN_ID="42")
+                r = subprocess.run(["bash", "-e", "-c", run_text.replace("/tmp/", t + "/")], cwd=ROOT, env=env, capture_output=True, text=True)
+                if r.returncode != 0:
+                    return ["the fixture step does not run to the end on a single-image layout (rc %d): %s" % (r.returncode, (r.stdout + r.stderr)[-400:])]
+                dig = json.load(open(os.path.join(t, "attach", "digests.json")))
+                for name, key in (("fixture", "fixture-before"), ("fixture-ours", "fixture-ours")):
                     top = json.load(open(os.path.join(t, "layout", name, "index.json")))["manifests"]
                     if len(top) != 1 or top[0]["mediaType"] != "application/vnd.oci.image.index.v1+json":
-                        bad.append("the %s layout's one descriptor is not an OCI index after the step: %s" % (name, top))
-                dig = json.load(open(os.path.join(t, "attach", "digests.json")))
-                if dig.get("fixture-before") == dig.get("fixture-ours") or not dig.get("fixture-before", "").startswith("sha256:"):
-                    bad.append("the fixture digests are not two different index digests: %s" % {k: dig.get(k) for k in ("fixture-before", "fixture-ours")})
+                        out.append("the %s layout's one descriptor is not an OCI index after the step: %s" % (name, top))
+                    elif dig.get(key) != top[0]["digest"]:
+                        out.append("the recorded %s (%s) is not the digest of the %s layout's index (%s)" % (key, dig.get(key), name, top[0]["digest"]))
+                if dig.get("fixture-before") == dig.get("fixture-ours"):
+                    out.append("the two fixture digests are the same")
+            return out
+        bad.extend(fixture_problems(fxs[0]["run"]))
+        lines_ = fxs[0]["run"].rstrip("\n").split("\n")
+        if not lines_[-1].lstrip().startswith("jq --arg b"):
+            bad.append("the fixture step no longer ends with the jq line that records fixture-before and fixture-ours")
+        elif not fixture_problems("\n".join(lines_[:-1])):
+            bad.append("the fixture test does not notice when the step never records the fixture digests (a vacuous check)")
     for need in ("docker login ghcr.io", "-X DELETE", "14 days ago"):
         if need not in vt:
             bad.append("vex-attach lacks %s" % need)
