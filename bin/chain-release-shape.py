@@ -31,7 +31,7 @@ STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "r
 INSTALLS = ["witness", "cosign", "crane"]
 MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-AC1 (Astra R4): the one build tool Release needs, for release-sign-apks.sh; the fourth install, after crane
 DOWN = {"signed-witness-build", "signed-witness-rebuild", "witness-check", "witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "apk-compare"}   # the artifacts the verify and release jobs may download: Build's real names (AC17) and the compare job's small result; NEVER a rapk (the owner's rule of Oct 21 2026)
-COMPARE_PAIRS = {"apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm", "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm"}   # the compare job: Build's apks and Rebuild's, nothing else
+COMPARE_PAIRS = {"apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm", "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm", "signed-witness-rapk-ubuntu-24.04": "witness-rapk-ubuntu-24.04", "signed-witness-rapk-ubuntu-24.04-arm": "witness-rapk-ubuntu-24.04-arm"}   # the compare job: Build's apks and Rebuild's, nothing else
 VERIFY_PAIRS = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "admission-baseline": "witness-build", "signed-witness-rebuild": "witness-rebuild",
                 "witness-check": "witness-check", "witness-check-arm64": "witness-check/witness-arm64", "check-results": "check-results", "provenance": "provenance",
                 "apk-compare": "apk-compare"}   # what release-verify reads, and where (the last: the compare job's result file, the only trace of Rebuild's apks that reaches these jobs)
@@ -46,7 +46,7 @@ CREDS = {"APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH
 # the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
 # publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
-IFS_OF = {"build": GATE_G, "sign": GATE_G, "sign-rebuild": GATE_G, "release": "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}
+IFS_OF = {"build": GATE_G, "sign": GATE_G, "release": "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}
 CHAIN_JOBS = ["build", "sign", "rebuild", "sign-rebuild", "check", "release"]   # the last stage is Release (the ratified rules' name; Q9)
 # the tag rule (REQ-CHAIN-007-AC14, advisor 0383/0386): vX.Y.Z or a release candidate vX.Y.Z-rcN, exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (the -rc.N form is gone)
 TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(-rc\[0-9\]\+\)\?\$ \]\] \|\| '
@@ -72,7 +72,7 @@ ROWS = {
     "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/chain-verify.py"]},
     "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3", "trap"], "signs": "other", "runs": ["bin/apk-tool.py", "bin/release-sign-apks.sh"]},   # cache's script signs; Release calls it
     "bin/release-compare.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-compare.py"]},   # the compare job's one plain step: a wrapper around the Python file
-    "bin/release-compare.py": {"tools": [], "signs": False, "runs": ["bin/apk-tool.py"]},   # no key, no signing, no network: it only reads the two apk trees and writes the result file
+    "bin/release-compare.py": {"tools": ["make"], "signs": False, "runs": ["bin/apk-tool.py", "bin/chain-verify.py"]},   # no key, no signing, no network: it reads the two apk trees, binds Rebuild's apks to the signed rapk records (chain-verify.py verify and bind) and writes the result file; `make` is the word of `policy make`
     "bin/release-publish.sh": {"tools": ["crane", "jq", "python3", "trap"], "signs": False, "runs": ["bin/release-layout.py"]},   # round 1 B4: the layout is checked first
     "bin/release-layout.py":  {"tools": [], "signs": False, "runs": []},
     "bin/release-sign.sh":    {"tools": ["cosign", "git", "jq", "python3", "trap"], "signs": "other", "runs": ["bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]},
@@ -172,7 +172,7 @@ def verify_job(j):
 def compare_job(j):
     """The owner's rule of Oct 21 2026 (ops/docs/ratify/2026-10-21-signer-builder-separate-jobs.md): the comparison of Build's and Rebuild's apks runs in a job with no secrets, no
     publish permission and no identity token: contents read ONLY (an id-token can mint a signing certificate), no environment, no env, no needs, no condition. Its steps are
-    exactly: the checkout, the four downloads (Build's two apk artifacts and Rebuild's two rapk artifacts, each to its fixed path), ONE plain step `bash bin/release-compare.sh` (not
+    exactly: the checkout, the six downloads (Build's two apk artifacts, Rebuild's two rapk artifacts and the two signed rapk records, each to its fixed path), ONE plain step `bash bin/release-compare.sh` (not
     under Witness: Witness signs through the identity token) and one upload of the small result apk-compare, which fails the job when the file is missing. No build script runs here."""
     bad = []
     allowed = {"runs-on", "permissions", "steps", "name", "timeout-minutes"}
@@ -205,10 +205,10 @@ def compare_job(j):
             kinds.append("compare")
         else:
             bad.append("compare job: a step that is none of checkout, download, `%s` or the upload (no build script, no Witness, no secret): %r" % (COMPARE_RUN, r or st.get("name")))
-    if kinds != ["checkout", "down", "down", "down", "down", "compare", "up"]:
-        bad.append("compare job: the steps must be exactly the checkout, four downloads, the comparison and the upload, got %s" % kinds)
+    if kinds != ["checkout"] + ["down"] * 6 + ["compare", "up"]:
+        bad.append("compare job: the steps must be exactly the checkout, six downloads (Build's two apk artifacts, Rebuild's two rapk artifacts and the two signed rapk records Sign signed), the comparison and the upload, got %s" % kinds)
     if sorted(x for x in downs if x[0] is not None) != sorted(COMPARE_PAIRS.items()):
-        bad.append("compare job: its downloads must be exactly these four artifact/path pairs (Build's apks and Rebuild's apks), each once: %s" % sorted(downs, key=str))
+        bad.append("compare job: its downloads must be exactly these six artifact/path pairs (Build's apks, Rebuild's apks and the signed rapk records), each once: %s" % sorted(downs, key=str))
     if has_expression(j.get("steps")):
         bad.append("compare job: no step may hold an expression (${{ }}): it holds no secret, no token and no condition")
     return bad
