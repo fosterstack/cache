@@ -682,6 +682,13 @@ rm -rf "$fx/images/production"; cp -R "$work/keep-ml" "$fx/images/production"
 if [ "$rc" = 1 ] && [ -z "$(ls "$work/ml")" ]; then ok "AC33 check-bind refuses a layout that is not Build's and writes no member list"; else bad "AC33 check-bind on a tampered layout rc=$rc, lists: $(ls "$work/ml" | tr '\n' ' ')"; fi
 out=$(bind --members-out "$work/no-such-dir") && rc=0 || rc=$?
 if [ "$rc" = 1 ] && grep -Fq 'member list could not be written' <<< "$out"; then ok "AC33 check-bind refuses when the member list cannot be written"; else bad "AC33 check-bind with an unwritable list directory rc=$rc: $out"; fi
+# oci-layout and index.json are the layout's own regular files: a link there would be archived as a link, and read through by the bind
+for own in index.json oci-layout; do
+  rm -rf "$work/keep-sl"; cp -R "$fx/images/fips" "$work/keep-sl"; mv "$fx/images/fips/$own" "$fx/images/fips/$own.real"; ln -s "$own.real" "$fx/images/fips/$own"
+  out=$(bind) && rc=0 || rc=$?
+  rm -rf "$fx/images/fips"; cp -R "$work/keep-sl" "$fx/images/fips"
+  if [ "$rc" = 1 ] && grep -Fq "$own" <<< "$out"; then ok "AC33 check-bind refuses a layout whose $own is a symbolic link"; else bad "AC33 a symlinked $own passed the bind (rc=$rc): $out"; fi
+done
 rm -rf "$work/keep-f3"; cp -R "$fx/images/fips" "$work/keep-f3"; cp "$fx/images/fips.map" "$work/keep-f3.map"; cp "$fx/digests.json" "$work/dig.f3"
 # a third descriptor (buildkit's provenance manifest, unknown/unknown): the scan judges it; the load gets its manifest, config and layers too
 rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" fips linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
@@ -1319,7 +1326,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=427
+EXPECT=429
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

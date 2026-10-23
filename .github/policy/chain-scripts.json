@@ -2015,7 +2015,7 @@
     },
     {
       "path": "bin/check-bind.py",
-      "sha256": "67e0626d07e0943eda509f2b09c4ce7cbbe127ab8893b76f6268303e9d048e01",
+      "sha256": "8701729e8c859b5f62fdcdff3620ba695504424f14b44d8bd05356623399460d",
       "tools": [],
       "runs": [
         "bin/chain_items.py"

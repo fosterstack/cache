@@ -45,6 +45,9 @@ def bind_layout(images, variant, digest, members_out=None):
         children = chain_items.check_layout(images, variant, digest)
     except Refuse as e:
         fail("%s: the layout %s/%s is not the image Build recorded (%s): %s" % (key, images, variant, digest, e.reason))
+    for own in ("oci-layout", "index.json"):    # REQ-SUP-001-AC33: the two top-level files are the layout's own regular files, not links
+        if os.path.islink(os.path.join(images, variant, own)) or not os.path.isfile(os.path.join(images, variant, own)):
+            fail("%s: %s/%s is not a regular file of the layout" % (key, variant, own))
     blobs = os.path.join(images, variant, "blobs", "sha256")
     names = set()
     try:
