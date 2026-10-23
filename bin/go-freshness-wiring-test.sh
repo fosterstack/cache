@@ -187,9 +187,9 @@ GO_NAME = "install the pinned Go toolchain"
 GO_ROOT = "/usr/local/bin/fscache-go"
 if GO_NAME not in rnames or ORDER[2] not in rnames or rnames.index(GO_NAME) > rnames.index(ORDER[2]) or rnames.index(GO_NAME) < 2:
     bad.append("AC26: the pinned Go toolchain is not installed (after the key check, before the certified-module check)")
-elif "./bin/install-scanner.sh go" not in run_of(GO_NAME) or any(x.get("if") for x in rsteps if x.get("name") == GO_NAME):
+elif run_of(GO_NAME).strip().splitlines() != ["set -euo pipefail", "./bin/install-scanner.sh go"] or any(x.get("if") for x in rsteps if x.get("name") == GO_NAME):
     bad.append("AC26: the pinned Go toolchain step does not run bin/install-scanner.sh go unconditionally")
-if ("--go-root " + GO_ROOT) not in run_of(ORDER[2]) or "go env" in run_of(ORDER[2]):
+if not re.search(r"--go-root " + re.escape(GO_ROOT) + r"(\s|$)", run_of(ORDER[2])) or "go env" in run_of(ORDER[2]):
     bad.append("AC26: the certified-module check does not read the pinned toolchain (--go-root %s), or asks `go env`" % GO_ROOT)
 if [x for x in rsteps if str(x.get("uses", "")).startswith("actions/setup-go@")]:
     bad.append("AC26: the refresh job installs a floating Go with setup-go; the toolchain it reads is the pinned one")
@@ -332,6 +332,8 @@ case_ refresh-pull-by-tag     bad "[s.__setitem__('run', 'crane pull ghcr.io/x/a
 case_ refresh-bootstrap-always bad "[s.pop('if', None) for s in $R['steps'] if s.get('name') == 'bootstrap the archive from the pinned Wolfi key']"
 case_ refresh-keycheck-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'check the live Wolfi key against the pinned one']"
 case_ refresh-go-root-floating bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '\$(go env GOROOT)')) for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
+case_ refresh-pinned-go-or-true bad "[s.__setitem__('run', s['run'].rstrip() + ' || true\\n') for s in $R['steps'] if s.get('name') == 'install the pinned Go toolchain']"
+case_ refresh-go-root-lookalike bad "[s.__setitem__('run', s['run'].replace('/usr/local/bin/fscache-go', '/usr/local/bin/fscache-go2')) for s in $R['steps'] if s.get('name') == 'check for a newer certified crypto module']"
 case_ refresh-pinned-go-removed bad "$R['steps'][:] = [s for s in $R['steps'] if s.get('name') != 'install the pinned Go toolchain']"
 case_ refresh-pinned-go-late bad "a = $R['steps']; n = [s.get('name') for s in a]; a.insert(n.index('check for a newer certified crypto module') + 1, a.pop(n.index('install the pinned Go toolchain')))"
 case_ refresh-setup-go-back bad "$R['steps'].insert(2, {'uses': 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e', 'with': {'go-version': '1.27'}})"
