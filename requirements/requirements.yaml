@@ -3342,8 +3342,8 @@ requirements:
       protection counts a skipped required check as passing, so without the always() a build that is not reproducible would pass the gate; the test runs the
       step against success, failure, skipped, cancelled and an empty result. (I2) .github/policy/chain-scripts.json judges only the scripts a stage file
       runs directly; the scripts the stage scripts call (build-apk.sh, assemble-image.sh, apk-tool.py, chain-verify.py, build-archives.py) are covered by
-      their own tests and by cache's recipes, not by that allowlist. (I3) a pull request from a fork cannot get an id-token, so Build (which signs with
-      Witness) fails and the scan check is red for forks: an availability limit of the signed snapshot, not a gap in the checks.
+      their own tests and by cache's recipes, not by that allowlist. (I3) Build holds no id-token (its Witness record is made under a throwaway key and, on a tag, signed by Sign), so a pull request from a fork runs Build
+      like any other and the scan check does not depend on an identity token.
     acceptance_criteria:
       - id: REQ-CHAIN-004-AC1
         given: "stage-build.yml"
@@ -3965,7 +3965,7 @@ requirements:
       - id: REQ-CHAIN-007-AC18
         given: "chain-scripts.json and the five stage files that run the chain"
         when: "they are judged"
-        then: "a stored secret (secrets.*) appears in no step, condition or job of Build, Sign, Rebuild or Check, and in Release only as the exact value of the four named env entries; the run's own token (GH_TOKEN = ${{ github.token }}) appears only in Build job apk for the admission step (bin/witnessed.sh, bin/build-stage-apk.sh, bin/build-admit.py) with job permissions exactly contents, checks, statuses, pull-requests read and id-token write, and in Release job release (contents, packages, id-token write) for release-publish, release-sign, release-assets and release-postverify; APK_RELEASE_SIGNING_KEY only for release-apks; DOCKERHUB_USERNAME and DOCKERHUB_TOKEN only for release-publish and release-sign; any other name, place or script, a name twice at one place, a sixth row or a value that is not the exact one is refused"
+        then: "a stored secret (secrets.*) appears in no step, condition or job of Build, Sign, Rebuild or Check, and in Release only as the exact value of the four named env entries; the run's own token (GH_TOKEN = ${{ github.token }}) appears only in Build job apk for the admission step (bin/witnessed-local.sh, bin/build-stage-apk.sh, bin/build-admit.py) with job permissions exactly contents, checks, statuses, pull-requests read and no id-token, and in Release job release (contents, packages, id-token write) for release-publish, release-sign, release-assets and release-postverify; APK_RELEASE_SIGNING_KEY only for release-apks; DOCKERHUB_USERNAME and DOCKERHUB_TOKEN only for release-publish and release-sign; any other name, place or script, a name twice at one place, a sixth row or a value that is not the exact one is refused"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC19
