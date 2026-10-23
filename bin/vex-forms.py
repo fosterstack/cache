@@ -176,11 +176,18 @@ def _scopes(statement, digests):
         if not subs:
             out.append((ds, None))
         for sub in subs:
-            # generic packages only: Inspector's filter has no ecosystem, so pkg:npm/foo and pkg:pypi/foo would be one rule (Codex #381 r5/r6)
-            # no namespace: the forms carry a package's name only, so pkg:golang/github.com/acme/busybox would widen
-            # to every "busybox" (Codex #165 r3, SEC-165-01) — refused, as is a qualifier or subpath
-            pm = re.fullmatch(r"pkg:generic/([^/@?#]+)(?:@([^?#]+))?", _purl_of(sub, _cve(statement)))
-            if not pm:                                   # a namespace, qualifier or subpath: not represented
+            # generic packages and Go modules only: Inspector's filter has no ecosystem, so pkg:npm/foo and pkg:pypi/foo would be one rule
+            # (Codex #381 r5/r6). A generic package has no namespace: the forms carry a package's name only, so a namespaced name would
+            # widen to every "busybox" (Codex #165 r3, SEC-165-01). A Go module is named by its FULL module path (Inspector and the SBOMs
+            # name it so: github.com/golang-jwt/jwt/v4), which needs a host-like first segment and at least one more, so it never
+            # widens to a bare last segment. A qualifier or subpath is refused for both.
+            sid = _purl_of(sub, _cve(statement))
+            pm = re.fullmatch(r"pkg:generic/([^/@?#]+)(?:@([^?#]+))?", sid)
+            if not pm:
+                pm = re.fullmatch(r"pkg:golang/([^/@?#]+(?:/[^/@?#]+)+)(?:@([^?#]+))?", sid)
+                if pm and "." not in pm.group(1).split("/")[0]:
+                    pm = None                            # a module path starts with a domain (github.com/…); anything else is not one
+            if not pm:                                   # a namespace on a generic package, a qualifier or subpath: not represented
                 raise ValueError("%s: subcomponent %r cannot be represented" % (_cve(statement), sub.get("@id")))
             out.append((ds, (urllib.parse.unquote(pm.group(1)), urllib.parse.unquote(pm.group(2) or ""))))
     return out

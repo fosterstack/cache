@@ -41,7 +41,7 @@ release's own image digests — never edited by hand:
 | File | For | Statements |
 |---|---|---|
 | `fosterstack-cache.openvex.json` | scanners that read OpenVEX | the source |
-| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule per suppressible statement (`not_affected`, `fixed`) and none for `affected` or `under_investigation`, each scoped by its CVE, by the released image digests the statement covers and, when the statement names a package (e.g. busybox 1.37.0), by that package and version | <!-- pinned: upstream -->
+| `fosterstack-cache-<version>.inspector-filters.json` | Amazon Inspector suppression rules (`aws inspector2 create-filter`, one rule per call) | one rule per suppressible statement (`not_affected`, `fixed`) and none for `affected` or `under_investigation`, each scoped by its CVE, by the released image digests the statement covers and, when the statement names a package (e.g. the golang-jwt/jwt/v4 module), by that package and version | <!-- pinned: upstream -->
 | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex` | every OpenVEX statement about this release's images, as a CSAF 2.0 VEX document, each with its own scope: a whole-image statement names the image digests; a package statement names that package inside each image |
 
 In other words: the CSAF file carries every OpenVEX statement; the Inspector file
@@ -56,7 +56,7 @@ name the digest you run (one of this release's digests, listed in `release-manif
 `jq --arg u "$IMAGE" --arg d "$DIGEST" '.product_tree.branches |= map(if (.product.product_identification_helper.purl | startswith("pkg:oci/cache@" + $d + "?")) then .name = $u else . end)' <file> > vex-for-my-image.json`,
 then `gcloud artifacts vulnerabilities load-vex --source=vex-for-my-image.json --uri="$IMAGE@$DIGEST"` — the
 statements then bind to that digest only. Google applies whole-image statements only; a statement that names a package
-inside the image (our busybox statements) is carried in the file but not applied by Google's loader —
+inside the image (our one statement, scoped to the golang-jwt/jwt/v4 module) is carried in the file but not applied by Google's loader —
 the conservative direction (it never hides a finding the statement does not cover).
 
 All three files are listed, with their sha256, in the release's `release-manifest.json`,

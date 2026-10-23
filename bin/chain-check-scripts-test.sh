@@ -181,7 +181,7 @@ mkdig() { python3 "$work/mkdig.py" "$1"; }
 # ---- the throw-away tree and the fake tools ---------------------------------------------------------------------------------
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
 cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh "$fx/bin/" 2> /dev/null || true
-mkdir -p "$fx/.vex"; cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+mkdir -p "$fx/.vex"; cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
 for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
 mkdig "$fx"
@@ -550,9 +550,9 @@ FAKE_OSV_VULNS='[{"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "A
 FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}, {"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "AC4 F3 one excepted and one uncovered finding: the uncovered one fails the scan" osv-scanner "${SCAN[@]}"
 printf '{"statements": "not a list"}\n' > "$fx/.vex/fosterstack-cache.openvex.json"
 FAKE_OSV_VULNS="$VBUSY" want_fail "AC4 F3 an unreadable VEX document excepts nothing (fail closed)" osv-scanner "${SCAN[@]}"
-cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 # a statement scoped to ONE architecture excepts the finding on that platform child only: osv-scanner scans each child, and the child's platform reaches the matcher
-archvex() { python3 - "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json" "$@" <<'PYV'
+archvex() { python3 - "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json" "$@" <<'PYV'
 import copy, json, sys
 d = json.load(open(sys.argv[1])); base = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
 prod = d["statements"][1]["products"][0]; assert prod["@id"] == base
@@ -570,10 +570,10 @@ archvex amd64 arm64
 FAKE_OSV_VULNS="$VBUSY" want_fail "AC4 F3 statements scoped to each architecture do not except the finding on the go.mod sources (no platform)" go.mod "${SCAN[@]}"
 if jq -e '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | select(.name | test("^(production|fips)/linux/"))] | length == 4 and all(.[]; .verdict == "pass" and .vex_suppressed == 1)' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 F3 one statement scoped to each architecture excepts the finding on both platform children of each image"; else bad "AC4 F3 per-arch verdicts wrong: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | {name, verdict}]' "$fx/out/scan-results.json" 2>&1 | head -c 300)"; fi
 for badplat in amd64 odd/amd64 linux/arm64/v8 linux/ windows/amd64; do
-  pout=$(python3 "$root/bin/check-osv-vex.py" --vex "$root/.vex/fosterstack-cache.openvex.json" --report /dev/null --platform "$badplat" 2>&1) && prc=0 || prc=$?
+  pout=$(python3 "$root/bin/check-osv-vex.py" --vex "$root/test-evidence/vex-scope/busybox.openvex.json" --report /dev/null --platform "$badplat" 2>&1) && prc=0 || prc=$?
   if [ "$prc" = 1 ] && grep -Fq -- "platform" <<< "$pout" && grep -Fq -- "$badplat" <<< "$pout"; then ok "AC4 F3 check-osv-vex.py refuses the platform '$badplat' (only linux/amd64, linux/arm64 or none) naming it"; else bad "AC4 F3 check-osv-vex.py accepted or mis-reported platform '$badplat': rc=$prc ${pout:0:140}"; fi
 done
-cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 mkfake osv-scanner 0 80
 # ---- REQ-CHAIN-006-AC15: fresh vulnerability databases from the scanner's own host --------------------------------------------
 printf '{"scanners":["grype"]}\n' > "$fx/.github/policy/scanners.json"; rm -f "$fx/out/scan-results.json"

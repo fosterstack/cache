@@ -417,7 +417,7 @@ def mk_fx(kind="oci", plats=(("amd64", None), ("arm64", None)), indent=2, no_mt=
     return f
 
 
-VEX_REAL = rd(os.path.join(ROOT, ".vex", "fosterstack-cache.openvex.json")) if os.path.isfile(os.path.join(ROOT, ".vex", "fosterstack-cache.openvex.json")) else None
+VEX_REAL = rd(os.path.join(ROOT, "test-evidence", "vex-scope", "busybox.openvex.json")) if os.path.isfile(os.path.join(ROOT, "test-evidence", "vex-scope", "busybox.openvex.json")) else None
 VEX_MIN = ('{"@context":"https://openvex.dev/ns/v0.2.0","@id":"https://example.test/vex","author":"Example Co",'
            '"timestamp":"2026-01-01T00:00:00Z","version":1,"statements":[{"vulnerability":{"name":"CVE-2000-0001"},'
            '"products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}],"status":"not_affected",'

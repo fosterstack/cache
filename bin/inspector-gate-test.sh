@@ -8,7 +8,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 sut="${here}/inspector-gate.py"
-vex="${here}/../.vex/fosterstack-cache.openvex.json"
+vex="${here}/../test-evidence/vex-scope/busybox.openvex.json"
 pass=0; fail=0
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 
