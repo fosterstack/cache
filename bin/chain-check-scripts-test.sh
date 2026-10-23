@@ -1274,7 +1274,44 @@ for rc_ in 'no go build line|printf "package:\n  name: x\nenvironment:\n  enviro
 done
 # the closed line grammar: each mutation below is a shape the grammar must refuse before any scan (fail closed), in the standard recipe or the FIPS one
 gvfl_=$'      export GOFIPS140=v1.0.0\n'
-for rc_ in 'a trailing comment on the build line|sed -i.bak "s/\(go build .*\)$/\1 # x/" "$gvt/build/melange.yaml"' 'a semicolon after the build line|sed -i.bak "s/\(go build .*\)$/\1 ; true/" "$gvt/build/melange.yaml"' 'an ampersand after the build line|sed -i.bak "s/\(go build .*\)$/\1 \&\& true/" "$gvt/build/melange.yaml"' 'a redirect and pipe on the build line|sed -i.bak "s/\(go build .*\)$/\1 > \/x/" "$gvt/build/melange.yaml"' 'a second package on the build line|sed -i.bak "s/\(go build .*\)$/\1 .\/cmd\/other/" "$gvt/build/melange.yaml"' 'a -tags flag|sed -i.bak "s/go build -trimpath/go build -tags x -trimpath/" "$gvt/build/melange.yaml"' 'an inline runs go build|printf "  - runs: go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'an absolute-path go|printf "      \/usr\/local\/go\/bin\/go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'an extra export of a Go setting|printf "      export GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"' 'an export CGO_ENABLED line|printf "      export CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"' 'CGO_ENABLED named in a trailing description line|printf "      echo CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"' 'a command substitution on a go line|printf "      go version -m \$(id)\n" >> "$gvt/build/melange.yaml"' 'a backtick on a go line|printf "      go version -m \`id\`\n" >> "$gvt/build/melange.yaml"' 'a go command other than the two|printf "      go env -w GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"' 'a go word built by a command substitution|printf "      g\$(printf o) build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'a quoted go word|printf "      g'"'"'o'"'"' build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'a backslash go word|printf "      g\\\\o build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'a command word from a variable|printf "      \$G build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'a substitution on a line with no go word|printf "      echo \$(id)\n" >> "$gvt/build/melange.yaml"' 'GOFIPS140 in the standard recipe|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange.yaml"' 'the FIPS recipe without the GOFIPS140 export|sed -i.bak "/export GOFIPS140=v1.0.0/d" "$gvt/build/melange-fips.yaml"' 'the FIPS recipe with another GOFIPS140 value|sed -i.bak "s#export GOFIPS140=v1.0.0#export GOFIPS140=off#" "$gvt/build/melange-fips.yaml"' 'the FIPS recipe with GOFIPS140 twice|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange-fips.yaml"' 'a fifth environment key|sed -i.bak "s/^    GOPROXY: \"off\"$/    GOPROXY: \"off\"\n    GOAMD64: v3/" "$gvt/build/melange.yaml"' 'CGO_ENABLED set twice in the environment block|sed -i.bak "s/^    CGO_ENABLED: \"0\"$/    CGO_ENABLED: \"0\"\n    CGO_ENABLED: \"1\"/" "$gvt/build/melange.yaml"' 'CGO_ENABLED with a value other than 0 or 1|gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml" 2' 'a quoted expansion as the command word|printf "      G=go\n      \"\$G\" build -tags x -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'an expansion after a wrapper word|printf "      env \$G build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'a glob as the command word|printf "      \/usr\/local\/go\/bin\/g? build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'a quoted Go setting after declare|printf "      declare -x GOFL\x27\x27AGS=-mod=mod\n" >> "$gvt/build/melange.yaml"' 'eval of a built string|printf "      eval \"g\"\"o build -o \/x .\/cmd\/other\"\n" >> "$gvt/build/melange.yaml"' 'a template line changed (the install directory)|sed -i.bak "s#^  - runs: mkdir -p /usr/local/#  - runs: mkdir -p /usr/local/x#" "$gvt/build/melange.yaml"' 'a template line removed (the git set-up)|sed -i.bak "/safe.directory/d" "$gvt/build/melange.yaml"' 'a template line added in a second step|printf "  - runs: true\n" >> "$gvt/build/melange.yaml"' 'a runs step before the pipeline|sed -i.bak "s#^pipeline:#  extra:\n    - runs: true\npipeline:#" "$gvt/build/melange.yaml"'; do
+gvcases_=(
+  'a trailing comment on the build line|sed -i.bak "s/\(go build .*\)$/\1 # x/" "$gvt/build/melange.yaml"'
+  'a semicolon after the build line|sed -i.bak "s/\(go build .*\)$/\1 ; true/" "$gvt/build/melange.yaml"'
+  'an ampersand after the build line|sed -i.bak "s/\(go build .*\)$/\1 \&\& true/" "$gvt/build/melange.yaml"'
+  'a redirect and pipe on the build line|sed -i.bak "s/\(go build .*\)$/\1 > \/x/" "$gvt/build/melange.yaml"'
+  'a second package on the build line|sed -i.bak "s/\(go build .*\)$/\1 .\/cmd\/other/" "$gvt/build/melange.yaml"'
+  'a -tags flag|sed -i.bak "s/go build -trimpath/go build -tags x -trimpath/" "$gvt/build/melange.yaml"'
+  'an inline runs go build|printf "  - runs: go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'an absolute-path go|printf "      \/usr\/local\/go\/bin\/go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'an extra export of a Go setting|printf "      export GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
+  'an export CGO_ENABLED line|printf "      export CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"'
+  'CGO_ENABLED named in a trailing description line|printf "      echo CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"'
+  'a command substitution on a go line|printf "      go version -m \$(id)\n" >> "$gvt/build/melange.yaml"'
+  'a backtick on a go line|printf "      go version -m \`id\`\n" >> "$gvt/build/melange.yaml"'
+  'a go command other than the two|printf "      go env -w GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
+  'a go word built by a command substitution|printf "      g\$(printf o) build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a quoted go word|printf "      g'"'"'o'"'"' build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a backslash go word|printf "      g\\\\o build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a command word from a variable|printf "      \$G build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a substitution on a line with no go word|printf "      echo \$(id)\n" >> "$gvt/build/melange.yaml"'
+  'GOFIPS140 in the standard recipe|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange.yaml"'
+  'the FIPS recipe without the GOFIPS140 export|sed -i.bak "/export GOFIPS140=v1.0.0/d" "$gvt/build/melange-fips.yaml"'
+  'the FIPS recipe with another GOFIPS140 value|sed -i.bak "s#export GOFIPS140=v1.0.0#export GOFIPS140=off#" "$gvt/build/melange-fips.yaml"'
+  'the FIPS recipe with GOFIPS140 twice|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange-fips.yaml"'
+  'a fifth environment key|sed -i.bak "s/^    GOPROXY: \"off\"$/    GOPROXY: \"off\"\n    GOAMD64: v3/" "$gvt/build/melange.yaml"'
+  'CGO_ENABLED set twice in the environment block|sed -i.bak "s/^    CGO_ENABLED: \"0\"$/    CGO_ENABLED: \"0\"\n    CGO_ENABLED: \"1\"/" "$gvt/build/melange.yaml"'
+  'CGO_ENABLED with a value other than 0 or 1|gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml" 2'
+  'a quoted expansion as the command word|printf "      G=go\n      \"\$G\" build -tags x -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'an expansion after a wrapper word|printf "      env \$G build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a glob as the command word|printf "      \/usr\/local\/go\/bin\/g? build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a quoted Go setting after declare|printf "      declare -x GOFL\x27\x27AGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
+  'eval of a built string|printf "      eval \"g\"\"o build -o \/x .\/cmd\/other\"\n" >> "$gvt/build/melange.yaml"'
+  'a template line changed (the install directory)|sed -i.bak "s#^  - runs: mkdir -p /usr/local/#  - runs: mkdir -p /usr/local/x#" "$gvt/build/melange.yaml"'
+  'a template line removed (the git set-up)|sed -i.bak "/safe.directory/d" "$gvt/build/melange.yaml"'
+  'a template line added in a second step|printf "  - runs: true\n" >> "$gvt/build/melange.yaml"'
+  'a runs step before the pipeline|sed -i.bak "s#^pipeline:#  extra:\n    - runs: true\npipeline:#" "$gvt/build/melange.yaml"'
+)
+for rc_ in "${gvcases_[@]}"; do
   eval "${rc_#*|}"; rm -f "$gvt"/build/*.bak
   gvrun GV_OUT=clean -- "${GVARGS[@]}"
   if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the closed recipe grammar refuses before any scan: ${rc_%%|*}"; else bad "G grammar case '${rc_%%|*}' accepted: rc=$rc $out"; fi
