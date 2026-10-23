@@ -2841,7 +2841,7 @@ requirements:
       - id: REQ-SUP-001-AC32
         given: "bin/acceptance-gradle.sh and bin/acceptance-gradle-capped.sh, which run the sample project's ./gradlew"
         when: "either starts"
-        then: "before any ./gradlew it checks gradle-wrapper.jar against the committed .github/policy/gradle-wrapper-jar-sha256.txt (sha256sum -c) and refuses with exit 1, naming the jar, when the jar differs, the expected file is missing, or the expected file is for another jar; no gradlew runs behind a refusal (the owner's plain form for a tool download: exact version and checksum)"
+        then: "before any ./gradlew it checks gradle-wrapper.jar against the committed .github/policy/gradle-wrapper-jar-sha256.txt (sha256sum -c) and refuses with exit 1, naming the jar, when the jar differs, the expected file is missing, is not exactly one line naming the jar, or is for another jar; no gradlew runs behind a refusal (the owner's plain form for a tool download: exact version and checksum)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-UAT-001

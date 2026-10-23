@@ -142,17 +142,17 @@ class AcceptanceScriptsCheckTheJar(unittest.TestCase):
         shutil.copy(JAR_SUM_FILE, os.path.join(d, JAR_SUM_REL))
         if drop_sum:
             os.remove(os.path.join(d, JAR_SUM_REL))
-        if jar_bytes is not None:
-            with open(os.path.join(wrap, "gradle-wrapper.jar"), "wb") as f:
-                f.write(jar_bytes)
-        if sum_text is not None:
-            with open(os.path.join(d, JAR_SUM_REL), "w") as f:
-                f.write(sum_text)
         log = os.path.join(d, "gradlew.log")
         gw = os.path.join(d, "bench/gradle-sample/gradlew")
         with open(gw, "w") as f:
             f.write('#!/bin/sh\necho gradlew >> "%s"\nexit 1\n' % log)
         os.chmod(gw, 0o755)
+        if jar_bytes is not None:
+            with open(os.path.join(wrap, "gradle-wrapper.jar"), "wb") as f:
+                f.write(jar_bytes)
+        if sum_text is not None:
+            with open(os.path.join(d, JAR_SUM_REL), "w") as f:
+                f.write(sum_text(d) if callable(sum_text) else sum_text)
         shim = os.path.join(d, "shim")
         os.makedirs(shim)
         try:
@@ -183,13 +183,37 @@ class AcceptanceScriptsCheckTheJar(unittest.TestCase):
         for s in SCRIPTS:
             r, ran = self.run_script(s, drop_sum=True)
             self.assertEqual(r.returncode, 1, "%s: %s" % (s, r.stderr))
+            self.assertIn("gradle-wrapper.jar", r.stderr)
             self.assertEqual(ran, "", "%s ran gradlew with no expected sum" % s)
 
     def test_an_expected_file_for_another_jar_is_refused(self):
         for s in SCRIPTS:
             r, ran = self.run_script(s, sum_text="%s  %s\n" % ("0" * 64, JAR_REL))
             self.assertEqual(r.returncode, 1, "%s: %s" % (s, r.stderr))
+            self.assertIn("gradle-wrapper.jar", r.stderr)
             self.assertEqual(ran, "", "%s ran gradlew against a wrong expected sum" % s)
+
+    def test_an_expected_file_naming_another_file_is_refused_even_when_that_file_verifies(self):
+        import hashlib
+
+        def names_gradlew(d):   # the hash of the FIXTURE's gradlew (the fake the test installs), so only the check's refusal can stop the run
+            with open(os.path.join(d, "bench/gradle-sample/gradlew"), "rb") as f:
+                return "%s  bench/gradle-sample/gradlew\n" % hashlib.sha256(f.read()).hexdigest()
+        for s in SCRIPTS:
+            r, ran = self.run_script(s, jar_bytes=b"not the wrapper", sum_text=names_gradlew)
+            self.assertEqual(r.returncode, 1, "%s: %s" % (s, r.stderr))
+            self.assertIn("gradle-wrapper.jar", r.stderr)
+            self.assertEqual(ran, "", "%s ran gradlew although the expected file names another file" % s)
+
+    def test_an_expected_file_with_a_second_line_is_refused(self):
+        for s in SCRIPTS:
+            def with_valid_second_line(d):   # a second line that verifies, so only the one-line rule can refuse
+                import hashlib
+                with open(os.path.join(d, "bench/gradle-sample/gradlew"), "rb") as f:
+                    return open(JAR_SUM_FILE).read() + "%s  bench/gradle-sample/gradlew\n" % hashlib.sha256(f.read()).hexdigest()
+            r, ran = self.run_script(s, sum_text=with_valid_second_line)
+            self.assertEqual(r.returncode, 1, "%s: %s" % (s, r.stderr))
+            self.assertEqual(ran, "", "%s ran gradlew behind a two-line expected file" % s)
 
     def test_the_committed_jar_reaches_gradlew(self):
         for s in SCRIPTS:
