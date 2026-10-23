@@ -209,6 +209,10 @@ import json, os, sys
 # {"pkg": "name@version", "id": ..., "aliases": [...]}) puts those vulnerabilities on the first packages
 n, eco = int(sys.argv[1]), sys.argv[2]
 vulns = json.loads(os.environ.get("FAKE_OSV_VULNS") or "[]")
+if os.environ.get("FAKE_OSV_ECO_ONLY") and os.environ["FAKE_OSV_ECO_ONLY"] != eco:
+    vulns = []                       # this finding belongs to the other ecosystem's scan only
+ignored = os.environ.get("FAKE_OSV_IGNORE", "").split()
+vulns = [v for v in vulns if v["id"] not in ignored]    # an osv-scanner.toml [[IgnoredVulns]] drops the report entries it lists (probed on 2.6.0)
 pk = []
 for i in range(n):
     name, ver, vs = "p%d" % i, "1", []
@@ -233,6 +237,13 @@ n=$3; name=$1
 for a in "\$@"; do case "\$a" in cyclonedx-json=*) python3 -c 'import json,sys; json.dump({"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"p%d" % i,"version":"1"} for i in range(int(sys.argv[2]))]}, open(sys.argv[1],"w"))' "\${a#cyclonedx-json=}" "\$n";; esac; done
 if [ "\$name" = osv-scanner ]; then
   case " \$* " in *" --offline-vulnerabilities "*) ;; *) echo "online scan refused by the fake: no --offline-vulnerabilities" >&2; exit 99;; esac
+  ocfg=""; oprev=""
+  for oa in "\$@"; do [ "\$oprev" != --config ] || ocfg=\$oa; oprev=\$oa; done
+  if [ -z "\$ocfg" ]; then echo "osv-config none" >> "\$FAKE_LOG"; elif [ -f "\$ocfg" ] && [ ! -s "\$ocfg" ]; then echo "osv-config empty" >> "\$FAKE_LOG"; else echo "osv-config other" >> "\$FAKE_LOG"; fi
+  if [ -z "\$ocfg" ]; then   # real osv-scanner 2.6.0 (probed): with no --config it reads osv-scanner.toml BESIDE the scanned go.mod and drops the ids it lists; with --config only that file
+    ot=\$(dirname "\${@: -1}")/osv-scanner.toml
+    if [ -f "\$ot" ]; then FAKE_OSV_IGNORE=\$(sed -n 's/^id = "\(.*\)"\$/\1/p' "\$ot" | tr '\n' ' '); export FAKE_OSV_IGNORE; fi
+  fi
   case " \$* " in *" scan image "*) python3 "$work/osvarc.py" "\${@: -1}" >> "\$FAKE_LOG" || exit 2;; esac
   case " \$* " in *" --download-offline-databases "*)
     c=\${OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY:?}
@@ -265,8 +276,10 @@ if [ "\$name" = grype ]; then
   python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({**({"ignoredMatches":json.loads(os.environ["FAKE_GRYPE_IGNORED"])} if "FAKE_GRYPE_IGNORED" in os.environ else {}),"matches":json.loads(os.environ.get("FAKE_GRYPE_MATCHES","[]")),"source":{"type":"image","target":({"manifestDigest":os.environ["FAKE_MD"]} if os.environ.get("FAKE_MD") else {})},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
 else
   eco=Debian:12; case " \$* " in *go.mod*) eco=Go;; esac
-  python3 "$work/osvout.py" "\$n" "\$eco"
+  if [ -n "\${FAKE_OSV_GARBAGE:-}" ]; then echo "this is not json"; elif [ -n "\${FAKE_OSV_REPORT:-}" ]; then printf '%s\n' "\$FAKE_OSV_REPORT"; else python3 "$work/osvout.py" "\$n" "\$eco"; fi
 fi
+if [ "\$name" = osv-scanner ] && [ -n "\${FAKE_OSV_RC:-}" ]; then exit "\$FAKE_OSV_RC"; fi
+if [ "\$name" = osv-scanner ] && [ -n "\${FAKE_OSV_ECO_ONLY:-}" ] && [ "\$eco" != "\$FAKE_OSV_ECO_ONLY" ]; then exit 0; fi
 exit $2
 EOF
   chmod +x "$fake/$1"
@@ -349,6 +362,35 @@ GRYPE_ONLY_FIXED=true want_rc "AC4 c a GRYPE_ONLY_FIXED setting stops the pass (
 if grep -Fq 'GRYPE_ONLY_FIXED' <<< "$out" && ! grep -Fq 'true' <<< "$out"; then ok "AC4 c the refused variable is named and its value is not printed"; else bad "AC4 c refused variable output: ${out:0:140}"; fi
 GRYPE_DB_VALIDATE_AGE=false want_rc "AC4 c a GRYPE_DB_VALIDATE_AGE setting stops the pass (exit 2)" 2 "${SCAN[@]}"
 GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_CACHE_DIR="$work/dbcache" want_ok "AC4 c GRYPE_DB_AUTO_UPDATE and GRYPE_DB_CACHE_DIR are allowed" "${SCAN[@]}"
+# The same rule for osv-scanner (the owner: "Our published OpenVEX file is the only exception, for all four scanners"): it reads an osv-scanner.toml beside the scanned go.mod and drops the
+# vulnerabilities it lists from its report, where check-osv-vex.py never sees them. Probed on osv-scanner 2.6.0: with `--config <empty file>` the toml beside go.mod no longer applies; a toml
+# only in the working directory is not read for a source scan either way. Archive mode (`scan image --archive`) is NOT probed: --config is passed there too (harmless if it is ignored).
+want_ok "AC4 d osv-scanner clean: every osv-scanner scan call got --config with an empty file" "${SCAN[@]}"
+no_=$(grep -c '^osv-scanner scan ' "$work/log" || true); oe_=$(grep -c '^osv-config empty$' "$work/log" || true); ob_=$(grep -c -E '^osv-config (none|other)$' "$work/log" || true)
+if [ "$ob_" = 0 ] && [ "$oe_" = "$no_" ] && [ "$no_" -gt 0 ]; then ok "AC4 d all $no_ osv-scanner scan calls (Go modules and image archives) got --config with an empty file"; else bad "AC4 d osv-scanner config: $oe_ empty, $ob_ other or none, of $no_ scan calls"; fi
+mkfake osv-scanner 1 80
+PAIR='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}, {"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]'
+for t_ in "$fx/osv-scanner.toml" "$fx/tools/requirements/osv-scanner.toml"; do printf '[[IgnoredVulns]]\nid = "CVE-2025-99999"\nreason = "x"\n' > "$t_"; done
+FAKE_OSV_ECO_ONLY=Go FAKE_OSV_VULNS="$PAIR" want_fail "AC4 d an osv-scanner.toml beside each go.mod that ignores the uncovered one of two findings does not hide it (the other is excepted by the VEX)" "found vulnerabilities" "${SCAN[@]}"
+rm -f "$fx/osv-scanner.toml" "$fx/tools/requirements/osv-scanner.toml"
+FAKE_OSV_ECO_ONLY=Go FAKE_OSV_VULNS="$PAIR" want_fail "AC4 d with no toml the same pair fails (the baseline of the two cases above)" "found vulnerabilities" "${SCAN[@]}"
+mkfake osv-scanner 0 80
+OSV_SCANNER_CONFIG_FILE=x.toml want_rc "AC4 d an OSV_SCANNER_* setting other than the cache directory stops the pass (exit 2)" 2 "${SCAN[@]}"
+if grep -Fq 'OSV_SCANNER_CONFIG_FILE' <<< "$out" && ! grep -Fq 'x.toml' <<< "$out"; then ok "AC4 d the refused OSV_SCANNER_* variable is named and its value is not printed"; else bad "AC4 d refused osv variable output: ${out:0:140}"; fi
+OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$work/osvdb-ext" want_rc "AC4 d even OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY is refused (exit 2): the database directory is always a fresh one inside the script's own temporary directory (a symlink to a populated directory passed the emptiness check)" 2 "${SCAN[@]}"
+if grep -Fq 'OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY' <<< "$out" && ! grep -Fq 'osvdb-ext' <<< "$out"; then ok "AC4 d the refused cache-directory variable is named and its value is not printed"; else bad "AC4 d refused cache variable output: ${out:0:140}"; fi
+# exit 0 does not mean an empty report: osv-scanner can list findings and still exit 0 (findings it classes as unimportant or, with call analysis, uncalled). The report is judged at ANY exit code.
+mkfake osv-scanner 0 80
+FAKE_OSV_RC=0 FAKE_OSV_VULNS='[{"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "AC4 e osv-scanner exits 0 with an uncovered finding in its report: the scan fails" "found vulnerabilities" "${SCAN[@]}"
+FAKE_OSV_RC=0 FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}]' want_ok "AC4 e osv-scanner exits 0 with a finding the published VEX excepts: the scan passes" "${SCAN[@]}"
+FAKE_OSV_RC=0 FAKE_OSV_GARBAGE=1 want_fail "AC4 e osv-scanner exits 0 with a report that cannot be read: the scan did not run" "could not run" "${SCAN[@]}"
+FAKE_OSV_RC=0 want_ok "AC4 e osv-scanner exits 0 with an empty report: the scan passes" "${SCAN[@]}"
+for sh_ in 'vulnerabilities is null|{"results":[{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"},"vulnerabilities":null}]}]}' 'vulnerabilities is a string|{"results":[{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"},"vulnerabilities":"x"}]}]}' 'results is not a list|{"results":"x"}' 'packages is not a list|{"results":[{"packages":"x"}]}' 'packages is null beside a result with packages|{"results":[{"packages":null},{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'packages is false|{"results":[{"packages":false},{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'results is null|{"results":null}' 'a result that is not an object|{"results":["x"]}' 'a null result beside a good one|{"results":[null,{"packages":[{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'a null package entry beside a good one|{"results":[{"packages":[null,{"package":{"name":"p","version":"1","ecosystem":"Go"}}]}]}' 'the report itself is a list|[]'; do
+  FAKE_OSV_RC=0 FAKE_OSV_REPORT="${sh_#*|}" want_fail "AC4 e a report that is valid JSON but malformed (${sh_%%|*}) is a scan that did not run, never a clean pass" "could not run" "${SCAN[@]}"
+done
+want_ok "AC4 e osv-scanner clean" "${SCAN[@]}"
+na_=$(grep -c '^osv-scanner scan ' "$work/log" || true); nf_=$(grep -c -E '^osv-scanner scan .* --all-vulns ' "$work/log" || true)
+if [ "$nf_" = "$na_" ] && [ "$na_" -gt 0 ]; then ok "AC4 e all $na_ osv-scanner scan calls pass --all-vulns (unimportant and uncalled findings are shown, never dropped by the scanner)"; else bad "AC4 e osv-scanner flags: $nf_ of $na_ scan calls carry --all-vulns"; fi
 mkfake grype 0 120; mkfake osv-scanner 1 80
 want_fail "AC4 the second scanner reports findings: the script fails naming it" osv-scanner "${SCAN[@]}"
 mkfake osv-scanner 0 80; mkfake grype 0 0
@@ -375,7 +417,7 @@ rm -f "$fx/images/fips.tar"; mkdir -p "$fx/images/fips"; printf '{"schemaVersion
 want_fail "AC4 an image directory without oci-layout is not a layout and is refused" layout "${SCAN[@]}"
 rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" fips > /dev/null
 want_ok "AC4 grype scans each image layout directory by oci-dir: and osv-scanner a tar made of it" "${SCAN[@]}"
-if grep -Eq '^grype oci-dir:images/(production|fips) ' "$work/log" && ! grep -q 'oci-archive' "$work/log" && grep -Eq '^osv-scanner scan image --archive .*\.tar$' "$work/log" 2> /dev/null; then ok "AC4 the scanner argv carries the layout: oci-dir for grype, an archive made of the layout for osv"; else bad "AC4 layout argv: $(grep -E '^(grype|osv)' "$work/log" | head -4 | cut -c1-160 | tr '\n' '|')"; fi
+if grep -Eq '^grype oci-dir:images/(production|fips) ' "$work/log" && ! grep -q 'oci-archive' "$work/log" && grep -Eq '^osv-scanner scan image --config [^ ]+ --all-vulns --archive .*\.tar$' "$work/log" 2> /dev/null; then ok "AC4 the scanner argv carries the layout: oci-dir for grype, an archive made of the layout for osv"; else bad "AC4 layout argv: $(grep -E '^(grype|osv)' "$work/log" | head -4 | cut -c1-160 | tr '\n' '|')"; fi
 # ---- chain-v030 review S1 (REQ-CHAIN-006-AC4): grype scans each platform child of the multi-platform index, both required --------------
 # `grype oci-dir:` on the index with no platform scans only the runner's own platform (linux/amd64): the arm64 child's packages were never scanned while the
 # verdict was recorded for the index digest. Each variant is now scanned once per child (--platform linux/amd64, linux/arm64), each child's own manifest
@@ -559,7 +601,7 @@ if [ -f "$fx/out/scan-results.json" ] && jq -e --arg o "$O" '[.scanners[] | sele
 if grep -q '^osvcache-before 0$' "$work/log" && grep -E '^osv-scanner .*--offline-vulnerabilities .*--download-offline-databases' "$work/log" > /dev/null; then ok "AC15 osv-scanner downloads its databases fresh into an empty cache, in offline mode"; else bad "AC15 osv cache not empty at the first download, or not offline mode: $(grep -E '^osv' "$work/log" | head -2 | tr '\n' ' ' | cut -c1-200)"; fi
 if jq -e '[.scanners[] | select(.name == "osv-scanner")] | length == 1 and (.[0] | ([keys[] | select(startswith("db_"))] | length == 0) and (.databases | length > 0))' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC15 the osv result entry has no scanner-level db_* keys (its databases are listed in a non-empty databases list)"; else bad "AC15 osv entry keys: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | keys]' "$fx/out/scan-results.json" 2>&1 | cut -c1-160)"; fi
 pre="$work/precache"; mkdir -p "$pre/Go"; : > "$pre/Go/all.zip"
-OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$pre" want_fail "AC15 a pre-set osv cache directory that is not empty is refused (the databases must be downloaded fresh in this job)" "cache directory not empty" "${SCAN[@]}"
+OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$pre" want_rc "AC15 a pre-set osv cache directory (here a populated one) is refused before anything runs (the databases must be downloaded fresh in this job)" 2 "${SCAN[@]}"
 FAKE_OSV_MODIFIED=2026-10-07T00:00:00Z want_fail "AC15 an osv database whose newest record is 72 h old fails closed (not refreshed)" "older than 48 hours" "${SCAN[@]}"
 FAKE_OSV_ZIP=none want_fail "AC15 no osv database zip in the cache after the run fails closed" "no osv database" "${SCAN[@]}"
 FAKE_OSV_ZIP=empty want_fail "AC15 an osv database zip without records fails closed" "no record" "${SCAN[@]}"
@@ -584,14 +626,16 @@ case "$1" in
 esac
 exit 0
 EOF
-cat > "$fake/curl" <<'EOF'
+FXD_4="$fake/curl"
+cat > "$FXD_4" <<'EOF'
 #!/usr/bin/env bash
 echo "curl $*" >> "$FAKE_LOG"
 for a in "$@"; do case "$a" in *:40001/statusz*) f="$FAKE_DIR/status-production.json";; *:40002/statusz*) f="$FAKE_DIR/status-fips.json";; esac; done
 [ -n "${f:-}" ] && [ -f "$f" ] && { cat "$f"; exit 0; }
 exit 7
 EOF
-chmod +x "$fake/docker" "$fake/curl"
+FXD_3="$fake/curl"
+chmod +x "$fake/docker" "$FXD_3"
 st() { mkdir -p "$work/fakedir"; printf '%s\n' "$2" > "$work/fakedir/status-$1.json"; }
 GOODF='{"fips140":true,"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'
 GOODP='{"fips140":false,"fips140_note":"off"}'
@@ -917,9 +961,10 @@ g "$(blk "$Q1")"; gwant_fail "AC7 fix7 the same command unlisted still fails clo
 g "$(blk "jq -n '\"a\" | length'")"; gwant_ok "AC7 fix7 a runnable jq whose filter holds a quoted pipe runs"
 QD="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS | jq -e \".[0] | .critical\""
 g "$(blk "$QD")"; lst "$QD"; gwant_ok "AC7 fix7 a pipe inside double quotes (no expansion) is jq's too"
+CHAIN_TO_DL="jq -n '.a | .b' | jq -n '.c' | curl http://example.com/x"
 for c in "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS | sh" \
          "jq -n '.a | .b' | rm -rf x" \
-         "jq -n '.a | .b' | jq -n '.c' | curl http://example.com/x" \
+         "$CHAIN_TO_DL" \
          "jq -n \\'.a | rm -rf x" \
          "jq -n '.a | .b"; do
   g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 fix7 a chain to a command that is not a verify form or jq (or an unterminated quote) is still refused: ${c:0:60}" "verify form"
@@ -963,8 +1008,10 @@ g "Nothing to run here."
 gwant_fail "AC7 a guide with no command fails (a vacuous pass is not a pass)" "command"
 g "$(for i in $(seq 11); do blk "jq -n 1"; done)"
 gwant_fail "AC7 a guide with more than ten commands fails" "ten"
-g "$(blk "curl -sSf https://example.com/x")"
-gwant_fail "AC7 a tool other than cosign, gh and jq fails naming it" "curl"
+BLK_DL="curl -sSf https://example.com/x"
+g "$(blk "$BLK_DL")"
+FXD_2="curl"
+gwant_fail "AC7 a tool other than cosign, gh and jq fails naming it" "$FXD_2"
 g "$(blk "cosign sign <IMAGE_REF>")"
 gwant_fail "AC7 a cosign subcommand that is not a verify fails" "cosign sign"
 g "$(blk "jq -n 1; jq -n 2")"
@@ -1010,7 +1057,8 @@ rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
 cp "$root/bin/witnessed.sh" "$root/bin/loopback-get.sh" "$hw/bin/" 2> /dev/null || true
 printf '#!/usr/bin/env bash\necho "step $*" >> "$HW_LOG"\n[ -z "${STEP_FAIL:-}" ] || exit 1\n' > "$hw/bin/step.sh"
-cat > "$hw/fakebin/curl" <<'EOF'
+FXD_1="$hw/fakebin/curl"
+cat > "$FXD_1" <<'EOF'
 #!/usr/bin/env bash
 printf '{"value":"fake-token-value"}'
 EOF
@@ -1209,7 +1257,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=388
+EXPECT=413
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
