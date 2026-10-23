@@ -106,8 +106,12 @@ class ReviewedInputInvalid(Exception):
 
 def _read_reviewed_json(path):
     """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else that is not a readable JSON object is a stop."""
-    if not os.path.lexists(path):
-        return None
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None                                # absent (the first run); any other failure to look (EACCES on a parent, EIO) is a stop, not "missing"
+    except OSError as ex:
+        raise ReviewedInputInvalid("%s cannot be looked at (%s)" % (path, type(ex).__name__))
     try:
         with open(path) as f:
             doc = json.load(f)
@@ -115,7 +119,25 @@ def _read_reviewed_json(path):
         raise ReviewedInputInvalid("%s is present but cannot be read as JSON (%s)" % (path, type(ex).__name__))
     if not isinstance(doc, dict):
         raise ReviewedInputInvalid("%s is not a JSON object" % path)
+    key = "statements" if "openvex" in os.path.basename(path) else "accepted_items" if os.path.basename(path) == "accepted-items.json" else None
+    if key and key in doc and (not isinstance(doc[key], list) or not all(isinstance(x, dict) for x in doc[key])):
+        raise ReviewedInputInvalid("%s: %r is not a list of objects" % (path, key))
     return doc
+
+
+def _workspace():
+    """The one checkout the run reads and delivers against: GITHUB_WORKSPACE, else the current directory (what delivery always did)."""
+    return os.environ.get("GITHUB_WORKSPACE") or os.getcwd()
+
+
+def _read_reopened(path):
+    """The scopes this run reopened (reopened-expired.json, written by the run itself): a list of [cve, products, purls]. Absent = none; present and unreadable or mis-shaped means the run
+    is broken, so it stops (exit 3) rather than deliver without the removals (rc-5b fix 13, item 6)."""
+    doc = _read_reviewed_json(path)
+    rows = (doc or {}).get("reopened", [])
+    if not isinstance(rows, list) or not all(isinstance(x, list) and len(x) == 3 for x in rows if x):
+        raise ReviewedInputInvalid("%s: 'reopened' is not a list of [cve, products, purls]" % path)
+    return [x for x in rows if x]
 
 
 class DefectLogInvalid(Exception):
@@ -165,11 +187,8 @@ def _supp_cves(supp):
 def _supp_removed(supp):
     """The scopes the suppression PR REMOVES this run — expired, or lifted because a fix became
     pullable (the record does not say which): (cve ids, scope count)."""
-    try:
-        sc = json.load(open(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json"))).get("reopened", [])
-    except Exception:
-        return [], 0
-    return sorted({x[0] for x in sc if x}), len(sc)
+    sc = _read_reopened(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json"))
+    return sorted({x[0] for x in sc}), len(sc)
 
 
 def _supp_target(supp, nstmt):
@@ -341,11 +360,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     test image always forces dry_run — REQ-AUD-15 AC9)."""
     # nstmt==0 with NO removals means nothing to deliver. But an expiry reopen (AC5c) produces
     # zero NEW statements yet must still REMOVE a carried statement/ignore — deliver that.
-    has_removals = False
-    try:
-        has_removals = bool(json.load(open(os.path.join(out, ".auditor", "reopened-expired.json"))).get("reopened"))
-    except Exception:
-        has_removals = False
+    has_removals = bool(_read_reopened(os.path.join(out, ".auditor", "reopened-expired.json")))
     # A run that produced ONLY model proposals (no statements, no removals) still opens the draft
     # PR so the proposals reach audit-lane review (REQ-AUD-16 AC4; Codex round-1 P2).
     has_proposals = os.path.exists(os.path.join(out, ".auditor", "proposals", "adjudicator-proposals.json"))
@@ -390,7 +405,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
         _plan(would, "suppression PR", *_supp_target(supp, nstmt), note="not delivered: delivery disabled (no authorized delivery step)")
         return None, None
     import shutil
-    ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+    ws = _workspace()
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
@@ -412,6 +427,8 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
             s = os.path.join(out, p); d = os.path.join(ws, p)
             os.makedirs(os.path.dirname(d), exist_ok=True)
             shutil.copyfile(s, d)
+    except ReviewedInputInvalid:
+        raise                                       # a reviewed file of the delivery checkout that does not parse stops the run (exit 3), it is not a staging error to carry on from
     except Exception as e:
         return None, "stage files: %s" % e
     # the files THIS run changed against main (as `git add` + `git commit` once found them: a path that is absent and untracked is skipped)
@@ -587,7 +604,7 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
         print("bump PR pending: no authorized delivery step (real gh disabled): %s" % title)
         _plan(would, "bump PR", target, cves, note="not delivered: delivery disabled (no authorized delivery step)", key=branch)
         return None, None, "pending"
-    ws = os.environ.get("GITHUB_WORKSPACE", os.getcwd())
+    ws = _workspace()
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
@@ -706,12 +723,8 @@ def _merge_suppressions(ws, supp):
     # reopened this run because its time box expired (identified by statement @id); sibling
     # scopes and permanent statements of the same vulnerability are retained.
     reopened = set()
-    try:
-        for sc in json.load(open(os.path.join(os.path.dirname(supp), ".auditor",
-                                              "reopened-expired.json"))).get("reopened", []):
-            reopened.add((sc[0], tuple(sc[1]), tuple(sc[2])))     # (cve, products, purls)
-    except Exception:
-        reopened = set()
+    for sc in _read_reopened(os.path.join(os.path.dirname(supp), ".auditor", "reopened-expired.json")):
+        reopened.add((sc[0], tuple(sc[1]), tuple(sc[2])))     # (cve, products, purls)
     if reopened:
         survivors = [s for s in survivors
                      if ((s.get("vulnerability") or {}).get("name"), _scope_key(s)[0], _scope_key(s)[1]) not in reopened]
@@ -743,7 +756,7 @@ def _merge_suppressions(ws, supp):
             return None
     aip = os.path.join(ws, ".auditor", "accepted-items.json")
     new_ai = _loadj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))
-    old_ai = _loadj(aip)
+    old_ai = _read_reviewed_json(aip)              # the checkout's inventory: unreadable is a stop, never "no inventory" (rc-5b fix 13)
     out_ai = {}
     if new_ai is not None or old_ai is not None:
         def _cve(it):
@@ -833,10 +846,7 @@ def _consolidate(out, ts):
     import glob
     statements = []
     for vf in sorted(glob.glob(os.path.join(out, "vex", "*.openvex.json"))):
-        try:
-            statements.extend(json.load(open(vf)).get("statements", []))
-        except Exception:
-            pass
+        statements.extend((_read_reviewed_json(vf) or {}).get("statements", []))      # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
     supp = os.path.join(out, "suppressions")
     document = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
                 "author": "FosterStack LLC", "role": "vendor", "timestamp": ts, "version": 1,
@@ -1622,7 +1632,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
     carried_expiry = {}; carried_scopes = set(); carried_status = {}; carried_not_pullable = set()
     carried_lift_trigger = {}
-    ws0 = os.environ.get("GITHUB_WORKSPACE")
+    ws0 = _workspace()
     if ws0:
         # resolve each carried item to its statement's canonical SCOPE (REQ-AUD-13 AC6), so a
         # foreign/legacy @id is matched by the scope it addresses, not its literal id spelling
@@ -1644,6 +1654,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     # (e.g. new unreachability evidence) is NOT yet published as not_affected, so it
                     # must render "proposed", not "in force (main)" (Codex round-2 residual #3).
                     carried_status[(nm, _scope_key(s))] = s.get("status")
+        except ReviewedInputInvalid:
+            raise
         except Exception:
             prev_id_to_scope = {}
         prev = _read_reviewed_json(os.path.join(ws0, ".auditor", "accepted-items.json"))
@@ -1664,6 +1676,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     carried_not_pullable.add(key)
                     if it.get("lift_trigger"):           # preserve the machine-checkable condition
                         carried_lift_trigger[key] = it["lift_trigger"]
+        except ReviewedInputInvalid:
+            raise
         except Exception:
             carried_expiry = {}
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
