@@ -76,7 +76,11 @@ jobs:
           IMAGE_REF: ${{ inputs.image-ref }}
         run: |
           set -euo pipefail
-          pin_re='^[a-z0-9]+([._/:-][a-z0-9]+)*@sha256:[0-9a-f]{64}$'
+          # the reference grammar: [host[:port]/]path[/path]...[:tag]@sha256:<64 hex>; path parts are lowercase
+          host='[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?'
+          part='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
+          tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
+          pin_re="^(${host}/)?${part}(/${part})*(:${tag})?@sha256:[0-9a-f]{64}"'$'
           if ! [[ "${IMAGE_REF}" =~ $pin_re ]]; then
             printf 'image-ref must be name@sha256:<64 lowercase hex>, got: %q\n' "${IMAGE_REF}" >&2
             exit 1
@@ -205,7 +209,11 @@ jobs:
           IMAGE_REF: ${{ inputs.image-ref }}
         run: |
           set -euo pipefail
-          pin_re='^[a-z0-9]+([._/:-][a-z0-9]+)*@sha256:[0-9a-f]{64}$'
+          # the reference grammar: [host[:port]/]path[/path]...[:tag]@sha256:<64 hex>; path parts are lowercase
+          host='[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]+)?'
+          part='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
+          tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
+          pin_re="^(${host}/)?${part}(/${part})*(:${tag})?@sha256:[0-9a-f]{64}"'$'
           if ! [[ "${IMAGE_REF}" =~ $pin_re ]]; then
             printf 'image-ref must be name@sha256:<64 lowercase hex>, got: %q\n' "${IMAGE_REF}" >&2
             exit 1

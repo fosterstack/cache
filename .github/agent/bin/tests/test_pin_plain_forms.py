@@ -81,8 +81,7 @@ class ImageRefRefusal(unittest.TestCase):
             open(path, "w").write('#!/bin/sh\necho "%s $*" >>"%s"\nexit 0\n' % (tool, calls))
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
         script = re.sub(r"\$\{\{[^}]*\}\}", "x", script)
-        tools = {os.path.dirname(shutil.which(x)) for x in ("bash", "grep", "printf", "env") if shutil.which(x)}
-        env = {"PATH": os.pathsep.join([d] + sorted(tools)), "IMAGE_REF": ref}
+        env = {"PATH": d + os.pathsep + os.environ.get("PATH", ""), "IMAGE_REF": ref}
         r = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=60)
         ran = open(calls).read() if os.path.exists(calls) else ""
         return r, ran
@@ -130,6 +129,10 @@ class ImageRefRefusal(unittest.TestCase):
                 "ghcr.io/fosterstack//cache@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/cache..x@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/cache:@sha256:" + "a" * 64,
+                "ghcr.io/fosterstack/cache:one:two@sha256:" + "a" * 64,
+                "ghcr.io/fosterstack/cache:v1/child@sha256:" + "a" * 64,
+                "ghcr.io/fosterstack/Cache@sha256:" + "a" * 64,
+                "ghcr.io/fosterstack/cache:" + "t" * 129 + "@sha256:" + "a" * 64,
                 "-v/:/host@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/cache/@sha256:" + "a" * 64,
                 "@sha256:" + "a" * 64,
@@ -146,13 +149,32 @@ class ImageRefRefusal(unittest.TestCase):
             r, ran = self.run_step(DIGEST, step["run"])
             self.assertEqual(r.returncode, 0, r.stderr)
 
-    def test_a_digest_ref_with_a_tag_is_accepted_only_when_the_digest_is_complete(self):
+    def test_a_valid_reference_with_a_tag_port_or_underscores_is_accepted(self):
+        good = [
+            "ghcr.io/fosterstack/cache:v0.3.0@sha256:" + "b" * 64,
+            "ghcr.io/fosterstack/cache:RC1@sha256:" + "b" * 64,
+            "ghcr.io/fosterstack/cache__release@sha256:" + "b" * 64,
+            "localhost:5000/team/app-x.y@sha256:" + "b" * 64,
+            "cache@sha256:" + "b" * 64,
+        ]
         for name, job in jobs().items():
             i, step = refusal_step(job)
             if step is None or not uses_image_ref(step):
                 continue
-            r, _ = self.run_step("ghcr.io/fosterstack/cache:v0.3.0@sha256:" + "b" * 64, step["run"])
-            self.assertEqual(r.returncode, 0, r.stderr)
+            for ref in good:
+                r, _ = self.run_step(ref, step["run"])
+                self.assertEqual(r.returncode, 0, "%s refused %r: %s" % (name, ref, r.stderr))
+
+    def test_the_refusal_runs_whenever_the_image_is_started(self):
+        for name, job in jobs().items():
+            i, step = refusal_step(job)
+            if step is None:
+                continue
+            starts = [s for s in job["steps"] if uses_image_ref(s) and "docker run" in s.get("run", "")]
+            self.assertTrue(starts)
+            for s in starts:
+                self.assertEqual(step["if"], s["if"], "job %s: the refusal's condition must equal the start step's" % name)
+            self.assertNotEqual(job.get("continue-on-error"), True)
 
 
 if __name__ == "__main__":
