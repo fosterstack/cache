@@ -569,6 +569,95 @@ expect caught "AC2 a second witness invocation in the helper" "helper command" h
 expect ok "AC2 comments in the helper are not commands" "" helper "$work/h_comment.sh"
 printf 'set -euo pipefail\nwitness run --step apk -- timeout 540 bash bin/build-stage-apk.sh\n' > "$work/direct.sh"
 expect caught "AC2 a stage script naming witness run directly" "witness run" directwitness "$work/direct.sh"
+# ---- the local helper (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md, option 1): a BUILDING step records under Witness with a throwaway ed25519
+# key made in the job and destroyed before it ends; no identity token, no Fulcio, no timestamp; Sign re-signs the payload keyless. Key hygiene is hygiene, not the trust boundary
+# (the wrapped build runs on the same runner as the same user and can be assumed to see anything the job can): the guarantee is Sign's digest check plus verifiers refusing a record
+# whose only signature is the throwaway one. Tests written first.
+python3 - "$shape" "$work/witnessed-local.sh" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shape", sys.argv[1]); S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+open(sys.argv[2], "w").write("#!/usr/bin/env bash\n" + "\n".join(S.local_lines()) + "\n")
+PY
+expect ok "WIT1 fixture: the known-good bin/witnessed-local.sh is exactly the canonical local helper" "" localhelper "$work/witnessed-local.sh"
+expect ok "WIT1 the real bin/witnessed-local.sh is exactly the canonical local helper" "" localhelper "$root/bin/witnessed-local.sh"
+lm() { replace "$work/witnessed-local.sh" "$work/l_$1.sh" "$3" "$4" && expect caught "$2" "local helper" localhelper "$work/l_$1.sh"; return 0; }
+lm lfulcio  "WIT1 a Fulcio flag (Build must not ask for a certificate)" '--signer-file-key-path' '--signer-fulcio-url https://fulcio.sigstore.dev --signer-file-key-path'
+lm ltsa     "WIT1 a timestamp authority flag" '--env-filter-sensitive-vars' '-t https://timestamp.sigstore.dev/api/v1/timestamp --env-filter-sensitive-vars'
+lm ltoken   "WIT1 the identity token fetched again" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-${step#snapshot-}"\ntok=$(sh bin/loopback-get.sh -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)'
+lm lfixed   "WIT1 the key at a fixed path" '"$kd/key.pem"' '/tmp/key.pem'
+lm lnotemp  "WIT1 the key directory outside the runner temp folder" '"${RUNNER_TEMP:?}/witness-key.XXXXXX"' '/tmp/witness-key.XXXXXX'
+lm lrsa     "WIT1 another key algorithm" 'genpkey -algorithm ed25519' 'genpkey -algorithm RSA'
+lm lnotrap  "WIT1 no trap (a signal would leave the key)" "trap 'rm -rf \"\$kd\"' EXIT HUP INT TERM\n" ''
+lm ltrapx   "WIT1 the trap covers only the normal exit" "EXIT HUP INT TERM" "EXIT"
+lm lnorm    "WIT1 the key not removed after the run" 'rm -rf "$kd"\n[ ! -e' '[ ! -e'
+lm lnocheck "WIT1 no check that the key directory is gone" '[ ! -e "$kd" ] || { echo "witnessed-local: the throwaway key directory still exists" >&2; exit 1; }\n' ''
+lm lignore  "WIT1 a failure of the witnessed command ignored" '|| rc=$?' '|| true'
+lm lexec    "WIT1 witness exec'd (the shell, and with it the cleanup, would be replaced)" 'witness run --step' 'exec witness run --step'
+lm lumask   "WIT1 a looser umask (the key file would be readable by others)" 'umask 077' 'umask 022'
+lm lcopy    "WIT1 the key copied into the record directory (it would be uploaded)" 'rc=0' 'rc=0\ncp "$kd/key.pem" "witness-${step#snapshot-}/key.pem"'
+lm lcat     "WIT1 the key printed" 'rc=0' 'rc=0\ncat "$kd/key.pem"'
+lm lsigned  "WIT1 the record written under the signed name (it must end in .local.json: only Sign signs a trusted one)" '$step-collection.local.json' '$step-collection.json'
+lm lopen    "WIT1 the step list open" 'apk|build|rapk|rebuild|snapshot-apk' '*|apk'
+lm lrelease "WIT1 a non-building step in the list (Check and Release keep the keyless helper)" 'snapshot-rebuild)' 'snapshot-rebuild|release-sign)'
+lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environment,git,material,slsa'
+lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
+lm lnoflt   "WIT1 no environment filter" '--env-filter-sensitive-vars' ''
+lm lnounset "WIT1 the token variables not unset" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN\n' ''
+lm ltimeout "WIT1 no time limit on the build" '-- timeout -k 20 540 bash' '-- bash'
+lm lsnapdir "WIT1 a snapshot record in its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
+{ cat "$work/witnessed-local.sh"; echo "witness run --step x -- true"; } > "$work/l_second.sh"
+expect caught "WIT1 a second witness invocation in the local helper" "local helper" localhelper "$work/l_second.sh"
+# ---- behaviour of the real local helper against a stub witness (no network, no identity token) -----------------------------------------------
+wl="$work/wl"; mkdir -p "${wl:?}/bin" "${wl:?}/stub" "${wl:?}/keep"
+cp "$root/bin/witnessed-local.sh" "$wl/bin/witnessed-local.sh" 2>/dev/null || : > "$wl/bin/witnessed-local.sh"
+cat > "$wl/stub/witness" <<'STUB'
+#!/usr/bin/env bash
+# a stand-in for Witness: records its arguments, checks the key it was handed, writes a record at the -o path
+printf '%s\n' "$@" > "$STUB_KEEP/argv"
+key=""; out=""; prev=""
+for a in "$@"; do
+  [ "$prev" = --signer-file-key-path ] && key=$a
+  [ "$prev" = -o ] && out=$a
+  prev=$a
+done
+[ -f "$key" ] || { echo "stub: no key file" >&2; exit 41; }
+{ stat -f '%Lp' "$key" || stat -c '%a' "$key"; } > "$STUB_KEEP/keymode" 2>/dev/null
+{ stat -f '%Lp' "$(dirname "$key")" || stat -c '%a' "$(dirname "$key")"; } > "$STUB_KEEP/dirmode" 2>/dev/null
+cp "$key" "$STUB_KEEP/keycopy"; echo "$key" > "$STUB_KEEP/keypath"; env | grep -E '^(ACTIONS_|SIGSTORE_)' > "$STUB_KEEP/envtokens" || true
+case "${STUB_MODE:-ok}" in
+  fail) exit 3 ;;
+  sleep) echo $$ > "$STUB_KEEP/stubpid"; trap 'exit 143' TERM; : > "$STUB_KEEP/started"; sleep 30 & wait; exit 0 ;;
+esac
+mkdir -p "$(dirname "$out")"; printf '{"stub":"record"}\n' > "$out"
+STUB
+chmod +x "$wl/stub/witness"
+wclean() { find "${wl:?}/tmp" "${wl:?}/keep" -mindepth 1 -delete 2>/dev/null || true; rm -rf "${wl:?}/witness-apk" "${wl:?}/witness-rebuild"; mkdir -p "${wl:?}/tmp" "${wl:?}/keep"; }
+wrun() { # wrun STEP MODE  -> sets wl_rc; the helper runs in $wl with a clean runner temp folder
+  wclean; wl_rc=0
+  ( cd "$wl" && env -i PATH="$wl/stub:$PATH" HOME="$wl" RUNNER_TEMP="$wl/tmp" STUB_KEEP="$wl/keep" STUB_MODE="$2" \
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN=leak-token ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/t SIGSTORE_ID_TOKEN=leak-sig \
+      bash bin/witnessed-local.sh "$1" true > "$wl/out.log" 2>&1 ) || wl_rc=$?; }
+wrun apk ok
+if [ "$wl_rc" = 0 ] && [ -f "$wl/witness-apk/apk-collection.local.json" ] && [ ! -e "$wl/witness-apk/apk-collection.json" ]; then ok "WIT2 a building step writes its record as <step>-collection.local.json and never the signed name"; else bad "WIT2 the record is not at witness-apk/apk-collection.local.json (rc=$wl_rc): $(ls "$wl" | tr '\n' ' ')"; fi
+if [ "$wl_rc" = 0 ] && [ -z "$(ls -A "$wl/tmp")" ]; then ok "WIT2 the key directory is gone after a successful run (runner temp folder empty)"; else bad "WIT2 the runner temp folder still holds: $(ls -A "$wl/tmp" | tr '\n' ' ')"; fi
+if [ "$(cat "$wl/keep/keymode" 2>/dev/null)" = 600 ] && [ "$(cat "$wl/keep/dirmode" 2>/dev/null)" = 700 ]; then ok "WIT2 the key file was 0600 in a 0700 directory while Witness ran (hygiene)"; else bad "WIT2 key modes: file $(cat "$wl/keep/keymode" 2>/dev/null) dir $(cat "$wl/keep/dirmode" 2>/dev/null)"; fi
+if grep -q 'BEGIN PRIVATE KEY' "$wl/keep/keycopy" 2>/dev/null; then ok "WIT2 the key handed to Witness is a PEM private key made in the job"; else bad "WIT2 no PEM key reached Witness"; fi
+if ! grep -qE -- '--signer-fulcio|^-t$|timestamp|audience' "$wl/keep/argv" && grep -qx -- '--signer-file-key-path' "$wl/keep/argv"; then ok "WIT2 Witness gets a file key and no Fulcio, timestamp or token flag"; else bad "WIT2 unexpected Witness arguments: $(tr '\n' ' ' < "$wl/keep/argv")"; fi
+if [ -f "$wl/keep/envtokens" ] && [ ! -s "$wl/keep/envtokens" ]; then ok "WIT2 the identity-token variables are not in the environment Witness (and so the build) sees"; else bad "WIT2 the wrapped environment still holds: $(cat "$wl/keep/envtokens" 2>/dev/null)"; fi
+kb=$(grep -v -- '-----' "$wl/keep/keycopy" 2>/dev/null | tr -d '\n') || kb=""
+if [ -n "$kb" ] && ! grep -rqF -- "$kb" "$wl/witness-apk" "$wl/out.log"; then ok "WIT2 the key bytes appear in no record, no upload directory and no log"; else bad "WIT2 the key bytes are in a record, an upload directory or the log (or no key was made)"; fi
+wrun apk fail
+if [ "$wl_rc" = 3 ] && [ -z "$(ls -A "$wl/tmp")" ]; then ok "WIT2 a failing Witness run keeps its exit status (3) and the key is still destroyed"; else bad "WIT2 failure case: rc=$wl_rc, temp: $(ls -A "$wl/tmp" | tr '\n' ' ')"; fi
+wrun release-sign ok
+if [ "$wl_rc" = 2 ] && [ ! -e "$wl/keep/argv" ]; then ok "WIT2 a non-building step (release-sign) is refused with exit 2 before anything runs"; else bad "WIT2 release-sign was not refused (rc=$wl_rc)"; fi
+wrun snapshot-rebuild ok
+if [ "$wl_rc" = 0 ] && [ -f "$wl/witness-rebuild/snapshot-rebuild-collection.local.json" ]; then ok "WIT2 a snapshot step records under its release directory with the snapshot- name inside the file name"; else bad "WIT2 snapshot-rebuild record missing (rc=$wl_rc): $(ls "$wl" | tr '\n' ' ')"; fi
+# a TERM signal while Witness runs: the trap destroys the key directory
+wclean
+( cd "$wl" && env -i PATH="$wl/stub:$PATH" HOME="$wl" RUNNER_TEMP="$wl/tmp" STUB_KEEP="$wl/keep" STUB_MODE=sleep bash bin/witnessed-local.sh apk true > "$wl/sig.log" 2>&1 ) &
+wl_pid=$!; for _ in $(seq 40); do [ -e "$wl/keep/started" ] && break; sleep 0.25; done
+kill -TERM "$wl_pid" 2>/dev/null || true; if [ -s "$wl/keep/stubpid" ]; then kill -TERM "$(cat "$wl/keep/stubpid")" 2>/dev/null || true; fi; wait "$wl_pid" 2>/dev/null || true
+if [ -e "$wl/keep/started" ] && [ -z "$(ls -A "$wl/tmp")" ]; then ok "WIT2 a TERM signal while Witness runs still destroys the key directory (trap)"; else bad "WIT2 after TERM the runner temp folder holds: $(ls -A "$wl/tmp" | tr '\n' ' ')"; fi
 # ---- the four stage scripts: an EXACT line grammar (REQ-CHAIN-004-AC3, AC6, AC11; REQ-CHAIN-005-AC2) --------------------------------------
 KINDS="apk assemble rebuild-apk rebuild-assemble snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble"
 for k in $KINDS; do
