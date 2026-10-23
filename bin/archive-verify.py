@@ -280,12 +280,19 @@ def cmd_unpack(a):
             die("the unpacked files do not match the pointer:\n  %s" % "\n  ".join(problems), 1)
         os.rename(stage, out)
     except BaseException:
+        _ignore_signals()           # whatever failed, the cleanup that follows is not interrupted by a signal
         remove_tree(stage)          # a failed or interrupted extraction leaves neither the stage nor the output behind
         raise
 
 
 def _stop(signum, frame):
+    _ignore_signals()          # a second signal must not interrupt the cleanup the first one starts
     raise SystemExit(128 + signum)
+
+
+def _ignore_signals():
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def remove_tree(path):

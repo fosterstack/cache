@@ -509,5 +509,31 @@ assert not os.path.lexists(out + ".stage"), "the stage directory was left behind
 assert not os.path.lexists(out), "a partial output was left behind"
 P
 done
+t AC6 "a SECOND signal during the cleanup does not stop it: no <out>.stage and no <out> are left" python3 - "$VER" "$work/ptr.json" "$work/layout-keep" "$work/o-sig-twice" <<'P'
+import importlib.util, os, signal, sys
+spec = importlib.util.spec_from_file_location("av", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ptr, layout, out = sys.argv[2:5]
+n = [0]; real_chmod, real_unlink = os.chmod, os.unlink
+def second(p, *a, **k):
+    os.kill(os.getpid(), signal.SIGTERM)   # the second signal, in the middle of the cleanup
+    return real_unlink(p, *a, **k)
+def first(p, mode, *a, **k):
+    n[0] += 1
+    if n[0] == 2:
+        os.unlink = second
+        os.kill(os.getpid(), signal.SIGINT)   # the first signal, during the extraction
+    return real_chmod(p, mode, *a, **k)
+os.chmod = first
+try:
+    m.cmd_unpack({"--pointer": ptr, "--layout": layout, "--out": out})
+except SystemExit:
+    pass
+else:
+    raise SystemExit("the signal did not stop the extraction")
+os.unlink = real_unlink
+assert n[0] >= 2, "the injection point was never reached"
+assert not os.path.lexists(out + ".stage"), "a second signal left the stage directory behind"
+assert not os.path.lexists(out), "a partial output was left behind"
+P
 echo "archive-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
