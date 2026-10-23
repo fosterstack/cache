@@ -9,7 +9,8 @@ laptop cannot forge a release that GitHub's own runners never built).
 ## Pipeline (`.github/workflows/release.yml`)
 
 From v0.3.0 the release is five stages, each one reusable workflow file with its <!-- pinned: historical -->
-own job, on a fresh GitHub-hosted runner. The jobs that build (Build's and
+own job, on a fresh GitHub-hosted runner (Sign is called twice, once for Build's
+records and once for Rebuild's). The jobs that build (Build's and
 Rebuild's) hold no signing identity; the Sign stage signs their Witness records:
 
 ```
@@ -17,8 +18,9 @@ Build -> Sign -> { Rebuild, Check } ; Rebuild -> Sign (second call) ; { Check, S
 ```
 
 The chain starts on a pushed `v*` tag (or a branch dry run, which publishes
-nothing). Every stage first verifies the signed record of the stage before it
-and ties its work to the digest list Build attested; Release publishes by
+nothing). After Sign, every stage first verifies the signed record of the stage before it
+and ties its work to the digest list Build attested (Sign itself checks Build's
+records against the artifacts it receives, and signs them); Release publishes by
 digest the exact bytes Build made and Rebuild and Check judged, and never
 rebuilds. Release is the only job that holds a registry credential, the apk
 signing key or `packages: write`.
