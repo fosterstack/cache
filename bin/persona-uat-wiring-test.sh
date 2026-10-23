@@ -1828,6 +1828,12 @@ cases = [int(x) for x in re.search(r'^SEG_CASES="([0-9 ]+)"$', src, re.M).group(
 result(len(cases) == shards and all(c > 0 for c in cases), "shard gate: SEG_CASES gives a number of cases for each shard")
 rc, o = gate(SUITE, [shard_out([k for k, w in zip(held, owners) if w == i], cases[i - 1]) for i in range(1, shards + 1)])
 result(rc == 0, "shard gate: the shards each running the sections SEG_OWNER gives them cover every section of the real script once")
+# section 34 reads runs made in section 26: moving section 26 to another shard must make the shard that keeps section 34 fail, not skip the check
+mv26 = owners[:]; mv26[25] = 2 if owners[25] != 2 else 3
+d = tempfile.mkdtemp(); moved = f"{d}/persona-uat-test.sh"
+open(moved, "w").write(re.sub(r"^SEG_OWNER=\([0-9 ]+\)$", "SEG_OWNER=(" + " ".join(map(str, mv26)) + ")", src, count=1, flags=re.M))
+r = subprocess.run(["bash", moved], capture_output=True, text=True, env={**os.environ, "PERSONA_UAT_SHARD": f"{owners[33]}/{shards}"}, timeout=2400)
+result(r.returncode != 0 and "section 34 reads" in r.stdout + r.stderr, "shard gate: section 26 moved away from the shard that keeps section 34 makes that shard fail (section 34 reads its runs)")
 # a shard that hangs is killed after its deadline and counts as failed (exit 124); one that ends in time keeps its own exit status and output
 import time
 d = tempfile.mkdtemp(); t0 = time.time()

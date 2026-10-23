@@ -259,11 +259,13 @@ seg_close() {
   if [ "$SEGON" = 1 ]; then
     echo "persona-uat-seg: $SEG $((pass-SEGP0)) $((failn-SEGF0))"
     local d; for d in "$work"/*/; do [ -f "${d}docker.log" ] && [ "${d}docker.log" -nt "$work/.segstart" ] && : >"${d}.owned"; done   # the runs this owned section made (run() rewrites docker.log)
+  else
+    local d; for d in "$work"/*/; do [ -f "${d}docker.log" ] && [ "${d}docker.log" -nt "$work/.segstart" ] && rm -f "${d}.owned"; done   # a light section that re-ran a case (the directory reused) took it over: it is not this shard's run
   fi
   return 0
 }
 seg_begin() {
-  set -euo pipefail; driver="$DRIVER_REAL"; seg_close; SEG=$1; SEGP0=$pass; SEGF0=$failn; SEGON=1; : >"$work/.segstart"
+  set -euo pipefail; driver="$DRIVER_REAL"; seg_close; SEG=$1; SEGP0=$pass; SEGF0=$failn; SEGON=1; : >"$work/.segstart"; sleep 0.02
   [ -z "${PERSONA_UAT_SHARD:-}" ] && return 0
   case "$SEG_MINE" in *" $1 "*) SEG_RAN="$SEG_RAN$1 ";; *) case "$SEG_REPLAY" in *" $1 "*) SEGON=2;; *) SEGON=0;; esac;; esac
 }
@@ -5538,6 +5540,7 @@ check test "$(head -1 "$(out proofauth)/readme-evaluator.report.md")" = "VERDICT
 
 seg_begin 34
 seg_on
+for c in kindfail kindhang kinddelfail kindbothfail kubectlapplyfail jendead imgdead runnerdead hosts leak; do if [ "$SEGON" = 1 ] && ! mine "$c"; then bad "section 34 reads $c, which this shard did not run (keep its section in this shard)"; fi; done
 # --- PRIVACY, outcomes that exist only late in this file
 CASE="the public log is ONLY pass/fail lines in every outcome: clean, blocking, crash, a provider error carrying secrets, a dead image, missing docs: no finding, doc name, host, model name or transcript text, and the transcripts/reports exist only inside the encrypted artifacts"
 dist_begin
