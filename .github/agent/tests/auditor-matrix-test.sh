@@ -4005,6 +4005,73 @@ i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/nu
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
+# rc-5b fix 13 (R6, Fable): a reviewed file on main that is PRESENT but unreadable or malformed is a stop (exit 3), never a guess: an unreadable VEX must not become "no statements"
+# (the PR would delete every statement) and an unreadable accepted-items file must not renew every time box. A missing file is the first run and stays allowed.
+for variant in vex-malformed vex-notobject items-malformed items-notobject vex-dir items-dir; do
+  b="$WORK/r6-$variant"; rm -rf "$b"; mkdir -p "$b/ws/.vex" "$b/ws/.auditor"
+  "$PY" - "$b" "$variant" <<'PP'
+import json,os,sys
+tmp,var=sys.argv[1],sys.argv[2]; ws=os.path.join(tmp,"ws"); c="CVE-2099-9300"
+purl="pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
+sys.path.insert(0,".github/agent/bin")
+from auditorlib import vex
+old=vex.doc(c,"affected","2026-08-24T00:00:00Z",action="tracked",subcomponents=[purl])
+vp=os.path.join(ws,".vex","fosterstack-cache.openvex.json"); ap=os.path.join(ws,".auditor","accepted-items.json")
+json.dump(old,open(vp,"w"))
+json.dump({"accepted_items":[{"cve":c,"severity":"Medium","package":"libmed","threshold":"below","owner_issue":None,"vex_id":old["statements"][0]["@id"],"expiry":"2026-12-31"}]},open(ap,"w"))
+if var=="vex-malformed": open(vp,"w").write("{not json")
+elif var=="vex-notobject": open(vp,"w").write("[]")
+elif var=="items-malformed": open(ap,"w").write("{not json")
+elif var=="items-notobject": open(ap,"w").write("[]")
+elif var=="vex-dir": os.remove(vp); os.mkdir(vp)
+elif var=="items-dir": os.remove(ap); os.mkdir(ap)
+PP
+  r6="$("$PY" -c '
+import json,os,sys,io,contextlib,subprocess,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+from unittest.mock import patch
+tmp=sys.argv[1]; mp=sys.argv[2]; ws=os.path.join(tmp,"ws")
+import subprocess as _sp
+def fake2(cmd,*a,**kw):
+    if cmd and cmd[0]=="git": return _sp.CompletedProcess(cmd,0,"","")
+    if cmd[:3]==["gh","pr","list"]: return _sp.CompletedProcess(cmd,0,"","")
+    if cmd[:3]==["gh","issue","list"]: return _sp.CompletedProcess(cmd,0,"[]","")
+    if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"","")
+    return _sp.run(cmd,*a,**kw)
+before=sorted((d,f) for d,_,fs in os.walk(ws) for f in fs)
+with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake2),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+    try:
+        R.run(mp,False,os.path.join(tmp,"out"),"2026-09-24",adjudicator="offline-probe"); res="RAN"
+    except R.ReviewedInputInvalid as e:
+        res="STOP" if str(e) else "STOP-NOMSG"
+    except Exception as e:
+        res="OTHER %s" % type(e).__name__
+after=sorted((d,f) for d,_,fs in os.walk(ws) for f in fs)
+print(res if before==after else res+" (workspace changed)")
+' "$b" "$FX/run/manifest-mediumnofix.json" 2>/dev/null | tail -1)"
+  eq "$r6" "STOP" && ok || no "an unreadable or malformed reviewed file ($variant) stops the run with exit 3 (ReviewedInputInvalid), nothing delivered, nothing guessed" "$r6"
+done
+b="$WORK/r6-missing"; rm -rf "$b"; mkdir -p "$b/ws"
+r6m="$("$PY" -c '
+import json,os,sys,io,contextlib,subprocess,importlib.util
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+from unittest.mock import patch
+tmp=sys.argv[1]; mp=sys.argv[2]; ws=os.path.join(tmp,"ws")
+import subprocess as _sp
+def fake2(cmd,*a,**kw):
+    if cmd and cmd[0]=="git": return _sp.CompletedProcess(cmd,0,"","")
+    if cmd[:3]==["gh","pr","list"]: return _sp.CompletedProcess(cmd,0,"","")
+    if cmd[:3]==["gh","issue","list"]: return _sp.CompletedProcess(cmd,0,"[]","")
+    if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"","")
+    return _sp.run(cmd,*a,**kw)
+with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake2),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+    try:
+        R.run(mp,False,os.path.join(tmp,"out"),"2026-09-24",adjudicator="offline-probe"); res="RAN"
+    except Exception as e:
+        res="OTHER %s %s" % (type(e).__name__, e)
+print(res)
+' "$b" "$FX/run/manifest-mediumnofix.json" 2>/dev/null | tail -1)"
+eq "$r6m" "RAN" && ok || no "a MISSING VEX and accepted-items file is the first run and still works" "$r6m"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"

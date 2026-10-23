@@ -99,6 +99,25 @@ def _issue_pending_note(ref):
     return "would open (dry run)" if ref == "dry" else "delivery disabled (gh off)"
 
 
+class ReviewedInputInvalid(Exception):
+    """A reviewed file on main (the published VEX, the accepted-items inventory) is present but unreadable or not the JSON object it must be: the run stops (exit 3) rather than guess an
+    empty one, which would delete every statement or renew every time box (rc-5b fix 13; REQ-AUD-13 AC6, REQ-AUD-2 AC5c)."""
+
+
+def _read_reviewed_json(path):
+    """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else that is not a readable JSON object is a stop."""
+    if not os.path.lexists(path):
+        return None
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError, UnicodeError) as ex:
+        raise ReviewedInputInvalid("%s is present but cannot be read as JSON (%s)" % (path, type(ex).__name__))
+    if not isinstance(doc, dict):
+        raise ReviewedInputInvalid("%s is not a JSON object" % path)
+    return doc
+
+
 class DefectLogInvalid(Exception):
     """The known-defect log exists but is not a JSON object — a log problem, never reported as
     a manifest problem, and never a traceback."""
@@ -669,12 +688,7 @@ def _merge_suppressions(ws, supp):
     vp = os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")
     os.makedirs(os.path.dirname(vp), exist_ok=True)
     newdoc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))
-    existing = {}
-    if os.path.exists(vp):
-        try:
-            existing = json.load(open(vp))
-        except Exception:
-            existing = {}
+    existing = _read_reviewed_json(vp) or {}
     # Merge statements by the CANONICAL scope key (vulnerability, scope) (REQ-AUD-13 AC1/AC3).
     # Statements now arrive with scope-deterministic @ids (generation-time, AC2), so a
     # same-scope statement — this run's or a carried one — has the same key and the incoming
@@ -1614,9 +1628,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
         # foreign/legacy @id is matched by the scope it addresses, not its literal id spelling
         # (R1 refactor round-1 #5). Keyed by scope, per scope — never CVE-wide.
         prev_id_to_scope = {}
+        pv = _read_reviewed_json(os.path.join(ws0, ".vex", "fosterstack-cache.openvex.json"))
         try:
-            pv = json.load(open(os.path.join(ws0, ".vex", "fosterstack-cache.openvex.json")))
-            for s in pv.get("statements", []):
+            for s in (pv or {}).get("statements", []):
                 if s.get("@id"):
                     prev_id_to_scope[s["@id"]] = _scope_key(s)
                 nm = (s.get("vulnerability") or {}).get("name")
@@ -1632,9 +1646,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     carried_status[(nm, _scope_key(s))] = s.get("status")
         except Exception:
             prev_id_to_scope = {}
+        prev = _read_reviewed_json(os.path.join(ws0, ".auditor", "accepted-items.json"))
         try:
-            prev = json.load(open(os.path.join(ws0, ".auditor", "accepted-items.json")))
-            for it in prev.get("accepted_items", []):
+            for it in (prev or {}).get("accepted_items", []):
                 if not it.get("expiry"):
                     continue
                 cve = it.get("cve") or it.get("id")
@@ -2433,6 +2447,9 @@ def main():
         complete = run(manifest, dry, out, today, kevpath=kev)
     except DefectLogInvalid as e:
         print("daily CVE auditor: known-defect log invalid — %s" % e)
+        return 3
+    except ReviewedInputInvalid as e:
+        print("daily CVE auditor: a reviewed input is unreadable, the run stops — %s" % e)
         return 3
     except ValueError as e:
         print("daily CVE auditor: manifest invalid — %s" % e)
