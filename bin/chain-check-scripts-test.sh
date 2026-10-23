@@ -354,7 +354,8 @@ want_ok "AC4 S1 the layouts with both children pass" "${SCAN[@]}"
 for v in production fips; do for a in amd64 arm64; do
   if grep -Eq "^grype oci-dir:images/$v .*--platform linux/$a( |\$)" "$work/log"; then ok "AC4 S1 grype scanned the $v image's linux/$a child explicitly"; else bad "AC4 S1 no grype call with --platform linux/$a on the $v image"; fi
 done; done
-if grep -E '^grype oci-dir:' "$work/log" | grep -qv -- '--platform linux/'; then bad "AC4 S1 a grype image scan ran without a platform"; else ok "AC4 S1 no grype image scan runs without a platform"; fi
+bare_=$(grep -E '^grype oci-dir:' "$work/log" | grep -cv -- '--platform linux/' || true)   # a count, not a pipe into grep -q (pipefail + SIGPIPE)
+if [ "$bare_" != 0 ]; then bad "AC4 S1 a grype image scan ran without a platform"; else ok "AC4 S1 no grype image scan runs without a platform"; fi
 for v in production fips; do for a in amd64 arm64; do
   cd_=$(jq -r ".$a.manifest" "$fx/images/$v.map")
   if jq -e --arg n "$v/linux/$a" --arg d "sha256:$cd_" '.scanners[] | select(.name == "grype") | .subjects | map(select(.name == $n and .digest == $d and .packages > 0 and .verdict == "pass")) | length == 1' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 S1 the results record the $v linux/$a child by its own manifest digest"; else bad "AC4 S1 no grype subject $v/linux/$a with digest sha256:$cd_"; fi
@@ -1142,7 +1143,8 @@ if [ -n "$ce_" ] && grep -q "go build -trimpath -o \${{targets.destdir}}${ce_} "
 # after the first, would leave the value above checked but not used
 if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 ]; then ok "acceptance-egress.sh: CANDIDATE_ENTRYPOINT is assigned exactly once"; else bad "acceptance-egress.sh: CANDIDATE_ENTRYPOINT is assigned $(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh") times (the first one is the one checked, the last one is the one used)"; fi
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
-if [ "$(printf '%s\n' "$cl_" | grep -c .)" = 1 ] && printf '%s\n' "$cl_" | grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$'; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
+n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
+if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
 EXPECT=357
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
