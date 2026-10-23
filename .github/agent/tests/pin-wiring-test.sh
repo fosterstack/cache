@@ -213,13 +213,13 @@ GUARD_STEPS = [
 ]
 # REQ-CI-001 (advisor Oct 23, CI speed): allowlist-chain is accepted in EXACTLY TWO forms: the one job (SPLIT_STEPS below), or four parallel jobs
 # allowlist-chain-1..4 plus a gate job that keeps the name allowlist-chain. The groups name steps of the one job's list by run text (the first group is the
-# image-assembly suite, the long one); the fourth shard takes every other suite step and the two guard steps. Every shard opens with the five setup steps.
+# Sign boundary's wiring suite, 691 s alone, the long one; the second holds image assembly, 267 s); the fourth shard takes every other suite step and the two guard steps. Every shard opens with the five setup steps.
 # The groups name their steps by run text (stripped), not by position, so an edit of the one job's step list cannot move a suite to another shard silently.
 CHAIN_SHARD_IDS = ["allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowlist-chain-4"]
 CHAIN_GROUPS = [
-    ["bash bin/assemble-image-test.sh"],
-    ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
-    ["bash bin/build-apk-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+    ["bash bin/chain-sign-wiring-test.sh"],
+    ["bash bin/assemble-image-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+    ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh", "bash bin/build-apk-test.sh"],
 ]
 # Installed state does not cross jobs (each shard is a fresh runner): the one step that installs a tool for later steps, `./bin/install-scanner.sh grype` (with the
 # vex-scope suite), stays in shard 4 with its consumers, vex-both-scanners-test and the suite-floor re-run (suite-guard-run.py all). cache#608 round 2, both seats.
@@ -947,7 +947,7 @@ case_ split-job-runs-on       bad "d['jobs']['allowlist-persona']['runs-on'] = '
 case_ split-job-continue      bad "d['jobs']['allowlist-chain']['steps'][-1]['continue-on-error'] = 'true'"
 case_ split-step-if           bad "d['jobs']['allowlist-persona']['steps'][-1]['if'] = 'false'"
 case_ split-step-shell        bad "d['jobs']['allowlist-pins-auditor']['steps'][-2]['shell'] = 'bash -c true {0}'"
-case_ split-anchor-gone       bad "st = d['jobs']['allowlist-chain-1']['steps']; st[:] = [x for x in st if 'assemble-image-test' not in (x.get('run') or '')]"
+case_ split-anchor-gone       bad "st = d['jobs']['allowlist-chain-2']['steps']; st[:] = [x for x in st if 'assemble-image-test' not in (x.get('run') or '')]"
 case_ split-no-checkout       bad "d['jobs']['allowlist-persona']['steps'].pop(0)"
 case_ split-job-env           bad "d['jobs']['allowlist-chain']['env'] = {'X': '1'}"
 case_ split-env-bash-env      bad "d['jobs']['allowlist-chain']['steps'][-1]['env'] = {'BASH_ENV': '/tmp/x'}"
@@ -958,11 +958,11 @@ case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain-4']['steps'];
 case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append({'name': 'x', 'run': 'true'})"
 # REQ-CI-001 (advisor Oct 23: CI speed, no check dropped, exactly once): allowlist-chain is ALSO accepted split into four parallel jobs
 # (allowlist-chain-1..4) plus a gate job that keeps the name allowlist-chain. This helper builds that form from the real ci.yml's own job, independently of the judge:
-# the five setup steps open every shard, the groups below name steps of the old job by run text (the first is the image-assembly suite, the long one).
+# the five setup steps open every shard, the groups below name steps of the old job by run text (the first is the Sign boundary's wiring suite, the long one).
 cat > "$work/split.py" <<'PYS'
 import copy
-GROUPS = [["bash bin/assemble-image-test.sh"], ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
-          ["bash bin/build-apk-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"]]   # the rest is the fourth shard (it keeps the grype installer with its consumers)
+GROUPS = [["bash bin/chain-sign-wiring-test.sh"], ["bash bin/assemble-image-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+          ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh", "bash bin/build-apk-test.sh"]]   # the rest is the fourth shard (it keeps the grype installer with its consumers)
 def split_chain(d):
     if "allowlist-chain-1" in d["jobs"]:   # ci.yml is already split: the cases then mutate the real shards and gate
         return

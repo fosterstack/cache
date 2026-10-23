@@ -9,6 +9,9 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"errors"
@@ -243,11 +246,49 @@ func handleHealthz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// credHasher makes the fixed-size form a credential is compared in: an
+// HMAC-SHA256 of its bytes under a key drawn from crypto/rand when the
+// hasher is built, so the comparison never sees inputs of differing length
+// (crypto/subtle.ConstantTimeCompare returns early on those, which would
+// make the configured credential's length measurable). The digest is a
+// comparison aid and is never stored or logged; the key lives only in this
+// process.
+type credHasher struct{ key [32]byte }
+
+func newCredHasher() *credHasher {
+	h := &credHasher{}
+	_, _ = rand.Read(h.key[:]) // crypto/rand.Read does not return an error since Go 1.24
+	return h
+}
+
+func (h *credHasher) digest(s string) []byte {
+	m := hmac.New(sha256.New, h.key[:])
+	m.Write([]byte(s))
+	return m.Sum(nil)
+}
+
+// credDigests are the digests of one configured credential pair.
+type credDigests struct{ user, pass []byte }
+
+// digestsOf digests a configured pair; withAuth does it once, when it is
+// built, not on every request.
+func digestsOf(h *credHasher, c Credentials) credDigests {
+	return credDigests{user: h.digest(c.Username), pass: h.digest(c.Password)}
+}
+
+// digestEqual compares two credential digests in constant time
+// (REQ-AUTH-002); both are always 32 bytes, so ConstantTimeCompare never
+// takes its early return on a length mismatch.
+func digestEqual(a, b []byte) bool {
+	return subtle.ConstantTimeCompare(a, b) == 1
+}
+
 // withAuth wraps h with HTTP Basic Auth when Credentials are configured.
-// Constant-time comparison avoids leaking password length/prefix via
-// timing (COMMIT-REQ style hygiene: this is exactly the kind of small
-// correctness detail the addendum's algorithm-discipline section expects
-// applied to all code, not just the crypto module choice).
+// Presented and configured credentials are compared as fixed-size digests
+// in constant time: ConstantTimeCompare never sees inputs of differing
+// length, so its early return cannot reveal the configured credential's
+// length. (It does not claim to hide the cost of hashing the presented
+// value.)
 //
 // Two pairs (REQ-AUTH-005): the read-write pair passes everything
 // through; the read-only pair passes GET and HEAD and answers writes
@@ -259,12 +300,15 @@ func withAuth(creds, ro Credentials, next http.Handler) http.Handler {
 	if !creds.enabled() {
 		return next
 	}
+	hasher := newCredHasher()
+	rw, roD := digestsOf(hasher, creds), digestsOf(hasher, ro)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		rwUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(creds.Username)) == 1
-		rwPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(creds.Password)) == 1
-		roUserOK := subtle.ConstantTimeCompare([]byte(user), []byte(ro.Username)) == 1
-		roPassOK := subtle.ConstantTimeCompare([]byte(pass), []byte(ro.Password)) == 1
+		pu, pp := hasher.digest(user), hasher.digest(pass)
+		rwUserOK := digestEqual(pu, rw.user)
+		rwPassOK := digestEqual(pp, rw.pass)
+		roUserOK := digestEqual(pu, roD.user)
+		roPassOK := digestEqual(pp, roD.pass)
 		isRW := rwUserOK && rwPassOK
 		isRO := ro.enabled() && roUserOK && roPassOK
 		if !ok || (!isRW && !isRO) {
@@ -315,9 +359,21 @@ func withMetrics(m *metrics.Metrics, next http.Handler) http.Handler {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		m.RequestsTotal.WithLabelValues(r.Method, strconv.Itoa(sw.status)).Inc()
-		m.RequestDuration.WithLabelValues(r.Method).Observe(time.Since(start).Seconds())
+		method := methodLabel(r.Method)
+		m.RequestsTotal.WithLabelValues(method, strconv.Itoa(sw.status)).Inc()
+		m.RequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
 	})
+}
+
+// methodLabel bounds the method label to the three methods the server
+// serves plus "other": a client may send any method token, and each distinct
+// value would otherwise live as its own series until the process exits.
+func methodLabel(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPut:
+		return method
+	}
+	return "other"
 }
 
 type statusWriter struct {
