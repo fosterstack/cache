@@ -76,7 +76,8 @@ stages of the chain. See "Verify the whole chain" below.
 From v0.3.0 the chain is five stages (Build, Sign, Rebuild, Check, Release; <!-- pinned: historical -->
 see [`RELEASING.md`](../RELEASING.md)). Rebuild, Check and Release each verify the
 signed records of the stages before them; Sign checks the building jobs'
-records against the artifacts it receives, and signs them. The records are attached to the release so you can
+records (Build's against the artifacts it receives, Rebuild's against Build's
+attested digest list) and signs them. The records are attached to the release so you can
 verify them too: the Witness records of Build (`build-collection.json`,
 `digests.json`, `items.json`, `admission-baseline.json`), Rebuild (`rebuild-collection.json`,
 `verdict.json`) and Check (`scanners-collection.json`,
