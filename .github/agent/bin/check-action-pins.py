@@ -47,8 +47,7 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
   The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
-             frozen set of exactly two digests while cache PR #316 is bootstrapped; a later change leaves one)
-             (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
+             frozen set of exactly one digest, its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
              until this file is updated — a change under .github/agent/, so it needs the independent
              second review: the enforcement cannot be removed from its caller by an ordinary merge either.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
@@ -230,10 +229,10 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO for the bootstrap of
-# cache PR #316 (scanner guard): main's gate workflow and #316's; a later change removes main's old one, leaving one
+# the accepted gate-workflow digest (gate_digest: pins masked), a closed set of EXACTLY ONE: the gate workflow of cache
+# PR #316 (scanner guard). Main's older gate (adcfd54f…) was a bootstrap digest and is removed (rc-5b B1): a plain
+# revert of the gate workflow to it would drop the scanner guard under a green gate.
 GATE_WORKFLOW_SHA256 = frozenset({
-    "adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d",   # main's gate workflow before #316
     "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533",   # the gate workflow of cache PR #316
 })
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
