@@ -85,6 +85,7 @@ R_REC_REBUILD = r"python3 -I -B bin/chain-verify\.py sign-records --stage rebuil
 RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
 EXPECT_STEPS = {
     "sign": [("checkout",), ("download", "witness-build", "witness-build")]
+            + [("download", n, "witness-build") for n in ("digests", "items", "admission-baseline")]
             + [("download", "witness-apk-" + r, "witness-apk-" + r) for r in RUNNERS]
             + [("download", "images", "artifacts/witness-build/out"), ("download", "dist", "artifacts/witness-build/dist")]
             + [("download", "apk-" + r, "artifacts/witness-apk-" + r + "/out") for r in RUNNERS]
@@ -103,6 +104,8 @@ def judge_sign(path):
     try: d, text = load(path)
     except Exception as ex: return ["AC1: %s cannot be judged (%s: %s)" % (os.path.basename(path), type(ex).__name__, ex)]
     bad = []
+    try: allowed = set(json.load(open(os.environ.get("CHAIN_ALLOWED") or os.path.join(os.environ.get("CHAIN_ROOT", "."), ".github/policy/allowed-actions.json"))).get("actions", []))
+    except (OSError, ValueError): allowed = None; bad.append("AC2: the allowed-actions list is unreadable (fail closed)")
     extra_top = set(d) - {"name", "on", "permissions", "jobs"}
     if extra_top: bad.append("AC3: top-level keys %s are not allowed (defaults.run.shell, concurrency, run-name, env can reroute every run step)" % sorted(extra_top))
     on = d.get("on")
@@ -142,6 +145,7 @@ def judge_sign(path):
                 m = re.fullmatch(r"(actions/[a-z-]+)@(%s)( #.*)?" % SHA, u)
                 if not m: bad.append("AC2: step %r uses %r; only a pinned actions/checkout, download-artifact or upload-artifact" % (sn, u)); continue
                 act = m.group(1)
+                if allowed is not None and u.split(" #")[0] not in allowed: bad.append("AC2: step %r uses %s, which is not on the allowed-actions list" % (sn, u.split(" #")[0]))
                 if act == "actions/checkout":
                     order.append("checkout"); seq.append(("checkout",))
                     if set(w) - {"persist-credentials", "fetch-depth"} or w.get("persist-credentials") != "false":
@@ -503,6 +507,8 @@ expect() { # expect ok|caught LABEL judge ARG
   else failn=$((failn + 1)); echo "FAIL $2 -> ${out:0:500}"; fi
 }
 sha=$(printf 'a%.0s' $(seq 40))
+printf '{"actions":["actions/checkout@%s","actions/download-artifact@%s","actions/upload-artifact@%s"]}\n' "$sha" "$sha" "$sha" > "$work/allowed.json"
+export CHAIN_ALLOWED="$work/allowed.json"
 good="$work/good.yml"
 cat > "$good" <<EOF
 name: 'Stage: sign'
@@ -533,6 +539,18 @@ jobs:
       - uses: actions/download-artifact@$sha # v8
         with:
           name: witness-build
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: admission-baseline
           path: witness-build
       - uses: actions/download-artifact@$sha # v8
         with:
@@ -648,6 +666,8 @@ caught() { # LABEL regex replacement
 }
 SIGNLINE='run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
+caught "F11 a digest-shaped download-artifact pin that is not on the allowed-actions list" 'download-artifact@a{40}' "download-artifact@$(printf 'b%.0s' $(seq 40))"
+caught "F1 Sign no longer downloads Build's digest list into witness-build" 'name: digests\n          path: witness-build' 'name: dist\n          path: witness-build'
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
 caught "AC1 second job" '    steps:' '    steps: []\n  other:\n    runs-on: ubuntu-24.04\n    steps:'
@@ -2402,7 +2422,7 @@ tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
 REAL=$(tracked_copy real)
-expect ok "the real stage-sign.yml passes the Sign judge" sign "$REAL/.github/workflows/stage-sign.yml"
+CHAIN_ALLOWED="$root/.github/policy/allowed-actions.json" expect ok "the real stage-sign.yml passes the Sign judge" sign "$REAL/.github/workflows/stage-sign.yml"
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$REAL/.github/workflows/stage-build.yml"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$REAL"
 # FROZEN LEGACY FILES (REQ-CHAIN-003 notes): the eleven legacy stage files PRs 2-4 rewrite on chain-v030 are listed with the sha256 of their
@@ -4479,6 +4499,47 @@ $ABS --flag x'
 hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
+
+# ---- F4 (cache#586 round 1): witness-sign-staged.sh signs exactly the list the records step printed, and refuses anything else ----
+# A fake witness records what it is asked to sign; a stub token fetcher and verifier stand in for the network and the verifier.
+wsdir="$work/wsst"; mkdir -p "$wsdir/fakebin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "$WS_LOG.args"\nwhile [ $# -gt 0 ]; do case "$1" in -f) echo "$2" >> "$WS_LOG" ;; -o) o="$2" ;; esac; shift; done\nmkdir -p "$(dirname "$o")"; echo signed > "$o"\n' > "$wsdir/fakebin/witness"
+chmod +x "$wsdir/fakebin/witness"
+ws_tree() { # NAME -> a fresh tree with the helper, stubs and a two-record staged set; prints the path
+  local t="$wsdir/$1"; mkdir -p "$t/bin" "$t/staged/witness-build" "$t/staged/witness-apk-ubuntu-24.04"
+  cp "$root/bin/witness-sign-staged.sh" "$t/bin/"
+  echo "echo '{\"value\":\"tok\"}'" > "$t/bin/loopback-get.sh"
+  printf 'import sys\nsys.exit(0)\n' > "$t/bin/chain-verify.py"
+  echo '{}' > "$t/staged/witness-build/build-collection.payload"; echo '{}' > "$t/staged/witness-build/digests.json"
+  echo '{}' > "$t/staged/witness-apk-ubuntu-24.04/apk-collection.payload"
+  printf 'staged/witness-build/build-collection.payload\tsigned/witness-build/build-collection.json\nstaged/witness-apk-ubuntu-24.04/apk-collection.payload\tsigned/witness-apk-ubuntu-24.04/apk-collection.json\n' > "$t/staged/plan.txt"
+  mkdir -p "$t/.github/policy"; echo '{}' > "$t/.github/policy/release-policy.template.json"
+  echo "$t"
+}
+ws_run() { # TREE -> exit code; the signed list lands in TREE/log
+  ( cd "$1" && rm -f log log.args && env -i PATH="$wsdir/fakebin:$PATH" WS_LOG="$1/log" GITHUB_REF=refs/tags/v0.3.0-rc1 ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL=http://x/?a=b bash bin/witness-sign-staged.sh staged signed ) > "$1/out" 2>&1
+}
+wsok() { # LABEL TREE: signs exactly the two planned payloads
+  local rc=0; ws_run "$2" || rc=$?
+  if [ "$rc" = 0 ] && [ "$(sort "$2/log" | tr '\n' ' ')" = "staged/witness-apk-ubuntu-24.04/apk-collection.payload staged/witness-build/build-collection.payload " ] && [ -f "$2/signed/witness-build/digests.json" ]; then pass=$((pass + 1)); echo "ok   $1"
+  else failn=$((failn + 1)); echo "FAIL $1 -> rc=$rc signed=[$(cat "$2/log" 2>/dev/null | tr '\n' ' ')] $(head -c 300 "$2/out")"; fi
+}
+wsno() { # LABEL TREE: refused (non-zero) and the fake witness was never asked to sign anything
+  local rc=0; ws_run "$2" || rc=$?
+  if [ "$rc" != 0 ] && [ ! -s "$2/log" ]; then pass=$((pass + 1)); echo "ok   $1 (refused: $(head -c 120 "$2/out" | tr '\n' ' '))"
+  else failn=$((failn + 1)); echo "FAIL $1 -> rc=$rc signed=[$(cat "$2/log" 2>/dev/null | tr '\n' ' ')]"; fi
+}
+t=$(ws_tree good); wsok "F4 the helper signs exactly the planned payloads and copies the data files" "$t"
+t=$(ws_tree extra); echo '{}' > "$t/staged/witness-build/evil-collection.payload"; wsno "F4 a staged payload that is not on the plan is refused before any signing" "$t"
+t=$(ws_tree extradir); mkdir -p "$t/staged/witness-evil"; echo '{}' > "$t/staged/witness-evil/build-collection.payload"; wsno "F4 an unplanned record directory is refused" "$t"
+t=$(ws_tree missing); rm "$t/staged/witness-apk-ubuntu-24.04/apk-collection.payload"; wsno "F4 a planned payload the staged tree lacks is refused" "$t"
+t=$(ws_tree planextra); printf 'staged/witness-evil/build-collection.payload\tsigned/witness-evil/build-collection.json\n' >> "$t/staged/plan.txt"; wsno "F4 a plan line for a payload that is not staged is refused" "$t"
+t=$(ws_tree badfinal); printf 'staged/witness-build/build-collection.payload\tsigned/elsewhere/build-collection.json\nstaged/witness-apk-ubuntu-24.04/apk-collection.payload\tsigned/witness-apk-ubuntu-24.04/apk-collection.json\n' > "$t/staged/plan.txt"; wsno "F4 a plan line whose signed path is not the fixed one is refused" "$t"
+t=$(ws_tree dup); cat "$t/staged/plan.txt" "$t/staged/plan.txt" > "$t/plan2" && mv "$t/plan2" "$t/staged/plan.txt"; wsno "F4 a payload listed twice is refused" "$t"
+t=$(ws_tree empty); : > "$t/staged/plan.txt"; wsno "F4 an empty plan signs nothing and refuses" "$t"
+t=$(ws_tree link); rm "$t/staged/witness-build/build-collection.payload"; ln -s /etc/hosts "$t/staged/witness-build/build-collection.payload"; wsno "F4 a symlink payload is refused" "$t"
+t=$(ws_tree stray); echo x > "$t/staged/stray.txt"; wsno "F4 a stray file in the staged root is refused" "$t"
+t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/staged/witness-build/evil-collection.payload"; printf 'staged/witness-build/evil-collection.payload\tsigned/witness-build/evil-collection.json\n' > "$t/staged/plan.txt"; wsno "F4 a payload of a step name outside apk/build/rapk/rebuild is refused" "$t"
 
 EXPECT=2052
 echo "pass=$pass fail=$failn"

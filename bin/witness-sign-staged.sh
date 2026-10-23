@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/witness-sign-staged.sh STAGED SIGNED  --  Sign's signing step for the building jobs' Witness records (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC4).
 # the records step of the verifier (its sign-records subcommand) has already checked every local record against the artifacts Sign received and staged, under STAGED/<record-dir>/, each
-# record's payload bytes (STEP-collection.payload) and its data files; it printed nothing to sign on any refusal. This helper signs each payload keyless
+# record's payload bytes (STEP-collection.payload) and its data files; it printed nothing to sign on any refusal; STAGED/plan.txt is that printed list (one line per record: staged payload path, TAB, signed record path). This helper signs exactly the payloads on that list, and refuses before any token request when the staged tree holds anything else or a PLAN line is not of the fixed form. It signs each payload keyless
 # (the job's identity token, audience sigstore, held in a shell variable and handed to Witness through a one-read process substitution; the request
 # variables are unset first) into SIGNED/<record-dir>/STEP-collection.json with the Sigstore timestamp, copies the data files unchanged, and then runs the
 # self-check `bin/chain-verify.py verify` on every signed record (identity stage-sign.yml, the committed template made for GITHUB_REF), so a signing that
@@ -9,12 +9,39 @@
 set -euo pipefail
 staged="$1"
 signed="$2"
+plan="$staged/plan.txt"
+declare -A want
+n=0
+while IFS=$'\t' read -r payload final extra; do
+  [ -n "$payload" ] || { echo "witness-sign-staged: empty line in the plan" >&2; exit 1; }
+  if [[ ! "$payload" =~ ^"$staged"/([A-Za-z0-9._-]+)/(apk|build|rapk|rebuild)-collection\.payload$ ]] || [ -n "$extra" ]; then
+    echo "witness-sign-staged: plan line is not a staged payload: $payload" >&2; exit 1
+  fi
+  name=${BASH_REMATCH[1]}
+  step=${BASH_REMATCH[2]}
+  if [ "$final" != "$signed/$name/$step-collection.json" ] || [ -n "${want[$payload]:-}" ] || [ ! -f "$payload" ] || [ -L "$payload" ]; then
+    echo "witness-sign-staged: plan line does not match the staged tree: $payload" >&2; exit 1
+  fi
+  want[$payload]=$final
+  n=$((n + 1))
+done < "$plan"
+[ "$n" -gt 0 ] || { echo "witness-sign-staged: the plan is empty" >&2; exit 1; }
+seen=0
+for d in "$staged"/*; do
+  [ "$d" = "$plan" ] && continue
+  [ -d "$d" ] && [ ! -L "$d" ] || { echo "witness-sign-staged: staged tree holds a non-directory: $d" >&2; exit 1; }
+  for f in "$d"/*; do
+    [ -f "$f" ] && [ ! -L "$f" ] || { echo "witness-sign-staged: staged tree holds a non-file: $f" >&2; exit 1; }
+    case "$f" in *.payload) [ -n "${want[$f]:-}" ] || { echo "witness-sign-staged: staged payload not on the plan: $f" >&2; exit 1; }; seen=$((seen + 1)) ;; esac
+  done
+done
+[ "$seen" -eq "$n" ] || { echo "witness-sign-staged: the plan names a payload the staged tree lacks" >&2; exit 1; }
 tok=$(sh bin/loopback-get.sh -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
 echo "::add-mask::$tok"
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN
 python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "$GITHUB_REF" --out policy.json
-for payload in "$staged"/*/*-collection.payload; do
+for payload in "${!want[@]}"; do
   dir=$(dirname "$payload")
   name=$(basename "$dir")
   base=$(basename "$payload" .payload)
@@ -27,7 +54,7 @@ for payload in "$staged"/*/*-collection.payload; do
     --signer-fulcio-oidc-client-id sigstore \
     --signer-fulcio-token-path <(printf %s "$tok") \
     --timestamp-servers https://timestamp.sigstore.dev/api/v1/timestamp \
-    -o "$signed/$name/$base.json"
+    -o "${want[$payload]}"
   case "$step" in apk|build) stage=build ;; rapk|rebuild) stage=rebuild ;; *) echo "witness-sign-staged: unknown step $step" >&2; exit 1 ;; esac
-  python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "$signed/$name/$base.json"
+  python3 -I -B bin/chain-verify.py verify --policy policy.json --stage "$stage" --record "${want[$payload]}"
 done
