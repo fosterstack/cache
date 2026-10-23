@@ -285,6 +285,13 @@
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586: the stage input of the Sign call and the Sign-rebuild call); advisor ruling Oct 23"
     },
     {
+      "file": ".github/workflows/release.yml",
+      "form": "a local reusable workflow call",
+      "key": "64aea209513fa6dafd7b1259b6444f55af7d7c9d1de5d6486fff443b010e2e42",
+      "line": "64aea209513fa6dafd7b1259b6444f55af7d7c9d1de5d6486fff443b010e2e42",
+      "ruling": "local reusable workflow call; inputs reviewed in the PR that added them (cache#586 round 2: the records input of the Sign-rebuild call, the Rebuild record digests); advisor ruling Oct 23"
+    },
+    {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
       "key": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
