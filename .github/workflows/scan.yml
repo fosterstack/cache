@@ -22,7 +22,7 @@ name: scan
 # run, or that inventories zero packages (row 53), is a PIPELINE failure
 # (red), never a silent clean pass (bin/install-scanner.sh).
 #
-# Inspector needs no stored secret: the scanner job alone requests
+# Inspector needs no stored secret: the inspector job alone requests
 # id-token: write and assumes a ScanSbom-only role by OIDC on pull requests
 # (Dependabot's included), pushes to main and tags (REQ-REL-004-AC1 as
 # ratified Sep 29, decision row 73; the role's trust names those subjects).
@@ -41,8 +41,8 @@ on:
 # startup_failure with zero jobs (the former release-chain-pr.yml learned this the hard way);
 # checks/statuses/pull-requests read are requested by Build's admission step, which snapshot mode
 # does not run, but they are static job permissions of the called stage. The callers' grants
-# are a static ceiling (REQ-CHAIN-004-AC14): no write but id-token. The scanner job requests
-# id-token: write for the Inspector leg's role assumption. Dependabot-
+# are a static ceiling (REQ-CHAIN-004-AC14): no write but id-token. The inspector job requests
+# id-token: write for the role assumption; the scanner (grype) matrix holds no token. Dependabot-
 # triggered runs get a read-only token that the permissions key can raise
 # (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork
 # events are downgraded and need none of this to build and scan.
@@ -95,30 +95,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: read
-        run: echo "list=$(jq -c '.pr_gate' .github/policy/scanners.json)" >> "$GITHUB_OUTPUT"
+        run: echo "list=$(jq -c '.pr_gate' .github/policy/scanners.json | jq -c 'map(select(. != "inspector"))')" >> "$GITHUB_OUTPUT"
 
   scanner:
     name: scan (${{ matrix.scanner }})
     needs: [build, scanners]
     runs-on: ubuntu-latest
-    # id-token: write is for the Inspector leg's role assumption and is the
-    # only place in this workflow's own jobs that requests it.
+    # The grype leg(s) of the pr_gate list; Amazon Inspector runs in its own job below (the Witness adversarial pass: the one job that
+    # holds id-token: write is not a matrix, and the scanner matrix holds no token at all).
     permissions:
       contents: read
-      id-token: write
     strategy:
       fail-fast: false
       matrix:
         scanner: ${{ fromJSON(needs.scanners.outputs.list) }}
-    env:
-      INSPECTOR_ROLE: arn:aws:iam::821302803867:role/fosterstack-cache-inspector-scan
-      INSPECTOR_REGION: us-east-1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Both gate scanners read the OCI images; only grype scans the
-      # release archives. So: the image download + daemon load run for
-      # both; the archive download + verify run for grype only.
+      # grype reads the OCI images and scans the release archives: the image download + daemon load,
+      # the archive download and the archive verify all run in this job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: images
@@ -143,11 +138,11 @@ jobs:
           (cd dist && sha256sum -c /tmp/expected-checksums.txt --strict)
 
       - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
-        run: ./bin/install-scanner.sh '${{ matrix.scanner == 'inspector' && 'inspector-sbomgen' || matrix.scanner }}'
+        run: ./bin/install-scanner.sh '${{ matrix.scanner }}'
 
       # Load every (variant, platform) child into the docker daemon. The
       # candidate is an OCI layout the scanners do not read directly, so each
-      # single-arch child is loaded by ref. Both gate scanners scan these
+      # single-arch child is loaded by ref. The gate scanners scan these
       # four children by ref.
       - name: load every variant/platform child into the docker daemon
         run: |
@@ -175,8 +170,49 @@ jobs:
           while read -r ref; do g "docker:${ref}" "${ref##*:}"; done < /tmp/refs.txt
           for a in dist/*.tar.gz; do g "file:${a}" "${a#dist/}"; done
 
+  inspector:
+    name: scan (inspector)
+    needs: [build]
+    runs-on: ubuntu-latest
+    # The only job of this workflow's own that requests id-token: write: the ScanSbom-only role assumption (OIDC, no stored secret).
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      INSPECTOR_ROLE: arn:aws:iam::821302803867:role/fosterstack-cache-inspector-scan
+      INSPECTOR_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Inspector reads the same OCI images (no archives): the image download + daemon load run here too.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: images
+          path: /tmp/oci/
+
+      - name: install inspector-sbomgen (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
+        run: ./bin/install-scanner.sh inspector-sbomgen
+
+      # Load every (variant, platform) child into the docker daemon. The
+      # candidate is an OCI layout the scanners do not read directly, so each
+      # single-arch child is loaded by ref. The gate scanners scan these
+      # four children by ref.
+      - name: load every variant/platform child into the docker daemon
+        run: |
+          set -euo pipefail
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image" >&2; exit 1; }   # on the runner image (the rescan's vex-attach job relies on it too); no package install here
+          : > /tmp/refs.txt
+          for v in production fips; do
+            for arch in amd64 arm64; do
+              ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
+              skopeo copy --override-arch "${arch}" --override-os linux \
+                "oci:/tmp/oci/${v}" "docker-daemon:${ref}"
+              echo "${ref}" >> /tmp/refs.txt
+            done
+          done
+          echo "loaded images to scan:"; cat /tmp/refs.txt
+
       - name: Amazon Inspector — assume the ScanSbom-only role (OIDC; no stored secret)
-        if: matrix.scanner == 'inspector'
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ env.INSPECTOR_ROLE }}
@@ -188,10 +224,9 @@ jobs:
       # picks the newest same-day entry; a run that only reused saves nothing. Same-repo runs only (no fork reads or writes).
       - name: Amazon Inspector - today's date (UTC) for the same-day reuse
         id: insp-date
-        if: matrix.scanner == 'inspector'
         run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - name: Amazon Inspector - restore today's results (same-repo runs only)
-        if: matrix.scanner == 'inspector' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/inspector-cache
@@ -200,9 +235,15 @@ jobs:
 
       - name: Amazon Inspector scan every loaded image
         id: insp-scan
-        if: matrix.scanner == 'inspector'
+        env:
+          EXPECTED_REFS: "4"      # production and fips, each on amd64 and arm64: a load step that left fewer must not turn into a clean pass
         run: |
           set +e -uo pipefail   # the runner starts bash with -e; every image must be scanned before the verdict
+          nrefs=$(grep -c . /tmp/refs.txt 2>/dev/null)
+          if [ "${nrefs:-0}" -ne "${EXPECTED_REFS}" ]; then
+            echo "::error::Amazon Inspector was given ${nrefs:-0} image references, expected ${EXPECTED_REFS} — did not run on every image, not a clean pass" >&2
+            exit 2
+          fi
           # inspector-sbomgen inventories each child on the runner; only the
           # SBOM leaves the runner. bin/inspector-reuse.py keys the inventory
           # (package names and versions only): an inventory Inspector already
@@ -245,6 +286,7 @@ jobs:
             echo "${out}"; echo "- ${out%%$'\n'*}" >> "$GITHUB_STEP_SUMMARY"
             [ "$c" -gt "$rc" ] && rc=$c
           done < /tmp/refs.txt
+          [ "$(grep -c . /tmp/refs.txt)" -eq "${EXPECTED_REFS}" ] || rc=2
           echo "fresh=${stored}" >> "$GITHUB_OUTPUT"
           echo "- SBOMs assessed: ${sent} sent to Inspector, ${reused} reused (same inventory, same UTC day)" >> "$GITHUB_STEP_SUMMARY"
           if [ "$rc" -eq 1 ]; then
@@ -256,10 +298,10 @@ jobs:
 
       - name: Amazon Inspector - the UTC day at save time
         id: insp-save-day
-        if: always() && matrix.scanner == 'inspector'
+        if: always()
         run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - name: Amazon Inspector - save today's new results (only when this run made some; same-repo runs only)
-        if: always() && matrix.scanner == 'inspector' && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: always() && steps.insp-scan.outputs.fresh != '' && steps.insp-scan.outputs.fresh != '0' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /tmp/inspector-cache
@@ -268,7 +310,7 @@ jobs:
       # The SBOMs and the raw ScanSbom responses, as evidence of what was
       # inventoried and what came back (kept even when the leg is red).
       - name: keep the Inspector SBOMs and responses
-        if: always() && matrix.scanner == 'inspector'
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: inspector-evidence
@@ -278,12 +320,14 @@ jobs:
 
   scan:
     name: scan
-    needs: scanner
+    needs: [scanner, inspector]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: every scanner must have run and passed
         run: |
           r='${{ needs.scanner.result }}'
-          echo "aggregate scanner result: ${r}"
+          i='${{ needs.inspector.result }}'
+          echo "aggregate scanner result: ${r}, inspector result: ${i}"
+          [ "${i}" = "success" ] || { echo "::error::Amazon Inspector failed, was cancelled, or was skipped (result=${i}). Per policy nothing is clean unless every scanner in the pr_gate list of scanners.json runs and passes." >&2; exit 1; }
           [ "${r}" = "success" ] || { echo "::error::one or more scanners failed, were cancelled, or were skipped (result=${r}). Per policy nothing is clean unless every scanner in the pr_gate list of scanners.json runs and passes." >&2; exit 1; }

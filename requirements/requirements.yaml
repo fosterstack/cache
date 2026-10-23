@@ -3553,7 +3553,7 @@ requirements:
       The `then` text of AC1, AC2 and AC3 is a PARAPHRASE of the ratified sentences with the literal auditor path replaced by 'the auditor directory' (the layout check forbids that literal in this file); the VERBATIM ratified sentences are quoted in the comments above the three entries in test-evidence/mappings.yaml, which is exempt from the layout check.
       The second review that AC3 requires is enforced outside this repository, by the private review tooling, before merge. The trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's action-pin checker, allowlist guard, pin-wiring judge and scanner guard over the pull request head, read as git objects; it judges no review record and reads no substitute. That the main branch ruleset REQUIRES the checks is not checkable from the repository and is an inspection item for the owner's settings.
       AC1 exemptions in the layout check beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries), plus mappings.yaml and unmapped.yaml (owner, Oct 2) and bin/patch-decide.py with its test (owner, Oct 3). The coverage gate's exclusion list (coverage-exclusions.txt in the auditor directory) is not in the AC2 text, so "100% coverage" is read as zero uncovered eligible statements.
-      Gate-workflow digest set (bootstrap of the scanner guard, cache PR #316): the pin checker (bin/check-action-pins.py in the auditor directory) pins the gate workflow by GATE_WORKFLOW_SHA256, a frozen set of exactly two digests, both taken by its gate_digest (action pins masked): adcfd54f (the gate workflow on main) and 699abb31 (the gate workflow of #316), so #316 can pass main's copy of the checker; a later change removes the old digest and leaves one. A third digest fails with a message naming both accepted ones. RESIDUAL by design: during the window a revert to adcfd54f passes too; the window closes when the later change leaves one.
+      Gate-workflow digest (the scanner guard, cache PR #316): the pin checker (bin/check-action-pins.py in the auditor directory) pins the gate workflow by GATE_WORKFLOW_SHA256, a frozen set of exactly one digest, 699abb31 (the gate workflow of #316), taken by its gate_digest (action pins masked). The bootstrap digest adcfd54f (the gate workflow on main before #316) was removed in the release-candidate review (rc-5b B1), so a revert of the gate workflow to it is refused. A different digest fails with a message naming the accepted one.
     acceptance_criteria:
       - id: REQ-AUD-018-AC1
         given: "any tracked file in the repository"
@@ -4677,4 +4677,45 @@ requirements:
         when: "it is accepted"
         then: "the owner reads the page cold once; a second reader follows it on a clean machine; and pipeline's AC7 run executes every command against a candidate"
         verification: { method: manual, release_blocking: false }
+        status: approved
+
+  - id: REQ-CI-001
+    title: A required CI job that is split into parallel jobs runs every suite exactly once
+    statement: >
+      When a required CI job of .github/workflows/ci.yml is split into parallel jobs to shorten the pull request wall time, no check is dropped and none runs
+      twice: every step of the old job is in exactly one new job, unchanged, and a gate job with the old job's name, which the branch protection requires,
+      fails unless every new job succeeded.
+    source: [ci-speed read-back of Oct 23 (advisor), the pin-wiring judge (pin-wiring-test.sh)]
+    tier: community
+    introduced: v0.3.0
+    origin: advisor Oct 23 2026 (CI speed, under the owner's rules that no check is dropped and every test runs exactly once); first use is allowlist-chain (allowlist-chain-1..4 and the gate allowlist-chain)
+    confidence: documented
+    notes: >
+      The pin-wiring judge accepts allowlist-chain in exactly two forms: the one job, or four parallel jobs plus the gate. The groups of suites per shard are
+      fixed in the judge; moving a suite to another shard is a reviewed edit of the judge, which the trusted gate runs from main. The gate fails on a missing
+      or empty result as on a failed, skipped or cancelled one.
+    acceptance_criteria:
+      - id: REQ-CI-001-AC1
+        given: "the CI workflow after a required job is split into parallel jobs"
+        when: "the steps of the split jobs are compared with the steps the job had before the split"
+        then: "every step of the old job is in exactly one of the new jobs, unchanged in name, run text and relative order, and no other step exists in them except the checkout, base-ref fetch, Python setup and pip steps each job needs"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC2
+        given: "the same workflow"
+        when: "the gate job is read"
+        then: "a job with the old job's name exists, needs every new job, has `if: ${{ always() }}`, takes no checkout and no action, and exits non-zero unless the result of every needed job is exactly `success` (failed, skipped, cancelled, missing and empty each count as failure), so the required-check name is unchanged and a skipped shard cannot pass"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC3
+        given: "any job of the split"
+        when: "its keys are read"
+        then: "no `if`, `env`, `continue-on-error`, `timeout-minutes`, `container`, `services`, `permissions`, `needs`, id-token or secret is added at job or step level, except the gate's own `needs`, `if` and the result variables of its one step"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-001-AC4
+        given: "the pin-wiring judge"
+        when: "it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened"
+        then: "it fails for each of those mutations, and it accepts the real workflow"
+        verification: { method: unit, release_blocking: false }
         status: approved
