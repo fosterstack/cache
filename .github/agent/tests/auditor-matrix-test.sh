@@ -4055,7 +4055,7 @@ cat > "$fb/git" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$WORK/rc5b8r-git.log"
 case "\$1 \$2" in
-  "diff --cached") case "\$*" in *--quiet*) exit 1;; *--name-only*) printf 'go.mod\0go.sum\0vendor/example.org/lib/a.go\0vendor/example.org/lib/gone.go\0vendor/modules.txt\0'; [ -n "\${RC5B8_BIG:-}" ] && printf 'vendor/example.org/lib/big.bin\0';; esac;;
+  "diff --cached") case "\$*" in *--quiet*) exit 1;; *--name-only*) printf 'go.mod\0go.sum\0vendor/example.org/lib/a.go\0vendor/example.org/lib/gone.go\0vendor/modules.txt\0'; [ -n "\${RC5B8_BIG:-}" ] && printf 'vendor/b/1.bin\0vendor/b/2.bin\0vendor/b/3.bin\0vendor/b/4.bin\0vendor/b/5.bin\0vendor/b/6.bin\0';; esac;;
   "fetch origin") [ "\$3" = "main" ] || exit 1;;
   "rev-parse origin/main") echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;;
 esac
@@ -4067,7 +4067,7 @@ echo "\$*" >> "$golog"
 case "\$1 \$2" in
   "get "*) printf 'module x\n' > go.mod;;
   "mod tidy") printf 'module x\n' > go.mod; printf 'sum\n' > go.sum;;
-  "mod vendor") [ -n "\${RC5B8_VENDOR_FAIL:-}" ] && { echo "go: vendor failed" >&2; exit 1; }; mkdir -p vendor/example.org/lib; printf 'package lib\n' > vendor/example.org/lib/a.go; printf '# example.org/lib v1.2.3\n' > vendor/modules.txt; [ -n "\${RC5B8_BIG:-}" ] && head -c 6000000 /dev/zero > vendor/example.org/lib/big.bin;;
+  "mod vendor") [ -n "\${RC5B8_VENDOR_FAIL:-}" ] && { echo "go: vendor failed" >&2; exit 1; }; mkdir -p vendor/example.org/lib; printf 'package lib\n' > vendor/example.org/lib/a.go; printf '# example.org/lib v1.2.3\n' > vendor/modules.txt; if [ -n "\${RC5B8_BIG:-}" ]; then mkdir -p vendor/b; for n in 1 2 3 4 5 6; do head -c 4000000 /dev/zero > vendor/b/\$n.bin; done; fi;;
 esac
 exit 0
 EOF
@@ -4094,8 +4094,8 @@ want="-vendor/example.org/lib/gone.go,go.mod,go.sum,vendor/example.org/lib/a.go,
 big_o="$WORK/rc5b8r-big"; rm -rf "$big_o"; rm -f "$glog" "$gin"; rm -rf "$ws"; mkdir -p "$ws/vendor"; cp -R .vex "$ws/"
 env RC5B8_BIG=1 PATH="$fb:$PATH" GITHUB_WORKSPACE="$ws" GITHUB_REPOSITORY=OWNER/REPO AUDITOR_ALLOW_REAL_GH=1 GH_TOKEN=APP AUDITOR_ISSUES_TOKEN=JOB \
   "$PY" "$BIN/auditor-run.py" --dry-run false --manifest "$FX/run/manifest-01.json" --kev "$F/kev/kev.json" --adjudicator "$STUB" --today 2026-09-24 --out "$big_o" >/dev/null 2>&1; bigrc=$?
-bigerr="$(grep -c 'bump PR delivery FAILED' "$big_o/report.md" 2>/dev/null)"; bigcommit="$(grep -c 'ARGS=api graphql' "$glog" 2>/dev/null)"; bigprs="$(grep -c 'ARGS=pr create.*auditor/bump' "$glog" 2>/dev/null)"
-{ [ "$vend" -ge 1 ] 2>/dev/null && eq "$paths" "$want" && [ "$draftline" -ge 1 ] 2>/dev/null && [ "$hasline" -ge 1 ] 2>/dev/null && eq "$armed" "0" && [ "$bigrc" -ne 0 ] 2>/dev/null && [ "$bigerr" -ge 1 ] 2>/dev/null && eq "$bigprs" "0"; } \
+bigerr="$(grep -c 'bump PR delivery FAILED.*under vendor/, over the 2000-file / 20971520-byte limit' "$big_o/report.md" 2>/dev/null)"; bigcommit="$(grep -c 'ARGS=api graphql' "$glog" 2>/dev/null)"; bigprs="$(grep -c 'ARGS=pr create.*auditor/bump' "$glog" 2>/dev/null)"
+{ [ "$vend" -ge 1 ] 2>/dev/null && eq "$paths" "$want" && [ "$draftline" -ge 1 ] 2>/dev/null && [ "$hasline" -ge 1 ] 2>/dev/null && eq "$armed" "0" && [ "$bigrc" -ne 0 ] 2>/dev/null && [ "$bigerr" -ge 1 ] 2>/dev/null && eq "$bigprs" "0" && eq "$bigcommit" "0"; } \
   && ok || no "go mod vendor ran; the commit carries go.mod go.sum + changed vendor files + the deletion; draft with the line; never armed; an oversized vendor change fails the run with no PR" "vendor_runs=$vend paths=[$paths] draft=$draftline line=$hasline armed=$armed oversized: rc=$bigrc incomplete=$bigerr graphql_calls=$bigcommit bump_prs=$bigprs"
 
 begin "rc5b8-failed-vendor-and-an-unvendored-tree-and-the-staging-guards" "a failing go mod vendor is a delivery ERROR with no PR; a tree with no vendor/ runs no go mod vendor and stages only go.mod and go.sum; the staged-path guard refuses a path outside go.mod, go.sum and vendor/, a failing git diff, and a change over the file-count or byte caps"

@@ -884,6 +884,13 @@ class FixPR(Base):
         res, fr = self.real({**self.CHG, ("git", "diff", "--cached", "--name-only"): (0, "go.mod\0README.md\0", "")})
         self.assertEqual(res[2], "error"); self.assertIn("README.md", res[1]); self.assertEqual(fr.argvs()[-1], ["git", "reset", "--hard", "origin/main"])
 
+    def test_a_reused_bump_pr_that_someone_armed_is_disarmed(self):
+        res, fr = self.real({**self.REUSE, ("gh", "pr", "view"): (0, "true\n", "")}, api={"lookup": head_lookup(True, SHA)})
+        self.assertEqual(res, ("https://x/pull/7", None, "delivered")); self.assertEqual(fr.ref_writes(), [])          # the branch itself was reused
+        self.assertIn(["gh", "pr", "merge", "--disable-auto", "https://x/pull/7"], fr.argvs())
+        res, fr = self.real({**self.REUSE, ("gh", "pr", "view"): (0, "true\n", ""), ("gh", "pr", "merge", "--disable-auto"): (1, "", "HTTP 500")}, api={"lookup": head_lookup(True, SHA)})
+        self.assertEqual(res[2], "error"); self.assertIn("disable auto-merge", res[1])
+
     def test_the_staged_path_guard(self):
         ws = self.d("guard"); os.makedirs(os.path.join(ws, "vendor", "m")); open(os.path.join(ws, "vendor", "m", "a.go"), "w").write("12345678")
         git = lambda out, rc=0: (lambda *a: subprocess.CompletedProcess(a, rc, out, "boom" if rc else ""))

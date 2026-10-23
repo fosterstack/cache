@@ -664,6 +664,9 @@ def _deliver_fix_pr(rows, today, commit, dry, would, is_test=False):
     def _reuse(u):
         # the open PR is updated to this run's CVE list; a failed edit is a failed delivery (never
         # armed, never reported delivered) — whichever discovery path found the PR
+        err = _disarm_before_replace(ws, u)       # a bump PR is never armed: one armed by hand (or by an earlier release of this driver) is disarmed on every path
+        if err:
+            return None, err, "error"
         e = subprocess.run(["gh", "pr", "edit", u, "--title", title, "--body", body], cwd=ws,
                            capture_output=True, text=True)
         if e.returncode != 0:
