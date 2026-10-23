@@ -2466,7 +2466,7 @@
       "form": "a download",
       "key": "7b4939d8409566256dee796de1a01cb79a091bb9d11b3cfa2522a1127e5fd79a",
       "line": "7b4939d8409566256dee796de1a01cb79a091bb9d11b3cfa2522a1127e5fd79a",
-      "ruling": "text, not a command: the text sits inside a quoted variable assignment; it is stored, compared or handed to a judge as fixture text",
+      "ruling": "text, not a command: a package name and version (curl@8.0) in a plain variable assignment, passed to the SBOM fixture builder; nothing downloads it",
       "context": "assignment"
     },
     {
@@ -2498,7 +2498,7 @@
       "form": "a gh release or extension download",
       "key": "ab65ff7c9922b313f2792e8f1e53da316a384c128ec4592fd3262448e7a383ef",
       "line": "ab65ff7c9922b313f2792e8f1e53da316a384c128ec4592fd3262448e7a383ef",
-      "ruling": "text, not a command: curl appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
+      "ruling": "text, not a command: `gh release download` appears only inside a Python string literal that the test evaluates as Python; it is never run as a shell command",
       "context": "assignment"
     }
   ]
