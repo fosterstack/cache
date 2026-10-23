@@ -215,6 +215,15 @@ class AcceptanceScriptsCheckTheJar(unittest.TestCase):
             self.assertEqual(r.returncode, 1, "%s: %s" % (s, r.stderr))
             self.assertEqual(ran, "", "%s ran gradlew behind a two-line expected file" % s)
 
+    def test_an_expected_file_with_the_jar_line_twice_or_a_blank_line_after_it_is_refused(self):
+        line = open(JAR_SUM_FILE).read()
+        for name, text in (("the jar line twice", line + line), ("a blank line after it", line + "\n")):
+            for s in SCRIPTS:
+                r, ran = self.run_script(s, sum_text=text)
+                self.assertEqual(r.returncode, 1, "%s with %s: %s" % (s, name, r.stderr))
+                self.assertIn("gradle-wrapper.jar", r.stderr)
+                self.assertEqual(ran, "", "%s ran gradlew behind an expected file with %s" % (s, name))
+
     def test_the_committed_jar_reaches_gradlew(self):
         for s in SCRIPTS:
             r, ran = self.run_script(s)
