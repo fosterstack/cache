@@ -494,8 +494,8 @@ def graph(path):
         bad.append("check must need exactly build and sign (its previous stage is Build, whose record it verifies as Sign signed it; Sign's provenance is Release's to verify, rule 58), found %s" % sorted(needs("check")))
     if "check" in needs("rebuild") or "rebuild" in needs("check"):
         bad.append("check and rebuild must run side by side (rule 70)")
-    if needs("release") != {"check", "sign", "sign-rebuild"}:   # the Witness move: Sign signs Build's records, sign-rebuild Rebuild's; build is reached through check
-        bad.append("the release job must need exactly check, sign and sign-rebuild, found %s" % sorted(needs("release")))
+    if needs("release") != {"check", "sign", "sign-rebuild", "sign-check"}:   # the Witness move: Sign signs Build's records, sign-rebuild Rebuild's, sign-check Check's; build is reached through check
+        bad.append("the release job must need exactly check, sign, sign-rebuild and sign-check, found %s" % sorted(needs("release")))
     return bad
 
 

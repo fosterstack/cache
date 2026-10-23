@@ -622,7 +622,7 @@ CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage
 # The Witness move (owner Oct 22 2026): the building jobs' records are signed by Sign, so Rebuild and Check start after Sign (they verify Build's record as Sign
 # signed it), and Rebuild's own records are signed by Sign's second call after Rebuild. Release needs Check, Sign and Sign-rebuild (it reaches Rebuild through it).
 NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build", "sign"], "sign-rebuild": ["build", "rebuild"], "check": ["build", "sign"],
-         "sign-check": ["build", "check"], "release": ["check", "sign", "sign-rebuild", "sign-check"]}
+         "sign-check": ["build", "check"], "release": ["check", "sign", "sign-check", "sign-rebuild"]}
 
 
 # The `if` of the chain jobs (REQ-CHAIN-005-AC5). ONE gate G, the same exact text on build and sign: the chain starts on a v* tag PUSH, or in a dry-run

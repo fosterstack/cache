@@ -779,7 +779,7 @@ jobs:
     # Also when the release job was CANCELLED (audit ruling, Oct 22): the release job's concurrency group keeps one pending run, so a third queued tag run
     # replaces the first pending one, which ends as cancelled, not failed. failure() alone would open no issue; the issue below says to publish the tag again.
     if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    needs: [build, sign, rebuild, sign-rebuild, check, release]
+    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read

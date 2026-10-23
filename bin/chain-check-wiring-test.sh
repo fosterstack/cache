@@ -198,8 +198,11 @@ jobs:
   check:
     needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
+  sign-check:
+    needs: [build, check]
+    uses: ./.github/workflows/stage-sign.yml
   release:
-    needs: [check, sign, sign-rebuild]
+    needs: [check, sign, sign-rebuild, sign-check]
     uses: ./.github/workflows/stage-promote.yml
 """)
 open(w + "/install-kind.sh", "w").write("""#!/usr/bin/env bash
@@ -497,8 +500,8 @@ gm g_serial  'check:\n    needs: \[build, sign\]'                 'check:\n    n
 gm g_rebw    'rebuild:\n    needs: \[build, sign\]'                'rebuild:\n    needs: [build, sign, check]'                   'side by side'      "AC2 rebuild waits for check"
 gm g_nosign  'check:\n    needs: \[build, sign\]'                 'check:\n    needs: build'                                  'exactly build and sign' "AC2 check does not wait for sign (it verifies Build's record as Sign signed it)"
 gm g_xtra    'check:\n    needs: \[build, sign\]'                 'check:\n    needs: [build, sign, sign-rebuild]'            'exactly build and sign' "AC2 check waits for sign-rebuild too"
-gm g_prom    'needs: \[check, sign, sign-rebuild\]'               'needs: [sign, sign-rebuild]'                            'release job'       "AC2 the release job does not need check"
-gm g_relbld  'needs: \[check, sign, sign-rebuild\]'               'needs: [build, check, sign, sign-rebuild]'              'exactly'           "AC2 the release job also lists build (redundant: check needs build; the set is exactly check, sign, sign-rebuild)"
+gm g_prom    'needs: \[check, sign, sign-rebuild, sign-check\]'               'needs: [sign, sign-rebuild, sign-check]'                            'release job'       "AC2 the release job does not need check"
+gm g_relbld  'needs: \[check, sign, sign-rebuild, sign-check\]'               'needs: [build, check, sign, sign-rebuild, sign-check]'              'exactly'           "AC2 the release job also lists build (redundant: check needs build; the set is exactly check, sign, sign-rebuild)"
 gm g_promo   '  release:\n'                                    '  promotion:\n'                                       'no job release'    "AC2 the last stage's job named promotion (the ratified name is release, Q9)"
 gm g_uses    'stage-verify.yml'                                 'ci.yml'                                                 'stage-verify.yml'  "AC2 check calls another workflow"
 # ---- AC8: plain scripts and the list ---------------------------------------------------------------------------------
@@ -701,7 +704,7 @@ expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acce
 for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-phase-$s.sh is the one line of its phase (AC1, AC3)" "" phase "$root/bin/check-phase-$s.sh" "$s"; done
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
-expect ok "the real release.yml runs check beside rebuild, check needs build only, and the release job needs exactly check, rebuild and sign" "" graph "$root/.github/workflows/release.yml"
+expect ok "the real release.yml runs check beside rebuild, check needs build only, and the release job needs exactly check, sign, sign-rebuild and sign-check" "" graph "$root/.github/workflows/release.yml"
 expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.py "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
