@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 98 |
-| Acceptance criteria | 474 |
+| Acceptance criteria | 475 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 463 |
+| ACs with mapped evidence | 464 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 46 |
@@ -1049,6 +1049,7 @@ Our workflows shall take no new version of an action, or of a tool, image or pac
 | REQ-SUP-001-AC27 | Given (owner ratified Oct 21 2026: "yes skip the 7 day hold lets unblock stuff - go." - ops/docs/ratify/2026-10-21-go-releases-skip-7-day-hold.md) a pull request that moves the tool item go, Go's own toolchain release, in bin/install-scanner.sh; when pin-age runs; then that one item is exempt from the 7-day age and from nothing else: the exemption holds only when the head's installer has exactly one GO_VER, exactly one download line naming Go and it is the https://go.dev/dl/go${GO_VER} fetch, a sha256 pin of 64 hex for each of the two architectures, and the verify call on the very next line, and only for the version GO_VER names; a Go download from any other host, an unpinned or unverified one, a second Go download or any other tool at 0 days still fails; the advisory and malware audit and every other check still apply to go | ci-workflow |  | approved | 1 item(s) |
 | REQ-SUP-001-AC28 | Given the sample project's Gradle wrapper (bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties); when the wrapper downloads its Gradle distribution; then the properties file carries distributionSha256Sum, the lowercase sha256 of the distribution its distributionUrl names (the sum Gradle publishes for that zip, re-checked against the zip), so the wrapper refuses any other bytes; this is the owner's plain form for a tool download: exact version and checksum | unit |  | approved | 1 item(s) |
 | REQ-SUP-001-AC29 | Given acceptance.yml run with an image-ref (release-chain mode); when the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line); then the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest | unit |  | approved | 1 item(s) |
+| REQ-SUP-001-AC31 | Given the sample project's committed Gradle wrapper jar (bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar); when the offline tests run, and when a pull request changes the wrapper jar or properties (CI then also runs the online test); then the jar's sha256 equals the reviewed value committed in the test and, in the online test, the sha256 Gradle publishes for the wrapper of the version the distribution URL names, so a changed or substituted jar fails; this is the owner's plain form for a tool download: exact version and checksum | unit |  | approved | 1 item(s) |
 
 ## UAT
 

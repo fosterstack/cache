@@ -340,8 +340,8 @@ jobs:
         env:
           BASE: ${{ github.base_ref }}
         run: |
-          # REQ-SUP-001-AC28: when a pull request changes the Gradle wrapper pin, the online test compares it with Gradle's published sum
-          if [ -n "${BASE}" ] && ! git diff --quiet "origin/${BASE}...HEAD" -- bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties; then
+          # REQ-SUP-001-AC28, AC31: when a pull request changes the Gradle wrapper pin or jar, the online tests compare them with Gradle's published sum
+          if [ -n "${BASE}" ] && ! git diff --quiet "origin/${BASE}...HEAD" -- bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar; then
             export GRADLE_SUM_ONLINE=1
           fi
           # the report lint renders with GitHub's own cmark-gfm (hash-pinned, test-only)

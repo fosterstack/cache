@@ -1,4 +1,4 @@
-# proves: REQ-SUP-001-AC28, REQ-SUP-001-AC29
+# proves: REQ-SUP-001-AC28, REQ-SUP-001-AC29, REQ-SUP-001-AC31
 """Two plain-form pins (owner: tool downloads are an exact version plus a checksum; images are pinned by digest).
 AC28: the sample project's Gradle wrapper carries distributionSha256Sum, a lowercase sha256 hex.
 AC29: acceptance.yml refuses an image-ref that is not name@sha256:<64 lowercase hex> before any docker run: in every job that
@@ -9,10 +9,13 @@ import yaml
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 PROPS = os.path.join(ROOT, "bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties")
+JAR = os.path.join(ROOT, "bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar")
 WORKFLOW = os.path.join(ROOT, ".github/workflows/acceptance.yml")
 # The pin as reviewed: changing the wrapper's sum means changing this line too, and then CI's online test (below) compares the
 # new value with the sum Gradle publishes and with the zip itself.
 EXPECTED_SUM = "acd53f1edaf02f1a8ff99879f8a34b302661a057d9b063ae9e35b552f804d20a"
+# The wrapper jar as reviewed (REQ-SUP-001-AC31): the sha256 Gradle publishes for gradle-9.7.1-wrapper.jar.
+EXPECTED_JAR_SUM = "7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d"
 DIGEST = "ghcr.io/fosterstack/cache@sha256:" + "a" * 64
 
 
@@ -75,6 +78,34 @@ class GradleWrapperSumOnline(unittest.TestCase):
             for chunk in iter(lambda: r.read(1 << 20), b""):
                 h.update(chunk)
         self.assertEqual(p["distributionSha256Sum"], h.hexdigest(), "the sum is not the sha256 of the zip")
+
+
+def jar_sha256():
+    import hashlib
+    with open(JAR, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+class GradleWrapperJar(unittest.TestCase):
+    def test_the_committed_jar_is_the_reviewed_one(self):
+        self.assertEqual(jar_sha256(), EXPECTED_JAR_SUM)
+
+    def test_the_expected_jar_sum_is_a_lowercase_sha256(self):
+        self.assertRegex(EXPECTED_JAR_SUM, r"^[0-9a-f]{64}$")
+
+
+@unittest.skipUnless(os.environ.get("GRADLE_SUM_ONLINE") == "1", "set GRADLE_SUM_ONLINE=1 (CI does when a pull request changes the wrapper files)")
+class GradleWrapperJarOnline(unittest.TestCase):
+    def test_the_jar_is_the_one_gradle_publishes_for_the_version_the_url_names(self):
+        import re, urllib.request
+        m = re.search(r"gradle-(\d+\.\d+(?:\.\d+)?)-bin\.zip$", wrapper_props()["distributionUrl"])
+        self.assertIsNotNone(m)
+        url = "https://services.gradle.org/distributions/gradle-%s-wrapper.jar.sha256" % m.group(1)
+        with urllib.request.urlopen(url, timeout=60) as r:
+            published = r.read().decode().split()[0].strip().lower()
+        self.assertRegex(published, r"^[0-9a-f]{64}$")
+        self.assertEqual(jar_sha256(), published, "the committed wrapper jar is not the one Gradle publishes")
+        self.assertEqual(EXPECTED_JAR_SUM, published)
 
 
 class ImageRefRefusal(unittest.TestCase):
