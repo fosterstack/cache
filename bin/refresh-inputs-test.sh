@@ -1576,6 +1576,14 @@ printf '# only a comment\n' >"$gr/lib/fips140/certified.txt"
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
 echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"
 t "AC26" "fips-module --plan-dir with a refresh plan already staged and a certified-module file holding no module value (empty or only comments): exit 1, not nothing pending" bash -c "test \"\$(cat '$work/rc')\" = 1 && ! grep -qi 'nothing pending' '$work/log'"
+# rc-3 astra F4 (REQ-REFRESH-001-AC12): the staged-plan branch runs the same strict checks first; four inputs that used to come back as pending / nothing pending, exit 0
+for c in "not-a-module" "v1.0.0-c2097c7c|v1.1.0-deadbeef" "v0.9.0-c2097c7c" "v1.0.0-aaaaaaaa"; do
+  printf '%s\n' ${c//|/ } >"$gr/lib/fips140/certified.txt"
+  fr; rm -rf "$work/plan-x"; mkdir -p "$work/plan-x/1-refresh"; printf 'refresh/00000001\n' >"$work/plan-x/1-refresh/branch"; h_before=$(bash "$work/bhash.sh")
+  run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
+  t "AC12" "fips-module with a refresh plan already staged and the certified file '${c//|/ + }': exit 2 naming the file, not pending, nothing staged or edited" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -q 'certified.txt' '$work/log' && ! grep -qi 'pending' '$work/log' && test \"\$(ls '$work/plan-x' | wc -l)\" -eq 1 && test \"\$(bash '$work/bhash.sh')\" = '$h_before'"
+done
+echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"
 fr; rm -rf "$work/plan-f"
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-f"
 t "AC29" "fips-module --plan-dir into an empty plan directory still stages its pull request (exit 0, one plan)" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(ls '$work/plan-f' | wc -l)\" -eq 1"
