@@ -173,7 +173,7 @@ for s in "${scanners[@]}"; do
       osvcache="$tmp/osv-db"; mkdir -p "$osvcache"
     fi
   fi
-  dbrc=0; [ "$s" != grype ] || grype db update < /dev/null || dbrc=$?
+  dbrc=0; [ "$s" != grype ] || grype db update -c "$tmp/empty.yaml" < /dev/null || dbrc=$?
   if [ "$dbrc" != 0 ]; then
     echo "check-scan: grype could not fetch its vulnerability database (grype db update exit $dbrc): nothing is scanned, nothing is clean" >&2
     failed=1

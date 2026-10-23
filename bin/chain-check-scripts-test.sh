@@ -223,6 +223,11 @@ mkfake() { # mkfake NAME EXIT PACKAGES  -> a scanner that logs its argv and prin
 #!/usr/bin/env bash
 echo "$1 \$*" >> "\$FAKE_LOG"
 case "\${1:-}" in --version|version) echo "$1 9.9.9"; exit 0;; esac
+if [ "$1" = grype ]; then
+  gcfg=""; gprev2=""
+  for ga in "\$@"; do [ "\$gprev2" != -c ] || gcfg=\$ga; gprev2=\$ga; done
+  if [ -z "\$gcfg" ]; then echo "grype-config none" >> "\$FAKE_LOG"; elif [ -f "\$gcfg" ] && [ ! -s "\$gcfg" ]; then echo "grype-config empty" >> "\$FAKE_LOG"; else echo "grype-config other" >> "\$FAKE_LOG"; fi
+fi
 [ "\${1:-} \${2:-}" != "db update" ] || exit "\$FAKE_DB_RC"
 n=$3; name=$1
 for a in "\$@"; do case "\$a" in cyclonedx-json=*) python3 -c 'import json,sys; json.dump({"bomFormat":"CycloneDX","specVersion":"1.6","components":[{"type":"library","name":"p%d" % i,"version":"1"} for i in range(int(sys.argv[2]))]}, open(sys.argv[1],"w"))' "\${a#cyclonedx-json=}" "\$n";; esac; done
@@ -256,9 +261,6 @@ if [ "\$name" = grype ]; then
   gpath=""; gplat=""; gprev=""
   for ga in "\$@"; do case "\$ga" in oci-dir:*) gpath=\${ga#oci-dir:};; esac; [ "\$gprev" != --platform ] || gplat=\$ga; gprev=\$ga; done
   FAKE_MD=""; [ -z "\$gpath" ] || FAKE_MD=\$(python3 "$work/childdigest.py" "\$gpath" "\$gplat"); export FAKE_MD
-  gcfg=""; gprev2=""
-  for ga in "\$@"; do [ "\$gprev2" != -c ] || gcfg=\$ga; gprev2=\$ga; done
-  if [ -z "\$gcfg" ]; then echo "grype-config none" >> "\$FAKE_LOG"; elif [ -f "\$gcfg" ] && [ ! -s "\$gcfg" ]; then echo "grype-config empty" >> "\$FAKE_LOG"; else echo "grype-config other" >> "\$FAKE_LOG"; fi
   case " \$* " in *" --platform linux/arm64 "*) export FAKE_GRYPE_MATCHES="\${FAKE_GRYPE_ARM64_MATCHES-\${FAKE_GRYPE_MATCHES:-[]}}";; esac
   python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({**({"ignoredMatches":json.loads(os.environ["FAKE_GRYPE_IGNORED"])} if "FAKE_GRYPE_IGNORED" in os.environ else {}),"matches":json.loads(os.environ.get("FAKE_GRYPE_MATCHES","[]")),"source":{"type":"image","target":({"manifestDigest":os.environ["FAKE_MD"]} if os.environ.get("FAKE_MD") else {})},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
 else
@@ -327,8 +329,8 @@ FAKE_GRYPE_MATCHES='[]' want_ok "AC4 grype with no match left after the VEX pass
 # other than GRYPE_DB_CACHE_DIR and GRYPE_DB_AUTO_UPDATE stops the pass, and everything grype left out (ignoredMatches) must come from a VEX rule (namespace vex and a vex-status
 # of not_affected or fixed). Real grype 0.118.0 behaviour of these shapes was probed for cache#580.
 want_ok "AC4 c grype with no ignored match passes and was run with an empty config on every call" "${SCAN[@]}"
-nc_=$(grep -c '^grype-config empty$' "$work/log" || true); nb_=$(grep -c -E '^grype-config (none|other)$' "$work/log" || true); ng_=$(grep -c -E '^grype (oci-dir|file):' "$work/log" || true)
-if [ "$nb_" = 0 ] && [ "$nc_" = "$ng_" ] && [ "$ng_" -gt 0 ]; then ok "AC4 c every grype call ($ng_: images and archives) got -c with an empty file"; else bad "AC4 c grype config: $nc_ empty, $nb_ other or none, of $ng_ calls"; fi
+nc_=$(grep -c '^grype-config empty$' "$work/log" || true); nb_=$(grep -c -E '^grype-config (none|other)$' "$work/log" || true); ng_=$(grep -c -E '^grype (oci-dir:|file:|db update)' "$work/log" || true)
+if [ "$nb_" = 0 ] && [ "$nc_" = "$ng_" ] && [ "$ng_" -gt 0 ]; then ok "AC4 c every grype call ($ng_: the database update, images and archives) got -c with an empty file"; else bad "AC4 c grype config: $nc_ empty, $nb_ other or none, of $ng_ calls"; fi
 IG='{"vulnerability":{"id":"CVE-2099-0100"},"artifact":{"name":"pkgx","version":"1"}'
 FAKE_GRYPE_IGNORED='[]' want_ok "AC4 c ignoredMatches empty passes" "${SCAN[@]}"
 FAKE_GRYPE_IGNORED='null' want_ok "AC4 c ignoredMatches null passes" "${SCAN[@]}"
@@ -512,7 +514,7 @@ mkfake osv-scanner 0 80
 printf '{"scanners":["grype"]}\n' > "$fx/.github/policy/scanners.json"; rm -f "$fx/out/scan-results.json"
 want_ok "AC15 a fresh grype database (built 17.5 h before now) from grype.anchore.io: the scan proceeds" "${SCAN[@]}"
 if [ -f "$fx/out/scan-results.json" ] && jq -e --arg u "$GDB_FROM" --arg s "sha256:$GDB_SUM" '.scanners[0] | .db_source_url == $u and .db_built_or_published == "2026-10-09T06:30:41Z" and .db_digest == $s and .db_source_basis == "observed"' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC15 the results carry grype's database source URL (basis: observed), build date and digest"; else bad "AC15 db fields in scan-results.json: $(jq -c '.scanners[0] | {db_source_url, db_built_or_published, db_digest}' "$fx/out/scan-results.json" 2>&1 | cut -c1-160)"; fi
-u=$(grep -n '^grype db update$' "$work/log" | head -1 | cut -d: -f1 || true); s=$(grep -n '^grype .*\(oci-dir\|file\):' "$work/log" | head -1 | cut -d: -f1 || true)
+u=$(grep -n '^grype db update' "$work/log" | head -1 | cut -d: -f1 || true); s=$(grep -n '^grype .*\(oci-dir\|file\):' "$work/log" | head -1 | cut -d: -f1 || true)
 if [ -n "$u" ] && [ -n "$s" ] && [ "$u" -lt "$s" ]; then ok "AC15 the database is fetched fresh (grype db update) before the first scan"; else bad "AC15 db update (line ${u:-none}) must come before the first scan (line ${s:-none})"; fi
 FAKE_DB_BUILT=2026-10-07T00:00:00Z want_fail "AC15 a database built 72 h before now fails closed" "older than 48 hours" "${SCAN[@]}"
 # round 1 F4 (Codex A3): the clock is the runner's. A CHECK_SCAN_NOW in the environment (an older `now` makes any database fresh) is refused, never read.
