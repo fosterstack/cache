@@ -79,7 +79,12 @@
   {
    "workflow": "stage-sign.yml",
    "job": "sign",
-   "reason": "Sign: the one provenance signer (REQ-CHAIN-001)"
+   "reason": "Sign: the one provenance signer (REQ-CHAIN-001), and the signer of the Build records (owner Oct 22)"
+  },
+  {
+   "workflow": "stage-sign.yml",
+   "job": "sign-rebuild",
+   "reason": "Sign: the signer of the Rebuild records (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md); receives no Rebuild apk or image"
   },
   {
    "workflow": "stage-verify.yml",
