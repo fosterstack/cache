@@ -135,9 +135,9 @@ def _read_reopened(path):
     is broken, so it stops (exit 3) rather than deliver without the removals (rc-5b fix 13, item 6)."""
     doc = _read_reviewed_json(path)
     rows = (doc or {}).get("reopened", [])
-    if not isinstance(rows, list) or not all(isinstance(x, list) and len(x) == 3 for x in rows if x):
-        raise ReviewedInputInvalid("%s: 'reopened' is not a list of [cve, products, purls]" % path)
-    return [x for x in rows if x]
+    if not isinstance(rows, list) or not all(isinstance(x, list) and len(x) == 3 and isinstance(x[0], str) and all(isinstance(y, list) and all(isinstance(z, str) for z in y) for y in x[1:]) for x in rows):
+        raise ReviewedInputInvalid("%s: 'reopened' is not a list of [cve, [products], [purls]] with strings" % path)
+    return rows
 
 
 class DefectLogInvalid(Exception):
@@ -177,10 +177,7 @@ def _plan(would, kind, target, cves=(), cmd="", note="", key=None):
 
 def _supp_cves(supp):
     """The CVE IDs the consolidated suppression package carries (its VEX statements)."""
-    try:
-        doc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))
-    except Exception:
-        return []
+    doc = _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json")) or {}
     return sorted({(s.get("vulnerability") or {}).get("name") for s in doc.get("statements", [])} - {None})
 
 
@@ -704,7 +701,9 @@ def _merge_suppressions(ws, supp):
     import shutil
     vp = os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")
     os.makedirs(os.path.dirname(vp), exist_ok=True)
-    newdoc = json.load(open(os.path.join(supp, "fosterstack-cache.openvex.json")))
+    newdoc = _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))
+    if newdoc is None:                              # the run's own consolidated VEX must exist (as before: a missing file is a staging error)
+        raise FileNotFoundError(os.path.join(supp, "fosterstack-cache.openvex.json"))
     existing = _read_reviewed_json(vp) or {}
     # Merge statements by the CANONICAL scope key (vulnerability, scope) (REQ-AUD-13 AC1/AC3).
     # Statements now arrive with scope-deterministic @ids (generation-time, AC2), so a
@@ -742,6 +741,7 @@ def _merge_suppressions(ws, supp):
     for k in ("@context", "@id", "author", "role"):
         merged.setdefault(k, newdoc.get(k))
     merged["timestamp"] = newdoc.get("timestamp", merged.get("timestamp"))
+    old_ai = _read_reviewed_json(os.path.join(ws, ".auditor", "accepted-items.json"))   # read (and so validated) BEFORE the working tree is touched: an unreadable inventory stops the run with the VEX unwritten
     cli.writej(vp, merged)
 
     # accepted-items.json is COUPLED to the VEX: an affected statement that survives the VEX
@@ -756,7 +756,6 @@ def _merge_suppressions(ws, supp):
             return None
     aip = os.path.join(ws, ".auditor", "accepted-items.json")
     new_ai = _loadj(os.path.join(os.path.dirname(supp), ".auditor", "accepted-items.json"))
-    old_ai = _read_reviewed_json(aip)              # the checkout's inventory: unreadable is a stop, never "no inventory" (rc-5b fix 13)
     out_ai = {}
     if new_ai is not None or old_ai is not None:
         def _cve(it):
@@ -1656,8 +1655,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     carried_status[(nm, _scope_key(s))] = s.get("status")
         except ReviewedInputInvalid:
             raise
-        except Exception:
-            prev_id_to_scope = {}
+        except Exception as ex:
+            raise ReviewedInputInvalid("the published VEX has a statement the run cannot read (%s): it stops rather than guess a partial state" % type(ex).__name__)
         prev = _read_reviewed_json(os.path.join(ws0, ".auditor", "accepted-items.json"))
         try:
             for it in (prev or {}).get("accepted_items", []):
@@ -1678,8 +1677,8 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                         carried_lift_trigger[key] = it["lift_trigger"]
         except ReviewedInputInvalid:
             raise
-        except Exception:
-            carried_expiry = {}
+        except Exception as ex:
+            raise ReviewedInputInvalid("accepted-items.json has an entry the run cannot read (%s): it stops rather than renew or drop a time box" % type(ex).__name__)
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
            "adjudicator": adjudicator, "state": state, "kev_ids": kev_ids, "kev_ok": kev_ok, "exp": exp, "out": out,
            "ts": ts, "dry": dry, "digest": (m.get("candidate_digests") or {}).get("production"),

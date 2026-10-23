@@ -4031,6 +4031,9 @@ elif variant=="items-malformed": open(ap,"w").write("{not json")
 elif variant=="items-notobject": open(ap,"w").write("[]")
 elif variant=="items-null-entry": json.dump({"accepted_items":[good_items["accepted_items"][0],None]},open(ap,"w"))
 elif variant=="items-scalar-entry": json.dump({"accepted_items":[3]},open(ap,"w"))
+elif variant=="items-bad-fields": json.dump({"accepted_items":[{"cve":"CVE-A","expiry":"2026-01-01","scope_purls":["p"],"not_pullable":True},{"cve":"CVE-B","expiry":"2026-01-01","scope_purls":5}]},open(ap,"w"))
+elif variant=="items-mixed-expiry": json.dump({"accepted_items":[dict(good_items["accepted_items"][0],expiry=5),dict(good_items["accepted_items"][0],expiry="2026-12-31")]},open(ap,"w"))
+elif variant=="vex-bad-vulnerability": json.dump(dict(old,statements=[dict(old["statements"][0],vulnerability="x")]),open(vp,"w"))
 elif variant=="vex-dir": os.remove(vp); os.mkdir(vp)
 elif variant=="items-dir": os.remove(ap); os.mkdir(ap)
 elif variant=="items-bad-at-delivery": corrupt_at="delivery"
@@ -4059,7 +4062,7 @@ print("rc=%s mutating=%d%s"%(rc,len(mut)," (checked at delivery)" if corrupt_at=
 PP
 begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
-for variant in vex-malformed vex-notobject vex-null-statement items-malformed items-notobject items-null-entry items-scalar-entry vex-dir items-dir; do
+for variant in vex-malformed vex-notobject vex-null-statement items-malformed items-notobject items-null-entry items-scalar-entry items-bad-fields items-mixed-expiry vex-bad-vulnerability vex-dir items-dir; do
   r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r6" "rc=3 mutating=0" && ok || no "an unreadable or malformed reviewed input ($variant) stops the run: main() returns 3 and makes no mutating git/gh call" "$r6"
 done
