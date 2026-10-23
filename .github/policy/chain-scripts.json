@@ -42,7 +42,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "98820530ad1563ea389f5b8c6ccb1b5fe632b260ae05a72869c1ee274576fe0b",
+      "sha256": "0375798509047be2659b53f126c821366c98dd13b5f456526172ae561e21c029",
       "tools": [
         "make",
         "at",
@@ -142,7 +142,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "a4416d7229822d16d8e3d355ce6c0bc99e94afc44400b081fbb44f7794486ad6",
+      "sha256": "a0fcde92bdabcd4ee3126d3bf13838e13a75d0bf08c9e072bca182ad0f1d2178",
       "tools": [
         "at",
         "bash",
@@ -187,8 +187,8 @@
         },
         {
           "rule": "deny",
-          "line": "  jq -n --arg pt \"$pt\" --arg payload \"$(base64 < \"$1\" | tr -d '\\n')\" --arg sig \"$(jq -r '.messageSignature.signature' hostile-work/forged.bundle.json)\" \\",
-          "line_sha256": "a56d256000295c1ddacdf51c37a83398f80b006007366ddc10c6ebae719bfe35",
+          "line": "  jq -n --arg pt \"$pt\" --arg payload \"$(base64 < \"$1\" | tr -d '\\n')\" --arg sig \"$(base64 < hostile-work/forged.sig | tr -d '\\n')\" --arg kid \"$kid\" \\",
+          "line_sha256": "da931bdf2d5804511057f5fbaa354488b2095eaa854c58d6a2db0666e3ebb052",
           "count": 1,
           "why": "a line the data-opener default deny cannot read as code: a comment, a message, a nested substitution (live code in double quotes around single-quoted text), a generated-source printf or a shell continuation holding quoted text with $( or backticks; it is not a compound assignment to a builtin (REQ-CHAIN-001-AC1; reviewed line-bound waiver in PR 454 round 9, every waived line is comment, message or ordinary nested-substitution code)"
         },
@@ -406,6 +406,20 @@
       "signs": "other",
       "reason": "Sign's signing step for the building jobs' Witness records (REQ-CHAIN-005-AC4): takes the identity token (audience sigstore) into a shell variable, runs witness sign keyless over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record under the stage-sign.yml identity; builds nothing",
       "sha256": "c4cb2cbecab65bdb3150b24fe939138c29264b6a22f57ef05de5788c3b1d38fb"
+    },
+    {
+      "path": "bin/rebuild-records-digests.sh",
+      "tools": [
+        "basename",
+        "bash",
+        "cut",
+        "jq",
+        "openssl"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the Rebuild assemble job's list of the records it made (REQ-CHAIN-005-AC4): after the Witness step it prints one compact JSON object of the sha256 of every file in the record folders Sign's second call will receive (witness-rebuild, witness-rapk-<runner>); the text leaves the stage as a job output and Sign refuses any folder that differs; reads and prints, writes nothing, builds nothing",
+      "sha256": "83a7ddc855f73a85473a7f9a0c965f4ea9607531a5c439bb91c98692d512389a"
     },
     {
       "path": "bin/build-stage-apk.sh",
