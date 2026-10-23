@@ -1384,7 +1384,7 @@
     },
     {
       "path": "bin/check-osv-db.py",
-      "sha256": "3f2533f0e296d7e87eebe1940eded34a727b8aa284b2e35d410881002501486e",
+      "sha256": "5c76cb9a4fb513345d2db6eb0cd80f50aa7e5b1a13640c2c167336729a8cebcd",
       "tools": [],
       "runs": [
         "bin/check-scan.sh"

@@ -9,6 +9,10 @@ ecos = {l.strip() for l in open(ecofile) if l.strip()}
 zips = sorted(os.path.join(d, f) for d, _, fs in os.walk(cache) for f in fs if f == "all.zip")
 if not zips:
     fail("no osv database zip in the cache after the run: osv-scanner scanned against no downloaded database")
+have = {os.path.basename(os.path.dirname(z)) for z in zips}
+for e in sorted(ecos):
+    if e not in have and e.split(":")[0] not in have:
+        fail("no osv database zip for the reported ecosystem %s (the cache holds %s): osv-scanner scanned it against no downloaded database" % (e, sorted(have)))
 out = []
 for z in zips:
     eco = os.path.basename(os.path.dirname(z))
