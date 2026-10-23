@@ -249,7 +249,7 @@ if [ "\$name" = osv-scanner ]; then
     c=\${OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY:?}
     echo "osvcache-before \$(find "\$c" -type f | wc -l | tr -d ' ')" >> "\$FAKE_LOG"
     [ "\$FAKE_OSV_DB_RC" = 0 ] || exit "\$FAKE_OSV_DB_RC"
-    [ "\$FAKE_OSV_ZIP" = none ] || python3 - "\$c" "\$FAKE_OSV_ZIP" "\$FAKE_OSV_MODIFIED" \$FAKE_OSV_ECOS <<'PZ'
+    [ "\$FAKE_OSV_ZIP" = none ] || python3 - "\$c" "\$FAKE_OSV_ZIP" "\$FAKE_OSV_MODIFIED" \${FAKE_OSV_ZIP_DIRS:-\$FAKE_OSV_ECOS} <<'PZ'
 import json, os, sys, zipfile
 c, mode, newest = sys.argv[1:4]
 for eco in sys.argv[4:]:
@@ -608,6 +608,8 @@ FAKE_OSV_ZIP=empty want_fail "AC15 an osv database zip without records fails clo
 FAKE_OSV_ZIP=nomodified want_fail "AC15 an osv database whose records carry no modified date fails closed" "modified" "${SCAN[@]}"
 FAKE_OSV_ZIP=broken want_fail "AC15 an unreadable osv database zip fails closed" "unreadable" "${SCAN[@]}"
 FAKE_OSV_ECOS="Go Debian:12 PyPI" want_fail "AC15 an osv database for an ecosystem the scan does not target fails closed" "not one the scan targets" "${SCAN[@]}"
+FAKE_OSV_ZIP_DIRS="Go Debian" want_ok "AC15 rc-5a E: a reported Debian:12 is covered by the zip directory of its family (Debian/all.zip): the family match is used" "${SCAN[@]}"
+FAKE_OSV_ZIP_DIRS="Go Debian:11" want_fail "AC15 rc-5a E: a zip for another release of the family (Debian:11) does not cover a reported Debian:12" "no osv database zip for" "${SCAN[@]}"
 FAKE_OSV_ECOS="Go" want_fail "AC15 rc-5a E: a reported ecosystem (Debian:12) with no osv database zip fails closed, even when another ecosystem has one" "no osv database zip for" "${SCAN[@]}"
 rm -f "$fx/out/scan-results.json"; FAKE_OSV_DB_RC=3 run "${SCAN[@]}"
 if [ "$rc" = 1 ] && grep -Fq "osv-scanner could not run" <<< "$out" && ! jq -e 'any(.scanners[]?; .verdict == "pass")' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC15 an osv database download failure (non-zero exit) fails closed and nothing is recorded as clean"; else bad "AC15 osv download failure -> rc=$rc: ${out:0:140}"; fi
@@ -1258,7 +1260,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=414
+EXPECT=416
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
