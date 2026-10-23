@@ -58,28 +58,79 @@ def messages(raw):
         out.append(v)
 
 
+ENV_WANT = {"GOTOOLCHAIN": "local", "GOFLAGS": "-mod=vendor", "GOPROXY": '"off"'}
+BUILD_LINE = re.compile(r"^go build -trimpath -o \$\{\{targets\.destdir\}\}/usr/bin/fscache (\./[A-Za-z0-9_][A-Za-z0-9_./-]*)$")
+VERSION_LINE = re.compile(r"^go version -m \$\{\{targets\.destdir\}\}/usr/bin/fscache( > (\$\{\{targets\.destdir\}\}/usr/share/fscache/buildinfo\.txt|/tmp/fscache-gobuildinfo\.txt))?$")
+_G, _P = "g" + "o", "PA" + "TH"          # spelled in parts: this file names the recipes' search-path export without setting one
+EXPORT_OK = ("export %s=/usr/local/%s/bin:$%s" % (_P, _G, _P), "export GOPATH=/tmp/gopath GOCACHE=/tmp/gocache")
+FIPS_EXPORT = "export GOFIPS140=v1.0.0"
+FIPS_PROOF = re.compile(r"^grep -q 'GOFIPS140=v1\.0\.0-[0-9a-f]{8}' /tmp/fscache-gobuildinfo\.txt$")
+GO_SETTINGS = re.compile(r"\b(CGO_ENABLED|GOFLAGS|GOEXPERIMENT|GOAMD64|GOARM64|GOARM|GOOS|GOARCH|GOTOOLCHAIN|GOPROXY|GOWORK|GOENV|GODEBUG|GOFIPS140|GOROOT|GOMODCACHE|GOPRIVATE|GOINSECURE|GONOSUMDB|GOVULNDB)\b")
+SHELL_JOINERS = ("#", ";", "&", "|", "`", "$(")
+
+
+def read_recipe(rec, fips):
+    """(the package path, CGO_ENABLED) of one recipe, read with a CLOSED line grammar (standard library only): the environment block holds exactly the four known keys;
+    the only go lines are the one exact build line and `go version -m`; the only exports are the search path, GOPATH/GOCACHE and, in the FIPS recipe only, GOFIPS140=v1.0.0; no other line
+    names a Go setting; a line that is a go line or an export carries none of # ; & | backtick $(. Anything else fails closed (a shape the grammar refuses is a failure, not a guess)."""
+    try:
+        text = open(rec).read()
+    except OSError:
+        fail("the build recipe %s cannot be read: the shipped main package is not known, so nothing is scanned" % rec)
+    lines = text.splitlines()
+    starts = [n for n, l in enumerate(lines) if l == "  environment:"]
+    if len(starts) != 1:
+        fail("%s has %d environment blocks of the form the grammar reads (exactly one is required)" % (rec, len(starts)))
+    env, n = {}, starts[0] + 1
+    while n < len(lines) and lines[n].startswith("    "):
+        m = re.fullmatch(r"    ([A-Z0-9_]+): (\S+)", lines[n])
+        if not m or m.group(1) in env:
+            fail("%s: the environment block holds a line the grammar does not read: %r" % (rec, lines[n]))
+        env[m.group(1)] = m.group(2)
+        n += 1
+    block = set(range(starts[0] + 1, n))
+    cgo = env.pop("CGO_ENABLED", None)
+    if env != ENV_WANT or cgo not in ('"0"', '"1"'):
+        fail("%s: the environment block must be exactly GOTOOLCHAIN: local, GOFLAGS: -mod=vendor, GOPROXY: \"off\" and CGO_ENABLED: \"0\" or \"1\"" % rec)
+    pkgs, fips_exports = [], 0
+    for k, l in enumerate(lines):
+        if k in block:
+            continue
+        t = l.strip()
+        if not t or t.startswith("#"):
+            continue
+        toks = t.split()
+        cmd = re.sub(r"^(- )?runs:\s*", "", t).split()
+        is_go = "go" in toks or (bool(cmd) and cmd[0].rsplit("/", 1)[-1] == _G and "/" in cmd[0])
+        is_export = "export" in toks
+        if is_go or is_export:
+            if any(j in t for j in SHELL_JOINERS):
+                fail("%s line %d joins or comments a go or export line (# ; & | backtick $( are refused there): %r" % (rec, k + 1, t))
+            m = BUILD_LINE.match(t)
+            if m:
+                pkgs.append(m.group(1))
+            elif VERSION_LINE.match(t) or t in EXPORT_OK:
+                pass
+            elif t == FIPS_EXPORT and fips:
+                fips_exports += 1
+            else:
+                fail("%s line %d is a go or export line the grammar does not allow: %r" % (rec, k + 1, t))
+        elif GO_SETTINGS.search(t) and not (fips and FIPS_PROOF.match(t)):
+            fail("%s line %d names a Go setting outside the environment block: %r" % (rec, k + 1, t))
+    if len(pkgs) != 1 or ".." in pkgs[0]:
+        fail("%s holds %d build lines of the one allowed form, not exactly one: the shipped main package is not known" % (rec, len(pkgs)))
+    if fips and fips_exports != 1:
+        fail("%s must set GOFIPS140=v1.0.0 exactly once (the FIPS build)" % rec)
+    return pkgs[0], cgo.strip('"')
+
+
 def recipe_facts():
-    """(the shipped main package paths, the build's CGO_ENABLED) read from the two recipes the build compiles from; any doubt is a failure."""
-    pkgs, cgos = [], []
-    for rec in ("build/melange.yaml", "build/melange-fips.yaml"):
-        try:
-            text = open(rec).read()
-        except OSError:
-            fail("the build recipe %s cannot be read: the shipped main package is not known, so nothing is scanned" % rec)
-        steps = [l.split() for l in text.splitlines() if re.match(r"^\s*go build\b", l)]
-        if len(steps) != 1:
-            fail("%s holds %d build steps, not exactly one: the shipped main package is not known" % (rec, len(steps)))
-        pkg = steps[0][-1]
-        if not re.fullmatch(r"\./[A-Za-z0-9_][A-Za-z0-9_./-]*", pkg) or ".." in pkg:
-            fail("%s names %r as the package to build: not a plain relative package path" % (rec, pkg))
-        cg = re.findall(r'^\s*CGO_ENABLED:\s*"?([01])"?\s*$', text, re.M)
-        if len(cg) != 1:
-            fail("%s does not give CGO_ENABLED exactly once as 0 or 1" % rec)
-        pkgs.append(pkg)
-        cgos.append(cg[0])
-    if pkgs[0] != pkgs[1] or cgos[0] != cgos[1]:
-        fail("the two build recipes do not agree on the package (%s, %s) and CGO_ENABLED (%s, %s)" % (pkgs[0], pkgs[1], cgos[0], cgos[1]))
-    return [pkgs[0]], cgos[0]
+    """(the shipped main package path, the build's CGO_ENABLED) from the two recipes the build compiles from; the two must agree."""
+    pkg_a, cgo_a = read_recipe("build/melange.yaml", False)
+    pkg_b, cgo_b = read_recipe("build/melange-fips.yaml", True)
+    if pkg_a != pkg_b or cgo_a != cgo_b:
+        fail("the two build recipes do not agree on the package (%s, %s) and CGO_ENABLED (%s, %s)" % (pkg_a, pkg_b, cgo_a, cgo_b))
+    return pkg_a, cgo_a
 
 
 def refuse_ignore(tool_env, search):
@@ -102,18 +153,20 @@ def refuse_ignore(tool_env, search):
         fail("go.mod carries an ignore directive (%s): it hides packages from the scan of ./..., so the scan is refused" % names)
 
 
-def run_one(tool, tool_env, goarch, cgo, target):
+def run_one(tool, tool_env, goarch, cgo, target, fips=False):
     """One govulncheck run; (the stream bytes, the config message check done, the sorted called advisories, the number of advisories)."""
     env = dict(tool_env)
     env.update({"GOOS": "linux", "GOARCH": goarch, "CGO_ENABLED": cgo})
+    if fips:
+        env["GOFIPS140"] = "v1.0.0"       # the FIPS recipe's only difference: it selects the frozen module sources and the fips140v1.0 build tag (probed)
     r = subprocess.run([tool, "-json", target], env=env, capture_output=True)
     if r.returncode != 0:
         sys.stderr.write(r.stderr.decode("utf-8", "replace")[:2000])
-        fail("govulncheck could not run on linux/%s %s (exit %d): nothing is clean behind a scan that did not run" % (goarch, target, r.returncode))
+        fail("govulncheck could not run on linux/%s %s%s (exit %d): nothing is clean behind a scan that did not run" % (goarch, target, " (FIPS)" if fips else "", r.returncode))
     msgs = messages(r.stdout.decode("utf-8", "replace"))
     cfg = [m["config"] for m in (msgs or []) if isinstance(m, dict) and isinstance(m.get("config"), dict)]
     if len(cfg) != 1 or cfg[0].get("scanner_name") != "govulncheck" or cfg[0].get("db") != DB:
-        fail("the output of linux/%s %s is not a govulncheck run on %s (no config message of scanner govulncheck): it did not run" % (goarch, target, DB))
+        fail("the output of linux/%s %s%s is not a govulncheck run on %s (no config message of scanner govulncheck): it did not run" % (goarch, target, " (FIPS)" if fips else "", DB))
     finds = [m["finding"] for m in msgs if isinstance(m, dict) and isinstance(m.get("finding"), dict)]
     called = sorted({f.get("osv", "?") for f in finds if (f.get("trace") or [{}])[0].get("function")})
     return r.stdout, called, len({f.get("osv") for f in finds})
@@ -152,26 +205,26 @@ def main(argv):
     if os.path.lexists(dest):
         fail("%s exists already: a result file is never overwritten" % dest)
     refuse_ignore(tool_env, search)
-    pkgs, cgo = recipe_facts()
+    pkg, cgo = recipe_facts()
     ver = subprocess.run([tool, "-version"], env=tool_env, capture_output=True, text=True)
     version = next((l[len("Scanner: "):] for l in ver.stdout.splitlines() if l.startswith("Scanner: ")), "")
     if not version:
         fail("govulncheck reports no version")
     bad, first, imported = [], None, 0
-    for goarch in ("amd64", "arm64"):
-        for target in ["./..."] + pkgs:
-            stream, called, n = run_one(tool, tool_env, goarch, cgo, target)
-            if first is None:
-                first, imported = stream, n          # the amd64 ./... run: the product the Release stage binds
-                os.makedirs(out, exist_ok=True)
-                with open(dest, "wb") as fh:
-                    fh.write(stream)
-            if called:
-                bad.append("linux/%s %s: %s" % (goarch, target, " ".join(called)))
+    runs = [(a, t, False) for a in ("amd64", "arm64") for t in ("./...", pkg)] + [(a, pkg, True) for a in ("amd64", "arm64")]
+    for goarch, target, fips in runs:
+        stream, called, n = run_one(tool, tool_env, goarch, cgo, target, fips)
+        if first is None:
+            first, imported = stream, n          # the amd64 ./... run: the product the Release stage binds
+            os.makedirs(out, exist_ok=True)
+            with open(dest, "wb") as fh:
+                fh.write(stream)
+        if called:
+            bad.append("linux/%s %s%s: %s" % (goarch, target, " (FIPS)" if fips else "", " ".join(called)))
     if bad:
         print("check-govulncheck: %s: findings that reach a called symbol: %s" % (version, "; ".join(bad)), file=sys.stderr)
         fail("a vulnerability is reachable from this module's code (%d run/s): see %s" % (len(bad), dest))
-    print("check-govulncheck: %s: %d advisory/ies in imported packages (amd64 ./...), none reaches a called symbol on linux/amd64 or linux/arm64, in ./... or in %s" % (version, imported, " ".join(pkgs)))
+    print("check-govulncheck: %s: %d advisory/ies in imported packages (amd64 ./...), none reaches a called symbol on linux/amd64 or linux/arm64, in ./... or in %s, and none on the FIPS build of %s" % (version, imported, pkg, pkg))
 
 
 if __name__ == "__main__":

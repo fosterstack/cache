@@ -669,7 +669,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "92d5c2894da5561738dd63d0352bf417748e2ffc0c47060bc5764d42be4aa3d7",
+      "sha256": "8c1d7b6771ef1847712ab4b472e5461c9a41009ab95ce68c101f89111e696692",
       "tools": [
         "env",
         "go",
@@ -677,7 +677,7 @@
       ],
       "runs": [],
       "signs": false,
-      "reason": "Check's Go scan of the module's code in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the pinned Go first on the tool's search path): `govulncheck -json` on ./... and on the shipped main package read from the build recipes, on linux/amd64 and linux/arm64, after `go mod edit -json` has shown no go.mod ignore directive; the amd64 ./... stream is written unchanged to check-results/govulncheck.json, a called symbol in any run fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs, and go is the pinned Go it reads go.mod with",
+      "reason": "Check's Go scan of the module's code in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the Go directory of the pinned search path first): `govulncheck -json` on ./... and on the shipped main package, read from the two build recipes with a closed line grammar (the one exact build line, `go version -m`, the PATH/GOPATH/GOCACHE exports and, in the FIPS recipe only, GOFIPS140=v1.0.0; CGO_ENABLED only from the environment block), on linux/amd64 and linux/arm64, plus the shipped main again with GOFIPS140=v1.0.0 on both, after `go mod edit -json` has shown no go.mod ignore directive; the amd64 ./... stream is written unchanged to check-results/govulncheck.json, a called symbol in any run fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs, and go is the Go on the pinned search path, which it reads go.mod with",
       "env_mentions": [
         {
           "name": "PATH",

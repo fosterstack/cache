@@ -1162,8 +1162,8 @@ printf 'module example.com/a\n' > "$gvt/go.mod"; mkdir -p "$gvt/vendor"; printf 
 printf '{"scanners":["grype","osv-scanner"],"source_scanners":["govulncheck"],"pr_gate":["grype","inspector"]}\n' > "$gvt/.github/policy/scanners.json"
 # the shipped main package is read from the recipes the build compiles from (build/melange.yaml and build/melange-fips.yaml: exactly one `go build`, CGO_ENABLED set), never from `go list`
 mkdir -p "$gvt/build"
-gv_recipe() { printf 'package:\n  name: %s\nenvironment:\n  environment:\n    GOPROXY: "off"\n    CGO_ENABLED: "0"\npipeline:\n  - runs: |\n      export PATH=/usr/local/go/bin:$PATH\n      go build -trimpath -o ${{targets.destdir}}/usr/bin/fscache %s\n' "$1" "$2" > "$3"; }
-gv_recipes() { gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml"; gv_recipe fscache-fips ./cmd/fscache "$gvt/build/melange-fips.yaml"; }
+gv_recipe() { printf 'package:\n  name: %s\nenvironment:\n  environment:\n    GOTOOLCHAIN: local\n    GOFLAGS: -mod=vendor\n    GOPROXY: "off"\n    CGO_ENABLED: "%s"\npipeline:\n  - runs: mkdir -p /usr/local/go\n  - runs: |\n      export PATH=/usr/local/go/bin:$PATH\n      export GOPATH=/tmp/gopath GOCACHE=/tmp/gocache\n%s      go build -trimpath -o ${{targets.destdir}}/usr/bin/fscache %s\n      go version -m ${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt\n' "$1" "${4:-0}" "${5:-}" "$2" > "$3"; }
+gv_recipes() { gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml" "${1:-0}"; gv_recipe fscache-fips ./cmd/fscache "$gvt/build/melange-fips.yaml" "${1:-0}" $'      export GOFIPS140=v1.0.0\n'; }
 gv_recipes
 cat > "$gvt/fake/govulncheck" <<'EOF'
 #!/usr/bin/env bash
@@ -1172,7 +1172,7 @@ cat > "$gvt/fake/govulncheck" <<'EOF'
 echo "govulncheck $*" >> "$GV_LOG"
 echo "env GOFLAGS=${GOFLAGS:-} GOTOOLCHAIN=${GOTOOLCHAIN:-} GOPROXY=${GOPROXY:-} PATH1=${PATH%%:*}" >> "$GV_LOG"
 echo "pkgdriver GOPACKAGESDRIVER=${GOPACKAGESDRIVER-unset}" >> "$GV_LOG"
-echo "goenv GOOS=${GOOS-unset} GOARCH=${GOARCH-unset} CGO_ENABLED=${CGO_ENABLED-unset} GOAMD64=${GOAMD64-unset} GOPATH=${GOPATH-unset} GOCACHE=${GOCACHE-unset} GOMODCACHE=${GOMODCACHE-unset} GOENV=${GOENV-unset}" >> "$GV_LOG"
+echo "goenv GOOS=${GOOS-unset} GOARCH=${GOARCH-unset} CGO_ENABLED=${CGO_ENABLED-unset} GOAMD64=${GOAMD64-unset} GOPATH=${GOPATH-unset} GOCACHE=${GOCACHE-unset} GOMODCACHE=${GOMODCACHE-unset} GOENV=${GOENV-unset} GOFIPS140=${GOFIPS140-unset}" >> "$GV_LOG"
 case "$1" in -version) printf 'Go: go1.27.2\nScanner: govulncheck@v1.7.0\nDB: https://vuln.go.dev\nDB updated: 2026-10-10 00:00:00 +0000 UTC\n'; exit 0 ;; esac
 [ "${GV_RC:-0}" = 0 ] || { echo "govulncheck: boom" >&2; exit "$GV_RC"; }
 # one fake, three questions: which platform (GOARCH), which target (the last argument), which case. GV_OUT_ARM64 overrides GV_OUT on the arm64 runs, GV_OUT_EXPLICIT on the runs of an explicit package path.
@@ -1200,6 +1200,7 @@ cat > "$gvt/fake/go" <<'EOF'
 echo "go $*" >> "$GV_LOG"
 [ "${GV_GO_RC:-0}" = 0 ] || exit "$GV_GO_RC"
 if [ "$1 $2 $3" = "mod edit -json" ]; then
+  if [ -n "${GV_GO_JSON:-}" ]; then cat "$GV_GO_JSON"; exit 0; fi
   if [ -n "${GV_IGNORE:-}" ]; then printf '{"Module":{"Path":"example.com/a"},"Go":"1.27","Ignore":[{"Path":"%s"}]}\n' "$GV_IGNORE"; else printf '{"Module":{"Path":"example.com/a"},"Go":"1.27"}\n'; fi
   exit 0
 fi
@@ -1213,7 +1214,7 @@ gvrun() { # gvrun [ENV=V ...] -- ARGS... : runs the script in the throw-away tre
   out=$( (cd "$gvt" && env "${envs[@]}" PATH="$gvt/fake:$PATH" python3 -I -B bin/check-govulncheck.py "$@") 2>&1) || rc=$?; }
 GVARGS=(--scanners .github/policy/scanners.json --out out)
 gvrun GV_OUT=clean -- "${GVARGS[@]}"
-if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && [ "$(grep -c '^govulncheck -json ./\.\.\.$' "$work/gvlog")" = 2 ] && [ "$(grep -c '^govulncheck -json ./cmd/fscache$' "$work/gvlog")" = 2 ] && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 5 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran once as govulncheck -json ./..."
+if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && [ "$(grep -c '^govulncheck -json ./\.\.\.$' "$work/gvlog")" = 2 ] && [ "$(grep -c '^govulncheck -json ./cmd/fscache$' "$work/gvlog")" = 4 ] && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 7 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran six times (./... and the shipped main on amd64 and arm64, then the shipped main on both with the FIPS build) after the version query"
 else bad "G a clean source scan -> rc=$rc $out | $(tr '\n' '|' < "$work/gvlog" | cut -c1-200)"; fi
 ( cd "$gvt/fake" && : > env && GV_LOG=/dev/null GV_OUT=clean ./govulncheck -json ./... > "$work/gv-expected.bin" ) 2> /dev/null
 if [ -f "$gvt/out/govulncheck.json" ] && cmp -s "$gvt/out/govulncheck.json" "$work/gv-expected.bin" && [ -s "$work/gv-expected.bin" ] \
@@ -1226,8 +1227,9 @@ if [ "$rc" = 0 ] && grep -q 'GOFLAGS=-mod=vendor GOTOOLCHAIN=local GOPROXY=off '
 else bad "G the caller's Go environment reached the scan: $(grep '^env' "$work/gvlog" | head -1) rc=$rc"; fi
 gvrun GOPACKAGESDRIVER=/tmp/evil-driver GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" = 0 ] && grep -q '^pkgdriver GOPACKAGESDRIVER=off$' "$work/gvlog"; then ok "G the scan sets GOPACKAGESDRIVER=off (no external package driver is searched for on PATH or taken from the caller's environment)"; else bad "G the package-driver setting is not off: $(grep '^pkgdriver' "$work/gvlog" | head -1) rc=$rc"; fi
-gvrun GOOS=windows GOARCH=arm64 CGO_ENABLED=0 GOAMD64=v4 GOPATH=/tmp/evil-path GOCACHE=/tmp/evil-cache GOMODCACHE=/tmp/evil-mod GOENV=/tmp/evil-env GV_OUT=clean -- "${GVARGS[@]}"
-if [ "$rc" = 0 ] && [ "$(grep -c '^goenv ' "$work/gvlog")" = 5 ] && [ "$(grep -c '^goenv GOOS=unset GOARCH=unset CGO_ENABLED=unset GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off$' "$work/gvlog")" = 1 ] && [ "$(grep -c -E '^goenv GOOS=linux GOARCH=(amd64|arm64) CGO_ENABLED=0 GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off$' "$work/gvlog")" = 4 ] && [ "$(grep -c 'GOARCH=arm64' "$work/gvlog")" = 2 ]; then ok "G no Go setting of the caller (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV) reaches the scan and persisted Go configuration is off (GOENV=off)"
+gvrun GOOS=windows GOARCH=arm64 CGO_ENABLED=0 GOAMD64=v4 GOPATH=/tmp/evil-path GOCACHE=/tmp/evil-cache GOMODCACHE=/tmp/evil-mod GOENV=/tmp/evil-env GOFIPS140=evil GV_OUT=clean -- "${GVARGS[@]}"
+gvenv_='GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off'
+if [ "$rc" = 0 ] && [ "$(grep -c '^goenv ' "$work/gvlog")" = 7 ] && [ "$(grep -c "^goenv GOOS=unset GOARCH=unset CGO_ENABLED=unset $gvenv_ GOFIPS140=unset\$" "$work/gvlog")" = 1 ] && [ "$(grep -c -E "^goenv GOOS=linux GOARCH=(amd64|arm64) CGO_ENABLED=0 $gvenv_ GOFIPS140=unset\$" "$work/gvlog")" = 4 ] && [ "$(grep -c -E "^goenv GOOS=linux GOARCH=(amd64|arm64) CGO_ENABLED=0 $gvenv_ GOFIPS140=v1.0.0\$" "$work/gvlog")" = 2 ] && [ "$(grep -c 'GOARCH=arm64' "$work/gvlog")" = 3 ]; then ok "G no Go setting of the caller (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV, GOFIPS140) reaches the scan, persisted Go configuration is off (GOENV=off), and GOFIPS140=v1.0.0 is set on exactly the two FIPS runs"
 else bad "G the caller's platform or cache settings reached the scan: $(grep '^goenv' "$work/gvlog" | head -1) rc=$rc"; fi
 gvrun GV_OUT=called -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'GO-2099-0002' <<< "$out" && [ -f "$gvt/out/govulncheck.json" ]; then ok "G a finding that reaches a called symbol fails the scan, naming the advisory, and the file is still written"
@@ -1268,6 +1270,30 @@ for rc_ in 'no go build line|printf "package:\n  name: x\nenvironment:\n  enviro
   if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the build recipe is read strictly, fail closed before any scan: ${rc_%%|*}"; else bad "G recipe case '${rc_%%|*}' accepted: rc=$rc"; fi
   gv_recipes
 done
+# the closed line grammar: each mutation below is a shape the grammar must refuse before any scan (fail closed), in the standard recipe or the FIPS one
+gvfl_=$'      export GOFIPS140=v1.0.0\n'
+for rc_ in 'a trailing comment on the build line|sed -i.bak "s/\(go build .*\)$/\1 # x/" "$gvt/build/melange.yaml"' 'a semicolon after the build line|sed -i.bak "s/\(go build .*\)$/\1 ; true/" "$gvt/build/melange.yaml"' 'an ampersand after the build line|sed -i.bak "s/\(go build .*\)$/\1 \&\& true/" "$gvt/build/melange.yaml"' 'a redirect and pipe on the build line|sed -i.bak "s/\(go build .*\)$/\1 > \/x/" "$gvt/build/melange.yaml"' 'a second package on the build line|sed -i.bak "s/\(go build .*\)$/\1 .\/cmd\/other/" "$gvt/build/melange.yaml"' 'a -tags flag|sed -i.bak "s/go build -trimpath/go build -tags x -trimpath/" "$gvt/build/melange.yaml"' 'an inline runs go build|printf "  - runs: go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'an absolute-path go|printf "      \/usr\/local\/go\/bin\/go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"' 'an extra export of a Go setting|printf "      export GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"' 'an export CGO_ENABLED line|printf "      export CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"' 'CGO_ENABLED named in a trailing description line|printf "      echo CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"' 'a command substitution on a go line|printf "      go version -m \$(id)\n" >> "$gvt/build/melange.yaml"' 'a backtick on a go line|printf "      go version -m \`id\`\n" >> "$gvt/build/melange.yaml"' 'a go command other than the two|printf "      go env -w GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"' 'GOFIPS140 in the standard recipe|gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml" 0 "$gvfl_"' 'the FIPS recipe without the GOFIPS140 export|gv_recipe fscache-fips ./cmd/fscache "$gvt/build/melange-fips.yaml" 0' 'the FIPS recipe with another GOFIPS140 value|gv_recipe fscache-fips ./cmd/fscache "$gvt/build/melange-fips.yaml" 0 $'"'"'      export GOFIPS140=off\n'"'"'' 'the FIPS recipe with GOFIPS140 twice|gv_recipe fscache-fips ./cmd/fscache "$gvt/build/melange-fips.yaml" 0 "$gvfl_$gvfl_"' 'a fifth environment key|sed -i.bak "s/^    GOPROXY: \"off\"$/    GOPROXY: \"off\"\n    GOAMD64: v3/" "$gvt/build/melange.yaml"' 'CGO_ENABLED set twice in the environment block|sed -i.bak "s/^    CGO_ENABLED: \"0\"$/    CGO_ENABLED: \"0\"\n    CGO_ENABLED: \"1\"/" "$gvt/build/melange.yaml"' 'CGO_ENABLED with a value other than 0 or 1|gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml" 2'; do
+  eval "${rc_#*|}"; rm -f "$gvt"/build/*.bak
+  gvrun GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the closed recipe grammar refuses before any scan: ${rc_%%|*}"; else bad "G grammar case '${rc_%%|*}' accepted: rc=$rc $out"; fi
+  gv_recipes
+done
+# the package and CGO_ENABLED come from the recipes, never hard-coded: another path and CGO "1" reach the scan's target and environment
+gv_recipes 1; sed -i.bak 's#fscache ./cmd/fscache$#fscache ./cmd/other#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
+gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && [ "$(grep -c '^govulncheck -json ./cmd/other$' "$work/gvlog")" = 4 ] && ! grep -q 'cmd/fscache' "$work/gvlog" && [ "$(grep -c 'CGO_ENABLED=1' "$work/gvlog")" = 6 ]; then ok "G the shipped package and CGO_ENABLED are the recipes' own (./cmd/other and \"1\" reach all six runs)"; else bad "G package/CGO were not taken from the recipes: rc=$rc $out | $(grep -c 'CGO_ENABLED=1' "$work/gvlog")"; fi
+gv_recipes
+# the real shape of `go mod edit -json` (this machine's Go writes it): a decoy `ignore` is read from the real field, and a module without one passes
+mkdir -p "$work/realmod" && printf 'module example.com/a\n\ngo 1.27\n\nignore ./decoy\n' > "$work/realmod/go.mod"
+if ( cd "$work/realmod" && GOFLAGS= GOTOOLCHAIN=local go mod edit -json > "$work/real-ignore.json" ) 2> /dev/null && grep -q '"Ignore"' "$work/real-ignore.json"; then
+  gvrun GV_GO_JSON="$work/real-ignore.json" GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog" && grep -q 'decoy' <<< "$out"; then ok "G the real go mod edit -json output with an ignore directive is refused, naming the path"; else bad "G real ignore output accepted: rc=$rc $out"; fi
+else ok "G (no Go on this machine writes the ignore field: the real-output case is skipped)"; fi
+printf 'module example.com/a\n\ngo 1.27\n' > "$work/realmod/go.mod"
+if ( cd "$work/realmod" && GOFLAGS= GOTOOLCHAIN=local go mod edit -json > "$work/real-plain.json" ) 2> /dev/null && ! grep -q '"Ignore"' "$work/real-plain.json"; then
+  gvrun GV_GO_JSON="$work/real-plain.json" GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" = 0 ]; then ok "G the real go mod edit -json output of a module without ignore passes"; else bad "G real plain output refused: rc=$rc $out"; fi
+else ok "G (no Go on this machine: the real plain-output case is skipped)"; fi
 gvrun GV_RC=3 GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G a tool exit other than 0 fails (it could not run: nothing is clean behind it)"; else bad "G a failing tool was accepted"; fi
 rm -f "$gvt/fake/govulncheck.hide"; mv "$gvt/fake/govulncheck" "$gvt/fake/govulncheck.hide"
@@ -1307,7 +1333,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=427
+EXPECT=451
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
