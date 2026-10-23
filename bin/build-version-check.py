@@ -5,7 +5,7 @@
 
 With --apk-dir the ONE apk of the variant is found in DIR (standard fscache-<ver>-r0.apk, fips fscache-fips-<ver>-r0.apk; PROPOSED/UNVERIFIED,
 cache-3f), usr/bin/fscache is extracted with `python3 bin/apk-tool.py cat APK usr/bin/fscache` to a temporary file, and that file is checked
-exactly as --binary is. The build info is read with `go version -m PATH` (the binary is never executed).
+exactly as --binary is. The build info is read with `go version -m PATH` by the pinned toolchain at its fixed path, in a closed environment (the binary is never executed).
 Exit 0: version == tag, vcs.revision == SHA, tree not modified. Exit 1: "version check refused at <what>: <why>". Exit 2: usage error.
 """
 import argparse
@@ -15,6 +15,11 @@ import re
 import subprocess
 import sys
 import tempfile
+
+
+# the build's own toolchain, installed checksum-pinned by `bash bin/install-scanner.sh go`; never a `go` found on PATH, and the call gets a closed environment
+GO_TOOL = "/usr/local/bin/fscache-go/bin/go"  # TEST-SUBST
+GO_ENV = {"PATH": "/usr/bin:/bin", "GOTOOLCHAIN": "local", "GOFLAGS": "", "GOENV": "off"}
 
 
 class Refusal(Exception):
@@ -65,7 +70,7 @@ def extract_binary(apk, dest):
 
 def build_info(binary):
     try:
-        r = subprocess.run(["go", "version", "-m", binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(os.environ, GOTOOLCHAIN="local"))
+        r = subprocess.run([GO_TOOL, "version", "-m", binary], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=GO_ENV)
     except OSError as e:
         raise Refusal("buildinfo", "cannot run go: %s" % e)
     if r.returncode != 0:
