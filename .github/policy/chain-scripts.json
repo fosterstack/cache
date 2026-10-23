@@ -2669,6 +2669,28 @@
       ],
       "signs": false,
       "reason": "the work of Release's comparison (the compare job, no key, no secret, no id-token, nothing signed): it checks the layout, the signer and the signature of every apk on both sides with bin/apk-tool.py, compares them, and writes the small result file apk-compare/apk-compare.json"
+    },
+    {
+      "path": "bin/pack-govulncheck.sh",
+      "sha256": "49c6cd57c01fca812a431154e1d3d769b3e66ff12f1f713cde6c32b66818a269",
+      "tools": [
+        "install",
+        "mkdir"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "govulncheck-build's last step: places the built govulncheck where the job uploads it from (REQ-REL-011-AC1)"
+    },
+    {
+      "path": "bin/unpack-govulncheck.sh",
+      "sha256": "719fa9ce5b8f10ab352c868bf285f97032552a53d886a713aafe11d5de6ff4ae",
+      "tools": [
+        "install",
+        "mkdir"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Check installs the govulncheck the credential-free govulncheck-build job built, after download-artifact's digest check (REQ-REL-011-AC1)"
     }
   ],
   "ambient_env": [
