@@ -253,17 +253,28 @@ func credDigest(s string) []byte {
 	return d[:]
 }
 
-// credEqual compares two credential fields in constant time over their
-// fixed-size digests (REQ-AUTH-002).
-func credEqual(presented, configured string) bool {
-	return subtle.ConstantTimeCompare(credDigest(presented), credDigest(configured)) == 1
+// credDigests are the digests of one configured credential pair.
+type credDigests struct{ user, pass []byte }
+
+// digestsOf digests a configured pair; withAuth does it once, when it is
+// built, not on every request.
+func digestsOf(c Credentials) credDigests {
+	return credDigests{user: credDigest(c.Username), pass: credDigest(c.Password)}
+}
+
+// digestEqual compares two credential digests in constant time
+// (REQ-AUTH-002); both are always 32 bytes, so ConstantTimeCompare never
+// takes its early return on a length mismatch.
+func digestEqual(a, b []byte) bool {
+	return subtle.ConstantTimeCompare(a, b) == 1
 }
 
 // withAuth wraps h with HTTP Basic Auth when Credentials are configured.
-// Constant-time comparison of fixed-size digests avoids leaking the
-// password length or prefix via timing (COMMIT-REQ style hygiene: this is exactly the kind of small
-// correctness detail the addendum's algorithm-discipline section expects
-// applied to all code, not just the crypto module choice).
+// Presented and configured credentials are compared as fixed-size digests
+// in constant time: ConstantTimeCompare never sees inputs of differing
+// length, so its early return cannot reveal the configured credential's
+// length. (It does not claim to hide the cost of hashing the presented
+// value.)
 //
 // Two pairs (REQ-AUTH-005): the read-write pair passes everything
 // through; the read-only pair passes GET and HEAD and answers writes
@@ -275,12 +286,14 @@ func withAuth(creds, ro Credentials, next http.Handler) http.Handler {
 	if !creds.enabled() {
 		return next
 	}
+	rw, roD := digestsOf(creds), digestsOf(ro)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		rwUserOK := credEqual(user, creds.Username)
-		rwPassOK := credEqual(pass, creds.Password)
-		roUserOK := credEqual(user, ro.Username)
-		roPassOK := credEqual(pass, ro.Password)
+		pu, pp := credDigest(user), credDigest(pass)
+		rwUserOK := digestEqual(pu, rw.user)
+		rwPassOK := digestEqual(pp, rw.pass)
+		roUserOK := digestEqual(pu, roD.user)
+		roPassOK := digestEqual(pp, roD.pass)
 		isRW := rwUserOK && rwPassOK
 		isRO := ro.enabled() && roUserOK && roPassOK
 		if !ok || (!isRW && !isRO) {

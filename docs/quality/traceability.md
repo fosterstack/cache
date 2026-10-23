@@ -211,7 +211,7 @@ The server shall compare presented credentials in constant time, with both usern
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-AUTH-002-AC1 | Given the auth implementation; when it is inspected; then comparison uses crypto/subtle.ConstantTimeCompare for both fields with no short-circuit between them | inspection |  | approved | 3 item(s) |
+| REQ-AUTH-002-AC1 | Given the auth implementation; when it is inspected; then comparison uses crypto/subtle.ConstantTimeCompare for both fields with no short-circuit between them | inspection |  | approved | 4 item(s) |
 
 ### REQ-AUTH-003 — Probes and scrapers stay open
 

@@ -17,7 +17,7 @@ func TestCredentialDigestIsFixedSize(t *testing.T) {
 	}
 }
 
-func TestCredEqualDecidesOnContent(t *testing.T) {
+func TestDigestEqualDecidesOnContent(t *testing.T) {
 	cases := []struct {
 		a, b string
 		want bool
@@ -31,8 +31,26 @@ func TestCredEqualDecidesOnContent(t *testing.T) {
 		{strings.Repeat("a", 1000), strings.Repeat("a", 1001), false},
 	}
 	for _, c := range cases {
-		if got := credEqual(c.a, c.b); got != c.want {
-			t.Errorf("credEqual(%q,%q) = %v, want %v", c.a, c.b, got, c.want)
+		if got := digestEqual(credDigest(c.a), credDigest(c.b)); got != c.want {
+			t.Errorf("digestEqual(credDigest(%q), credDigest(%q)) = %v, want %v", c.a, c.b, got, c.want)
 		}
+	}
+}
+
+// withAuth digests the configured credentials once, when it is built: the
+// digests of two Credentials values are equal exactly when the values are,
+// and an unset read-only pair digests like the empty string.
+func TestConfiguredDigestsAreComputedFromTheCredentials(t *testing.T) {
+	a := digestsOf(Credentials{Username: "u", Password: "p"})
+	b := digestsOf(Credentials{Username: "u", Password: "p"})
+	c := digestsOf(Credentials{Username: "u", Password: "q"})
+	if !digestEqual(a.user, b.user) || !digestEqual(a.pass, b.pass) {
+		t.Error("equal credentials must have equal digests")
+	}
+	if !digestEqual(a.user, c.user) || digestEqual(a.pass, c.pass) {
+		t.Error("only the changed field's digest may differ")
+	}
+	if len(digestsOf(Credentials{}).user) != 32 {
+		t.Error("an unset pair still digests to 32 bytes")
 	}
 }
