@@ -435,7 +435,7 @@
       "runs": [],
       "signs": false,
       "reason": "the lists of the records Rebuild's jobs made (REQ-CHAIN-005-AC4): each apk job prints its own leg after its Witness step (--rapk), the assemble job checks both legs against the folders BEFORE its Witness step (--check: any difference, extra or missing file, empty or invalid output is refused) and prints the whole list after it; the text leaves a job as a job output and Sign refuses any folder that differs; reads and prints, writes nothing, builds nothing",
-      "sha256": "cc78029d0c01519ffd5bd7f7a01e21bfd5430c437b014486a3497bb1faf5d70b"
+      "sha256": "f3c165f80b5b6ddb6fae3f73dae101ef338403425b50c809bdc4415264239202"
     },
     {
       "path": "bin/build-stage-apk.sh",
