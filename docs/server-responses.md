@@ -1,6 +1,6 @@
 # What the server answers
 
-This page lists the HTTP status codes the cache returns and what each one means for a build client. The status of every cache request is counted in the `fscache_http_requests_total` metric by method and status code. It is read from the server code (`internal/server/server.go`, `internal/blobstore/blobstore.go`), not from the clients.
+This page lists the HTTP status codes the cache returns and what each one means for a build client. A request to a cache path is counted in `fscache_http_requests_total` by method and status code once it passes authentication and the path check; 401, 403, and the 400 for an empty, `.` or `..` path segment are not counted. Requests to `/healthz`, `/metrics` and `/statusz` are not counted. It is read from the server code (`internal/server/server.go`, `internal/blobstore/blobstore.go`), not from the clients.
 
 ## Cache requests
 
@@ -15,7 +15,7 @@ A cache key is the request path without its leading slash. The cache handles thr
 | `PUT` | 413 | The body is larger than `FSCACHE_MAX_BODY_BYTES` (default 1 GiB; `0` turns the limit off). Nothing is stored. |
 | `PUT` | 413 with the header `X-FSCache-Reject: entry-exceeds-cache-cap` | The entry is larger than the whole cache size `FSCACHE_MAX_BYTES`, when that is set. Nothing is stored and nothing is evicted. The header tells this case apart from the body limit above. |
 | `PUT` | 429 with `Retry-After: 1` | More uploads are running at once than `FSCACHE_MAX_CONCURRENT_UPLOADS` allows (`0` turns the bound off). The server does not queue the upload; it refuses it at once. |
-| any method except `GET`, `PUT`, `HEAD` | 405 with `Allow: GET, PUT, HEAD` | The method is not part of the cache protocol (for example `DELETE`). |
+| any method except `GET`, `PUT`, `HEAD` | 405 with `Allow: GET, PUT, HEAD` | The method is not part of the cache protocol (for example `DELETE`), on a cache path with no empty, `.` or `..` segment that passed authentication. |
 | any | 500 | The store failed in a way that is not the client's doing. The server logs the method, the key and the error. |
 
 ## Key rules
