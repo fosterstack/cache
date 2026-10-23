@@ -46,11 +46,14 @@ import hashlib, json, os, re, shlex, sys, yaml
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 DOWN = {"signed-witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
-UP = {"witness-check": RECORD_DIRS, "check-results": "check-results"}   # artifact name -> the path(s) it may carry
+UP = {"witness-check": RECORD_DIRS, "check-results": "check-results", "witness-check-arm64": "witness-arm64", "check-results-arm64": "check-results"}   # artifact name -> the path(s) it may carry
 KIND_STEP = "bash bin/install-kind.sh"
 STEPS = ["scanners", "acceptance", "runtime"]
 SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain govulncheck is built with (an installer of its own; not a scanner)
+REC_RUN = {"records": 'echo "records=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime)" >> "$GITHUB_OUTPUT"',
+           "records-arm64": 'echo "records-arm64=$(bash bin/check-records-digests.sh witness-arm64)" >> "$GITHUB_OUTPUT"'}   # the two pinned steps (bin/chain-test-signers.py PINNED_ALLOWED; REQ-REL-011-AC1, cache#606)
+WF_OUTPUTS = {"records": "${{ jobs.check.outputs.records }}", "records-arm64": "${{ jobs.check-arm64.outputs.records-arm64 }}"}
 GV_BUILD = "govulncheck-build"   # REQ-REL-011-AC1 (advisor, Oct 23; Witness review F9): the job with no credential that builds govulncheck; the check job (id-token: write) only installs what it hands over
 GV_BUILD_LINE = "bash bin/install-scanner.sh govulncheck"
 GV_PACK_LINE = "bash bin/pack-govulncheck.sh"   # the one build step; the artifact it uploads is the hand-over (download-artifact fails the step on a digest mismatch; no override is allowed)
@@ -187,7 +190,7 @@ def exact_steps(label, steps, want, what):
     if len(steps) != len(want):
         bad.append("%s must have exactly its %d listed steps (%s), found %d" % (label, len(want), what, len(steps)))
     for i, (s, (kind, arg)) in enumerate(zip(steps, want), 1):
-        extra = {"upid": {"id"}}.get(kind, set())
+        extra = {"upid": {"id"}, "rec": {"id"}}.get(kind, set())
         if not isinstance(s, dict) or set(s) - ({"name", "uses", "with", "run"} | extra):
             bad.append("%s step %d: keys not allowed (an if, env or shell would change what runs): %s" % (label, i, sorted(s) if isinstance(s, dict) else s)); continue
         u, w, r = (s.get("uses") or ""), s.get("with") or {}, (s.get("run") or "").strip()
@@ -197,6 +200,9 @@ def exact_steps(label, steps, want, what):
         elif kind == "run":
             if u or r != arg:
                 bad.append("%s step %d must be exactly `run: %s`, found %r" % (label, i, arg, (r or u)[:80]))
+        elif kind == "rec":
+            if u or r != REC_RUN[arg] or s.get("id") != arg:
+                bad.append("%s step %d must be the pinned step with id %s and the exact run %r, found id %r and %r" % (label, i, arg, REC_RUN[arg], s.get("id"), (r or u)[:140]))
         elif kind == "downid":
             if not u.startswith("actions/download-artifact@") or not PIN.match(u.split(" ")[0]) or w != {"artifact-ids": GV_IDS, "path": arg} or "run" in s:
                 bad.append("%s step %d must be a digest-pinned download-artifact with exactly artifact-ids %s and path %s (no name, pattern, merge-multiple or digest-mismatch)" % (label, i, GV_IDS, arg))
@@ -218,16 +224,18 @@ def arm_job(j):
     bad = []
     if not isinstance(j, dict):
         return ["check-arm64 is not a job"]
-    if set(j) != {"runs-on", "permissions", "steps"}:
-        bad.append("check-arm64 may hold exactly runs-on, permissions and steps (no if, needs, env, strategy, container, name): %s" % sorted(j))
+    if set(j) != {"runs-on", "permissions", "outputs", "steps"}:
+        bad.append("check-arm64 may hold exactly runs-on, permissions, outputs and steps (no if, needs, env, strategy, container, name): %s" % sorted(j))
     if j.get("runs-on") != "ubuntu-24.04-arm":
         bad.append("check-arm64 must run on the literal GitHub-hosted label ubuntu-24.04-arm, got %r" % j.get("runs-on"))
     if j.get("permissions") != {"contents": "read"}:
         bad.append("check-arm64 permissions must be exactly contents read (no identity token: its record is made with the local helper and signed by Sign; REQ-REL-011-AC1): %s" % j.get("permissions"))
     steps = j.get("steps") or []
     want = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("down", x) for x in ARM_DOWNLOADS] + \
-           [("run", "bash bin/witnessed-local.sh %s %s" % (ARM_STEP, ARM_TARGET)), ("up", ("witness-check-arm64", "witness-arm64"))]
-    bad += exact_steps("check-arm64", steps, want, "checkout, Witness install, five downloads, the arm64 witnessed step, the upload")
+           [("run", "bash bin/witnessed-local.sh %s %s" % (ARM_STEP, ARM_TARGET)), ("rec", "records-arm64"), ("up", ("witness-check-arm64", "witness-arm64")), ("up", ("check-results-arm64", "check-results"))]
+    bad += exact_steps("check-arm64", steps, want, "checkout, Witness install, five downloads, the arm64 witnessed step, the records output step, the two uploads")
+    if j.get("outputs") != {"records-arm64": "${{ steps.records-arm64.outputs.records-arm64 }}"}:
+        bad.append("check-arm64 must expose exactly the output records-arm64 from its records-arm64 step: %s" % j.get("outputs"))
     return bad
 
 
@@ -256,6 +264,11 @@ def stage(path):
     on = d.get("on") or {}
     if not (isinstance(on, dict) and set(on) == {"workflow_call"}):
         bad.append("on: must be exactly workflow_call: %s" % on)
+    else:
+        wc = on.get("workflow_call") or {}
+        outs = wc.get("outputs") if isinstance(wc, dict) else None
+        if not isinstance(wc, dict) or set(wc) != {"outputs"} or not isinstance(outs, dict) or {k: (v or {}).get("value") if isinstance(v, dict) else None for k, v in outs.items()} != WF_OUTPUTS or any(set(v) - {"description", "value"} for v in outs.values() if isinstance(v, dict)):
+            bad.append("workflow_call must carry exactly the outputs records and records-arm64 with the values %s (and nothing else): %s" % (WF_OUTPUTS, wc))
     if set(d) - {"name", "on", "permissions", "jobs"}:
         bad.append("workflow keys not allowed: %s" % sorted(set(d) - {"name", "on", "permissions", "jobs"}))
     jobs = d.get("jobs") or {}
@@ -265,8 +278,10 @@ def stage(path):
     bad += gv_job(jobs[GV_BUILD])
     bad += arm_job(jobs["check-arm64"])
     j = jobs["check"]
-    if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}:
-        bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs"}))
+    if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs", "outputs"}:
+        bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes", "needs", "outputs"}))
+    if j.get("outputs") != {"records": "${{ steps.records.outputs.records }}"}:
+        bad.append("check must expose exactly the output records from its records step: %s" % j.get("outputs"))
     if j.get("needs") != GV_BUILD:
         bad.append("check must need exactly %s (the job that builds govulncheck with no credential), got %r" % (GV_BUILD, j.get("needs")))
     if j.get("runs-on") != "ubuntu-24.04":
@@ -279,8 +294,10 @@ def stage(path):
         bad.append("a registry login, a secret, a packages or attestations permission or a registry name appears in the file")
     kinds, names = [], []
     for s in steps:
-        if set(s) - {"name", "uses", "with", "run"}:
-            bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run"}))
+        if set(s) - {"name", "uses", "with", "run", "id"}:
+            bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run", "id"}))
+        if "id" in s and s.get("id") != "records":
+            bad.append("step key id is allowed only on the pinned records step: %s" % s.get("id"))
         u = s.get("uses", "")
         if u.startswith("actions/checkout@"):
             kinds.append("checkout")
@@ -305,6 +322,8 @@ def stage(path):
             kinds.append("install")
         elif (s.get("run") or "").strip() == GV_HAND_LINE:
             kinds.append("hand")
+        elif (s.get("run") or "").strip() == REC_RUN["records"] and s.get("id") == "records":
+            kinds.append("rec")
         elif (s.get("run") or "").strip() == KIND_STEP:
             kinds.append("kind")
         elif "run" in s:
@@ -320,12 +339,12 @@ def stage(path):
     k = len(want)
     got_down = [x for x in kinds if x == "down"]
     body = [x for x in kinds if x != "down"]
-    if body[:k] != want or body[k:k + 3] != ["witnessed"] * 3 or any(x != "up" for x in body[k + 3:]) or len(body) < k + 4:
-        bad.append("steps must be checkout, install Witness, install each listed scanner, install kind (bash bin/install-kind.sh), downloads, THREE witnessed steps, uploads (in that order); got %s" % kinds)
+    if body[:k] != want or body[k:k + 3] != ["witnessed"] * 3 or body[k + 3:k + 4] != ["rec"] or any(x != "up" for x in body[k + 4:]) or len(body) < k + 5:
+        bad.append("steps must be checkout, install Witness, install each listed scanner, install kind (bash bin/install-kind.sh), downloads, THREE witnessed steps, the records step, uploads (in that order); got %s" % kinds)
     if "kind" in kinds and "down" in kinds and kinds.index("down") < kinds.index("kind"):
         bad.append("the downloads come after the installs")
     want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", GO_INSTALL)] + [("downid", "govulncheck-dl"), ("run", GV_HAND_LINE)] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
-             [("run", "bash bin/witnessed-local.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS] + [("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))]
+             [("run", "bash bin/witnessed-local.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS] + [("rec", "records"), ("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))]
     bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, kind install, four downloads, the three witnessed steps, the two uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
     if len(imgs) != 1 or (imgs[0].get("with") or {}).get("path") != "images":

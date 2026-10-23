@@ -567,7 +567,10 @@ SIGNS = (False, "provenance", "other")
 # an error until a later reviewed change adds it HERE.
 PINNED_IF = {(".github/workflows/stage-reproducibility.yml", "assemble", "records"): "${{ inputs.mode == 'release' }}"}
 PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"',
-                  (".github/workflows/stage-reproducibility.yml", "assemble", "records"): 'echo "records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)" >> "$GITHUB_OUTPUT"'}
+                  (".github/workflows/stage-reproducibility.yml", "assemble", "records"): 'echo "records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)" >> "$GITHUB_OUTPUT"',
+                  # REQ-REL-011-AC1 (cache#606): the Check jobs list their records the same way; no condition (they run in every mode)
+                  (".github/workflows/stage-verify.yml", "check", "records"): 'echo "records=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime)" >> "$GITHUB_OUTPUT"',
+                  (".github/workflows/stage-verify.yml", "check-arm64", "records-arm64"): 'echo "records-arm64=$(bash bin/check-records-digests.sh witness-arm64)" >> "$GITHUB_OUTPUT"'}
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
 # plain literal; never a secret, a glued expression or a substitution

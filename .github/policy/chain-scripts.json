@@ -2669,6 +2669,18 @@
       "runs": [],
       "signs": false,
       "reason": "Check installs the govulncheck the credential-free govulncheck-build job built, after download-artifact's digest check (REQ-REL-011-AC1)"
+    },
+    {
+      "path": "bin/check-records-digests.sh",
+      "sha256": "c688699f949e46cfe8e4613754161f519e4b12c3dadb7b8f791097159a3feb49",
+      "tools": [
+        "basename",
+        "jq",
+        "openssl"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "a Check job's list of the records it made, as a job output Sign compares with what it receives (REQ-REL-011-AC1)"
     }
   ],
   "ambient_env": [
@@ -2800,6 +2812,20 @@
       "id": "records",
       "run": "echo \"records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-005-AC4 (adversarial pass R2): the stage output Sign checks Rebuild's records against (the sha256 of its record, verdict and rapk records); a job output only the Rebuild assemble job can write"
+    },
+    {
+      "file": ".github/workflows/stage-verify.yml",
+      "job": "check",
+      "id": "records",
+      "run": "echo \"records=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime)\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-REL-011-AC1: the Check job lists its records (witness-scanners, witness-acceptance, witness-runtime) as a stage output for Sign; the reviewed write into the job outputs"
+    },
+    {
+      "file": ".github/workflows/stage-verify.yml",
+      "job": "check-arm64",
+      "id": "records-arm64",
+      "run": "echo \"records-arm64=$(bash bin/check-records-digests.sh witness-arm64)\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-REL-011-AC1: the arm64 Check job lists its record (witness-arm64) as a stage output for Sign; the reviewed write into the job outputs"
     }
   ]
 }
