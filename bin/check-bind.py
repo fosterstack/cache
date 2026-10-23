@@ -79,13 +79,17 @@ def bind_layout(images, variant, digest, members_out=None):
             with open(os.path.join(blobs, d.split(":", 1)[1]), "rb") as f:
                 man = json.loads(f.read())
             refs = [man["config"]["digest"]] + [layer["digest"] for layer in man["layers"]]
-        except (OSError, ValueError, KeyError, TypeError):
-            continue                    # not an image manifest: its blob alone is archived
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            if members_out:             # the caller will load this layout: a manifest that cannot be read as one is refused, never skipped
+                fail("%s: the descriptor %s is not a readable image manifest (%s)" % (key, d, e))
+            continue                    # the scan names it; its blob alone is archived
         for r in refs:
             if isinstance(r, str) and DIGEST.fullmatch(r):
                 if r.split(":", 1)[1] not in names:
                     fail("%s: the descriptor %s names %s, which the layout does not hold" % (key, d, r))
                 members.add(r)
+            elif members_out:
+                fail("%s: the descriptor %s names %r, which is not a sha256 digest" % (key, d, r))
     for arch, child in sorted(children.items()):
         try:
             with open(os.path.join(blobs, child.split(":", 1)[1]), "rb") as f:
