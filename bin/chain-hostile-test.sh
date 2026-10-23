@@ -285,6 +285,20 @@ for n in TX:"a file whose name only ends like Sign's (xstage-sign.yml)" TO:"Sign
 done
 mrc=0; GITHUB_REPOSITORY=other/repo cvx hostile-material --kind token --file "$work/tok_yes.txt" || mrc=$?
 if [ "$mrc" = 1 ] && grep -F -q "refused at runner" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: the repository is read from GITHUB_REPOSITORY: Sign's file of another repository is not this repository's Sign"; else bad "hostile-material: GITHUB_REPOSITORY=other/repo must refuse fosterstack/cache's Sign token, got $mrc"; fi
+# a Build job with no id-token permission has no token request address (the Witness move): isolated, but only with the step's proof
+printf '%s\nrequest-env: absent\nenviron-files: 31\n' "$TR" > "$work/tok_absent.txt"
+printf '%s\nrequest-env: absent\nenviron-files: 0\n' "$TR" > "$work/tok_absent0.txt"
+printf '%s\nrequest-env: absent\n' "$TR" > "$work/tok_absentnc.txt"
+printf '%s\na process on this runner holds a token request address: /proc/9/environ\nrequest-env: absent\nenviron-files: 31\n' "$TR" > "$work/tok_absenthold.txt"
+xexpect refuse "hostile-material: no token request address in the job, with the proof lines, is isolation: refused at runner (nothing usable for Sign)" "refused at runner" -- hostile-material --kind token --file "$work/tok_absent.txt"
+for f in tok_absent0 tok_absentnc tok_absenthold; do
+  mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (absent address with no files searched, no file count, or a process holding an address) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f is an error" "exit $mrc"; fi
+done
+# the REAL step's token attempt in a job with no request address: it writes the absence proof and no claims line (functions only: the cut drops the five calls at the end)
+mkdir -p "$work/stepnotok" && sed '/^attempt_mint_sign_cert$/,$d' "$root/bin/chain-hostile-step.sh" > "$work/stepnotok/fns.sh"
+(cd "$work/stepnotok" && env -i PATH="$PATH" bash -c '. ./fns.sh; attempt_read_sign_token')
+if grep -qx 'request-env: absent' "$work/stepnotok/attempts/read_sign_token.txt" && grep -q '^environ-files: [0-9]*$' "$work/stepnotok/attempts/read_sign_token.txt" && ! grep -q '^claims:' "$work/stepnotok/attempts/read_sign_token.txt"; then ok "hostile step: with no token request address in the environment the token attempt writes request-env: absent and a file count, and no claims line"; else bad "hostile step: no-token transcript" "$(cat "$work/stepnotok/attempts/read_sign_token.txt" 2>&1 | head -3)"; fi
 xexpect ok "hostile-material: a key found on the runner whose public key IS the key in Sign's certificate means the attempt got Sign's key" - -- hostile-material --kind key --file "$work/key_yes.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's key is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_other.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a search that looked at files and found no key is refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_none.txt" --sign-record "$work/signrec.json"
@@ -362,7 +376,7 @@ def conj(cond):
     body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-rc'\s*\)", "RCCALL", body)
     if "(" in body or ")" in body: return None
     return [re.sub(r"\s+", " ", c.strip()).replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("RCCALL", "contains(github.ref_name, '-rc')") for c in body.split("&&")]
-OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml"}
+OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "sign-rebuild": "stage-sign.yml", "check": "stage-verify.yml"}
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
 import importlib.util as _ilu
@@ -407,10 +421,10 @@ if rl is None: bad.append("release.yml missing")
 else:
     jobs = rl.get("jobs") or {}
     if "workflow_dispatch" not in (rl.get("on") or {}): bad.append("release.yml has no workflow_dispatch (the dry run)")
-    # final batch R-d: among jobs named hostile* or sign* (any case) only sign, hostile-verify and hostile-verdict may exist
+    # final batch R-d: among jobs named hostile* or sign* (any case) only sign, sign-rebuild (the Witness move: Sign's second call, for Rebuild's records), hostile-verify and hostile-verdict may exist
     for _jn in jobs:
-        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in ("sign", "hostile-verify", "hostile-verdict"):
-            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, hostile-verify and hostile-verdict are allowed" % _jn)
+        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in ("sign", "sign-rebuild", "hostile-verify", "hostile-verdict"):
+            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, sign-rebuild, hostile-verify and hostile-verdict are allowed" % _jn)
     hv, hd = jobs.get("hostile-verify"), jobs.get("hostile-verdict")
     if not hv or not hd: bad.append("jobs hostile-verify and hostile-verdict are required")
     else:
@@ -969,6 +983,12 @@ d=$(mk w_rd_sign2); pymut "$(rel "$d")" "  hostile-verdict:
       - run: echo hi
   hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect caught "wiring: an extra sign-extra job" "$d"
+d=$(mk w_rd_signrb); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  sign-rebuild:
+    needs: sign
+    uses: ./.github/workflows/stage-sign.yml
+  hostile-verdict:
+    if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"; wexpect ok "wiring: the job sign-rebuild (Sign's second call, for Rebuild's records) is not refused as an extra sign* job" "$d"
 d=$(mk w_rd_signup); pymut "$(rel "$d")" "  hostile-verdict:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}" "  SIGN2:
     if: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
@@ -1269,7 +1289,7 @@ MUT
 else
   bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
 fi
-EXPECT=253
+EXPECT=259
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

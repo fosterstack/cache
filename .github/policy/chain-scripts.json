@@ -42,16 +42,17 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "b8af29ebf7c3e60ff8802f9506a33045ca2f4750954ef580070e3eefc01b05c0",
+      "sha256": "98820530ad1563ea389f5b8c6ccb1b5fe632b260ae05a72869c1ee274576fe0b",
       "tools": [
         "make",
         "at",
-        "exec"
+        "exec",
+        "git"
       ],
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec",
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec; `git` is the name of Witness's git attestor and the prefix of the commit subject that sign-records reads, never a command it runs",
       "env_mentions": [
         {
           "name": "PATH",
@@ -141,7 +142,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "af35a2e03e4a7ec7d1e82761b5b748700b9d7d42de5ca58b1d305a4771c5c9e3",
+      "sha256": "fbe1d6b2feeb94e0f146c0510e8774de4c1bfb668a0e83210c85592508ba0a7e",
       "tools": [
         "at",
         "bash",
@@ -217,7 +218,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "726e3016604e4971aec8e5e69f266cc200e5aed19df11bf567b349c483b94750",
+      "sha256": "1376bbc2546873cafae55648c5980d609677db47e77499f415c03f4b3cab6728",
       "tools": [
         "at"
       ],
@@ -300,7 +301,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "4d7ecb9b7a2ed64e2323b507450f056fdd388aceac8f51fd6f9b3861e6a9d0be",
+      "sha256": "d64c6697e22ea5a62b857f35f580fea40038ad015669024f3864a19952cc6aaa",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -308,14 +309,6 @@
         "DOCKERHUB_TOKEN"
       ],
       "arg_map": {
-        "apk": "bin/build-stage-apk.sh",
-        "build": "bin/build-stage-assemble.sh",
-        "rapk": "bin/build-stage-rebuild-apk.sh",
-        "rebuild": "bin/build-stage-rebuild-assemble.sh",
-        "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
-        "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
-        "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
-        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
         "runtime": "bin/check-phase-runtime.sh",
@@ -353,6 +346,68 @@
       ]
     },
     {
+      "path": "bin/witnessed-local.sh",
+      "tools": [
+        "bash",
+        "git",
+        "openssl",
+        "script",
+        "timeout",
+        "trap"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
+      "sha256": "d7ab910fb31977158de648b4a352edcfe505dda2fe52f9121d6cd17ab4343a9c",
+      "reads_env": [
+        "GH_TOKEN",
+        "APK_RELEASE_SIGNING_KEY",
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN"
+      ],
+      "arg_map": {
+        "apk": "bin/build-stage-apk.sh",
+        "build": "bin/build-stage-assemble.sh",
+        "rapk": "bin/build-stage-rebuild-apk.sh",
+        "rebuild": "bin/build-stage-rebuild-assemble.sh",
+        "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
+        "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
+        "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
+        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh"
+      },
+      "exceptions": [
+        {
+          "rule": "witness-target",
+          "text": "timeout -k 20 540 bash \"$@\" || rc=$?",
+          "why": "REQ-CHAIN-004-AC2: the wrapped build runs under timeout -k 20 540; the target is one of the arg_map scripts, bound by the stage line"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/chain-test-shape.py",
+          "why": "a comment naming the judge of this file's exact text; it is never run from here"
+        }
+      ]
+    },
+    {
+      "path": "bin/witness-sign-staged.sh",
+      "tools": [
+        "bash",
+        "cp",
+        "make",
+        "mkdir",
+        "python3",
+        "script",
+        "sh"
+      ],
+      "runs": [
+        "bin/loopback-get.sh",
+        "bin/chain-verify.py"
+      ],
+      "signs": "other",
+      "reason": "Sign's signing step for the building jobs' Witness records (REQ-CHAIN-005-AC4): takes the identity token (audience sigstore) into a shell variable, runs witness sign keyless over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record under the stage-sign.yml identity; builds nothing",
+      "sha256": "03dca3b24cc4706470c9c1421590ae921924590eca77569071ec49a9d64fef90"
+    },
+    {
       "path": "bin/build-stage-apk.sh",
       "tools": [
         "python3"
@@ -365,7 +420,7 @@
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "8a0dd834bf709677c2d79218ef4ccd2bcf1de6de7c1ab0454b9c936ebb1d5756",
+      "sha256": "def62ef70604658d4bf69113c02577addeedf7797e5da98754bce548fad6b96e",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -386,7 +441,7 @@
       ],
       "signs": false,
       "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "b8204607679e636797bedaeae874a22aa2e3240149101b66814b1b5804a7a370"
+      "sha256": "b07a7d56a6c1c37e6bb86cb5143b16d329cf9e966b25b843fa14d1552758c3c0"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -400,7 +455,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
-      "sha256": "54324ab757e81752da108e53eb4eb9de4a483705b801199f8f1794785d8b9e3d"
+      "sha256": "7a1d4667a1e7e46f02278f6d8b221b062d43aa9d6f03b67ddaa0963004ad2bc5"
     },
     {
       "path": "bin/build-stage-rebuild-assemble.sh",
@@ -417,7 +472,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's; then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "2d6917aed16eda8d043c69d66ab16cd41d2a167d577b05940306f3369307ae2e"
+      "sha256": "572adc34d48b285fcb2bb6a884bec99b2377b198a1064efa64565f69e3ad709f"
     },
     {
       "path": "bin/build-admit.py",
@@ -516,7 +571,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "629e13abc2d7b885e631ffaeae089a2609f3d65aeae940d29386cc7529ef2909"
+      "sha256": "5e767c23aa4af0a7d293ca454a429ef2d274aa7382e75518e870ea6dc3bed9eb"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -564,7 +619,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "50c16ff497e10b995d846c5fe7ba74ce5a3e97fd921e0efcd5f256fe64cd62ee"
+      "sha256": "fd57429dcae7f905a50d4ed580066a5b8a52fed0fc765ee2ede38cff43f0ad26"
     },
     {
       "path": "bin/build-stage-snapshot-rebuild-apk.sh",
@@ -613,7 +668,7 @@
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot); then each image's built index becomes the final index carrying the release's OpenVEX (bin/vex-index.py, REQ-REL-010-AC1)",
-      "sha256": "64392922a2d944a139c2c585b8e86cff0934bab6203c0e9362f1aa24865d0bd4"
+      "sha256": "45fe2941df5fcadcb111c3fb2279ef4282576671b12db93c5b1c8410268b8d45"
     },
     {
       "path": "bin/admission-tag-signer.py",
@@ -1673,7 +1728,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "2aaf3d0aebb74f8d79e2217825fa0d57d0757a8dfc956d7f4fb2dab315baee04",
+      "sha256": "8f568f99ac6e0a2abe16191bfac624ee88a9aee1835351f2831c0d16771308b8",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -2662,10 +2717,13 @@
     },
     {
       "path": "bin/release-compare.py",
-      "sha256": "561e4059bd2c99dc9af3d4a71361be72a610c687d7e6fcb327f923feaa988589",
-      "tools": [],
+      "sha256": "ee65db258704b1a243eb01e9d500ebff5711df460180b7a376aa2e18b0466a38",
+      "tools": [
+        "make"
+      ],
       "runs": [
-        "bin/apk-tool.py"
+        "bin/apk-tool.py",
+        "bin/chain-verify.py"
       ],
       "signs": false,
       "reason": "the work of Release's comparison (the compare job, no key, no secret, no id-token, nothing signed): it checks the layout, the signer and the signature of every apk on both sides with bin/apk-tool.py, compares them, and writes the small result file apk-compare/apk-compare.json"
@@ -2674,8 +2732,8 @@
   "ambient_env": [
     {
       "name": "GH_TOKEN",
-      "script": "bin/witnessed.sh",
-      "why": "the Witness wrapper receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
+      "script": "bin/witnessed-local.sh",
+      "why": "the Witness wrapper of the building steps (bin/witnessed-local.sh) receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
       "file": ".github/workflows/stage-build.yml",
       "job": "apk"
     },

@@ -21,7 +21,6 @@ jobs:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,7 +42,7 @@ jobs:
         run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: witness-build
+          name: ${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -51,10 +50,10 @@ jobs:
           path: build-in
       - name: rapk under Witness
         if: ${{ inputs.mode == 'release' }}
-        run: bash bin/witnessed.sh rapk bin/build-stage-rebuild-apk.sh
+        run: bash bin/witnessed-local.sh rapk bin/build-stage-rebuild-apk.sh
       - name: snapshot-rapk under Witness
         if: ${{ inputs.mode == 'snapshot' }}
-        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh
+        run: bash bin/witnessed-local.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rapk-${{ matrix.runner }}
@@ -68,7 +67,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,7 +86,7 @@ jobs:
         run: bash bin/archive-pull.sh --pointer build/archive.json --out archive
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: witness-build
+          name: ${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}
           path: witness-build
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -116,10 +114,10 @@ jobs:
           path: rec-rapk/ubuntu-24.04-arm
       - name: rebuild under Witness
         if: ${{ inputs.mode == 'release' }}
-        run: bash bin/witnessed.sh rebuild bin/build-stage-rebuild-assemble.sh
+        run: bash bin/witnessed-local.sh rebuild bin/build-stage-rebuild-assemble.sh
       - name: snapshot-rebuild under Witness
         if: ${{ inputs.mode == 'snapshot' }}
-        run: bash bin/witnessed.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh
+        run: bash bin/witnessed-local.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh
       # always(): the verdict (snapshot-verdict.json in snapshot mode) is the only place the per-image digests and the differing items are readable, failed comparison or not
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()

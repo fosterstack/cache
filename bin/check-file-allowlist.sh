@@ -155,6 +155,8 @@ ALLOW_PATTERNS=(
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
   # suites with their two test helpers
   '^bin/witnessed\.sh$'
+  '^bin/witnessed-local\.sh$'
+  '^bin/witness-sign-staged\.sh$'
   '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble|refuse-mode)\.sh$'
   '^bin/build-(admit|archives|version-check)\.py$'
   '^bin/chain_items\.py$'

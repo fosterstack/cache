@@ -4,13 +4,13 @@
  "caller_workflow": ".github/workflows/release.yml",
  "stages": {
   "build": {
-   "workflow": ".github/workflows/stage-build.yml"
+   "workflow": ".github/workflows/stage-sign.yml"
   },
   "sign": {
    "workflow": ".github/workflows/stage-sign.yml"
   },
   "rebuild": {
-   "workflow": ".github/workflows/stage-reproducibility.yml"
+   "workflow": ".github/workflows/stage-sign.yml"
   },
   "check": {
    "workflow": ".github/workflows/stage-verify.yml"

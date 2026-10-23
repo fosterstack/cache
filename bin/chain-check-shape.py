@@ -44,7 +44,7 @@ collection holds); PR 2's bin/chain-test-shape.py (the same flag allowlist, the 
 import hashlib, json, os, re, shlex, sys, yaml
 
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
-DOWN = {"witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
+DOWN = {"signed-witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
 UP = {"witness-check": RECORD_DIRS, "check-results": "check-results"}   # artifact name -> the path(s) it may carry
 KIND_STEP = "bash bin/install-kind.sh"
@@ -53,7 +53,7 @@ SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh r
 GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain govulncheck is built with (an installer of its own; not a scanner)
 SOURCE_SCANNERS = ["govulncheck"]   # ruling G (advisor Oct 12): the source scanners of .github/policy/scanners.json `source_scanners`, installed after Go, run by bin/check-govulncheck.py
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
-STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # PR 2's + PR 3's three
+STEP_LIST = "scanners|acceptance|runtime|arm64|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # PR 2's + PR 3's three
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "SIGSTORE_ID_TOKEN"]   # PR 2's; never github or slsa
 
 
@@ -170,7 +170,7 @@ def load(path):
 ARM_STEP = "arm64"
 ARM_TARGET = "bin/check-phase-arm64.sh"
 ARM_LINE = "bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results"
-ARM_DOWNLOADS = [("witness-build", "witness-build"), ("digests", "witness-build"), ("dist", "dist"), ("images", "images")]   # the same inputs as check-stage.sh verifies
+ARM_DOWNLOADS = [("signed-witness-build", "witness-build"), ("digests", "witness-build"), ("dist", "dist"), ("images", "images")]   # the same inputs as check-stage.sh verifies
 
 
 def exact_steps(label, steps, want, what):
@@ -413,19 +413,19 @@ def graph(path):
     def needs(n):
         v = (jobs.get(n) or {}).get("needs", [])
         return {v} if isinstance(v, str) else set(v)
-    for n in ("build", "sign", "rebuild", "check", "release"):   # the last stage is Release (the ratified rules' name; Q9)
+    for n in ("build", "sign", "rebuild", "sign-rebuild", "check", "release"):   # the last stage is Release (the ratified rules' name; Q9)
         if n not in jobs:
             bad.append("release.yml has no job %s" % n)
     if bad:
         return bad
     if (jobs["check"].get("uses") or "") != "./.github/workflows/stage-verify.yml":
         bad.append("the check job must call ./.github/workflows/stage-verify.yml")
-    if needs("check") != {"build"}:
-        bad.append("check must need exactly build (its previous stage; Sign's provenance is Release's to verify, rule 58), found %s" % sorted(needs("check")))
+    if needs("check") != {"build", "sign"}:
+        bad.append("check must need exactly build and sign (its previous stage is Build, whose record it verifies as Sign signed it; Sign's provenance is Release's to verify, rule 58), found %s" % sorted(needs("check")))
     if "check" in needs("rebuild") or "rebuild" in needs("check"):
         bad.append("check and rebuild must run side by side (rule 70)")
-    if needs("release") != {"check", "rebuild", "sign"}:   # exactly PR 2's set (3e883b3): build is reached through check
-        bad.append("the release job must need exactly check, rebuild and sign, found %s" % sorted(needs("release")))
+    if needs("release") != {"check", "sign", "sign-rebuild"}:   # the Witness move: Sign signs Build's records, sign-rebuild Rebuild's; build is reached through check
+        bad.append("the release job must need exactly check, sign and sign-rebuild, found %s" % sorted(needs("release")))
     return bad
 
 
