@@ -212,8 +212,8 @@ GUARD_STEPS = [
     }
 ]
 # REQ-CI-001 (advisor Oct 23, CI speed): allowlist-chain is accepted in EXACTLY TWO forms: the one job (SPLIT_STEPS below), or four parallel jobs
-# allowlist-chain-1..4 plus a gate job that keeps the name allowlist-chain. The groups are positions in the one job's step list (12 is the image-assembly
-# suite, the long one); the fourth shard takes every other suite step and the two guard steps. Every shard opens with the five setup steps.
+# allowlist-chain-1..4 plus a gate job that keeps the name allowlist-chain. The groups name steps of the one job's list by run text (the first group is the
+# image-assembly suite, the long one); the fourth shard takes every other suite step and the two guard steps. Every shard opens with the five setup steps.
 # The groups name their steps by run text (stripped), not by position, so an edit of the one job's step list cannot move a suite to another shard silently.
 CHAIN_SHARD_IDS = ["allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowlist-chain-4"]
 CHAIN_GROUPS = [
@@ -946,7 +946,7 @@ case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain']['steps']; s
 case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append({'name': 'x', 'run': 'true'})"
 # REQ-CI-001 (advisor Oct 23: CI speed, no check dropped, exactly once): allowlist-chain is ALSO accepted split into four parallel jobs
 # (allowlist-chain-1..4) plus a gate job that keeps the name allowlist-chain. This helper builds that form from the real ci.yml's own job, independently of the judge:
-# the five setup steps open every shard, the groups below are positions in the old job's step list (position 12 is the image-assembly suite, the long one).
+# the five setup steps open every shard, the groups below name steps of the old job by run text (the first is the image-assembly suite, the long one).
 cat > "$work/split.py" <<'PYS'
 import copy
 GROUPS = [["bash bin/assemble-image-test.sh"], ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
