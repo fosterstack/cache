@@ -22,7 +22,7 @@ d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 tree = sys.argv[2]
 bad = []
 # Codex #157 r2 (SEC-157-02 A): the pin also binds what the privileged step EXECUTES — the bump script's bytes.
-REVIEWED_BUMP_SCRIPT = "1b9c9a16c750e2f3fe207931daa3e7ae7db52e1eb8fe17140ee89a58144efcbb"
+REVIEWED_BUMP_SCRIPT = "2b86cebdb0f34c00300a4be1dd9bcbec4791e41b84394fde6340d30098d9f886"
 got_script = hashlib.sha256(open(os.path.join(tree, "bin/go-bump-open-pr.sh"), "rb").read()).hexdigest()
 if got_script != REVIEWED_BUMP_SCRIPT:
     bad.append("bin/go-bump-open-pr.sh (run with the App token) differs from its reviewed form (%s)" % got_script[:12])
