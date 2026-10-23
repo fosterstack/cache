@@ -17,6 +17,15 @@ case "$suite:$what" in
   *) echo "acceptance-serve: unknown suite or action: $suite $what" >&2; exit 2 ;;
 esac
 [ -n "${IMAGE_REF:-}" ] || { echo "acceptance-serve: IMAGE_REF is unset" >&2; exit 2; }
+# the image is named by content (REQ-SUP-001-AC30): name@sha256:<64 hex> or an image ID sha256:<64 hex>; a tag is refused (ASCII classes only)
+export LC_ALL=C
+label='[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?'
+host="${label}(\\.${label})*(:[0-9]+)?"
+part='[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*'
+tag='[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}'
+by_name="^(${host}/)?${part}(/${part})*(:${tag})?@sha256:[0-9a-f]{64}"'$'
+by_id='^sha256:[0-9a-f]{64}$'
+[[ "$IMAGE_REF" =~ $by_id ]] || [[ "$IMAGE_REF" =~ $by_name ]] || { printf 'acceptance-serve: IMAGE_REF must be content-addressed (name@sha256:<64 hex> or an image ID sha256:<64 hex>), got: %q\n' "$IMAGE_REF" >&2; exit 2; }
 docker tag "$IMAGE_REF" localhost/fscache-serve-candidate
 docker run --pull=never -d --name "$name" --env-file /dev/stdin -p "127.0.0.1:$port:8080" localhost/fscache-serve-candidate <<< "$(printf '%s\n' $envs)"   # the suite's environment (space-separated NAME=value words), one per line
 for _ in $(seq 1 20); do
