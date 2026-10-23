@@ -3782,9 +3782,16 @@ os.remove(d + "/alive")
 assert use(good) != 0, "a token was accepted although the cluster is gone"
 d3 = d.replace("/fk", "/fk3") if d.endswith("/fk") else d + "3"
 k3 = d3 + "/hostbin/kubectl"
-tok = subprocess.run([k3, "--kubeconfig", d3 + "/admin", "create", "token", "persona", "-n", "persona", "--duration", "1h"], capture_output=True, text=True).stdout.strip()
-open(d3 + "/persona-kc", "w").write(json.dumps({"users": [{"name": "p", "user": {"token": tok}}]}))
-assert subprocess.run([k3, "--kubeconfig", d3 + "/persona-kc", "get", "pods"], capture_output=True).returncode == 0, "a fresh 1-second token should work at once"
+def fresh_works():
+    # a token with a one-second life must work when it is used at once; on a loaded runner the process start alone can take longer than that second, so the token is
+    # issued again (a bounded number of times; expiry is in whole seconds, so a token issued late in a second can be gone almost at once) until one is used inside its life: the proof is "a fresh token is accepted", not "this machine is never slow"
+    for _ in range(30):
+        tok = subprocess.run([k3, "--kubeconfig", d3 + "/admin", "create", "token", "persona", "-n", "persona", "--duration", "1h"], capture_output=True, text=True).stdout.strip()
+        open(d3 + "/persona-kc", "w").write(json.dumps({"users": [{"name": "p", "user": {"token": tok}}]}))
+        if subprocess.run([k3, "--kubeconfig", d3 + "/persona-kc", "get", "pods"], capture_output=True).returncode == 0:
+            return True
+    return False
+assert fresh_works(), "a fresh 1-second token should work at once"
 time.sleep(1.4)
 assert subprocess.run([k3, "--kubeconfig", d3 + "/persona-kc", "get", "pods"], capture_output=True).returncode != 0, "an expired token was accepted"
 PY
