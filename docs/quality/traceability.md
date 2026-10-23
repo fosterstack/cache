@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 90 |
-| Acceptance criteria | 376 |
+| Acceptance criteria | 377 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 356 |
+| ACs with mapped evidence | 357 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
@@ -636,6 +636,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 | REQ-REL-004-AC5 | Given the published releases; when the daily rescan enumerates what to scan; then it enumerates exactly the current release (the latest published, non-draft, non-prerelease release by semantic version) and no superseded one; a release that stops being current is no longer scanned; the issues of superseded releases are not reopened or created | ci-workflow |  | approved | 1 item(s) |
 | REQ-REL-004-AC6 | Given a rescan scanner listed in .github/policy/scanners.json that cannot read the VEX itself (OSV-Scanner today; Grype and Trivy apply it themselves), and a finding for a CVE or alias that our published OpenVEX marks not_affected or fixed for this image's product; when the rescan statement is merged; then that finding is removed before it counts (it opens no tracking issue and raises no comment), is kept in the statement as vex_suppressed with the VEX document and statement that covered it, and every other finding still counts at any severity; a VEX document that is missing, cannot be read or does not parse stops the rescan as an operational error (never as 'no suppression'); the match is by CVE or alias for the image's product (the repository-wide product, or one scoped to this variant and architecture; the named package and version when the statement names subcomponents), never by CVE alone across products; and a scanner in scanners.json that is neither marked as reading the VEX natively nor covered by this filter fails a test, so a new scanner can never bypass the VEX by omission (advisor reading: ratified scanner-panel rule 4, the pipeline filter, applied to every scanner that cannot read the VEX) | unit |  | approved | 1 item(s) |
 | REQ-REL-004-AC7 | Given more open issues carry the daily-rescan label than one page holds; when the daily rescan looks for its tracking issue; then it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue' | unit |  | approved | 1 item(s) |
+| REQ-REL-004-AC8 | Given the toolchain-freshness job's bump branch, and a main whose ruleset requires signed commits; when bin/go-bump-open-pr.sh creates a bump branch (no branch and no pull request exist for it); then the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the two bumped go.mod files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token), and the API is asked whether that commit is verified; only then is the draft pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; and no workflow file or script outside the tests runs git commit, git commit-tree or git merge, so no PR-opening bot has a commit path that produces an unsigned commit (rule: main requires signed commits; advisor handoff 0623 after cache#464 was found BLOCKED by an unsigned bump commit, same mechanism as REQ-REFRESH-001-AC34, no new credential) | unit |  | approved | 1 item(s) |
 
 ### REQ-REL-005 — Every CI action pinned to a commit digest
 

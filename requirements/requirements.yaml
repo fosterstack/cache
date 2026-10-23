@@ -1550,6 +1550,12 @@ requirements:
         then: "it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue'"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-REL-004-AC8
+        given: "the toolchain-freshness job's bump branch, and a main whose ruleset requires signed commits"
+        when: "bin/go-bump-open-pr.sh creates a bump branch (no branch and no pull request exist for it)"
+        then: "the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the two bumped go.mod files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token), and the API is asked whether that commit is verified; only then is the draft pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; and no workflow file or script outside the tests runs git commit, git commit-tree or git merge, so no PR-opening bot has a commit path that produces an unsigned commit (rule: main requires signed commits; advisor handoff 0623 after cache#464 was found BLOCKED by an unsigned bump commit, same mechanism as REQ-REFRESH-001-AC34, no new credential)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
 
   - id: REQ-REL-005
     title: Every CI action pinned to a commit digest
