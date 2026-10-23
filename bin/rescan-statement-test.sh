@@ -629,7 +629,7 @@ vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":
 expect "snyk: a well-formed applications list still works (one suppressed, the application finding counts)" findings true 1 1
 # namespace-preserving package match against the PUBLISHED VEX (pkg:generic/busybox@1.37.0 covers busybox 1.37.0 only, not another namespace's busybox)
 osvrep() { jq -nc --arg n "$1" --arg p "$2" --arg v "$3" '{"results":[{"source":{"path":"x","type":"lockfile"},"packages":[{"package":{"name":$p,"version":$v},"vulnerabilities":[{"id":$n,"aliases":[]}]}]}]}'; }
-PUBVEX=.vex/fosterstack-cache.openvex.json
+PUBVEX=test-evidence/vex-scope/busybox.openvex.json   # the retired busybox statements (rc-5a G): the namespace-preserving match still needs a document that holds them
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 evil/busybox 1.37.0)" "$PUBVEX"; expect "published VEX: evil/busybox 1.37.0 is NOT busybox (namespace kept, finding counts)" findings true 1 0
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX"; expect "published VEX: busybox 1.37.0 is suppressed in the cache image" clean false 0 1
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX" debug linux/arm64 "$CAND_REPO@$AMD"; expect "published VEX: busybox 1.37.0 is suppressed in the candidates image" clean false 0 1
