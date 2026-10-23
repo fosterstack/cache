@@ -261,7 +261,7 @@ check("--rebuild-dir" not in t6 and "compares Build's and Rebuild's" not in t6 a
       "text: REQ-CHAIN-007-AC6 runs release-sign-apks.sh with --build-dir and --key only; the comparison is release-compare.sh's")
 check("release-sign: cosign, git, jq and python3" in t10, "text: REQ-CHAIN-007-AC10 lists git among release-sign's tools")
 b7 = ac("REQ-BUILDAPK-001", 7)["then"]
-check("counterpart in Rebuild" not in b7 and "same control AND data sections" not in b7 and "--rebuild-dir" in b7 and "unknown argument" in b7 and "release-compare.sh" in b7,
+check("Build and Rebuild apk" not in b7 and "PROPOSED" not in b7 and "counterpart in Rebuild" not in b7 and "same control AND data sections" not in b7 and "--rebuild-dir" in b7 and "unknown argument" in b7 and "release-compare.sh" in b7,
       "text: REQ-BUILDAPK-001-AC7 signs Build's apks only; a --rebuild-dir is an unknown argument; the comparison is release-compare.sh's")
 CS = {r["path"]: r for r in json.load(open(os.path.join(BIN, "..", ".github", "policy", "chain-scripts.json")))["scripts"]}
 check("Build/Rebuild comparison" not in CS["bin/release-apks.sh"]["reason"] and "release-compare" in CS["bin/release-apks.sh"]["reason"],
