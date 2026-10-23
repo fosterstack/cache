@@ -56,7 +56,7 @@ class GradleWrapperSum(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("GRADLE_SUM_ONLINE") == "1", "set GRADLE_SUM_ONLINE=1 (CI's auditor suites step does) to compare with the published sum")
 class GradleWrapperSumOnline(unittest.TestCase):
     def test_the_sum_is_the_one_gradle_publishes_for_the_zip_the_url_names(self):
-        import urllib.request
+        import hashlib, urllib.request
         p = wrapper_props()
         url = p["distributionUrl"].replace("\\:", ":")
         self.assertTrue(url.startswith("https://services.gradle.org/distributions/"))
@@ -64,6 +64,11 @@ class GradleWrapperSumOnline(unittest.TestCase):
             published = r.read().decode().split()[0].strip().lower()
         self.assertRegex(published, r"^[0-9a-f]{64}$")
         self.assertEqual(p["distributionSha256Sum"], published)
+        h = hashlib.sha256()
+        with urllib.request.urlopen(url, timeout=300) as r:
+            for chunk in iter(lambda: r.read(1 << 20), b""):
+                h.update(chunk)
+        self.assertEqual(p["distributionSha256Sum"], h.hexdigest(), "the sum is not the sha256 of the zip")
 
 
 class ImageRefRefusal(unittest.TestCase):
@@ -121,6 +126,10 @@ class ImageRefRefusal(unittest.TestCase):
                 "ghcr.io/fosterstack/cache@sha256:" + "a" * 63,
                 "ghcr.io/fosterstack/cache@sha256:" + "A" * 64,
                 "/@sha256:" + "a" * 64,
+                "ghcr.io//fosterstack/cache@sha256:" + "a" * 64,
+                "ghcr.io/fosterstack//cache@sha256:" + "a" * 64,
+                "ghcr.io/fosterstack/cache..x@sha256:" + "a" * 64,
+                "ghcr.io/fosterstack/cache:@sha256:" + "a" * 64,
                 "-v/:/host@sha256:" + "a" * 64,
                 "ghcr.io/fosterstack/cache/@sha256:" + "a" * 64,
                 "@sha256:" + "a" * 64,
