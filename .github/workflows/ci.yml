@@ -491,8 +491,8 @@ jobs:
         run: |
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
 
-      - name: image assembly, lock proof and sealed proof regressions
-        run: bash bin/assemble-image-test.sh
+      - name: "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)"
+        run: bash bin/chain-sign-wiring-test.sh
 
   allowlist-chain-2:
     name: allowlist-chain-2
@@ -526,13 +526,14 @@ jobs:
         run: |
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
 
-      - name: input refresh script regressions
-        run: bash bin/refresh-inputs-test.sh
+      - name: image assembly, lock proof and sealed proof regressions
+        run: bash bin/assemble-image-test.sh
 
-      # The v0.3.0 release chain's four suites (REQ-CHAIN-001..003). The pin-wiring judge requires each step exactly as written here.
-      # The verifier's cases run with the network cut and must prove the cut (CHAIN_TEST_REQUIRE_NETCUT=1).
-      - name: "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)"
-        run: CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh
+      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
+        run: bash bin/go-bump-open-pr-test.sh
+
+      - name: same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)
+        run: bash bin/inspector-reuse-test.sh
 
   allowlist-chain-3:
     name: allowlist-chain-3
@@ -569,11 +570,13 @@ jobs:
       - name: apk build driver and release signing regressions
         run: bash bin/build-apk-test.sh
 
-      - name: Go-bump PR recovery regressions (audit R03 — orphaned branch / closed-merged)
-        run: bash bin/go-bump-open-pr-test.sh
+      - name: input refresh script regressions
+        run: bash bin/refresh-inputs-test.sh
 
-      - name: same-day reuse of Amazon Inspector results — keyed by the SBOM's package inventory, reuse on a match, a fresh call on each way it differs (REQ-REL-004 AC5)
-        run: bash bin/inspector-reuse-test.sh
+      # The v0.3.0 release chain's four suites (REQ-CHAIN-001..003). The pin-wiring judge requires each step exactly as written here.
+      # The verifier's cases run with the network cut and must prove the cut (CHAIN_TEST_REQUIRE_NETCUT=1).
+      - name: "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)"
+        run: CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh
 
   allowlist-chain-4:
     name: allowlist-chain-4
@@ -660,9 +663,6 @@ jobs:
       - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
         run: bash bin/chain-hostile-test.sh
 
-      - name: "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)"
-        run: bash bin/chain-sign-wiring-test.sh
-
       - name: "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)"
         run: bash bin/chain-records-test.sh
 
@@ -727,6 +727,7 @@ jobs:
 
   # The required check `allowlist-chain` (REQ-CI-001): the four shards above run the one job's steps in parallel; this gate keeps the name, needs every
   # shard, always runs, takes no checkout and no action, and fails unless every shard's result is exactly `success` (failed, skipped, cancelled, missing or empty fails).
+
   allowlist-chain:
     name: allowlist-chain
     runs-on: ubuntu-latest
