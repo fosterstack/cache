@@ -161,8 +161,8 @@ mkdir -p "$out"
 # the witness-<step> directory and the policy it writes). These nine paths, anchored at the root, go into the exclude file of the checkout (never committed).
 # Every other untracked or modified file still makes the tree dirty, and the dirty-tree checks below and in both recipes are unchanged.
 excl=$("$GIT" -C "$src" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null) || die "cannot find the exclude file of $src (git rev-parse failed)" 1
-mkdir -p "${excl%/*}" 2>/dev/null   # a checkout made with an empty template has no info/ directory
-[ -d "${excl%/*}" ] && [ ! -d "$excl" ] || die "the exclude file $excl cannot be written (its directory is missing, or it is a directory)" 1
+mkdir -p "${excl%/*}" 2>/dev/null || true   # a checkout made with an empty template has no info/ directory; if it cannot be made the test below says so
+[ -d "${excl%/*}" ] && [ ! -d "$excl" ] || die "the exclude file $excl cannot be used: its directory ${excl%/*} is not a directory, or the exclude path itself is a directory" 1
 lines=()
 [ ! -f "$excl" ] || mapfile -t lines <"$excl"
 first=1

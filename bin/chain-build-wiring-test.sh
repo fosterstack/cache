@@ -2849,6 +2849,9 @@ g=$(mktemp -d); ( cd "$g" && git init -q && git config user.email t@t && git con
 bash "$TREE" "$g" > /dev/null 2>&1; [ -z "$(git -C "$g" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' (a different pattern to git) is not taken for /out/, and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: an exclude holding ' /out/' left the tree dirty: $(git -C "$g" status --porcelain | tr '\n' ' ')"
 m=$(mktemp -d); ( cd "$m" && git init -q && git config user.email t@t && git config user.name t && echo a > tracked && git add tracked && git commit -qm i && mkdir archive && echo x > archive/f && rm -rf .git/info )
 bash "$TREE" "$m" > /dev/null 2>&1; [ -z "$(git -C "$m" status --porcelain)" ] && ok "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the block makes it and the tree ends clean" || bad "REQ-BUILDAPK-001-AC4 tree: with .git/info removed the tree is dirty or the block failed: $(git -C "$m" status --porcelain | tr '\n' ' ')"
+n=$(mktemp -d); ( cd "$n" && git init -q && rm -rf .git/info && echo x > .git/info )
+nrc=0; nerr=$(bash "$TREE" "$n" 2>&1 >/dev/null) || nrc=$?
+[ "$nrc" = 1 ] && case "$nerr" in *"the exclude file"*) true ;; *) false ;; esac && ok "REQ-BUILDAPK-001-AC4 tree: with .git/info a regular file the block exits 1 and names the exclude file" || bad "REQ-BUILDAPK-001-AC4 tree: with .git/info a regular file the block did not exit 1 naming the exclude file (rc=$nrc: $nerr)"
 python3 - << 'PY' && ok "REQ-BUILDAPK-001-AC4 tree: build-apk.sh holds the exclusion block once, before the sealed melange call" || bad "REQ-BUILDAPK-001-AC4 tree: the exclusion block is missing, repeated or after the sealed melange call"
 t = open("bin/build-apk.sh").read().splitlines()
 b = [i for i, l in enumerate(t) if l == "# tree-exclude begin"]
@@ -2856,8 +2859,8 @@ e = [i for i, l in enumerate(t) if l == "# tree-exclude end"]
 m = [i for i, l in enumerate(t) if l.startswith('melange_bin=')]
 assert len(b) == 1 and len(e) == 1 and b[0] < e[0] < m[0]
 PY
-grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then" build/melange.yaml && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then" build/melange-fips.yaml && ok "REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh ((devel) and vcs.modified) and in each of the two recipes" || bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
-EXPECT=976
+grep -qF "grep -Fq '(devel)' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "grep -Eq 'vcs\\.modified=true' \"\$tmp/buildinfo.txt\" && die" bin/build-apk.sh && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then cat \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; echo 'the binary says (devel) or vcs.modified=true' >&2; exit 1; fi" build/melange.yaml && grep -qF "if grep -Eq '\\(devel\\)|vcs.modified=true' \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; then cat \${{targets.destdir}}/usr/share/fscache/buildinfo.txt; echo 'the binary says (devel) or vcs.modified=true' >&2; exit 1; fi" build/melange-fips.yaml && ok "REQ-BUILDAPK-001-AC4 tree: the dirty-tree check lines themselves are still in build-apk.sh ((devel) and vcs.modified) and in each of the two recipes" || bad "REQ-BUILDAPK-001-AC4 tree: a dirty-tree check line was removed or changed"
+EXPECT=977
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
