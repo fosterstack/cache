@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-VEND-001-AC1, REQ-VEND-001-AC4, REQ-VEND-001-AC5, REQ-VEND-001-AC6, REQ-VEND-001-AC7, REQ-VEND-001-AC8, REQ-VEND-001-AC9, REQ-VEND-001-AC10, REQ-VEND-001-AC11, REQ-VEND-001-AC12, REQ-VEND-001-AC13, REQ-VEND-001-AC14
+# proves: REQ-VEND-001-AC15, REQ-VEND-001-AC1, REQ-VEND-001-AC4, REQ-VEND-001-AC5, REQ-VEND-001-AC6, REQ-VEND-001-AC7, REQ-VEND-001-AC8, REQ-VEND-001-AC9, REQ-VEND-001-AC10, REQ-VEND-001-AC11, REQ-VEND-001-AC12, REQ-VEND-001-AC13, REQ-VEND-001-AC14
 # The vendored tree and its provenance (REQ-VEND-001, owner-ratified dependency rules 1-10; ACs accepted by the advisor Oct 12):
 # the committed vendor/ tree and the build-recipe mode (AC1, AC6), dependency-provenance.json (check, build; AC4, AC5, AC14), the
 # evidence file the release assembles (AC7-AC10), and the listable shape, signing and wording rules (AC11-AC13). The regenerate-and-compare
@@ -554,6 +554,121 @@ for x in e:
     assert set(x) == {"module", "version", "url", "commit", "command"} and re.fullmatch(r"[0-9a-f]{40}", x["commit"]) and x["command"].startswith("git ") and x["url"].startswith("https://"), x
 assert e[1]["commit"].startswith("a7dc8b61c822")
 PY
+
+# ===== AC15: bin/vendor-provenance-records.py produces the three record files (the one step that reads the network, through the Go toolchain) =========================
+# A fake `go` prints canned `go mod download -json` output; the script copy differs from bin/vendor-provenance-records.py in its GO_TOOL line only.
+bin_vr="$root/bin/vendor-provenance-records.py"
+CA=a7dc8b61c822528f973a5e4e7b272055c6fdb43e
+BETA=v0.0.0-20191010083416-a7dc8b61c822
+mkrec() { # mkrec DIR: fixtures plus a records-step copy whose go is the fake at DIR/go
+  local d=$1; mkfix "$d"; mkdir -p "$d/bin"
+  cp "$bin_vp" "$d/bin/vendor-provenance.py"
+  python3 - "$bin_vr" "$d/bin/vendor-provenance-records.py" "$d/go" <<'PY'
+import re, sys
+src, out, gopath = sys.argv[1:4]
+lines = open(src).read().split("\n"); n = 0
+for i, ln in enumerate(lines):
+    if re.match(r'^GO_TOOL = .*#\s*TEST-SUBST\s*$', ln):
+        lines[i] = 'GO_TOOL = "%s"  # TEST-SUBST' % gopath; n += 1
+assert n == 1, "expected exactly one GO_TOOL line marked TEST-SUBST, found %d" % n
+open(out, "w").write("\n".join(lines))
+PY
+  cat >"$d/go" <<EOF
+#!/bin/bash
+{ echo "ARGS \$*"; echo "PWD-HAS-GOMOD \$([ -f go.mod ] && echo yes || echo no)"; for v in GOTOOLCHAIN GOFLAGS GOENV GOSUMDB GOPROXY GOPRIVATE GONOSUMDB GONOSUMCHECK GOINSECURE GOVCS GONOPROXY GOFIPS140 GODEBUG; do echo "ENV \$v=\${!v-unset}"; done; } >> "$d/go.log"
+/bin/cat "$d/go-out.jsonl"
+exit \$(/bin/cat "$d/go-rc" 2>/dev/null || echo 0)
+EOF
+  chmod +x "$d/go"; : >"$d/go.log"
+  cat >"$d/go-out.jsonl" <<EOF
+{"Path":"example.test/alpha","Version":"v1.2.3","Sum":"$H1","Origin":{"VCS":"git","URL":"https://example.test/alpha","Ref":"refs/tags/v1.2.3","Hash":"1111111111111111111111111111111111111111"}}
+{"Path":"example.test/beta","Version":"$BETA","Sum":"$H2","Origin":{"VCS":"git","URL":"https://example.test/beta","Hash":"$CA"}}
+EOF
+  echo '[]' >"$d/rec15.json"
+}
+recs() { # recs DIR [extra args]: run the copy
+  local d=$1; shift
+  ( cd "$d" && python3 -I "$d/bin/vendor-provenance-records.py" --vendor-dir "$d/vendor" --go-sum "$d/go.sum" --licenses "$d/licenses.json" --recorded-origins "$d/rec15.json" --out-dir "$d/records" "$@" )
+}
+r15() { # r15 LABEL REGEX MUTATION-CODE-ON-go-out-lines(lines) [FILE]: the step refuses (exit 2) naming the cause and writes nothing
+  local n=$1 re=$2 code=$3 f=${4:-go-out.jsonl} d="$work/f15-$1"; mkrec "$d"
+  python3 - "$d/$f" "$code" <<'PY'
+import json, sys
+p, code = sys.argv[1], sys.argv[2]
+if p.endswith(".jsonl"):
+    lines = [json.loads(x) for x in open(p).read().splitlines() if x.strip()]
+    exec(code); open(p, "w").write("\n".join(json.dumps(x) for x in lines) + "\n")
+else:
+    d = json.load(open(p)); exec(code); json.dump(d, open(p, "w"))
+PY
+  recs "$d" >"$work/out15" 2>&1; local got=$?
+  if [ "$got" = 2 ] && grep -Eq "$re" "$work/out15" && [ ! -e "$d/records" ]; then ok; else bad AC15 "refuses with the cause ($n): exit $got: $(head -c 200 "$work/out15")"; fi; }
+if [ ! -f "$bin_vr" ]; then bad AC15 "bin/vendor-provenance-records.py does not exist (RED)"; else
+d="$work/f15-ok"; mkrec "$d"
+t AC15 "the records step writes the three files and exits 0 on a fully verified, fully reviewed set" recs "$d"
+t AC15 "its sumdb record names each module, its go.sum hash, included and sum.golang.org" python3 - "$d/records/sumdb.json" "$H1" "$H2" "$BETA" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1])); h1, h2, beta = sys.argv[2:5]
+assert s == {"example.test/alpha@v1.2.3": {"hash": h1, "included": True, "log": "sum.golang.org"},
+             "example.test/beta@" + beta: {"hash": h2, "included": True, "log": "sum.golang.org"}}, s
+PY
+t AC15 "its origins hold a tag for the tagged module and a commit for the pseudo-version" python3 - "$d/records/origins.json" "$BETA" "$CA" <<'PY'
+import json, sys
+o = json.load(open(sys.argv[1])); beta, ca = sys.argv[2:4]
+assert o == {"example.test/alpha@v1.2.3": {"url": "https://example.test/alpha", "tag": "v1.2.3"},
+             "example.test/beta@" + beta: {"url": "https://example.test/beta", "commit": ca}}, o
+PY
+t AC15 "its licences are the reviewed file's entries for exactly the vendored modules" python3 - "$d/records/licenses.json" "$d/licenses.json" <<'PY'
+import json, sys
+assert json.load(open(sys.argv[1])) == json.load(open(sys.argv[2]))
+PY
+t AC15 "the three files feed bin/vendor-provenance.py build, which writes the provenance" bash -c "cd '$d' && python3 '$bin_vp' build --vendor-dir vendor --go-sum go.sum --sumdb-record records/sumdb.json --origins records/origins.json --licenses records/licenses.json --out out.json && python3 '$bin_vp' check --vendor-dir vendor --go-sum go.sum --provenance out.json"
+t AC15 "it never writes dependency-provenance.json itself and writes nothing but the three files" bash -c "test \"\$(ls '$d/records' | tr '\n' ' ')\" = 'licenses.json origins.json sumdb.json ' && ! test -e '$d/dependency-provenance.json'"
+d="$work/f15-env"; mkrec "$d"
+GOSUMDB=off GOFLAGS=-insecure GOPRIVATE='*' GONOSUMDB='*' GOPROXY=direct GOTOOLCHAIN=go9.9.9 GOENV=/nonexistent GOINSECURE='*' GOVCS=off GONOPROXY='*' recs "$d" >/dev/null 2>&1
+for want in "ARGS mod download -json example.test/alpha@v1.2.3 example.test/beta@$BETA" "PWD-HAS-GOMOD yes" "ENV GOTOOLCHAIN=local" "ENV GOFLAGS=" "ENV GOENV=off" "ENV GOSUMDB=sum.golang.org" "ENV GOPROXY=https://proxy.golang.org" "ENV GOPRIVATE=unset" "ENV GONOSUMDB=unset" "ENV GONOSUMCHECK=unset" "ENV GOINSECURE=unset" "ENV GOVCS=unset" "ENV GONOPROXY=unset"; do
+  t AC15 "the go call gets: $want (a hostile caller environment changes nothing)" grep -qxF "$want" "$d/go.log"
+done
+r15 go-error       "alpha.*(boom|cannot be verified)"         "lines[0]['Error'] = 'boom: cannot be verified'"
+r15 sum-vs-gosum   "alpha.*go.sum"                            "lines[0]['Sum'] = 'h1:ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ='"
+r15 module-missing "beta.*(not|no) .*(download|output|reported)" "lines.pop(1)"
+r15 module-twice   "alpha.*(twice|more than once)"            "lines.append(dict(lines[0]))"
+r15 extra-module   "example.test/gamma"                       "lines.append({'Path':'example.test/gamma','Version':'v1.0.0','Sum':lines[0]['Sum'],'Origin':lines[0]['Origin']})"
+r15 not-git        "alpha.*(git|VCS)"                         "lines[0]['Origin']['VCS'] = 'hg'"
+r15 not-https      "alpha.*https"                             "lines[0]['Origin']['URL'] = 'http://example.test/alpha'"
+r15 wrong-tag-ref  "alpha.*(ref|tag)"                         "lines[0]['Origin']['Ref'] = 'refs/tags/v9.9.9'"
+r15 branch-ref     "alpha.*(ref|tag)"                         "lines[0]['Origin']['Ref'] = 'refs/heads/main'"
+r15 pseudo-prefix  "beta.*(commit|prefix)"                    "lines[1]['Origin']['Hash'] = '3' * 40"
+r15 pseudo-short   "beta.*(commit|40)"                        "lines[1]['Origin']['Hash'] = 'a7dc8b61c822'"
+r15 no-origin-alpha "alpha.*origin"                           "lines[0].pop('Origin')"
+r15 no-origin-beta  "beta.*origin"                            "lines[1].pop('Origin')"
+r15 no-licence      "alpha.*licen[sc]e"                       "d.pop('example.test/alpha@v1.2.3')" licenses.json
+r15 empty-licence   "alpha.*licen[sc]e"                       "d['example.test/alpha@v1.2.3'] = ''" licenses.json
+r15 no-sum          "beta.*(Sum|hash)"                        "lines[1].pop('Sum')"
+# a module with no Origin is filled only from the reviewed recorded-origins file, as build does
+d="$work/f15-rec"; mkrec "$d"
+python3 - "$d" "$BETA" "$CA" <<'PY'
+import json, sys
+d, beta, ca = sys.argv[1:4]
+lines = [json.loads(x) for x in open(d + "/go-out.jsonl").read().splitlines()]
+lines[1].pop("Origin"); open(d + "/go-out.jsonl", "w").write("\n".join(json.dumps(x) for x in lines) + "\n")
+json.dump([{"module": "example.test/beta", "version": beta, "url": "https://example.test/beta", "commit": ca, "command": "git ls-remote https://example.test/beta"}], open(d + "/rec15.json", "w"))
+PY
+t AC15 "a module the toolchain reports no Origin for is accepted when the reviewed recorded-origins file covers it" recs "$d"
+t AC15 "... origins.json then holds only what the toolchain verified, and build applies the reviewed file" bash -c "cd '$d' && python3 -c \"import json; o=json.load(open('records/origins.json')); assert list(o)==['example.test/alpha@v1.2.3'], o\" && python3 '$bin_vp' build --vendor-dir vendor --go-sum go.sum --sumdb-record records/sumdb.json --origins records/origins.json --licenses records/licenses.json --recorded-origins rec15.json --out out.json && python3 '$bin_vp' check --vendor-dir vendor --go-sum go.sum --provenance out.json"
+r15 no-origin-uncovered "beta.*(origin|recorded)" "lines[1].pop('Origin')"
+d="$work/f15-exists"; mkrec "$d"; mkdir "$d/records"
+rc AC15 "an --out-dir that already exists is refused (exit 2) and left untouched" 2 bash -c "cd '$d' && python3 -I '$d/bin/vendor-provenance-records.py' --vendor-dir '$d/vendor' --go-sum '$d/go.sum' --licenses '$d/licenses.json' --out-dir '$d/records'; r=\$?; ls '$d/records' | wc -l | grep -q '^ *0\$' && exit \$r"
+d="$work/f15-nogo"; mkrec "$d"; rm "$d/go"
+rc AC15 "an absent toolchain is a refusal (exit 2), never a fallback to another go" 2 recs "$d"
+d="$work/f15-gorc"; mkrec "$d"; echo 1 >"$d/go-rc"
+rc AC15 "a go that exits non-zero is a refusal (exit 2) writing nothing" 2 recs "$d"
+t AC15 "... and writes nothing" test ! -e "$d/records"
+t AC15 "the production file holds its go as exactly one TEST-SUBST line, the toolchain's fixed install path" bash -c "test \$(grep -c '^GO_TOOL = .*# TEST-SUBST' '$bin_vr') = 1 && grep -q '^GO_TOOL = \"/usr/local/bin/fscache-go/bin/go\"  # TEST-SUBST' '$bin_vr'"
+t AC15 "the production file sets no sumdb opt-out and no module-mode flag: no GOSUMDB=off, GONOSUMDB, GOPRIVATE, GOINSECURE or GOFLAGS value" bash -c "! grep -En '\"(GOSUMDB)\": *\"off\"|\"(GONOSUMDB|GOPRIVATE|GOINSECURE|GONOSUMCHECK)\"|-mod=|-insecure' '$bin_vr'"
+t AC15 "the production file opens no socket of its own (no urllib, http, socket, ssl, requests): the network is reached only through the Go toolchain" bash -c "! grep -Eq '^ *(import|from) +(urllib|http|socket|ssl|requests)' '$bin_vr'"
+t AC15 "bin/vendor-provenance.py is unchanged in kind: still no network, no subprocess, no environment" bash -c "! grep -Eq '^ *(import|from) +(subprocess|socket|urllib|http|ssl|requests)' '$bin_vp'"
+fi
 
 echo "vendor-provenance: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
