@@ -298,6 +298,16 @@ mappings:
       - { type: go-test, ref: "internal/blobstore:TestPutFailsWhenTempDirIsAFile" }
       - { type: go-test, ref: "internal/blobstore:TestWalkKeepsTmpLeafKeysAndReportsOnlyTempDirFiles" }
       - { type: go-test, ref: "internal/blobstore:TestWalkLeavesEarlierVersionShardFilesAlone" }
+  - ac: REQ-PROTO-003-AC5
+    evidence:
+      - { type: go-test, ref: "internal/blobstore:TestDirectoryAtAKeysPathIsNotFound" }
+      - { type: go-test, ref: "internal/blobstore:TestBlobSurvivesACollidingKey" }
+      - { type: go-test, ref: "internal/blobstore:TestSymlinkAtAKeysPathIsNotFound" }
+      - { type: go-test, ref: "internal/blobstore:TestFifoAtAKeysPathIsNotFoundAndDoesNotBlock" }
+      - { type: go-test, ref: "internal/blobstore:TestGetWhenTheBlobVanishesBeforeItIsOpened" }
+      - { type: go-test, ref: "internal/blobstore:TestGetWhenTheOpenedFileIsNotTheCheckedOne" }
+      - { type: go-test, ref: "internal/blobstore:TestGetSurfacesAnOpenFailureOfARegularFile" }
+      - { type: go-test, ref: "internal/server:TestNeverStoredKeyOnADirectoryPathIs404" }
       - { type: go-test, ref: "internal/blobstore:TestInterruptedWriteLeavesNoKeyVisible" }
       - { type: go-test, ref: "internal/blobstore:TestRelPathUnchangedForOtherKeys" }
       - { type: go-test, ref: "internal/cache:TestReconcileKeepsTmpLeafKeys" }

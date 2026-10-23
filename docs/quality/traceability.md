@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 99 |
-| Acceptance criteria | 478 |
+| Acceptance criteria | 479 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 467 |
+| ACs with mapped evidence | 468 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 47 |
@@ -63,7 +63,8 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 | REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects; when the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root | http-integration | yes | approved | 3 item(s) |
 | REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | approved | none mapped |
 | REQ-PROTO-003-AC3 | Given a key whose leaf segment starts with two dots; when it is stored and read; then it is kept under the fixed shard `__` of its directory, two different keys that differ only in their directory part stay different, and the result stays inside the store root; every key whose leaf does not start with two dots keeps exactly its previous path | component | yes | approved | 8 item(s) |
-| REQ-PROTO-003-AC4 | Given a key whose leaf starts with `.tmp-` stored before an unclean shutdown, at the top level or in a nested directory, including a leaf shaped exactly like a generated temporary name, and stray files in the store's temporary directory; when the store is reconciled at startup; then the blob is still there and still readable, only files in the dedicated temporary directory (and leftover `.tmp-` files directly at the top of the store, where no key's path can lie) are removed, and every key keeps its path | component | yes | approved | 14 item(s) |
+| REQ-PROTO-003-AC4 | Given a key whose leaf starts with `.tmp-` stored before an unclean shutdown, at the top level or in a nested directory, including a leaf shaped exactly like a generated temporary name, and stray files in the store's temporary directory; when the store is reconciled at startup; then the blob is still there and still readable, only files in the dedicated temporary directory (and leftover `.tmp-` files directly at the top of the store, where no key's path can lie) are removed, and every key keeps its path | component | yes | approved | 6 item(s) |
+| REQ-PROTO-003-AC5 | Given a key that was never stored whose path in the store is a directory, a symbolic link or any other file that is not a regular file (for example the key `ab` after the key `ab/ab` was stored), or a key whose path lies below a stored blob; when a client sends HEAD or GET for it, or the startup walk meets that path; then the answer is 404, never 200, nothing at that path is opened, and the walk reports no entry for it | component |  | approved | 16 item(s) |
 
 ### REQ-PROTO-004 — Method surface
 

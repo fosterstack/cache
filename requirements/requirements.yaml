@@ -160,6 +160,12 @@ requirements:
         then: the blob is still there and still readable, only files in the dedicated temporary directory (and leftover `.tmp-` files directly at the top of the store, where no key's path can lie) are removed, and every key keeps its path
         verification: { method: component, release_blocking: true }
         status: approved
+      - id: REQ-PROTO-003-AC5
+        given: a key that was never stored whose path in the store is a directory, a symbolic link or any other file that is not a regular file (for example the key `ab` after the key `ab/ab` was stored), or a key whose path lies below a stored blob
+        when: a client sends HEAD or GET for it, or the startup walk meets that path
+        then: the answer is 404, never 200, nothing at that path is opened, and the walk reports no entry for it
+        verification: { method: component, release_blocking: false }
+        status: approved
 
   - id: REQ-PROTO-004
     title: Method surface
