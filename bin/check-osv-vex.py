@@ -32,6 +32,8 @@ def main():
     ap.add_argument("--variant", default="")
     ap.add_argument("--platform", default="")
     a = ap.parse_args()
+    if a.platform not in ("", "linux/amd64", "linux/arm64"):
+        fail("the platform %r is not linux/amd64, linux/arm64 or empty: an architecture-scoped statement is not matched against a platform that is not one of them" % a.platform)
     m = load_matcher()
     try:
         doc = m._vex_load(a.vex)

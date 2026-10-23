@@ -527,6 +527,10 @@ if jq -e '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | select(.
 archvex amd64 arm64
 FAKE_OSV_VULNS="$VBUSY" want_fail "AC4 F3 statements scoped to each architecture do not except the finding on the go.mod sources (no platform)" go.mod "${SCAN[@]}"
 if jq -e '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | select(.name | test("^(production|fips)/linux/"))] | length == 4 and all(.[]; .verdict == "pass" and .vex_suppressed == 1)' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 F3 one statement scoped to each architecture excepts the finding on both platform children of each image"; else bad "AC4 F3 per-arch verdicts wrong: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | {name, verdict}]' "$fx/out/scan-results.json" 2>&1 | head -c 300)"; fi
+for badplat in amd64 odd/amd64 linux/arm64/v8 linux/ windows/amd64; do
+  pout=$(python3 "$root/bin/check-osv-vex.py" --vex "$root/.vex/fosterstack-cache.openvex.json" --report /dev/null --platform "$badplat" 2>&1) && prc=0 || prc=$?
+  if [ "$prc" = 1 ] && grep -Fq -- "platform" <<< "$pout" && grep -Fq -- "$badplat" <<< "$pout"; then ok "AC4 F3 check-osv-vex.py refuses the platform '$badplat' (only linux/amd64, linux/arm64 or none) naming it"; else bad "AC4 F3 check-osv-vex.py accepted or mis-reported platform '$badplat': rc=$prc ${pout:0:140}"; fi
+done
 cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
 mkfake osv-scanner 0 80
 # ---- REQ-CHAIN-006-AC15: fresh vulnerability databases from the scanner's own host --------------------------------------------
@@ -1205,7 +1209,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=383
+EXPECT=388
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
