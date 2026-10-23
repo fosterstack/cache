@@ -81,7 +81,7 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
     bad = next((src[len("bad-label:"):] for _, src in proofs if str(src).startswith("bad-label:")), None)
     if bad is not None:
         return False, f"age not provable: the label '# {bad}' does not name the pinned commit (the label is wrong; this is not a missing clock)", None
-    if item.kind in ("tool", "package") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") and (d := parse_time(t)) is not None and d <= now for t, src in proofs):
+    if item.kind in ("tool", "package") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") for t, src in proofs):
         proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]   # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old clock (rc-5b item 6)
     best, seen = None, []
     for t, src in proofs:
@@ -308,14 +308,14 @@ def _pr_clock(item, root, base, head="HEAD"):
             continue
     if first is None:
         return None
-    for c in commits[first:first + PR_CLOCK_WALK]:      # the earliest run whose head CONTAINS the commit: a commit that was never a pushed head has no run of its own
+    intro = commits[first]
+    for c in commits[first:]:      # the earliest run whose head CONTAINS the commit: a commit that was never a pushed head has no run of its own (base..head bounds the walk)
+        if c != intro and _gh_run(["git", "-C", root, "merge-base", "--is-ancestor", intro, c], capture_output=True).returncode != 0:
+            continue      # a sibling in a merge does not contain the introducing commit: its runs lend no clock
         times = _run_times(repo, c)
         if times:
             return min(times)
     return None
-
-
-PR_CLOCK_WALK = 60
 
 
 def _run_times(repo, commit):

@@ -4317,5 +4317,90 @@ urllib.request.urlopen = lambda *a, **k: R(rows.encode())
 assert ac._go_index_time("github.com/BurntSushi/toml", "v1.0.0", "2020-01-01T00:00:00Z") == "2026-02-02T00:00:00Z"   # an exact Path match: another module's case-twin lends no time
 PY
 
+# --- rc-5b item 6, round 1 rulings on #639 (ancestry, unusable server proof, no cap, literal-download sums, sums across files) -----------------------------------------------------------------
+CASE="PR clock: a later commit that does NOT contain the introducing commit (a sibling in a merge) lends no clock; the merge that contains it does"
+check python3 - "$chk" "$stubpy" "$work" <<'PY'
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+work = sys.argv[3]; repo = work + "/anc"; os.makedirs(repo + "/.github/workflows")
+env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+def g(*a, date=None):
+    e = dict(env, **({"GIT_COMMITTER_DATE": date, "GIT_AUTHOR_DATE": date} if date else {}))
+    return subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=e, check=True).stdout.strip()
+wf = repo + "/.github/workflows/a.yml"
+g("init", "-q", "-b", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n"); g("add", "-A"); g("commit", "-q", "-m", "base", date="2026-09-01T00:00:00Z")
+base = g("rev-parse", "HEAD")
+g("checkout", "-q", "-b", "side"); open(repo + "/other.txt", "w").write("x"); g("add", "-A"); g("commit", "-q", "-m", "sibling", date="2026-09-05T00:00:00Z")
+sib = g("rev-parse", "HEAD")
+g("checkout", "-q", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n      - uses: actions/setup-java@" + "6" * 40 + " # v5\n        with:\n          java-version: 21\n"); g("add", "-A"); g("commit", "-q", "-m", "intro", date="2026-09-04T00:00:00Z")
+intro = g("rev-parse", "HEAD")
+subprocess.run(["git", "-C", repo, "merge", "-q", "--no-ff", "-m", "merge", "side"], env=dict(env, GIT_COMMITTER_DATE="2026-09-06T00:00:00Z"), check=True, capture_output=True)
+head = g("rev-parse", "HEAD")
+m = {f"repos/o/r/actions/runs?head_sha={sib}&per_page=100": {"workflow_runs": [{"created_at": "2026-01-01T00:00:00Z"}]},
+     f"repos/o/r/actions/runs?head_sha={head}&per_page=100": {"workflow_runs": [{"created_at": "2026-10-04T00:00:00Z"}]}}
+json.dump(m, open(work + "/anc.json", "w")); os.environ.update(GITHUB_REPOSITORY="o/r", GH_MAP=work + "/anc.json")
+orig = subprocess.run
+def run(cmd, *a, **k):
+    if cmd and cmd[0] == "gh": cmd = [sys.argv[2], *cmd[1:]]
+    return orig(cmd, *a, **k)
+subprocess.run = run
+got = ac._pr_clock(ac.inv.Item("tool", "java", "21"), repo, base, "HEAD")
+assert got == "2026-10-04T00:00:00Z", got
+PY
+CASE="judge: a server proof that is in the future or unreadable still removes the PR-clock fallback for a tool or package (age not provable, the reason names the source)"
+check python3 - "$chk" <<'PY'
+import datetime, importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+now = datetime.datetime(2026, 10, 5, tzinfo=datetime.timezone.utc)
+for kind, name, ver, src in (("tool", "trivy", "0.74.0", "github-release"), ("package", "pypi/p", "1.0", "pypi")):
+    for t in ("2026-10-06T00:00:00Z", "garbage"):
+        ok, why, _ = ac.judge_item(ac.inv.Item(kind, name, ver), [(t, src), ("2020-01-01T00:00:00Z", "pr-clock")], now)
+        assert not ok and src in why, (kind, t, why)
+PY
+CASE="PR clock: no cap on the walk: a 70-commit push whose only containing run is on its head still gets that clock"
+check python3 - "$chk" "$stubpy" "$work" <<'PY'
+import importlib.util, json, os, subprocess, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+work = sys.argv[3]; repo = work + "/nocap"; os.makedirs(repo + "/.github/workflows")
+env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
+g = lambda *a: subprocess.run(["git", "-C", repo, *a], capture_output=True, text=True, env=env, check=True).stdout.strip()
+wf = repo + "/.github/workflows/a.yml"
+g("init", "-q", "-b", "main"); open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n"); g("add", "-A"); g("commit", "-q", "-m", "base")
+base = g("rev-parse", "HEAD")
+open(wf, "w").write("on: x\njobs:\n  j:\n    steps:\n      - run: echo hi\n      - uses: actions/setup-java@" + "6" * 40 + " # v5\n        with:\n          java-version: 21\n"); g("add", "-A"); g("commit", "-q", "-m", "intro")
+for i in range(69): g("commit", "-q", "--allow-empty", "-m", f"c{i}")
+head = g("rev-parse", "HEAD")
+json.dump({f"repos/o/r/actions/runs?head_sha={head}&per_page=100": {"workflow_runs": [{"created_at": "2026-09-20T00:00:00Z"}]}}, open(work + "/nocap.json", "w"))
+os.environ.update(GITHUB_REPOSITORY="o/r", GH_MAP=work + "/nocap.json")
+orig = subprocess.run
+def run(cmd, *a, **k):
+    if cmd and cmd[0] == "gh": cmd = [sys.argv[2], *cmd[1:]]
+    return orig(cmd, *a, **k)
+subprocess.run = run
+got = ac._pr_clock(ac.inv.Item("tool", "java", "21"), repo, base, "HEAD")
+assert got == "2026-09-20T00:00:00Z", got
+PY
+CASE="sum: a literal release download inside an installer arm (crane) carries its arm's sums; changing only that sum is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+def files(sm):
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:x86_64|crane:amd64) SUM=' + sm + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n    ;;\nesac\n'}
+a, b = inv.inventory(files("a" * 64)), inv.inventory(files("b" * 64))
+assert any("go-containerregistry" in k for k in a), list(a)
+assert inv.moved(a, b) and not inv.moved(a, inv.inventory(files("a" * 64)))
+PY
+CASE="sum: the same package pinned in two requirements files: a hash change in the SECOND file is a moved item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+r = lambda h: "demo==1.2.3 \\\n    --hash=sha256:" + h + "\n"
+a = inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("bb")})
+b = inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("cc")})
+assert inv.moved(a, b), "a hash change in the second file was hidden by the first"
+assert not inv.moved(a, inv.inventory({"a/requirements.txt": r("aa"), "b/requirements.txt": r("bb")}))
+PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

@@ -121,12 +121,16 @@ class Item:
         self.step = ""   # a placeholder's identity: the hash of the step it sits in
         self.raw = None  # a file item's repository path, exactly as git names it (name goes through _hide(); REQ-SUP-001-AC21 compares this)
         self.src = None  # (script path, line id) of the script line that made this item (not part of its identity): REQ-SUP-001-AC20 binds a ruled row to that line
-        self.sum = ""    # the checksum(s) the repo pins for this tool or package (an install-scanner.sh SUM, a requirements --hash): part of the item's identity (rc-5b item 6) but not of its key
+        self.sums = []   # the checksum(s) the repo pins for this tool or package (an install-scanner.sh SUM, a requirements --hash), from every occurrence: part of the item's identity (rc-5b item 6) but not of its key
 
     @property
     def key(self):
         sub = f"/{self.path}" if self.path else ""
         return f"{self.kind}:{self.name}{sub}@{self.version}" + (f"#{self.step}" if self.step else "")
+
+    @property
+    def sum(self):
+        return _sumid(self.sums)
 
     @property
     def ident(self):
@@ -654,7 +658,7 @@ def _step_items(node, out, labels):
             rsums = _req_sums(run)
             for p in _REQ_PIN.finditer(run):
                 out.append(Item("package", f"pypi/{p.group(1).lower().replace('_', '-')}", p.group(2)))
-                out[-1].sum = _sumid(rsums.get((p.group(1).lower().replace("_", "-"), p.group(2)), []))
+                out[-1].sums = rsums.get((p.group(1).lower().replace("_", "-"), p.group(2)), [])
 
 
 def _walk(node, out, labels, path="", in_step=False):
@@ -734,6 +738,15 @@ def _scanner_sums(text, name, version):
     return exact or plain
 
 
+def _arm_of(text, rawln):
+    """The tool label of the installer arm (`  <tool>)`) a script line sits in, or None."""
+    at = text.find(rawln) if rawln else -1
+    if at < 0:
+        return None
+    arms = re.findall(r"^  ([\w.\-]+)\)[ \t]*(?:#.*)?$", text[:at], re.M)
+    return arms[-1] if arms else None
+
+
 _REQ_HASH = re.compile(r"--hash=([A-Za-z0-9]+:[0-9A-Fa-f]+)")
 
 
@@ -761,7 +774,7 @@ def inventory(files):
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
             for it in found:
                 if it.kind == "tool" and not it.name.startswith("source:"):
-                    it.sum = _sumid(_scanner_sums(text, it.name, it.version))
+                    it.sums = _scanner_sums(text, it.name, it.version)
             sjoined, sraw = _script_lines(text)
             sctx = _assign_context(sjoined, sraw)
             for ln, lid, actx, rawln in zip(sjoined, _line_ids(text), sctx, sraw):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
@@ -769,6 +782,10 @@ def inventory(files):
                 _step({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found, {})
                 for it in found[before:]:
                     it.src = (path, lid)
+                    if it.kind == "tool" and not it.sums and not it.name.startswith("source:"):
+                        arm = _arm_of(text, rawln)
+                        if arm:
+                            it.sums = _scanner_sums(text, arm, "")      # a literal release download inside the installer's `<tool>)` arm carries that tool's pinned sums
         elif path == PERSONA_TOOLS:
             found = _persona_tool_items(path, text)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
@@ -804,7 +821,7 @@ def inventory(files):
             found = [Item("package", f"pypi/{m.group(1).lower().replace('_', '-')}", m.group(2)) for m in _REQ_PIN.finditer(text)]
             rsums = _req_sums(text)
             for it in found:
-                it.sum = _sumid(rsums.get((it.name[5:], it.version), []))
+                it.sums = rsums.get((it.name[5:], it.version), [])
             for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):
                 body = ln.split("#", 1)[0].strip()
                 if not body or body.startswith("--hash="):
@@ -854,7 +871,10 @@ def inventory(files):
                     if it.key not in items:
                         break
                     n += 1
-            items.setdefault(it.key, it)
+            if it.key in items:
+                items[it.key].sums = items[it.key].sums + it.sums     # every occurrence's checksums count: a change in a second file is not hidden by the first
+            else:
+                items[it.key] = it
     return items
 
 
