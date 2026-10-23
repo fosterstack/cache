@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import urllib.parse
+import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -153,6 +154,19 @@ def _http_json(url, timeout=30):
         return None
 
 
+def _http_json_strict(url, timeout=30):
+    """Like _http_json, but only "not there" (404/410) is an answer (None); a network error, a timeout, a 5xx or a body that is not JSON means we could not look."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 410):
+            return None
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
+    except (OSError, ValueError) as e:
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
+
+
 TOOL_REPOS = {  # tool -> (github repo, tag prefix to try after the bare version)
     "trivy": "aquasecurity/trivy", "grype": "anchore/grype", "syft": "anchore/syft", "snyk": "snyk/cli", "osv": "google/osv-scanner",
     "scout": "docker/scout-cli", "gitsign": "sigstore/gitsign", "golangci-lint": "golangci/golangci-lint", "python": "actions/python-versions",
@@ -210,11 +224,11 @@ def _commit_date(repo, sha):
     return ((c or {}).get("commit", {}).get("committer") or {}).get("date")
 
 
-def _go_module(path, version):
+def _go_module(path, version, strict=False):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
-        info = _http_json(f"https://proxy.golang.org/{urllib.parse.quote(mod, safe='/').lower()}/@v/{urllib.parse.quote(version)}.info")
+        info = (_http_json_strict if strict else _http_json)(f"https://proxy.golang.org/{urllib.parse.quote(mod, safe='/').lower()}/@v/{urllib.parse.quote(version)}.info")
         if info and info.get("Version"):
             return mod, info
     return None, None

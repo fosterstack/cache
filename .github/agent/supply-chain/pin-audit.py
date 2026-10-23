@@ -439,10 +439,24 @@ class LiveNet:
         mod = None
         if item.kind == "gotool":
             # the module root, resolved through the proxy; unresolved: not covered (never the raw command path)
-            mod = age._go_module(item.name, item.version)[0]
+            mod = age._go_module(item.name, item.version, strict=True)[0]   # a proxy outage is CouldNotLook (exit 2), never "not covered"
         elif item.kind == "tool":
             mod = GO_TOOLS.get(item.name) or (f"github.com/{item.name}" if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)
         return {"package": {"name": mod, "ecosystem": "Go"}, "version": version} if mod else None
+
+    @staticmethod
+    def _ranges_of(adv, names):
+        """(readable ranges, unreadable?) of an advisory's entries for our package: an entry with a null, empty or missing range cannot be evaluated, so it counts as a hit (fail closed)."""
+        rngs, unreadable = [], False
+        for x in (adv or {}).get("vulnerabilities", []):
+            if _norm_name((x.get("package") or {}).get("name", "")) not in names:
+                continue
+            r = x.get("vulnerable_version_range")
+            if isinstance(r, str) and r.strip():
+                rngs.append(r)
+            else:
+                unreadable = True
+        return rngs, unreadable
 
     def live_ranges(self, item, source, advisory_id):
         """The authoritative advisory's affected ranges for this package, read live (GitHub only: the rulings so far name GitHub)."""
@@ -502,10 +516,9 @@ class LiveNet:
                 if alias.startswith("GHSA-"):
                     adv = self._gh_json(f"advisories/{alias}", strict=True)
                     names = {_norm_name(q["package"]["name"]), _norm_name(item.name)} | {_norm_name(p) for p in paths}
-                    rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", [])
-                            if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
-                    if adv and rngs:
-                        ghs.append({"id": alias, "incident": v["id"], "affected": in_range(version, "|".join(rngs)), "modified": adv.get("updated_at")})
+                    rngs, unreadable = self._ranges_of(adv, names)
+                    if adv and (rngs or unreadable):
+                        ghs.append({"id": alias, "incident": v["id"], "affected": unreadable or in_range(version, "|".join(rngs)), "modified": adv.get("updated_at")})
         eco = {"actions": "actions", "PyPI": "pip", "Go": "go", "npm": "npm"}.get(q["package"]["ecosystem"].replace("GitHub Actions", "actions"))
         pkg = q["package"]["name"]
         if eco:
@@ -531,9 +544,8 @@ class LiveNet:
             for adv in page:  # GitHub-only advisories (never copied to OSV) and malware reports: the ranges are read here, not trusted to a filter
                 if adv.get("ghsa_id") in seen:
                     continue
-                rngs = [x["vulnerable_version_range"] for x in adv.get("vulnerabilities", [])
-                        if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in {_norm_name(a) for a in asked}]
-                if rngs and in_range(version, "|".join(rngs)):
+                rngs, unreadable = self._ranges_of(adv, {_norm_name(a) for a in asked})
+                if unreadable or (rngs and in_range(version, "|".join(rngs))):
                     ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"),
                         "malicious": adv.get("type") == "malware"})
                     rec = self._osv_get(adv["ghsa_id"])

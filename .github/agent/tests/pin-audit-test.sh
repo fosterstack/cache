@@ -1146,5 +1146,61 @@ for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
     assert sys.argv[8] in " ".join(repr(k) for k in items)
 PY
 
+# --- rc-5b item 7 (R9a, R9b): a proxy failure is CouldNotLook, never "not checked"; an advisory for our package with no readable range is a hit under its GHSA id ---------------------------------
+CASE="proxy: a Go proxy outage (network error or a 5xx) while resolving a go install module is CouldNotLook (exit 2, no 'as of' sentence); a plain 404 only means a shorter path is tried"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.error, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+it = pa.inv.Item("gotool", "github.com/o/r/cmd/x", "v1.0.0")
+net = pa.LiveNet(["false"], ".")
+def boom(exc):
+    def f(*a, **k): raise exc
+    return f
+for exc in (urllib.error.URLError("down"), urllib.error.HTTPError("u", 503, "unavailable", {}, io.BytesIO(b"")), TimeoutError("slow")):
+    urllib.request.urlopen = boom(exc)
+    try:
+        net._query(it, "v1.0.0")
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("no CouldNotLook", exc))
+urllib.request.urlopen = boom(urllib.error.HTTPError("u", 404, "not found", {}, io.BytesIO(b"")))
+assert net._query(it, "v1.0.0") is None          # every prefix is a plain 404: the module is not found, as before
+assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None)   # the age check keeps its non-strict behaviour
+PY
+GHSA_N=GHSA-nnnn-nnnn-nnnn
+CASE="null range: a GitHub-only advisory whose entry for our package has a null, empty or missing vulnerable_version_range is a HIT under its GHSA id (an entry for another package changes nothing)"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]
+def lists(vulns):
+    adv = [{"ghsa_id": "GHSA-nnnn-nnnn-nnnn", "updated_at": "2026-01-01T00:00:00Z", "vulnerabilities": vulns}]
+    json.dump({"advisories?ecosystem=actions&affects=o/r&per_page=100&page=1": adv, "advisories?ecosystem=actions&affects=o/r&type=malware&per_page=100&page=1": []}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
+    net = pa.LiveNet([work + "/ghmap"], "."); net._osv_post = lambda q: []; net._osv_get = lambda i: None
+    return net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
+for vulns in ([{"package": {"name": "o/r"}, "vulnerable_version_range": None}], [{"package": {"name": "o/r"}, "vulnerable_version_range": ""}], [{"package": {"name": "o/r"}}]):
+    gh, osv = lists(vulns)
+    assert [g["id"] for g in gh] == ["GHSA-nnnn-nnnn-nnnn"] and gh[0]["affected"], (vulns, gh)
+assert lists([{"package": {"name": "other/pkg"}, "vulnerable_version_range": None}]) == ([], [])
+gh, _ = lists([{"package": {"name": "o/r"}, "vulnerable_version_range": ">= 2.0, < 3.0"}])
+assert gh == [], gh        # a readable range that excludes the version is still not a hit
+PY
+CASE="null range: an OSV record that is itself a GHSA id whose GitHub entry for our package has no readable range is a hit"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]
+json.dump({"advisories/GHSA-aaaa-bbbb-cccc": {"ghsa_id": "GHSA-aaaa-bbbb-cccc", "updated_at": "2026-01-01T00:00:00Z", "vulnerabilities": [{"package": {"name": "o/r"}, "vulnerable_version_range": None}]},
+           "advisories?ecosystem=actions&affects=o/r&per_page=100&page=1": [], "advisories?ecosystem=actions&affects=o/r&type=malware&per_page=100&page=1": []}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
+net = pa.LiveNet([work + "/ghmap"], ".")
+net._osv_records = lambda q, paths, strict=False: {"k": [{"id": "GHSA-aaaa-bbbb-cccc", "aliases": [], "modified": "2026-01-01T00:00:00Z"}]}
+net._osv_says = lambda *a, **k: False
+net._osv_get = lambda i: None
+gh, osv = net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
+assert [g["id"] for g in gh] == ["GHSA-aaaa-bbbb-cccc"] and gh[0]["affected"], gh
+PY
+
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

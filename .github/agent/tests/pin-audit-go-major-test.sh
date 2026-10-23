@@ -313,7 +313,7 @@ hit("3.14.0", [record("GO-X-25", [(H, INTRO0)])], none_ignored=True, mk=lambda v
 PY
 py "other kinds keep the OLD verdict and log nothing: a gotool item (module resolved to /v3: clean; resolved to the bare path: a hit)" <<'PY'
 for mod, want in ((BARE + "/v3", False), (BARE, True)):
-    pa.age._go_module = lambda n, v, m=mod: (m, None)
+    pa.age._go_module = lambda n, v, m=mod, **k: (m, None)
     net = mknet([G4309], GG, True)
     finds, _ = run(pa.inv.Item("gotool", mod + "/cmd/cosign", "v3.1.3", ""), net)
     assert bool(finds) == want and ignored(net) == [], (mod, finds, ignored(net))
