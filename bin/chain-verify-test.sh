@@ -884,7 +884,7 @@ for _nm, _kw in (("iss_raw", {"issuer_der": _hx(_I)}), ("iss_ia5", {"issuer_der"
 dj("rekor-x3.json", {"entries": [entry("sign_" + n, 60 + i) for i, n in enumerate(("iss_raw", "iss_ia5", "iss_len", "iss_trail", "cfg_raw", "cfg_long", "iss_der"))]})
 # ---- PR 4 (advisor 0386, read-back verifier-bindings): bind-items and check-list ----
 # items.json is a PRODUCT of Build's record next to digests.json; the four Check records (scanners, acceptance, runtime, arm64) are Witness collections
-# named for their step, signed by stage-verify.yml at the tag, whose MATERIAL file:witness-build/digests.json carries the sha256 of Build's digest list.
+# named for their step, signed by stage-sign.yml at the tag, whose MATERIAL file:witness-build/digests.json carries the sha256 of Build's digest list.
 MAT = "https://witness.dev/attestations/material/v0.1/file:"
 PRD = "https://witness.dev/attestations/product/v0.1/file:"
 def _fsha(n): return hashlib.sha256(open(p(n), "rb").read()).hexdigest()
