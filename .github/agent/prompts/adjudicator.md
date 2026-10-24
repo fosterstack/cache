@@ -45,8 +45,13 @@ fix is pullable for us. Reply with ONE JSON object and nothing else, keys: pulla
 hold ('upstream-held' if carried by another artifact, 'policy-held' if held by the base pin, else
 null); component_fixed (fixed version of the vulnerable component); candidate_release (a
 carrier/base release that embeds the fix, or null if none exists yet); bump_attempted
-(true/false); bump_result (short text); lift_trigger (a MACHINE-CHECKABLE condition, e.g.
-'<carrier> >= X embeds <component> >= Y' or 'base release >= R'); repo_version and base_release
+(true/false); bump_result (short text); lift_trigger (an OBJECT with exactly four string keys:
+carrier (the carrier's or base's name, e.g. nodejs or debian), min_version (the first version of
+that carrier that embeds the fix, e.g. 20.11.0), component (the vulnerable component, e.g. openssl)
+and component_min_version (its fixed version, e.g. 3.0.13): "carrier >= min_version embeds
+component >= component_min_version"; the daily recheck compares the SBOM's carrier version with
+min_version; free text or any other shape is discarded and the finding stays visible);
+repo_version and base_release
 when policy-held; evidence (object: how it is carried, and the source). Do NOT produce exploit
 code.
 
