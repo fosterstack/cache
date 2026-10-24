@@ -338,27 +338,28 @@ BASE_VEX, BASE_ITEMS = ".vex/fosterstack-cache.openvex.json", ".auditor/accepted
 
 
 def _fetch_base(ws):
-    """One `git fetch origin main` (it changes no ref the workspace stands on) and the sha origin/main resolved to, or None when either step fails: the delivery then reports its own
-    fetch failure, as it always did. The sha is what the base is read at and what the delivery branch is cut from, so the validated bytes are the bytes merged into (cache#708 ruling 1)."""
+    """(sha, None) or (None, the failure text): ONE `git fetch origin main` (it changes no ref the workspace stands on) and the sha origin/main resolved to. The sha is what the base is read
+    at, what the delivery branch is cut from and what the signed commit is built on, so the validated bytes are the bytes merged into (cache#708 rulings 1, 2). A failure is handed down to the
+    delivery, which reports it and acquires nothing again: a second acquisition could find a base the first never validated, after an owner issue exists."""
     r = subprocess.run(["git", "fetch", "origin", "main"], cwd=ws, capture_output=True, text=True)
     if r.returncode != 0:
-        return None
+        return None, "git fetch: " + (r.stderr or "").strip()
     s = subprocess.run(["git", "rev-parse", "origin/main"], cwd=ws, capture_output=True, text=True)
     sha = (s.stdout or "").strip()
-    return sha if s.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+    if s.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return None, "git rev-parse: " + ((s.stderr or "").strip() or sha)
+    return sha, None
 
 
 def _base_file(ws, sha, rel):
-    """The reviewed file `rel` as the delivery base (commit `sha`) holds it, read as a git object so the workspace is not touched: the parsed JSON object the reader requires, None for
-    the first run, or ReviewedInputInvalid. A file git says exists on disk but not in the base is untracked: the checkout would leave it in place and the merge would read it, so it is
-    held to the same rules (read through the shared reader)."""
-    r = subprocess.run(["git", "show", sha + ":" + rel], cwd=ws, capture_output=True)
+    """The reviewed file `rel` as the delivery base (commit `sha`) holds it, read as a git object so the workspace is not touched: the parsed JSON object the reader requires, None when the
+    base does not hold it (the first run; a file git reports as existing on disk but not in the base is absent at the base too: the workspace copy is never the base), or
+    ReviewedInputInvalid. git runs in the C locale because its messages are matched."""
+    r = subprocess.run(["git", "show", sha + ":" + rel], cwd=ws, capture_output=True, env=dict(os.environ, LC_ALL="C"))
     if r.returncode != 0:
         err = r.stderr.decode("utf-8", "replace") if isinstance(r.stderr, bytes) else (r.stderr or "")
-        if "does not exist in" in err:
+        if "does not exist in" in err or "exists on disk, but not in" in err:
             return None
-        if "exists on disk, but not in" in err:
-            return _read_reviewed_json(os.path.join(ws, rel))
         raise ReviewedInputInvalid("%s:%s cannot be read (%s)" % (sha[:12], rel, err.strip()[:200]))
     return reviewed.parse(r.stdout, "%s:%s" % (sha[:12], rel), as_name=rel)
 
@@ -376,7 +377,7 @@ def _preflight_delivery(out, supp):
     _read_reviewed_json(os.path.join(out, ".auditor", "accepted-items.json"))
 
 
-def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False, base_sha=None):
+def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False, base_sha=None, base_err=None):
     """Deliver the consolidated suppressions (R16) as ONE non-stacked draft PR against main,
     carrying .vex/fosterstack-cache.openvex.json (the only exception there is, rule 4) in a single commit
     by the App bot identity. Returns (pr_url, error). A dry run only proposes. A push/PR
@@ -436,14 +437,12 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
 
     def _git(*a):
         return subprocess.run(["git", *a], cwd=ws, capture_output=True, text=True)
-    if base_sha is None:                                  # run() fetched and validated the base once before the first owner issue and hands the sha down; a direct caller fetches here
-        r = _git("fetch", "origin", "main")
-        if r.returncode != 0:
-            return None, ("git fetch: " + (r.stderr or "").strip())
-        r = _git("rev-parse", "origin/main")
-        base_sha = (r.stdout or "").strip()
-        if r.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", base_sha):
-            return None, ("git rev-parse: " + (r.stderr or base_sha).strip())
+    if base_err:                                          # run() tried to acquire the base before the first owner issue and failed: that failure is the delivery's, and nothing is acquired again
+        return None, base_err
+    if base_sha is None:                                  # run() hands the validated sha down; a direct caller (neither given) acquires it here
+        base_sha, base_err = _fetch_base(ws)
+        if base_err:
+            return None, base_err
     base_docs = _base_docs(ws, base_sha)                  # the belt: the base read again at the sha, with the run's own outputs, before anything touches the workspace
     _preflight_delivery(out, supp)
     r = _git("checkout", "-B", branch, base_sha)          # off main => not stacked
@@ -472,9 +471,6 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     changed = [e[3:] for e in (r.stdout or "").split("\0") if len(e) > 3]
     if not changed:
         return None, "signed commit: nothing to commit (the run changed none of the suppression files)"
-    sha = _git("rev-parse", "origin/main")
-    if sha.returncode != 0:
-        return None, ("git rev-parse: " + (sha.stderr or "").strip())
     # idempotence (R1 outer round-4 #5): if a PR for this head already exists, reconcile with
     # it (no duplicate, no false failure) instead of a second `gh pr create`.
     def _arm_head(u):
@@ -490,7 +486,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     if err:
         return None, err
     # the commit is made THROUGH THE API so GitHub signs it (main requires signed commits; a `git commit` is unsigned and left the PR BLOCKED)
-    oid, err = _signed_delivery(ws, branch, sha.stdout.strip(), title, changed)
+    oid, err = _signed_delivery(ws, branch, base_sha, title, changed)       # built on the validated sha, never on a ref that may have moved since
     if err:
         return None, err
     if ex:
@@ -1900,9 +1896,9 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     adjudicator_down = bool(adj_unavailable)
     adj_cause = "; ".join(adj_err_msgs) or "model calls failed"
     _collect_vex(out, ts)       # every per-finding VEX the run wrote is read and validated BEFORE the first owner-decision issue: exit 3 never follows a mutating call (cache#701 ruling F3/B3)
-    base_sha = None             # ...and so is the delivery base: ONE fetch of origin/main, its two reviewed files read at that sha, before any gh call (cache#708 ruling 1); the delivery cuts its branch from this sha
+    base_sha = base_err = None  # ...and so is the delivery base: ONE fetch of origin/main, its two reviewed files read at that sha, before any gh call (cache#708 ruling 1); the delivery cuts its branch from this sha
     if not dry and not os.environ.get("AUDITOR_GIT_SHIM_LOG") and _real_gh_allowed() and (m.get("provenance") or {}).get("source") != "test-image":
-        base_sha = _fetch_base(_workspace())
+        base_sha, base_err = _fetch_base(_workspace())
         if base_sha:
             _base_docs(_workspace(), base_sha)
     if adjudicator_down:
@@ -2043,7 +2039,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     consistency = _consistency(out, supp, manifest_path)
     cons_failed = any(p.get("type", "").startswith("consistency-check-") for p in (consistency or {}).get("problems", []))
     is_test = (m.get("provenance") or {}).get("source") == "test-image"
-    pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test, base_sha=base_sha)
+    pr_url, pr_err = _deliver_suppression_pr(out, supp, nstmt, today, m.get("commit"), dry, would, is_test=is_test, base_sha=base_sha, base_err=base_err)
     # Decision 2: the auditor DELIVERS its own Go-module bumps as draft PRs through the App path
     # (go get + go mod tidy, go.mod/go.sum only). Each §1/§3 row carrying a fix_bump gets one
     # draft PR; an unresolvable fixed version stays in §3 (never a broken PR); a git/gh/tidy

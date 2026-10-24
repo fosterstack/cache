@@ -4287,7 +4287,7 @@ eq "$r12p" "OK" && ok || no "_valid_proposal keeps a well-shaped proposal and re
 # Every case drives main() and records every git/gh call: a stop makes NO mutating call (no issue, no PR, no git beyond reads).
 cat > "$WORK/mutclass.py" <<'PP'
 """The one classifier of the matrix, in ALLOWLIST form (cache#708 ruling): a git or gh call counts as mutating unless it is listed read-only here; any other program (go, python) is not counted."""
-READ_GIT = {"fetch", "show", "rev-parse", "status", "diff", "log", "ls-files", "cat-file", "merge-base", "rev-list", "symbolic-ref"}
+READ_GIT = {"fetch", "show", "rev-parse", "status", "diff", "log", "ls-files", "cat-file", "merge-base", "rev-list"}
 READ_GH = {("issue", "list"), ("issue", "view"), ("pr", "list"), ("pr", "view"), ("pr", "status"), ("pr", "checks"), ("label", "list"), ("auth", "status"), ("repo", "view")}
 def mutating(cmd):
     if not cmd: return False
@@ -4388,13 +4388,21 @@ def dmg_write(*a,**kw):
     if variant=="finding-vex-empty-object": open(p,"w").write("{}")
     elif variant=="finding-vex-invalid-statement": json.dump({"statements":[{}]},open(p,"w"))
     return p
+fetches=[0]; revfail=[0]
 calls=[]
 def fake(cmd,*a,**kw):
     calls.append(list(cmd))
     if cmd and cmd[0]=="git":
-        if cmd[1:3]==["rev-parse","origin/main"]: return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
+        if cmd[1:2]==["fetch"]:
+            fetches[0]+=1
+            if variant=="fetch-fails-then-bad-base" and fetches[0]==1: return _sp.CompletedProcess(cmd,1,"","network error")
+        if cmd[1:3]==["rev-parse","origin/main"]:
+            if variant=="revparse-fails-then-bad-base" and not revfail[0]:
+                revfail[0]=1; return _sp.CompletedProcess(cmd,1,"","bad ref")
+            return _sp.CompletedProcess(cmd,0,"a"*40+"\n","")
         if cmd[1:2]==["show"]:
             _rel=cmd[2].split(":",1)[1]
+            if variant.endswith("-then-bad-base") and _rel.startswith(".vex/"): return _sp.CompletedProcess(cmd,0,"{}","")        # a damaged base, visible only to a SECOND acquisition
             if variant=="base-vex-empty" and _rel.startswith(".vex/"): return _sp.CompletedProcess(cmd,0,"{}","")
             if variant=="base-items-keyless" and _rel.startswith(".auditor/"): return _sp.CompletedProcess(cmd,0,'{"other": []}',"")
             return _sp.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")
@@ -4407,7 +4415,7 @@ with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),
     except Exception as e: rc="EXC %s"%type(e).__name__
 issues=[x for x in calls if x[:3]==["gh","issue","create"]]
 import mutclass; mut=[x for x in calls if mutclass.mutating(x)]   # the shared allowlist-form classifier
-print("rc=%s issues=%d mutating=%d"%(rc,len(issues),len(mut)))
+print("rc=%s fetches=%d"%(rc,fetches[0]) if variant.endswith("-then-bad-base") else "rc=%s issues=%d mutating=%d"%(rc,len(issues),len(mut)))
 PP
 begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
@@ -4454,6 +4462,10 @@ for variant in base-vex-empty base-items-keyless; do
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding AND a damaged delivery base ($variant) stops the run (exit 3) before the owner-decision issue: the base is fetched and validated once, before the first issue" "$r7"
 done
+for variant in fetch-fails-then-bad-base revparse-fails-then-bad-base; do
+  r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r7" "rc=1 fetches=1" && ok || no "a base fetch or resolution that fails before the first owner issue is handed to the delivery, which reports it (rc=1) and acquires the base ONCE: no second fetch can find a damaged base after the issue exists ($variant)" "$r7"
+done
 for variant in finding-vex-empty-object finding-vex-invalid-statement; do
   r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding whose per-finding VEX is damaged ($variant) stops the run (exit 3) BEFORE the owner-decision issue is created: no gh issue, no checkout, no push" "$r7"
@@ -4482,6 +4494,7 @@ done <<'LIST'
 1 git reset --hard
 1 git add x
 1 git rebase main
+1 git symbolic-ref HEAD refs/heads/x
 0 git fetch origin main
 0 git show origin/main:x
 0 git rev-parse origin/main

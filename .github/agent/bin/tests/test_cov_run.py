@@ -809,14 +809,14 @@ class SuppressionPR(Base):
         self.wj(os.path.join(self.supp, "fosterstack-cache.openvex.json"), st)
         self.wj(os.path.join(self.out, ".auditor", "knowledge.md"), "# k\n")
 
-    def real(self, fr, automerge=False, supp=None):
+    def real(self, fr, automerge=False, supp=None, **kw):
         os.environ.update(AUDITOR_ALLOW_REAL_GH="1", GITHUB_WORKSPACE=self.ws, GITHUB_REPOSITORY="o/r")
         os.environ.pop("AUDITOR_AUTOMERGE", None)
         if automerge:
             os.environ["AUDITOR_AUTOMERGE"] = "on"
         with mock.patch.object(R.subprocess, "run", fr):
             return self.quiet(R._deliver_suppression_pr, self.out, supp or self.supp, 1, "2026-09-22",
-                              "abcdef1234567890", False, [])[0]
+                              "abcdef1234567890", False, [], **kw)[0]
 
     def test_a_panel_delivery_stages_the_vex_only(self):
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
@@ -847,6 +847,18 @@ class SuppressionPR(Base):
         fr = ApiRun({("git", "status"): (0, "", "")})                      # the run changed none of the files: never an empty commit
         self.assertEqual(self.real(fr), (None, "signed commit: nothing to commit (the run changed none of the suppression files)"))
         self.assertFalse(fr.stdins)
+
+    def test_the_signed_commit_is_built_on_the_pinned_base_even_when_the_ref_moves(self):
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})        # a later `git rev-parse origin/main` would answer SHA: the tracking ref moved
+        self.assertEqual(self.real(fr, base_sha="b" * 40), ("https://x/pull/9", None))
+        self.assertEqual(fr.stdins[0]["variables"]["input"]["expectedHeadOid"], "b" * 40)   # the API commit's parent is the validated sha
+        self.assertIn(["git", "checkout", "-B", self.BR, "b" * 40], fr.argvs())
+        self.assertFalse(any(a[:2] == ["git", "rev-parse"] for a in fr.argvs()))         # no later lookup of the moving ref
+
+    def test_a_delivery_given_the_base_failure_returns_it_and_fetches_nothing_again(self):
+        fr = ApiRun()
+        self.assertEqual(self.real(fr, base_err="git fetch: offline"), (None, "git fetch: offline"))
+        self.assertEqual(fr.argvs(), [])                                                # not a second fetch, not a read, not a checkout
 
     def test_the_delivery_commit_is_made_through_the_api_never_git(self):   # main requires signed commits
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
@@ -1562,15 +1574,17 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         with mock.patch.object(R.subprocess, "run", self._show(0, json.dumps({"statements": []}))):
             self.assertEqual(R._base_file(self.d, self.SHA40, self.VP), {"statements": []})
 
-    def test_a_base_file_that_exists_only_on_disk_is_held_to_the_same_rules(self):
-        gone = "fatal: path 'x' exists on disk, but not in 'abc'"
-        with mock.patch.object(R.subprocess, "run", self._show(128, "", gone)):
-            self.assertIsNone(R._base_file(self.d, self.SHA40, self.VP))                  # no such file in the workspace either: the first run
-            os.makedirs(os.path.join(self.d, ".vex")); open(os.path.join(self.d, self.VP), "w").write("{}")
-            with self.assertRaises(R.ReviewedInputInvalid):
-                R._base_file(self.d, self.SHA40, self.VP)                                   # an untracked file the checkout would leave in place is read by the merge: it is checked now
-            json.dump({"statements": []}, open(os.path.join(self.d, self.VP), "w"))
-            self.assertEqual(R._base_file(self.d, self.SHA40, self.VP), {"statements": []})
+    def test_both_not_in_the_base_answers_mean_absent_and_the_workspace_copy_is_never_the_base(self):
+        os.makedirs(os.path.join(self.d, ".vex")); open(os.path.join(self.d, self.VP), "w").write("{}")      # a workspace file (untracked, or deleted on main): not the base
+        for gone in ("fatal: path 'x' does not exist in 'abc'", "fatal: path 'x' exists on disk, but not in 'abc'"):
+            with mock.patch.object(R.subprocess, "run", self._show(128, "", gone)):
+                self.assertIsNone(R._base_file(self.d, self.SHA40, self.VP))
+
+    def test_git_show_runs_in_the_c_locale(self):
+        fr = self._show(128, "", "fatal: path 'x' does not exist in 'abc'")
+        with mock.patch.object(R.subprocess, "run", fr):
+            R._base_file(self.d, self.SHA40, self.VP)
+        self.assertEqual(fr.calls[0][1]["env"]["LC_ALL"], "C")                          # git's messages are matched, so they are read in English
 
     def test_a_base_file_that_cannot_be_read_or_is_not_the_required_object_is_a_stop(self):
         bad = (self._show(128, "", "fatal: bad object"), self._show(0, "{not json"), self._show(0, "[]"), self._show(0, "{}"), self._show(0, b"\xff\xfe{}"))
@@ -1579,15 +1593,15 @@ class ExitThreeBeforeMutation(unittest.TestCase):
                 with self.assertRaises(R.ReviewedInputInvalid):
                     R._base_file(self.d, self.SHA40, self.VP)
 
-    def test_fetch_base_gives_one_sha_or_nothing(self):
+    def test_fetch_base_gives_one_sha_or_the_failure_to_report(self):
         with mock.patch.object(R.subprocess, "run", FakeRun()):
-            self.assertEqual(R._fetch_base(self.d), self.SHA40)
-        with mock.patch.object(R.subprocess, "run", FakeRun({("git", "fetch"): (1, "", "offline")})):
-            self.assertIsNone(R._fetch_base(self.d))                                        # the delivery reports its own fetch failure
+            self.assertEqual(R._fetch_base(self.d), (self.SHA40, None))
+        with mock.patch.object(R.subprocess, "run", FakeRun({("git", "fetch"): (1, "", " offline \n")})):
+            self.assertEqual(R._fetch_base(self.d), (None, "git fetch: offline"))           # handed down: the delivery reports it and never fetches again
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (0, "not-a-sha\n", "")})):
-            self.assertIsNone(R._fetch_base(self.d))
+            self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: not-a-sha"))
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (1, "", "bad")})):
-            self.assertIsNone(R._fetch_base(self.d))
+            self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: bad"))
 
     def test_base_docs_reads_both_reviewed_files_from_the_sha(self):
         fr = FakeRun({("git", "show", self.SHA40 + ":" + self.VP): (0, json.dumps({"statements": []}).encode(), b"")})
