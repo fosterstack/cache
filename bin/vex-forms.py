@@ -210,10 +210,23 @@ def _scopes(statement, digests, meta=None):
             # generic packages only: Inspector's filter has no ecosystem, so pkg:npm/foo and pkg:pypi/foo would be one rule (Codex #381 r5/r6)
             # no namespace: the forms carry a package's name only, so pkg:golang/github.com/acme/busybox would widen
             # to every "busybox" (Codex #165 r3, SEC-165-01) — refused, as is a qualifier or subpath
-            pm = re.fullmatch(r"pkg:generic/([^/@?#]+)(?:@([^?#]+))?", _purl_of(sub, _cve(statement)))
-            if not pm:                                   # a namespace, qualifier or subpath: not represented
+            # The one exception (rc-5a G): a Go module is named by its FULL module path (Inspector and the SBOMs name it so), which needs a
+            # host-like first segment and at least one more, so it never widens to a bare last segment.
+            sid = _purl_of(sub, _cve(statement))
+            pm = re.fullmatch(r"pkg:generic/([^/@?#]+)(?:@([^?#]+))?", sid)
+            if not pm:
+                pm = re.fullmatch(r"pkg:golang/([^/@?#]+(?:/[^/@?#]+)+)(?:@([^?#]+))?", sid)
+                if pm and "." not in urllib.parse.unquote(pm.group(1)).split("/")[0]:
+                    pm = None                            # a module path starts with a domain (github.com/…); anything else is not one
+            if not pm:                                   # a namespace on a generic package, a qualifier or subpath: not represented
                 raise ValueError("%s: subcomponent %r cannot be represented" % (_cve(statement), sub.get("@id")))
-            out.append((ds, (urllib.parse.unquote(pm.group(1)), urllib.parse.unquote(pm.group(2) or ""))))
+            name_, ver_ = urllib.parse.unquote(pm.group(1)), urllib.parse.unquote(pm.group(2) or "")
+            if pm.group(1).count("/") == 0 and any(c in name_ for c in "/@?#") or any(c in ver_ for c in "/?#"):
+                # a delimiter that was only percent-encoded (busybox%401.37.0, github.com%2Fgolang-jwt%2Fjwt): decoded once it would name another package
+                raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
+            if "/" in pm.group(1) and (any(c in seg for seg in name_.split("/") for c in "@?#") or name_.count("/") != pm.group(1).count("/")):
+                raise ValueError("%s: subcomponent %r hides a purl delimiter in a percent escape" % (_cve(statement), sub.get("@id")))
+            out.append((ds, (name_, ver_)))
     return out
 
 
@@ -258,7 +271,7 @@ def inspector(vex, images, version):
                 "name": ("fosterstack-cache-%s-%s%s" % (version, cve, "" if k == 0 else "-%d" % (k + 1)))[:128],
                 "action": "SUPPRESS",
                 "description": ("FosterStack Cache %s VEX: %s is %s%s (%s)" % (
-                    version, cve, st["status"], " in %s %s" % pkg, why))[:512],
+                    version, cve, st["status"], " in %s" % " ".join(x for x in pkg if x), why))[:512],
                 "reason": "FosterStack Cache published VEX statement",
                 "filterCriteria": crit,
             })
@@ -290,7 +303,7 @@ def csaf(vex, images, version):
                     out.append(pid[d])
                     continue
                 cid = "component-%s@%s" % tuple(urllib.parse.quote(x, safe="") for x in pkg)   # unambiguous (SEC-165-07)
-                components.setdefault(cid, {"name": "%s %s" % pkg, "product_id": cid})
+                components.setdefault(cid, {"name": " ".join(x for x in pkg if x), "product_id": cid})
                 rid = "%s-in-%s" % (cid, pid[d])
                 relationships.setdefault(rid, {"category": "default_component_of", "product_reference": cid,
                                                "relates_to_product_reference": pid[d],
