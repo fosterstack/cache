@@ -1955,7 +1955,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "56fa6d8abe7d4bf2d85b8fc8920d5fa3031a63c794732a80dc4e501b45798b6b",
+      "sha256": "f4cf56ae548a10aa4b1691a481494e94ef825ee3999ff07ad83f5f803f202fdf",
       "tools": [
         "at",
         "curl",
@@ -1978,8 +1978,8 @@
       "exceptions": [
         {
           "rule": "deny",
-          "line": "stop_last() { kill \"${pids[${#pids[@]}-1]}\" > /dev/null 2>&1 || true; }",
-          "line_sha256": "0d964a14c5ea1af0f5292642809f0f8f615d89eb2394e012d043d5a2ff4b6677",
+          "line": "stop_last() { stop_pid \"${pids[${#pids[@]}-1]}\"; }",
+          "line_sha256": "bf7dd9a233e62c2ae4256e92705e3b58197d21da1646f34f48717022a8efccbd",
           "count": 1,
           "why": "a plain parameter expansion of an array element: ${pids[${#pids[@]}-1]} is the last element of pids, the nested ${#pids[@]} is a length (REQ-CHAIN-001-AC1: a subscript NAME[ ... holding a substitution is refused unless waived here)"
         },
