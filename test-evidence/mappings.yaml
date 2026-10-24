@@ -1307,6 +1307,9 @@ mappings:
   - ac: REQ-CHAIN-006-AC14
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC18
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-CHAIN-006-AC17
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }

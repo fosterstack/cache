@@ -3889,6 +3889,14 @@ requirements:
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
 
+      # Source: advisor, Oct 24 (cache#597 round 8 ruling): carries out the owner's ratified words (scanner-panel rule 4, ratify/2026-10-02-scanner-panel-rules.md; ratify/2026-10-16-govulncheck-scans-what-we-ship.md; the approved read-back 2026-10-23-cache-docs-readback-govulncheck-check.md) for what the Go source scan reads; AC4's text is unchanged.
+      - id: REQ-CHAIN-006-AC18
+        given: "the Go source scan of the scanners step and the tagged checkout"
+        when: "bin/check-govulncheck.py runs"
+        then: "before any scan it reads go.mod with the pinned Go (`go mod edit -json`) and refuses, naming the paths, a go.mod that carries an ignore directive, and refuses a go.mod it cannot read (the tool fails, prints no JSON, or prints JSON that is not an object); it reads the shipped main package of each of the two recipes (build/melange.yaml and build/melange-fips.yaml) and the CGO_ENABLED of their build commands from the recipes themselves, and runs govulncheck six times: `./...` on linux/amd64 and on linux/arm64, and each recipe's shipped main package by explicit path on both; a called finding in any of the six fails, naming the platform and the target, and the file written to check-results/govulncheck.json is the linux/amd64 `./...` stream, byte for byte"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+
   # Source: advisor reading Oct 16, Astra release review (R6) and Codex PR 415 round 2. Earlier wording of the changed fragment of the statement below, kept here: "...in a fixed order and before any credential exists in its job, and only then use..."
   - id: REQ-CHAIN-007
     title: Release verifies everything first, then alone holds the credentials and publishes the exact bytes
