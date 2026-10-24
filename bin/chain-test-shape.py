@@ -512,7 +512,7 @@ def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
-            'case "$step" in scanners|acceptance|runtime|arm64|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; '
+            'case "$step" in release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; '
             '*) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
             'mkdir -p "witness-${step#snapshot-}"'] + TOKEN + SIGTOK + [
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
@@ -524,7 +524,7 @@ def witnessed_lines():
             '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"' % (TOKEN_PATH, keys)]
 
 
-LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild"
+LOCAL_STEPS = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64"
 
 
 def local_lines():
@@ -643,12 +643,12 @@ def listed(path, root):
 
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
 CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml",
-         "sign-rebuild": "stage-sign.yml", "check": "stage-verify.yml", "release": "stage-promote.yml"}
+         "sign-rebuild": "stage-sign.yml", "check": "stage-verify.yml", "sign-check": "stage-sign.yml", "release": "stage-promote.yml"}
 # Check needs exactly build (REQ-CHAIN-005-AC5: Rebuild and Check each need only Build, so they run side by side; Codex B r2 R3). Release needs all three.
 # The Witness move (owner Oct 22 2026): the building jobs' records are signed by Sign, so Rebuild and Check start after Sign (they verify Build's record as Sign
 # signed it), and Rebuild's own records are signed by Sign's second call after Rebuild. Release needs Check, Sign and Sign-rebuild (it reaches Rebuild through it).
 NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build", "sign"], "sign-rebuild": ["build", "rebuild"], "check": ["build", "sign"],
-         "release": ["check", "sign", "sign-rebuild"]}
+         "sign-check": ["build", "check"], "release": ["check", "sign", "sign-check", "sign-rebuild"]}
 
 
 # The `if` of the chain jobs (REQ-CHAIN-005-AC5). ONE gate G, the same exact text on build and sign: the chain starts on a v* tag PUSH, or in a dry-run
@@ -670,7 +670,8 @@ SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
 # PR 1's stage-sign.yml takes exactly ONE input, digests (Build's record is downloaded by the fixed artifact name witness-build, not passed). PR 1's
 # placeholder needs.build.outputs.checksums (raw checksums.txt text) is replaced at the cutover by Build's digests output, the digests.json text.
 SIGN_WITH = {"sign": {"digests": "${{ needs.build.outputs.digests }}", "stage": "build"},
-             "sign-rebuild": {"digests": "${{ needs.build.outputs.digests }}", "stage": "rebuild", "records": "${{ needs.rebuild.outputs.records }}"}}
+             "sign-rebuild": {"digests": "${{ needs.build.outputs.digests }}", "stage": "rebuild", "records": "${{ needs.rebuild.outputs.records }}"},
+             "sign-check": {"digests": "${{ needs.build.outputs.digests }}", "stage": "check", "records": "${{ needs.check.outputs.records }}", "records-arm64": "${{ needs.check.outputs.records-arm64 }}"}}
 
 # The jobs of release.yml that are not chain jobs, each a finite spec: its exact permissions, whether it may name `environment: agent` and `secrets.`
 # (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide, patch-notes and
