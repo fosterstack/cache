@@ -781,7 +781,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "07d39f008d95fdc7596d3c142b2b3557d8e904c88219b0907c1bc16667d9c1f1",
+      "sha256": "62e453e653c7b693a6c31f4667c8c99556485ed454d5571eafdb6d866b554f56",
       "tools": [
         "find",
         "python3",
@@ -2044,7 +2044,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "193e0bd7829f10f7aeb77f0326e60f00790439cbbb74b1ff45d62e46ca9ddc90",
+      "sha256": "b3a213618865af19ade10ed5ec7e5277c1163325a64ed2d3235155dbfda00d00",
       "tools": [
         "at",
         "gh",
@@ -2087,7 +2087,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "21b40d6a082f6e5ba0724978f62d3de62e1ef48777dc95147ab0638959acaa4b",
+      "sha256": "a74d72fe7a01425fc5f75dee7d00b2a8fa9a92ee4059c1c5eb673781f21ccacd",
       "tools": [
         "at",
         "python3"
