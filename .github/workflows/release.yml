@@ -147,9 +147,26 @@ jobs:
         run: |
           set -euo pipefail
           title="auditor: main is not patch-clean"
-          body=$(jq -r '"No patch was cut: these commits since " + (.since // "the latest tag") + " are not fix-only (rule 1). A minor release, or the owner'"'"'s patch-fix label on the PR, resolves each.\n\n" + (.not_clean | map("- " + .) | join("\n"))' "$RUNNER_TEMP/decision.json")
+          # One body, entries whole (REQ-REL-009 AC1: "the commits and why"): as many complete lines as fit under 60000 bytes, never a line cut
+          # (so a redacted text is never split), then how many are left out; the decide job log lists them all. Handed over as a file: the whole
+          # list as one argument is past the kernel's limit and the step died with exit 126 (run 39989891074).
+          python3 - "$RUNNER_TEMP" <<'PY'
+          import json, sys
+          t = sys.argv[1]
+          d = json.load(open(t + "/decision.json"))
+          body = "No patch was cut: these commits since %s are not fix-only (rule 1). A minor release, or the owner's patch-fix label on the PR, resolves each.\n\n" % (d.get("since") or "the latest tag")
+          LIMIT, total, placed = 60000, len(d["not_clean"]), 0
+          foot = lambda left: "\n... and %d more of %d commits; the decide job log lists them all\n" % (left, total)
+          for e in d["not_clean"]:
+              line = "- " + e + "\n"
+              if len((body + line).encode()) + len(foot(total).encode()) > LIMIT: break
+              body += line
+              placed += 1
+          if placed < total: body += foot(total - placed)
+          open(t + "/issue-body.md", "w").write(body)
+          PY
           n=$(gh issue list --state open --search "$title in:title" --json number,title --jq "[.[] | select(.title == \"$title\")][0].number // empty")
-          if [ -n "$n" ]; then gh issue comment "$n" --body "$body"; else gh issue create --title "$title" --body "$body"; fi
+          if [ -n "$n" ]; then gh issue comment "$n" --body-file "$RUNNER_TEMP/issue-body.md"; else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue-body.md"; fi
 
       # REQ-REL-009-AC13 (owner RATIFIED Oct 2): a CI patch uses the latest owner-approved ACs baseline of its line, only
       # if the requirements are byte-for-byte unchanged since it. Admission applies this rule; decide applies the SAME
@@ -253,7 +270,7 @@ jobs:
       - name: mint the auditor App's token (contents write on cache only)
         id: app-token
         if: ${{ steps.checks.outputs.ready == 'true' }}
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}
@@ -289,7 +306,7 @@ jobs:
 
       - name: mint the auditor App's token (contents + pull requests on cache only)
         id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}

@@ -8,6 +8,13 @@ on:
     branches: [main]
   pull_request:
 
+# A pull request's FIRST run attempt of this workflow shares a group with the pull request's other first attempts, so a newer push cancels its older run. Every other run (whatever
+# its event, and any re-run of any head) gets a group of its own per run and attempt: it is never cancelled, never replaced as a pending run, and a re-run of an old head cancels
+# nothing. The prefix is a literal, not github.workflow, so no workflow name can collide with another's group.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -335,7 +342,13 @@ jobs:
         run: git ls-files | python3 .github/agent/bin/auditor-layout-check.py
 
       - name: auditor suites — parser unit tests and the requirements-matrix suite
+        env:
+          BASE: ${{ github.base_ref }}
         run: |
+          # REQ-SUP-001-AC28: when a pull request changes the Gradle wrapper pin, the online test compares it with Gradle's published sum
+          if [ -n "${BASE}" ] && ! git diff --quiet "origin/${BASE}...HEAD" -- bench/gradle-sample/gradle/wrapper/gradle-wrapper.properties; then
+            export GRADLE_SUM_ONLINE=1
+          fi
           # the report lint renders with GitHub's own cmark-gfm (hash-pinned, test-only)
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
           bash .github/agent/tests/auditor-parser-tests.sh
@@ -666,7 +679,7 @@ jobs:
       - name: mint the App token for dispatching the fixer (ops, contents:write only)
         id: app-ops
         continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           app-id: ${{ secrets.AUDITOR_APP_ID }}
           private-key: ${{ secrets.AUDITOR_APP_PRIVATE_KEY }}

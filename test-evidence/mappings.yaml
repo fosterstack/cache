@@ -820,6 +820,12 @@ mappings:
   - ac: REQ-SUP-001-AC27
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC28
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
+  - ac: REQ-SUP-001-AC29
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-REPO-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
@@ -1095,6 +1101,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
   - ac: REQ-VEND-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-VEND-001-AC15
     evidence:
       - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
   - ac: REQ-BUILDAPK-001-AC1

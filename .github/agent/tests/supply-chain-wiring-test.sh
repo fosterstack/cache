@@ -26,6 +26,24 @@ CANONICAL_RUNS = {'pin-age': 'set -uo pipefail\nstatus=0\npython3 trusted/.githu
 
 def load(p): return yaml.load(open(p), Loader=yaml.BaseLoader)
 
+def dup_keys(text):
+    """Duplicate mapping keys anywhere in a YAML text (a parse silently keeps the last value; GitHub rejects the file, so its checks would never run)."""
+    out = []
+    def walk(n, path):
+        if isinstance(n, yaml.MappingNode):
+            seen = set()
+            for k, v in n.value:
+                kk = k.value if isinstance(k, yaml.ScalarNode) else None
+                if kk in seen:
+                    out.append(path + "/" + str(kk))
+                seen.add(kk)
+                walk(v, path + "/" + str(kk))
+        elif isinstance(n, yaml.SequenceNode):
+            for i, v in enumerate(n.value):
+                walk(v, path + "/" + str(i))
+    walk(yaml.compose(text, Loader=yaml.BaseLoader), "")
+    return out
+
 def judge_wf(d, real=False):
     bad = []
     on = d.get("on", {})
@@ -99,9 +117,16 @@ def judge_wf(d, real=False):
     if "--rerun-held" not in "\n".join(str(s.get("run", "")) for s in j.get("steps", [])):
         bad.append("rerun-held does not run .github/agent/supply-chain/pin-audit.py --rerun-held")
     # nothing may change WHERE the checker comes from or what runs it
-    for key in ("env", "defaults", "concurrency"):
+    for key in ("env", "defaults"):
         if key in d:
             bad.append(f"the workflow has a top-level {key}: it could change what the trusted checker runs")
+    # the one reviewed block (advisor, Oct 22; cache#583): a pull request's FIRST run attempt joins the pull request's group (a newer push cancels its older run); every other run (the
+    # daily schedule, a dispatch, a re-run of any head) gets a group of its own per run and attempt and is never cancelled nor replaced as a pending run. The prefix is a literal. Any other
+    # top-level concurrency is refused. daily-audit keeps its own job-level group (checked above).
+    if d.get("concurrency") != {
+            "group": "${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('supply-chain-pr-{0}', github.event.pull_request.number) || format('supply-chain-{0}-{1}', github.run_id, github.run_attempt) }}",
+            "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}:
+        bad.append("the workflow's top-level concurrency is not the reviewed block: it could cancel the trusted checker's run")
     for name, jj in jobs.items():
         for key in ("container", "services", "defaults"):
             if key in jj:
@@ -229,6 +254,11 @@ def result(ok, msg):
     else: failed += 1; print("FAIL", msg)
 
 # the real files
+real_text = open(WF).read()
+dd = dup_keys(real_text)
+result(not dd, "the real supply-chain.yml has no duplicate YAML key" + ("" if not dd else ": " + ", ".join(dd[:5])))
+dd = dup_keys(real_text.replace("\nconcurrency:\n", "\nconcurrency: {group: shared, cancel-in-progress: true}\nconcurrency:\n", 1))
+result(bool(dd), "caught: a duplicate top-level concurrency key (raw YAML; a parse would keep the last value)" + ("" if dd else "; saw nothing"))
 b = judge_wf(real_wf, True) if real_wf is not None else ["supply-chain.yml is missing"]
 result(not b, "the real supply-chain.yml satisfies the wiring" + ("" if not b else ": " + "; ".join(b)))
 b = judge_db(real_db)
@@ -332,6 +362,12 @@ mut_wf("checkout keeps credentials", "persist-credentials", lambda d: next(s for
 mut_wf("daily-audit loses issues: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].pop("issues"))
 mut_wf("daily-audit gains contents: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].update(contents="write"))
 mut_wf("daily-audit gains actions: write", "daily-audit's permissions are not exactly", lambda d: J(d, "daily-audit")["permissions"].update(actions="write"))
+mut_wf("a top-level concurrency that cancels every event", "not the reviewed block", lambda d: d["concurrency"].update({"cancel-in-progress": "true"}))
+mut_wf("a top-level concurrency with a shared ref group", "not the reviewed block", lambda d: d.update(concurrency={"group": "${{ github.workflow }}-${{ github.ref }}", "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}))
+mut_wf("a top-level concurrency whose pull-request group is shared by re-runs", "not the reviewed block", lambda d: d["concurrency"].update(group=d["concurrency"]["group"].replace(" && github.run_attempt == '1'", "")))
+mut_wf("a top-level concurrency that borrows github.workflow", "not the reviewed block", lambda d: d["concurrency"].update(group=d["concurrency"]["group"].replace("'supply-chain-pr-{0}', ", "'{0}-pr-{1}', github.workflow, ").replace("'supply-chain-{0}-{1}', ", "'{0}-{1}-{2}', github.workflow, ")))
+mut_wf("a top-level concurrency dropped entirely", "not the reviewed block", lambda d: d.pop("concurrency"))
+mut_wf("a top-level concurrency on its own", "not the reviewed block", lambda d: d.update(concurrency={"group": "x", "cancel-in-progress": "false"}))
 mut_wf("daily-audit loses its concurrency group", "no concurrency group", lambda d: J(d, "daily-audit").pop("concurrency"))
 mut_wf("daily-audit stops keeping the observations", "does not keep the tag observations", lambda d: J(d, "daily-audit").update(steps=[x for x in J(d, "daily-audit")["steps"] if "upload-artifact" not in str(x.get("uses", ""))]))
 mut_wf("the observations are kept only on success", "does not keep the tag observations", lambda d: [x.pop("if") for x in J(d, "daily-audit")["steps"] if "upload-artifact" in str(x.get("uses", ""))])
