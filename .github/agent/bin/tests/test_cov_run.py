@@ -29,7 +29,8 @@ class FakeRun:
     (rc, stdout, stderr), a list of responses consumed in order, or an Exception to raise.
     The longest matching prefix wins; unmatched argv -> rc 0, empty output."""
     def __init__(self, rules=None):
-        # the delivery base holds no reviewed file yet unless a test says so (git show of origin/main:<path> is read before the checkout)
+        # the delivery base holds no reviewed file yet unless a test says so (git show of origin/main:<path> is read
+        # before the checkout)
         self.defaults = {("git", "show"): (128, "", "fatal: path 'x' does not exist in 'origin/main'"),
                          ("git", "rev-parse", "origin/main"): (0, "a" * 40 + "\n", "")}
         self.rules = dict(rules or {}); self.calls = []
@@ -41,7 +42,8 @@ class FakeRun:
             if tuple(argv[:len(pre)]) == pre and (best is None or len(pre) > len(best)):
                 best = pre
         resp = (0, "", "") if best is None else self.rules[best]
-        if best is None:                          # no rule of the test: the delivery base holds no reviewed file yet, origin/main resolves to SHA
+        # no rule of the test: the delivery base holds no reviewed file yet, origin/main resolves to SHA
+        if best is None:
             for pre in self.defaults:
                 if tuple(argv[:len(pre)]) == pre:
                     resp = self.defaults[pre]
@@ -145,7 +147,9 @@ class Base(unittest.TestCase):
         self.assertTrue(co, "no branch checkout issued")
         for x in co:
             self.assertEqual(len(x), 5)
-            if x[4] != "origin/main":                 # the suppression delivery cuts its branch from the sha origin/main resolved to right after the fetch (cache#708 ruling 1)
+            # the suppression delivery cuts its branch from the sha origin/main resolved to right after the fetch
+            # (cache#708 ruling 1)
+            if x[4] != "origin/main":
                 self.assertEqual(x[4], SHA)
                 self.assertLess(a.index(["git", "rev-parse", "origin/main"]), a.index(co[0]))
         self.assertLess(a.index(["git", "fetch", "origin", "main"]), a.index(co[0]))
@@ -175,7 +179,7 @@ class Base(unittest.TestCase):
 
     def env(self, **kw):
         e = {"gvc": None, "module": None, "gvc_usable": False, "idx": {}, "logpath": None,
-             "adjudicator": "/x/real-adjudicator.py", "state": {"tokens": 0, "iters": 0, "roles_used": set()},
+             "adjudicator": "/x/real-adjudicator.py", "state": {"tokens": 0, "roles_used": set()},
              "kev_ids": set(), "kev_ok": True, "exp": "2026-10-22", "out": self.d("out"),
              "ts": "2026-09-22T00:00:00Z", "dry": True, "digest": "sha256:cand", "carried_expiry": {},
              "carried_scopes": set(), "carried_status": {}, "today": "2026-09-22", "knowledge": "",
@@ -267,7 +271,7 @@ class NoChange(Base):
     CTX = {"finding_id": "CVE-2099-7", "package": "libz", "installed_version": "1", "candidate_digest": "sha256:cand"}
 
     def state(self, **kw):
-        st = {"tokens": 0, "iters": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None,
+        st = {"tokens": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None,
               "nc_prev": None, "nc_today": "2026-10-24"}
         st.update(kw); return st
 
@@ -886,22 +890,27 @@ class SuppressionPR(Base):
         self.assertFalse(fr.stdins)
 
     def test_the_signed_commit_is_built_on_the_pinned_base_even_when_the_ref_moves(self):
-        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})        # a later `git rev-parse origin/main` would answer SHA: the tracking ref moved
+        # a later `git rev-parse origin/main` would answer SHA: the tracking ref moved
+        fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
         self.assertEqual(self.real(fr, base_sha="b" * 40), ("https://x/pull/9", None))
-        self.assertEqual(fr.stdins[0]["variables"]["input"]["expectedHeadOid"], "b" * 40)   # the API commit's parent is the validated sha
+        # the API commit's parent is the validated sha
+        self.assertEqual(fr.stdins[0]["variables"]["input"]["expectedHeadOid"], "b" * 40)
         self.assertIn(["git", "checkout", "-B", self.BR, "b" * 40], fr.argvs())
-        self.assertFalse(any(a[:2] == ["git", "rev-parse"] for a in fr.argvs()))         # no later lookup of the moving ref
+        # no later lookup of the moving ref
+        self.assertFalse(any(a[:2] == ["git", "rev-parse"] for a in fr.argvs()))
 
     def test_a_reviewed_input_that_stops_the_merge_after_the_checkout_still_ends_the_run(self):
         fr = ApiRun()
         with mock.patch.object(R, "_merge_suppressions", side_effect=R.ReviewedInputInvalid("damaged after the preflight")):
-            with self.assertRaises(R.ReviewedInputInvalid):                             # exit 3, not a "stage files" error to carry on from
+            # exit 3, not a "stage files" error to carry on from
+            with self.assertRaises(R.ReviewedInputInvalid):
                 self.real(fr, base_sha="b" * 40)
 
     def test_a_delivery_given_the_base_failure_returns_it_and_fetches_nothing_again(self):
         fr = ApiRun()
         self.assertEqual(self.real(fr, base_err="git fetch: offline"), (None, "git fetch: offline"))
-        self.assertEqual(fr.argvs(), [])                                                # not a second fetch, not a read, not a checkout
+        # not a second fetch, not a read, not a checkout
+        self.assertEqual(fr.argvs(), [])
 
     def test_the_delivery_commit_is_made_through_the_api_never_git(self):   # main requires signed commits
         fr = ApiRun({("gh", "pr", "create"): (0, "https://x/pull/9\n", "")})
@@ -1600,8 +1609,10 @@ class Run(Base):
 
 
 class ExitThreeBeforeMutation(unittest.TestCase):
-    """cache#701 ruling F3/B3 and the cache#708 ruling: every validation that can end the run with exit 3 runs before the first mutating call: the per-finding VEX and the delivery base
-    (one fetch, one sha, its two reviewed files read as git objects) before the first owner-decision issue, the run's own outputs before `git checkout -B <sha>`."""
+    """cache#701 ruling F3/B3 and the cache#708 ruling: every validation that can end the run with exit 3 runs before
+    the first mutating call: the per-finding VEX and the delivery base
+    (one fetch, one sha, its two reviewed files read as git objects) before the first owner-decision issue, the run's
+    own outputs before `git checkout -B <sha>`."""
     SHA40 = "a" * 40
     VP, AP = ".vex/fosterstack-cache.openvex.json", ".auditor/accepted-items.json"
 
@@ -1618,7 +1629,8 @@ class ExitThreeBeforeMutation(unittest.TestCase):
             self.assertEqual(R._base_file(self.d, self.SHA40, self.VP), {"statements": []})
 
     def test_both_not_in_the_base_answers_mean_absent_and_the_workspace_copy_is_never_the_base(self):
-        os.makedirs(os.path.join(self.d, ".vex")); open(os.path.join(self.d, self.VP), "w").write("{}")      # a workspace file (untracked, or deleted on main): not the base
+        # a workspace file (untracked, or deleted on main): not the base
+        os.makedirs(os.path.join(self.d, ".vex")); open(os.path.join(self.d, self.VP), "w").write("{}")
         for gone in ("fatal: path 'x' does not exist in 'abc'", "fatal: path 'x' exists on disk, but not in 'abc'"):
             with mock.patch.object(R.subprocess, "run", self._show(128, "", gone)):
                 self.assertIsNone(R._base_file(self.d, self.SHA40, self.VP))
@@ -1627,7 +1639,8 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         fr = self._show(128, "", "fatal: path 'x' does not exist in 'abc'")
         with mock.patch.object(R.subprocess, "run", fr):
             R._base_file(self.d, self.SHA40, self.VP)
-        self.assertEqual(fr.calls[0][1]["env"]["LC_ALL"], "C")                          # git's messages are matched, so they are read in English
+        # git's messages are matched, so they are read in English
+        self.assertEqual(fr.calls[0][1]["env"]["LC_ALL"], "C")
 
     def test_a_base_file_that_cannot_be_read_or_is_not_the_required_object_is_a_stop(self):
         bad = (self._show(128, "", "fatal: bad object"), self._show(0, "{not json"), self._show(0, "[]"), self._show(0, "{}"), self._show(0, b"\xff\xfe{}"))
@@ -1640,7 +1653,8 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         with mock.patch.object(R.subprocess, "run", FakeRun()):
             self.assertEqual(R._fetch_base(self.d), (self.SHA40, None))
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "fetch"): (1, "", " offline \n")})):
-            self.assertEqual(R._fetch_base(self.d), (None, "git fetch: offline"))           # handed down: the delivery reports it and never fetches again
+            # handed down: the delivery reports it and never fetches again
+            self.assertEqual(R._fetch_base(self.d), (None, "git fetch: offline"))
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (0, "not-a-sha\n", "")})):
             self.assertEqual(R._fetch_base(self.d), (None, "git rev-parse: not-a-sha"))
         with mock.patch.object(R.subprocess, "run", FakeRun({("git", "rev-parse", "origin/main"): (1, "", "bad")})):
@@ -1656,17 +1670,20 @@ class ExitThreeBeforeMutation(unittest.TestCase):
     def test_preflight_validates_what_the_merge_will_read(self):
         out = os.path.join(self.d, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)
         with mock.patch.object(R.subprocess, "run", FakeRun()):
-            R._preflight_delivery(out, supp)                                                # nothing of the run is written yet: first-run shaped, passes
+            # nothing of the run is written yet: first-run shaped, passes
+            R._preflight_delivery(out, supp)
             vp = os.path.join(supp, "fosterstack-cache.openvex.json")
             open(vp, "w").write("{}")
             with self.assertRaises(R.ReviewedInputInvalid):
-                R._preflight_delivery(out, supp)                                            # a consolidated VEX without its statements stops it
+                # a consolidated VEX without its statements stops it
+                R._preflight_delivery(out, supp)
             json.dump({"statements": []}, open(vp, "w"))
             R._preflight_delivery(out, supp)
             os.makedirs(os.path.join(out, ".auditor"))
             open(os.path.join(out, ".auditor", "reopened-expired.json"), "w").write("{}")
             with self.assertRaises(R.ReviewedInputInvalid):
-                R._preflight_delivery(out, supp)                                            # a damaged ledger of the run stops it before the checkout
+                # a damaged ledger of the run stops it before the checkout
+                R._preflight_delivery(out, supp)
 
     def test_collect_vex_reads_and_validates_without_writing(self):
         os.makedirs(os.path.join(self.d, "vex"))
@@ -1677,11 +1694,13 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         with self.assertRaises(R.ReviewedInputInvalid):
             R._collect_vex(self.d, "2026-09-24T00:00:00Z")
         open(os.path.join(self.d, "vex", "a.openvex.json"), "w").write(json.dumps({"statements": [{}]}))
-        with self.assertRaises(R.ReviewedInputInvalid):                                     # a statement set that does not validate is a stop with its own reason, not "manifest invalid"
+        # a statement set that does not validate is a stop with its own reason, not "manifest invalid"
+        with self.assertRaises(R.ReviewedInputInvalid):
             R._collect_vex(self.d, "2026-09-24T00:00:00Z")
 
     def test_collect_vex_absent_directory_is_none_unreadable_or_not_a_directory_is_a_stop(self):
-        doc, st = R._collect_vex(os.path.join(self.d, "never"), "2026-09-24T00:00:00Z")      # the first run wrote no per-finding VEX at all
+        # the first run wrote no per-finding VEX at all
+        doc, st = R._collect_vex(os.path.join(self.d, "never"), "2026-09-24T00:00:00Z")
         self.assertEqual(st, [])
         open(os.path.join(self.d, "vex"), "w").write("x")
         with self.assertRaises(R.ReviewedInputInvalid):
@@ -1691,7 +1710,8 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         if os.geteuid() != 0:
             os.chmod(os.path.join(self.d, "vex"), 0)
             self.addCleanup(os.chmod, os.path.join(self.d, "vex"), 0o755)
-            with self.assertRaises(R.ReviewedInputInvalid):                                 # glob used to turn this into zero statements
+            # glob used to turn this into zero statements
+            with self.assertRaises(R.ReviewedInputInvalid):
                 R._collect_vex(self.d, "2026-09-24T00:00:00Z")
 
     def test_parse_decodes_bytes_and_wraps_every_failure(self):
@@ -1707,13 +1727,15 @@ class ExitThreeBeforeMutation(unittest.TestCase):
         base_stmt = R.vex.doc("CVE-2099-2", "affected", "2026-08-24T00:00:00Z", action="tracked", subcomponents=["pkg:deb/debian/b@1"])["statements"][0]
         run_stmt = R.vex.doc("CVE-2099-3", "affected", "2026-08-24T00:00:00Z", action="tracked", subcomponents=["pkg:deb/debian/c@1"])["statements"][0]
         mk = lambda s: {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "x", "author": "a", "role": "vendor", "timestamp": "2026-08-24T00:00:00Z", "version": 3, "statements": [s]}
-        json.dump(mk(tree_stmt), open(os.path.join(ws, self.VP), "w"))                      # an untracked / modified file in the workspace
+        # an untracked / modified file in the workspace
+        json.dump(mk(tree_stmt), open(os.path.join(ws, self.VP), "w"))
         out = os.path.join(self.d, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)
         json.dump(mk(run_stmt), open(os.path.join(supp, "fosterstack-cache.openvex.json"), "w"))
         R._merge_suppressions(ws, supp, base={self.VP: mk(base_stmt), self.AP: None})
         merged = json.load(open(os.path.join(ws, self.VP)))
         names = sorted(s["vulnerability"]["name"] for s in merged["statements"])
-        self.assertEqual((names, merged["version"]), (["CVE-2099-2", "CVE-2099-3"], 4))    # the base document, not the tree's: CVE-2099-1 is not carried
+        # the base document, not the tree's: CVE-2099-1 is not carried
+        self.assertEqual((names, merged["version"]), (["CVE-2099-2", "CVE-2099-3"], 4))
 
     def test_delivery_given_the_sha_does_not_fetch_again_and_checks_out_the_sha(self):
         ws = self.d; out = os.path.join(ws, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)

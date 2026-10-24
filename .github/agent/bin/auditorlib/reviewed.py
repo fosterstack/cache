@@ -76,7 +76,8 @@ def present(path):
 
 
 def parse(data, label, as_name=None):
-    """The same rules for a document already in hand (the bytes of a git object read with `git show`, or text): decoded as UTF-8, then the parsed JSON object carrying its required keys,
+    """The same rules for a document already in hand (the bytes of a git object read with `git show`, or text): decoded
+    as UTF-8, then the parsed JSON object carrying its required keys,
     or ReviewedInputInvalid. `label` names it in the stop."""
     try:
         doc = json.loads(data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else data)
