@@ -87,6 +87,8 @@ def read_recipe(rec, fips):
         text = open(rec).read()
     except OSError:
         fail("the build recipe %s cannot be read: the shipped main package is not known, so nothing is scanned" % rec)
+    if not text.isascii():
+        fail("%s holds a character outside ASCII: Unicode white space in a `#` line the shell still runs, or a line break only Python sees, would hide a step from the grammar (Codex astra on #597 round 6)" % rec)
     lines = text.splitlines()
     starts = [n for n, l in enumerate(lines) if l == "  environment:"]
     if len(starts) != 1:
@@ -108,17 +110,17 @@ def read_recipe(rec, fips):
     # the part of the recipe outside the pipeline is closed too: three top-level keys, the package keys, the package list and the licence line; an extra
     # subpackage, a quoted or unquoted step key, or an added key anywhere else would be a second place that builds, so it fails closed (Codex astra on #597)
     for k, l in enumerate(lines):
-        if k in block or k == starts[0] or not l.strip() or l.lstrip().startswith("#") or k > pipes[0]:
+        if k in block or k == starts[0] or not l.strip(" \t") or l.lstrip(" \t").startswith("#") or k > pipes[0]:
             continue
         if not (l in ("package:", "environment:", "pipeline:") or PRE_LINE.fullmatch(l)):
-            fail("%s line %d is outside the pipeline and is not one of the recipe's package, licence and package-list lines: %r" % (rec, k + 1, l.strip()))
+            fail("%s line %d is outside the pipeline and is not one of the recipe's package, licence and package-list lines: %r" % (rec, k + 1, l.strip(" \t")))
     tops = [l for l in lines if l and not l.startswith((" ", "#"))]
     if tops != ["package:", "environment:", "pipeline:"]:
         fail("%s has top-level keys %r, not exactly package, environment and pipeline once each, in that order (a repeated key would hide nested content from the pipeline-only reading)" % (rec, tops))
     pkgs, fips_exports, proofs, other = [], 0, 0, []
     for k in range(pipes[0] + 1, len(lines)):
         l = lines[k]
-        t = l.strip()
+        t = l.strip(" \t")
         if not t or t.startswith("#"):
             continue
         shell = l.startswith("      ") and not l.startswith("       ")        # a shell line of a `runs: |` step: exactly six spaces
