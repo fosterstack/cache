@@ -150,13 +150,13 @@ def _purl_of(component, cve):
     return purls.pop()
 
 
-# Our image as the OTHER readers recognise it (inspector-gate.py OUR_PRODUCTS): repository_url is the FIRST qualifier and spelled out, not percent-encoded; an optional
+# Our image as the OTHER readers recognise it (the gate's OUR_PRODUCTS): repository_url is the FIRST qualifier and spelled out, not percent-encoded; an optional
 # @digest may stand between the name and the query (a digest-scoped product, which only these forms read).
 RAW_OURS = re.compile(r"pkg:oci/cache(?:@[^?#]*)?\?repository_url=" + re.escape(REPO) + r"(?:&|$|#)")
 
 
 def _qualifiers(pid, qs, cve):
-    """The one scope grammar (rc-5a H; the same as inspector-gate.py::scope_of, rescan-statement.py::_parse_product and panel.py::_covers): the
+    """The one scope grammar (rc-5a H; the same as the gate's scope_of, the rescan's _parse_product and the panel's _covers): the
     query is split RAW on '&' (no percent-decoding of keys or of variant/arch), every part is key=value with a non-blank value, the keys are only
     repository_url, variant and arch in lower case, each once, variant is production or fips, arch is amd64 or arm64. repository_url is the first
     qualifier and carries the repository unencoded (the shape every other reader recognises, RAW_OURS); the caller has already checked that.
