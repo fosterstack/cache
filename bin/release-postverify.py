@@ -28,8 +28,10 @@ REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")
 # v0.3.0 yes, v0.3.0-rc1 no: a release candidate publishes nothing to verify
 TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 PH = re.compile(r"<([A-Z][A-Z0-9_]*)>")   # <TAG> yes, <tag> no
+# sha256: and 64 lowercase hex digits yes; sha256:abc and an upper-case digest no
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")   # a filled placeholder is one plain word
+# a filled placeholder is one plain word: ghcr.io/fosterstack/cache@sha256:ab12 yes; "a b" and "$(id)" no
+SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
 HOST = re.compile(r"^[A-Za-z0-9.-]+\.[A-Za-z]+(:[0-9]+)?/")   # ghcr.io/x yes, x/y no: a registry host written out
 FORMS = (("cosign", "verify"), ("cosign", "verify-attestation"), ("cosign", "verify-blob"),
          ("cosign", "verify-blob-attestation"), ("gh", "attestation", "verify"))
@@ -144,8 +146,10 @@ def form_error(c, jq_only=False):
 # 0). Whatever the grammar does not name is refused, so no option, module, program file, glob or combined flag can
 # get jq to read what nothing verified.
 JQ_FLAGS = ("-e", "-r", "-c", "-S", "--exit-status", "--raw-output", "--compact-output", "--sort-keys")   # whole words
+# the name after --arg: ref yes; 1x and a-b no
 JQ_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 JQ_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")   # provenance.bundle.json yes; ../x, a/b, *.json, $X, <TAG> no
+# the jq word at the start of the text: "fromjson | .a" gives fromjson; ".a" and "1x" give none
 JQ_WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 JQ_KEYWORDS = {"if", "then", "elif", "else", "end", "and", "or", "as"}
 JQ_BUILTINS = {
@@ -181,15 +185,15 @@ def jq_filter_why(f, names):
         elif ch == "#":
             return "a comment"
         elif ch == "@":
-            m = re.match(r"@[A-Za-z0-9_]+", f[i:])
+            m = re.match(r"@[A-Za-z0-9_]+", f[i:])   # "@base64d | x" gives @base64d; "@ x" gives none
             if not m or m.group(0) not in JQ_FORMATS:
                 return "the format %s" % (m.group(0) if m else "@")
             i += len(m.group(0))
         elif ch == "$":
-            m = re.match(r"\$([A-Za-z_][A-Za-z0-9_]*)", f[i:])
+            m = re.match(r"\$([A-Za-z_][A-Za-z0-9_]*)", f[i:])   # "$ref == 1" gives ref; "$1" and "$ " give none
             if not m:
                 return "the variable $"
-            if re.search(r"\bas\s+$", f[:i]):
+            if re.search(r"\bas\s+$", f[:i]):   # text before the $ ends in "as ": ".a as $x" yes; ".a | $x" no
                 names = names | {m.group(1)}
             elif m.group(1) not in names or m.group(1) == "ENV":
                 return "the variable %s (only an --arg name or a name bound by `as`)" % m.group(0)
