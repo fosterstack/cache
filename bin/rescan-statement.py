@@ -60,9 +60,10 @@ CONTRACTS = {
 }
 
 
-# Rule 4 (ratified scanner-panel rules): the published OpenVEX file is the only exception. A scanner that reads it itself (Grype --vex) has already
-# applied it; every other scanner of .github/policy/scanners.json has its findings filtered HERE, against the same document. A scanner in neither list
-# cannot be classified, so it cannot bypass the VEX by omission: `classify` (and the test over scanners.json) fail for it.
+# Rule 4 (ratified scanner-panel rules): the published OpenVEX file is the only exception. A scanner that reads it
+# itself (Grype --vex) has already applied it; every other scanner of .github/policy/scanners.json has its findings
+# filtered HERE, against the same document. A scanner in neither list cannot be classified, so it cannot bypass the
+# VEX by omission: `classify` (and the test over scanners.json) fail for it.
 NATIVE_VEX = ("grype",)
 PIPELINE_FILTERED = ("osv-scanner",)
 

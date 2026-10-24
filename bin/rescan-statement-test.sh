@@ -44,12 +44,6 @@ child() { # manifest-file  childno  platform  exit  report-json  [packages: a nu
   fi
 }
 # A child whose scanner produced NO file at all (operational crash).
-child_missing() { # manifest-file  childno  platform  exit
-  local mf="$1" plat="$3" code="$4"
-  jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg rp "$(dirname "$mf")/does-not-exist-xyz.json" \
-    '{platform:$p, ref:$r, exit:$e, report:$rp}' >> "$mf"
-}
-
 assert_stmt() { # desc scanner manifest want_verdict want_hasfindings want_count
   local desc="$1" scanner="$2" mf="$3" wv="$4" whf="$5" wc="$6" out v hf c
   out=$(python3 "$SCRIPT" statement --scanner "$scanner" --children "$mf" "${STMT_EXTRA[@]}" \
@@ -302,10 +296,18 @@ jq '.scanners += ["newscan"]' .github/policy/scanners.json >"$D/scanners-plus.js
 miss=0; for s in $(jq -r '.scanners[]' "$D/scanners-plus.json"); do python3 "$SCRIPT" classify --scanner "$s" >/dev/null 2>&1 || miss=$((miss+1)); done
 if [ "$miss" = 1 ]; then ok; else bad "a scanner added to scanners.json without a VEX classification must be caught (missing=$miss, want 1)"; fi
 [ "$(python3 "$SCRIPT" classify --scanner grype)" = native ] && ok || bad "grype should classify as native"
-[ "$(python3 "$SCRIPT" classify --scanner osv-scanner)" = filtered ] && ok || bad "osv-scanner should classify as filtered"
-# rc-5a K: Trivy and Snyk are no longer panel scanners: nothing classifies them, and a statement for them is refused (never a silent pass)
-for s in trivy snyk; do python3 "$SCRIPT" classify --scanner $s >/dev/null 2>&1 && bad "$s must not classify (retired from the panel)" || ok; done
-for s in trivy snyk; do mf=$D/m; : >"$mf"; child "$mf" 1 linux/amd64 0 "{}"; python3 "$SCRIPT" statement --scanner $s --children "$mf" "${STMT_EXTRA[@]}" >/dev/null 2>&1 && bad "$s statement must be refused (unknown scanner)" || ok; done
+[ "$(python3 "$SCRIPT" classify --scanner osv-scanner)" = filtered ] \
+  && ok || bad "osv-scanner should classify as filtered"
+# rc-5a K: Trivy and Snyk are no longer panel scanners: nothing classifies them, and a statement for them is refused
+# (never a silent pass)
+for s in trivy snyk; do
+  python3 "$SCRIPT" classify --scanner $s >/dev/null 2>&1 && bad "$s must not classify (retired from the panel)" || ok
+done
+for s in trivy snyk; do
+  mf=$D/m; : >"$mf"; child "$mf" 1 linux/amd64 0 "{}"
+  python3 "$SCRIPT" statement --scanner $s --children "$mf" "${STMT_EXTRA[@]}" >/dev/null 2>&1 \
+    && bad "$s statement must be refused (unknown scanner)" || ok
+done
 # the same statement with the workflow's real VEX file still parses (the document the pipeline passes)
 vrun osv-scanner 1 "$OSV_FIND" ".vex/fosterstack-cache.openvex.json"
 if [ "$V" != SCRIPT-FAILED ] && [ "$V" != error ]; then ok; else bad "the published VEX document was rejected by the filter ($V; $(cat "$D/vrun.err"))"; fi

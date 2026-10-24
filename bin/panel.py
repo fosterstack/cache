@@ -4,7 +4,9 @@ Each scanner job leaves its raw output per image under <scanner>/<image>/ in its
 
   grype      result.cdx.json   CycloneDX from `grype --vex <our VEX> -o cyclonedx-json` (VEX applied by Grype)
   scout      sbom.json         `docker scout sbom --format json`
-             cves.json         `docker scout cves --format gitlab --vex-author '^FosterStack LLC$' registry://<image>` (Scout applies our VEX through the attestation in the image index, REQ-REL-010; there is no --vex-location)
+             cves.json         `docker scout cves --format gitlab --vex-author '^FosterStack LLC$' registry://<image>`
+                               (Scout applies our VEX through the attestation in the image index, REQ-REL-010;
+                               there is no --vex-location)
   inspector  sbom.cdx.json     inspector-sbomgen's CycloneDX
              scan.json         inspector-scan:ScanSbom's answer ({"sbom": CycloneDX with vulnerabilities})
   google     packages.json     the package list gcloud sent to on-demand scanning

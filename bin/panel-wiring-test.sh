@@ -39,8 +39,10 @@ for j in jobs:
     # The old scanner-reports job (trivy/osv-scanner reports for the auditor) is gone: the auditor reads the panel
     if any(x in (text(j) + " ".join(uses(j))).lower() for x in ("trivy", "snyk", "osv-scanner")) and j not in ("manifests", "rescan"):
         bad.append(f"{j} runs Trivy, Snyk or OSV-Scanner")
-    # rc-5a K (Fable R9): no job names Trivy or Snyk at all, the rescan included (neither is in scanners.json; the dead step only invited a reader to think it ran)
-    if any(x in (text(j) + " ".join(uses(j))).lower() + " ".join(str(st.get("name", "")) + str(st.get("if", "")) for st in jobs[j].get("steps", [])).lower() for x in ("trivy", "snyk")):
+    # rc-5a K (Fable R9): no job names Trivy or Snyk at all, the rescan included (neither is in scanners.json)
+    step_names = " ".join(str(st.get("name", "")) + str(st.get("if", "")) for st in jobs[j].get("steps", []))
+    named = (text(j) + " ".join(uses(j))).lower() + step_names.lower()
+    if any(x in named for x in ("trivy", "snyk")):
         bad.append(f"{j} still has a Trivy or Snyk step or branch")
 for gone in ("scan-main", "trivy-main", "snyk-main", "scanner-reports"):
     if gone in jobs:
