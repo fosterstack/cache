@@ -1731,6 +1731,10 @@ def c_local_files():
     refuse("base inputs {}", lambda: (_ for _ in ()).throw(age.CouldNotLook("x")) if False else _runtime(lambda: age.load_base_inputs(f, True)))
     assert accepts("ruled text {} (nothing ruled)", lambda: age.load_ruled_text(f, True)) == {}      # "unmeasured_text" is optional: an absent list rules nothing, which only fails more
     refuse("exceptions {}", lambda: pa.load_exceptions(f, True))
+    # file_pins (REQ-SUP-001-AC34): {} holds no rows (the key is optional); a file that is not an object, a null, a file_pins that is not a list and a row that is not an object are unreadable, never "nothing ruled"
+    assert accepts("file_pins {} (no rows)", lambda: _runtime(lambda: age.load_file_pins(f, True))) is None
+    for body in ("[]", "null", '{"file_pins": 5}', '{"file_pins": {}}', '{"file_pins": [5]}', '{"file_pins": [[]]}', "not json"):
+        open(f, "w").write(body); refuse(("file_pins", body), lambda: _runtime(lambda: age.load_file_pins(f, True)))
 def _runtime(fn):
     try:
         fn()
@@ -1848,7 +1852,7 @@ CASES = {
     ("pin-age-check.py", "_run_times", "_gh_api"): c_pr_clock, ("pin-age-check.py", "_run_times", "loads"): c_pr_clock,
     ("pin-age-check.py", "_release_with_assets", "_gh_api"): c_release_assets, ("pin-age-check.py", "live_proofs", "_http_dict"): c_live_pypi,
     ("pin-age-check.py", "_registry_push", "_gh_list"): c_registry, ("pin-age-check.py", "_registry_push", "_http_dict"): c_registry,
-    ("pin-age-check.py", "main", "load"): c_main_fixtures, ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
+    ("pin-age-check.py", "main", "load"): c_main_fixtures, ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_file_pins", "load"): c_local_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
     ("pin-audit.py", "_gh_json_raw", "loads"): c_gh_json_raw, ("pin-audit.py", "_gh_json", "_gh_json_raw"): c_gh_json_raw, ("pin-audit.py", "_osv_post", "load"): c_osv_post, ("pin-audit.py", "_osv_get", "load"): c_osv_get,
     ("pin-audit.py", "resolve_ref", "_gh_json"): c_resolve_ref, ("pin-audit.py", "live_ranges", "_gh_json"): c_live_ranges,
     ("pin-audit.py", "_lists_for", "_gh_json"): c_lists_for, ("pin-audit.py", "_lists_for", "_http_dict"): c_lists_for,
