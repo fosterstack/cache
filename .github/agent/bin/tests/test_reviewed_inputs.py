@@ -17,6 +17,7 @@ def _load(name, fname):
 
 
 R = _load("auditor_run_reviewed", "auditor-run.py")
+PANEL = _load("auditor_panel_reviewed", "auditor-panel.py")
 
 # one entry per reviewed-input file name the agent reads: (a sample file name, the required keys, a valid document, documents that must stop)
 FILES = [
@@ -25,6 +26,20 @@ FILES = [
     ("accepted-items.json", ("accepted_items",), {"accepted_items": []}, [{}, {"accepted_items": None}, {"accepted_items": {}}, {"accepted_items": [None]}, {"accepted_items": ["x"]}, {"other": []}, []]),
     ("reopened-expired.json", ("reopened",), {"reopened": []}, [{}, {"reopened": None}, {"reopened": {}}, {"reopened": "x"}, {"reopened": [None]}, {"other": []}, []]),
     ("consistency.json", ("problems", "consistent"), {"consistent": True, "problems": []}, [{}, {"problems": []}, {"consistent": True}, {"consistent": True, "problems": None}, {"consistent": "yes", "problems": []}, {"consistent": True, "problems": [3]}, []]),
+    ("panel-state.json", ("version", "false", "real", "debates", "scores", "seat"),
+     {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"},
+     [{}, [], None, {"version": 1}, {"version": 2, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"},
+      {"version": 1, "false": None, "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [3], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": {}, "scores": {"A": 0, "B": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": "0", "B": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0, "C": 1}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": [0, 0], "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "C"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}}]),
+    ("scanner-profiles.json", ("entries",), {"entries": []},
+     [{}, [], None, {"entries": None}, {"entries": {}}, {"entries": [None]}, {"comment": ["x"]}]),
     ("known-defect-log.json", ("defects",), {"defects": []}, [{}, {"defects": None}, {"defects": {}}, {"defects": [None]}, {"other": []}, []]),
 ]
 
@@ -57,7 +72,7 @@ _SITES = {
     "auditor-run.py": (3, "the known-defect log's own parse (after reviewed.present) and the gh issue list replies"),
     "auditor-poam.py": (2, "the package and the finding files written earlier in the same run"),
     "auditor-votes.py": (1, "the run's manifest"),
-    "auditor-panel.py": (13, "registry and scanner-database replies, image blobs, the persistent panel state and the PR files; the panel state and profiles are the declared gap above"),
+    "auditor-panel.py": (13, "registry and scanner-database replies, image blobs, the PR files and the panel's own run files; the persistent state and profiles are read through the shared reader with the panel's own SPECS (cmd_judge)"),
     "auditor-release-authz.py": (1, "the owner-issues list the run fetched with gh"),
     "auditor-report.py": (1, "run-state.json written earlier in the same run"),
     "auditor-suppress.py": (1, "the disposition file written earlier in the same run"),
@@ -68,6 +83,11 @@ _SITES = {
     "auditorlib/cli.py": (1, "the model client's reply"),
     "auditorlib/signed_commit.py": (1, "the GitHub API reply"),
 }
+
+
+def rd(path, name):
+    """read `path` as the file called `name`: the table of the library, or the scanner panel's own rules"""
+    return reviewed.read(path, spec=PANEL.SPECS.get(name))
 
 
 class TheTable(unittest.TestCase):
@@ -84,21 +104,21 @@ class TheTable(unittest.TestCase):
         for name, keys, good, bads in FILES:
             for bad in bads:
                 with self.assertRaises(reviewed.ReviewedInputInvalid, msg=repr((name, bad))):
-                    reviewed.read(self.write(name, bad))
-            self.assertEqual(reviewed.read(self.write(name, good)), good, name)
+                    rd(self.write(name, bad), name)
+            self.assertEqual(rd(self.write(name, good), name), good, name)
 
     def test_an_absent_file_is_none_and_a_non_json_or_unlookable_one_is_a_stop(self):
         for name, *_ in FILES:
-            self.assertIsNone(reviewed.read(os.path.join(self.d, "absent", name)), name)
+            self.assertIsNone(rd(os.path.join(self.d, "absent", name), name), name)
             p = os.path.join(self.d, name)
             with open(p, "w") as fh:
                 fh.write("{not json")
             with self.assertRaises(reviewed.ReviewedInputInvalid):
-                reviewed.read(p)
+                rd(p, name)
 
     def test_the_table_names_exactly_the_reviewed_files_and_their_required_keys(self):
         for name, keys, *_ in FILES:
-            self.assertEqual(tuple(k for k, _ in reviewed.spec_for(name)), keys, name)
+            self.assertEqual(tuple(k for k, _ in (PANEL.SPECS.get(name) or reviewed.spec_for(name))), keys, name)
         self.assertEqual(reviewed.spec_for("run-state.json"), ())
         self.assertEqual(reviewed.spec_for("whatever.openvex.json")[0][0], "statements")
 
@@ -117,7 +137,7 @@ class TheTable(unittest.TestCase):
                 src = fh.read()
             for lit in re.findall(r"[\"']([A-Za-z0-9_./*-]*\.json)[\"']", src):
                 seen.add(os.path.basename(lit) or lit)
-        undecided = sorted(n for n in seen if not reviewed.spec_for(n) and n not in EXEMPT)
+        undecided = sorted(n for n in seen if not reviewed.spec_for(n) and n not in PANEL.SPECS and n not in EXEMPT)
         self.assertEqual(undecided, [], "a new json file name: add it to the table of auditorlib/reviewed.py (a reviewed input) or to EXEMPT here with its reason")
 
 

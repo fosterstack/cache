@@ -401,6 +401,31 @@ class Judge(Tmp):
         self.assertIn("nothing was judged", err.getvalue())
         self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")))
 
+    def test_a_damaged_state_or_profiles_file_is_a_stop_not_a_fresh_start(self):
+        # rc-5b fix 13 (cache#701 ruling, row 5): a PRESENT panel-state.json or scanner-profiles.json without its required content is
+        # refused (exit 3, nothing judged, nothing written); an absent state is the first run, an absent profiles file (checked-in policy) is a stop
+        good_state = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        cases = []
+        for bad in ({}, [], None, 0, {"version": 1}, dict(good_state, seat="C"), dict(good_state, scores={"A": 0}), dict(good_state, debates={})):
+            cases.append(("state", bad))
+        for bad in ({}, [], None, {"entries": None}, {"entries": {}}):
+            cases.append(("profiles", bad))
+        for which, bad in cases:
+            p = os.path.join(self.d, which + ".json")
+            json.dump(bad, open(p, "w"))
+            with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_judge(self.a(**{which: p}), bundles=lambda f: BUNDLE)
+            self.assertEqual(rc, 3, (which, bad))
+            self.assertIn("nothing was judged", err.getvalue())
+            self.assertIn(which if which == "state" else "profiles", err.getvalue().lower())
+            self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")), (which, bad))
+        with mock.patch("sys.stderr", new=io.StringIO()) as err:                            # the checked-in policy file is absent: the tree is wrong
+            rc = P.cmd_judge(self.a(profiles=os.path.join(self.d, "no-such-profiles.json")), bundles=lambda f: BUNDLE)
+        self.assertEqual(rc, 3)
+        self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")))
+        sp = os.path.join(self.d, "state.json"); json.dump(good_state, open(sp, "w"))      # a good state and the real profiles judge as before
+        self.judged(state=sp)
+
     def test_a_verdict_that_is_not_json_is_refused_with_the_same_diagnostic(self):
         # cache#466 round 4: empty or truncated JSON returns 2 'nothing was judged', not a traceback
         for text in ("", "{not json", "[1, 2"):

@@ -21,7 +21,7 @@ environment's secrets (rule 8(b), rule 14, REQ-AUD-6 AC1).
 import argparse, copy, datetime, hashlib, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auditorlib import parsers, policy, signed_commit  # noqa: E402
+from auditorlib import parsers, policy, reviewed, signed_commit  # noqa: E402
 
 SEATS = ("A", "B")
 DEBATE_ROUNDS = (2, 3, 4)
@@ -957,6 +957,12 @@ def make_seats(mode, env=os.environ, a=seat_a, b=seat_b, retries=None):
 
 # ------------------------------------------------------------------------------------------------ commands
 
+# The required content of the panel's two persistent inputs (rc-5b fix 13; cache#701 ruling, row 5), read through the shared reader: a PRESENT file without it is a stop, never a fresh start
+# or zero profiles. They live here, not in auditorlib/reviewed.py, because the CVE auditor's library never names the panel's state (REQ-SCAN-014-AC3).
+SPECS = {
+    "panel-state.json": (("version", ("int", 1)), ("false", "objects"), ("real", "objects"), ("debates", "objects"), ("scores", ("ints", ("A", "B"))), ("seat", ("choice", ("A", "B")))),
+    "scanner-profiles.json": (("entries", "objects"),),
+}
 STATE = ".auditor/panel-state.json"
 PROFILES = ".github/policy/scanner-profiles.json"
 VEX = ".vex/fosterstack-cache.openvex.json"
@@ -1026,8 +1032,14 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
     except (parsers.ParseError, ValueError, OSError) as e:
         sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s: %s); nothing was judged\n" % (a.verdict, e))
         return 2
-    state = _load_json(a.state) or new_state()
-    profiles = _load_json(a.profiles, {"entries": []})
+    try:
+        state = reviewed.read(a.state, spec=SPECS["panel-state.json"]) or new_state()      # absent = the first run; a PRESENT state without its content is a stop, never a fresh start
+        profiles = reviewed.read(a.profiles, spec=SPECS["scanner-profiles.json"])
+        if profiles is None:
+            raise reviewed.ReviewedInputInvalid("%s does not exist: the scanner profiles are checked-in policy, so an absent file means the tree is wrong" % a.profiles)
+    except reviewed.ReviewedInputInvalid as e:
+        sys.stderr.write("::error::auditor-panel: %s; nothing was judged\n" % e)
+        return 3
     errs = validate_profiles(profiles)
     if errs:
         for e in errs:

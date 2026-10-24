@@ -32,16 +32,35 @@ def spec_for(name):
 
 
 def _shaped(value, kind):
+    if isinstance(kind, tuple):
+        tag, arg = kind
+        if tag == "int":                              # exactly this integer (a schema version); True is not 1
+            return type(value) is int and value == arg
+        if tag == "choice":
+            return isinstance(value, str) and value in arg
+        return isinstance(value, dict) and set(value) == set(arg) and all(type(v) is int and v >= 0 for v in value.values())      # "ints"
     if kind == "bool":
         return isinstance(value, bool)
     return isinstance(value, list) and all(isinstance(x, dict if kind == "objects" else list) for x in value)
 
 
-def check(doc, path, as_name=None):
-    """doc (already a JSON object) against the rules of the file's name (or of `as_name`); raises ReviewedInputInvalid."""
-    for key, kind in spec_for(as_name or path):
+def _expected(kind):
+    if isinstance(kind, tuple):
+        tag, arg = kind
+        if tag == "int":
+            return "the integer %s" % arg
+        if tag == "choice":
+            return "one of %s" % ", ".join(arg)
+        return "an object with the integer counts %s" % ", ".join(arg)
+    return {"bool": "true or false", "objects": "a list of objects"}.get(kind, "a list of rows")
+
+
+def check(doc, path, as_name=None, spec=None):
+    """doc (already a JSON object) against the rules of the file's name (or of `as_name`), or against an explicit `spec` ((key, kind) pairs: the scanner panel brings the rules of
+    its own files, so this library never names them); raises ReviewedInputInvalid."""
+    for key, kind in (spec if spec is not None else spec_for(as_name or path)):
         if key not in doc or not _shaped(doc[key], kind):
-            raise ReviewedInputInvalid("%s: %r is missing or is not %s" % (path, key, "true or false" if kind == "bool" else "a list of %s" % ("objects" if kind == "objects" else "rows")))
+            raise ReviewedInputInvalid("%s: %r is missing or is not %s" % (path, key, _expected(kind)))
     return doc
 
 
@@ -56,7 +75,7 @@ def present(path):
     return True
 
 
-def read(path, as_name=None):
+def read(path, as_name=None, spec=None):
     """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else that is not a readable JSON object carrying its required keys
     is a stop. `as_name` reads a file under the rules of another name (the release gate's per-finding VEX files)."""
     if not present(path):
@@ -68,4 +87,4 @@ def read(path, as_name=None):
         raise ReviewedInputInvalid("%s is present but cannot be read as JSON (%s)" % (path, type(ex).__name__))
     if not isinstance(doc, dict):
         raise ReviewedInputInvalid("%s is not a JSON object" % path)
-    return check(doc, path, as_name)
+    return check(doc, path, as_name, spec)
