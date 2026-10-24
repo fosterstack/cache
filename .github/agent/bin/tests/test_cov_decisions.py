@@ -400,18 +400,19 @@ class AuthzHelpers(TmpCase):
 
     def test_affected_cves(self):
         self.assertEqual(authz.affected_cves(None), (set(), []))
-        self.put("v/a.json", {"statements": [
+        self.put("v/a.openvex.json", {"statements": [
             {"status": "affected", "vulnerability": {"name": "CVE-1"}},
             {"status": "affected", "vulnerability": {}},
             {"status": "not_affected", "vulnerability": {"name": "CVE-2"}}]})
-        self.put("v/b.json", {"statements": [{"status": "affected", "vulnerability": {"name": "CVE-3"}}]})
+        self.put("v/b.openvex.json", {"statements": [{"status": "affected", "vulnerability": {"name": "CVE-3"}}]})
         self.put("v/ignored.txt", "garbage")
         self.assertEqual(authz.affected_cves(self.p("v")), ({"CVE-1", "CVE-3"}, []))
-        self.put("v/bad.json", "{x")
+        self.put("v/bad.openvex.json", "{x")
+        self.put("v/note.json", {})                 # not a VEX document (the run writes dispositions beside them): not judged
         cves, bad = authz.affected_cves(self.p("v"))
         self.assertEqual(cves, {"CVE-1", "CVE-3"})
         self.assertEqual(len(bad), 1)
-        self.assertTrue(bad[0].startswith("bad.json ("))
+        self.assertTrue(bad[0].startswith("bad.openvex.json ("))
 
 
 class AuthzMain(TmpCase):
@@ -419,7 +420,7 @@ class AuthzMain(TmpCase):
         args = ["--out", self.p("decision.json"), "--today", "2026-09-22", "--owner", "own"]
         if vex is not None:
             for i, stmts in enumerate(vex):
-                self.put("vex/%d.json" % i, stmts)
+                self.put("vex/%d.openvex.json" % i, stmts)
             args += ["--vex-dir", self.p("vex")]
         if cand is not None:
             args += ["--candidate", self.put("cand.json", cand)]
@@ -433,7 +434,7 @@ class AuthzMain(TmpCase):
     def test_malformed_vex_holds(self):
         r = self.decide(vex=["{broken"])
         self.assertEqual(r["decision"], "hold")
-        self.assertTrue(r["reasons"][0].startswith("malformed candidate VEX: 0.json ("))
+        self.assertTrue(r["reasons"][0].startswith("malformed candidate VEX: 0.openvex.json ("))
 
     def test_no_inventory(self):
         self.assertEqual(self.decide(vex=self.AFF),

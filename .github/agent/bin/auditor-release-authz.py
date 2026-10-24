@@ -60,7 +60,7 @@ def affected_cves(vex_dir):
         if not reviewed.present(vex_dir):
             return cves, malformed
         with os.scandir(vex_dir) as it:
-            names = sorted(e.name for e in it if e.name.endswith(".json"))
+            names = sorted(e.name for e in it if e.name.endswith(".openvex.json"))     # the VEX documents only: the run writes dispositions (still-present.json) beside them
     except (reviewed.ReviewedInputInvalid, OSError) as e:
         malformed.append("%s (%s)" % (os.path.basename(vex_dir.rstrip("/")) or vex_dir, e))
         return cves, malformed

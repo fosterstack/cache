@@ -263,7 +263,7 @@ class TheClosedGuards(unittest.TestCase):
 
     def test_the_release_gate_holds_when_it_cannot_enumerate_or_read_what_it_judges(self):
         vd = os.path.join(self.d, "vex"); os.makedirs(vd)
-        self.w("vex/CVE-2099-1.json", {"statements": [{"status": "affected", "vulnerability": {"name": "CVE-2099-1"}}]})
+        self.w("vex/CVE-2099-1.openvex.json", {"statements": [{"status": "affected", "vulnerability": {"name": "CVE-2099-1"}}]})
         if os.geteuid() != 0:
             self.unreadable(vd)
             got = self.authz("--vex-dir", vd)
@@ -277,6 +277,14 @@ class TheClosedGuards(unittest.TestCase):
         self.assertEqual(self.authz("--vex-dir", os.path.join(self.d, "dangling"))["decision"], "hold")
         self.assertEqual(self.authz("--vex-dir", os.path.join(self.d, "absent-dir")), {"decision": "promote", "reasons": []})      # only a truly absent directory means no VEX
         self.assertEqual(self.authz(), {"decision": "promote", "reasons": []})
+
+    def test_the_release_gate_judges_only_the_vex_files_of_its_directory(self):
+        vd = os.path.join(self.d, "vexonly"); os.makedirs(vd)
+        self.w("vexonly/still-present.json", {})                      # a disposition the run writes beside the VEX files, and a note: not VEX documents
+        self.w("vexonly/note.json", {})
+        self.assertEqual(self.authz("--vex-dir", vd), {"decision": "promote", "reasons": []})
+        self.w("vexonly/a.openvex.json", {})                         # a VEX file without its list is still a hold
+        self.assertEqual(self.authz("--vex-dir", vd)["decision"], "hold")
 
     def test_the_release_gate_reads_its_candidate_inventory_under_the_inventory_rules(self):
         for bad in ({"accepted_items": {}}, {"accepted_items": ""}, {"accepted_items": None}, {}, {"accepted_items": [3]}):
