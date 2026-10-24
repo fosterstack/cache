@@ -198,6 +198,16 @@ to the same document (`bin/check-osv-vex.py`), so an exception is one public
 claim rather than two tool-local suppressions. No statement, no
 exception, no push.
 
+### Dependency provenance: when the checksum-log record is checked
+`dependency-provenance.json` lists each vendored module with `checksum_log.included: true`. Only
+`bin/vendor-provenance.py build` verifies that, against a checksum-database record file passed as
+`--sumdb-record` (it refuses a module whose record is missing, not marked included, or whose hash
+differs from `go.sum`). No workflow or script runs `build`: a maintainer runs it by hand, with a
+fresh record, whenever `dependency-provenance.json` is regenerated (a module added, removed or
+bumped). CI runs `bin/vendor-provenance.py check`, which verifies the module set, the `go.sum`
+hashes and the form of each entry, and does not re-verify the log, so the log claim is as current as the last run of
+`build`.
+
 ## CI-only releases, verified in practice
 
 `v0.1.0` was cut four times before it published. <!-- pinned: historical -->
