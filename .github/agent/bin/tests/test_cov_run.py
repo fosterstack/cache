@@ -165,7 +165,7 @@ class Base(unittest.TestCase):
 
     def env(self, **kw):
         e = {"gvc": None, "module": None, "gvc_usable": False, "idx": {}, "logpath": None,
-             "adjudicator": "/x/real-adjudicator.py", "state": {"tokens": 0, "iters": 0, "roles_used": set()},
+             "adjudicator": "/x/real-adjudicator.py", "state": {"tokens": 0, "roles_used": set()},
              "kev_ids": set(), "kev_ok": True, "exp": "2026-10-22", "out": self.d("out"),
              "ts": "2026-09-22T00:00:00Z", "dry": True, "digest": "sha256:cand", "carried_expiry": {},
              "carried_scopes": set(), "carried_status": {}, "today": "2026-09-22", "knowledge": "",
@@ -257,7 +257,7 @@ class NoChange(Base):
     CTX = {"finding_id": "CVE-2099-7", "package": "libz", "installed_version": "1", "candidate_digest": "sha256:cand"}
 
     def state(self, **kw):
-        st = {"tokens": 0, "iters": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None,
+        st = {"tokens": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None,
               "nc_prev": None, "nc_today": "2026-10-24"}
         st.update(kw); return st
 
