@@ -117,12 +117,12 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-# 199 (rc-5a K removed ^bin/scout-vex-scan\.sh$); 201 (+ ^bin/check-records-digests\.sh$, REQ-REL-011-AC1, cache#606,
-# taken from chain-v030); 200 (+ ^bin/vendor-provenance-records\.py$, REQ-VEND-001-AC15, taken from main); 199 (+
-# ^bin/(un)?pack-govulncheck\.sh$, REQ-REL-011-AC1, F9, taken from chain-v030); 198 (+
-# ^bin/rebuild-records-digests\.sh$, the list of the records Rebuild's assemble job made); 197 (+
-# ^bin/witness-sign-staged\.sh$, Sign's signing step for the building jobs' records); 196 (+
-# ^bin/witnessed-local\.sh$, the Witness wrapper of the building steps, owner Oct 22); 195 (main's +
+# 199 (rc-5a K removed ^bin/scout-vex-scan\.sh$); 200 (- ^bin/install-kind\.sh$, kind comes from the runner image,
+# cache#735); 201 (+ ^bin/check-records-digests\.sh$, REQ-REL-011-AC1, cache#606, taken from chain-v030); 200 (+
+# ^bin/vendor-provenance-records\.py$, REQ-VEND-001-AC15, taken from main); 199 (+ ^bin/(un)?pack-govulncheck\.sh$,
+# REQ-REL-011-AC1, F9, taken from chain-v030); 198 (+ ^bin/rebuild-records-digests\.sh$, the list of the records
+# Rebuild's assemble job made); 197 (+ ^bin/witness-sign-staged\.sh$, Sign's signing step for the building jobs'
+# records); 196 (+ ^bin/witnessed-local\.sh$, the Witness wrapper of the building steps, owner Oct 22); 195 (main's +
 # ^bin/job-isolation-test\.sh$, REQ-REL-011, and + ^bin/release-layout\.py$, handoff 0521, taken into the chain); 193
 # (+ ^build/host-tools\.yaml$ and ^build/locks/host-tools\.lock$, REQ-REFRESH-001-AC35); 191 (- main's two
 # suppression/set-01 fixture patterns .snyk and osv-scanner.toml, PR 2b-2c); 193 (+
@@ -191,18 +191,18 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-# rc-5a K: - the bin/scout-vex-scan.sh pattern (the script is deleted); cache#597:
-# ^bin/chain-check-scripts-fixtures\.txt$ joins the sign-wiring fixtures pattern (one data file, never run;
-# REQ-CHAIN-006-AC18); cache#606: + ^bin/check-records-digests\.sh$ in the Check block (REQ-REL-011-AC1); F9 merge: +
-# the pack-govulncheck pattern from chain-v030; + the bin/rebuild-records-digests.sh pattern (row-78 pass R2,
-# cache#586); + the bin/witness-sign-staged.sh pattern (round-1 audit F3, cache#586); + the bin/witnessed-local.sh
-# pattern (owner Oct 22 Witness move); take 27 refresh: main's job-isolation-test and release-layout.py patterns
-# merged with the compare alternations; compare job: bin/release-compare.sh and bin/release-compare.py join the
-# existing Release script alternations (no new pattern line); take 25: - main's two suppression/set-01 fixture
-# patterns (.snyk and osv-scanner.toml, PR 2b-2c), the only script change against chain-v030; take 20: + main's
-# ^bin/scout-older-versions(\.sh|-test\.sh)$ pattern (advisor 0520), the only script change outside the region;
-# before: the merge of main and chain-v030 (+ the two loopback-get patterns, REQ-SUP-001-AC24): the script text
-# outside the region is the union of both sides' changes (take 12)
+# rc-5a K: - the bin/scout-vex-scan.sh pattern (the script is deleted); cache#735: - the install-kind pattern (the one
+# script change of that PR); cache#597: ^bin/chain-check-scripts-fixtures\.txt$ joins the sign-wiring fixtures pattern
+# (one data file, never run; REQ-CHAIN-006-AC18); cache#606: + ^bin/check-records-digests\.sh$ in the Check block
+# (REQ-REL-011-AC1); F9 merge: + the pack-govulncheck pattern from chain-v030; + the bin/rebuild-records-digests.sh
+# pattern (row-78 pass R2, cache#586); + the bin/witness-sign-staged.sh pattern (round-1 audit F3, cache#586); + the
+# bin/witnessed-local.sh pattern (owner Oct 22 Witness move); take 27 refresh: main's job-isolation-test and
+# release-layout.py patterns merged with the compare alternations; compare job: bin/release-compare.sh and
+# bin/release-compare.py join the existing Release script alternations (no new pattern line); take 25: - main's two
+# suppression/set-01 fixture patterns (.snyk and osv-scanner.toml, PR 2b-2c), the only script change against
+# chain-v030; take 20: + main's ^bin/scout-older-versions(\.sh|-test\.sh)$ pattern (advisor 0520), the only script
+# change outside the region; before: the merge of main and chain-v030 (+ the two loopback-get patterns,
+# REQ-SUP-001-AC24): the script text outside the region is the union of both sides' changes (take 12)
 PINNED_SHA256 = "cb6a63087081f31d6773b367b3b3238ebf30dd4057798a5095305e72be06f114"
 if rstart and rend:
     import hashlib
