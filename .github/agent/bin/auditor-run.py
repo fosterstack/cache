@@ -1648,8 +1648,6 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     # (e.g. new unreachability evidence) is NOT yet published as not_affected, so it
                     # must render "proposed", not "in force (main)" (Codex round-2 residual #3).
                     carried_status[(nm, _scope_key(s))] = s.get("status")
-        except ReviewedInputInvalid:
-            raise
         except Exception as ex:
             raise ReviewedInputInvalid("the published VEX has a statement the run cannot read (%s): it stops rather than guess a partial state" % type(ex).__name__)
         prev = _read_reviewed_json(os.path.join(ws0, ".auditor", "accepted-items.json"))
@@ -1670,8 +1668,6 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                     carried_not_pullable.add(key)
                     if it.get("lift_trigger"):           # preserve the machine-checkable condition
                         carried_lift_trigger[key] = it["lift_trigger"]
-        except ReviewedInputInvalid:
-            raise
         except Exception as ex:
             raise ReviewedInputInvalid("accepted-items.json has an entry the run cannot read (%s): it stops rather than renew or drop a time box" % type(ex).__name__)
     env = {"gvc": gvc, "module": module, "gvc_usable": gvc_usable, "idx": idx, "logpath": logpath,
