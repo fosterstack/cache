@@ -100,6 +100,46 @@ Run without `--vex` to see raw findings including the ones we have
 publicly dispositioned — the difference between the two runs is exactly
 the set of published VEX statements, which is how you audit them.
 
+## Docker Scout: our VEX travels with the image
+
+> **Draft: published only after REQ-REL-010-AC6 has passed on our real image.**
+> Until then this section makes no claim about what Docker Scout shows.
+
+The production and `-fips` images are published as a multi-platform index.
+Each platform in the index has an attestation next to it that carries the
+same OpenVEX document as `fosterstack-cache.openvex.json` (the file in
+[`.vex/`](../.vex/)), so a tool that reads attestations from the registry
+needs nothing else from you. The attestations are part of the digest we
+sign: the digest you pull is the digest the signature, provenance and
+release manifest name, and nothing is added after signing
+(REQ-REL-010-AC4).
+
+With the attestation path, Docker Scout applies our statements itself:
+
+```sh
+docker scout cves ghcr.io/fosterstack/cache:X.Y.Z
+docker scout cves ghcr.io/fosterstack/cache@sha256:<digest from verify-images>
+```
+
+Findings we have dispositioned in the VEX (for example "not affected,
+vulnerable code not in the execute path") are shown as suppressed rather
+than open. Reading the statements is the audit: they are the same ones
+the Trivy and Grype commands above take with `--vex`, and a change to
+them reaches images only through the next automatic patch release
+(REQ-REL-010-AC5), never by editing an image already published.
+
+If your Scout setup ignores attestations (an older client, or a
+registry mirror that strips them), pass the file yourself:
+
+```sh
+docker scout cves --vex-location fosterstack-cache.openvex.json \
+  ghcr.io/fosterstack/cache:X.Y.Z
+```
+
+Run without it to see the raw findings. As with the other scanners, the
+difference between the two runs is exactly the set of published
+statements.
+
 ## Marketing claim, with the receipt
 
 "Every scanner in the repo's list runs on every release, verdicts in the
