@@ -604,6 +604,10 @@ def _merge_raw(scanner, valid_reports):
 # B04d + B04e — statement assembly and classification.
 # --------------------------------------------------------------------------
 
+# the scanners whose workflow step records each child's package count (the ones scanners.json lists); the retired trivy and snyk paths record none and are unchanged
+COUNTED = ("grype", "osv-scanner")
+
+
 def cmd_statement(args):
     scanner = args.scanner
     if scanner not in CONTRACTS:
@@ -663,7 +667,7 @@ def cmd_statement(args):
             continue
         valid_reports.append(report)
         pk = child.get("packages")
-        if isinstance(pk, bool) or not isinstance(pk, int) or pk <= 0:
+        if scanner in COUNTED and (isinstance(pk, bool) or not isinstance(pk, int) or pk <= 0):
             # Register row 53 (zero packages = did not run): a scanner that completed but inventoried no package looked at nothing, so `no findings` proves
             # nothing. The workflow records each child's package count; a missing, zero, negative or non-numeric one is an error, never clean.
             err("the %s report of %s completed but the scan inventoried no package (packages=%r); the rescan is incomplete, never clean" % (scanner, platform, pk))

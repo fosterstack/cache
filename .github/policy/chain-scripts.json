@@ -2044,7 +2044,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "4062bc9cb972d563ba5ccd2b13155b3b0ab3e54a0e6c2eb1cf12968fd85bb02a",
+      "sha256": "830452548c044f69fb36976ccd71272c2cf527e0f87d2787a375abfda4f3fb0c",
       "tools": [
         "at",
         "gh",

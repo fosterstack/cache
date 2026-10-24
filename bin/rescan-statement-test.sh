@@ -745,5 +745,10 @@ GRYPE_FIND='{"matches":[{"vulnerability":{"id":"CVE-2099-0001","severity":"High"
 mf=$D/pk9; : >"$mf"; child "$mf" 1 linux/amd64 2 "$GRYPE_FIND" 0
 assert_stmt "grype: a finding in a child that inventoried no package still counts (verdict error, has_findings true)" grype "$mf" error true 1
 
+# the retired trivy path records no package count and keeps its contract: a clean exit with a valid report is clean (first look, #665)
+TRIVY_CLEAN='{"SchemaVersion":2,"Results":[]}'
+mf=$D/trv; : >"$mf"; child "$mf" 1 linux/amd64 0 "$TRIVY_CLEAN" none
+assert_stmt "trivy (retired path, no package count recorded): unchanged, clean" trivy "$mf" clean false 0
+
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
