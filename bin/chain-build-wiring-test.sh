@@ -1765,14 +1765,25 @@ for image in ("production", "fips"):
     atts = [k for k in kids if (k.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"]
     assert len(kids) == 4 and len(atts) == 2, image                                  # two platforms, one attestation child each
     assert kids[:2] == json.loads(open("%s/%s/blobs/sha256/%s" % (d, layout, base.split(":")[1]), "rb").read())["manifests"], image   # AC3: the original entries first and unchanged
-    # "content" cannot drift into "roughly the same" (advisor, Oct 16): every attestation's statement holds the VEX document whole, and a copy of the file with ONE value changed
+    # "content" cannot drift into "roughly the same" (advisor, Oct 16): every attestation's statement holds the VEX document in Scout's form, and a copy of the file with ONE value changed
     # (a statement's impact text, then the document's version) is refused by the layout check
     doc = json.load(open(d + "/" + vex))
+    IMG = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    def scout_form(vex):   # REQ-REL-010-AC1: the image's own product with subcomponents is replaced by them (once each, in order); any other product is unchanged
+        out = json.loads(json.dumps(vex))
+        for st in out["statements"]:
+            products = []
+            for p in st["products"]:
+                for q in (p["subcomponents"] if IMG in (p.get("@id"), (p.get("identifiers") or {}).get("purl")) and p.get("subcomponents") else [p]):
+                    if q not in products:
+                        products.append(q)
+            st["products"] = products
+        return out
     blob = lambda dg: open("%s/%s/blobs/sha256/%s" % (d, layout, dg.split(":")[1]), "rb").read()
     for att in atts:
         manifest = json.loads(blob(att["digest"]))
         statement = json.loads(blob(manifest["layers"][0]["digest"]))
-        assert statement["predicate"] == doc, "%s: an attestation does not hold the whole VEX document" % image
+        assert statement["predicate"] == scout_form(doc), "%s: an attestation does not hold the VEX document in the form Docker Scout applies" % image
     for label, edit in (("impact text", lambda x: x["statements"][0].__setitem__("impact_statement", str(x["statements"][0].get("impact_statement", "")) + " changed")),
                         ("document version", lambda x: x.__setitem__("version", x["version"] + 1))):
         other = json.loads(json.dumps(doc)); edit(other)
