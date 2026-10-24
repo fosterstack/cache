@@ -150,11 +150,35 @@ def _purl_of(component, cve):
     return purls.pop()
 
 
-def _scopes(statement, digests):
+# Our image as the OTHER readers recognise it (the gate's OUR_PRODUCTS): repository_url is the FIRST qualifier and spelled out, not percent-encoded; an optional
+# @digest may stand between the name and the query (a digest-scoped product, which only these forms read).
+RAW_OURS = re.compile(r"pkg:oci/cache(?:@[^?#]*)?\?repository_url=" + re.escape(REPO) + r"(?:&|$|#)")
+
+
+def _qualifiers(pid, qs, cve):
+    """The one scope grammar (rc-5a H; the same as the gate's scope_of, the rescan's _parse_product and the panel's _covers): the
+    query is split RAW on '&' (no percent-decoding of keys or of variant/arch), every part is key=value with a non-blank value, the keys are only
+    repository_url, variant and arch in lower case, each once, variant is production or fips, arch is amd64 or arm64. repository_url is the first
+    qualifier and carries the repository unencoded (the shape every other reader recognises, RAW_OURS); the caller has already checked that.
+    Returns (repository_url, variant|None, arch|None); anything else is ValueError (generation stops: a form that could be read wider must not be)."""
+    seen = {}
+    for part in qs.split("&") if qs else []:
+        k, eq, v = part.partition("=")
+        if not eq or not v or k not in ("repository_url", "variant", "arch") or k in seen:
+            raise ValueError("%s: product %s has a part these forms cannot represent" % (cve, pid))
+        seen[k] = v
+    if seen.get("variant") not in (None,) + VARIANTS or seen.get("arch") not in (None, "amd64", "arm64"):
+        raise ValueError("%s: product %s names an unknown variant or architecture" % (cve, pid))
+    return urllib.parse.unquote(seen.get("repository_url", "")), seen.get("variant"), seen.get("arch")
+
+
+def _scopes(statement, digests, meta=None):
     """[(digests, package)] a statement covers in this release (Codex #165 r1, SEC-165-01): each product that is this
     repository's OCI image (`pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache`, or one digest of it), with each of
     its subcomponents as a package (name, version) — None for the whole image. Another product (another repository, a
-    Go module) is not an image of this release: no scope here. A qualifier the forms cannot represent stops generation."""
+    Go module) is not an image of this release: no scope here. A qualifier the forms cannot represent stops generation. `meta` maps each digest to
+    (variant, platform|None): a product with variant= / arch= covers only the digests it names (variant: the index and the children of that variant;
+    arch: the children of that architecture, an index having none); without `meta` such a product cannot be placed and stops generation."""
     out = []
     for prod in statement.get("products") or []:
         pid = _purl_of(prod, _cve(statement))
@@ -165,13 +189,20 @@ def _scopes(statement, digests):
         rest, _, subpath = pid[len("pkg:oci/"):].partition("#")
         rest, _, qs = rest.partition("?")
         name, at, version = rest.partition("@")
-        quals = urllib.parse.parse_qs(qs, keep_blank_values=True)
-        if urllib.parse.unquote(name) != "cache" or [urllib.parse.unquote(x) for x in quals.get("repository_url", [])] != [REPO]:
+        if urllib.parse.unquote(name) != "cache" or [urllib.parse.unquote(x) for x in urllib.parse.parse_qs(qs, keep_blank_values=True).get("repository_url", [])] != [REPO]:
             continue                                     # another repository's image
-        if subpath or (at and not version) or "@" in version or set(quals) - {"repository_url"}:
+        if subpath or "#" in pid or (at and not version) or "@" in version:   # any fragment separator, even an empty fragment, is a subpath the other readers refuse
             raise ValueError("%s: product %s has a part these forms cannot represent" % (_cve(statement), pid))
+        if not RAW_OURS.match(pid):                      # ours only after decoding or reordering: the gate, panel and rescan would ignore it, so these forms must not honour it
+            raise ValueError("%s: product %s names our image in a form the other readers do not recognise (repository_url first, unencoded)" % (_cve(statement), pid))
+        _, variant, arch = _qualifiers(pid, qs, _cve(statement))
         want = urllib.parse.unquote(version) if at else None
-        ds = [d for d in digests if want is None or d == want]
+        if (variant or arch) and meta is None:
+            raise ValueError("%s: product %s is scoped by variant or architecture, which needs the digest file to place" % (_cve(statement), pid))
+        ds = [d for d in digests if (want is None or d == want)
+              and (variant is None or meta[d][0] == variant) and (arch is None or meta[d][1] == "linux/" + arch)]
+        if (variant or arch) and want in digests and not ds:
+            raise ValueError("%s: product %s pins a digest that its own variant/arch qualifier excludes" % (_cve(statement), pid))
         subs = prod.get("subcomponents") or []
         if not subs:
             out.append((ds, None))
@@ -199,12 +230,12 @@ def _scopes(statement, digests):
     return out
 
 
-def _check_conflicts(vex, digests):
+def _check_conflicts(vex, digests, meta=None):
     """A suppressible and a non-suppressible statement of one CVE that cover the same image (and package) contradict
     each other: generation stops — never a suppression of an affected product."""
     by = {}
     for st in vex["statements"]:
-        for ds, pkg in _scopes(st, digests):
+        for ds, pkg in _scopes(st, digests, meta):
             for d in ds:
                 by.setdefault((_cve(st), d), []).append((_status(st) in SUPPRESSIBLE, pkg))
     def overlap(p, q):                                    # no version = every version of that package (SEC-165-01)
@@ -218,14 +249,15 @@ def _check_conflicts(vex, digests):
 
 def inspector(vex, images, version):
     digests = [d for _, _, d in _digests(images)]
-    _check_conflicts(vex, digests)
+    meta = {d: (v, plat) for v, plat, d in _digests(images)}
+    _check_conflicts(vex, digests, meta)
     filters = []
     for st in vex["statements"]:
         if _status(st) not in SUPPRESSIBLE:
             continue
         cve = _cve(st)
         why = st.get("impact_statement") or ("fixed in this release" if st["status"] == "fixed" else st.get("justification", ""))
-        for ds, pkg in _scopes(st, digests):
+        for ds, pkg in _scopes(st, digests, meta):
             if not ds or pkg is None:                    # no package named: Inspector cannot narrow the rule to it, so no rule (owner Oct 16)
                 continue
             crit = {"vulnerabilityId": [{"comparison": "EQUALS", "value": cve}],
@@ -253,7 +285,8 @@ def csaf(vex, images, version):
     readers and which Google's loader, reading branch products only, does not apply (the safe direction)."""
     found = _digests(images)
     digests = [d for _, _, d in found]
-    _check_conflicts(vex, digests)
+    meta = {d: (v, plat) for v, plat, d in _digests(images)}
+    _check_conflicts(vex, digests, meta)
     branches, pid = [], {}
     for v, plat, d in found:
         pid[d] = "fosterstack-cache-%s-%s%s" % (version, v, "" if plat is None else "-" + plat.replace("/", "-"))
@@ -264,7 +297,7 @@ def csaf(vex, images, version):
 
     def ids(st):
         out = []
-        for ds, pkg in _scopes(st, digests):
+        for ds, pkg in _scopes(st, digests, meta):
             for d in ds:
                 if pkg is None:
                     out.append(pid[d])

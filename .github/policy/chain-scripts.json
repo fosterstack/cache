@@ -1905,7 +1905,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "bc4fae27401024654d15febd91fe6a431770ef056b3066bfe464ef0e497bb830",
+      "sha256": "efbd2bb935a223d4abb4b26ff6ac78f72a3758c1f1f959a9ac7798bcbb19881f",
       "exceptions": [
         {
           "rule": "deny",
@@ -2045,7 +2045,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "c068be50f5a1781ef24ffdc77d40ef870dbb2b1b75b2e896d3e0726052df9e68",
+      "sha256": "ab22b7ea9d1647f60b784f9c99b134db89f239e5f0b19e43eb4d373e565069a2",
       "tools": [
         "at",
         "gh",
