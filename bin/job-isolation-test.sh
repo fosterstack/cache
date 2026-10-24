@@ -245,7 +245,7 @@ PY
 }
 check() { local name=$1 want=$2 dir=$3 out rc=0
   out=$(judge "$dir" 2>&1) || rc=$?
-  if { [ "$want" = ok ] && [ $rc -eq 0 ]; } || { [ "$want" = bad ] && [ $rc -ne 0 ]; }; then pass=$((pass+1)); echo "ok   $name"
+  if { [ "$want" = ok ] && [ $rc -eq 0 ]; } || { [ "$want" = bad ] && [ $rc -ne 0 ] && { [ -z "${want_msg:-}" ] || grep -Fq "$want_msg" <<< "$out"; }; }; then pass=$((pass+1)); echo "ok   $name"
   else failn=$((failn+1)); echo "FAIL $name (want $want, rc=$rc): $out"; fi; }
 mutate() { local name=$1 py=$2 dir="$work/$1"
   rm -rf "$dir"; mkdir -p "$dir"; cp "$root"/.github/workflows/*.y*ml "$dir/"
@@ -287,14 +287,20 @@ mutate "docker build added to a job that reads a secret (release.yml decide)" '
 edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: docker build -t x .\n", s, count=1, flags=re.S))'
 mutate "id-token: write granted to a job that builds (ci.yml gosec)" '
 edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
-# the build-side jobs of the release chain hold no identity token and sign with the throwaway key only (owner Oct 21 separate jobs; Oct 22 Witness: only Sign signs keyless; cache-2a, handoff 0671)
+# the build-side jobs of the release chain hold no identity token and sign with the throwaway key only (owner Oct 21 separate jobs; Oct 22 Witness: only Sign signs keyless; cache-2a, handoff 0671).
+# The judge finds a build-side job by the word witnessed-local.sh in its step text; a job that stops naming it (a reusable-workflow call, the script through a variable) escapes THIS rule. The fail-closed backstop for the
+# identity token is bin/chain-sign-wiring-test.sh, which refuses any job with id-token: write that is not in .github/policy/id-token-jobs.json (only the Sign and release jobs are).
+# Each of these mutations must be refused BY this rule, not by another one: want_msg names the refusal text.
 for spec in stage-build.yml:apk stage-build.yml:assemble stage-reproducibility.yml:rapk stage-reproducibility.yml:rapk-arm stage-reproducibility.yml:assemble stage-verify.yml:check stage-verify.yml:check-arm64; do
   wf=${spec%%:*} job=${spec##*:}
+  want_msg="records its steps with witnessed-local.sh (a build-side job) and holds id-token: write"
   mutate "$wf job $job is granted id-token: write" '
 edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
+  want_msg="also runs the keyless witnessed.sh"
   mutate "$wf job $job runs bin/witnessed.sh (keyless) instead of witnessed-local.sh" '
 edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", s, count=1, flags=re.S))'
 done
+want_msg=""
 # AC2: a second build in one job
 mutate "a second build step in one job (ci.yml gosec)" '
 edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant one\n        run: go build ./a\n      - name: mutant two\n        run: go build ./b\n", s, count=1, flags=re.S))'
