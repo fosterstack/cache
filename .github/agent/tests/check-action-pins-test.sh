@@ -1755,7 +1755,7 @@ mutant_() {   # name, python replace (old|||new), probe script, optional setup
   take "mutant-$name" || return 0
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
-  mkdir -p "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"
+  mkdir -p "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"; : > "$d/bin/scan-no-workflow-call-test.sh"; : > "$d/bin/audit-record-judge.sh"; : > "$d/bin/audit-record-prepare.sh"; : > "$d/.github/agent/bin/auditor-signed-commit.py"
   if [ -n "${4:-}" ]; then (cd "$d" && eval "$4"); fi
   python3 - "$here/../bin/check-action-pins.py" "$d/mut.py" "$2" <<'PY'
 import sys
