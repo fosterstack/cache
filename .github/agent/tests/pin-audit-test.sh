@@ -1222,7 +1222,12 @@ urllib.request.urlopen = lambda *a, **k: R(b'{"Version": "v1.0.0", "Time": "2020
 mod, info = age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
 assert info["Version"] == "v1.0.0", (mod, info)
 urllib.request.urlopen = lambda *a, **k: R(b"[1]")
-assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None)      # the age check's lenient mode no longer crashes on a list
+try:
+    age._go_module("github.com/o/r/cmd/x", "v1.0.0")      # the age check's lenient mode: a list answer is a wrong shape, CouldNotLook, no crash
+except age.CouldNotLook:
+    pass
+else:
+    raise AssertionError("lenient proxy skipped a wrong shape")
 PY
 CASE="proxy (round 2 findings): a cut-off or malformed HTTP answer (http.client exceptions) is CouldNotLook in strict mode and no crash in lenient mode; a missing Time or a null Time never crashes the go-index proof; a bad answer reaches covered() as CouldNotLook"
 check python3 - "$aud" <<'PY'
@@ -1282,24 +1287,68 @@ for body in (b"[]\n", b"null\n", b'{"Path":null,"Version":"v1.0.0","Timestamp":"
 # 2. PyPI release files (age proof)
 pkg = pa.inv.Item("package", "pypi/p", "1.0")
 for ans in ([], {"urls": 5}, {"urls": [1]}, {"urls": [{"upload_time_iso_8601": 7}]}):
-    age._http_json = lambda url, timeout=30, _a=ans: _a
+    age._fetch_json = lambda url, timeout=30, _a=ans: _a
     age._pr_clock = lambda *a, **k: None
     must_refuse(("pypi", ans), lambda: age.live_proofs(pkg, "."))
 # 3. Docker Hub tags
 img = pa.inv.Item("image", "ns/repo", "sha256:" + "a" * 64)
 for ans in ([], {"results": 5}, {"results": [1]}, {"results": [{"digest": "x", "images": 5}]}):
-    age._http_json = lambda url, timeout=30, _a=ans: _a
+    age._fetch_json = lambda url, timeout=30, _a=ans: _a
     must_refuse(("hub", ans), lambda: age._registry_push(img))
 # 4. the advisory tool's PyPI info (published name) and release list
 net = pa.LiveNet(["false"], ".")
 for ans in ([], {"info": []}, {"info": 5}):
-    age._http_json = lambda url, timeout=30, _a=ans: _a
+    age._fetch_json = lambda url, timeout=30, _a=ans: _a
     net._osv_records = lambda *a, **k: {}
     net._gh_json = lambda *a, **k: []
     must_refuse(("pypi info", ans), lambda: net._lists_for(pkg, "1.0"))
 for ans in ([], {"releases": []}, {"releases": {"1.0": 5}}, {"releases": {"1.0": [1]}}):
-    age._http_json = lambda url, timeout=30, _a=ans: _a
+    age._fetch_json = lambda url, timeout=30, _a=ans: _a
     must_refuse(("releases", ans), lambda: net.versions(pkg))
+PY
+CASE="absence (round 4 rulings): a malformed index line, a valid match followed by a bad row, a JSON null body (PyPI, Docker Hub, the lenient proxy) and a Docker Hub next link that is not a hub URL are CouldNotLook, never 'nothing there'"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+def must_refuse(label, fn):
+    try:
+        fn()
+    except age.CouldNotLook:
+        return
+    except BaseException as e:
+        raise AssertionError((label, "crashed", type(e).__name__, str(e)[:80]))
+    raise AssertionError((label, "no CouldNotLook"))
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+good = b'{"Path":"github.com/o/r","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n'
+for body in (b"{not-json}\n", good + b"null\n", good + b'{"Path":"x"}\n', b'{"Path":"a","Version":"v","Timestamp":"t"}\n' + good + b"[]\n"):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    must_refuse(("index", body), lambda: age._go_index_time("github.com/o/r", "v1.0.0", "2020-01-01T00:00:00Z"))
+pkg = pa.inv.Item("package", "pypi/p", "1.0")
+img = pa.inv.Item("image", "ns/repo", "sha256:" + "a" * 64)
+age._pr_clock = lambda *a, **k: None
+urllib.request.urlopen = lambda *a, **k: R(b"null")
+must_refuse("pypi null", lambda: age.live_proofs(pkg, "."))
+must_refuse("hub null", lambda: age._registry_push(img))
+must_refuse("proxy null (lenient)", lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0"))
+for nxt in (7, "http://evil.example/x", "https://evil.example/x", ["a"]):
+    urllib.request.urlopen = lambda *a, _n=nxt, **k: R(__import__("json").dumps({"results": [], "next": _n}).encode())
+    must_refuse(("hub next", nxt), lambda: age._registry_push(img))
+PY
+CASE="structural closure: an unexpected AttributeError/KeyError/TypeError/IndexError/ValueError while reading an answer ends the daily audit with exit 2, 'cannot do its job' and no 'as of' sentence"
+check python3 - "$aud" "$root" "$work" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+fx = sys.argv[3] + "/struct-fx.json"; json.dump({"lists": {}}, open(fx, "w"))
+for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"), ValueError("v")):
+    def boom(self, item, _e=exc): raise _e
+    pa.FixtureNet.lists = boom
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
+    assert rc == 2 and "cannot do its job" in err.getvalue() and "as of" not in out.getvalue(), (exc, rc, err.getvalue()[:200])
 PY
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0

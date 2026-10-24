@@ -1490,6 +1490,9 @@ def main(argv=None):
     except (Fail, age.CouldNotLook) as e:
         print(f"audit: cannot do its job: {e}", file=sys.stderr)
         return 2
+    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the audit cannot do its job, it never says 'as of' and never ends in a traceback
+        print(f"audit: cannot do its job: an answer could not be read ({type(e).__name__})", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

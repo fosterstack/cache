@@ -4241,5 +4241,19 @@ for mut in nohost nopin noverify twohosts verifyoff nocompare sumreset literal2 
   check test "$rc" -eq 1; check grep -q 'FAIL tool:go@1.27.3' "$work/gomut-$mut.out"
 done
 
+CASE="structural closure: an unexpected KeyError/AttributeError/TypeError/IndexError/ValueError while reading an answer ends the age check with exit 2 (cannot run, not a pass)"
+newcase struct-guard "$(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')"
+check python3 - "$chk" "$work/struct-guard" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx = sys.argv[2] + ".fx.json"; json.dump({"times": {}}, open(fx, "w"))
+for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"), ValueError("v")):
+    def boom(self, item, _e=exc): raise _e
+    ac.Fixture.proofs = boom
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        rc = ac.main(["--root", sys.argv[2], "--base", "HEAD~1", "--head", "HEAD", "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"])
+    assert rc == 2 and "cannot run" in err.getvalue(), (exc, rc, err.getvalue()[:200])
+PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

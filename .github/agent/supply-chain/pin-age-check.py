@@ -147,19 +147,30 @@ def _gh_api(path):
         return None
 
 
-def _http_json(url, timeout=30):
+_FAILED = object()
+
+
+def _fetch_json(url, timeout=30):
+    """The decoded answer (a JSON null included) or _FAILED when the server could not be asked or its body is not JSON."""
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.load(r)
     except (OSError, ValueError, http.client.HTTPException):
-        return None
+        return _FAILED
+
+
+def _http_json(url, timeout=30):
+    d = _fetch_json(url, timeout)
+    return None if d is _FAILED else d
 
 
 def _http_dict(url, timeout=30):
     """_http_json for an endpoint that answers with a JSON object: valid JSON of another shape is an answer we cannot read (CouldNotLook), never 'nothing there'."""
-    d = _http_json(url, timeout)
-    if d is not None and not isinstance(d, dict):
-        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered with something that is not a JSON object")
+    d = _fetch_json(url, timeout)
+    if d is _FAILED:
+        return None
+    if not isinstance(d, dict):
+        raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered with something that is not a JSON object")      # a JSON null too: a decoded null is not 'nothing there'
     return d
 
 
@@ -247,27 +258,39 @@ def _go_module(path, version, strict=False):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
-        info = (_http_json_strict if strict else _http_json)(f"https://proxy.golang.org/{urllib.parse.quote(mod, safe='/').lower()}/@v/{urllib.parse.quote(version)}.info")
-        if strict and info is not None and not (isinstance(info, dict) and isinstance(info.get("Version"), str) and info["Version"]):
-            raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")      # a 200 we cannot read is not "module not found"
-        if isinstance(info, dict) and info.get("Version"):
+        url = f"https://proxy.golang.org/{urllib.parse.quote(mod, safe='/').lower()}/@v/{urllib.parse.quote(version)}.info"
+        info = _http_json_strict(url) if strict else _fetch_json(url)
+        if info is _FAILED:
+            continue      # lenient mode: the proxy could not be asked: no answer (the strict mode raised already)
+        if info is None and not strict:
+            raise CouldNotLook("proxy.golang.org answered with an empty body")
+        if info is not None and not (isinstance(info, dict) and isinstance(info.get("Version"), str) and info["Version"]):
+            raise CouldNotLook("proxy.golang.org answered with something that is not a module info object")      # a 200 we cannot read is not "module not found", in either mode
+        if info is not None:
             return mod, info
     return None, None
 
 
 def _go_index_time(mod, version, vcs_time):
-    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the index entry follows it)."""
+    """The Go module index's timestamp for module@version: scan the index from the version-control time forward (the index entry follows it).
+    Every row of a page is validated before any is used: an unreadable row is CouldNotLook, never 'not this module'."""
     since = vcs_time
     for _ in range(40):
-        rows = []
         try:
             with urllib.request.urlopen(f"https://index.golang.org/index?since={urllib.parse.quote(since)}&limit=2000", timeout=30) as r:
-                rows = [json.loads(line) for line in r.read().decode().splitlines() if line.strip()]
+                lines = [ln for ln in r.read().decode().splitlines() if ln.strip()]
         except (OSError, ValueError, http.client.HTTPException):
             return None
-        for row in rows:
+        rows = []
+        for ln in lines:
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                raise CouldNotLook("index.golang.org answered with a line that is not JSON")
             if not (isinstance(row, dict) and all(isinstance(row.get(k), str) and row.get(k) for k in ("Path", "Version", "Timestamp"))):
-                raise CouldNotLook("index.golang.org answered with a row that is not {Path, Version, Timestamp}")      # an unreadable row is never skipped as 'not this module'
+                raise CouldNotLook("index.golang.org answered with a row that is not {Path, Version, Timestamp}")
+            rows.append(row)
+        for row in rows:
             if row["Path"].lower() == mod.lower() and row["Version"] == version:
                 return row["Timestamp"]
         if len(rows) < 2000:
@@ -436,6 +459,8 @@ def _registry_push(item):
             url = d.get("next")
             if not url:
                 break
+            if not (isinstance(url, str) and url.startswith("https://hub.docker.com/")):
+                raise CouldNotLook("hub.docker.com answered with a next link that is not a hub.docker.com URL")
     return None
 
 
@@ -497,6 +522,9 @@ def main(argv=None):
         return _run(a, moved, fx, now)
     except RuntimeError as e:
         print(f"pin-age: cannot run: {e} (not a pass)", file=sys.stderr)
+        return 2
+    except (AttributeError, KeyError, TypeError, IndexError, ValueError) as e:      # an answer of a shape nobody guarded: the check cannot run, it is never a pass and never a traceback
+        print(f"pin-age: cannot run: an answer could not be read ({type(e).__name__}) (not a pass)", file=sys.stderr)
         return 2
     except CouldNotLook as e:
         print(f"pin-age: cannot run: {e} (not a pass: re-run the check)", file=sys.stderr)
