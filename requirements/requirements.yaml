@@ -2868,6 +2868,12 @@ requirements:
         then: "only oci-layout, index.json and the blobs the layout's index and child manifests name go into the archive docker load reads, everything else is left out, and a layout whose index names a blob it lacks is refused before any load. Extends the named-members rule of REQ-CHAIN-006-AC4 from the scan to docker load. Tighten-only; approved by the advisor Oct 23"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC34
+        given: "a pull request that adds or changes a checksum file for an upstream artifact (a file whose name says sha256 or checksum, an item whose identity is the file's content) that is no base input"
+        when: "the age check runs and the exceptions file the base branch holds has a file_pins row {file, content, upstream, version, published} for that file and exactly that content"
+        then: "the file is dated by the row's published time and still needs 7 days public (too young fails, a future or unreadable time fails); a row for other content, another file, one that omits a field or one that only the pull request's own tree carries rules nothing (exit 1); two rows for one file and content, a file_pins that is not a list or an unreadable exceptions file stop the check (exit 2); owner's plain-forms rule: a pin has a version and a date the checker can read. Advisor ruling Oct 23 (fix to an existing coded check that blocks work)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -4793,8 +4799,8 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC5
-        given: "the committed ci.yml and floors file (PLANNED, Fable ruling on cache#695: the split of the wrap; the requirements tool accepts only approved or proposed, so the status field reads approved and this word says planned)"
+        given: "the committed ci.yml and floors file (Fable ruling on cache#695: PR 2 of the wrap left eight suites in `all`, PR 3 migrated five of them)"
         when: "the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them"
-        then: "it runs exactly these eight, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: auditor-labels-test.sh (2 runs), auditor-matrix-test.sh (2 runs), required-check-guard-test.sh (2 runs), suite-guard-test.sh (2 runs), vex-index-test.sh (3 runs: two plain steps and `all`) and vex-scope-test.sh (2 runs) are six whose steps are not counting steps yet, so they run more than once until PR 3 migrates them (this AC then shrinks to the last two); marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run) are known-red by design: no step of their own, run only by `all`"
+        then: "it runs exactly these three, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: required-check-guard-test.sh (2 runs: its job holds a `permissions:` block, so it is not a plain job and its step cannot be a counting step; advisor Oct 24, AC1 unchanged) and marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run), the last two known-red by design: no step of their own, run only by `all`. Every other floored suite is counted by its own step and runs once. The count is of the steps of ci.yml; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here"
         verification: { method: unit, release_blocking: false }
         status: approved
