@@ -395,17 +395,19 @@ def load_index(data, final):
 
 # ---------------------------------------------------------------- the attestation of one platform
 def scout_form(vex):
-    """the VEX file in the form Docker Scout applies, which is what every attestation carries as its predicate. `docker scout attestation add` stores a statement whose products
-    are the vulnerable PACKAGES (the image is the in-toto subject, so the image purl is not repeated): a product that carries subcomponents is replaced by them, in order, once each;
-    a product without subcomponents stays. Scout read our attestation when it held the VEX file as it is (a product = the image purl, the package as its subcomponent) and did not
-    apply it (rescan run 39978435878, Oct 23 2026; the fixture is Scout's own output, held in bin/vex-index-test.sh). The published VEX file itself is not changed; this is a pure
-    function of its bytes, like everything else here."""
+    """the VEX file in the form Docker Scout applies, which is what every attestation carries as its predicate. `docker scout attestation add` stores a statement whose
+    products are the vulnerable PACKAGES (the image is the in-toto subject, so the image purl is not repeated): a product that names the attested image (SUBJECT_NAME, as @id
+    or identifiers.purl) and lists subcomponents is replaced by them, in order, once each; every other product stays whole, so a claim about another image is never
+    carried onto this one. Scout read our attestation when it held the VEX file as it is (a product = the image purl, the package as its subcomponent) and did not
+    apply it (rescan run 39978435878, Oct 23 2026; the fixture is Scout's own output, held in bin/vex-index-test.sh). The published VEX file itself is not changed;
+    this is a pure function of its bytes, like everything else here."""
     out = json.loads(json.dumps(vex))
     for statement in out.get("statements", []):
         products, seen = [], set()
         for product in statement.get("products", []):
             subcomponents = product.get("subcomponents")
-            for item in (subcomponents if isinstance(subcomponents, list) and subcomponents else [product]):
+            names_image = SUBJECT_NAME in (product.get("@id"), (product.get("identifiers") or {}).get("purl"))
+            for item in (subcomponents if names_image and isinstance(subcomponents, list) and subcomponents else [product]):
                 key = canonical(item)
                 if key not in seen:
                     seen.add(key)
@@ -557,7 +559,7 @@ def compute(index_bytes, vex_bytes):
     try:
         check_vex(canonical(attested))   # verify runs this same check on the attested predicate: refuse here what verify would refuse
     except Refuse as e:
-        raise Refuse("the VEX in the form Docker Scout applies is not a valid VEX (two statements that differ only in a parent product are identical there): %s" % e)
+        raise Refuse("the VEX in the form Docker Scout applies is not a valid VEX (two statements that name the image in two forms are identical there): %s" % e)
     for name, entry in platforms:
         descriptor, parts = build_attestation(entry["digest"], attested)
         descriptors.append(descriptor)

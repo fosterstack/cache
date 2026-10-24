@@ -307,15 +307,17 @@ def hx(d):
 
 
 def ref_scout(vex_obj):
-    """the predicate an attestation carries: the VEX file in the form Docker Scout applies. Scout's own `docker scout attestation add` stores a statement whose products are the
-    vulnerable PACKAGES (the image is the in-toto subject): a product that carries subcomponents is replaced by them, in order, once each; a product without subcomponents stays.
+    """the predicate an attestation carries: the VEX file in the form Docker Scout applies. Scout's own `docker scout attestation add` stores a statement whose products
+    are the vulnerable PACKAGES (the image is the in-toto subject): a product that names the attested image (its purl, as @id or identifiers.purl) and lists subcomponents
+    is replaced by them, in order, once each; every other product stays whole.
     (Oct 23 2026, rescan run 39978435878: the same document embedded verbatim, product = image purl with the package as a subcomponent, was read by Scout and not applied.)"""
     o = json.loads(json.dumps(vex_obj))
     for st in o.get("statements", []):
         out, seen = [], set()
         for prod in st.get("products", []):
             subs = prod.get("subcomponents")
-            for q in (subs if isinstance(subs, list) and subs else [prod]):
+            names_image = SUBJECT_NAME in (prod.get("@id"), (prod.get("identifiers") or {}).get("purl"))
+            for q in (subs if names_image and isinstance(subs, list) and subs else [prod]):
                 k = cj(q)
                 if k not in seen:
                     seen.add(k)
@@ -1290,12 +1292,14 @@ def _():
     assert_refused(fx.bytes, vb, "VEX naming the built index")
 
 
-@case("AC1", "two statements that differ only in a parent product and become the same in Scout's form are refused by compute (verify would refuse the duplicate) and nothing is written (round 1, Opus F1)")
+@case("AC1", "two statements that name the image in two forms (@id, identifiers.purl) and become the same in Scout's form are refused by compute (verify would refuse the duplicate) and nothing is written (round 1, Opus F1)")
 def _():
     fx = mk_fx()
     def twice(o):
         o["statements"].append(json.loads(json.dumps(o["statements"][0])))
-        o["statements"][1]["products"][0]["@id"] = "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+        prod = o["statements"][1]["products"][0]
+        del prod["@id"]
+        prod["identifiers"] = {"purl": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}   # the image named by identifiers.purl instead of @id
     vb = vex_with(twice, base=BASE_VEX)
     assert_refused(fx.bytes, vb, "statements identical in Scout's form")
 
@@ -1517,7 +1521,7 @@ def _():
     ok(n >= 1, "no attestation found")
 
 
-@case("AC3", "a statement whose product has no subcomponents is attested unchanged; a product with several subcomponents becomes several products, once each, in order")
+@case("AC3", "a statement whose product has no subcomponents is attested unchanged; the image's product with several subcomponents becomes several products, once each, in order; another product (cache-x) stays whole")
 def _():
     fx = mk_fx()
     vex = json.loads(json.dumps(SCOUT_IN))
@@ -1532,7 +1536,32 @@ def _():
     e = [x for x in f["manifests"] if (x.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"][0]
     st = json.loads(rd(os.path.join(bdir, hx(json.loads(rd(os.path.join(bdir, hx(e["digest"]))))["layers"][0]["digest"]))))
     eq([x["products"] for x in st["predicate"]["statements"]],
-       [[{"@id": "pkg:golang/github.com/fosterstack/cache"}], [{"@id": "pkg:generic/b@1"}, {"@id": "pkg:generic/a@2"}]], "products after the derivation")
+       [[{"@id": "pkg:golang/github.com/fosterstack/cache"}],
+        [{"@id": "pkg:generic/b@1"}, {"@id": "pkg:generic/a@2"},
+         {"@id": "pkg:oci/cache-x?repository_url=ghcr.io/fosterstack/cache-x", "subcomponents": [{"@id": "pkg:generic/b@1"}]}]], "products after the derivation")
+
+
+@case("AC3", "only the image's own product is replaced by its subcomponents: another image, a platform digest form and cache-candidates stay whole; an empty list stays; a package in two statements stays in both")
+def _():
+    fx = mk_fx()
+    IMG = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+    vex = json.loads(json.dumps(SCOUT_IN))
+    def stmt(name, products):
+        return {"vulnerability": {"name": name}, "status": "not_affected", "justification": "vulnerable_code_not_present", "products": products}
+    A = {"@id": "pkg:generic/a@1"}
+    CAND = {"@id": "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates", "subcomponents": [A]}
+    OTHER = {"@id": "pkg:oci/other", "subcomponents": [A]}
+    DIGEST = {"@id": "pkg:oci/cache@sha256:" + "a" * 64 + "?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [A]}
+    EMPTY = {"@id": IMG, "subcomponents": []}
+    vex["statements"] = [stmt("CVE-2024-1", [CAND]), stmt("CVE-2024-2", [OTHER, DIGEST]), stmt("CVE-2024-3", [EMPTY]),
+                         stmt("CVE-2024-4", [{"@id": IMG, "subcomponents": [A]}]), stmt("CVE-2024-5", [{"@id": IMG, "subcomponents": [A]}])]
+    r = do_compute(fx.bytes, json.dumps(vex).encode("utf-8"))
+    ok(r.rc == 0, "compute failed: " + r.err.strip()[:200])
+    f = json.loads(rd(os.path.join(r.dir, "index.json")))
+    bdir = os.path.join(r.dir, "blobs", "sha256")
+    e = [x for x in f["manifests"] if (x.get("annotations") or {}).get("vnd.docker.reference.type") == "attestation-manifest"][0]
+    st = json.loads(rd(os.path.join(bdir, hx(json.loads(rd(os.path.join(bdir, hx(e["digest"]))))["layers"][0]["digest"]))))
+    eq([x["products"] for x in st["predicate"]["statements"]], [[CAND], [OTHER, DIGEST], [EMPTY], [A], [A]], "products after the derivation")
 
 
 @case("AC3", "verify refuses an attestation that carries the VEX file verbatim instead of Scout's applied form")
