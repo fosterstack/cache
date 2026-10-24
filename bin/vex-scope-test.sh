@@ -5,10 +5,11 @@
 # another vendor's image (even one whose bare basename is "cache"), a different
 # busybox version, or an image with no usable identity (no context-free
 # package fallback). Runs the pinned Grype over synthetic SBOMs against the
-# committed .vex and asserts suppress/flag per case.
+# retired-busybox fixture document (test-evidence/vex-scope/busybox.openvex.json: the committed .vex no longer holds busybox statements)
+# and asserts suppress/flag per case; the Check-path section at the end runs bin/check-scan.sh over real layouts.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"; repo="$(cd "$here/.." && pwd)"
-vex="$repo/.vex/fosterstack-cache.openvex.json"
+vex="$repo/test-evidence/vex-scope/busybox.openvex.json"
 base="$repo/test-evidence/vex-scope/busybox-image.sbom.json"
 grype="${GRYPE:-$(command -v grype || true)}"   # PATH or $GRYPE only: no probing of a fixed system location
 [ -n "$grype" ] && [ -x "$grype" ] || { echo "::error::grype not found — install it (bin/install-scanner.sh grype) before this test" >&2; exit 1; }
@@ -102,8 +103,12 @@ os.makedirs(W + "/dist"); os.makedirs(W + "/.vex"); os.makedirs(W + "/.github/po
 for a in ("amd64", "arm64"):
     for n, k in (("fscache", "archive-linux-"), ("fscache-fips", "archive-fips-linux-")):
         f = "%s/dist/%s_0.3.0_linux_%s.tar.gz" % (W, n, a)
+        # the archive holds one package grype can inventory (an apk database entry no vulnerability database knows), as the real archives hold the Go binary's modules:
+        # a scan that inventoried nothing is not a scan that ran (REQ-REL-004-AC1), so a fixture archive of one bare file would fail the gate, as it should
         with tarfile.open(f, "w:gz") as t:
-            i = tarfile.TarInfo("f.txt"); c = b"x\n"; i.size = len(c); t.addfile(i, io.BytesIO(c))
+            for n, c in (("etc/alpine-release", b"3.21.0\n"), ("etc/os-release", b'NAME="Alpine Linux"\nID=alpine\nVERSION_ID=3.21.0\n'),
+                         ("lib/apk/db/installed", b"C:Q1xxxxxxxxxxxxxxxxxxxxxxxxxxx=\nP:fscache-fixture\nV:1.0-r0\nA:x86_64\nS:1\nI:1\nT:x\nU:x\nL:MIT\no:fscache-fixture\nm:x\nt:0\nc:0\n\n")):
+                i = tarfile.TarInfo(n); i.size = len(c); t.addfile(i, io.BytesIO(c))
         d[k + a] = "sha256:" + hashlib.sha256(open(f, "rb").read()).hexdigest()
 json.dump(d, open(W + "/digests.json", "w"))
 # one tagged docker archive of the production amd64 child, for the exact-finding assertions below (what the Check script builds from the same blobs)
@@ -127,8 +132,8 @@ run_check() {   # run_check VEXFILE: bin/check-scan.sh in the tree with that doc
   cp "$1" "$chk/.vex/fosterstack-cache.openvex.json"; rm -rf "$chk/out"
   ( cd "$chk" && PATH="$(dirname "$grype"):$PATH" bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests digests.json --images images --archives dist --out out > run.log 2>&1 ) || true
 }
-child_is() {   # child_is production amd64 pass|fail -> 0 when the subject's verdict is that and it inventoried 3 packages
-  [ "$(jq -r --arg n "$1/linux/$2" '[.scanners[0].subjects[]? | select(.name == $n)][0] | [.verdict, .packages] | @csv' "$chk/out/scan-results.json" 2>/dev/null)" = "\"$3\",3" ]
+child_is() {   # child_is production amd64 pass|fail -> 0 when the subject's verdict is that and it inventoried 1 package (the one apk package; files and the OS record carry no package URL and are not counted, rc-5a C)
+  [ "$(jq -r --arg n "$1/linux/$2" '[.scanners[0].subjects[]? | select(.name == $n)][0] | [.verdict, .packages] | @csv' "$chk/out/scan-results.json" 2>/dev/null)" = "\"$3\",1" ]
 }
 vex_with() {   # vex_with FILE PRODUCT-ID CVE...: a document excepting those CVEs for that product
   python3 - "$@" <<'PYV'
@@ -144,8 +149,8 @@ vex_with "$work/vex-none.json" "$CACHE_IMG" CVE-2099-0001
 vex_with "$work/vex-qual.json" "$CACHE_IMG&variant=production&arch=amd64" CVE-2025-60876 CVE-2025-46394 CVE-2024-58251
 run_check "$work/vex-all.json"
 for v in production fips; do for a in amd64 arm64; do
-  if child_is $v $a pass; then echo "PASS check path: the $v image's linux/$a child (gzip layer) is scanned by real grype and the cache VEX applies (3 packages, verdict pass)"; pass=$((pass+1))
-  else echo "FAIL check path: the $v image's linux/$a child (want pass over 3 packages): $(tail -2 "$chk/run.log" | cut -c1-200 | tr '\n' ' ')"; fail=$((fail+1)); fi
+  if child_is $v $a pass; then echo "PASS check path: the $v image's linux/$a child (gzip layer) is scanned by real grype and the cache VEX applies (1 package, verdict pass)"; pass=$((pass+1))
+  else echo "FAIL check path: the $v image's linux/$a child (want pass over 1 package): $(jq -c '[.scanners[0].subjects[]? | [.name, .verdict, .packages]]' "$chk/out/scan-results.json" 2>&1 | cut -c1-400)"; fail=$((fail+1)); fi
 done; done
 # the same layouts under a document that excepts none of their findings must FAIL: otherwise the pass above could be a database that no longer matches (the VEX inert)
 run_check "$work/vex-none.json"

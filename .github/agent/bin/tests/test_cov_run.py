@@ -14,6 +14,7 @@ import verdict_fixture  # noqa: E402  (fixture verdicts adapted to the panel's c
 _spec = importlib.util.spec_from_file_location("auditor_run_cov", os.path.join(BIN, "auditor-run.py"))
 R = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(R)
 policy = R.policy
+from auditorlib import nochange  # noqa: E402
 PROD = policy.VEX_PRODUCT
 
 # env vars that change which delivery path runs — cleared for every test, set explicitly per case
@@ -247,7 +248,245 @@ class PureHelpers(Base):
         self.assertEqual(st["tokens"], 14)
         self.assertIn("primary", st["roles_used"])
         self.assertEqual(ask.call_args.kwargs["attempt"], "narrative")
-        self.assertEqual(ask.call_args.kwargs["context"]["structured"]["commit"], "c1")
+        self.assertNotIn("commit", ask.call_args.kwargs["context"]["structured"])   # the model is told nothing the key leaves out
+
+
+# ---------------------------------------------------------------- no-change day (REQ-AUD-3 AC3)
+
+class NoChange(Base):
+    CTX = {"finding_id": "CVE-2099-7", "package": "libz", "installed_version": "1", "candidate_digest": "sha256:cand"}
+
+    def state(self, **kw):
+        st = {"tokens": 0, "iters": 0, "roles_used": set(), "nc_verdicts": {}, "nc_pull": {}, "nc_narr": None,
+              "nc_prev": None, "nc_today": "2026-10-24"}
+        st.update(kw); return st
+
+    def prev(self, **kw):
+        doc = nochange.dump("2026-10-23", "a" * 64, {}, {}, None); doc.update(kw); return doc
+
+    def test_a_reused_verdict_makes_no_model_call_and_is_carried_forward(self):
+        key = nochange.call_key("adjudicate", self.CTX)
+        st = self.state(nc_prev=self.prev(verdicts={key: "false_positive"}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "false_positive")
+        ask.assert_not_called()
+        self.assertNotIn("calls", st); self.assertEqual(st["tokens"], 0)
+        self.assertEqual(st["nc_verdicts"], {key: "false_positive"})
+        self.assertEqual(st.get("nc_reused"), 1)
+
+    def test_a_fresh_verdict_is_recorded_only_when_it_is_a_real_category(self):
+        key = nochange.call_key("adjudicate", self.CTX)
+        for cat, kept in (("real_fixable", True), ("under_investigation", True), ("unknown", False), ("burn_it_down", False)):
+            st = self.state()
+            with mock.patch.object(R.cli, "ask_model", return_value={"category": cat, "token_usage": 1}) as ask:
+                self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), cat)
+            self.assertEqual(ask.call_count, 1)
+            self.assertEqual(st["nc_verdicts"], {key: cat} if kept else {}, cat)
+
+    def test_a_different_context_is_a_miss_even_with_a_matching_state(self):
+        st = self.state(nc_prev=self.prev(verdicts={nochange.call_key("adjudicate", dict(self.CTX, installed_version="0")): "false_positive"}))
+        with mock.patch.object(R.cli, "ask_model", return_value={"category": "real_fixable", "token_usage": 1}) as ask:
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "real_fixable")
+        self.assertEqual(ask.call_count, 1)
+
+    def test_a_refusal_or_an_error_is_never_recorded_as_a_verdict(self):
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=R.cli.Refused("no")):
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "refused")
+        self.assertEqual(st["nc_verdicts"], {})
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "adjudicator_error")
+        self.assertEqual(st["nc_verdicts"], {})
+
+    # REQ-AUD-3 AC3, Fable ruling on cache#684: a run where ANY attempted model call ended without a cacheable result is an incomplete run; it leaves no usable state.
+    def test_a_complete_adjudication_leaves_the_run_complete(self):
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"category": "real_fixable", "token_usage": 1}):
+            R.adjudicate("/x/real.py", self.CTX, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_every_uncacheable_adjudication_outcome_marks_the_run_incomplete(self):
+        cases = (("an unknown answer", dict(return_value={"category": "unknown", "token_usage": 1}), {}),
+                 ("a category outside the five", dict(return_value={"category": "burn_it_down", "token_usage": 1}), {}),
+                 ("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
+                 ("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("the token budget stop", dict(return_value={"category": "real_fixable"}), {"tokens": R.policy.TOKEN_BUDGET}),
+                 ("the iteration stop", dict(return_value={"category": "real_fixable"}), {"iters": R.policy.MAX_ITERATIONS}))
+        for label, ask_kw, st_kw in cases:
+            st = self.state(**st_kw)
+            if label == "the iteration stop":
+                st_kw = {}
+            with mock.patch.object(R.cli, "ask_model", **ask_kw), mock.patch.object(R.policy, "MAX_ITERATIONS", 0 if label == "the iteration stop" else R.policy.MAX_ITERATIONS):
+                R.adjudicate("/x/real.py", self.CTX, st)
+            self.assertTrue(st.get("nc_incomplete"), label)
+
+    def test_a_reused_adjudication_makes_no_call_and_does_not_mark_the_run_incomplete(self):
+        key = nochange.call_key("adjudicate", self.CTX)
+        st = self.state(nc_prev=self.prev(verdicts={key: "false_positive"}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            R.adjudicate("/x/real.py", self.CTX, st)
+        ask.assert_not_called(); self.assertFalse(st.get("nc_incomplete"))
+
+    def test_every_uncacheable_pullability_outcome_marks_the_run_incomplete(self):
+        good = {"pullable": False, "token_usage": 1}
+        cases = (("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
+                 ("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("an answer the router cannot read", dict(return_value={"pullable": "maybe", "token_usage": 1}), {}),
+                 ("the token budget stop", dict(return_value=good), {"tokens": R.policy.TOKEN_BUDGET}))
+        for label, ask_kw, st_kw in cases:
+            st = self.state(**st_kw)
+            with mock.patch.object(R.cli, "ask_model", **ask_kw):
+                R._pullability("/x/real.py", self.CTX, st)
+            self.assertTrue(st.get("nc_incomplete"), label)
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value=good):
+            R._pullability("/x/real.py", self.CTX, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_every_uncacheable_narrative_outcome_marks_the_run_incomplete(self):
+        sections, m = {"s": 1}, {}
+        cases = (("an error", dict(side_effect=RuntimeError("down")), {}),
+                 ("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
+                 ("an empty narrative", dict(return_value={"narrative": "  ", "token_usage": 1}), {}),
+                 ("a narrative that disagrees with the record", dict(return_value={"narrative": "text", "token_usage": 1}), {"bad": True}),
+                 ("the token budget stop", dict(return_value={"narrative": "text"}), {"tokens": R.policy.TOKEN_BUDGET}))
+        for label, ask_kw, flags in cases:
+            st = self.state(**({"tokens": R.policy.TOKEN_BUDGET} if "budget" in label else {}))
+            with mock.patch.object(R.cli, "ask_model", **ask_kw), mock.patch.object(R, "_narrative_structured", return_value={}), \
+                 mock.patch.object(R, "_narrative_ok", return_value=not flags.get("bad")):
+                R._conclusion("/x/real.py", sections, m, st)
+            self.assertTrue(st.get("nc_incomplete"), label)
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "fine", "token_usage": 1}), mock.patch.object(R, "_narrative_structured", return_value={}), \
+             mock.patch.object(R, "_narrative_ok", return_value=True):
+            R._conclusion("/x/real.py", sections, m, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_a_stub_adjudicator_makes_no_call_and_is_not_incomplete(self):
+        st = self.state()
+        R._conclusion("/x/stub.py", {}, {}, st)
+        self.assertFalse(st.get("nc_incomplete"))
+
+    def test_the_stable_base_drops_the_day_counter_but_keeps_the_threshold_decision(self):
+        a = R._stable_base({"release": "debian 12.0", "behind_threshold_days": 30, "days_behind": 52})
+        b = R._stable_base({"release": "debian 12.0", "behind_threshold_days": 30, "days_behind": 53})
+        self.assertEqual(a, b); self.assertNotIn("days_behind", a); self.assertIs(a["behind_beyond_threshold"], True)
+        self.assertIs(R._stable_base({"days_behind": 3})["behind_beyond_threshold"], False)
+        self.assertEqual(R._stable_base({"release": "x"}), {"release": "x"})
+        at, over = (R._stable_base({"behind_threshold_days": 30, "days_behind": d}) for d in (30, 31))
+        self.assertNotEqual(at, over)                                              # crossing the threshold is a change
+        self.assertEqual(R._stable_base(None), {})
+
+    def test_the_adjudication_fingerprint_follows_prompt_adjudicator_and_model(self):
+        adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "m-one", "AUDITOR_MODEL_FALLBACK": "m-two"}):
+            base = R._adjudication_fingerprint(adj)
+            os.environ["AUDITOR_MODEL_PRIMARY"], os.environ["AUDITOR_MODEL_FALLBACK"] = "m-two", "m-one"      # the roles swapped
+            self.assertNotEqual(base, R._adjudication_fingerprint(adj))
+            os.environ["AUDITOR_MODEL_PRIMARY"], os.environ["AUDITOR_MODEL_FALLBACK"] = "m-one", "m-two"
+            self.assertEqual(base, R._adjudication_fingerprint(adj))
+            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-three"
+            self.assertNotEqual(base, R._adjudication_fingerprint(adj))
+            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-one"
+            open(adj, "w").write("print(2)")
+            self.assertNotEqual(base, R._adjudication_fingerprint(adj))
+            self.assertNotEqual(R._adjudication_fingerprint(os.path.join(self.tmp, "missing.py")), base)
+        self.assertNotIn("m-one", R._adjudication_fingerprint(adj))          # a digest, never the identifier itself
+
+    def test_the_adjudication_fingerprint_follows_the_standing_prompt(self):
+        adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
+        bindir = self.d("fake", "bin"); self.d("fake", "prompts")
+        prompt = os.path.join(self.tmp, "fake", "prompts", "adjudicator.md")
+        with mock.patch.object(R, "HERE", bindir):
+            open(prompt, "w").write("answer in one word")
+            a = R._adjudication_fingerprint(adj)
+            open(prompt, "w").write("answer in two words")
+            self.assertNotEqual(a, R._adjudication_fingerprint(adj))
+
+    def test_a_reused_pullability_verdict_makes_no_call(self):
+        ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
+        key = nochange.call_key("pullability", ctx)
+        verdict = {"pullable": False, "lift_trigger": "base >= 3"}
+        st = self.state(nc_prev=self.prev(pullability={key: verdict}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            self.assertEqual(R._pullability("/x/real.py", ctx, st), verdict)
+        ask.assert_not_called()
+        self.assertEqual(st["nc_pull"], {key: verdict}); self.assertNotIn("calls", st)
+
+    def test_a_fresh_pullability_verdict_is_recorded_by_its_known_keys_only(self):
+        ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
+        key = nochange.call_key("pullability", ctx)
+        st = self.state()
+        ans = {"pullable": False, "lift_trigger": "x", "token_usage": 5, "surprise": {"nested": 1}, "evidence": {"how": "e"}}
+        with mock.patch.object(R.cli, "ask_model", return_value=ans):
+            got = R._pullability("/x/real.py", ctx, st)
+        self.assertEqual(got, ans)
+        self.assertEqual(st["nc_pull"], {key: {"pullable": False, "lift_trigger": "x", "evidence": {"how": "e"}}})
+
+    def test_a_pullability_answer_the_router_cannot_read_is_unusable_and_not_cached(self):
+        ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
+        for bad in ({"pullable": False, "lift_trigger": 12}, {"pullable": False, "lift_trigger": "x", "hold": "arbitrary"},
+                    {"pullable": "no"}, {"pullable": False, "lift_trigger": "x" * 5000}, {"evidence": ["x"]}):
+            st = self.state()
+            with mock.patch.object(R.cli, "ask_model", return_value=dict(bad, token_usage=5)):
+                self.assertIsNone(R._pullability("/x/real.py", ctx, st), bad)       # as if the model had been unavailable: the finding stays actionable
+            self.assertEqual(st["nc_pull"], {}, bad)
+            self.assertEqual(st["tokens"], 5)                                     # the call was made and billed
+
+    def test_a_reused_narrative_is_marked_unchanged_and_makes_no_call(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
+        m = {"commit": "c1", "candidate_digests": {"production": "sha256:p"}}
+        key = R._narrative_key(secs, m)
+        st = self.state(nc_prev=self.prev(narrative={"key": key, "text": "CVE-2099-3 needs a bump.", "date": "2026-10-22"}))
+        with mock.patch.object(R.cli, "ask_model") as ask:
+            text = R._conclusion("/x/real.py", secs, m, st)
+        ask.assert_not_called()
+        self.assertEqual(text, "CVE-2099-3 needs a bump.\n\n(unchanged since 2026-10-22)")
+        self.assertEqual(st["nc_narr"], {"key": key, "text": "CVE-2099-3 needs a bump.", "date": "2026-10-22"})
+
+    def test_the_narrative_request_is_exactly_what_its_key_covers(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
+        reqs = []
+        for commit in ("c1", "c2"):
+            with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-3 needs a bump."}) as ask:
+                R._conclusion("/x/real.py", secs, {"commit": commit}, self.state())
+            reqs.append(ask.call_args.kwargs["context"])
+        self.assertEqual(reqs[0], reqs[1])
+
+    def test_a_new_commit_alone_does_not_change_the_narrative_key(self):
+        secs = {n: [] for n in range(1, 8)}
+        self.assertEqual(R._narrative_key(secs, {"commit": "c1"}), R._narrative_key(secs, {"commit": "c2"}))
+        secs2 = {n: [] for n in range(1, 8)}; secs2[3] = [{"id": "CVE-2099-3"}]
+        self.assertNotEqual(R._narrative_key(secs, {"commit": "c1"}), R._narrative_key(secs2, {"commit": "c1"}))
+
+    def test_a_reused_narrative_that_no_longer_fits_the_record_is_asked_again(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]; secs[5] = [{"id": "CVE-2099-5"}]
+        m = {"commit": "c1"}; key = R._narrative_key(secs, m)
+        st = self.state(nc_prev=self.prev(narrative={"key": key, "text": "CVE-2099-9 appeared.", "date": "2026-10-22"}))
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-3 needs a bump.", "token_usage": 2}) as ask:
+            text = R._conclusion("/x/real.py", secs, m, st)
+        self.assertEqual(ask.call_count, 1)
+        self.assertEqual(text, "CVE-2099-3 needs a bump.")
+        self.assertEqual(st["nc_narr"]["date"], "2026-10-24")
+
+    def test_a_fresh_narrative_is_recorded_with_todays_date(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-3 needs a bump.", "token_usage": 2}):
+            R._conclusion("/x/real.py", secs, {"commit": "c1"}, st)
+        self.assertEqual(st["nc_narr"], {"key": R._narrative_key(secs, {"commit": "c1"}), "text": "CVE-2099-3 needs a bump.", "date": "2026-10-24"})
+
+    def test_a_withheld_narrative_is_not_recorded(self):
+        secs = {n: [] for n in range(1, 8)}
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", side_effect=RuntimeError("down")):
+            R._conclusion("/x/real.py", secs, {}, st)
+        self.assertIsNone(st["nc_narr"])
+        st = self.state()
+        with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-9 appeared.", "token_usage": 1}):
+            R._conclusion("/x/real.py", secs, {}, st)
+        self.assertIsNone(st["nc_narr"])
 
 
 # ---------------------------------------------------------------- pullability model call
@@ -411,6 +650,19 @@ class MergeConsolidate(Base):
                  "timestamp": "t", "version": version, "statements": statements})
         return out, supp
 
+    def test_two_retained_statements_without_an_id_are_made_separately_addressable(self):
+        # AC2 safety net: statements of DIFFERENT scopes that arrive with no @id (or the same one) never leave the merge sharing an @id
+        ws = self.d("ws"); a = self._stmt("CVE-2099-30", ["pkg:deb/a@1"]); b = self._stmt("CVE-2099-30", ["pkg:deb/b@1"])
+        a.pop("@id"); b.pop("@id")
+        self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"),
+                {"@context": "c", "@id": policy.VEX_BASE, "author": "a", "role": "vendor", "timestamp": "t", "version": 2, "statements": [a, b]})
+        _out, supp = self._supp([self._stmt("CVE-2099-31", ["pkg:deb/c@1"])], version=3)
+        R._merge_suppressions(ws, supp)
+        got = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))["statements"]
+        ids = [s["@id"] for s in got]
+        self.assertEqual(len(got), 3)
+        self.assertEqual(len(set(ids)), 3, ids)
+
     def test_corrupt_existing_vex_stops_the_run(self):
         # rc-5b fix 13: a reviewed file that is present but unreadable is a stop, never "no statements"
         ws = self.d("ws"); self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"), "{not json")
@@ -444,6 +696,19 @@ class MergeConsolidate(Base):
         p = os.path.join(self.d("ro2"), "reopened-expired.json"); self.wj(p, {"reopened": [["CVE-1", ["prod"], ["pkg:deb/a@1"]]]})
         self.assertEqual(R._read_reopened(p), [["CVE-1", ["prod"], ["pkg:deb/a@1"]]])
         self.assertEqual(R._read_reopened(os.path.join(self.d("ro3"), "absent.json")), [])      # absent = none
+
+    def test_a_published_vex_and_the_accepted_items_file_must_carry_their_list(self):
+        # a present file of the right name must hold its key as a list of objects: {} and a null list are a stop, [] is a valid empty list (rc-5b fix 13)
+        for name, key in (("fosterstack-cache.openvex.json", "statements"), ("accepted-items.json", "accepted_items"), ("f-CVE-2099-1.openvex.json", "statements")):
+            for bad in ({}, {key: None}, {"other": []}, {key: {}}, {key: "x"}, {key: [None]}, {key: [3]}, {key: [{}, "x"]}):
+                p = os.path.join(self.d("rq"), name); self.wj(p, bad)
+                with self.assertRaises(R.ReviewedInputInvalid, msg=repr((name, bad))):
+                    R._read_reviewed_json(p)
+            for good in ({key: []}, {key: [{}]}, {key: [{"a": 1}], "other": 1}):
+                p = os.path.join(self.d("rq2"), name); self.wj(p, good)
+                self.assertEqual(R._read_reviewed_json(p), good)
+        p = os.path.join(self.d("rq3"), "run-state.json"); self.wj(p, {})      # a file the reader has no rule for is read as before
+        self.assertEqual(R._read_reviewed_json(p), {})
 
     def test_lstat_failure_other_than_absent_is_a_stop(self):
         import errno
@@ -1125,7 +1390,7 @@ class ConsistencyTablesMain(Base):
 # ---------------------------------------------------------------- run() end to end (in-process)
 
 def _expected_images(scanner):
-    from auditorlib import parsers as PL
+    from auditorlib import nochange,  parsers as PL
     return sum(1 for im in PL.panel_images() if PL.panel_expected(scanner, im))      # follows bin/panel.py VARIANTS (Google: amd64 only)
 
 
@@ -1161,6 +1426,8 @@ class Run(Base):
         m = dict({"commit": "abcdef1234567890", "candidate_digests": {"production": "sha256:d"}}, **panel_manifest_fields(self.tmp))
         m.update(m_extra or {})
         out = self.d("out")
+        adj = os.path.join(self.d("adj"), os.path.basename(adjudicator))   # the run fingerprints its adjudicator file: a real file of the same name (no test touches /x)
+        open(adj, "w").write("# a stand-in adjudicator\n"); adjudicator = adj
         ask = ask or mock.Mock(side_effect=AssertionError("no model call expected"))
         with mock.patch.object(R.C, "manifest_findings", return_value=(m, groups)), \
                 mock.patch.object(R, "_consistency", return_value=consistency or {"problems": []}), \

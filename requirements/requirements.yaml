@@ -1867,9 +1867,9 @@ requirements:
         status: approved
 
   - id: REQ-REL-008
-    title: The workflow set is consolidated to the ratified 23 files
+    title: The workflow set is consolidated to the ratified list (ratified 32 → 23; 19 files today)
     statement: >
-      The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), each merge
+      The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), and to the 19 files that remain today after the v0.3.0 chain's ratified removals (AC1 fixes the list), each merge
       keeping every required check's name, top-level placement and events, and no new workflow file added without the
       owner's ratification.
     source: [.github/workflows/go-freshness.yml, .github/workflows/ci.yml]
@@ -2856,6 +2856,18 @@ requirements:
         then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC30
+        given: "bin/acceptance-serve.sh started with an IMAGE_REF, and bin/check-acceptance.sh, which loads Build's production candidate and starts it through that script"
+        when: "the IMAGE_REF is not content-addressed: not exactly name@sha256:<64 lowercase hex> (name = [host[:port]/]path[/path]...[:tag]) and not exactly an image ID sha256:<64 lowercase hex> as one whole string (a tag only, an upper-case or short digest, trailing text, a second line, a leading option character)"
+        then: "serve refuses it with exit 2 and a message naming the ref, before docker run; serve tags only the image's inspected ID to its fixed local name, checks that name still resolves to exactly that ID right before docker run (a re-tag is refused) and runs that name; check-acceptance.sh turns the tag that docker load printed into the loaded image's ID (docker image inspect) and hands serve that ID, never the tag; this is the owner's plain form for an image: pinned by digest"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC33
+        given: "a Check script (bin/check-acceptance.sh, bin/check-fips.sh, bin/check-artifacts.sh) loads a candidate image layout into docker"
+        when: "the layout holds anything beyond the files its index and manifests name (a root manifest.json, a stray tar, a blob nothing names)"
+        then: "only oci-layout, index.json and the blobs the layout's index and child manifests name go into the archive docker load reads, everything else is left out, and a layout whose index names a blob it lacks is refused before any load. Extends the named-members rule of REQ-CHAIN-006-AC4 from the scan to docker load. Tighten-only; approved by the advisor Oct 23"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3442,7 +3454,7 @@ requirements:
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC11
-        given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
+        given: "the Build stage file and its bin/build-stage-*.sh scripts (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
         when: "they are read"
         then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"
         verification: { method: ci-workflow, release_blocking: true }
@@ -3881,6 +3893,14 @@ requirements:
         when: "bin/check-artifacts.sh runs with --arch arm64 under the step arm64"
         then: "before anything of the candidate is loaded or run, the step makes the release policy for the run's tag, verifies Build's record as Sign signed it, for the digests it was given, isolated as python3 -I -B, and a failed verification stops it; then, on the digest file so verified and no other, the linux/arm64 fscache and fscache-fips binaries each start, answer /healthz and round-trip a key; the loaded linux/arm64 production and -fips images serve cache traffic; the three FIPS postures are read from the arm64 binaries as on amd64; the result names the same candidate digests as the amd64 record; the step signs one Witness record, witness-arm64/arm64-collection.json, under the stage file's own identity; Release requires that record beside the three of Check (a missing, extra or unverifiable one is refused and names Check)"
         verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+
+      # Source: advisor, Oct 24 (cache#597 round 8 ruling): carries out the owner's ratified words (scanner-panel rule 4, ratify/2026-10-02-scanner-panel-rules.md; ratify/2026-10-16-govulncheck-scans-what-we-ship.md; the approved read-back 2026-10-23-cache-docs-readback-govulncheck-check.md) for what the Go source scan reads; AC4's text is unchanged.
+      - id: REQ-CHAIN-006-AC18
+        given: "the Go source scan of the scanners step and the tagged checkout"
+        when: "bin/check-govulncheck.py runs"
+        then: "before any scan it reads go.mod with the pinned Go (`go mod edit -json`) and refuses, naming the paths, a go.mod that carries an ignore directive, and refuses a go.mod it cannot read (the tool fails, prints no JSON, or prints JSON that is not an object); it reads the shipped main package of each of the two recipes (build/melange.yaml and build/melange-fips.yaml) and the CGO_ENABLED of their build commands from the recipes themselves, and runs govulncheck six times: `./...` on linux/amd64 and on linux/arm64, and each recipe's shipped main package by explicit path on both; a called finding in any of the six fails, naming the platform and the target, and the file written to check-results/govulncheck.json is the linux/amd64 `./...` stream, byte for byte"
+        verification: { method: unit, release_blocking: true }
         status: approved
 
   # Source: advisor reading Oct 16, Astra release review (R6) and Codex PR 415 round 2. Earlier wording of the changed fragment of the statement below, kept here: "...in a fixed order and before any credential exists in its job, and only then use..."
@@ -4745,7 +4765,7 @@ requirements:
     notes: >
       A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite
       once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain
-      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job), runs the rest, and fails on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
+      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job that is a required check or is needed by one, one counting step per suite), runs the rest without echoing their output, and fails on a second counting step for one suite, on a ci.yml whose jobs are not a mapping, and on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
       is not the file name of its PATH. The floors only rise as before.
     acceptance_criteria:
       - id: REQ-CI-005-AC1
@@ -4770,5 +4790,11 @@ requirements:
         given: "the suite guard's floors"
         when: "a pull request lowers or drops a floor"
         then: "the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-005-AC5
+        given: "the committed ci.yml and floors file (PLANNED, Fable ruling on cache#695: the split of the wrap; the requirements tool accepts only approved or proposed, so the status field reads approved and this word says planned)"
+        when: "the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them"
+        then: "it runs exactly these eight, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: auditor-labels-test.sh (2 runs), auditor-matrix-test.sh (2 runs), required-check-guard-test.sh (2 runs), suite-guard-test.sh (2 runs), vex-index-test.sh (3 runs: two plain steps and `all`) and vex-scope-test.sh (2 runs) are six whose steps are not counting steps yet, so they run more than once until PR 3 migrates them (this AC then shrinks to the last two); marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run) are known-red by design: no step of their own, run only by `all`"
         verification: { method: unit, release_blocking: false }
         status: approved

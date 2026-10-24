@@ -146,7 +146,7 @@ for kind in ("npm", "pypi", "deb", "golang"):
         V.inspector({"statements": [scoped("CVE-2099-50", "not_affected", [{"@id": REPO_P, "subcomponents": [{"@id": "pkg:%s/foo@1" % kind}]}])]}, IMAGES, "v0.3.0"); got = "accepted"
     except ValueError:
         got = "refused"
-    check("OWNER-3 a pkg:%s package is refused before any rule is made (only pkg:generic names a package these forms can carry)" % kind, got == "refused", got)
+    check("OWNER-3 a pkg:%s package is refused before any rule is made (only pkg:generic and a Go module path name a package these forms can carry; foo@1 has neither a namespace nor is generic)" % kind, got == "refused", got)
 # the same CVE in two packages, only one of them not affected: the rule names that package alone
 TWO = {"statements": [scoped("CVE-2099-40", "not_affected", BB), scoped("CVE-2099-40", "affected", TOY)]}
 r2p = V.inspector(TWO, IMAGES, "v0.3.0")["filters"]
@@ -225,6 +225,7 @@ for gone in ("fips", "production"):
 import re as _re
 GEN = sys.argv[1]
 OPENVEX = os.path.join(root, ".vex/fosterstack-cache.openvex.json")
+BBVEX = os.path.join(root, "test-evidence/vex-scope/busybox.openvex.json")   # the retired busybox statements, kept as a fixture: the generator's busybox scoping still has a document to run on
 FORMS = ("fosterstack-cache-v0.3.0.inspector-filters.json", "fosterstack-cache-v0.3.0.csaf.json")
 SYN = os.path.join(tempfile.mkdtemp(), "synthetic.openvex.json"); json.dump(VEX, open(SYN, "w"))   # every statement on the whole image
 def run_gen(images_text, out, env=None, prelude="", openvex=SYN):
@@ -354,8 +355,8 @@ named = lambda s: any(p.get("subcomponents") for p in s["products"] if "pkg:oci/
 wsup = sorted({s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES) and s["status"] in ("not_affected", "fixed") and named(s)})
 rcv = sorted({r["filterCriteria"]["vulnerabilityId"][0]["value"] for r in V.inspector(real, IMAGES, "v0.3.0")["filters"]})
 check("AC2 the real file: the Inspector file has a rule for each suppressible statement that applies and names a package, and no other", rcv == wsup, (rcv, wsup))
-check("the real file's CSAF passes the loader's checks; its busybox statements stay scoped to busybox 1.37.0",
-      bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox@1.37.0" for r in rc["product_tree"].get("relationships", [])))
+check("the real file's CSAF passes the loader's checks; its one statement stays scoped to the jwt/v4 module",
+      bool(google_validate(rc)) and rc["product_tree"].get("relationships") and all(r["product_reference"] == "component-github.com%2Fgolang-jwt%2Fjwt%2Fv4@" for r in rc["product_tree"].get("relationships", [])))
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
@@ -375,14 +376,15 @@ DEBUG = {"production": {"index": "sha256:87887f55ffa41cc63d4aa6f6d9459fd0dbf9194
          "fips": {"index": "sha256:e2e502f44d8bd9e6967cb160aabeb012e8520ebba0faa88e130143fe534f282e",
                   "children": {"linux/amd64": "sha256:fd52446f5bb30b17c7b20e5d4b381722180f63911f678937e75b16b6f080ac5a",
                                "linux/arm64": "sha256:596adb2363f907a62634a24aeea0295e147bf45e4c4a3bb44b1c75963bad5653"}}}
-dc = V.csaf(real, DEBUG, "v0.2.2")
-check("the real file on the published :debug images: each busybox CVE is present", BUSYBOX <= {v["cve"] for v in dc["vulnerabilities"]})
+bbvex = json.load(open(BBVEX))
+dc = V.csaf(bbvex, DEBUG, "v0.2.2")
+check("the busybox fixture on the published :debug images: each busybox CVE is present", BUSYBOX <= {v["cve"] for v in dc["vulnerabilities"]})
 p2d = {b["product"]["product_id"]: b["product"]["product_identification_helper"]["purl"].split("@", 1)[1].split("?")[0]
        for b in dc["product_tree"]["branches"]}
 rels = dc["product_tree"].get("relationships", [])
 check("…every relationship is busybox 1.37.0 on one of those :debug digests",
       rels and all(x["product_reference"] == "component-busybox@1.37.0" and p2d.get(x["relates_to_product_reference"]) in six_of(DEBUG) for x in rels))
-bb = [x for x in V.inspector(real, DEBUG, "v0.2.2")["filters"] if x["filterCriteria"]["vulnerabilityId"][0]["value"] in BUSYBOX]
+bb = [x for x in V.inspector(bbvex, DEBUG, "v0.2.2")["filters"] if x["filterCriteria"]["vulnerabilityId"][0]["value"] in BUSYBOX]
 check("…each busybox Inspector rule carries busybox 1.37.0 and only those digests",
       {x["filterCriteria"]["vulnerabilityId"][0]["value"] for x in bb} == BUSYBOX
       and all(x["filterCriteria"].get("vulnerablePackages") == [{"name": {"comparison": "EQUALS", "value": "busybox"},
@@ -476,7 +478,7 @@ def refused(prod):
         V._scopes(scoped("CVE-ID", "affected", [prod]), [D("1")]); return False
     except ValueError:
         return True
-for sub in ("pkg:golang/github.com/acme/busybox@1.37.0", "pkg:npm/%40acme/busybox@1.37.0", "pkg:deb/debian/libssl3@3.0.15-1"):
+for sub in ("pkg:generic/acme/busybox@1.37.0", "pkg:npm/%40acme/busybox@1.37.0", "pkg:deb/debian/libssl3@3.0.15-1"):
     check("SEC-165-01 a namespaced subcomponent stops generation: " + sub, refused({"@id": OURS, "subcomponents": [{"@id": sub}]}))
 for name, prod in [("an IRI @id with our purl in identifiers", {"@id": "https://example.com/x", "identifiers": {"purl": OURS}}),
                    ("@id and identifiers.purl that differ", {"@id": OURS, "identifiers": {"purl": "pkg:oci/other?repository_url=ghcr.io/x/other"}}),
@@ -580,6 +582,41 @@ except ValueError:
     got = "refused"
 fips_or_not = META(IMAGES)[sorted(ALL6)[0]][0]
 check("H a pinned digest that its own variant qualifier excludes stops generation (%s digest, variant=fips)" % fips_or_not, (got == "refused") == (fips_or_not != "fips"), got)
+# --- rc-5a G (handoff 0666; ruling R7/R8): the one statement is scoped to the jwt/v4 module, the busybox statements are retired, and a Go
+#     module represents as its FULL module path (Inspector names a Go module by its path; the Codex #165 widening concern was a namespace-less name)
+JWT = "pkg:golang/github.com/golang-jwt/jwt/v4"
+check("G a Go subcomponent is the package named by its full module path",
+      V._scopes(scoped("CVE-G1", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}]), [D("1")]) == [([D("1")], ("github.com/golang-jwt/jwt/v4", ""))])
+check("G a versioned Go subcomponent keeps its version",
+      V._scopes(scoped("CVE-G2", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT + "@v4.5.0"}]}]), [D("1")]) == [([D("1")], ("github.com/golang-jwt/jwt/v4", "v4.5.0"))])
+for sub in ("pkg:golang/jwt", "pkg:golang/jwt@v4.5.0", JWT + "?goos=linux", JWT + "#sub/dir", "pkg:golang/", "pkg:golang//x"):
+    check("G a Go subcomponent the forms cannot represent stops generation: " + sub, refused({"@id": OURS, "subcomponents": [{"@id": sub}]}))
+check("G a Go module and a generic package of the same last segment stay distinct",
+      V._scopes(scoped("CVE-G3", "affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}, {"@id": "pkg:generic/jwt"}]}]), [D("1")])
+      == [([D("1")], ("github.com/golang-jwt/jwt/v4", "")), ([D("1")], ("jwt", ""))])
+gj = V.inspector({"statements": [scoped("CVE-G4", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"]
+check("G the Inspector rule names the Go module by its full path", [f["filterCriteria"]["vulnerablePackages"] for f in gj] == [[{"name": {"comparison": "EQUALS", "value": "github.com/golang-jwt/jwt/v4"}}]], gj)
+sts = real["statements"]
+check("G the published document holds exactly one statement, CVE-2024-51744", [s_["vulnerability"]["name"] for s_ in sts] == ["CVE-2024-51744"])
+oci = [p_ for s_ in sts for p_ in s_["products"]]
+check("G every product of that statement (the image products AND the Go product) names the jwt/v4 module, and nothing else, as its subcomponent",
+      oci and all([x["@id"] for x in p_.get("subcomponents", [])] == [JWT] for p_ in oci), oci)
+for sub_ in ("pkg:golang/foo/bar", "pkg:golang/foo/bar@v1", "pkg:generic/github.com%2Fgolang-jwt%2Fjwt%2Fv4", "pkg:generic/busybox%401.37.0", "pkg:generic/busybox@1.37.0%2F1", "pkg:golang/github.com/golang-jwt/jwt%40v4"):
+    check("G a subcomponent that is not a Go module path nor a plain generic name stops generation: " + sub_, refused({"@id": OURS, "subcomponents": [{"@id": sub_}]}))
+check("G a double-encoded delimiter is decoded once and stays a literal name (never the Go module it spells after a second decoding)",
+      V._scopes(scoped("CVE-G8", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:generic/github.com%252Fgolang-jwt%252Fjwt%252Fv4"}]}]), [D("1")])
+      == [([D("1")], ("github.com%2Fgolang-jwt%2Fjwt%2Fv4", ""))])
+check("G an encoded dot in the host segment is still a Go module path (decoded once, then judged)",
+      V._scopes(scoped("CVE-G10", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": "pkg:golang/github%2Ecom/golang-jwt/jwt/v4"}]}]), [D("1")]) == [([D("1")], ("github.com/golang-jwt/jwt/v4", ""))])
+check("G an encoded slash in a Go module path (host or later segment) stops generation",
+      all(refused({"@id": OURS, "subcomponents": [{"@id": x}]}) for x in ("pkg:golang/github%2Ecom%2Fgolang-jwt/jwt/v4", "pkg:golang/github.com/golang-jwt%2Fjwt/v4")))
+check("G the empty version leaves no stray space in the published text",
+      "  " not in V.inspector({"statements": [scoped("CVE-G9", "not_affected", [{"@id": OURS, "subcomponents": [{"@id": JWT}]}])]}, IMAGES, "v0.3.0")["filters"][0]["description"])
+check("G the published document no longer describes a :debug image or busybox",
+      "busybox" not in json.dumps(real).lower() and ":debug" not in json.dumps(real) and "distroless" not in json.dumps(real).lower())
+check("G the document's version moved past the fixture's (6)", real["version"] > json.load(open(BBVEX))["version"], real["version"])
+check("G the busybox fixture keeps the three retired statements for the generator's tests",
+      sorted(s_["vulnerability"]["name"] for s_ in json.load(open(BBVEX))["statements"]) == ["CVE-2024-51744", "CVE-2024-58251", "CVE-2025-46394", "CVE-2025-60876"])
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

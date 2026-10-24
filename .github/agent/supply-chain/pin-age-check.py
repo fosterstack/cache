@@ -78,6 +78,11 @@ def judge_item(item, proofs, now, min_days=MIN_DAYS):
         return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
     if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
         return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
+    bad = next((src[len("bad-label:"):] for _, src in proofs if str(src).startswith("bad-label:")), None)
+    if bad is not None:
+        return False, f"age not provable: the label '# {bad}' does not name the pinned commit (the label is wrong; this is not a missing clock)", None
+    if item.kind in ("tool", "package") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") for t, src in proofs):
+        proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]   # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old clock (rc-5b item 6)
     best, seen = None, []
     for t, src in proofs:
         seen.append(src)
@@ -210,11 +215,16 @@ def _commit_date(repo, sha):
     return ((c or {}).get("commit", {}).get("committer") or {}).get("date")
 
 
+def _go_escape(path):
+    """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
+    return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
+
+
 def _go_module(path, version):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
-        info = _http_json(f"https://proxy.golang.org/{urllib.parse.quote(mod, safe='/').lower()}/@v/{urllib.parse.quote(version)}.info")
+        info = _http_json(f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info")
         if info and info.get("Version"):
             return mod, info
     return None, None
@@ -231,7 +241,7 @@ def _go_index_time(mod, version, vcs_time):
         except (OSError, ValueError):
             return None
         for row in rows:
-            if row.get("Path", "").lower() == mod.lower() and row.get("Version") == version:
+            if row.get("Path", "") == mod and row.get("Version") == version:
                 return row["Timestamp"]
         if len(rows) < 2000:
             return None
@@ -284,21 +294,34 @@ def _pr_clock(item, root, base, head="HEAD"):
     if not repo or not base or not item.version:
         return None
     r = _gh_run(["git", "-C", root, "rev-list", "--reverse", f"{base}..{head}"], capture_output=True, text=True)
+    commits = r.stdout.split()
     first = None
-    for c in r.stdout.split():
+    for i, c in enumerate(commits):
         try:
             if (root, c) not in _INV_CACHE:
                 _INV_CACHE[(root, c)] = inv.load_at(root, c)     # one parse per commit, not one per moved item
-            if item.key in _INV_CACHE[(root, c)]:
-                first = c
+            got = _INV_CACHE[(root, c)].get(item.key)
+            if got is not None and got.sum == item.sum:
+                first = i
                 break
         except RuntimeError:
             continue
-    if not first:
+    if first is None:
         return None
-    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100") or {}).get("workflow_runs", [])
+    intro = commits[first]
+    for c in commits[first:]:      # the earliest run whose head CONTAINS the commit: a commit that was never a pushed head has no run of its own (base..head bounds the walk)
+        if c != intro and _gh_run(["git", "-C", root, "merge-base", "--is-ancestor", intro, c], capture_output=True).returncode != 0:
+            continue      # a sibling in a merge does not contain the introducing commit: its runs lend no clock
+        times = _run_times(repo, c)
+        if times:
+            return min(times)
+    return None
+
+
+def _run_times(repo, commit):
+    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={commit}&per_page=100") or {}).get("workflow_runs", [])
     times = [x["created_at"] for x in runs if x.get("created_at")]
-    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{first}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
+    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{commit}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
     if r2.returncode:
         _gh_failed(r2)
     else:
@@ -309,7 +332,7 @@ def _pr_clock(item, root, base, head="HEAD"):
                 continue
             if c:
                 times.append(c)    # a check from a non-Actions app counts too: the EARLIEST server-side sign of the commit
-    return min(times) if times else None
+    return times
 
 
 def _release_with_assets(repo, tags):
@@ -330,12 +353,13 @@ def live_proofs(item, root, base=None, head="HEAD"):
         # or the PR clock; the tag in the `# vX` label must itself resolve to the pinned commit
         tags = _tags_for_commit(item.name, item.version)
         want = [item.label] if item.label else tags
-        if not item.label or item.label in tags:
-            state = observed()
-            for tag in want:
-                t = tobs.first_seen(state, item.name, tag, item.version)
-                if t:
-                    out.append((t, "observer"))
+        if item.label and item.label not in tags:
+            return [(None, "bad-label:" + item.label)]    # the label Dependabot bumps does not resolve to this commit: age not provable, with no PR clock to lean on
+        state = observed()
+        for tag in want:
+            t = tobs.first_seen(state, item.name, tag, item.version)
+            if t:
+                out.append((t, "observer"))
     elif item.kind == "tool":
         repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)  # owner/repo: a downloaded release asset
         if repo:

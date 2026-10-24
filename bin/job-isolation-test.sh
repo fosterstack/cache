@@ -22,6 +22,8 @@ COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|goreleaser/goreleaser-action|\
 # Exclusions: none on the release-chain branch (cache#561 ruling B2). On main the table named the old release-chain jobs (stage-build build, stage-image assemble, stage-promote promote,
 # stage-reproducibility reproduce, stage-acceptance-artifacts artifacts) that the chain landing replaces; those jobs do not exist here, so the rows are gone (the requirement's own note
 # says the list shrinks to nothing at the landing). The stale-row check below stays: a row added later must name a job that exists.
+CREDENTIAL_CALLEES = ("stage-sign.yml", "stage-promote.yml")   # the only reusable workflows a credential-holding job may call (Sign and Release)
+BUILD_SIDE_FILES = ("stage-build.yml", "stage-reproducibility.yml", "stage-verify.yml")   # the release chain's Build, Rebuild and Check workflows (owner Oct 21 separate jobs, Oct 22 Witness)
 EXCLUDED_AC1 = {}
 EXCLUDED_AC2 = {}
 # govulncheck is a Go module built from source by the installer arm `install-scanner.sh govulncheck`: a build the workflow text does not show. The tool argument is read after the
@@ -51,7 +53,7 @@ def builds_govulncheck(a):
 # lines the same step must also carry; a new line outside the grammar needs a new row here, in review.
 ALLOWED = re.compile(r'(?:bash bin/|\./bin/)install-scanner\.sh (?P<tool>[a-z0-9][a-z0-9.-]*|"?[a-z0-9][a-z0-9.-]*-\$\{?[A-Za-z_]\w*\}?"?)(?: "(?:[^"`\\$]|\$(?!\())*")?(?:[ \t]+#.*)?')
 EXCLUDED_INSTALLER = {
-    ("auditor.yml", "audit"): {"lines": ['./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \\', './bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" || echo "::warning::could not install syft; the package inventory falls back to matched packages"'], "needs": [], "why": "the syft install whose failure is a warning (the line continues on the next line)"},
+    ("auditor.yml", "audit"): {"lines": ['./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \\', './bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" || echo "::warning::could not install syft; the package inventory falls back to matched packages"', './bin/install-scanner.sh go \\', './bin/install-scanner.sh go || echo "::warning::could not install the pinned Go toolchain; a bump PR will not regenerate its dependency provenance"'], "needs": [], "why": "the syft install and the pinned Go toolchain install (REQ-VEND-001-AC15), each of which fails as a warning (the line continues on the next line); govulncheck is built in its own credential-free job, never here"},
     ("main-candidate-rescan.yml", "scout-root-cause"): {"lines": ['./bin/install-scanner.sh "$t" "$RUNNER_TEMP/$t"'], "needs": ["for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do"], "forbid": r"(?<![\w$])t=", "why": "a loop over three literal docker-scout names, t assigned nowhere else in the step"},
 }
 def names_installer(line):
@@ -124,6 +126,29 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
             bad.append("%s/%s holds %s and builds in the step %r" % (key[0], jn, ", ".join(w), comp[0]))
         if w and unresolved:
             bad.append("%s/%s holds %s and runs the line %r in the step %r: a credential job may name install-scanner.sh only as exactly `bash bin/install-scanner.sh TOOL` (TOOL a literal word, not govulncheck) or a listed exception" % (key[0], jn, ", ".join(w), unresolved[0][1], unresolved[0][0]))
+        # the release chain's build-side workflows (Build, Rebuild, Check): a caller grants them no credential, and every job declares its own permissions (undeclared, it would inherit the caller's)
+        if os.path.basename(f) in BUILD_SIDE_FILES and j.get("permissions", d.get("permissions")) is None:
+            bad.append("%s/%s declares no permissions (neither the job nor the workflow): a build-side job would inherit its caller's, credentials included" % (key[0], jn))
+        callee = os.path.basename(str(j.get("uses") or ""))
+        if j.get("uses") and w and not (str(j.get("uses")).startswith("./.github/workflows/") and callee in CREDENTIAL_CALLEES):
+            bad.append("%s/%s holds %s and calls a reusable workflow that is not Sign's or Release's local file (%s): the callee could build with the caller's credentials" % (key[0], jn, ", ".join(w), j.get("uses")))
+        if str(j.get("uses") or "").startswith("./.github/workflows/") and callee in BUILD_SIDE_FILES and w:
+            bad.append("%s/%s calls the build-side workflow %s and holds %s: only Sign's calls hold an identity token" % (key[0], jn, callee, ", ".join(w)))
+        # a job that records a step with bin/witnessed-local.sh (Build, Rebuild, Check: the throwaway-key Witness records, owner Oct 22) is a build-side job whatever its scripts hide: no credential, and never the keyless bin/witnessed.sh
+        stext = "\n".join(steps_text(s_) for s_ in (j.get("steps") or []))
+        stext = re.sub(r"['\"\\]", "", re.sub(r"\\\n[ \t]*", "", stext))   # quotes, backslashes and continuations are not part of the word the shell runs (bin/witnessed-"local".sh is witnessed-local.sh)
+        if re.search(r"\bwitnessed-local\.sh\b", stext):
+            if w:
+                bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and holds %s: only Sign holds an identity token" % (key[0], jn, ", ".join(w)))
+            if re.search(r"\bwitnessed\.sh\b", stext):
+                bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and also runs the keyless witnessed.sh: a build-side job signs with the throwaway key only" % (key[0], jn))
+        if w:   # fail closed: a credential job never names a script through a variable: a path word with a variable or a substitution after bash/sh/source/./, a variable assigned a path under bin/, or an env value under bin/ (any of them could hide the wrapper or a build from the rules above)
+            for s_ in (j.get("steps") or []):
+                for l_ in re.sub(r"\\\n[ \t]*", "", steps_text(s_)).split("\n"):   # a backslash-newline continuation is one logical line
+                    n_ = re.sub(r"['\"\\]", "", l_)
+                    n_ = re.sub(r"\$\{?(?:RUNNER_TEMP|GITHUB_WORKSPACE)\}?", "/runner", n_)   # the runner's own fixed directories are not a hidden path
+                    if re.search(r"\bbin/[^\s;&|)]*[$`]", n_) or re.search(r"(?:(?<![\w./-])(?:bash|sh|source|exec)\s+|(?<![\w.])\.\s+|(?<![\w.])\./)[^\s;&|)]*[$`]", n_) or re.search(r"\b\w+=[^\s$(`]*\bbin/", n_) or re.search(r"^\s*\w+:\s+\S*\bbin/", n_):
+                        bad.append("%s/%s holds %s and names a script path under bin/ through a variable: %r" % (key[0], jn, ", ".join(w), l_.strip()[:100]))
         if len(comp) >= 2 and key not in EXCLUDED_AC2:
             bad.append("%s/%s runs two builds: %r and %r" % (key[0], jn, comp[0], comp[1]))
 # a listed installer exception must name a job that exists, and scan.yml's matrix (the one tool word read from a list) must be exactly the pr_gate-driven shape
@@ -238,7 +263,7 @@ PY
 }
 check() { local name=$1 want=$2 dir=$3 out rc=0
   out=$(judge "$dir" 2>&1) || rc=$?
-  if { [ "$want" = ok ] && [ $rc -eq 0 ]; } || { [ "$want" = bad ] && [ $rc -ne 0 ]; }; then pass=$((pass+1)); echo "ok   $name"
+  if { [ "$want" = ok ] && [ $rc -eq 0 ]; } || { [ "$want" = bad ] && [ $rc -ne 0 ] && { [ -z "${want_msg:-}" ] || grep -Fq "$want_msg" <<< "$out"; }; }; then pass=$((pass+1)); echo "ok   $name"
   else failn=$((failn+1)); echo "FAIL $name (want $want, rc=$rc): $out"; fi; }
 mutate() { local name=$1 py=$2 dir="$work/$1"
   rm -rf "$dir"; mkdir -p "$dir"; cp "$root"/.github/workflows/*.y*ml "$dir/"
@@ -251,7 +276,7 @@ def in_refresh(s, old, new):   # the first match inside the refresh job (go-fres
     i = s.index("\n  refresh:"); return s[:i] + s[i:].replace(old, new, 1)
 $py
 PY
-  check "$name" bad "$dir"; }
+  check "$name" "${mwant:-bad}" "$dir"; }
 
 export ISO_SCANNERS="$root/.github/policy/scanners.json"   # the policy file the pr_gate check reads (mutated copies of the workflows keep the real one)
 check "the real workflows" ok "$root/.github/workflows"
@@ -280,6 +305,68 @@ mutate "docker build added to a job that reads a secret (release.yml decide)" '
 edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: docker build -t x .\n", s, count=1, flags=re.S))'
 mutate "id-token: write granted to a job that builds (ci.yml gosec)" '
 edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
+# the build-side jobs of the release chain hold no identity token and sign with the throwaway key only (owner Oct 21 separate jobs; Oct 22 Witness: only Sign signs keyless; cache-2a, handoff 0671).
+# The judge finds a build-side job by the word witnessed-local.sh in its step text; a job that stops naming it (a reusable-workflow call, the script through a variable) escapes THIS rule. The fail-closed backstop for the
+# identity token is bin/chain-sign-wiring-test.sh, which refuses any job with id-token: write that is not in .github/policy/id-token-jobs.json (only the Sign and release jobs are).
+# Each of these mutations must be refused BY this rule, not by another one: want_msg names the refusal text.
+for spec in stage-build.yml:apk stage-build.yml:assemble stage-reproducibility.yml:rapk stage-reproducibility.yml:rapk-arm stage-reproducibility.yml:assemble stage-verify.yml:check stage-verify.yml:check-arm64; do
+  wf=${spec%%:*} job=${spec##*:}
+  want_msg="records its steps with witnessed-local.sh (a build-side job) and holds id-token: write"
+  mutate "$wf job $job is granted id-token: write" '
+edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    permissions:\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1, flags=re.S))'
+  want_msg="also runs the keyless witnessed.sh"
+  mutate "$wf job $job runs bin/witnessed.sh (keyless) instead of witnessed-local.sh" '
+edit("'$wf'", lambda s: re.sub(r"(\n  '$job':\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed.sh x bin/x.sh\n", s, count=1, flags=re.S))'
+done
+want_msg=""
+# fail closed (round 2, reviewer A): a job that holds a credential never runs a script whose path is built from a variable under bin/ (bash "bin/${helper}-local.sh" would hide the wrapper and the build from the rules above)
+want_msg="names a script path under bin/ through a variable"
+mutate "a credential job runs bash \"bin/\${helper}-local.sh\" (the wrapper named through a variable)" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          helper=witnessed\n          bash \"bin/${helper}-local.sh\" build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+mutate "a credential job runs bash \"bin/\${helper}.sh\" (the keyless wrapper named through a variable)" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash \"bin/${helper}.sh\" x bin/x.sh\n", s, count=1, flags=re.S))'
+want_msg="names a script path under bin/ through a variable"
+mutate "a credential job assigns the wrapper's path to a variable (h=bin/witnessed; bash \"\${h}-local.sh\")" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          h=bin/witnessed\n          bash \"${h}-local.sh\" build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+mutate "a credential job runs a script whose directory is a variable (bash \"\$P/witnessed-\${K}.sh\")" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        env:\n          P: bin\n          K: local\n        run: bash \"$P/witnessed-${K}.sh\" build x.sh\n", s, count=1, flags=re.S))'
+# quote and backslash spellings of the wrapper names are the same word to the shell (round 4, reviewer A): the judge reads the step text with quotes and backslashes removed
+want_msg="records its steps with witnessed-local.sh (a build-side job) and holds"
+mutate "a credential job runs bash bin/witnessed-\"local\".sh (quote fragment inside the wrapper name)" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed-\"local\".sh build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+mutate "a credential job runs bash bin/witnessed-lo\\cal.sh (backslash inside the wrapper name)" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed-lo\\cal.sh build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+want_msg="also runs the keyless witnessed.sh"
+mutate "the Check job runs bash bin/witnessed\"\".sh (empty quotes inside the keyless wrapper name)" '
+edit("stage-verify.yml", lambda s: re.sub(r"(\n  check:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed\"\".sh x bin/x.sh\n", s, count=1, flags=re.S))'
+mutate "the Check job runs bash bin/witn\\essed.sh (backslash inside the keyless wrapper name)" '
+edit("stage-verify.yml", lambda s: re.sub(r"(\n  check:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witn\\essed.sh x bin/x.sh\n", s, count=1, flags=re.S))'
+# the pinned Go toolchain install in the audit job (cache#687): accepted exactly as listed; govulncheck through the same installer stays refused
+mwant=ok
+mutate "the audit job's pinned Go toolchain install is accepted (a comment added ahead of it)" '
+edit("auditor.yml", lambda s: s.replace("          ./bin/install-scanner.sh go \\\n", "          # accepted as listed\n          ./bin/install-scanner.sh go \\\n", 1))'
+mwant=bad
+want_msg="install-scanner.sh"
+mutate "the audit job installs govulncheck through install-scanner.sh in the Go toolchain step" '
+edit("auditor.yml", lambda s: s.replace("          ./bin/install-scanner.sh go \\\n", "          ./bin/install-scanner.sh govulncheck \\\n", 1))'
+# round 5 (reviewers A and B): a continuation split inside a variable-built path; a caller that grants a credential to a build-side workflow; a build-side job that declares no permissions (it would inherit its caller's)
+want_msg="names a script path under bin/ through a variable"
+mutate "a credential job splits a variable-built wrapper path over a backslash-newline continuation" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          k=local\n          bash bin/witnessed-\\\n          ${k}.sh build x.sh\n", s, count=1, flags=re.S))'
+want_msg="calls the build-side workflow"
+mutate "release.yml rebuild (a caller of stage-reproducibility.yml) is granted id-token: write" '
+edit("release.yml", lambda s: re.sub(r"(  rebuild:\n    needs: \[build, sign\]\n    permissions:\n      contents: read\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1))'
+want_msg="declares no permissions"
+mutate "stage-reproducibility.yml rapk declares no permissions and neither does the workflow (it would inherit its caller's)" '
+edit("stage-reproducibility.yml", lambda s: s.replace("permissions:\n  contents: read\njobs:", "jobs:", 1))
+edit("stage-reproducibility.yml", lambda s: re.sub(r"(\n  rapk:\n.*?)    permissions:\n      contents: read\n", lambda m: m.group(1), s, count=1, flags=re.S))'
+# round 6 (reviewer A): a credential-holding job that calls a reusable workflow may call only Sign's or Release's local workflow files (a remote or any other callee could build with the caller's credentials)
+want_msg="calls a reusable workflow that is not"
+mutate "release.yml sign calls a remote reusable workflow with id-token: write" '
+edit("release.yml", lambda s: s.replace("    uses: ./.github/workflows/stage-sign.yml\n", "    uses: someone/else/.github/workflows/build.yml@0123456789abcdef0123456789abcdef01234567\n", 1))'
+mutate "release.yml sign calls a local workflow other than Sign's or Release's with id-token: write" '
+edit("release.yml", lambda s: s.replace("    uses: ./.github/workflows/stage-sign.yml\n", "    uses: ./.github/workflows/stage-verify.yml\n", 1))'
+want_msg=""
 # AC2: a second build in one job
 mutate "a second build step in one job (ci.yml gosec)" '
 edit("ci.yml", lambda s: re.sub(r"(  gosec:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant one\n        run: go build ./a\n      - name: mutant two\n        run: go build ./b\n", s, count=1, flags=re.S))'

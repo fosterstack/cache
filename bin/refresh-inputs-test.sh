@@ -153,7 +153,7 @@ t "rule 73" "fips-module: a PR is opened, not merged, and nothing is pushed to m
 t "rule 73" "fips-module: the PR body names every file a human must change for a new certificate, each of them really carries the current module or certificate, and no other file that carries it is missing from the body or from the list of fixtures and generated files (rc-3 item 7)" bash -c "l=\$(grep '^gh pr create' '$CALLS'); python3 -I - \"\$l\" '$root' <<'PY'
 import re, subprocess, sys
 body, root = sys.argv[1], sys.argv[2]
-need = ['bin/check-artifacts.sh', 'bin/check-fips.sh', 'internal/buildinfo/buildinfo.go', 'internal/buildinfo/buildinfo_test.go', '.github/workflows/ci.yml',
+need = ['bin/check-artifacts.sh', 'bin/check-fips.sh', 'bin/check-govulncheck.py', 'internal/buildinfo/buildinfo.go', 'internal/buildinfo/buildinfo_test.go', '.github/workflows/ci.yml',
         'docs/install.md', 'SECURITY.md', 'RELEASING.md', 'docs/offline-install.md', 'docs/verify-images.md']
 bad = ['the body does not name ' + f for f in need if f not in body]
 lit = re.compile(r'GOFIPS140=v[0-9]|CMVP cert #[0-9]+|cert #[0-9]+|#[0-9]{4} ')
