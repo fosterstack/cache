@@ -743,7 +743,7 @@ def _arm_of(text, rawln):
     The LAST marker before the line decides: any `  <label>)` (a label with `|` or `*` included), a `  ;;` or an `esac` line. Only a plain single-label arm is an arm; a multi-label arm,
     a glob arm, or a line after a terminator is in no single tool's arm (None: the whole-script identity applies, so no foreign sums attach)."""
     at = text.find(rawln) if rawln else -1
-    if at < 0:
+    if at < 0 or text.count(rawln) > 1:      # a line that occurs twice cannot be placed by its text: no arm (the whole-script identity applies)
         return None
     marks = re.findall(r"^(?:  ([^\s;()#][^()\n]*)\)[ \t]*(?:#.*)?|(  ;;.*|esac\b.*))$", text[:at], re.M)
     if not marks or marks[-1][1]:

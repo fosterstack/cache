@@ -4432,5 +4432,20 @@ for name, mk in (("a|b) arm", multi), ("after esac", after)):
     assert inv.moved(a, b), (name, "a sum-only edit was not a moved item")
     assert not inv.moved(a, inv.inventory(mk("a" * 64))), name
 PY
+CASE="sum: the same download line in two single-label arms (crane, cosign) with different SUM rows: neither gets the other's sum, and a sum-only edit of the SECOND arm's row is a moved item (round 4 finding)"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+inv = ac.inv
+DL = '    curl -fsSL -o "$tmp/c.tgz" "https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz" || pipeline_fail "download failed"\n'
+def files(second):
+    return {"bin/install-scanner.sh": '#!/usr/bin/env bash\ncase "${TOOL}:${arch}" in\n  crane:amd64) SUM=' + "a" * 64 + ' ;;\n  cosign:amd64) SUM=' + second + ' ;;\nesac\ncase "$TOOL" in\n  crane)\n' + DL + '    ;;\n  cosign)\n' + DL + '    ;;\nesac\n'}
+a, b = inv.inventory(files("b" * 64)), inv.inventory(files("c" * 64))
+dl = [it for it in a.values() if "go-containerregistry" in it.name]
+assert dl, list(a)
+assert not any(it.sums == ["a" * 64] for it in dl), [it.sums for it in dl]      # the first arm's sum is not attached to the second arm's identical line
+assert inv.moved(a, b), "a sum-only edit of the second arm was not a moved item"
+assert not inv.moved(a, inv.inventory(files("b" * 64)))
+PY
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
