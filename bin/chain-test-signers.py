@@ -571,7 +571,10 @@ PINNED_IF = {(".github/workflows/stage-reproducibility.yml", "assemble", "record
 PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"',
                   (".github/workflows/stage-reproducibility.yml", "assemble", "records"): 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"',
                   (".github/workflows/stage-reproducibility.yml", "rapk", "records"): 'r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"',
-                  (".github/workflows/stage-reproducibility.yml", "rapk-arm", "records"): 'r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"'}
+                  (".github/workflows/stage-reproducibility.yml", "rapk-arm", "records"): 'r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo "records=$r" >> "$GITHUB_OUTPUT"',
+                  # REQ-REL-011-AC1 (cache#606): the Check jobs list their records the same way (a failing list script fails the step: the substitution is assigned first); no condition (they run in every mode)
+                  (".github/workflows/stage-verify.yml", "check", "records"): 'r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo "records=$r" >> "$GITHUB_OUTPUT"',
+                  (".github/workflows/stage-verify.yml", "check-arm64", "records-arm64"): 'r=$(bash bin/check-records-digests.sh witness-arm64) && echo "records-arm64=$r" >> "$GITHUB_OUTPUT"'}
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
 # plain literal; never a secret, a glued expression or a substitution
@@ -973,7 +976,8 @@ def _arg_error(parts, envnames):
                 return "double-quoted argument %r mixes text with a variable or substitution (use a whole \"$NAME\" from env:)" % t
     return None
 
-PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > (?:digests|rebuild-records)\.json")
+ENV_UNSET_OIDC = "env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL "
+PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > (?:digests|rebuild-records|check-records|check-records-arm64)\.json")
 
 def _literal_value(parts):
     """The shell word a quote-only word stands for (round 3 (1)): lit, single-quoted and double-quoted parts without an expansion, joined (bi'n/x' is
@@ -1008,10 +1012,12 @@ def check_run(run, envnames, rows, reads=None, argpaths=None):
         if line == "set -euo pipefail": continue
         if line.startswith("printf"):                   # the one write: an env var into digests.json; ANYTHING else starting with printf is an error
             m = PRINTF_OK.fullmatch(line)
-            if not m: errs.append("line %d: %s: a printf line must be exactly printf '%%s' \"$NAME\" > digests.json or > rebuild-records.json (the two writes the Sign job needs)" % (n, line[:90]))
+            if not m: errs.append("line %d: %s: a printf line must be exactly printf '%%s' \"$NAME\" > digests.json, > rebuild-records.json, > check-records.json or > check-records-arm64.json (the writes the Sign job needs)" % (n, line[:90]))
             elif m.group(1) not in envnames: errs.append("line %d: printf of $%s, which is not in this step's env:" % (n, m.group(1)))
             else: reads.add(m.group(1))
             continue
+        if line.startswith(ENV_UNSET_OIDC + "python3 -I -B bin/chain-verify.py sign-records "):    # the one `env` form: the records command drops the identity-token request variables from its process (ruling on #606)
+            line = line[len(ENV_UNSET_OIDC):]
         words, err = _words(line)
         if err: errs.append("line %d: %s: %s" % (n, line[:90], err)); continue
         if not words: continue
