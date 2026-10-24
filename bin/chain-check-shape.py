@@ -9,8 +9,8 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         strategy, needs, shell, working-directory, continue-on-error; steps EXACTLY, in order:
                           1. actions/checkout (full commit digest, persist-credentials: false, nothing else)
                           2. run: bash bin/install-scanner.sh witness, then one `bash bin/install-scanner.sh S` per listed scanner (grype, osv-scanner)
-                          3. run: KIND_STEP (REQ-CHAIN-006-AC14, amended Oct 24: kind and kubectl from the runner image;
-                             the step prints their versions and fails labelled if either is missing)
+                          3. (no kind step: REQ-CHAIN-006-AC14, amended Oct 24: kind and kubectl come from the runner image and
+                             bin/acceptance-k8s.sh stops at its first use of either if it is missing)
                           4. digest-pinned actions/download-artifact steps, names from DOWN, explicit path outside bin/ and .github/, EXACTLY ONE
                              of them `images` (path images/; the candidates arrive as OCI tarballs, advisor ruling Q4)
                           5. THREE run steps, one line each, the only form `bash bin/witnessed-local.sh STEP TARGET` (TARGET = bin/check-phase-STEP.sh) with STEP
@@ -46,9 +46,6 @@ PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 DOWN = {"signed-witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
 UP = {"witness-check": RECORD_DIRS, "check-results": "check-results", "witness-check-arm64": "witness-arm64", "check-results-arm64": "check-results"}   # artifact name -> the path(s) it may carry
-KIND_STEP = 'kind version && kubectl version --client || { echo "::error::PIPELINE, no kind or kubectl"; exit 1; }'
-# REQ-CHAIN-006-AC14 (amended Oct 24): kind and kubectl come from the runner image;
-# the step prints their versions and fails labelled if either is missing
 STEPS = ["scanners", "acceptance", "runtime"]
 SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain govulncheck is built with (an installer of its own; not a scanner)
@@ -309,8 +306,6 @@ def stage(path):
             kinds.append("hand")
         elif (s.get("run") or "").strip() == REC_RUN["records"] and s.get("id") == "records":
             kinds.append("rec")
-        elif (s.get("run") or "").strip() == KIND_STEP:
-            kinds.append("kind")
         elif "run" in s:
             kinds.append("witnessed")
             m = re.fullmatch(r"bash bin/witnessed-local\.sh ([a-z]+) (bin/check-phase-[a-z]+\.sh)", (s["run"] or "").strip())
@@ -320,19 +315,23 @@ def stage(path):
                 names.append(m.group(1))
         else:
             bad.append("a step with neither uses nor run")
-    want = ["checkout", "install"] + ["install"] * len(SCANNERS) + ["install"] + ["gvdown", "hand"] + ["kind"]
+    want = ["checkout", "install"] + ["install"] * len(SCANNERS) + ["install"] + ["gvdown", "hand"]
     k = len(want)
     got_down = [x for x in kinds if x == "down"]
     body = [x for x in kinds if x != "down"]
     if body[:k] != want or body[k:k + 3] != ["witnessed"] * 3 or body[k + 3:k + 4] != ["rec"] or any(x != "up" for x in body[k + 4:]) or len(body) < k + 5:
-        bad.append("steps must be checkout, install Witness, install each listed scanner, the kind and kubectl check "
-                   "(KIND_STEP), downloads, THREE witnessed steps, the records step, uploads (in that order); "
+        bad.append("steps must be checkout, install Witness, install each listed scanner, downloads, "
+                   "THREE witnessed steps, the records step, uploads (in that order); "
                    "got %s" % kinds)
-    if "kind" in kinds and "down" in kinds and kinds.index("down") < kinds.index("kind"):
-        bad.append("the downloads come after the installs")
-    want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", GO_INSTALL)] + [("downid", "govulncheck-dl"), ("run", GV_HAND_LINE)] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
-             [("run", "bash bin/witnessed-local.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS] + [("rec", "records"), ("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))]
-    bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, kind check, "
+    want_c = ([("checkout", None), ("run", "bash bin/install-scanner.sh witness")]
+              + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS]
+              + [("run", GO_INSTALL)]
+              + [("downid", "govulncheck-dl"), ("run", GV_HAND_LINE)]
+              + [("down", x) for x in ARM_DOWNLOADS]
+              + [("run", "bash bin/witnessed-local.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS]
+              + [("rec", "records"), ("up", ("witness-check", RECORD_DIRS)),
+                 ("up", ("check-results", "check-results"))])
+    bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, "
                                                "four downloads, the three witnessed steps, the two uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
     if len(imgs) != 1 or (imgs[0].get("with") or {}).get("path") != "images":
