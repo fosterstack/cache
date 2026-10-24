@@ -14,6 +14,7 @@ Fixtures (offline tests): {"now": ISO, "times": {ITEM: {"time": ISO, "source": S
 import argparse
 import base64
 import hashlib
+import http.client
 import datetime as dt
 import importlib.util
 import json
@@ -150,7 +151,7 @@ def _http_json(url, timeout=30):
     try:
         with urllib.request.urlopen(url, timeout=timeout) as r:
             return json.load(r)
-    except (OSError, ValueError):
+    except (OSError, ValueError, http.client.HTTPException):
         return None
 
 
@@ -163,7 +164,7 @@ def _http_json_strict(url, timeout=30):
         if e.code in (404, 410):
             return None
         raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered HTTP {e.code}")
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, http.client.HTTPException) as e:
         raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} could not be asked ({type(e).__name__})")
     if got is None:
         raise CouldNotLook(f"{urllib.parse.urlsplit(url).netloc} answered with an empty body")      # "not there" is a 404, never a null answer
@@ -247,7 +248,7 @@ def _go_index_time(mod, version, vcs_time):
         try:
             with urllib.request.urlopen(f"https://index.golang.org/index?since={urllib.parse.quote(since)}&limit=2000", timeout=30) as r:
                 rows = [json.loads(line) for line in r.read().decode().splitlines() if line.strip()]
-        except (OSError, ValueError):
+        except (OSError, ValueError, http.client.HTTPException):
             return None
         for row in rows:
             if row.get("Path", "").lower() == mod.lower() and row.get("Version") == version:
@@ -370,7 +371,7 @@ def live_proofs(item, root, base=None, head="HEAD"):
     elif item.kind == "gotool":
         mod, info = _go_module(item.name, item.version)
         if mod:
-            t = _go_index_time(mod, info["Version"], info["Time"])
+            t = _go_index_time(mod, info["Version"], info["Time"]) if isinstance(info.get("Time"), str) else None      # no readable version-control time: no go-index proof (the pin then fails as unprovable)
             if t:
                 out.append((t, "go-index"))
     elif item.kind == "package":

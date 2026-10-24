@@ -1224,5 +1224,40 @@ assert info["Version"] == "v1.0.0", (mod, info)
 urllib.request.urlopen = lambda *a, **k: R(b"[1]")
 assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None)      # the age check's lenient mode no longer crashes on a list
 PY
+CASE="proxy (round 2 findings): a cut-off or malformed HTTP answer (http.client exceptions) is CouldNotLook in strict mode and no crash in lenient mode; a missing Time or a null Time never crashes the go-index proof; a bad answer reaches covered() as CouldNotLook"
+check python3 - "$aud" <<'PY'
+import http.client, importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+def boom(exc):
+    def f(*a, **k): raise exc
+    return f
+for exc in (http.client.IncompleteRead(b'{"Ver'), http.client.BadStatusLine("x"), http.client.LineTooLong("status line")):
+    urllib.request.urlopen = boom(exc)
+    try:
+        age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("no CouldNotLook", exc))
+    assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None), exc      # lenient: no traceback, no proof
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+it = pa.inv.Item("gotool", "github.com/o/r/cmd/x", "v1.0.0")
+net = pa.LiveNet(["false"], ".")
+for body in (b'{"Time": "2020-01-01T00:00:00Z"}', b"{}", b"[]", b"null", b'{"Version": null, "Time": null}'):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    try:
+        net.covered(it)
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("covered() read an unreadable answer as an answer", body))
+for info in ({"Version": "v1.0.0"}, {"Version": "v1.0.0", "Time": None}, {"Version": "v1.0.0", "Time": 5}):
+    age._go_module = lambda path, version, strict=False, _i=info: ("github.com/o/r", _i)
+    age._pr_clock = lambda *a, **k: None
+    assert age.live_proofs(it, ".") == [], info      # no go-index proof, no crash: the pin then fails as unprovable
+PY
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
