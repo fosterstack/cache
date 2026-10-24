@@ -2020,7 +2020,7 @@ requirements:
       - id: REQ-REL-010-AC1
         given: "Build's image layouts and the tag's .vex/ OpenVEX file"
         when: "Build writes digests.json"
-        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content (the same OpenVEX document, which the in-toto statement of the attestation holds as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index) and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
+        then: "each published index (production and fips) has exactly one attestation child per platform, carrying that file's content in the form Docker Scout applies: the same OpenVEX document, except that in each statement a product that lists subcomponents is replaced by those subcomponents (the vulnerable packages; the image is the in-toto statement's subject), in order and once each, and a product without subcomponents is unchanged; the in-toto statement holds that document as JSON in its canonical serialization, so a re-serialization of the file with the same content gives the same index, and naming that platform's digest, and a missing, malformed or non-OpenVEX input stops Build"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-010-AC2
