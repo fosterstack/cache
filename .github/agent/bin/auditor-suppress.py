@@ -17,6 +17,7 @@ and still requires `evidence` to be an object with {check, source_file, detail}.
 import os, sys, json, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli, policy, vex
+from auditorlib import reviewed
 from auditorlib import parsers as P
 
 
@@ -49,8 +50,8 @@ def _verify(cve, aliases, purls, ev):
     pkgs = {p for p in (_pkg_of(v) for v in purls.values()) if p}
     if check == "known-defect-log":
         try:
-            log = json.load(open(src))
-        except Exception as e:
+            log = reviewed.read(src, as_name="known-defect-log.json")
+        except reviewed.ReviewedInputInvalid as e:
             sys.exit("suppress: cannot read known-defect log %s: %s" % (src, e))
         for row in log.get("defects", []):
             if row.get("disposition") != "false_positive":
