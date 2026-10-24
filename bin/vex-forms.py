@@ -191,7 +191,7 @@ def _scopes(statement, digests, meta=None):
         name, at, version = rest.partition("@")
         if urllib.parse.unquote(name) != "cache" or [urllib.parse.unquote(x) for x in urllib.parse.parse_qs(qs, keep_blank_values=True).get("repository_url", [])] != [REPO]:
             continue                                     # another repository's image
-        if subpath or (at and not version) or "@" in version:
+        if subpath or "#" in pid or (at and not version) or "@" in version:   # any fragment separator, even an empty fragment, is a subpath the other readers refuse
             raise ValueError("%s: product %s has a part these forms cannot represent" % (_cve(statement), pid))
         if not RAW_OURS.match(pid):                      # ours only after decoding or reordering: the gate, panel and rescan would ignore it, so these forms must not honour it
             raise ValueError("%s: product %s names our image in a form the other readers do not recognise (repository_url first, unencoded)" % (_cve(statement), pid))

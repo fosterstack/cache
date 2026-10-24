@@ -549,11 +549,21 @@ def r_forms(pid):
 BASE_Q = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
 OKQ = ["", "&variant=production", "&variant=fips", "&arch=amd64", "&arch=arm64", "&variant=fips&arch=arm64", "&arch=arm64&variant=production"]
 BADQ = ["&variant=debug", "&arch=riscv64", "&variant=", "&arch", "&arch=amd64&", "&color=red&arch=amd64", "&variant=production&variant=production",
-        "&Variant=production", "&variant=%70roduction", "&arch=%61md64", "&%61rch=amd64", "&variant=production&arch=amd64&arch=arm64", "&ARCH=arm64", "&variant=Production"]
+        "&Variant=production", "&variant=%70roduction", "&arch=%61md64", "&%61rch=amd64", "&variant=production&arch=amd64&arch=arm64", "&ARCH=arm64", "&variant=Production", "#", "&variant=production#"]
 for q in OKQ + BADQ:
     want = q in OKQ
     got = {n: f(BASE_Q + q) for n, f in (("gate", r_gate), ("rescan", r_resc), ("panel", r_panel), ("forms", r_forms))}
     check("H one grammar: %r is %s by every reader" % (q, "accepted" if want else "refused"), set(got.values()) == {want}, got)
+# the shared table, whole product ids (confirmation round, finding 2): none of these is accepted by ANY of the four readers (forms: refused or not a scope)
+def r_forms_scope(pid):
+    try: return bool(V._scopes(scoped("CVE-H7", "not_affected", [{"@id": pid, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)))
+    except ValueError: return False
+def r_gate_full(pid): return GATE.OUR_PRODUCTS.match(pid) is not None and GATE.scope_of(pid) is not None
+for pid in ("pkg:oci/cache?arch=amd64&repository_url=ghcr.io/fosterstack/cache", "pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache&variant=production",
+            "pkg:oci/cache?repository_url=ghcr.io%252Ffosterstack%252Fcache", "pkg:oci/ca%63he?repository_url=ghcr.io/fosterstack/cache",
+            "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache#", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=production#"):
+    got = {"gate": r_gate_full(pid), "rescan": r_resc(pid), "panel": r_panel(pid) and GATE.OUR_PRODUCTS.match(pid) is not None, "forms": r_forms_scope(pid)}   # the panel hands its statements to vex_index, whose first filter is OUR_PRODUCTS
+    check("H whole-product table: %s is accepted by no reader" % pid, not any(got.values()), got)
 # rc-5a H review (round 1, finding 1/2): a product the gate, panel and rescan ignore must never be honoured by the forms. Three outcomes per form: accept / ignore / refuse.
 OURS_ENC = "pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache"
 for pid in ("pkg:oci/cache?arch=amd64&repository_url=ghcr.io/fosterstack/cache", OURS_ENC + "&variant=production", "pkg:oci/cache?repository_url=ghcr.io%252Ffosterstack%252Fcache",
