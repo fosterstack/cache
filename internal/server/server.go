@@ -464,22 +464,37 @@ func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 	w.WriteHeader(http.StatusCreated)
 }
 
+// gaugesReadHook runs after a gauge refresh has read the totals and before it
+// sets the gauges. Production does nothing there; a test holds the refresh at
+// that point to make an overlapping upload's refresh run inside the window.
+var gaugesReadHook = func() {}
+
+// gaugesMu orders gauge refreshes: the last refresh to run also read last, so
+// the gauges end at the totals the last completed upload saw.
+var gaugesMu sync.Mutex
+
 // updateStoreGauges refreshes the store_bytes/store_entries gauges after a
-// successful write. Two extra read-only lookups per PUT (cheap: an
-// in-memory bbolt view transaction each) versus letting these gauges sit
-// at zero forever — which is what "Prometheus metrics" in the README
-// would otherwise silently not mean for the two numbers an operator
-// actually needs (bytes used vs. configured cap).
+// successful write. Each refresh makes two read-only passes over the metadata
+// index (TotalSize and Count each visit every record, so the cost grows with
+// the number of entries; a running total would be a metadata-layer change).
+// The whole refresh runs under gaugesMu: the reads and the sets of one
+// refresh cannot interleave with another's, so overlapping uploads cannot
+// leave the gauges at an older total.
 func updateStoreGauges(cfg Config) {
-	if total, err := cfg.Cache.TotalSize(); err == nil {
+	gaugesMu.Lock()
+	defer gaugesMu.Unlock()
+	total, totalErr := cfg.Cache.TotalSize()
+	n, countErr := cfg.Cache.EntryCount()
+	gaugesReadHook()
+	if totalErr == nil {
 		cfg.Metrics.StoreBytesTotal.Set(float64(total))
 	} else {
-		cfg.Log.Error("server: store_bytes gauge update failed", "error", err)
+		cfg.Log.Error("server: store_bytes gauge update failed", "error", totalErr)
 	}
-	if n, err := cfg.Cache.EntryCount(); err == nil {
+	if countErr == nil {
 		cfg.Metrics.StoreEntries.Set(float64(n))
 	} else {
-		cfg.Log.Error("server: store_entries gauge update failed", "error", err)
+		cfg.Log.Error("server: store_entries gauge update failed", "error", countErr)
 	}
 }
 

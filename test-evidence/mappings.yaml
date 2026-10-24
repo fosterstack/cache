@@ -251,6 +251,11 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestServePanicInServerNewKeepsMarker" }
       - { type: go-test, ref: "cmd/fscache:TestServeTLSErrorsKeepMarker" }
       - { type: go-test, ref: "cmd/fscache:TestServeRealServingErrorWithUploadInFlightThenRestart" }
+  - ac: REQ-STORE-005-AC6
+    evidence:
+      - { type: go-test, ref: "internal/metadata:TestDecodeRejectsARecordThatIsNot16Bytes" }
+      - { type: go-test, ref: "internal/metadata:TestDecodeSizeRejectsARecordThatIsNot16Bytes" }
+      - { type: go-test, ref: "internal/metadata:TestShortRecordIsAnErrorForEveryReader" }
   - ac: REQ-HTTP-001-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }
@@ -317,6 +322,19 @@ mappings:
       - { type: go-test, ref: "internal/blobstore:TestWalkVisitsKeysInCaseFoldedShardDirs" }
       - { type: go-test, ref: "internal/blobstore:TestWalkVisitsAFileItsKeysPathOpens" }
       - { type: go-test, ref: "internal/blobstore:TestWalkSkipsACopyAwayFromItsKeysPath" }
+  - ac: REQ-PROTO-003-AC5
+    evidence:
+      - { type: go-test, ref: "internal/blobstore:TestDirectoryAtAKeysPathIsNotFound" }
+      - { type: go-test, ref: "internal/blobstore:TestBlobSurvivesACollidingKey" }
+      - { type: go-test, ref: "internal/blobstore:TestSymlinkAtAKeysPathIsNotFound" }
+      - { type: go-test, ref: "internal/blobstore:TestFifoAtAKeysPathIsNotFoundAndDoesNotBlock" }
+      - { type: go-test, ref: "internal/blobstore:TestGetWhenTheBlobVanishesBeforeItIsOpened" }
+      - { type: go-test, ref: "internal/blobstore:TestGetWhenTheOpenedFileIsNotTheCheckedOne" }
+      - { type: go-test, ref: "internal/blobstore:TestGetSurfacesAnOpenFailureOfARegularFile" }
+      - { type: go-test, ref: "internal/server:TestNeverStoredKeyOnADirectoryPathIs404" }
+      - { type: go-test, ref: "internal/blobstore:TestWalkSkipsAKeyWhosePathIsASymlink" }
+      - { type: go-test, ref: "internal/blobstore:TestGetDoesNotBlockWhenAFifoReplacesTheBlobBeforeTheOpen" }
+      - { type: go-test, ref: "internal/blobstore:TestWalkSkipsAnEntryThatStoppedBeingRegularAfterTheListing" }
   - ac: REQ-PROTO-007-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReservedPathsRefuseWritesAndStoreNothing" }
@@ -1189,6 +1207,9 @@ mappings:
   - ac: REQ-OBS-003-AC7
     evidence:
       - { type: go-test, ref: "internal/server:TestAuthSurfaceUnchangedWithDiskSignals" }
+  - ac: REQ-OBS-003-AC8
+    evidence:
+      - { type: go-test, ref: "internal/server:TestGaugesEndAtTheStoreTotalsWhenUploadsOverlap" }
   - ac: REQ-SBOM-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
