@@ -33,7 +33,9 @@
 # Pure python3 + json, no network — exercised by bin/inspector-gate-test.sh.
 import json
 import re
+import datetime
 import sys
+import urllib.parse
 
 OUR_PRODUCTS = re.compile(
     r"^pkg:(oci/cache\?repository_url=ghcr\.io/fosterstack/cache"
@@ -83,7 +85,7 @@ def scope_of(product_id):
     unaffected."""
     base, q, query = product_id.partition("?")
     if base.startswith("pkg:golang/"):
-        return {} if not q and "@" not in base and "\n" not in product_id else None   # the Go product: unversioned, no qualifier (a pinned one never applies). A trailing newline (which OUR_PRODUCTS's $ lets through) is refused here although the rescan reads it as the Go product: the gate only ever blocks more, never suppresses more.
+        return {} if product_id == "pkg:golang/github.com/fosterstack/cache" else None   # the Go product: unversioned, no qualifier (a pinned one never applies). A trailing newline (which OUR_PRODUCTS's $ lets through) is refused here, and the rescan refuses the document (the exact product only): the gate only ever blocks more, never suppresses more.
     # only this gate's own repository: the images it scans are ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so a statement that names only the
     # candidates repository covers none of them (bin/rescan-statement.py::_vex_match and bin/panel.py::_covers agree; REQ-REL-004-AC1)
     repo = {"pkg:oci/cache": "ghcr.io/fosterstack/cache"}.get(base)
@@ -113,23 +115,100 @@ def load(path):
         return json.load(f)
 
 
+def _stamp(value):
+    """A statement's timestamp as an aware datetime, or None when it is missing or unreadable (ISO 8601; a trailing Z is UTC; no offset is read as UTC)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        d = datetime.datetime.fromisoformat(value.strip()[:-1] + "+00:00" if value.strip().endswith("Z") else value.strip())
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+
+
+def _product_key(pid):
+    """What the readers match a product on, not how it is spelled: the scope (variant, architecture; the query's order and nothing else decides nothing) of this
+    gate's own image or of the exact Go product; any other string (a product the readers drop or refuse) is compared as written."""
+    sc = scope_of(pid) if isinstance(pid, str) else None
+    if sc is None:
+        return ("raw", pid)
+    return ("fosterstack-module",) if pid.startswith("pkg:golang/") else ("oci", sc.get("variant"), sc.get("arch"))
+
+
+def _package_key(sid):
+    """A subcomponent the way the matchers see it, widened on purpose: percent-decoded, case-folded, the purl type and any namespace ignored (the last path segment),
+    with its version. Treating two spellings as one package only ever retracts MORE (a fail-closed direction)."""
+    s = urllib.parse.unquote(str(sid)).split("?", 1)[0].split("#", 1)[0]
+    s = s[4:].split("/", 1)[-1] if s.startswith("pkg:") else s
+    name, _, ver = s.rpartition("@") if "@" in s else (s, "", "")
+    return (name.rsplit("/", 1)[-1].lower(), ver)
+
+
+def superseded(statements):
+    """{(statement index, product index)} that a LATER statement for the same vulnerability, product and subcomponent set replaces: the latest statement of such a
+    pair is the current one, whatever its status, so a later `affected` retracts an earlier `not_affected`. The vulnerability is the whole alias class (a statement
+    that names CVE and GHSA ids links them for the whole document); the product and the packages are compared by what the readers match on (_product_key,
+    _package_key), not by spelling. 'Later' is one total order per pair: by timestamp when EVERY statement of the pair carries a readable one (equal times: document
+    order), else by document order for the whole pair."""
+    parent = {}
+    def alias_root(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    named = []
+    for st in statements:
+        v = (st.get("vulnerability") or {}) if isinstance(st, dict) else {}
+        ids = [x for x in ([v.get("name")] + list(v.get("aliases") or [])) if isinstance(x, str) and x]
+        named.append(ids)
+        for x in ids[1:]:
+            parent[alias_root(x)] = alias_root(ids[0])
+    groups = {}
+    for i, st in enumerate(statements):
+        if not isinstance(st, dict) or not named[i]:
+            continue
+        for pi, p in enumerate(st.get("products") or []):
+            if not isinstance(p, dict):
+                continue
+            at = p.get("@id")
+            pid = at if at is not None else (p.get("identifiers") or {}).get("purl") or ""
+            subs = frozenset(_package_key(s.get("@id")) for s in p.get("subcomponents") or [] if isinstance(s, dict))
+            groups.setdefault((alias_root(named[i][0]), _product_key(pid), subs), []).append((i, pi, _stamp(st.get("timestamp"))))
+    dead = set()
+    for entries in groups.values():
+        if len({e[0] for e in entries}) < 2:
+            continue
+        timed = all(e[2] is not None for e in entries)
+        order = sorted(entries, key=(lambda e: (e[2], e[0], e[1])) if timed else (lambda e: (e[0], e[1])))
+        winner = order[-1]
+        for e in entries:
+            if e[0] != winner[0]:
+                dead.add((e[0], e[1]))
+    return dead
+
+
 def vex_index(doc):
     """vulnerability id → list of (subcomponent (name, ver) set, product scope); an empty set
     means the statement covers every package of our product."""
     idx = {}
-    for st in doc.get("statements") or []:
+    dead = superseded(doc.get("statements") or [])
+    for si, st in enumerate(doc.get("statements") or []):
         if not isinstance(st, dict) or st.get("status") not in SUPPRESSING:
             continue
         v = st.get("vulnerability") or {}
         ids = {v.get("name")} | set(v.get("aliases") or [])
-        for p in st.get("products") or []:
-            pid = p.get("@id") or (p.get("identifiers") or {}).get("purl") or ""
-            if not OUR_PRODUCTS.match(pid):
+        for pi, p in enumerate(st.get("products") or []):
+            if (si, pi) in dead:       # a later statement of the same vulnerability, product and subcomponents replaces this one
+                continue
+            pid = p.get("@id") if p.get("@id") is not None else (p.get("identifiers") or {}).get("purl") or ""   # an @id that is present (even "") is the id, as the rescan reads it; only a missing or null one falls back
+            if not isinstance(pid, str) or not OUR_PRODUCTS.match(pid):
+                continue
+            scope = scope_of(pid)
+            if scope is None:          # not this gate's repository, or a scope the grammar rejects: it covers nothing, with or without an image (covered(.., image=None) trusts the index)
                 continue
             subs = {name_version(s.get("@id")) for s in p.get("subcomponents") or []}
             for i in ids:
                 if i:
-                    idx.setdefault(i, []).append((subs, scope_of(pid)))
+                    idx.setdefault(i, []).append((subs, scope))
     return idx
 
 

@@ -175,7 +175,7 @@ if g:
 if re.search(r"go\s+install\s+golang\.org/x/vuln", atxt):
     bad.append("the audit job still builds govulncheck itself")
 # the Check stage (stage-verify.yml): govulncheck is built by `install-scanner.sh govulncheck` (a Go module, no release binary), so its build gets its own job with no credential;
-# the `check` job (id-token: write, for Witness) downloads the artifact with download-artifact's own digest check left on (it fails the step when the digest differs from the one GitHub
+# the `check` job (no identity token: Sign signs its records) downloads the artifact with download-artifact's own digest check left on (it fails the step when the digest differs from the one GitHub
 # recorded at upload) and installs it. The download is by the artifact id the build job exports, not by name, so a same-name artifact another job uploads is not the one it gets. The check
 # and the id prove only that the artifact arrived intact and is the one that job uploaded; the guarantee is that no build runs in a job
 # that holds a credential (AC1 above, which sees this installer arm as a build).
@@ -232,6 +232,8 @@ import os, re, sys, yaml
 wf = sys.argv[1]
 def edit(fname, fn):
     p = os.path.join(wf, fname); s = open(p).read(); s2 = fn(s); assert s2 != s, "mutation did not apply"; open(p, "w").write(s2)
+def in_refresh(s, old, new):   # the first match inside the refresh job (go-freshness.yml has the same installer lines in other jobs)
+    i = s.index("\n  refresh:"); return s[:i] + s[i:].replace(old, new, 1)
 $py
 PY
   check "$name" bad "$dir"; }
@@ -240,12 +242,12 @@ export ISO_SCANNERS="$root/.github/policy/scanners.json"   # the policy file the
 check "the real workflows" ok "$root/.github/workflows"
 # AC1: a build added to a job that holds a credential
 mutate "go install added to go-freshness refresh (App key, packages: write)" '
-edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1\n\n      - name: log in", 1))'
+edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "GOBIN=/usr/local/bin go install github.com/google/go-containerregistry/cmd/crane@v0.22.1\n"))'
 mutate "go build added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: s.replace("  panel-probe:\n", "  panel-probe:\n", 1).replace("    environment: agent\n", "    environment: agent\n    # mutated\n", 1))
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: go build ./...\n", s, count=1, flags=re.S))'
-mutate "make added to a job with id-token: write (stage-verify check)" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: make all\n", s, count=1, flags=re.S))'
+mutate "make added to the Check job given id-token: write back" '
+edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    permissions:\n      contents: read\n)(.*?    steps:\n)", lambda m: m.group(1) + "      id-token: write\n" + m.group(2) + "      - name: mutant\n        run: make all\n", s, count=1, flags=re.S))'
 mutate "docker build added to a job that reads a secret (release.yml decide)" '
 edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: docker build -t x .\n", s, count=1, flags=re.S))'
 mutate "id-token: write granted to a job that builds (ci.yml gosec)" '
@@ -283,7 +285,7 @@ edit("auditor.yml", lambda s: s.replace("needs: [govulncheck-build]", "needs: []
 
 # the same hidden build written in the other ordinary shell forms, in a credential-holding job that is not the Check job (go-freshness refresh: App key, packages: write)
 gf() { local name=$1; GFLINE=$2 mutate "$name" '
-edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "./bin/install-scanner.sh crane\n          " + os.environ["GFLINE"] + "\n\n      - name: log in", 1))'; }
+edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "./bin/install-scanner.sh crane\n          " + os.environ["GFLINE"] + "\n"))'; }
 gf "install-scanner.sh \"govulncheck\" (double-quoted tool word)" 'bash bin/install-scanner.sh "govulncheck"'
 gf "install-scanner.sh 'govulncheck' (single-quoted tool word)" "bash bin/install-scanner.sh 'govulncheck'"
 gf "install-scanner.sh govu\"\"lncheck (quotes inside the word)" 'bash bin/install-scanner.sh govu""lncheck'
@@ -386,16 +388,16 @@ edit("stage-verify.yml", lambda s: s.replace("        run: bash bin/unpack-govul
 mutate "the Check job's whole job may fail without stopping the run (continue-on-error)" '
 edit("stage-verify.yml", lambda s: s.replace("    needs: govulncheck-build\n", "    needs: govulncheck-build\n    continue-on-error: true\n", 1))'
 # the hidden build in the jobs that hold id-token in the Check stage and elsewhere
-mutate "install-scanner.sh govulncheck put back in the Check job (id-token: write)" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
-mutate "install-scanner.sh govulncheck added to the arm64 Check job (id-token: write)" '
-edit("stage-verify.yml", lambda s: re.sub(r"(  check-arm64:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
+mutate "install-scanner.sh govulncheck put back in the Check job given id-token: write back" '
+edit("stage-verify.yml", lambda s: re.sub(r"(  check:.*?    permissions:\n      contents: read\n)(.*?    steps:\n)", lambda m: m.group(1) + "      id-token: write\n" + m.group(2) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
+mutate "install-scanner.sh govulncheck added to the arm64 Check job given id-token: write back" '
+edit("stage-verify.yml", lambda s: re.sub(r"(  check-arm64:.*?    permissions:\n      contents: read\n)(.*?    steps:\n)", lambda m: m.group(1) + "      id-token: write\n" + m.group(2) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
 mutate "install-scanner.sh govulncheck added to a job that reads a secret (release.yml decide)" '
 edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
 mutate "install-scanner.sh govulncheck added to a job with an environment (auditor panel-probe)" '
 edit("auditor.yml", lambda s: re.sub(r"(  panel-probe:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/install-scanner.sh govulncheck\n", s, count=1, flags=re.S))'
 mutate "install-scanner.sh govulncheck added to go-freshness refresh (App key, packages: write)" '
-edit("go-freshness.yml", lambda s: s.replace("./bin/install-scanner.sh crane\n\n      - name: log in", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n\n      - name: log in", 1))'
+edit("go-freshness.yml", lambda s: in_refresh(s, "./bin/install-scanner.sh crane\n", "./bin/install-scanner.sh crane\n          bash bin/install-scanner.sh govulncheck\n"))'
 
 echo "job-isolation: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
