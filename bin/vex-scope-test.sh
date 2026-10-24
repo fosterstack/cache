@@ -106,6 +106,16 @@ for a in ("amd64", "arm64"):
             i = tarfile.TarInfo("f.txt"); c = b"x\n"; i.size = len(c); t.addfile(i, io.BytesIO(c))
         d[k + a] = "sha256:" + hashlib.sha256(open(f, "rb").read()).hexdigest()
 json.dump(d, open(W + "/digests.json", "w"))
+# one tagged docker archive of the production amd64 child, for the exact-finding assertions below (what the Check script builds from the same blobs)
+root = W + "/images/production"
+idx = json.load(open(root + "/index.json"))["manifests"][0]["digest"].split(":")[1]
+kid = [m for m in json.load(open(root + "/blobs/sha256/" + idx))["manifests"] if m["platform"]["architecture"] == "amd64"][0]["digest"].split(":")[1]
+man = json.load(open(root + "/blobs/sha256/" + kid))
+cfg_, lay_ = man["config"]["digest"].split(":")[1], man["layers"][0]["digest"].split(":")[1]
+mj = json.dumps([{"Config": "blobs/sha256/" + cfg_, "RepoTags": ["ghcr.io/fosterstack/cache:cand-production-amd64"], "Layers": ["blobs/sha256/" + lay_]}]).encode()
+with tarfile.open(W + "/production-amd64.tar", "w") as t:
+    i = tarfile.TarInfo("manifest.json"); i.size = len(mj); t.addfile(i, io.BytesIO(mj))
+    for h in (cfg_, lay_): t.add(root + "/blobs/sha256/" + h, arcname="blobs/sha256/" + h)
 json.dump({"scanners": ["grype"]}, open(W + "/.github/policy/scanners.json", "w"))
 for g in ("go.mod", "tools/requirements/go.mod"): open(W + "/" + g, "w").write("module github.com/fosterstack/cache\n\ngo 1.22\n")
 st = [{"vulnerability": {"name": c}, "status": "not_affected", "justification": "vulnerable_code_not_in_execute_path",
@@ -143,7 +153,14 @@ for v in production fips; do for a in amd64 arm64; do
   if child_is $v $a fail; then echo "PASS check path control: the $v image's linux/$a child fails when the VEX excepts none of its findings"; pass=$((pass+1))
   else echo "FAIL check path control: the $v image's linux/$a child did not fail without a covering statement ($(tail -1 "$chk/run.log" | cut -c1-160))"; fail=$((fail+1)); fi
 done; done
-# a statement scoped by variant= / arch= is never applied by grype (it derives no such qualifier from an image): fail-closed, in every child, the documented limit (.vex/README.md)
+# the exact findings (round 1, P1): the covering document excepts all THREE BusyBox CVEs of the archive; without it all three are findings
+ids_of() { # ids_of VEXFILE FIELD -> sorted ids of matches|ignoredMatches
+  PATH="$(dirname "$grype"):$PATH" grype "docker-archive:$chk/production-amd64.tar" --vex "$1" -o json 2>/dev/null | jq -r --arg f "$2" '[.[$f][]? | .vulnerability.id] | unique | join(",")'
+}
+WANT3="CVE-2024-58251,CVE-2025-46394,CVE-2025-60876"
+if [ "$(ids_of "$work/vex-all.json" ignoredMatches)" = "$WANT3" ] && [ -z "$(ids_of "$work/vex-all.json" matches)" ]; then echo "PASS check path: the covering VEX excepts exactly the three BusyBox CVEs (none left as a finding)"; pass=$((pass+1)); else echo "FAIL check path: the covering VEX did not except exactly $WANT3 (ignored: $(ids_of "$work/vex-all.json" ignoredMatches); left: $(ids_of "$work/vex-all.json" matches))"; fail=$((fail+1)); fi
+if [ "$(ids_of "$work/vex-none.json" matches)" = "$WANT3" ]; then echo "PASS check path control: without a covering statement the same three CVEs are the findings"; pass=$((pass+1)); else echo "FAIL check path control: the findings without a covering statement are '$(ids_of "$work/vex-none.json" matches)', want $WANT3"; fail=$((fail+1)); fi
+# a statement scoped by variant= / arch= is never applied by grype (it derives no such qualifier from an image): fail-closed, in every child, the limit the VEX grammar notes (variant=/arch= are never seen by grype, so such a statement applies there never; the generator and the other readers honour it)
 run_check "$work/vex-qual.json"
 for v in production fips; do for a in amd64 arm64; do
   if child_is $v $a fail; then echo "PASS check path: a variant/arch-scoped statement is not applied to the $v image's linux/$a child (grype keeps blocking: fail-closed)"; pass=$((pass+1))
