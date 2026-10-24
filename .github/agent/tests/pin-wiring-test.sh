@@ -1071,10 +1071,12 @@ else
   lcase pins-auditor-step-removed              bad "$J['allowlist-pins-auditor']['steps'].pop()"
   # main's own single-job allowlist-chain inside chain-v030's ci.yml fits neither form
   MAIN="m = yaml.load(open('$here/.github/workflows/ci.yml'), Loader=yaml.BaseLoader)"
-  SINGLE="$MAIN; [$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; $J['allowlist-chain'] = m['jobs']['allowlist-chain']"
+  SINGLE="$MAIN; [$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; "
+  SINGLE+="$J['allowlist-chain'] = m['jobs']['allowlist-chain']"
   lcase mixed-single-job-chain                 bad "$SINGLE"
   # the landing judge is chain-v030's own, byte for byte
-  if git show "$landing_ref:.github/agent/tests/pin-wiring-test.sh" | cmp -s - "$here/.github/agent/tests/pin-wiring-landing.sh"
+  judge_file=.github/agent/tests/pin-wiring-test.sh
+  if git show "$landing_ref:$judge_file" | cmp -s - "$here/.github/agent/tests/pin-wiring-landing.sh"
   then pass=$((pass+1)); echo "PASS landing judge is chain-v030's pin-wiring-test.sh at $landing_ref, byte for byte"
   else failn=$((failn+1)); echo "FAIL landing judge differs from chain-v030's pin-wiring-test.sh at $landing_ref"; fi
 fi
