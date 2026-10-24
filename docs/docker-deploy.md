@@ -240,6 +240,8 @@ scrapers need no credentials.
 
 What the landing page and `/statusz` show: [status page](status-page.md).
 
+After a crash or a forced stop the server reconciles its stores before it serves: [crash recovery](crash-recovery.md).
+
 ## Resetting the cache
 
 There is no purge endpoint and no admin UI, by design — see
