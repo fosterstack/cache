@@ -60,7 +60,7 @@ jobs:
           name: images
           path: /tmp/oci/
       - name: skopeo is on the runner image
-        run: command -v skopeo >/dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
+        run: command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
       - name: log in to GHCR (the scratch package)
         env:
           GH_TOKEN: ${{ github.token }}

@@ -42,8 +42,8 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
   Script-text inputs: an input an action executes as a command (github-script `script`,
              golangci-lint-action `args`, goreleaser-action `args`) is script text, the same class as
              a `run:` block — outside this check, covered by the review pass (see ACTIONS).
-  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (skopeo from the runner's
-             signed Ubuntu archive, PyYAML for this checker) are distribution packages, not actions —
+  Package-manager installs: `apt-get install` / `pip install` in a `run:` block (PyYAML for this checker)
+             are distribution packages, not actions —
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
   The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
