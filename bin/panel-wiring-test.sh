@@ -393,8 +393,16 @@ else:
         bad.append("the statement step does not pass the number of enumerated children (--expect-children): a shorter manifest must be an error")
     if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in g_:
         bad.append("the published grype step's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
-    if "select((.purl // \"\") != \"\")" not in g_ or "packages:$k" not in g_.replace(" ", ""):
+    pk_ = re.search(r"pk=\$\(jq '([^']+)' \"\$\{sbom\}\"", g_)
+    if not pk_ or "packages:$k" not in g_.replace(" ", ""):
         bad.append("the published grype step does not record the child's package count (components with a package URL) in children-scanned.jsonl")
+    else:   # the count is run on an inventory: only a package URL (pkg:<type>/<name>) is a package, never a file, a number or a string like not-a-purl
+        import subprocess
+        inv = {"components": [{"purl": "pkg:deb/debian/glibc@2.36"}, {"purl": "not-a-purl"}, {"purl": "pkg:"}, {"purl": "pkg:/"}, {"purl": "pkg:deb/"},
+                              {"purl": 7}, {"purl": None}, {"type": "file", "name": "/x"}, {"purl": "pkg:golang/github.com/a/b@v1"}]}
+        got = subprocess.run(["jq", pk_.group(1)], input=json.dumps(inv), capture_output=True, text=True).stdout.strip()
+        if got != "2":
+            bad.append("the published grype step counts %s packages in an inventory with two package URLs and seven other components" % got)
     if not re.search(r"osv-scanner scan image --config /tmp/empty-osv\.toml --all-packages --all-vulns --format json", o_) or not re.search(r': > /tmp/empty-osv\.toml', o_):
         bad.append("the published osv-scanner step does not run with an empty config, --all-packages and --all-vulns")
     if not re.search(r"compgen -e \| grep '\^OSV_SCANNER_'", o_) or "exit 2" not in o_.split("compgen -e", 1)[-1].split("install-scanner", 1)[0]:

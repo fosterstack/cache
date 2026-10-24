@@ -906,8 +906,8 @@ jobs:
               --vex .vex/fosterstack-cache.openvex.json \
               -o "json=${out}" -o "cyclonedx-json=${sbom}" || code=$?
             [ "$code" -gt "$rc" ] && rc=$code
-            # packages = components that carry a package URL (grype also lists files); unreadable = 0, which bin/rescan-statement.py refuses
-            pk=$(jq '[.components[]? | select((.purl // "") != "")] | length' "${sbom}" 2>/dev/null) || pk=0
+            # packages = components that carry a package URL, pkg:<type>/<name> (grype also lists files); unreadable = 0, which bin/rescan-statement.py refuses
+            pk=$(jq '[.components[]? | select((.purl | type) == "string" and (.purl | startswith("pkg:") and (.[4:] | index("/") as $i | $i != null and $i > 0 and $i < length - 1)))] | length' "${sbom}" 2>/dev/null) || pk=0
             [[ "${pk}" =~ ^[0-9]+$ ]] || pk=0                  # an empty or odd result must not stop the loop before this child's record is written
             jq -nc --arg p "$platform" --arg r "$ref" --argjson e "$code" --arg f "$out" --argjson k "${pk}" \
               '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> /tmp/children-scanned.jsonl
