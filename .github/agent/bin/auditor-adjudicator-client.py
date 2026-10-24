@@ -193,8 +193,15 @@ def main():
 def _whole_answer(text):
     """The model's disposition answer: the WHOLE response must be exactly one JSON object (the prompt asks for nothing else). An object found inside prose, a second object, an array
     or any other top-level value is not an answer (rc-5b R5): an example in the model's wording or an injected leading object can never choose the disposition."""
+    def _no_dup(pairs):
+        d = {}
+        for k, v in pairs:
+            if k in d:
+                raise ValueError("duplicate key")        # a repeated key would let the last value erase a refusal
+            d[k] = v
+        return d
     try:
-        obj = json.loads(str(text or "").strip())
+        obj = json.loads(str(text or "").strip(), object_pairs_hook=_no_dup)
     except ValueError:
         return None
     return obj if isinstance(obj, dict) else None

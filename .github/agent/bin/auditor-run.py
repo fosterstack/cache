@@ -20,7 +20,7 @@ package + finding counts with database dates, dry_run and adjudicator mode, and 
 line: AUDIT COMPLETE, or AUDIT INCOMPLETE (which FAILS the job). A dry run lists in §6 every
 PR and issue it would have opened.
 """
-import os, sys, json, re, shlex, subprocess, importlib.util, urllib.parse
+import itertools, os, sys, json, re, shlex, subprocess, importlib.util, urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
@@ -1985,6 +1985,9 @@ def _persist(out, rows, today):
 FORBIDDEN_NAMES = re.compile(r"anthropic|claude|openai|chatgpt|gpt-|codex|sonnet|opus|gemini|llama|private-model|canary", re.I)
 
 
+_FORBIDDEN_SQUASHED = re.compile(FORBIDDEN_NAMES.pattern.replace("gpt-", "gpt"), re.I)      # separators are removed from the candidate, so the "gpt-" pattern loses its hyphen
+
+
 def _configured_model_values():
     """The model identifiers this run is actually configured with (AUDITOR_MODEL_*). The
     report must not disclose them even when they carry no vendor substring the fixed
@@ -1997,7 +2000,7 @@ def _configured_model_values():
 
 
 _PROP_KEYS = {"kind", "package", "keys", "note", "evidence"}
-_PROP_REQUIRED = {"kind", "evidence"}
+_PROP_REQUIRED = {"kind", "evidence", "note"}
 _PROP_KEY_KEYS = {"scanner", "finding_id", "purl"}
 _PROP_MAX = 2000
 # lookalike letters (Cyrillic, Greek) folded to Latin, so a vendor name written with one of them is still a vendor name
@@ -2010,20 +2013,25 @@ def _fold(x):
     import unicodedata
     y = unicodedata.normalize("NFKC", x)
     y = "".join(c for c in y if unicodedata.category(c) not in ("Cf", "Cc") or c in "\n\t")
-    return y.translate(_LOOKALIKE).lower()
+    return y.lower().translate(_LOOKALIKE)
 
 
 def _scrubbed_all(texts):
     """True when no string, taken alone or joined with the others (a name split across fields) and with every separator removed, holds a vendor/model name or any
     configured model identifier of this run (row 48: the public repo names none). No minimum length for the configured identifiers."""
     folded = [_fold(t) for t in texts]
+    if any(not f.isascii() for f in folded):
+        return False                                               # fail closed: a letter outside ASCII after folding cannot be judged a lookalike or not
     squashed = [re.sub(r"[^a-z0-9]", "", f) for f in folded]
-    pairs = [a + b for a in squashed for b in squashed]            # a name split across two fields, in either order
-    haystacks = folded + [" ".join(folded)] + squashed + ["".join(squashed)] + pairs
-    if any(FORBIDDEN_NAMES.search(h) for h in haystacks):
+    n = len(squashed)
+    runs = ["".join(squashed[i:j]) for i in range(n) for j in range(i + 1, n + 1)] + ["".join(squashed[i:j][::-1]) for i in range(n) for j in range(i + 1, n + 1)]
+    fixed = squashed[:4]                                           # kind, evidence, package, note: a name split over them in ANY order
+    perms = ["".join(q) for r in range(2, len(fixed) + 1) for q in itertools.permutations(fixed, r)]
+    haystacks = folded + [" ".join(folded)] + squashed + runs + perms
+    if any(FORBIDDEN_NAMES.search(h) for h in haystacks[:len(folded) + 1]) or any(_FORBIDDEN_SQUASHED.search(h) for h in haystacks[len(folded) + 1:]):
         return False
     cfg = [re.sub(r"[^a-z0-9]", "", _fold(v)) for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and v.strip()]
-    return not any(c and (c in sq) for c in cfg for sq in squashed + ["".join(squashed)] + pairs) and not any(
+    return not any(c and (c in sq) for c in cfg for sq in squashed + runs + perms) and not any(
         _fold(v.strip()) in h for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and v.strip() for h in folded)
 
 
@@ -2038,13 +2046,17 @@ def _valid_proposal(pr):
     if not isinstance(ev, str) or not ev.strip():
         return None
     texts = [pr["kind"], ev]
+    if not isinstance(pr["note"], str) or not pr["note"].strip():
+        return None
     for k in ("package", "note"):
         if k in pr:
             if not isinstance(pr[k], str):
                 return None
             texts.append(pr[k])
+    if pr["kind"] == "defect_log" and not pr.get("keys"):
+        return None                                                # a defect-log entry names the findings it is about
     if "keys" in pr:
-        if not isinstance(pr["keys"], list):
+        if not isinstance(pr["keys"], list) or len(pr["keys"]) > 20:
             return None
         for kk in pr["keys"]:
             if not isinstance(kk, dict) or set(kk) != _PROP_KEY_KEYS or not all(isinstance(v, str) for v in kk.values()):
