@@ -5,7 +5,8 @@
     "MODE",
     "RAPK_ARM_RECORDS",
     "RAPK_RECORDS",
-    "RECORDS"
+    "RECORDS",
+    "RECORDS_ARM64"
   ],
   "scripts": [
     {
@@ -56,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "0375798509047be2659b53f126c821366c98dd13b5f456526172ae561e21c029",
+      "sha256": "8466d10c222192c5e4363b2eaa038faae003d2696128e528d5e4acd7f9cb1f2f",
       "tools": [
         "make",
         "at",
@@ -315,7 +316,7 @@
       ],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "d64c6697e22ea5a62b857f35f580fea40038ad015669024f3864a19952cc6aaa",
+      "sha256": "1805ad0d354671fa4ee805736f31747d0b396af96d397a0f4eb098165a4d5c13",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -323,16 +324,12 @@
         "DOCKERHUB_TOKEN"
       ],
       "arg_map": {
-        "scanners": "bin/check-phase-scanners.sh",
-        "acceptance": "bin/check-phase-acceptance.sh",
-        "runtime": "bin/check-phase-runtime.sh",
         "release-verify": "bin/release-verify.sh",
         "release-apks": "bin/release-apks.sh",
         "release-publish": "bin/release-publish.sh",
         "release-sign": "bin/release-sign.sh",
         "release-assets": "bin/release-assets.sh",
-        "release-postverify": "bin/release-postverify.sh",
-        "arm64": "bin/check-phase-arm64.sh"
+        "release-postverify": "bin/release-postverify.sh"
       },
       "exceptions": [
         {
@@ -372,7 +369,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the Witness wrapper of the BUILDING steps (owner Oct 22, option 1): makes a throwaway ed25519 key in a 0700 directory, runs witness run once with it (attestors environment, git, material, product; never slsa) under timeout -k 20 540 and destroys the key; no identity token, no Fulcio; the record is <step>-collection.local.json, trusted by nothing until Sign re-signs it",
-      "sha256": "d7ab910fb31977158de648b4a352edcfe505dda2fe52f9121d6cd17ab4343a9c",
+      "sha256": "07378b33b2dda5b280d0074249ee24f0cddb197fcb56a87a9f82401f017bbd67",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -387,7 +384,11 @@
         "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
         "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
         "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
-        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh"
+        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
+        "scanners": "bin/check-phase-scanners.sh",
+        "acceptance": "bin/check-phase-acceptance.sh",
+        "runtime": "bin/check-phase-runtime.sh",
+        "arm64": "bin/check-phase-arm64.sh"
       },
       "exceptions": [
         {
@@ -418,8 +419,8 @@
         "bin/chain-verify.py"
       ],
       "signs": "other",
-      "reason": "Sign's signing step for the building jobs' Witness records (REQ-CHAIN-005-AC4): takes the identity token (audience sigstore) into a shell variable, runs witness sign keyless over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record under the stage-sign.yml identity; builds nothing",
-      "sha256": "c4cb2cbecab65bdb3150b24fe939138c29264b6a22f57ef05de5788c3b1d38fb"
+      "reason": "Sign's signing step for the building jobs' and the Check jobs' Witness records (REQ-CHAIN-005-AC4, REQ-REL-011-AC1): takes the identity token (audience sigstore) into a shell variable, runs witness sign keyless over each payload that chain-verify.py sign-records has already checked and staged, copies the data files unchanged, then verifies every signed record under the stage-sign.yml identity; builds nothing",
+      "sha256": "1fdd8eaf6aa2cc24bd61c77f5a88a79454ca828b951cf3618956ce7b692dab2e"
     },
     {
       "path": "bin/rebuild-records-digests.sh",
@@ -610,7 +611,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "5e767c23aa4af0a7d293ca454a429ef2d274aa7382e75518e870ea6dc3bed9eb"
+      "sha256": "2d3f35644cc0d035f4988592441806a8aeabf2a26c473f9f09cddb648b84f54f"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -781,7 +782,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "07d39f008d95fdc7596d3c142b2b3557d8e904c88219b0907c1bc16667d9c1f1",
+      "sha256": "62e453e653c7b693a6c31f4667c8c99556485ed454d5571eafdb6d866b554f56",
       "tools": [
         "find",
         "python3",
@@ -1467,7 +1468,7 @@
     },
     {
       "path": "bin/check-osv-db.py",
-      "sha256": "3f2533f0e296d7e87eebe1940eded34a727b8aa284b2e35d410881002501486e",
+      "sha256": "5c76cb9a4fb513345d2db6eb0cd80f50aa7e5b1a13640c2c167336729a8cebcd",
       "tools": [],
       "runs": [
         "bin/check-scan.sh"
@@ -1904,7 +1905,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "32b419557df99ec925b50b9e2b36bf7bd5048a111e93cf177209721eaffd43b6",
+      "sha256": "d3cfa3fca4ce9e7e639d0dc80fa65d2386fc63a6ee3de05c501c9bf72c7ca21a",
       "exceptions": [
         {
           "rule": "deny",
@@ -2044,7 +2045,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "a1cd81212aeefca716df5089f7beb395ecdff5339bdded38d618c03539aa9e99",
+      "sha256": "e633d170732c81253149c9a60f56b5e98a0aedfdba7c84dbd2ad7364cc5e2861",
       "tools": [
         "at",
         "gh",
@@ -2087,7 +2088,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "1047394dff04c900997a7624b3228686d57373f370b433e55d245d40c1714268",
+      "sha256": "a74d72fe7a01425fc5f75dee7d00b2a8fa9a92ee4059c1c5eb673781f21ccacd",
       "tools": [
         "at",
         "python3"
@@ -2693,6 +2694,18 @@
       "runs": [],
       "signs": false,
       "reason": "Check installs the govulncheck the credential-free govulncheck-build job built, after download-artifact's digest check (REQ-REL-011-AC1)"
+    },
+    {
+      "path": "bin/check-records-digests.sh",
+      "sha256": "c688699f949e46cfe8e4613754161f519e4b12c3dadb7b8f791097159a3feb49",
+      "tools": [
+        "basename",
+        "jq",
+        "openssl"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "a Check job's list of the records it made, as a job output Sign compares with what it receives (REQ-REL-011-AC1)"
     }
   ],
   "ambient_env": [
@@ -2838,6 +2851,20 @@
       "id": "records",
       "run": "r=$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
       "why": "REQ-CHAIN-005-AC4 (adversarial pass round 6, A1): this apk job's own record digests, a job output only this job can write, which the assemble job checks what it downloads against"
+    },
+    {
+      "file": ".github/workflows/stage-verify.yml",
+      "job": "check",
+      "id": "records",
+      "run": "r=$(bash bin/check-records-digests.sh witness-scanners witness-acceptance witness-runtime) && echo \"records=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-REL-011-AC1: the Check job lists its records (witness-scanners, witness-acceptance, witness-runtime) as a stage output for Sign; the reviewed write into the job outputs"
+    },
+    {
+      "file": ".github/workflows/stage-verify.yml",
+      "job": "check-arm64",
+      "id": "records-arm64",
+      "run": "r=$(bash bin/check-records-digests.sh witness-arm64) && echo \"records-arm64=$r\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-REL-011-AC1: the arm64 Check job lists its record (witness-arm64) as a stage output for Sign; the reviewed write into the job outputs"
     }
   ]
 }

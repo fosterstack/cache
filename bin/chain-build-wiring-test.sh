@@ -232,9 +232,20 @@ jobs:
   check:
     needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
+  sign-check:
+    needs: [build, check]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      stage: check
+      records: ${{ needs.check.outputs.records }}
+      records-arm64: ${{ needs.check.outputs.records-arm64 }}
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
-    needs: [check, sign, sign-rebuild]
+    needs: [check, sign, sign-rebuild, sign-check]
     concurrency:
       group: release-publish
       cancel-in-progress: false
@@ -260,7 +271,7 @@ jobs:
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
-    needs: [build, sign, rebuild, sign-rebuild, check, release]
+    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]
     if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     permissions:
@@ -604,7 +615,7 @@ hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
 hm fout    "AC2 the record written to another path" '"witness-${step#snapshot-}/$step-collection.json"' 'out/x.json'
-hm fopen   "AC2 the step list is open" 'scanners|acceptance|runtime|arm64' '*'
+hm fopen   "AC2 the step list is open" 'release-verify' '*'
 hm fexec   "AC2 witness not exec'd (its exit status could be lost)" 'exec witness run' 'witness run'
 hm ftee "AC2 the token written elsewhere" '| jq -r .value)' '| jq -r .value | tee /tmp/leak)'
 hm ffile "AC2 the token in a file again (the older form): a file under the runner temp folder while the command runs" \
@@ -624,8 +635,8 @@ hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads w
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
     '"witness-${step#snapshot-}/$step-collection.json"' \
        '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
-hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in scanners|' \
-    'in snapshot-evil|scanners|'
+hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in release-verify|' \
+    'in snapshot-evil|release-verify|'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
@@ -663,7 +674,7 @@ lm lcopy    "WIT1 the key copied into the record directory (it would be uploaded
 lm lcat     "WIT1 the key printed" 'rc=0' 'rc=0\ncat "$kd/key.pem"'
 lm lsigned  "WIT1 the record written under the signed name (it must end in .local.json: only Sign signs a trusted one)" '$step-collection.local.json' '$step-collection.json'
 lm lopen    "WIT1 the step list open" 'apk|build|rapk|rebuild|snapshot-apk' '*|apk'
-lm lrelease "WIT1 a non-building step in the list (Check and Release keep the keyless helper)" 'snapshot-rebuild)' 'snapshot-rebuild|release-sign)'
+lm lrelease "WIT1 a Release step in the list (Release keeps the keyless helper)" 'snapshot-rebuild|scanners' 'snapshot-rebuild|release-sign|scanners'
 lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environment,git,material,slsa'
 lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 lm lnoflt   "WIT1 no environment filter" '--env-filter-sensitive-vars' ''
@@ -1180,15 +1191,15 @@ RELIF="\${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
 BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
 BUILD_HEAD="    if: $GATE\n$BUILD_USES"
-REL_HEAD="  release:\n    if: $RELIF\n    needs: [check, sign, sign-rebuild]"
+REL_HEAD="  release:\n    if: $RELIF\n    needs: [check, sign, sign-rebuild, sign-check]"
 gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: [build, sign]' '  rebuild:\n    needs: [build, sign, check]' "rebuild must need exactly"
 gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: [build, sign]' '  check:\n    needs: [build, sign, rebuild]' "check must need exactly"
 # REQ-CHAIN-005-AC5 (Witness move): Rebuild and Check each need Build and Sign (they start from Build's record as Sign signed it) and run side by side.
 gr g2b "005-AC5 check starts without Sign (it would read an unsigned local record)" '  check:\n    needs: [build, sign]' '  check:\n    needs: build' \
        "check must need exactly"
 gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: [build, sign]' '  check:\n    needs: sign' "check must need exactly"
-gr g3  "005-AC5 release does not need rebuild" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign]' "release must need exactly"
-gr g3b "005-AC5 release does not need Sign's second call (Rebuild's records would be unsigned)" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign, rebuild]' "release must need exactly"
+gr g3  "005-AC5 release does not need rebuild" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign, sign-check]' "release must need exactly"
+gr g3b "005-AC5 release does not need Sign's second call (Rebuild's records would be unsigned)" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign, rebuild, sign-check]' "release must need exactly"
 gr g3c "005-AC5 sign-rebuild does not wait for rebuild" '  sign-rebuild:\n    needs: [build, rebuild]' '  sign-rebuild:\n    needs: build' "sign-rebuild must need exactly"
 gr g3x1 "R2 (round 6) sign-rebuild drops the records input (it would sign whatever arrives under the artifact names)" '      records: ${{ needs.rebuild.outputs.records }}\n' '' "sign-rebuild must pass exactly"
 gr g3f "R2 (round 6) sign-rebuild takes its records from Build's output" 'records: ${{ needs.rebuild.outputs.records }}' 'records: ${{ needs.build.outputs.digests }}' "sign-rebuild must pass exactly"
@@ -1199,13 +1210,13 @@ gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: $GATE\n 
 gr g5  "005-AC5 rebuild with an if (it runs after build through needs; an if could skip it)" '  rebuild:\n    needs: [build, sign]' \
        '  rebuild:\n    needs: [build, sign]\n    if: always()' "rebuild may not carry an if"
 gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: [build, sign]' "  check:\n    needs: [build, sign]\n    if: $GATE" "check may not carry an if"
-gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [check, sign, sign-rebuild]' \
+gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [check, sign, sign-rebuild, sign-check]' \
        "release must carry exactly the if"
-gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [check, sign, sign-rebuild]' \
+gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [check, sign, sign-rebuild, sign-check]' \
        "release must carry exactly the if"
-gr g7  "005-AC5 release runs when a stage failed (!cancelled())" "$REL_HEAD" "  release:\n    if: \${{ !cancelled() }}\n    needs: [check, sign, sign-rebuild]" \
+gr g7  "005-AC5 release runs when a stage failed (!cancelled())" "$REL_HEAD" "  release:\n    if: \${{ !cancelled() }}\n    needs: [check, sign, sign-rebuild, sign-check]" \
        "release must carry exactly the if"
-gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)" "$REL_HEAD" "  release:\n    if: $GATE\n    needs: [check, sign, sign-rebuild]" \
+gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)" "$REL_HEAD" "  release:\n    if: $GATE\n    needs: [check, sign, sign-rebuild, sign-check]" \
        "release must carry exactly the if"
 gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: [build, sign]' \
        '  rebuild:\n    continue-on-error: true\n    needs: [build, sign]' "keys outside"
@@ -1223,7 +1234,7 @@ gr g9 "005-AC5 check calls another stage file" 'uses: ./.github/workflows/stage-
 gr g10 "005-AC5 secrets: inherit on a stage call" 'uses: ./.github/workflows/stage-reproducibility.yml' \
        'uses: ./.github/workflows/stage-reproducibility.yml\n    secrets: inherit' "keys outside"
 gr g11 "005-AC5 the Rebuild job is not named rebuild (a failure would not name the stage)" '  rebuild:' '  reproducibility:' "rebuild is missing"
-gr g12 "005-AC5 release without sign" 'needs: [check, sign, sign-rebuild]' 'needs: [check, sign-rebuild]' "release must need exactly"
+gr g12 "005-AC5 release without sign" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign-rebuild]' "release must need exactly"
 FAST='  release-fast:\n    needs: [build, sign]\n    uses: ./.github/workflows/stage-promote.yml\n    secrets: inherit\n  decide:'
 EARLY='  publish-early:\n    needs: [build, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n'
 EARLY="$EARLY"'    steps:\n      - run: gh release create v1 dist/*\n  decide:'
@@ -1262,8 +1273,8 @@ HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissi
 gr g28 "005-AC5 hostile-verify with an app-token step" "$HV []" "$HV\n      - run: echo \${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" "may not use secrets."
 gr g29 "005-AC5 patch-notes needing sign as well as decide" "  patch-notes:\n    needs: decide" "  patch-notes:\n    needs: [decide, sign]" \
     "patch-notes must need exactly"
-gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, sign-rebuild, check, release]" \
-    "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, sign-rebuild, check, release]" "may not name an environment"
+gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" \
+    "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" "may not name an environment"
 gr g31 "005-AC5 decide whose if is widened (it would run on a tag)" "github.ref == 'refs/heads/main' && " "" "must carry exactly the if"
 gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: agent" \
        "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
@@ -1296,7 +1307,7 @@ gr g53 "AC12 release.yml's rebuild call passes an input (Rebuild takes none; mod
 gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "if: $PNIF" "if: always()" "must carry exactly the if"
 gr g43 "005-AC5 patch-notes without its if" "    needs: decide\n    if: $PNIF" "    needs: decide" "must carry exactly the if"
 gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a stage it does not watch)" \
-       "    needs: [build, sign, rebuild, sign-rebuild, check, release]" "    needs: [build]" "patch-failed must need exactly"
+       "    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" "    needs: [build]" "patch-failed must need exactly"
 gr g45 "005-AC5 the dry-run dispatch input is a string (inputs.dry-run == true would be false and skip the dry run)" \
        "      dry-run:\n        type: boolean" "      dry-run:\n        type: string" "must be type: boolean"
 # REQ-SCAN-012 (the rule-12 live tests of our VEX files): release.yml may hold exactly three non-chain jobs: the two that federate into the dedicated live-test accounts and persona-uat (the release candidate's persona run, REQ-UAT-001-AC1: needs Build only, publishes nothing).
@@ -1521,21 +1532,21 @@ for tag in fixture real; do
     done
     continue
   fi
-  d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ -f "$d/witness-scanners/scanners-collection.json" ] && grep -Fq -- '--step scanners' <<< "$calls" \
+  d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && [ -f "$d/witness-release-verify/release-verify-collection.json" ] && grep -Fq -- '--step release-verify' <<< "$calls" \
      && grep -Fq -- '-- timeout -k 20 540 bash bin/wrapped.sh' <<< "$calls" && grep -Fxq 'timeout -k 20 540' <<< "$calls"; then
     ok "AC2 $tag helper: the command runs through witness with timeout -k 20 540 and the record is written"
   else
     bad "AC2 $tag helper: rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners SLEEP=6 FAKE_TIMEOUT_SECONDS=1)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-scanners/scanners-collection.json" ] && [ ! -e "$d/digests.json" ]; then
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify SLEEP=6 FAKE_TIMEOUT_SECONDS=1)
+  if [ "$rc" != 0 ] && [ ! -e "$d/witness-release-verify/release-verify-collection.json" ] && [ ! -e "$d/digests.json" ]; then
     ok "AC2 $tag helper: a command that outlives the (test) timeout fails the job and leaves no record and no digests.json"
   else
-    bad "AC2 $tag helper: slow command -> rc=$rc, files left: $(ls "$d/witness-scanners" "$d/digests.json" 2> /dev/null | tr '\n' ' ')"
+    bad "AC2 $tag helper: slow command -> rc=$rc, files left: $(ls "$d/witness-release-verify" "$d/digests.json" 2> /dev/null | tr '\n' ' ')"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners WRAPPED_RC=3)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-scanners/scanners-collection.json" ]; then
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify WRAPPED_RC=3)
+  if [ "$rc" != 0 ] && [ ! -e "$d/witness-release-verify/release-verify-collection.json" ]; then
     ok "AC2 $tag helper: a failing command fails the job and leaves no record"
   else
     bad "AC2 $tag helper: failing command -> rc=$rc"
@@ -1568,7 +1579,7 @@ for tag in fixture real; do
   else
     bad "AC15 $tag helper: release-sign kept an inherited SIGSTORE_ID_TOKEN (rc=$rc)"
   fi
-  for other in release-publish release-assets scanners; do
+  for other in release-publish release-assets release-postverify; do
     helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" $other)
     if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt"; then
       ok "AC15 $tag helper: the step $other has no identity token and no request variable in its environment"
@@ -1590,14 +1601,14 @@ for tag in fixture real; do
   else
     bad "AC2 $tag helper: unknown step -> rc=$rc calls=$calls"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
   if [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 1 ] && grep -q '^::add-mask::' < <(grep 'FAKE-JWT-TOKEN-VALUE' <<< "$printed") \
      && ! grep -q SENTINEL-BEARER <<< "$printed"; then
     ok "AC2 $tag helper: the identity token appears only in the add-mask line and the bearer value is never printed"
   else
     bad "AC2 $tag helper: the token was printed more than in the add-mask line, or the bearer leaked"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" scanners)
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify)
   if [ "$rc" = 0 ] && [ "$(cat "$d/signer-token.txt" 2> /dev/null)" = FAKE-JWT-TOKEN-VALUE ] && [ -f "$d/tokfiles-while-running.txt" ] \
      && [ ! -s "$d/tokfiles-at-start.txt" ] && [ ! -s "$d/tokfiles-while-running.txt" ] && [ -z "$(ls "$d/tmp" 2> /dev/null)" ] \
      && ! grep -q FAKE-JWT-TOKEN-VALUE "$d/wrapped-env.txt"; then

@@ -1514,6 +1514,52 @@ class Wiring(unittest.TestCase):                                            # RE
         self.assertLess(j["run"].index("verdict.json\" ] ||"), j["run"].index("auditor-panel.py judge"))
         self.assertEqual(j["run"].count("exit 1; }"), 3)
 
+    # rc-5b fix 4 (handoff 0663, ruling A2/A9/R13): the source scan reads the tree the scanned image was built from
+    def test_the_source_scan_is_bound_to_the_selected_rescans_head(self):
+        text = yaml.safe_dump(self.wf)
+        val = next(st for st in self.steps if st.get("id") == "source-head")
+        co = next(st for st in self.steps if st.get("id") == "source-tree")
+        man = self.steps[self.step("auditor-manifest.py")]
+        order = [st.get("id") for st in self.steps]
+        self.assertLess(order.index("rescan"), order.index("source-head"))
+        self.assertLess(order.index("source-head"), order.index("source-tree"))
+        self.assertLess(order.index("source-tree"), order.index("manifest"))
+        # the head is read from the selected run only, validated (40 lowercase hex, an ancestor of main) before any checkout
+        self.assertEqual(val["env"]["RESCAN_HEAD"], "${{ steps.rescan.outputs.rescan_head }}")
+        for must in ("[0-9a-f]{40}", "compare/", "behind", "identical"):
+            self.assertIn(must, val["run"])
+        self.assertNotIn("inputs.", val["run"])
+        # the checkout is the file's pinned actions/checkout, of the VALIDATED head only, into its own path, with no credential
+        self.assertTrue(co["uses"].startswith("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1".split(" ")[0]), co["uses"])
+        self.assertEqual(co["with"]["ref"], "${{ steps.source-head.outputs.source_head }}")
+        self.assertEqual(co["with"]["path"], "scanned-source")
+        self.assertIs(co["with"]["persist-credentials"], False)
+        self.assertEqual(co["if"].replace(" ", ""), "${{steps.source-head.outputs.source_head!=''}}")
+        self.assertNotIn("continue-on-error", co)                         # a checkout that cannot be made is not papered over: the step is skipped, not failed silently
+        self.assertNotIn("github.sha", co["with"]["ref"])
+        for k in ("token", "ssh-key", "repository"):
+            self.assertNotIn(k, co["with"])
+        # the manifest reads that tree and stamps that head; with no valid head it gets no source dir at all
+        run = man["run"]
+        self.assertIn('--commit "${SOURCE_HEAD}"', run)
+        self.assertIn("SOURCE_HEAD", man["env"]); self.assertEqual(man["env"]["SOURCE_HEAD"], "${{ steps.source-head.outputs.source_head }}")
+        self.assertNotIn('--source-dir "${GITHUB_WORKSPACE}"', run)
+        self.assertIn('--source-dir "${GITHUB_WORKSPACE}/scanned-source"', run)
+        self.assertIn('[ -n "${SOURCE_HEAD}" ]', run)                    # the did-not-run branch exists
+        self.assertEqual(text.count("steps.source-head.outputs.source_head"), 3)
+
+    def test_the_dead_identity_refresh_timer_is_gone_and_the_comment_says_one_exchange(self):
+        text = open(os.path.join(REPO, ".github", "workflows", "auditor.yml")).read()
+        self.assertNotIn("setInterval", text)
+        self.assertFalse([st for st in self.steps if "Refresh the identity token" in st.get("name", "")])
+        self.assertNotIn("refreshed in the background", text)
+        self.assertNotIn("Schedule runs are always real and never dry", text)
+        self.assertIn("AUDITOR_SCHEDULE_MODE", text.split("on:")[0])
+
+    def test_the_skopeo_install_line_is_grouped(self):
+        run = self.steps[self.step("auditor-manifest.py")]["run"]
+        self.assertIn("command -v skopeo >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq skopeo; } || true", run)
+
     def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # review r1 R3; advisor 0186: through the tested command, bound to the delivery
         run = self.steps[self.step("auditor-panel.py judge")]["run"]
         self.assertIn("auditor-panel.py state-source", run)
