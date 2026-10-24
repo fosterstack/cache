@@ -155,6 +155,9 @@ ALLOW_PATTERNS=(
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
   # suites with their two test helpers
   '^bin/witnessed\.sh$'
+  '^bin/witnessed-local\.sh$'
+  '^bin/witness-sign-staged\.sh$'
+  '^bin/rebuild-records-digests\.sh$'
   '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble|refuse-mode)\.sh$'
   '^bin/build-(admit|archives|version-check)\.py$'
   '^bin/chain_items\.py$'
@@ -170,6 +173,7 @@ ALLOW_PATTERNS=(
   '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
   '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
   '^bin/(un)?pack-govulncheck\.sh$'
+  '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'

@@ -2,8 +2,8 @@
 # Release, third witnessed step (rules 56 and 64): publishes the exact image bytes Build made, with no rebuild, to ghcr.io first and then to the
 # Docker Hub mirror, and reads each registry back. Every digest read back must equal the attested one, else the release stops on the first
 # difference and names the image and both digests. Credentials are passed by standard input only. A target version tag that already shows another
-# digest is refused before anything is pushed. A release candidate gets its exact tags; a final release also moves the floating tags of
-# REQ-REL-009-AC11 (:X.Y every time, :X and :latest only when this is the highest released version).
+# digest is refused before anything is pushed. Only a final release reaches this step (a release candidate stops after release-verify, REQ-CHAIN-007-AC14):
+# it gets its exact vX.Y.Z tag and also moves the floating tags of REQ-REL-009-AC11 (:X.Y every time, :X and :latest only when this is the highest released version).
 set -euo pipefail
 for name in DOCKERHUB_USERNAME DOCKERHUB_TOKEN GH_TOKEN; do
   if [ -z "${!name:-}" ]; then echo "release-publish: $name is unset" >&2; exit 2; fi
