@@ -1,0 +1,3 @@
+# Automatic patch releases
+
+Fixes ship as patch releases cut by CI. A release that carries only fixes (dependency and base-image updates, VEX changes, bug fixes with no behavior change) gets the next patch tag, vX.Y.Z → vX.Y.(Z+1), signed keylessly by the release workflow's own identity. A critical or high vulnerability fix can be released as soon as it merges; other fixes are batched, at most one patch a day. Every patch runs the full release chain, is published to GHCR and Docker Hub with identical digests, and gets generated release notes listing each fix. `:X.Y`, `:X` and `:latest` are floating tags and can move; `:X` and `:latest` move only when the release is the highest version. Pin `:X.Y.Z` or a digest. Minor and major releases are tagged by hand.
