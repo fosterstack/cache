@@ -906,6 +906,32 @@ if ! have "$WF"; then no "$WF present" "absent"; else
   runs="$(pj "$WORK/sh.json" 'd.get("runs_auditor_run")')"
   eq "$runs" "true" && ok || no "run step invokes auditor-run.py with inputs.dry_run" "runs_auditor_run=$runs"; fi
 
+begin "req15-workflow-installs-the-pinned-go-for-the-records-step" "auditor.yml (REQ-VEND-001-AC15): the pinned Go toolchain is installed at its fixed path (bin/install-scanner.sh go) INSIDE the existing manifest step, as a warning-only step of that step (it never fails the audit), with no step added before the audited download exception's step; the 'Run the auditor' step's text is untouched; the pin checker finds nothing in the tree"
+if ! have "$WF"; then no "$WF present" "absent"; else
+  r="$(WF="$WF" "$PY" - <<'PY'
+import hashlib, os, re, subprocess, sys, yaml
+wf = yaml.safe_load(open(os.environ["WF"]))
+steps = wf["jobs"]["audit"]["steps"]
+bad = []
+m = next((s for s in steps if "auditor-manifest.py" in (s.get("run") or "")), None)
+if not m: bad.append("no manifest step")
+else:
+    r = m["run"]
+    if not re.search(r"^\s*\./bin/install-scanner\.sh go\s*\\?\n?\s*\|\| echo \"::warning::", r, re.M): bad.append("the manifest step does not install the pinned go as a warning-only command")
+    g = r.find("install-scanner.sh go")
+    if g < 0 or g > r.index("auditor-manifest.py"): bad.append("the go install must be present and come before the manifest is built")
+run = next(s for s in steps if "auditor-run.py" in (s.get("run") or ""))
+sys.path.insert(0, ".github/agent/bin")
+spec = __import__("importlib.util").util.spec_from_file_location("cap", ".github/agent/bin/check-action-pins.py"); cap = __import__("importlib.util").util.module_from_spec(spec); spec.loader.exec_module(cap)
+idx = steps.index(run); sha = hashlib.sha256(run["run"].encode()).hexdigest()
+if (".github/workflows/auditor.yml", "audit", idx, sha) not in cap.DOWNLOAD_EXCLUSIONS: bad.append("the 'Run the auditor' step moved or changed: its audited download exception (index %d, sha256 %s) no longer matches" % (idx, sha[:12]))
+rc = subprocess.run([sys.executable, ".github/agent/bin/check-action-pins.py"], capture_output=True, text=True)
+if rc.returncode != 0: bad.append("the pin checker fails the tree: " + rc.stdout[-200:])
+print("ok" if not bad else "; ".join(bad))
+PY
+)"
+  eq "$r" "ok" && ok || no "install inside the manifest step, run step untouched, pin checker clean" "$r"; fi
+
 begin "req12-schedule-mode-unset-is-dry" "a scheduled run is DRY unless the repo variable AUDITOR_SCHEDULE_MODE is exactly 'live' (unset => dry); both the dry flag and the App-token step follow it; dispatch follows dry_run"
 if ! have "$WF"; then no "$WF present" "absent"; else
   r="$(WF="$WF" "$PY" - <<'PY'
