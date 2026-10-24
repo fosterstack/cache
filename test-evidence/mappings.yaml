@@ -1706,3 +1706,16 @@ mappings:
   - ac: REQ-CI-001-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-005-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+  - ac: REQ-CI-005-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-005-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+  - ac: REQ-CI-005-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/suite-guard-test.sh" }

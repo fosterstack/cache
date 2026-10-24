@@ -336,6 +336,90 @@ put(sd, "cves.json", {"vulnerabilities": [
 ex = {t[0]: t[4] for t in P.read_scout(sd)[1]}
 check("Scout's GitLab-format report: severity and the other identifiers as aliases; Unknown severity is absent",
       ex["CVE-2099-0102"] == {"severity": "medium", "aliases": ["GHSA-dddd-eeee-ffff"]} and ex["CVE-2099-0103"] == {}, ex)
+# rc-5a C round 2 (fix-round seats): the panel counts packages the same way the gates do: a component with a non-empty STRING purl
+pcd = {"components": [{"purl": "pkg:generic/a@1"}, {"purl": ""}, {"purl": None}, {"purl": 7}, {"purl": {"a": 1}}, {"purl": [1]}, {"purl": True}, {"name": "f"}, "x"]}
+check("panel: only a component with a non-empty string purl is a package (7, an object, a list and true are not)", len(P._cdx_packages(pcd)) == 1, P._cdx_packages(pcd))
+# rc-5a B (Fable ruling on astra B2): Scout puts the package URL in dependency.package.name (scout-selfcheck.py:124); the reader names it as the other scanners do
+sp = os.path.join(tempfile.mkdtemp(), "sp")
+put(sp, "sbom.json", {"artifacts": [{"name": "tzdata", "version": "2026c", "purl": "pkg:deb/debian/tzdata@2026c"}]})
+put(sp, "cves.json", {"vulnerabilities": [{"severity": "High", "identifiers": [{"type": "cve", "value": "CVE-2099-0110"}],
+     "location": {"dependency": {"package": {"name": "pkg:deb/debian/tzdata@2026c"}, "version": "2026c"}}},
+    {"severity": "High", "identifiers": [{"type": "cve", "value": "CVE-2099-0111"}],
+     "location": {"dependency": {"package": {"name": "pkg:golang/golang.org/x/sys@v0.47.0"}, "version": "v0.47.0"}}}]})
+sf = {t[0]: t for t in P.read_scout(sp)[1]}
+check("Scout's package URL in the name field is read as name and version (tzdata 2026c), and the purl is kept", sf["CVE-2099-0110"][1:4] == ("tzdata", "2026c", "pkg:deb/debian/tzdata@2026c"), sf["CVE-2099-0110"])
+check("Scout's Go purl name keeps the module path", sf["CVE-2099-0111"][1] == "golang.org/x/sys", sf["CVE-2099-0111"])
+r = tree({("grype", "production-amd64"): [("CVE-2099-0112", "tzdata", "2026c")]}); sc = os.path.join(r, "scout", "production-amd64")
+put(sc, "cves.json", {"vulnerabilities": [{"identifiers": [{"type": "cve", "value": "CVE-2099-0112"}],
+     "location": {"dependency": {"package": {"name": "pkg:generic/tzdata@2026c"}, "version": "2026c"}}}]}); v = judge(r)
+f0 = [f for f in v["findings"] if f["id"] == "CVE-2099-0112" and f["image"] == "production-amd64"]
+check("a Scout finding named by purl corroborates Grype's finding for the same CVE and package (one finding, both scanners)", len(f0) == 1 and sorted(f0[0]["seen_by"]) == ["grype", "scout"], f0)
+# rc-5a B (astra B5): a vulnerability with no affects, or an empty one, is a report nobody can attribute: did not run, never silence
+for label, aff in (("missing", None), ("empty", [])):
+    gdn = os.path.join(tempfile.mkdtemp(), "gn")
+    vv = {"id": "CVE-2099-0113"}
+    if aff is not None:
+        vv["affects"] = aff
+    put(gdn, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}], "vulnerabilities": [vv]})
+    try:
+        P.read_grype(gdn); got = None
+    except ValueError as e_:
+        got = str(e_)
+    check("Grype's vulnerability with %s affects is a ValueError (did not run), not dropped" % label, got is not None and "CVE-2099-0113" in got, got)
+    idn = os.path.join(tempfile.mkdtemp(), "in")
+    put(idn, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+    put(idn, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [], "vulnerabilities": [vv]}})
+    try:
+        P.read_inspector(idn); got = None
+    except ValueError as e_:
+        got = str(e_)
+    check("Inspector's vulnerability with %s affects is a ValueError (did not run), not dropped" % label, got is not None and "CVE-2099-0113" in got, got)
+# rc-5a B round 2 (advisor: tighten): an affects entry that names no component of the report cannot be attributed either: did not run
+for label, aff in (("a ref that matches no component", [{"ref": "nope"}]), ("an entry with no ref", [{}]), ("only entries that are not objects", ["r0", 7])):
+    gdr = os.path.join(tempfile.mkdtemp(), "gr")
+    put(gdr, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                                 "vulnerabilities": [{"id": "CVE-2099-0114", "affects": aff}]})
+    try:
+        P.read_grype(gdr); got = None
+    except ValueError as e_:
+        got = str(e_)
+    check("Grype's vulnerability with affects holding %s is a ValueError (did not run)" % label, got is not None and "CVE-2099-0114" in got, got)
+# a version that only the purl carries is read from the purl
+spv = os.path.join(tempfile.mkdtemp(), "spv")
+put(spv, "sbom.json", {"artifacts": []})
+put(spv, "cves.json", {"vulnerabilities": [{"identifiers": [{"type": "cve", "value": "CVE-2099-0115"}],
+     "location": {"dependency": {"package": {"name": "pkg:deb/debian/tzdata@2026c"}}}}]})
+check("Scout: a version given only in the package URL is taken from it", P.read_scout(spv)[1][0][1:4] == ("tzdata", "2026c", "pkg:deb/debian/tzdata@2026c"), P.read_scout(spv)[1])
+# rc-5a B round 3 (fix-round seat): any affects entry that is not an object is an incomplete report (not only when none are left); a component that has neither a
+# purl nor a name cannot be attributed either; and Inspector's refs may live only in the request SBOM (sbom.cdx.json)
+gdm = os.path.join(tempfile.mkdtemp(), "gm")
+put(gdm, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}],
+                             "vulnerabilities": [{"id": "CVE-2099-0116", "affects": [{"ref": "r0"}, "junk"]}]})
+try:
+    P.read_grype(gdm); got = None
+except ValueError as e_:
+    got = str(e_)
+check("Grype's affects list holding a good entry and a non-object entry is a ValueError (did not run), not silently trimmed", got is not None and "CVE-2099-0116" in got, got)
+gdn2 = os.path.join(tempfile.mkdtemp(), "gn2")
+put(gdn2, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "r0", "type": "library"}], "vulnerabilities": [{"id": "CVE-2099-0117", "affects": [{"ref": "r0"}]}]})
+try:
+    P.read_grype(gdn2); got = None
+except ValueError as e_:
+    got = str(e_)
+check("Grype's affects naming a component with neither a package URL nor a name is a ValueError (did not run), not a '?' finding", got is not None and "CVE-2099-0117" in got, got)
+idr = os.path.join(tempfile.mkdtemp(), "ir")
+put(idr, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "c0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+put(idr, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [], "vulnerabilities": [{"id": "CVE-2099-0118", "affects": [{"ref": "c0"}]}]}})
+rr_ = P.read_inspector(idr)
+check("Inspector: a ref that exists only in the request SBOM (the scan answer repeats no components) still resolves to the package", rr_[0] == 1 and [t[1:3] for t in rr_[1]] == [("tzdata", "2026c")], rr_)
+idu = os.path.join(tempfile.mkdtemp(), "iu")
+put(idu, "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"bom-ref": "c0", "name": "tzdata", "version": "2026c", "purl": "pkg:generic/tzdata@2026c"}]})
+put(idu, "scan.json", {"sbom": {"bomFormat": "CycloneDX", "components": [], "vulnerabilities": [{"id": "CVE-2099-0119", "affects": [{"ref": "nope"}]}]}})
+try:
+    P.read_inspector(idu); got = None
+except ValueError as e_:
+    got = str(e_)
+check("Inspector: a ref that is in neither document is a ValueError (did not run)", got is not None and "CVE-2099-0119" in got, got)
 gd2 = os.path.join(tempfile.mkdtemp(), "g2")
 put(gd2, "packages.json", [{"package": "tzdata", "version": "2026c", "packageType": "OS"}])
 put(gd2, "vulns.json", [{"noteName": "projects/goog-vulnz/notes/CVE-2099-0104", "vulnerability": {"shortDescription": "CVE-2099-0104", "severity": "CRITICAL",

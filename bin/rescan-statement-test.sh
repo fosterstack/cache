@@ -544,6 +544,7 @@ expect "osv: a product that only resembles ours (oci-version) is not ours: ignor
 printf '{"@context":"https://openvex.dev/ns/v0.2.0","@id":"x","version":1,"statements":[%s]}' '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/evil/cache"}]}' >"$D/v/ign-repo-evil.json"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/ign-repo-evil.json"
 expect "osv: a product that only resembles ours (repo-evil) is not ours: ignored, it suppresses nothing" findings true 1 0
 badvex variant-unknown '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=nope"}]}'
+badvex variant-debug '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=debug"}]}'
 # a product that is simply not ours is fine (ignored): it neither suppresses nor breaks the document
 vexdoc "$D/v/foreign.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:npm/left-pad@1.0.0"}]')]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/foreign.json"
 expect "osv: a statement for a product that is not ours is ignored (finding kept, no error)" findings true 1 0

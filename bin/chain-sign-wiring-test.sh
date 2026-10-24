@@ -83,13 +83,16 @@ def signer_calls(text, strip_comments=True): return _cts.signer_calls(text, TABL
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
 R_PRINTF_REC = r"printf '%s' \"\$RECORDS\" > rebuild-records\.json"
+R_PRINTF_CREC = r"printf '%s' \"\$RECORDS\" > check-records\.json"
+R_PRINTF_CRECA = r"printf '%s' \"\$RECORDS_ARM64\" > check-records-arm64\.json"
 R_INSTALL = r"bash bin/install-scanner\.sh cosign"
 R_SIGNSTAGED = r"bash bin/witness-sign-staged\.sh staged signed"
 R_INSTALL_WIT = r"bash bin/install-scanner\.sh witness"
 # the Witness records of the building jobs carry a throwaway key's signature only (owner Oct 22, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): Sign checks them against
 # the artifacts it receives and signs each one keyless; the Rebuild records in their own job, which receives no Rebuild apk or image (the owner's separation rule)
-R_REC_BUILD = r"python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
-R_REC_REBUILD = r"python3 -I -B bin/chain-verify\.py sign-records --stage rebuild --template \.github/policy/release-policy\.template\.json --digests digests\.json --expect-digests rebuild-records\.json --out staged --record-dir witness-rapk-ubuntu-24\.04 --record-dir witness-rapk-ubuntu-24\.04-arm --record-dir witness-rebuild"
+R_REC_BUILD = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage build --template \.github/policy/release-policy\.template\.json --digests digests\.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24\.04 --record-dir witness-apk-ubuntu-24\.04-arm"
+R_REC_REBUILD = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage rebuild --template \.github/policy/release-policy\.template\.json --digests digests\.json --expect-digests rebuild-records\.json --out staged --record-dir witness-rapk-ubuntu-24\.04 --record-dir witness-rapk-ubuntu-24\.04-arm --record-dir witness-rebuild"
+R_REC_CHECK = r"env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify\.py sign-records --stage check --template \.github/policy/release-policy\.template\.json --digests digests\.json --expect-digests check-records\.json --expect-digests check-records-arm64\.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64"
 RUNNERS = ("ubuntu-24.04", "ubuntu-24.04-arm")
 EXPECT_STEPS = {
     "sign": [("checkout",), ("download", "witness-build", "witness-build")]
@@ -104,6 +107,11 @@ EXPECT_STEPS = {
             + [("download", "witness-rebuild", "witness-rebuild"), ("install", "witness"), ("printf",), ("printfrec",), ("records", "rebuild"), ("signstaged",)]
             + [("upload", "signed-witness-rapk-" + r, "signed/witness-rapk-" + r) for r in RUNNERS]
             + [("upload", "signed-witness-rebuild", "signed/witness-rebuild")],
+    # REQ-REL-011-AC1 (cache#606): the third call signs the Check jobs' records; Sign receives the records and the check-results the records name, nothing else
+    "sign-check": [("checkout",), ("download", "witness-check", "rec-check"), ("download", "witness-check-arm64", "rec-arm64/witness-arm64"),
+                   ("download", "check-results", "artifacts/check-results"), ("download", "check-results-arm64", "artifacts/check-results-arm64"),
+                   ("install", "witness"), ("printf",), ("printfchk",), ("printfchka",), ("records", "check"), ("signstaged",),
+                   ("upload", "signed-witness-check", "signed/witness-scanners\nsigned/witness-acceptance\nsigned/witness-runtime"), ("upload", "signed-witness-check-arm64", "signed/witness-arm64")],
 }
 R_SIGN = r"python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record signed/witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 def judge_sign(path):
@@ -120,22 +128,23 @@ def judge_sign(path):
         bad.append("AC1: on: must be exactly workflow_call: %s" % on)
     call = (on or {}).get("workflow_call") or {} if isinstance(on, dict) else {}
     inputs = call.get("inputs") or {}
-    if set(inputs) != {"digests", "stage", "records"} or any((inputs.get(k) or {}).get("type") != "string" for k in ("digests", "stage", "records")):
-        bad.append("AC2: the only inputs must be `digests`, `stage` and `records` (all string; records is the Rebuild record digests for the rebuild call), found %s" % sorted(inputs))
+    if set(inputs) != {"digests", "stage", "records", "records-arm64"} or any((inputs.get(k) or {}).get("type") != "string" for k in ("digests", "stage", "records", "records-arm64")):
+        bad.append("AC2: the only inputs must be `digests`, `stage`, `records` and `records-arm64` (all string; records is the Rebuild record digests for the rebuild call and the check job's for the check call, records-arm64 the arm64 job's), found %s" % sorted(inputs))
     if call.get("secrets"): bad.append("AC3: the workflow declares secrets")
     if call.get("outputs"): bad.append("AC3 (step output sink): workflow_call outputs are not allowed")
     if d.get("env"): bad.append("AC3: workflow-level env is not allowed")
     if re.search(r"secrets\b|toJSON|\bcontext\b", text): bad.append("AC3/002-AC4: secrets, toJSON or context appear in the file")
     jobs = d.get("jobs") or {}
-    if set(jobs) != {"sign", "sign-rebuild"}: bad.append("AC1: exactly the jobs sign and sign-rebuild are required, found %s" % sorted(jobs))
+    if set(jobs) != {"sign", "sign-rebuild", "sign-check"}: bad.append("AC1: exactly the jobs sign, sign-rebuild and sign-check are required, found %s" % sorted(jobs))
     for name, j in jobs.items():
         ro = j.get("runs-on")
         if not isinstance(ro, str) or not _cts.HOSTED.fullmatch(ro):   # the ONE closed runner set, shared with the stage grammar (Sonnet r7 R2)
             bad.append("AC1: job %s must run on a GitHub-hosted ubuntu runner, got %r" % (name, ro))
         for k in ("container", "services", "uses", "env", "outputs", "strategy", "needs", "environment", "defaults", "secrets"):
             if k in j: bad.append("AC2/AC3: job %s has `%s`, which Sign's job must not have" % (name, k))
-        if j.get("if") != "${{ inputs.stage == '%s' }}" % ("build" if name == "sign" else "rebuild"):
-            bad.append("AC1: job %s must have exactly `if: ${{ inputs.stage == '%s' }}` (the release graph calls this file once per stage), found %r" % (name, "build" if name == "sign" else "rebuild", j.get("if")))
+        stg = {"sign": "build", "sign-rebuild": "rebuild", "sign-check": "check"}.get(name, "?")
+        if j.get("if") != "${{ inputs.stage == '%s' }}" % stg:
+            bad.append("AC1: job %s must have exactly `if: ${{ inputs.stage == '%s' }}` (the release graph calls this file once per stage), found %r" % (name, stg, j.get("if")))
         perm = j.get("permissions")
         if not isinstance(perm, dict) or perm.get("id-token") != "write" or any(v == "write" for k, v in perm.items() if k != "id-token"):
             bad.append("AC3: Sign's permissions must be id-token: write and no other write: %s" % perm)
@@ -177,6 +186,12 @@ def judge_sign(path):
                 elif "\n" not in line and re.fullmatch(R_PRINTF_REC, line):
                     order.append("printf"); seq.append(("printfrec",))
                     if env != {"RECORDS": "${{ inputs.records }}"}: bad.append("AC3: the records step must have exactly env RECORDS: ${{ inputs.records }}, found %s" % env)
+                elif "\n" not in line and re.fullmatch(R_PRINTF_CREC, line):
+                    order.append("printf"); seq.append(("printfchk",))
+                    if env != {"RECORDS": "${{ inputs.records }}"}: bad.append("AC3: the check records step must have exactly env RECORDS: ${{ inputs.records }}, found %s" % env)
+                elif "\n" not in line and re.fullmatch(R_PRINTF_CRECA, line):
+                    order.append("printf"); seq.append(("printfchka",))
+                    if env != {"RECORDS_ARM64": "${{ inputs.records-arm64 }}"}: bad.append("AC3: the arm64 check records step must have exactly env RECORDS_ARM64: ${{ inputs.records-arm64 }}, found %s" % env)
                 elif "\n" not in line and re.fullmatch(R_INSTALL, line):
                     order.append("install"); seq.append(("install", "cosign"))
                     if env: bad.append("AC3: step %r passes env" % sn)
@@ -189,14 +204,14 @@ def judge_sign(path):
                 elif "\n" not in line and re.fullmatch(R_SIGNSTAGED, line):
                     order.append("signstaged"); seq.append(("signstaged",))
                     if env: bad.append("AC3: the staged-signing step passes env %s" % sorted(env))
-                elif "\n" not in line and (re.fullmatch(R_REC_BUILD, line) or re.fullmatch(R_REC_REBUILD, line)):
-                    kind = "build" if re.fullmatch(R_REC_BUILD, line) else "rebuild"
+                elif "\n" not in line and (re.fullmatch(R_REC_BUILD, line) or re.fullmatch(R_REC_REBUILD, line) or re.fullmatch(R_REC_CHECK, line)):
+                    kind = "build" if re.fullmatch(R_REC_BUILD, line) else "rebuild" if re.fullmatch(R_REC_REBUILD, line) else "check"
                     order.append("records"); seq.append(("records", kind))
                     if env: bad.append("AC3: the records step passes env %s" % sorted(env))
                 else:
                     sinks = [n for n, rx in (("file", r">>?\s*\S|\btee\b|\bcp\b|\bmv\b"), ("log", r"\becho\b|\bprintf\b|\bcat\b|\bset\s+-\w*x"),
                                              ("step output", r"GITHUB_(OUTPUT|ENV|STEP_SUMMARY|PATH)"), ("artifact", os.environ["SINK_ARTIFACT_RX"])) if re.search(rx, run)]
-                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the three allowed command lines (install cosign; write digests.json from env; chain-verify.py sign --check ... --out provenance)"
+                    why = "touches the identity token request (sinks reachable: %s)" % (", ".join(sinks) or "none, but no step may touch it") if re.search(TOKEN, run, re.I) else "is not one of the allowed command lines (install cosign or witness; printf an env value into one of the four record/digest files; the three sign-records forms; witness-sign-staged.sh; the one chain-verify.py sign --check ... --out provenance)"
                     bad.append("AC2/AC3: run step %r %s" % (sn, why))
                 if "${{" in run or ".." in run: bad.append("AC2: run step %r interpolates an expression or uses `..`" % sn)
         want = EXPECT_STEPS.get(name)
@@ -414,12 +429,26 @@ def direct_signers(base, files, frozen, allowed, bad):
     disc = []
     found = signing_files(base, disc)          # workflows, composite actions and any other jobs:/runs: YAML anywhere (Codex #249 r7 B8, r8 B4)
     bad += ["AC1: " + x for x in disc]
+    called, judged = set(), set()
     for f in found:
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         if os.path.relpath(f, base) in frozen or rel == "stage-sign.yml": continue
+        judged.add(rel)
         for e, pv, line in signer_calls(open(f).read()) + decoded_signer_calls(f, rel, bad):
+            called.add((rel, e["name"]))
             if pv: bad.append("AC1: %s signs provenance (%s: %s); only stage-sign.yml may" % (rel, e["name"], line[:80]))
             elif e["name"] not in allowed.get(rel, set()): bad.append("AC1: %s calls %r, which is not listed with a reason in chain-signers.json" % (rel, e["name"]))
+    # rc-2 signing review R5: a listed signer must be one the tree can use: its file exists, and a file this judge reads makes that call
+    # (a pre-authorisation of a signer that must never return is the opposite of the allowlist; the legacy frozen files are not read, so their rows are not judged)
+    for rel, tools in sorted(allowed.items()):
+        # a row must name a file this judge READS, spelled the one way it keys it (a workflow by its bare name, any other judged file by its path from the root); a legacy
+        # frozen file is not read, so its row is not judged either way. A path alias, a directory, a file the judge never reads (not YAML, or stage-sign.yml itself) or a
+        # different case on a case-insensitive disk would otherwise skip the unused-row check below (Codex astra on #638)
+        rs = str(rel)
+        if rs not in judged and rs not in frozen and (".github/workflows/" + rs) not in frozen:
+            bad.append("AC1: chain-signers.json lists %s, which is not a file this judge reads (a workflow is named by its bare name, any other file by its path from the root; remove the row)" % rel); continue
+        if rel in judged:
+            bad += ["AC1: chain-signers.json lists %r for %s, but that file makes no such call (remove the row)" % (t, rel) for t in sorted(tools, key=str) if (rel, t) not in called]
 
 def stage_grammars(base, files, frozen, rows, envn, bad):
     """001-AC1: "every stage-*.yml is judged over a closed set of keys" (keys, env names, uses, run lines). Returns what each stage runs."""
@@ -538,6 +567,11 @@ on:
         required: false
         type: string
         default: ''
+      records-arm64:
+        description: 'the arm64 check job record digests'
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -600,7 +634,7 @@ jobs:
           DIGESTS: \${{ inputs.digests }}
         run: printf '%s' "\$DIGESTS" > digests.json
       - name: check Build's records against the artifacts, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
       - name: sign the staged records and check each signed one
         run: bash bin/witness-sign-staged.sh staged signed
       - name: check Build's record, compare the digests, then sign the provenance
@@ -646,7 +680,7 @@ jobs:
           RECORDS: \${{ inputs.records }}
         run: printf '%s' "\$RECORDS" > rebuild-records.json
       - name: check Rebuild's records, then sign them
-        run: python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
       - name: sign the staged records and check each signed one
         run: bash bin/witness-sign-staged.sh staged signed
       - uses: actions/upload-artifact@$sha # v7
@@ -661,6 +695,61 @@ jobs:
         with:
           name: signed-witness-rebuild
           path: signed/witness-rebuild
+  sign-check:
+    if: \${{ inputs.stage == 'check' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@$sha # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-check
+          path: rec-check
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: witness-check-arm64
+          path: rec-arm64/witness-arm64
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: check-results
+          path: artifacts/check-results
+      - uses: actions/download-artifact@$sha # v8
+        with:
+          name: check-results-arm64
+          path: artifacts/check-results-arm64
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+      - name: write the digest list to a file
+        env:
+          DIGESTS: \${{ inputs.digests }}
+        run: printf '%s' "\$DIGESTS" > digests.json
+      - name: write the check job record digests to a file
+        env:
+          RECORDS: \${{ inputs.records }}
+        run: printf '%s' "\$RECORDS" > check-records.json
+      - name: write the arm64 check job record digests to a file
+        env:
+          RECORDS_ARM64: \${{ inputs.records-arm64 }}
+        run: printf '%s' "\$RECORDS_ARM64" > check-records-arm64.json
+      - name: check Check's records against the results, then sign them
+        run: env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage check --template .github/policy/release-policy.template.json --digests digests.json --expect-digests check-records.json --expect-digests check-records-arm64.json --artifacts-dir artifacts --out staged --record-dir rec-check/witness-scanners --record-dir rec-check/witness-acceptance --record-dir rec-check/witness-runtime --record-dir rec-arm64/witness-arm64
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-check
+          path: |-
+            signed/witness-scanners
+            signed/witness-acceptance
+            signed/witness-runtime
+      - uses: actions/upload-artifact@$sha # v7
+        with:
+          name: signed-witness-check-arm64
+          path: signed/witness-arm64
 EOF
 # mutate LABEL  python-regex  replacement : writes $work/LABEL.yml, or counts a FAILURE if the mutation did not apply
 mutate() {
@@ -679,6 +768,20 @@ SIGNLINE='run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "F11 a digest-shaped download-artifact pin that is not on the allowed-actions list" 'download-artifact@a{40}' "download-artifact@$(printf 'b%.0s' $(seq 40))"
 caught "F1 Sign no longer downloads Build's digest list into witness-build" 'name: digests\n          path: witness-build' 'name: dist\n          path: witness-build'
+caught "REL-011 the Check call drops the arm64 record digests list" ' --expect-digests check-records-arm64.json' ''
+caught "REL-011 the Check call drops the check job record digests list" ' --expect-digests check-records.json' ''
+caught "REL-011 the Check call reads the arm64 digests from the check list" '--expect-digests check-records-arm64.json' '--expect-digests check-records.json'
+caught "REL-011 the Check call drops a record folder" ' --record-dir rec-check/witness-runtime' ''
+caught "REL-011 the Check call takes a record folder from another place" '--record-dir rec-arm64/witness-arm64' '--record-dir rec-check/witness-arm64'
+caught "REL-011 the Check call checks no artifacts" ' --artifacts-dir artifacts' ''
+caught "REL-011 sign-check does not receive the check results" 'name: check-results\n          path: artifacts/check-results' 'name: dist\n          path: artifacts/check-results'
+caught "REL-011 sign-check does not receive the arm64 check results" 'name: check-results-arm64\n          path: artifacts/check-results-arm64' 'name: dist\n          path: artifacts/check-results-arm64'
+caught "REL-011 sign-check also downloads the images" 'name: check-results-arm64\n          path: artifacts/check-results-arm64\n' 'name: check-results-arm64\n          path: artifacts/check-results-arm64\n      - uses: actions/download-artifact@\$sha # v8\n        with:\n          name: images\n          path: artifacts/images\n'
+caught "REL-011 sign-check uploads the unsigned records" 'name: signed-witness-check\n          path: |-\n            signed/witness-scanners' 'name: signed-witness-check\n          path: |-\n            rec-check/witness-scanners'
+caught "REL-011 sign-check uploads an extra directory" 'signed/witness-runtime' 'signed/witness-runtime\n            artifacts'
+caught "REL-011 sign-check without the stage if" "if: \\\${{ inputs.stage == 'check' }}" "if: \\\${{ inputs.stage != 'build' }}"
+caught "REL-011 sign-check gets the wrong records env" 'RECORDS_ARM64: \${{ inputs.records-arm64 }}' 'RECORDS_ARM64: \${{ inputs.records }}'
+caught "REL-011 sign-check holds a write permission beyond id-token" '(  sign-check:.*?permissions:\n      contents: read\n      id-token: write)' '\1\n      packages: write'
 caught "R2 the Rebuild call drops the expected record digests" ' --expect-digests rebuild-records.json' ''
 caught "R2 the Rebuild records step reads the digests from another file" '--expect-digests rebuild-records.json' '--expect-digests digests.json'
 caught "item 4 the unused signed apk records are uploaded again" 'name: signed-witness-build\n          path: signed/witness-build' 'name: signed-witness-build\n          path: signed/witness-build\n      - uses: actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n        with:\n          name: signed-witness-apk-ubuntu-24.04\n          path: signed/witness-apk-ubuntu-24.04'
@@ -694,6 +797,8 @@ caught "WIT3 sign downloads a Rebuild record" 'name: apk-ubuntu-24.04-arm\n     
 caught "WIT3 sign downloads an artifact to another path" 'path: artifacts/witness-build/dist' 'path: artifacts/other'
 caught "WIT3 sign-rebuild without id-token (it signs keyless)" '(  sign-rebuild:.*?)      id-token: write' '\1      attestations: read'
 caught "WIT3 sign-rebuild with a write beyond id-token" '(  sign-rebuild:.*?permissions:\n      contents: read)' '\1\n      packages: write'
+caught "WIT3 sign-records keeps the OIDC request variables (build)" 'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage build' 'python3 -I -B bin/chain-verify.py sign-records --stage build'
+caught "WIT3 sign-records unsets only one OIDC request variable (check)" 'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I -B bin/chain-verify.py sign-records --stage check' 'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN python3 -I -B bin/chain-verify.py sign-records --stage check'
 caught "WIT3 the records step of sign runs the wrong stage" 'sign-records --stage build' 'sign-records --stage rebuild'
 caught "WIT3 the records step of sign-rebuild runs the wrong stage" 'sign-records --stage rebuild' 'sign-records --stage build'
 caught "WIT3 the records step without the artifact directory" ' --artifacts-dir artifacts --out staged' ' --out staged'
@@ -832,7 +937,7 @@ d = sys.argv[1]
 out = []
 for r in json.load(open(d + "/.spec.json")):
     r = dict(r); r["sha256"] = hashlib.sha256(open(os.path.join(d, r["path"]), "rb").read()).hexdigest(); out.append(r)
-doc = {"env_names": ["DIGESTS", "RECORDS", "V", "X1"], "scripts": out}
+doc = {"env_names": ["DIGESTS", "RECORDS", "RECORDS_ARM64", "V", "X1"], "scripts": out}
 if os.path.exists(d + "/.ambient.json"):
     doc["ambient_env"] = json.load(open(d + "/.ambient.json"))      # PR 1b: the closed ambient_env list
     if not os.environ.get("AMBIENT_RAW"):                           # round 4 (4): file and job are required; the fixtures say them once, here
@@ -871,7 +976,7 @@ mk() {
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho built\n' > "$d/bin/build-apk.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho staged\n' > "$d/bin/witness-sign-staged.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
-  printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"stage-sign.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"}]}\n' > "$d/.github/policy/id-token-jobs.json"
+  printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"},{"workflow":"stage-sign.yml","job":"sign-rebuild","reason":"Sign, the signer of the Rebuild records"},{"workflow":"stage-sign.yml","job":"sign-check","reason":"Sign, the signer of the Check records"}]}\n' > "$d/.github/policy/id-token-jobs.json"
   printf '%s\n' "$SPEC_GOOD" > "$d/.spec.json"
   gen "$d"; echo "$d"
 }
@@ -882,6 +987,10 @@ badcase() { d=$(mk "$1"); stage "$d" "$2"; expect caught "AC1 grammar: $3" tree 
 okcase g_ok1 $'set -euo pipefail\nbash bin/build-stage.sh apk' "set -euo pipefail then a listed script"
 badcase g_ok2 $'bash bin/build-stage.sh \\\n  --flag=1 \\\n  two' "a backslash-newline continuation, even with literal arguments (advisor: refused outright; Sonnet #249 continuation)"
 okcase g_ok3 $'python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "chain-verify.py stage-start from a non-Sign stage (only its sign subcommand is a signer)"
+badcase g_envu5 $'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "the env form in front of any other python3 command (round 2 finding 2)"
+badcase g_envu2 $'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "env that unsets only one of the two variables"
+badcase g_envu3 $'env -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL bash bin/build-stage.sh apk' "the env form in front of bash (it admits python3 only)"
+badcase g_envu4 $'env FOO=1 python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "env that sets a variable"
 # Opus r4 B1: every python3 line of a stage file runs isolated (-I): stage jobs hold id-token: write
 badcase g_noI $'python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "python3 without -I in a stage file (a bin/<stdlib name>.py would shadow the standard library)"
 badcase g_var1 'bash "$S"' 'a variable as the script path (bash "$S")'
@@ -2622,6 +2731,50 @@ d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"rea
 expect caught "AC1 a listed signer with no reason" tree "$d"
 d=$(mk t_nolist); rm "$d/.github/policy/chain-signers.json"
 expect caught "AC1 no chain-signers.json" tree "$d"
+# rc-2 signing review R5: a pre-authorisation of a signer the tree cannot use is itself a finding
+d=$(mk t_ghost)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-admission.yml", "tool": "gitsign", "reason": "old chain: verifies the CI patch-tag identity"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a workflow file that does not exist" tree "$d"
+d=$(mk t_unused)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-build.yml", "tool": "actions/attest", "reason": "old chain: signs the build predicate"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row for an existing workflow whose file never makes that call" tree "$d"
+# Codex astra on #638: a row must be a regular file spelled the way the judge keys it
+d=$(mk t_alias)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": ".github/workflows/stage-build.yml", "tool": "actions/attest", "reason": "old chain: signs the build predicate"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a workflow by its path instead of its bare name" tree "$d"
+d=$(mk t_dirrow)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "bin", "tool": "gitsign", "reason": "a directory is no signer file"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a directory" tree "$d"
+d=$(mk t_nonyaml)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "bin/build-stage-apk.sh", "tool": "gitsign", "reason": "a regular file the judge never reads"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming a regular file the judge does not read" tree "$d"
+d=$(mk t_signyml)
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-sign.yml", "tool": "gitsign", "reason": "stage-sign.yml is left out of this judge"}); json.dump(j, open(f, "w"))
+PY
+expect caught "AC1 a signer row naming stage-sign.yml, which this judge leaves out" tree "$d"
 # 003-AC5: only release.yml calls stage-sign.yml and no stage calls a stage (a stage that calls another stage gets that stage's SAN: spike (b) case 5)
 d=$(mk c_good); printf 'jobs:\n  s:\n    uses: ./.github/workflows/stage-sign.yml\n  b:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/release.yml"
 expect ok "003-AC5 fixture: release.yml calls every stage file" calls "$d"
@@ -3125,7 +3278,7 @@ d=$(cfix fp_awk_prog '/bin/awk x' '[]'); expm caught "$d" 'awk' "fixed path: /bi
 # Fixture texts that name a download tool are DATA in the fixture data file beside this test (one tab-separated record per case: name, script text, tools-json, ok|caught, fragment, label), the tool names spelled in full.
 # The file is read by run_fixtures below with `read`, never sourced, evaluated or run, and carries no execute bit (cache#433, the owner's approval of an honest rewrite).
 FX="$root/bin/chain-sign-wiring-fixtures.txt"
-FX_PIN='40639dff62eef23a740b105f8e5fa67f38651fe21355884d498b3193378af109'
+FX_PIN='4b13d7ee70c45b24e0f74f27fabd90e247440fd755d3794faa2ada4ab79a473b'
 run_fixtures() { # run_fixtures FILE : each record is one cfix + expm case
   local name body tools verdict frag label d
   while IFS=$'\t' read -r name body tools verdict frag label; do
@@ -3817,7 +3970,7 @@ for nm in PIP_INDEX_URL DOCKER_HOST KUBECONFIG KUBE_X TAR_OPTIONS MAKEFILES EDIT
   d=$(mk "e11_$nm"); printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          %s: x\n        run: bash bin/build-stage.sh apk "$%s"\n' "$nm" "$nm" > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'never allowed' "round-4 (11): the env name $nm is forbidden in a step env"
   d=$(mk "f11_$nm"); printf '["DIGESTS","%s"]' "$nm" > "$d/.envnames.json"; gen "$d"; expm caught "$d" 'env_names' "round-4 (11): $nm in env_names is refused"
 done
-d=$(mk e11_tz); printf '["DIGESTS","RECORDS","TZ"]' > "$d/.envnames.json"; printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          TZ: UTC\n        run: bash bin/build-stage.sh apk "$TZ"\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm ok "$d" - "round-4 (11): control: TZ stays allowed"
+d=$(mk e11_tz); printf '["DIGESTS","RECORDS","RECORDS_ARM64","TZ"]' > "$d/.envnames.json"; printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          TZ: UTC\n        run: bash bin/build-stage.sh apk "$TZ"\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm ok "$d" - "round-4 (11): control: TZ stays allowed"
 # (5, reduced) git configuration that loads a program
 for form in 'git --config-env=core.sshCommand=X fetch' 'git -c core.editor=x commit' 'git -c core.pager=x log' 'git -c core.fsmonitor=x status' 'git -c core.hooksPath=x commit' 'git -c core.askPass=x fetch' 'git -c credential.helper=!x fetch' 'git -c credential.helper=x fetch' 'git -c diff.external=x diff' 'git -c gpg.program=x commit' 'git -c alias.x=!id x' 'git --config-env=alias.x=Y x' 'git --upload-pack=p fetch' 'git --receive-pack=p push' 'git --exec-path=x status' 'git --exec-path status'; do
   tr3 "r5_$RANDOM" "$form" '' '["git"]'
@@ -4860,7 +5013,7 @@ t=$(ws_tree badstep); mv "$t/staged/witness-build/build-collection.payload" "$t/
 if (cd "$root" && python3 -I ".github/ag""ent/bin/check-action-pins.py" . > "$work/pins.out" 2>&1); then pass=$((pass + 1)); echo "ok   the real tree passes the repository-wide action-pin gate (stage-sign.yml and the staged signer bind)"
 else failn=$((failn + 1)); echo "FAIL the real tree fails the action-pin gate: $(tail -3 "$work/pins.out" | cut -c1-300)"; fi
 
-EXPECT=2082
+EXPECT=2108
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

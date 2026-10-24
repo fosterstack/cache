@@ -860,10 +860,15 @@ G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/
 run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
 expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
 # ---- nothing built on a refusal; the script is the only reader of the checks ----------------------------------------------------------------
+# the committed web-flow keyring (rc-2 signing review R9): exactly the current GitHub web-flow key, no expired key
+wf_keys=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "pub" { print $5 ":" $2 }')
+[ "$wf_keys" = "B5690EEEBB952194:-" ] && ok "the committed github-web-flow.gpg holds only the current web-flow key B5690EEEBB952194, not expired" || bad "github-web-flow.gpg holds: ${wf_keys//$'\n'/ } (want only B5690EEEBB952194, not expired)"
+wf_fprs=$(gpg --batch --show-keys --with-colons "$root/.github/policy/github-web-flow.gpg" 2> /dev/null | awk -F: '$1 == "fpr" { print $10 }')
+[ "$wf_fprs" = "968479A1AFF927E37D1A566BB5690EEEBB952194" ] && ok "the committed github-web-flow.gpg fingerprint is 968479A1AFF927E37D1A566BB5690EEEBB952194" || bad "github-web-flow.gpg fingerprints: ${wf_fprs//$'\n'/ }"
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=148
+EXPECT_TOTAL=150
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
