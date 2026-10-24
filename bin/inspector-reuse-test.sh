@@ -852,7 +852,7 @@ cat > "$sim/bin/inspector-sbomgen" <<'EOF'
 #!/usr/bin/env bash
 ref=""; out=""
 while [ $# -gt 0 ]; do case "$1" in --image) ref=$2; shift ;; --outfile) out=$2; shift ;; esac; shift; done
-cp "$FAKE_SBOMS/${ref##*:}.json" "$out"
+n=${ref##*[:/]}; cp "$FAKE_SBOMS/${n%.tar}.json" "$out"
 EOF
 cat > "$sim/bin/aws" <<'EOF'
 #!/usr/bin/env bash
@@ -1291,9 +1291,9 @@ if which == "scan":
     # (ruling, cache#603) the load step still produces the four refs and the scan step refuses to run on fewer; the aggregate needs both jobs and asserts Inspector's result;
     # the evidence upload exists and the role assumption comes before the scan; the matrix list is the real pr_gate minus inspector
     isteps = d["jobs"]["inspector"]["steps"]
-    ld = [st for st in isteps if "load every variant/platform child" in (st.get("name") or "")]
+    ld = [st for st in isteps if "make a tar of every variant/platform child" in (st.get("name") or "")]
     if len(ld) != 1 or "for v in production fips; do" not in ld[0].get("run", "") or "for arch in amd64 arm64; do" not in ld[0].get("run", ""):
-        bad.append("the Inspector job's load step no longer loops over production and fips on amd64 and arm64 (four refs)")
+        bad.append("the Inspector job's tar step no longer loops over production and fips on amd64 and arm64 (four refs)")
     sc_ = [st for st in isteps if st.get("id") == "insp-scan"]
     if len(sc_) != 1 or (sc_[0].get("env") or {}) != {"EXPECTED_REFS": "4"} or 'grep -c . /tmp/refs.txt' not in sc_[0].get("run", "") or '-ne "${EXPECTED_REFS}"' not in sc_[0].get("run", "") or sc_[0].get("run", "").count('[ "$(grep -c . /tmp/refs.txt)" -eq "${EXPECTED_REFS}" ] || rc=2') != 1:
         bad.append("the Inspector scan step does not refuse to run unless it was given exactly the four expected image references (EXPECTED_REFS 4)")
