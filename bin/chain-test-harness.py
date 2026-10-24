@@ -320,6 +320,8 @@ if cmd in ("verify", "stage-start"):
     sys.exit(rc)
 if cmd == "admission-baseline":     # REQ-CHAIN-007-AC19: the REAL command (bin/chain_items.py) runs, so a refusal of an admitted tag shows up in the integration cases (Codex 4b-2 r1)
     os.execv(sys.executable, [sys.executable, os.environ["REAL_CV"]] + a)
+if cmd == "bind" and os.environ.get("FAKE_BIND_RC"):      # a refused local record (the building job's own record): the bind is the only check left in the building job
+    sys.stderr.write("refused at build: digest (fake)\\n"); sys.exit(int(os.environ["FAKE_BIND_RC"]))
 if cmd == "bind":       # every file under --dir must be a product of the record: the harness wrote the table .bind/<path with / as _>
     bad = []
     for root, _, files in os.walk(arg("--dir")):

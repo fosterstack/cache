@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-SCAN-015-AC2 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases)
 # proves: REQ-CI-001-AC1, REQ-CI-001-AC2, REQ-CI-001-AC3, REQ-CI-001-AC4 — the split form of allowlist-chain is accepted only exactly (the chain-split cases)
+# proves: REQ-CI-005-AC2 — a counting step is accepted only in exactly its form (the count-step cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
@@ -13,7 +14,7 @@ work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 
 
-judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
+judge() { PIN_WIRING_WORKFLOWS_DIR="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}" PIN_WIRING_FLOORS_FILE="${PIN_WIRING_FLOORS_FILE:-$here/test-evidence/suite-floors.json}" PIN_WIRING_POLICY_FILE="${PIN_WIRING_POLICY_FILE:-$here/.github/policy/required-checks.json}" python3 - "$1" <<'PY'
 import sys, os, yaml
 # cheap pre-parse, BEFORE any structure is built: a token scan is linear and expands nothing, so an
 # anchor/alias bomb cannot hang the judge; the pin checker refuses anchors and aliases too
@@ -43,6 +44,26 @@ _walk(yaml.compose(_text, Loader=yaml.BaseLoader), "")
 if _dups:
     print("the workflow has duplicate YAML key(s): " + ", ".join(_dups[:5])); sys.exit(1)
 d = yaml.load(_text, Loader=yaml.BaseLoader)   # every scalar a string, as GitHub reads it
+# REQ-CI-005: a floored suite may be run by a counting step, `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of
+# PATH, a suite the committed floors file names), which runs it once and holds it to its floor and to exit 0. Every such line (optionally after env assignments, and
+# with a trailing </dev/null) is read back to the plain `bash PATH` line it stands for, so every exact-run check below judges one text for both forms; a line that
+# is not exactly this form is left as written and is judged (and refused) as any other unknown run text.
+import json as _json_, re as _re_
+try:
+    _floored_ = set(_json_.load(open(os.environ["PIN_WIRING_FLOORS_FILE"])))
+except Exception:
+    _floored_ = set()
+_COUNT_ = _re_.compile(r"((?:CHAIN_TEST_REQUIRE_NETCUT=1 )?)python3 -I bin/suite-guard-run\.py run test-evidence/suite-floors\.json (\S+) (\S+)( </dev/null)?")
+def _unwrap_(line):
+    m = _COUNT_.fullmatch(line)
+    if not m or m.group(2) not in _floored_ or os.path.basename(m.group(3)) != m.group(2):
+        return line
+    return m.group(1) + "bash " + m.group(3) + (m.group(4) or "")
+if isinstance(d, dict):
+    for _j_ in (d.get("jobs") or {}).values():
+        for _st_ in (_j_.get("steps") or []) if isinstance(_j_, dict) else []:
+            if isinstance(_st_, dict) and isinstance(_st_.get("run"), str):
+                _st_["run"] = "\n".join(_unwrap_(l) for l in _st_["run"].split("\n"))
 bad = []
 for k in sorted(set(d) - {"name", "on", "permissions", "jobs"}):
     bad.append(f"the workflow sets `{k}`")
@@ -213,13 +234,13 @@ GUARD_STEPS = [
 ]
 # REQ-CI-001 (advisor Oct 23, CI speed): allowlist-chain is accepted in EXACTLY TWO forms: the one job (SPLIT_STEPS below), or four parallel jobs
 # allowlist-chain-1..4 plus a gate job that keeps the name allowlist-chain. The groups name steps of the one job's list by run text (the first group is the
-# image-assembly suite, the long one); the fourth shard takes every other suite step and the two guard steps. Every shard opens with the five setup steps.
+# Sign boundary's wiring suite, 691 s alone, the long one; the second holds image assembly, 267 s); the fourth shard takes every other suite step and the two guard steps. Every shard opens with the five setup steps.
 # The groups name their steps by run text (stripped), not by position, so an edit of the one job's step list cannot move a suite to another shard silently.
 CHAIN_SHARD_IDS = ["allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowlist-chain-4"]
 CHAIN_GROUPS = [
-    ["bash bin/assemble-image-test.sh"],
-    ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
-    ["bash bin/build-apk-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+    ["bash bin/chain-sign-wiring-test.sh"],
+    ["bash bin/assemble-image-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+    ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh", "bash bin/build-apk-test.sh"],
 ]
 # Installed state does not cross jobs (each shard is a fresh runner): the one step that installs a tool for later steps, `./bin/install-scanner.sh grype` (with the
 # vex-scope suite), stays in shard 4 with its consumers, vex-both-scanners-test and the suite-floor re-run (suite-guard-run.py all). cache#608 round 2, both seats.
@@ -770,7 +791,8 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
-  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" judge "$work/head-ci.yml" && exit 0
+  git show "${PIN_WIRING_JUDGE_GIT}:test-evidence/suite-floors.json" > "$work/head-floors.json" 2> /dev/null || echo '{}' > "$work/head-floors.json"     # REQ-CI-005: the floors file of the judged commit, as the policy file is
+  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" PIN_WIRING_FLOORS_FILE="$work/head-floors.json" judge "$work/head-ci.yml" && exit 0
   exit 1
 fi
 
@@ -794,6 +816,23 @@ PY
 steps='d["jobs"]["allowlist"]["steps"]'
 pick='[s for s in '"$steps"' if (s.get("run") or "").startswith("python3 .github/agent/bin/check-action-pins.py")][0]'
 case_ the-real-hygiene      ok  ""
+# REQ-CI-005: a floored suite's step may call the counting runner instead of `bash PATH`; exactly that form is read back to the plain line, anything else is judged as unknown text
+CW="[s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/inspector-gate-test.sh'][0]"
+CF="python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json"
+case_ count-step-wrapped-ok         ok  "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-devnull-added      bad "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh </dev/null'"
+case_ count-step-devnull-kept       ok  "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/verify-release-guide-test.sh </dev/null'][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh </dev/null'"
+case_ count-step-devnull-dropped    bad "w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/verify-release-guide-test.sh </dev/null'][0]; w['run'] = '$CF verify-release-guide-test.sh bin/verify-release-guide-test.sh'"
+case_ count-step-name-not-path      bad "w = $CW; w['run'] = '$CF install-scanner-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-other-path         bad "w = $CW; w['run'] = '$CF install-scanner-test.sh bin/install-scanner-test.sh'"
+case_ count-step-unfloored-name     bad "w = $CW; w['run'] = '$CF zz-not-floored-test.sh bin/zz-not-floored-test.sh'"
+case_ count-step-other-floors       bad "w = $CW; w['run'] = 'python3 -I bin/suite-guard-run.py run /tmp/floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-count-only         bad "w = $CW; w['run'] = 'python3 -I bin/suite-guard-run.py run --count-only test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-or-true            bad "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh || true'"
+case_ count-step-no-isolation       bad "w = $CW; w['run'] = 'python3 bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-twice              bad "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh\n$CF inspector-gate-test.sh bin/inspector-gate-test.sh'"
+case_ count-step-if-false           bad "w = $CW; w['run'] = '$CF inspector-gate-test.sh bin/inspector-gate-test.sh'; w['if'] = 'false'"
+case_ count-step-env-injected       bad "w = $CW; w['run'] = 'BASH_ENV=/tmp/x $CF inspector-gate-test.sh bin/inspector-gate-test.sh'"
 case_ step-removed          bad "$steps[:] = [s for s in $steps if not (s.get('run') or '').startswith('python3 .github/agent/bin/check-action-pins.py')]"
 case_ step-if-false         bad "$pick['if'] = 'false'"
 case_ step-continue         bad "$pick['continue-on-error'] = 'true'"
@@ -918,6 +957,13 @@ gitcase() {  # gitcase <name> <expect ok|bad> <python edit or empty>
   cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
   mkdir -p "$r/.github/policy"; cp "$here/.github/policy/required-checks.json" "$r/.github/policy/required-checks.json"
   cp "$here"/.github/workflows/*.y*ml "$r/.github/workflows/" 2>/dev/null || true; cp "$here/.github/workflows/ci.yml" "$r/.github/workflows/ci.yml"
+  mkdir -p "$r/test-evidence"; cp "$here/test-evidence/suite-floors.json" "$r/test-evidence/suite-floors.json"     # REQ-CI-005: the judge reads the floors file of the judged commit
+  if [ -n "${GIT_FLOORS_EDIT:-}" ]; then python3 - "$r/test-evidence/suite-floors.json" "$GIT_FLOORS_EDIT" <<'PY'
+import sys, json
+p, edit = sys.argv[1], sys.argv[2]
+d = json.load(open(p)); exec(edit); json.dump(d, open(p, "w"))
+PY
+  fi
   if [ -n "$3" ]; then python3 - "$r/.github/workflows/ci.yml" "$3" <<'PY'
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
@@ -932,6 +978,9 @@ PY
   else failn=$((failn+1)); echo "FAIL git:$1 → $got, want $2 ($out)"; fi
 }
 gitcase the-real-ci-at-a-commit   ok  ""
+WRAP="w = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if (s.get('run') or '').strip() == 'bash bin/inspector-gate-test.sh'][0]; w['run'] = 'python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh'"
+gitcase counting-step-at-a-commit ok  "$WRAP"
+GIT_FLOORS_EDIT="d.pop('inspector-gate-test.sh')" gitcase counting-step-unfloored-at-that-commit bad "$WRAP"     # the floors file of the judged commit decides, not the checkout's
 # the policy at the commit is read too: a missing split entry is refused (and so is a missing file, above)
 
 gitcase run-true-at-a-commit      bad "[s for s in $steps if (s.get('run') or '').strip().endswith('check-file-allowlist.sh')][0]['run'] = 'true'"
@@ -947,7 +996,7 @@ case_ split-job-runs-on       bad "d['jobs']['allowlist-persona']['runs-on'] = '
 case_ split-job-continue      bad "d['jobs']['allowlist-chain']['steps'][-1]['continue-on-error'] = 'true'"
 case_ split-step-if           bad "d['jobs']['allowlist-persona']['steps'][-1]['if'] = 'false'"
 case_ split-step-shell        bad "d['jobs']['allowlist-pins-auditor']['steps'][-2]['shell'] = 'bash -c true {0}'"
-case_ split-anchor-gone       bad "st = d['jobs']['allowlist-chain-1']['steps']; st[:] = [x for x in st if 'assemble-image-test' not in (x.get('run') or '')]"
+case_ split-anchor-gone       bad "st = d['jobs']['allowlist-chain-2']['steps']; st[:] = [x for x in st if 'assemble-image-test' not in (x.get('run') or '')]"
 case_ split-no-checkout       bad "d['jobs']['allowlist-persona']['steps'].pop(0)"
 case_ split-job-env           bad "d['jobs']['allowlist-chain']['env'] = {'X': '1'}"
 case_ split-env-bash-env      bad "d['jobs']['allowlist-chain']['steps'][-1]['env'] = {'BASH_ENV': '/tmp/x'}"
@@ -958,11 +1007,11 @@ case_ split-suite-reordered   bad "st = d['jobs']['allowlist-chain-4']['steps'];
 case_ split-suite-added       bad "d['jobs']['allowlist-chain']['steps'].append({'name': 'x', 'run': 'true'})"
 # REQ-CI-001 (advisor Oct 23: CI speed, no check dropped, exactly once): allowlist-chain is ALSO accepted split into four parallel jobs
 # (allowlist-chain-1..4) plus a gate job that keeps the name allowlist-chain. This helper builds that form from the real ci.yml's own job, independently of the judge:
-# the five setup steps open every shard, the groups below name steps of the old job by run text (the first is the image-assembly suite, the long one).
+# the five setup steps open every shard, the groups below name steps of the old job by run text (the first is the Sign boundary's wiring suite, the long one).
 cat > "$work/split.py" <<'PYS'
 import copy
-GROUPS = [["bash bin/assemble-image-test.sh"], ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh"],
-          ["bash bin/build-apk-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"]]   # the rest is the fourth shard (it keeps the grype installer with its consumers)
+GROUPS = [["bash bin/chain-sign-wiring-test.sh"], ["bash bin/assemble-image-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
+          ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh", "bash bin/build-apk-test.sh"]]   # the rest is the fourth shard (it keeps the grype installer with its consumers)
 def split_chain(d):
     if "allowlist-chain-1" in d["jobs"]:   # ci.yml is already split: the cases then mutate the real shards and gate
         return

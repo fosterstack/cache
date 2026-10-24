@@ -96,6 +96,7 @@ def scan(rel, text, raw=False):
             dt = re.search(r"(?:-t|--datatype)[ =]+(\S+)", ctx)
             if not dt: add(POLT)
             elif re.fullmatch(r"https?://[^\s\"'$`]+", dt.group(1).strip("\"'")): add(dt.group(1).strip("\"'"))
+            elif dt.group(1).strip("\"'") == "application/vnd.in-toto+json": add(COLL)   # Sign re-signs a building job's collection payload as it is (the Witness move, Oct 22 2026): the record type is the collection's
             else: bad.append("%s: witness sign with an unresolved datatype %r (fail closed)" % (rel, dt.group(1)))
         elif n == "actions/attest":
             ty = _cts.attest_action_type(ctx)                      # per match: the type of THIS step, not the first in the file
@@ -234,6 +235,7 @@ uncase u_c_url 'cosign attest --type https://x.example/$(cat t) --predicate p im
 uncase u_c_var 'cosign attest --type "$T" --predicate p img' 'cosign attest --type "$T" is refused' 'unresolved --type'
 uncase u_ws_var 'witness sign -t "$DT" -f p.json -o s.json' 'witness sign -t "$DT" is refused (already)' 'unresolved datatype'
 uncase u_ws_url 'witness sign -t https://x.example/$(cat t) -f p.json -o s.json' 'witness sign -t URL with a substitution inside is refused' 'unresolved datatype'
+uncase u_ws_mime 'witness sign -t application/x-anything -f p.json -o s.json' 'witness sign -t with another media type is refused (only the in-toto payload type of a collection is known)' 'unresolved datatype'
 uncase u_sb_var 'cosign sign-blob --yes "$F" --bundle b.json' 'cosign sign-blob of a variable blob is refused (its type cannot be known)' 'unresolved argument'
 uncase u_sb_subst 'cosign sign-blob --yes $(ls *.json) --bundle b.json' 'cosign sign-blob of a substitution is refused' 'unresolved argument'
 uncase u_sp_var 'sigstore sign "$F"' 'sigstore (python) sign of a variable blob is refused' 'unresolved argument'
@@ -361,7 +363,7 @@ tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$roo
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$(tracked_copy real)"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
-EXPECT=98
+EXPECT=99
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

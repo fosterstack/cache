@@ -41,7 +41,7 @@ on:
 # startup_failure with zero jobs (the former release-chain-pr.yml learned this the hard way);
 # checks/statuses/pull-requests read are requested by Build's admission step, which snapshot mode
 # does not run, but they are static job permissions of the called stage. The callers' grants
-# are a static ceiling (REQ-CHAIN-004-AC14): no write but id-token. The inspector job requests
+# are a static ceiling (REQ-CHAIN-004-AC14): no write and, since the Witness move, no id-token (building jobs record under a throwaway key). The inspector job requests
 # id-token: write for the role assumption; the scanner (grype) matrix holds no token. Dependabot-
 # triggered runs get a read-only token that the permissions key can raise
 # (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork
@@ -57,7 +57,6 @@ jobs:
       checks: read
       statuses: read
       pull-requests: read
-      id-token: write
     uses: ./.github/workflows/stage-build.yml
     with:
       mode: snapshot
@@ -68,7 +67,6 @@ jobs:
     needs: build
     permissions:
       contents: read
-      id-token: write
     uses: ./.github/workflows/stage-reproducibility.yml
     with:
       mode: snapshot
@@ -111,6 +109,14 @@ jobs:
         scanner: ${{ fromJSON(needs.scanners.outputs.list) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # This job scans with grype only: its three grype-only steps below are `if: matrix.scanner == 'grype'`. A pr_gate name other than grype would install a tool and scan
+      # nothing, and the `scan` aggregate would read success; a scanner that did not run is a failure, never a pass.
+      - name: refuse a scanner this job cannot run
+        if: matrix.scanner != 'grype'
+        run: |
+          echo "::error::scanners.json pr_gate names a scanner this job does not run; only grype is wired into it" >&2
+          exit 1
 
       # grype reads the OCI images and scans the release archives: the image download + daemon load,
       # the archive download and the archive verify all run in this job.
