@@ -1290,6 +1290,16 @@ def _():
     assert_refused(fx.bytes, vb, "VEX naming the built index")
 
 
+@case("AC1", "two statements that differ only in a parent product and become the same in Scout's form are refused by compute (verify would refuse the duplicate) and nothing is written (round 1, Opus F1)")
+def _():
+    fx = mk_fx()
+    def twice(o):
+        o["statements"].append(json.loads(json.dumps(o["statements"][0])))
+        o["statements"][1]["products"][0]["@id"] = "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+    vb = vex_with(twice, base=BASE_VEX)
+    assert_refused(fx.bytes, vb, "statements identical in Scout's form")
+
+
 @param("AC2", "a half-unknown platform (unknown/amd64, linux/unknown) is refused; unknown/unknown is passed through", [("unknown/amd64", ("unknown", "amd64")), ("linux/unknown", ("linux", "unknown")), ("unknown/arm64/v8", ("unknown", "arm64"))])
 def _(osarch):
     fx = mk_fx()

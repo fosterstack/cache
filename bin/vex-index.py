@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""vex-index: derive and check the final image index that carries the release's VEX (REQ-REL-010, PROPOSED: the owner has not ratified its wording).
+"""vex-index: derive and check the final image index that carries the release's VEX (REQ-REL-010-AC1: the attestation carries the VEX in the form Docker Scout applies, owner-ratified Oct 24 2026).
 
 The final index F is the built index D plus one attestation-manifest child per platform; every child carries the
-release's OpenVEX document as an in-toto statement whose subject is that platform's own digest. F is a pure function
+release's OpenVEX document, in the form Docker Scout applies (scout_form), as an in-toto statement whose subject is that platform's own digest. F is a pure function
 of the bytes of D and of the VEX file: nothing signed or promoted ever names D.
 
   compute       --index D.json --vex VEX.json --out-dir DIR           (the pieces, into an empty directory)
@@ -553,8 +553,13 @@ def compute(index_bytes, vex_bytes):
     if hex_of(digest_of(index_bytes)).encode() in canonical(vex):
         raise Refuse("the VEX mentions the built index's digest")
     descriptors, blobs, summary = [], {}, {}
+    attested = scout_form(vex)
+    try:
+        check_vex(canonical(attested))   # verify runs this same check on the attested predicate: refuse here what verify would refuse
+    except Refuse as e:
+        raise Refuse("the VEX in the form Docker Scout applies is not a valid VEX (two statements that differ only in a parent product are identical there): %s" % e)
     for name, entry in platforms:
-        descriptor, parts = build_attestation(entry["digest"], scout_form(vex))
+        descriptor, parts = build_attestation(entry["digest"], attested)
         descriptors.append(descriptor)
         blobs.update(parts)
         summary[name] = {"platform_digest": entry["digest"], "attestation_digest": descriptor["digest"]}
@@ -651,7 +656,7 @@ class Blobs:
 
 def check_final(final_bytes, blobs, vex, forbidden):
     """Validate a final index completely: its shape and order, every attestation rebuilt from its predicate and
-    compared byte for byte, the predicates equal to vex and to each other, and no digest of D or F inside a blob.
+    compared byte for byte, the predicates equal to scout_form(vex) and to each other, and no digest of D or F inside a blob.
     Returns the parsed final index, its attestation descriptors and the digests of the blobs they need."""
     final, platforms = load_index(final_bytes, final=True)
     if final_bytes != canonical(final):
