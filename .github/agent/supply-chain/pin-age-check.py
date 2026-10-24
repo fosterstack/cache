@@ -1310,7 +1310,7 @@ def load_ruled_text(path, required=False):
 DEFAULT_BASE_INPUTS = os.path.normpath(os.path.join(HERE, "..", "..", "policy", "base-inputs.json"))
 
 
-_STRICT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)")   # a time with a real zone, nothing parse_time would bend (a +99:99 offset)
+_STRICT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?")   # a time with a real zone or none (UTC, as parse_time reads it); nothing parse_time would bend (a +99:99 offset)
 
 
 def load_file_pins(path, required=False):

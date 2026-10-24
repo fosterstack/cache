@@ -4289,6 +4289,9 @@ check test "$rc" -eq 1
 fpck dup "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10)"), $(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 2)")]"
 CASE="AC34: two rows for the same file and content: the check stops, it never picks the older (exit 2)"
 check test "$rc" -eq 2
+fpck naive "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "$(d 10 | sed 's/Z$//')")]"
+CASE="AC34: a published time without a zone is read as UTC, as the checker reads every time: an old row passes (exit 0)"
+check test "$rc" -eq 0
 fpck offset "[$(fprow "$FPFILE" "$FPSUM" "$GRADLE" 9.7.1 "2026-10-02T12:00:00+99:99")]"
 CASE="AC34: a published time with an impossible zone offset (+99:99, which would count as over 7 days) lends no age (exit 1)"
 check test "$rc" -eq 1
