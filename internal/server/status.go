@@ -163,7 +163,12 @@ type statusView struct {
 }
 
 func (s Status) view() statusView {
-	v := statusView{Status: s, StoreHuman: humanBytes(s.StoreBytes), FreeHuman: humanBytes(clampInt64(s.StoreFreeBytes)), MaxHuman: "unlimited", UsedPct: ""}
+	v := statusView{
+		Status:     s,
+		StoreHuman: humanBytes(s.StoreBytes),
+		FreeHuman:  humanBytes(clampInt64(s.StoreFreeBytes)),
+		MaxHuman:   "unlimited",
+	}
 	if s.MaxBytes > 0 {
 		v.MaxHuman = humanBytes(s.MaxBytes)
 		v.UsedPct = fmt.Sprintf("%.1f%%", 100*float64(s.StoreBytes)/float64(s.MaxBytes))

@@ -2871,11 +2871,12 @@ requirements:
         then: "the properties file carries distributionSha256Sum, the lowercase sha256 of the distribution its distributionUrl names (the sum Gradle publishes for that zip, re-checked against the zip), so the wrapper refuses any other bytes; this is the owner's plain form for a tool download: exact version and checksum"
         verification: { method: unit, release_blocking: false }
         status: approved
+      # owner RATIFIED text rewritten Oct 24 2026 (advisor ruling, a tightening; the owner sees it afterwards): the release-chain mode it described was dead and is deleted; LLM-enforced
       - id: REQ-SUP-001-AC29
-        given: "acceptance.yml run with an image-ref (release-chain mode)"
-        when: "the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line)"
-        then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
-        verification: { method: unit, release_blocking: false }
+        given: "acceptance.yml, the pull-request and main gate for the client suites"
+        when: "its workflow_call inputs and its jobs' steps are read"
+        then: "it declares no image input and no step starts a container image: both jobs run the server from source; the release chain runs the same suites through bin/check-acceptance.sh and bin/acceptance-serve.sh, where the candidate is refused unless content-addressed and run by its inspected ID (AC30); this keeps the owner's plain form for an image, pinned by digest, on the one path that is live"
+        verification: { method: inspection, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC31
         given: "the sample project's committed Gradle wrapper jar (bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar)"
