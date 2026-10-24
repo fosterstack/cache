@@ -20,7 +20,7 @@ package + finding counts with database dates, dry_run and adjudicator mode, and 
 line: AUDIT COMPLETE, or AUDIT INCOMPLETE (which FAILS the job). A dry run lists in §6 every
 PR and issue it would have opened.
 """
-import itertools, os, sys, json, re, shlex, subprocess, importlib.util, urllib.parse
+import os, sys, json, re, shlex, subprocess, importlib.util, urllib.parse
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
@@ -1985,9 +1985,6 @@ def _persist(out, rows, today):
 FORBIDDEN_NAMES = re.compile(r"anthropic|claude|openai|chatgpt|gpt-|codex|sonnet|opus|gemini|llama|private-model|canary", re.I)
 
 
-_FORBIDDEN_SQUASHED = re.compile(FORBIDDEN_NAMES.pattern.replace("gpt-", "gpt"), re.I)      # separators are removed from the candidate, so the "gpt-" pattern loses its hyphen
-
-
 def _configured_model_values():
     """The model identifiers this run is actually configured with (AUDITOR_MODEL_*). The
     report must not disclose them even when they carry no vendor substring the fixed
@@ -2016,23 +2013,47 @@ def _fold(x):
     return y.lower().translate(_LOOKALIKE)
 
 
+_FORBIDDEN_LITERALS = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in FORBIDDEN_NAMES.pattern.split("|")]       # the same names with every separator removed
+
+
+def _split_across(lit, squashed):
+    """True when `lit` can be read off the squashed fields laid end to end in SOME order: a suffix of one field, then whole fields, then a prefix of another, each field used once.
+    Complete for a name split over any fields in any order; fail-closed (it may refuse an innocent proposal, never pass a split name)."""
+    n = len(squashed)
+
+    def rest(r, used):
+        if not r:
+            return True
+        for k in range(n):
+            if k in used or not squashed[k]:
+                continue
+            f = squashed[k]
+            if f.startswith(r) or (r.startswith(f) and rest(r[len(f):], used | {k})):
+                return True
+        return False
+
+    for i in range(n):
+        f = squashed[i]
+        for a in range(len(f)):
+            suf = f[a:]
+            if lit.startswith(suf) and len(suf) < len(lit) and rest(lit[len(suf):], {i}):
+                return True
+    return False
+
+
 def _scrubbed_all(texts):
-    """True when no string, taken alone or joined with the others (a name split across fields) and with every separator removed, holds a vendor/model name or any
-    configured model identifier of this run (row 48: the public repo names none). No minimum length for the configured identifiers."""
+    """True when no string, taken alone, joined with the others, or split across them in any order (separators removed), holds a vendor/model name or any configured model
+    identifier of this run (row 48: the public repo names none). No minimum length for the configured identifiers. A character outside ASCII after folding refuses the proposal."""
     folded = [_fold(t) for t in texts]
     if any(not f.isascii() for f in folded):
         return False                                               # fail closed: a letter outside ASCII after folding cannot be judged a lookalike or not
     squashed = [re.sub(r"[^a-z0-9]", "", f) for f in folded]
-    n = len(squashed)
-    runs = ["".join(squashed[i:j]) for i in range(n) for j in range(i + 1, n + 1)] + ["".join(squashed[i:j][::-1]) for i in range(n) for j in range(i + 1, n + 1)]
-    fixed = squashed[:4]                                           # kind, evidence, package, note: a name split over them in ANY order
-    perms = ["".join(q) for r in range(2, len(fixed) + 1) for q in itertools.permutations(fixed, r)]
-    haystacks = folded + [" ".join(folded)] + squashed + runs + perms
-    if any(FORBIDDEN_NAMES.search(h) for h in haystacks[:len(folded) + 1]) or any(_FORBIDDEN_SQUASHED.search(h) for h in haystacks[len(folded) + 1:]):
-        return False
+    joined = "".join(squashed)
     cfg = [re.sub(r"[^a-z0-9]", "", _fold(v)) for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and v.strip()]
-    return not any(c and (c in sq) for c in cfg for sq in squashed + runs + perms) and not any(
-        _fold(v.strip()) in h for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and v.strip() for h in folded)
+    lits = [w for w in _FORBIDDEN_LITERALS if w] + [c for c in cfg if c]
+    if any(FORBIDDEN_NAMES.search(h) for h in folded + [" ".join(folded)]) or any(w in sq for w in lits for sq in squashed + [joined]):
+        return False
+    return not any(_split_across(w, squashed) for w in lits)
 
 
 def _valid_proposal(pr):

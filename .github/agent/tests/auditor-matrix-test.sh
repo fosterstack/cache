@@ -4038,7 +4038,7 @@ bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''
      dict(good,note='proposed by Claude'), dict(good,evidence='per the gpt-5 analysis'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
      dict(good,note='x'*2001), None, 'x', [], {},
      {'kind':'knowledge'}, {'evidence':'e'}, {'kind':'knowledge','evidence':'e'}, dict(good,keys=[]), {k:v for k,v in good.items() if k!='keys'},
-     dict(good,note='C\u04cf\u0430ude'), dict(good,note='Cl\u0410ude'), dict(good,package='Cl',note='au',evidence='de'), dict(good,note='gpt - 5'), dict(good,note='caf\u00e9'), dict(good,keys=[{}]), dict(good,keys=[{'scanner':'s'}]),
+     dict(good,note='C\u04cf\u0430ude'), dict(good,note='Cl\u0410ude'), dict(good,package='Cl',note='au',evidence='de'), dict(good,note='gpt - 5'), dict(good,note='reviewed by private - model'), dict(good,package='zlib',note='aude',keys=[{'scanner':'grype','finding_id':'CVE-2099-1','purl':'pkg:generic/cl'}]), dict(good,note='caf\u00e9'), dict(good,keys=[{}]), dict(good,keys=[{'scanner':'s'}]),
      dict(good,note='\\uff23\\uff4c\\uff41\\uff55\\uff44\\uff45'), dict(good,note='Cl\\u0430ude'), dict(good,note='Cl\\u200baude'), dict(good,note='Clau',evidence='de says no'),
      dict(good,package='an',note='thropic'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/\\uff4fpus@1'}])]
 ok=R._valid_proposal(good)==good and R._valid_proposal({'kind':'knowledge','evidence':'e','note':'n'})=={'kind':'knowledge','evidence':'e','note':'n'}
