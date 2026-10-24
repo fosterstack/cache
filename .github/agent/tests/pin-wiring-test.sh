@@ -668,7 +668,12 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   for wf in $(git ls-tree --name-only "${PIN_WIRING_JUDGE_GIT}" .github/workflows/ | sed 's|.*/||'); do   # every workflow of the commit, as git objects
     git show "${PIN_WIRING_JUDGE_GIT}:.github/workflows/$wf" > "$work/head-wf/$wf" || { echo "pin-wiring: cannot read workflow $wf" >&2; exit 1; }
   done
-  PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" judge "$work/head-ci.yml" && exit 0
+  # two exact forms (cutover, read-back 2026-10-24): main's own, judged here; or the landing form (chain-v030's ci.yml), judged by pin-wiring-landing.sh in the same mode over the same commit.
+  # A head that fits neither is refused with both judges' findings; nothing of the head runs.
+  if main_out=$(PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json" judge "$work/head-ci.yml"); then exit 0; fi
+  if [ -f "$here/.github/agent/tests/pin-wiring-landing.sh" ] && land_out=$(bash "$here/.github/agent/tests/pin-wiring-landing.sh" 2>&1); then exit 0; fi
+  printf '%s\n' "$main_out"
+  [ -z "${land_out:-}" ] || printf 'the landing form (pin-wiring-landing.sh) also refuses it: %s\n' "$land_out"
   exit 1
 fi
 
@@ -1009,6 +1014,64 @@ else: json.dump(d, open(sys.argv[2], "w"))
 PY
   if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
 done
+
+
+# ---- cutover (cache-c7, read-back 2026-10-24; advisor: generated tables plus the real-file case; both forms accepted through the landing, one form in a follow-up) ----------------------
+# The trusted gate runs THIS file over a pull request's head. The landing PR (chain-v030 into main) carries chain-v030's ci.yml, a different exact shape (four allowlist-chain shards and
+# their gate, counting steps, the live test's job group). Judge mode therefore accepts a head if main's own judge above accepts it, or if the landing judge does: .github/agent/tests/
+# pin-wiring-landing.sh, chain-v030's own pin-wiring judge (3-way merged with main's concurrency rules; the live test's group the one added exception), run in judge mode over the same
+# head. Neither form is loosened: each is an exact list; a file that fits neither is refused. The cases below read the chain-v030 ref (origin/chain-v030 or chain-v030) as git objects;
+# CI checks out every branch (fetch-depth 0). The follow-up that collapses to the landing form deletes this section, the landing script and the main-form data.
+landing_ref=""
+for _r in origin/chain-v030 chain-v030; do
+  if git rev-parse -q --verify "$_r^{commit}" > /dev/null 2>&1; then landing_ref=$(git rev-parse "$_r^{commit}"); break; fi
+done
+lcase() {  # lcase <name> <expect ok|bad> <python edit of the parsed chain-v030 ci.yml, or empty>   (judge mode over a temp commit made from chain-v030's files)
+  local r="$work/land-$1"; rm -rf "$r"; mkdir -p "$r/.github/policy" "$r/test-evidence" "$r/tools/govulncheck"
+  git archive "$landing_ref" .github/workflows | tar -x -C "$r"
+  git show "$landing_ref:.github/policy/required-checks.json" > "$r/.github/policy/required-checks.json"
+  git show "$landing_ref:test-evidence/suite-floors.json" > "$r/test-evidence/suite-floors.json"
+  git show "$landing_ref:tools/govulncheck/go.mod" > "$r/tools/govulncheck/go.mod"
+  if [ -n "$3" ]; then python3 - "$r/.github/workflows/ci.yml" "$3" <<'PYL'
+import sys, yaml
+p, edit = sys.argv[1], sys.argv[2]
+d = yaml.load(open(p), Loader=yaml.BaseLoader)
+exec(edit)
+yaml.safe_dump(d, open(p, "w"), sort_keys=False)
+PYL
+  fi
+  ( cd "$r" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
+  if out=$(cd "$r" && PIN_WIRING_JUDGE_GIT="$(cd "$r" && git rev-parse HEAD)" bash "$here/.github/agent/tests/pin-wiring-test.sh" 2>&1); then got=ok; else got=bad; fi
+  if [ "$got" = "$2" ]; then pass=$((pass+1)); echo "PASS landing:$1 → $got"
+  else failn=$((failn+1)); echo "FAIL landing:$1 → $got, want $2 ($out)"; fi
+}
+if [ -z "$landing_ref" ]; then
+  failn=$((failn+1)); echo "FAIL landing form: no origin/chain-v030 or chain-v030 ref in this clone (CI fetches every branch); the cutover cases cannot run"
+else
+  REVIEWED_CONC="{'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+  lcase chain-v030-as-it-is                    ok  ""
+  lcase with-the-reviewed-workflow-concurrency ok  "d['concurrency'] = $REVIEWED_CONC"
+  lcase wrong-workflow-concurrency             bad "d['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+  lcase job-concurrency-on-lint                bad "d['jobs']['lint']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
+  lcase live-test-group-cancels                bad "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
+  lcase shard-step-deleted                     bad "st = d['jobs']['allowlist-chain-2']['steps']; st.pop()"
+  lcase shard-step-if-false                    bad "d['jobs']['allowlist-chain-3']['steps'][-1]['if'] = 'false'"
+  lcase gate-if-removed                        bad "d['jobs']['allowlist-chain'].pop('if')"
+  lcase gate-needs-a-shard-short               bad "d['jobs']['allowlist-chain']['needs'] = d['jobs']['allowlist-chain']['needs'][:3]"
+  lcase counting-step-or-true                  bad "x = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if 'suite-guard-run.py run' in (s.get('run') or '') and 'chain-hostile-test.sh' in (s.get('run') or '')][0]; x['run'] += ' || true'"
+  lcase counting-step-env                      bad "x = [s for j in d['jobs'].values() for s in (j.get('steps') or []) if 'suite-guard-run.py run' in (s.get('run') or '') and 'chain-hostile-test.sh' in (s.get('run') or '')][0]; x['env'] = {'PINS_DRY': '1'}"
+  lcase persona-step-removed                   bad "st = d['jobs']['allowlist-persona']['steps']; st.pop()"
+  lcase pins-auditor-step-removed              bad "st = d['jobs']['allowlist-pins-auditor']['steps']; st.pop()"
+  # a mix of the two forms fits neither: chain-v030's ci.yml with main's single-job allowlist-chain (its steps in the one job, no shards) is refused
+  lcase mixed-single-job-chain                 bad "c = d['jobs']; [c.pop(k) for k in ('allowlist-chain-1','allowlist-chain-2','allowlist-chain-3','allowlist-chain-4')]; c['allowlist-chain'] = {'name': 'allowlist-chain', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+  # the landing judge's own cases, over the whole of chain-v030's tree: every one passes (the copy is the branch's judge; this proves it still accepts the branch as it is)
+  _lt="$work/landing-tree"; rm -rf "$_lt"; mkdir -p "$_lt"; git archive "$landing_ref" | tar -x -C "$_lt"
+  cp "$here/.github/agent/tests/pin-wiring-landing.sh" "$_lt/.github/agent/tests/pin-wiring-test.sh"
+  ( cd "$_lt" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm snap )
+  if lout=$(cd "$_lt" && bash .github/agent/tests/pin-wiring-test.sh 2>&1) && printf '%s\n' "$lout" | grep -Eq '^pin-wiring: [0-9]+ passed, 0 failed$'; then
+    pass=$((pass+1)); echo "PASS landing judge: its own cases all pass over chain-v030's tree ($(printf '%s\n' "$lout" | tail -1))"
+  else failn=$((failn+1)); echo "FAIL landing judge: its own cases over chain-v030's tree: $(printf '%s\n' "$lout" | grep -E '^FAIL|^pin-wiring:' | head -4 | tr '\n' ' ')"; fi
+fi
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
