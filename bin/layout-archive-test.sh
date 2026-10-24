@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-004-AC1 (the gate scans every image child of the layout, from the child's own blobs, no Docker daemon)
+# proves: REQ-REL-004-AC1 — the gate scans every image child of the layout, from the child's own blobs, no Docker daemon
 # bin/layout-archive.sh turns the linux/ARCH image of an OCI layout into a docker-save tar a scanner can read.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
