@@ -120,8 +120,8 @@ def _read_reviewed_json(path):
     if not isinstance(doc, dict):
         raise ReviewedInputInvalid("%s is not a JSON object" % path)
     key = "statements" if "openvex" in os.path.basename(path) else "accepted_items" if os.path.basename(path) == "accepted-items.json" else None
-    if key and key in doc and (not isinstance(doc[key], list) or not all(isinstance(x, dict) for x in doc[key])):
-        raise ReviewedInputInvalid("%s: %r is not a list of objects" % (path, key))
+    if key and (key not in doc or not isinstance(doc[key], list) or not all(isinstance(x, dict) for x in doc[key])):
+        raise ReviewedInputInvalid("%s: %r is missing or is not a list of objects" % (path, key))     # {} is not a published VEX / an inventory: only [] is an empty one
     return doc
 
 
@@ -1319,7 +1319,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         row["reachability"] = "govulncheck: %s" % verdict
         # a FRESH unreachable finding closes §5 even if a fix exists (unreachable => not
         # exploitable); only a CARRIED reachability suppression defers to the fix so it can be
-        # LIFTED and bumped (REQ-AUD-13 AC7; R1 refactor round-4 #4).
+        # LIFTED and bumped (REQ-AUD-13 AC3/AC6; R1 refactor round-4 #4).
         if verdict == "unreachable" and not (gf["fixed"] and _carried):
             # scope the closure to EXACTLY the module@version the trace supports, from the
             # NON-lineage Go findings only; a sibling version the evidence does not cover, or a
@@ -1657,7 +1657,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 nm = (s.get("vulnerability") or {}).get("name")
                 if nm:
                     # every carried (cve, scope) — including a reachability not_affected that has
-                    # NO time box — so a pullable fix can lift it (REQ-AUD-13 AC7; R1 refactor #4)
+                    # NO time box — so a pullable fix can lift it (REQ-AUD-13 AC3/AC6; R1 refactor #4)
                     carried_scopes.add((nm, _scope_key(s)))
                     # the PUBLISHED status for this exact scope, so the "in force (main)" display
                     # tag is only applied when THIS run writes the SAME disposition already on main:

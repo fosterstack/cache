@@ -4201,6 +4201,13 @@ write_good()
 corrupt_at="start"
 if variant=="vex-malformed": open(vp,"w").write("{not json")
 elif variant=="vex-notobject": open(vp,"w").write("[]")
+elif variant=="vex-empty-object": open(vp,"w").write("{}")
+elif variant=="vex-null-statements": json.dump(dict(old,statements=None),open(vp,"w"))
+elif variant=="vex-no-statements": json.dump({k:v for k,v in old.items() if k!="statements"},open(vp,"w"))
+elif variant=="vex-empty-list": json.dump(dict(old,statements=[]),open(vp,"w"))
+elif variant=="items-empty-object": open(ap,"w").write("{}")
+elif variant=="items-null-list": json.dump({"accepted_items":None},open(ap,"w"))
+elif variant=="items-empty-list": json.dump({"accepted_items":[]},open(ap,"w"))
 elif variant=="vex-null-statement": json.dump(dict(old,statements=[None]),open(vp,"w"))
 elif variant=="items-malformed": open(ap,"w").write("{not json")
 elif variant=="items-notobject": open(ap,"w").write("[]")
@@ -4237,7 +4244,7 @@ print("rc=%s mutating=%d%s"%(rc,len(mut)," (checked at delivery)" if corrupt_at=
 PP
 begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
-for variant in vex-malformed vex-notobject vex-null-statement items-malformed items-notobject items-null-entry items-scalar-entry items-bad-fields items-mixed-expiry vex-bad-vulnerability vex-dir items-dir; do
+for variant in vex-malformed vex-notobject vex-null-statement vex-empty-object vex-null-statements vex-no-statements items-empty-object items-null-list items-malformed items-notobject items-null-entry items-scalar-entry items-bad-fields items-mixed-expiry vex-bad-vulnerability vex-dir items-dir; do
   r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r6" "rc=3 mutating=0" && ok || no "an unreadable or malformed reviewed input ($variant) stops the run: main() returns 3 and makes no mutating git/gh call" "$r6"
 done
@@ -4260,6 +4267,10 @@ PP
 eq "$r6g" "STOP" && ok || no "a per-finding VEX file this run wrote that does not parse stops _consolidate instead of producing 'statements: []'" "$r6g"
 r6="$("$PY" "$WORK/r6main.py" "$FXRUN" items-bad-at-delivery 2>/dev/null | tail -1)"
 case "$r6" in rc=3\ mutating=0*) ok ;; *) no "a reviewed input that stops parsing only in the delivery checkout also stops the run (exit 3), not an ordinary staging error" "$r6" ;; esac
+for variant in vex-empty-list items-empty-list; do   # an empty list is a valid file: the run proceeds (it is not the stop of a missing key)
+  r6e="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  case "$r6e" in rc=3*|"rc=EXC"*|"") no "a published VEX with statements: [] / accepted-items with accepted_items: [] ($variant) is valid and does not stop the run" "$r6e" ;; *) ok ;; esac
+done
 r6m="$("$PY" "$WORK/r6main.py" "$FXRUN" missing 2>/dev/null | tail -1)"
 case "$r6m" in rc=3*|"rc=EXC"*|"") no "a MISSING VEX and accepted-items file is the first run and does not stop" "$r6m" ;; *) ok ;; esac
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"

@@ -445,6 +445,19 @@ class MergeConsolidate(Base):
         self.assertEqual(R._read_reopened(p), [["CVE-1", ["prod"], ["pkg:deb/a@1"]]])
         self.assertEqual(R._read_reopened(os.path.join(self.d("ro3"), "absent.json")), [])      # absent = none
 
+    def test_a_published_vex_and_the_accepted_items_file_must_carry_their_list(self):
+        # a present file of the right name must hold its key as a list of objects: {} and a null list are a stop, [] is a valid empty list (rc-5b fix 13)
+        for name, key in (("fosterstack-cache.openvex.json", "statements"), ("accepted-items.json", "accepted_items"), ("f-CVE-2099-1.openvex.json", "statements")):
+            for bad in ({}, {key: None}, {"other": []}, {key: {}}, {key: "x"}, {key: [None]}, {key: [3]}, {key: [{}, "x"]}):
+                p = os.path.join(self.d("rq"), name); self.wj(p, bad)
+                with self.assertRaises(R.ReviewedInputInvalid, msg=repr((name, bad))):
+                    R._read_reviewed_json(p)
+            for good in ({key: []}, {key: [{}]}, {key: [{"a": 1}], "other": 1}):
+                p = os.path.join(self.d("rq2"), name); self.wj(p, good)
+                self.assertEqual(R._read_reviewed_json(p), good)
+        p = os.path.join(self.d("rq3"), "reopened-expired.json"); self.wj(p, {})      # a file with no required list is read as before
+        self.assertEqual(R._read_reviewed_json(p), {})
+
     def test_lstat_failure_other_than_absent_is_a_stop(self):
         import errno
         from unittest.mock import patch
