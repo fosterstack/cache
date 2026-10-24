@@ -51,7 +51,7 @@ def builds_govulncheck(a):
 # lines the same step must also carry; a new line outside the grammar needs a new row here, in review.
 ALLOWED = re.compile(r'(?:bash bin/|\./bin/)install-scanner\.sh (?P<tool>[a-z0-9][a-z0-9.-]*|"?[a-z0-9][a-z0-9.-]*-\$\{?[A-Za-z_]\w*\}?"?)(?: "(?:[^"`\\$]|\$(?!\())*")?(?:[ \t]+#.*)?')
 EXCLUDED_INSTALLER = {
-    ("auditor.yml", "audit"): {"lines": ['./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \\', './bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" || echo "::warning::could not install syft; the package inventory falls back to matched packages"'], "needs": [], "why": "the syft install whose failure is a warning (the line continues on the next line)"},
+    ("auditor.yml", "audit"): {"lines": ['./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \\', './bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" || echo "::warning::could not install syft; the package inventory falls back to matched packages"', './bin/install-scanner.sh go \\', './bin/install-scanner.sh go || echo "::warning::could not install the pinned Go toolchain; a bump PR will not regenerate its dependency provenance"'], "needs": [], "why": "the syft install and the pinned Go toolchain install (REQ-VEND-001-AC15), each of which fails as a warning (the line continues on the next line); govulncheck is built in its own credential-free job, never here"},
     ("main-candidate-rescan.yml", "scout-root-cause"): {"lines": ['./bin/install-scanner.sh "$t" "$RUNNER_TEMP/$t"'], "needs": ["for t in docker-scout docker-scout-1.25.0 docker-scout-1.24.0; do"], "forbid": r"(?<![\w$])t=", "why": "a loop over three literal docker-scout names, t assigned nowhere else in the step"},
 }
 def names_installer(line):
@@ -126,6 +126,7 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
             bad.append("%s/%s holds %s and runs the line %r in the step %r: a credential job may name install-scanner.sh only as exactly `bash bin/install-scanner.sh TOOL` (TOOL a literal word, not govulncheck) or a listed exception" % (key[0], jn, ", ".join(w), unresolved[0][1], unresolved[0][0]))
         # a job that records a step with bin/witnessed-local.sh (Build, Rebuild, Check: the throwaway-key Witness records, owner Oct 22) is a build-side job whatever its scripts hide: no credential, and never the keyless bin/witnessed.sh
         stext = "\n".join(steps_text(s_) for s_ in (j.get("steps") or []))
+        stext = re.sub(r"['\"\\]", "", re.sub(r"\\\n[ \t]*", "", stext))   # quotes, backslashes and continuations are not part of the word the shell runs (bin/witnessed-"local".sh is witnessed-local.sh)
         if re.search(r"\bwitnessed-local\.sh\b", stext):
             if w:
                 bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and holds %s: only Sign holds an identity token" % (key[0], jn, ", ".join(w)))
@@ -265,7 +266,7 @@ def in_refresh(s, old, new):   # the first match inside the refresh job (go-fres
     i = s.index("\n  refresh:"); return s[:i] + s[i:].replace(old, new, 1)
 $py
 PY
-  check "$name" bad "$dir"; }
+  check "$name" "${mwant:-bad}" "$dir"; }
 
 export ISO_SCANNERS="$root/.github/policy/scanners.json"   # the policy file the pr_gate check reads (mutated copies of the workflows keep the real one)
 check "the real workflows" ok "$root/.github/workflows"
@@ -319,6 +320,25 @@ mutate "a credential job assigns the wrapper's path to a variable (h=bin/witness
 edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          h=bin/witnessed\n          bash \"${h}-local.sh\" build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
 mutate "a credential job runs a script whose directory is a variable (bash \"\$P/witnessed-\${K}.sh\")" '
 edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        env:\n          P: bin\n          K: local\n        run: bash \"$P/witnessed-${K}.sh\" build x.sh\n", s, count=1, flags=re.S))'
+# quote and backslash spellings of the wrapper names are the same word to the shell (round 4, reviewer A): the judge reads the step text with quotes and backslashes removed
+want_msg="records its steps with witnessed-local.sh (a build-side job) and holds"
+mutate "a credential job runs bash bin/witnessed-\"local\".sh (quote fragment inside the wrapper name)" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed-\"local\".sh build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+mutate "a credential job runs bash bin/witnessed-lo\\cal.sh (backslash inside the wrapper name)" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed-lo\\cal.sh build bin/build-stage-assemble.sh\n", s, count=1, flags=re.S))'
+want_msg="also runs the keyless witnessed.sh"
+mutate "the Check job runs bash bin/witnessed\"\".sh (empty quotes inside the keyless wrapper name)" '
+edit("stage-verify.yml", lambda s: re.sub(r"(\n  check:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witnessed\"\".sh x bin/x.sh\n", s, count=1, flags=re.S))'
+mutate "the Check job runs bash bin/witn\\essed.sh (backslash inside the keyless wrapper name)" '
+edit("stage-verify.yml", lambda s: re.sub(r"(\n  check:\n.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: bash bin/witn\\essed.sh x bin/x.sh\n", s, count=1, flags=re.S))'
+# the pinned Go toolchain install in the audit job (cache#687): accepted exactly as listed; govulncheck through the same installer stays refused
+mwant=ok
+mutate "the audit job's pinned Go toolchain install is accepted (a comment added ahead of it)" '
+edit("auditor.yml", lambda s: s.replace("          ./bin/install-scanner.sh go \\\n", "          # accepted as listed\n          ./bin/install-scanner.sh go \\\n", 1))'
+mwant=bad
+want_msg="install-scanner.sh"
+mutate "the audit job installs govulncheck through install-scanner.sh in the Go toolchain step" '
+edit("auditor.yml", lambda s: s.replace("          ./bin/install-scanner.sh go \\\n", "          ./bin/install-scanner.sh govulncheck \\\n", 1))'
 want_msg=""
 # AC2: a second build in one job
 mutate "a second build step in one job (ci.yml gosec)" '
