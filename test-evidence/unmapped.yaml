@@ -13,9 +13,7 @@ unmapped:
   - ac: REQ-DEPLOY-001-AC1
     reason: no component test drives SIGTERM to a clean exit within the drain window; none mapped since the baseline (Sep 11); the owner decides
   - ac: REQ-SCAN-011-AC1
-    reason: rule 11 (customer guide) ships with rule 10's files, a later PR
-  - ac: REQ-SCAN-011-AC3
-    reason: rule 11 (customer guide) ships with rule 10's files, a later PR
+    reason: "docs/using-our-vex.md exists and ships with the rule-10 files; that it is never in a release before them is read at each release cut (inspection); no test names it"
   - ac: REQ-REL-009-AC7
     reason: "proven by the first real patch release (the full chain and identical GHCR/Docker Hub digests)"
   - ac: REQ-REL-009-AC9

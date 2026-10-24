@@ -158,6 +158,19 @@ jobs:
           # the scanner panel's tally (scanner-panel rules 3-6): its unique findings are judged below (rules 7-9)
           gh run download "$rid" -n panel-evidence -D "${RUNNER_TEMP}/panel" \
             || echo "::warning::selected run has no panel-evidence artifact; the scanner panel's audits cannot run"
+          # REQ-AUD-3 AC3 (no-change day, zero model calls): yesterday's verdicts and narrative ride in a small artifact, `auditor-state`,
+          # uploaded by a real run of THIS workflow on main. Only a successful scheduled or dispatch run of main is a candidate (never a
+          # pull request or another branch); the driver (AUDITOR_PREV_STATE) validates the file and uses it only when its finding-set
+          # hash equals today's, so a missing or unusable file just means today's behaviour (model calls). Never fails the step.
+          mkdir -p "${RUNNER_TEMP}/prev-state"
+          prev_ids=$( { gh run list --workflow auditor.yml --branch main --event schedule --status success --limit 5 --json databaseId,createdAt
+                        gh run list --workflow auditor.yml --branch main --event workflow_dispatch --status success --limit 5 --json databaseId,createdAt
+                      } | jq -s -r 'add | sort_by(.createdAt) | reverse | .[].databaseId' ) || prev_ids=""
+          for prid in $prev_ids; do
+            if gh run download "$prid" -n auditor-state -D "${RUNNER_TEMP}/prev-state"; then
+              echo "using the no-change state of run ${prid}"; break
+            fi
+          done
 
       # The source scan reads the tree the scanned image was built from: the selected rescan's head, not this run's own checkout. The head
       # comes only from the selected run, must be 40 lowercase hex and an ancestor of (or equal to) main; anything else leaves source_head
@@ -224,6 +237,11 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/gobin"
           ./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \
             || echo "::warning::could not install syft; the package inventory falls back to matched packages"
+          # the build's pinned Go toolchain at its fixed install path (/usr/local/bin/fscache-go/bin/go): the provenance records step of a
+          # dependency bump runs it (REQ-VEND-001-AC15). Installed here, in this existing step, and never fatal: without it a bump PR simply
+          # does not regenerate its dependency provenance.
+          ./bin/install-scanner.sh go \
+            || echo "::warning::could not install the pinned Go toolchain; a bump PR will not regenerate its dependency provenance"
           export PATH="${RUNNER_TEMP}/gobin:${PATH}"
           # No scanner runs here: the manifest takes the four panel scanners' results from the rescan's verdict.json
           # (the panel directory option), and a scanner that did not run is recorded 'did not run', never clean.
@@ -321,6 +339,7 @@ jobs:
           AUDITOR_MODEL_PRIMARY: ${{ secrets.AUDITOR_MODEL_PRIMARY }}
           AUDITOR_MODEL_FALLBACK: ${{ secrets.AUDITOR_MODEL_FALLBACK }}
           AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json
+          AUDITOR_PREV_STATE: ${{ runner.temp }}/prev-state/auditor-state.json   # yesterday's no-change state, if the fetch found one (REQ-AUD-3 AC3)
           # the App installation token (delivery) for THIS step only — git push + gh pr create;
           # falls back to the read-only job token on a dry run where no delivery happens.
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
@@ -452,6 +471,18 @@ jobs:
             ${{ runner.temp }}/panel-out
             ${{ runner.temp }}/manifest.json
             ${{ runner.temp }}/reports
+
+      # The no-change state (REQ-AUD-3 AC3): only a run that used the real adjudicator on the day's candidate and the committed defect log writes one, so a stub or
+      # proving run can never become tomorrow's verdicts. Its own short retention; the audit trail above keeps its default.
+      - name: Upload the no-change state
+        if: ${{ always() && (github.event_name == 'schedule' || (inputs.adjudicator == 'real' && inputs.test_image == '' && inputs.known_defect_log == '.github/agent/known-defect-log.json')) }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: auditor-state
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: ignore
+          path: ${{ runner.temp }}/auditor-out/.auditor/auditor-state.json
 
   # The scanner panel's seat probe (REQ-SCAN-008-AC3, live proof; advisor 0051): on request, from main only, in its own
   # job so nothing else of the auditor runs. It installs the pinned SDKs and sends each seat ONE fixed audit over a

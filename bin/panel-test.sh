@@ -7,7 +7,7 @@
 set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd)
-python3 - "$here/panel.py" "$here/../.vex/fosterstack-cache.openvex.json" <<'PY'
+python3 - "$here/panel.py" "$here/../test-evidence/vex-scope/busybox.openvex.json" <<'PY'
 import importlib.util, json, os, shutil, sys, tempfile
 spec = importlib.util.spec_from_file_location("panel", sys.argv[1]); P = importlib.util.module_from_spec(spec); spec.loader.exec_module(P)
 VEX = sys.argv[2]
@@ -336,6 +336,9 @@ put(sd, "cves.json", {"vulnerabilities": [
 ex = {t[0]: t[4] for t in P.read_scout(sd)[1]}
 check("Scout's GitLab-format report: severity and the other identifiers as aliases; Unknown severity is absent",
       ex["CVE-2099-0102"] == {"severity": "medium", "aliases": ["GHSA-dddd-eeee-ffff"]} and ex["CVE-2099-0103"] == {}, ex)
+# rc-5a C round 2 (fix-round seats): the panel counts packages the same way the gates do: a component with a non-empty STRING purl
+pcd = {"components": [{"purl": "pkg:generic/a@1"}, {"purl": ""}, {"purl": None}, {"purl": 7}, {"purl": {"a": 1}}, {"purl": [1]}, {"purl": True}, {"name": "f"}, "x"]}
+check("panel: only a component with a non-empty string purl is a package (7, an object, a list and true are not)", len(P._cdx_packages(pcd)) == 1, P._cdx_packages(pcd))
 # rc-5a B (Fable ruling on astra B2): Scout puts the package URL in dependency.package.name (scout-selfcheck.py:124); the reader names it as the other scanners do
 sp = os.path.join(tempfile.mkdtemp(), "sp")
 put(sp, "sbom.json", {"artifacts": [{"name": "tzdata", "version": "2026c", "purl": "pkg:deb/debian/tzdata@2026c"}]})
@@ -498,6 +501,23 @@ def tally_cli(d):
     return p.returncode, p.stdout + p.stderr
 good = as_artifacts(tree())
 check("artifact layout: the normal download (one panel-<scanner> folder each) is accepted", layout_error(good) == "", layout_error(good))
+# rc-5a D1 round 2 (first look): a Scout step that fails on every image removes every image directory (so no partial report counts as ran); the artifact then holds
+# only scout-diag. That is a scanner with no results, which the tally calls did-not-run; it is not a layout refusal (a refusal would discard the other scanners' results too)
+nores = as_artifacts(tree(skip={("scout", "production-amd64"), ("scout", "production-arm64"), ("scout", "fips-amd64"), ("scout", "fips-arm64")}))
+os.makedirs(os.path.join(nores, "panel-scout"), exist_ok=True)
+check("artifact layout: a Scout artifact that holds only scout-diag (every image failed) is accepted as a scanner with no results", layout_error(nores) == "", layout_error(nores))
+check("artifact layout: and Scout is then absent from the scanner folders", "scout" not in P.scanner_dirs(nores), sorted(P.scanner_dirs(nores)))
+# a diagnostics entry that is a link or a plain file is still a layout refusal (the diag-only exemption checks every entry)
+for kind in ("symlink", "file"):
+    bad_ = as_artifacts(tree(skip={("scout", "production-amd64"), ("scout", "production-arm64"), ("scout", "fips-amd64"), ("scout", "fips-arm64")}))
+    shutil.rmtree(os.path.join(bad_, "panel-scout", "scout-diag"))
+    if kind == "symlink":
+        os.symlink(os.path.join(bad_, "panel-grype"), os.path.join(bad_, "panel-scout", "scout-diag"))
+    else:
+        open(os.path.join(bad_, "panel-scout", "scout-diag"), "w").write("x")
+    check("artifact layout: a diag-only Scout artifact whose scout-diag is a %s is refused" % kind, "scout-diag" in layout_error(bad_), layout_error(bad_))
+rc_, o_ = tally_cli(nores)
+check("artifact layout: the tally still runs and records Scout as did not run on all four images (the other scanners' results are kept)", rc_ == 2 and "scout" in o_ and "Traceback" not in o_, (rc_, o_[:200]))
 dirs = P.scanner_dirs(good)
 check("artifact layout: the tally of the downloaded layout equals the tally of the direct tree",
       json.dumps(P.tally(good, P.load_vex(VEX), dirs), sort_keys=True) == json.dumps(judge(tree()), sort_keys=True))

@@ -456,7 +456,7 @@ case_scan workflow-concurrency   bad "d['concurrency'] = {'group': 'scan', 'canc
 case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 'self-hosted'"
 
 # ---------------------------------------------------------------------------------------------------------------------
-# REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24; 25 with supply-chain.yml, REQ-SUP-001, a new file under the Oct 3 amendment, reported to the owner; 26 with stage-sign.yml, the one new workflow file of v0.3.0, named by rule 52 and RATIFIED by the owner Oct 9; 24 again when PR 2 removes stage-image.yml and stage-admission.yml, rules 50 and 61): after the consolidation PRs the workflow directory holds exactly
+# REQ-REL-008-AC1 (owner RATIFIED Oct 2, amended to 24; 25 with supply-chain.yml, REQ-SUP-001, a new file under the Oct 3 amendment, reported to the owner; 26 with stage-sign.yml, the one new workflow file of v0.3.0, named by rule 52 and RATIFIED by the owner Oct 9; 24 again when PR 2 removes stage-image.yml and stage-admission.yml, rules 50 and 61; 19 today, the list below): after the consolidation PRs the workflow directory holds exactly
 # the ratified files — the "keep" rows of docs/ratify/2026-10-02-workflow-consolidation.md, the 11 attestation-signer
 # stages, and dependabot-auto-merge.yml (its events differ from ci.yml's) — and nothing else (no workflow sprawl).
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
