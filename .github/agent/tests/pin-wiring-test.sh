@@ -2,6 +2,7 @@
 # proves: REQ-SCAN-015-AC2 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases)
 # proves: REQ-CI-001-AC1, REQ-CI-001-AC2, REQ-CI-001-AC3, REQ-CI-001-AC4 — the split form of allowlist-chain is accepted only exactly (the chain-split cases)
 # proves: REQ-CI-005-AC2 — a counting step is accepted only in exactly its form (the count-step cases)
+# proves: REQ-REL-004-AC1 — the pull-request gate's govulncheck job judges the way Check does: it is accepted only in exactly its form (the govulncheck-gate cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
@@ -1260,6 +1261,65 @@ else: json.dump(d, open(sys.argv[2], "w"))
 PY
   if out=$(PIN_WIRING_POLICY_FILE="$work/pol-$mut.json" judge "$here/.github/workflows/ci.yml"); then failn=$((failn+1)); echo "FAIL policy-$mut accepted"; else pass=$((pass+1)); echo "PASS policy-$mut → bad ($out)"; fi
 done
+
+# PR B (read-back approved by the advisor, Oct 23; Fable ruling of record cache#703): the pull-request gate's govulncheck job (the required context) installs the pinned Go, installs
+# govulncheck at the version tools/govulncheck pins, and runs bin/check-govulncheck.py by its fixed path on the repository's scanner list, as its LAST step and with nothing between:
+# the step list is exactly checkout, setup-go, the installer, the install and the script; the job keeps its name, contents: read, and holds no secret, id-token or environment.
+# This judge lives here because the trusted gate re-runs main's copy over the PR head (REQ-REL-004-AC1; the scan it runs is REQ-CHAIN-006-AC18).
+gvgate_judge() { # gvgate_judge CIYML : exit 0 when the job named govulncheck is exactly the Check-equivalent form
+  python3 - "$1" "$here/tools/govulncheck/go.mod" <<'PY'
+import re, sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+pin = None
+for line in open(sys.argv[2]):
+    m = re.match(r"^\s*(?:require\s+)?golang\.org/x/vuln\s+(v\d+\.\d+\.\d+)\b", line)
+    if m: pin = m.group(1); break
+if not pin: sys.exit(1)
+j = (d.get("jobs") or {}).get("govulncheck")
+if not isinstance(j, dict): sys.exit(1)
+bad = []
+if j.get("name") != "govulncheck": bad.append("name")
+if j.get("permissions") != {"contents": "read"}: bad.append("permissions")
+if set(j) - {"name", "runs-on", "permissions", "steps"}: bad.append("job keys")
+steps = j.get("steps") or []
+if len(steps) != 5: bad.append("step count")
+else:
+    s0, s1, s2, s3, s4 = steps
+    if not str(s0.get("uses", "")).startswith("actions/checkout@") or set(s0) - {"uses"}: bad.append("checkout step")
+    if not str(s1.get("uses", "")).startswith("actions/setup-go@") or set(s1) - {"uses", "with"}: bad.append("setup-go step")
+    if s2.get("run") != "bash bin/install-scanner.sh go" or set(s2) - {"name", "run"}: bad.append("installer step")
+    if s3.get("run") != "go install golang.org/x/vuln/cmd/govulncheck@" + pin or set(s3) - {"name", "run"}: bad.append("install step")
+    if s4.get("run") != 'python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"' or set(s4) - {"name", "run"}: bad.append("script step")
+sys.exit(1 if bad else 0)
+PY
+}
+gvgate_ci="${PIN_WIRING_WORKFLOWS_DIR:-$here/.github/workflows}/ci.yml"
+if gvgate_judge "$gvgate_ci"; then pass=$((pass+1)); echo "PASS govulncheck-gate real job"; else failn=$((failn+1)); echo "FAIL govulncheck-gate real job is not the Check-equivalent form"; fi
+gvgate_mut() { # gvgate_mut LABEL OLD NEW : the ci.yml with one change inside the govulncheck job must be refused
+  python3 - "$gvgate_ci" "$work/gvgate-ci.yml" "$2" "$3" <<'PY'
+import sys
+t = open(sys.argv[1]).read(); a, b = sys.argv[3], sys.argv[4]
+i = t.index("  govulncheck:\n    name: govulncheck")
+head, job = t[:i], t[i:]
+j = job.index("\n\n")
+body, rest = job[:j], job[j:]
+assert a in body, a
+open(sys.argv[2], "w").write(head + body.replace(a, b, 1) + rest)
+PY
+  if gvgate_judge "$work/gvgate-ci.yml"; then failn=$((failn+1)); echo "FAIL govulncheck-gate $1 accepted"; else pass=$((pass+1)); echo "PASS govulncheck-gate $1 → refused"; fi
+}
+gvgate_mut "old-bare-step" 'python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"' 'govulncheck ./...'
+gvgate_mut "no-installer" 'bash bin/install-scanner.sh go' 'true'
+gvgate_mut "script-path" 'bin/check-govulncheck.py' 'bin/check-other.py'
+gvgate_mut "scanner-list" '.github/policy/scanners.json' '/tmp/scanners.json'
+gvgate_mut "no-isolation-flags" 'python3 -I -B bin' 'python3 bin'
+gvgate_mut "id-token" 'contents: read' 'contents: read
+      id-token: write'
+gvgate_mut "job-renamed" 'name: govulncheck' 'name: govulncheck-gate'
+gvgate_mut "install-and-copy" 'govulncheck@v1.7.0' 'govulncheck@v1.7.0 && cp /bin/true ~/go/bin/govulncheck'
+gvgate_mut "planted-binary-step" '      - name: govulncheck (the same judgment as Check)' '      - name: plant
+        run: cp /bin/true /usr/local/bin/fscache-go/bin/govulncheck
+      - name: govulncheck (the same judgment as Check)'
 
 echo "pin-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
