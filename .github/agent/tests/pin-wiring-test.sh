@@ -101,6 +101,9 @@ for st in job.get("steps", []):
         for k in ("if", "continue-on-error", "shell", "working-directory") + (("env",) if run == "bash .github/agent/tests/check-action-pins-test.sh" else ()):   # env on the cases step: the PINS_* controls (shard, dry, serial, self, jobs) are never set from the workflow
             if k in st:
                 bad.append(f"the step `{run}` has `{k}`")
+        if run in ("bash .github/agent/tests/auditor-matrix-test.sh", "bash .github/agent/tests/auditor-labels-test.sh"):     # REQ-CI-005: a counting step is trusted only with no key but name and run, so any other key makes `all` run the suite again
+            for k in sorted(set(st) - {"name", "run"}):
+                bad.append(f"the counting step `{run}` has `{k}` (a counting step has no key but name and run)")
 # nothing may redirect how those steps execute (step 8 r3, residual 2): a shell startup file, an
 # environment or PATH written for later steps, interpreter search paths, or a checkout of another tree
 import json
@@ -903,6 +906,8 @@ for sfx in matrix labels; do
   case_ "auditor-$sfx-if"       bad "$sel['if'] = 'false'"
   case_ "auditor-$sfx-continue" bad "$sel['continue-on-error'] = 'true'"
   case_ "auditor-$sfx-shell"    bad "$sel['shell'] = \"bash -c 'true' {0}\""
+  case_ "auditor-$sfx-env"      bad "$sel['env'] = {'A': 'b'}"
+  case_ "auditor-$sfx-timeout"  bad "$sel['timeout-minutes'] = '5'"
 done
 
 ck='[s for s in '"$steps"' if (s.get("run") or "").strip().endswith("check-file-allowlist.sh")][0]'
