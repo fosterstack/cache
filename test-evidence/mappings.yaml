@@ -444,8 +444,8 @@ mappings:
       - { type: inspection, ref: "command -v skopeo > /dev/null || { echo \"::error::skopeo is not on this runner image\"; exit 1; }" }
       - { type: inspection, ref: "scan.yml: scanner, inspector. auditor.yml: audit." }
       - { type: inspection, ref: "main-candidate-rescan.yml: vex-attach, panel-grype, scout-root-cause, panel-inspector, panel-google." }
-      - { type: inspection, ref: "No job installs skopeo. The job token reaches docker login only through env: GH_TOKEN, in" }
-      - { type: inspection, ref: "acceptance.yml (acceptance-gradle, acceptance-maven) and main-candidate-rescan.yml (rescan)." }
+      - { type: inspection, ref: "No job installs skopeo. The job token reaches docker login only through env: GH_TOKEN," }
+      - { type: inspection, ref: "in main-candidate-rescan.yml (rescan); acceptance.yml's two login lines follow in their own change." }
   - ac: REQ-REL-005-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
