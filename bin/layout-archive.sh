@@ -18,9 +18,11 @@ member() {
   [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]] || die "not a sha256:<64 hex> digest: $1"
   local path="blobs/sha256/${1#sha256:}"
   [ -f "$layout/$path" ] && [ ! -L "$layout/$path" ] || die "$path is not a regular file"
-  cp "$layout/$path" "$stage/$path" 2> /dev/null || die "$path cannot be read"
-  echo "${1#sha256:}  $path" | (cd "$stage" && sha256sum -c --quiet) > /dev/null 2>&1 \
-    || die "$path does not match its digest"
+  if [ ! -e "$stage/$path" ]; then   # a digest met again is already staged and verified
+    cp "$layout/$path" "$stage/$path" 2> /dev/null || die "$path cannot be read"
+    echo "${1#sha256:}  $path" | (cd "$stage" && sha256sum -c --quiet) > /dev/null 2>&1 \
+      || die "$path does not match its digest"
+  fi
   echo "$path"
 }
 

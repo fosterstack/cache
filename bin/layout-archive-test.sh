@@ -51,6 +51,7 @@ json.dump({"schemaVersion": 2, "manifests": roots}, open(root + "/index.json", "
 open(root + "/manifest.json", "w").write("a stray file at the layout root")
 if variant == "repeated-layer":   # a second name for the same inode must not become a tar link to itself
     os.link(root + "/blobs/sha256/" + layer[7:], root + "/layer-alias")
+    os.chmod(root + "/blobs/sha256/" + layer[7:], 0o444)   # a read-only source must not break the second copy
 if variant == "wrong-bytes":
     open(root + "/blobs/sha256/" + layer[7:], "wb").write(b"not the layer")
 if variant == "symlink-layer":   # the target hashes to the digest, so only a regular-file check can refuse it
