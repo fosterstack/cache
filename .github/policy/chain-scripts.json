@@ -1931,7 +1931,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "b12fc34e84b5c3c02ffe0c7e4bebddfc33141aabcd0d2ccc04f250437a0f000d",
+      "sha256": "18aadaf8cc1cfb0c27fadafa9dee92c2f5cdfc39fc9bc25e20fca6af7af05786",
       "tools": [
         "at",
         "curl",

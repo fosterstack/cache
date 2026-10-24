@@ -51,7 +51,8 @@ trap cleanup EXIT
 
 checks="[]"
 passed() { checks=$(jq -c --arg ac "$1" --arg s "$2" '. + [{ac: $ac, subject: $s, result: "pass"}]' <<< "$checks"); }
-# healthy PORT [PID]: /healthz answers within 10 s; with a PID, a server that is gone ends the wait at once
+# healthy PORT [PID]: /healthz answers within 20 tries (a refused try costs 0.5 s, a silent one up to 2.5 s);
+# with a PID, a server that is gone ends the wait at once
 healthy() {
   local pid=${2:-}
   for _ in $(seq 20); do
@@ -84,7 +85,8 @@ python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$a
 # Each server asks the kernel for its own port (127.0.0.1:0) and the check reads the port from the server's "starting"
 # log line, so no port is guessed: another run's server, or a connection that is open on a port, can never be what a
 # server of this run fails to get.
-# bound_port PID LOG: the port the server reports; fails when the process is gone first or no line comes in 20 s
+# bound_port PID LOG: the port the server reports; fails when the process is gone first or 80 looks (about 20 s)
+# see no line
 bound_port() {
   local i addr
   for i in $(seq 80); do
