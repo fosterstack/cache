@@ -74,7 +74,7 @@ _SITES = {
     "auditor-report.py": (1, "run-state.json written earlier in the same run"),
     "auditor-suppress.py": (1, "the disposition file written earlier in the same run"),
     "auditor-vex-scope-check.py": (1, "a candidate VEX document: an empty one fails closed (no products, all_scoped false, nothing re-emitted)"),
-    "auditorlib/nochange.py": (1, "the no-change-day state: its own strict loader, an unusable file is no state (see EXEMPT auditor-state.json)"),
+    "auditorlib/nochange.py": (2, "the no-change-day state, read twice: load (verdict reuse) and load_unsettled (the unsettled-run counts), each its own strict loader; an unusable file is no state, a right-schema file with untrustworthy counts stops the run (see EXEMPT auditor-state.json)"),
     "auditorlib/parsers.py": (2, "the scanners' own reports"),
     "auditorlib/vex.py": (1, "the checked-in VEX schema"),
     "auditorlib/cli.py": (1, "the model client's reply"),
