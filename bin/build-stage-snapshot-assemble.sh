@@ -3,9 +3,9 @@
 # record is refused by them): the bind of each downloaded apk directory to its snapshot-apk record is the only link. It writes digests.json and items.json
 # like a release does, with the fixed snapshot version.
 set -euo pipefail
-python3 bin/chain-verify.py bind --step snapshot-apk --record rec-apk/ubuntu-24.04/snapshot-apk-collection.json --dir apk/ubuntu-24.04 \
+python3 bin/chain-verify.py bind --local --step snapshot-apk --record rec-apk/ubuntu-24.04/snapshot-apk-collection.local.json --dir apk/ubuntu-24.04 \
   --as out
-python3 bin/chain-verify.py bind --step snapshot-apk --record rec-apk/ubuntu-24.04-arm/snapshot-apk-collection.json \
+python3 bin/chain-verify.py bind --local --step snapshot-apk --record rec-apk/ubuntu-24.04-arm/snapshot-apk-collection.local.json \
   --dir apk/ubuntu-24.04-arm --as out
 mkdir -p melange-repo
 cp -R apk/ubuntu-24.04/x86_64 melange-repo/x86_64
