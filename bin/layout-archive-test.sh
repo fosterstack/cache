@@ -30,6 +30,12 @@ for arch in ("amd64", "arm64"):
         layers.append({"digest": ""})
     if variant == "layers-not-a-list" and arch == "amd64":
         layers = "x"
+    if variant == "layers-an-object" and arch == "amd64":
+        layers = {"a": {"digest": layer}}
+    if variant == "two-digests-in-one" and arch == "amd64":
+        layers = [{"digest": layer + "\n" + layer}]
+    if variant == "repeated-layer" and arch == "amd64":
+        layers = [{"digest": layer}, {"digest": layer}]
     manifest = json.dumps({"schemaVersion": 2, "config": {"digest": config}, "layers": layers}).encode()
     kids.append({"digest": blob(manifest), "platform": {"os": "linux", "architecture": arch}})
     open(root + "-" + arch, "w").write("child %s config %s" % (kids[-1]["digest"], config))
@@ -43,6 +49,8 @@ if variant == "bad-index-digest":
     roots = [{"digest": "sha256:../../../etc/passwd"}]
 json.dump({"schemaVersion": 2, "manifests": roots}, open(root + "/index.json", "w"))
 open(root + "/manifest.json", "w").write("a stray file at the layout root")
+if variant == "repeated-layer":   # a second name for the same inode must not become a tar link to itself
+    os.link(root + "/blobs/sha256/" + layer[7:], root + "/layer-alias")
 if variant == "wrong-bytes":
     open(root + "/blobs/sha256/" + layer[7:], "wb").write(b"not the layer")
 if variant == "symlink-layer":   # the target hashes to the digest, so only a regular-file check can refuse it
@@ -80,17 +88,25 @@ refused() {  # <label> <layout dir> <arch> [text the message must hold]: exit 1,
 }
 refused "an architecture the index does not hold" "$work/layout" s390x
 for v in two-children traversal-layer two-roots wrong-bytes bad-index-digest empty-layer-digest layers-not-a-list \
-  symlink-layer; do
+  symlink-layer layers-an-object two-digests-in-one repeated-layer; do
   python3 "$work/mk.py" "$work/$v" "$v"
 done
 refused "two children for one architecture" "$work/two-children" amd64 "single linux"
-refused "a layer digest that is not sha256:<64 hex>" "$work/traversal-layer" amd64 "not a sha256"
+refused "a layer digest that is not sha256:<64 hex>" "$work/traversal-layer" amd64 "must be sha256"
 refused "an index.json with two roots" "$work/two-roots" amd64 "exactly one"
 refused "a blob whose bytes are not its digest" "$work/wrong-bytes" amd64 "does not match"
 refused "an index digest that is not sha256:<64 hex>" "$work/bad-index-digest" amd64 "not a sha256"
-refused "a layer with an empty digest" "$work/empty-layer-digest" amd64 "not a sha256"
+refused "a layer with an empty digest" "$work/empty-layer-digest" amd64 "must be sha256"
 refused "layers that are not a list" "$work/layers-not-a-list" amd64 "layers"
 refused "a blob that is a symlink" "$work/symlink-layer" amd64 "regular file"
+refused "layers that are an object" "$work/layers-an-object" amd64 "layers"
+refused "one layer digest holding two" "$work/two-digests-in-one" amd64 "must be sha256"
+bash "$tool" "$work/repeated-layer" amd64 "$work/rep.tar" "$tag" > /dev/null
+[ "$(tar -tf "$work/rep.tar" | wc -l | tr -d ' ')" = 3 ] && ok "a layer listed twice is one member of the tar" \
+  || bad "repeated layer members: $(tar -tf "$work/rep.tar" | tr '\n' ' ')"
+tar -xOf "$work/rep.tar" manifest.json | jq -e '.[0].Layers | length == 2' > /dev/null \
+  && ok "and stays listed twice in the manifest" || bad "repeated layer manifest"
+rm -rf "$work/rep"; mkdir "$work/rep"; tar -xf "$work/rep.tar" -C "$work/rep" && ok "the tar extracts" || bad "extract"
 refused "a layout with no index" "$work/missing" amd64
 
 echo "layout-archive: $pass passed, $failn failed"
