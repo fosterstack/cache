@@ -9,7 +9,8 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         strategy, needs, shell, working-directory, continue-on-error; steps EXACTLY, in order:
                           1. actions/checkout (full commit digest, persist-credentials: false, nothing else)
                           2. run: bash bin/install-scanner.sh witness, then one `bash bin/install-scanner.sh S` per listed scanner (grype, osv-scanner)
-                          3. run: bash bin/install-kind.sh (REQ-CHAIN-006-AC14: kind and kubectl from exact versions and committed sha256)
+                          3. run: KIND_STEP (REQ-CHAIN-006-AC14, amended Oct 24: kind and kubectl from the runner image;
+                             the step prints their versions and fails labelled if either is missing)
                           4. digest-pinned actions/download-artifact steps, names from DOWN, explicit path outside bin/ and .github/, EXACTLY ONE
                              of them `images` (path images/; the candidates arrive as OCI tarballs, advisor ruling Q4)
                           5. THREE run steps, one line each, the only form `bash bin/witnessed-local.sh STEP TARGET` (TARGET = bin/check-phase-STEP.sh) with STEP
@@ -23,8 +24,6 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         substitution, the record witness-DIR/STEP-collection.json, the four sensitive keys) with ONE PR 3 extension: the closed step
                         list also holds scanners, acceptance and runtime (advisor ruling Q2, a step-5 revisit). At the merge with PR 2 its judge's
                         STEPS takes the same three names and this copy is deleted in favour of it.
-  kind FILE             REQ-CHAIN-006-AC14: bin/install-kind.sh is exactly KIND_LINES: kind v0.33.0 and kubectl v1.37.0 for linux amd64 only (the
-                        Check runner is ubuntu-24.04), each verified against its committed sha256 by sha256sum -c before it is installed.
   cluster FILE          REQ-CHAIN-006-AC14: bin/acceptance-k8s.sh creates its cluster with exactly CLUSTER (the node image by digest) and no action.
   suites FILE           REQ-CHAIN-006-AC5: acceptance.yml's gradle and maven jobs run the shared suite scripts (one copy of each suite).
   phase FILE STEP       REQ-CHAIN-006-AC1/AC3: bin/check-phase-STEP.sh is the one line `bash bin/check-stage.sh STEP`.
@@ -47,7 +46,9 @@ PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 DOWN = {"signed-witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
 UP = {"witness-check": RECORD_DIRS, "check-results": "check-results", "witness-check-arm64": "witness-arm64", "check-results-arm64": "check-results"}   # artifact name -> the path(s) it may carry
-KIND_STEP = "bash bin/install-kind.sh"
+KIND_STEP = 'kind version && kubectl version --client || { echo "::error::PIPELINE, no kind or kubectl"; exit 1; }'
+# REQ-CHAIN-006-AC14 (amended Oct 24): kind and kubectl come from the runner image;
+# the step prints their versions and fails labelled if either is missing
 STEPS = ["scanners", "acceptance", "runtime"]
 SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 GO_INSTALL = "bash bin/install-scanner.sh go"          # the pinned toolchain govulncheck is built with (an installer of its own; not a scanner)
@@ -141,26 +142,10 @@ PHASES = {  # rules 55, 72, 79; the phases are split so that no witnessed comman
 }
 SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase-acceptance.sh", "bin/check-phase-runtime.sh", "bin/check-phase-arm64.sh", "bin/check-scan.sh", "bin/check-govulncheck.py", "bin/check-fips.sh", "bin/check-artifacts.sh", "bin/check-acceptance.sh", "bin/check-guide.sh",
            "bin/acceptance-gradle.sh", "bin/acceptance-gradle-capped.sh", "bin/acceptance-maven.sh", "bin/acceptance-maven-capped.sh",
-           "bin/acceptance-egress.sh", "bin/acceptance-k8s.sh", "bin/acceptance-serve.sh", "bin/install-kind.sh"]
-# REQ-CHAIN-006-AC14 (advisor ruling Q8; kind v0.33.0 release notes, https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0, 2026-08-26)
-KIND_URL = "https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64"
-KIND_SHA = "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
-KUBECTL_SHA = "6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f"
+           "bin/acceptance-egress.sh", "bin/acceptance-k8s.sh", "bin/acceptance-serve.sh"]
+# REQ-CHAIN-006-AC14: the node image the k8s suite creates its cluster with, by digest
+# (kind v0.33.0 release notes, https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0)
 NODE_IMAGE = "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
-KIND_LINES = [
-    "set -euo pipefail",
-    '[ "$(uname -s)-$(uname -m)" = Linux-x86_64 ] || { echo "install-kind: only linux amd64 is pinned (the Check runner is ubuntu-24.04)" >&2; exit 1; }',
-    'tmp=$(mktemp -d)',
-    "trap 'rm -rf \"$tmp\"' EXIT",
-    'curl -fsSL -o "$tmp/kind" ' + KIND_URL,
-    'cid=$(docker create ' + NODE_IMAGE + ')',
-    'docker cp "$cid:/usr/bin/kubectl" "$tmp/kubectl"',
-    'docker rm "$cid" > /dev/null',
-    'printf \'%%s  %%s\\n\' %s "$tmp/kind" %s "$tmp/kubectl" | sha256sum -c -' % (KIND_SHA, KUBECTL_SHA),
-    'install -m 0755 "$tmp/kind" "$tmp/kubectl" /usr/local/bin/',
-    "kind version",
-    "kubectl version --client",
-]
 CLUSTER = "kind create cluster --name fscache-accept --image " + NODE_IMAGE
 SUITE_STEPS = {  # acceptance.yml: each job runs the shared suite scripts, the capped one as the results step
     "acceptance-gradle": ["bash bin/acceptance-gradle.sh", "bash bin/acceptance-gradle-capped.sh"],
@@ -340,12 +325,15 @@ def stage(path):
     got_down = [x for x in kinds if x == "down"]
     body = [x for x in kinds if x != "down"]
     if body[:k] != want or body[k:k + 3] != ["witnessed"] * 3 or body[k + 3:k + 4] != ["rec"] or any(x != "up" for x in body[k + 4:]) or len(body) < k + 5:
-        bad.append("steps must be checkout, install Witness, install each listed scanner, install kind (bash bin/install-kind.sh), downloads, THREE witnessed steps, the records step, uploads (in that order); got %s" % kinds)
+        bad.append("steps must be checkout, install Witness, install each listed scanner, the kind and kubectl check "
+                   "(KIND_STEP), downloads, THREE witnessed steps, the records step, uploads (in that order); "
+                   "got %s" % kinds)
     if "kind" in kinds and "down" in kinds and kinds.index("down") < kinds.index("kind"):
         bad.append("the downloads come after the installs")
     want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", GO_INSTALL)] + [("downid", "govulncheck-dl"), ("run", GV_HAND_LINE)] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
              [("run", "bash bin/witnessed-local.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS] + [("rec", "records"), ("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))]
-    bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, kind install, four downloads, the three witnessed steps, the two uploads")
+    bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, kind check, "
+                                               "four downloads, the three witnessed steps, the two uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
     if len(imgs) != 1 or (imgs[0].get("with") or {}).get("path") != "images":
         bad.append("exactly one download of the images artifact, into images/, is required; found %d" % len(imgs))
@@ -396,13 +384,6 @@ def helper(path):
     return ["control character %s in the helper" % c for c in control_chars(raw)] + faults + compare(commands, witnessed_lines(), "the helper")
 
 
-def kind(path):
-    """REQ-CHAIN-006-AC14: bin/install-kind.sh is exactly KIND_LINES (exact versions, amd64 only, committed sha256, checked before install)."""
-    raw = open(path, newline="").read()
-    commands, faults = commands_of(raw)
-    return ["control character %s in the installer" % c for c in control_chars(raw)] + faults + compare(commands, KIND_LINES, "the kind installer")
-
-
 def cluster(path):
     """REQ-CHAIN-006-AC14: the k8s suite creates its cluster with exactly CLUSTER, once, and names no kind action."""
     text = open(path).read()
@@ -412,7 +393,7 @@ def cluster(path):
     if creates != [CLUSTER]:
         bad.append("the cluster must be created exactly once, as %r (the node image by digest); found %s" % (CLUSTER, creates))
     if re.search(r"helm/kind-action|kind-action", text):
-        bad.append("the k8s suite names a kind action (kind and kubectl come from bin/install-kind.sh)")
+        bad.append("the k8s suite names a kind action (kind and kubectl come from the runner image)")
     return bad
 
 
@@ -860,11 +841,11 @@ def removed_rule61(root):
 if __name__ == "__main__":
     cmd = sys.argv[1]
     for p in sys.argv[2:]:
-        if cmd in ("stage", "script", "graph", "helper", "kind", "cluster", "suites") and not os.path.exists(p):
+        if cmd in ("stage", "script", "graph", "helper", "cluster", "suites") and not os.path.exists(p):
             print("missing file: %s" % p); sys.exit(1)
         break
     fn = {"stage": lambda: stage(sys.argv[2]), "script": lambda: script(sys.argv[2]), "phase": lambda: phase(sys.argv[2], sys.argv[3]), "graph": lambda: graph(sys.argv[2]),
-          "plain": lambda: plain(sys.argv[2:]), "helper": lambda: helper(sys.argv[2]), "kind": lambda: kind(sys.argv[2]),
+          "plain": lambda: plain(sys.argv[2:]), "helper": lambda: helper(sys.argv[2]),
           "cluster": lambda: cluster(sys.argv[2]), "suites": lambda: suites(sys.argv[2]), "guidelist": lambda: guidelist(sys.argv[2]), "records": lambda: records(sys.argv[2]), "listed": lambda: listed(sys.argv[2], sys.argv[3]), "installs": lambda: installs(sys.argv[2], sys.argv[3]), "removed": lambda: removed(sys.argv[2])}[cmd]
     bad = fn()
     print("; ".join(bad) or "ok")
