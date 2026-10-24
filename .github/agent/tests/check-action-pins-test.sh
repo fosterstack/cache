@@ -3208,14 +3208,14 @@ assert [t for t in m._commands(m._mark_defaults(old)) if t and t[0] == "__variab
 PY
 fi
 
-# the one exact exclusion (auditor.yml, job audit, step 9, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
+# the one exact exclusion (auditor.yml, job audit, step 10, the run text's sha256, and the env line that names the catalog file): a copy anywhere else, an edit, or a changed env is a finding again
 if take ac3-exclusion-is-exact; then
 python3 - "$here/../bin/check-action-pins.py" "$here/../../workflows/auditor.yml" <<'PY' && { pass=$((pass+1)); echo "PASS ac3-exclusion-is-exact → ok"; } || { failn=$((failn+1)); echo "FAIL ac3-exclusion-is-exact"; }
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("c", sys.argv[1]); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 import yaml
 wf = open(sys.argv[2]).read()
-run = yaml.safe_load(wf)["jobs"]["audit"]["steps"][9]["run"]
+run = yaml.safe_load(wf)["jobs"]["audit"]["steps"][10]["run"]
 class Tree:
     entries = {"bin/x-test.sh": "file"}
     def __init__(self, files): self.files = files
@@ -3229,14 +3229,14 @@ def judge(file, job, idx, text, files=None):
     m.check_runs(file, [(f"{file}.jobs.{job}.steps[{idx}].run", text, None), (f"{file}.jobs.{job}.steps[40].run", "bash bin/x-test.sh\n", None)], bad, Tree(files if files is not None else {file: wf}))
     return [b for b in bad if "REQ-REL-005-AC3" in b]
 F = ".github/workflows/auditor.yml"
-assert not judge(F, "audit", 9, run), "the exact step is excluded"
-assert judge(F, "audit", 10, run), "the same text at another step index is a finding"
-assert judge(F, "other", 9, run), "the same text in another job is a finding"
-assert judge(".github/workflows/other.yml", "audit", 9, run, {".github/workflows/other.yml": wf}), "the same text in another file is a finding"
-assert judge(F, "audit", 9, run, {}), "a workflow file the tree cannot read keeps the finding"
-assert judge(F, "audit", 9, run + "\n# edited"), "an edited step is a finding"
-assert judge(F, "audit", 9, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
-assert judge(F, "audit", 9, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
+assert not judge(F, "audit", 10, run), "the exact step is excluded"
+assert judge(F, "audit", 9, run), "the same text at another step index is a finding"
+assert judge(F, "other", 10, run), "the same text in another job is a finding"
+assert judge(".github/workflows/other.yml", "audit", 10, run, {".github/workflows/other.yml": wf}), "the same text in another file is a finding"
+assert judge(F, "audit", 10, run, {}), "a workflow file the tree cannot read keeps the finding"
+assert judge(F, "audit", 10, run + "\n# edited"), "an edited step is a finding"
+assert judge(F, "audit", 10, run, {F: wf.replace("${{ runner.temp }}/kev.json", "bin/x-test.sh")}), "a changed destination env is a finding"
+assert judge(F, "audit", 10, run, {F: wf + "\n          AUDITOR_KEV_CATALOG: ${{ runner.temp }}/kev.json\n"}), "a second assignment is a finding"
 D = ".github/workflows/dependabot-reviewer.yml"
 dwf = open(sys.argv[2].replace("auditor.yml", "dependabot-reviewer.yml")).read()
 dsteps = yaml.safe_load(dwf)["jobs"]["review"]["steps"]
