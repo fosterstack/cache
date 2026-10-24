@@ -423,6 +423,47 @@ func run(log *slog.Logger) error {
 	return serve(ctx, log, nil)
 }
 
+// reconcileAfterCrash repairs the stores after an unclean shutdown, before
+// anything is served, and logs what it adopted, dropped and removed.
+func reconcileAfterCrash(c *cache.Cache, log *slog.Logger) error {
+	log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
+	began := time.Now()
+	stats, err := cacheReconcile(c, context.Background())
+	if err != nil {
+		return fmt.Errorf("startup reconciliation: %w", err)
+	}
+	log.Info("fscache: reconciled",
+		"duration", reconcileDuration(time.Since(began)),
+		"adopted_blobs", stats.AdoptedBlobs,
+		"dropped_records", stats.DroppedRecords,
+		"removed_temp_files", stats.RemovedTempFiles)
+	return nil
+}
+
+// logStarting is the startup line: the address actually bound (":0" shows
+// the real port), the data directory and what is switched on. fips140
+// announces the one property the -fips build exists for, so an assessor
+// can see it at runtime.
+func logStarting(log *slog.Logger, ln net.Listener, cfg config, tlsOn bool) {
+	bi := buildinfo.Read()
+	log.Info("fscache: starting",
+		"version", bi.Version,
+		"addr", ln.Addr().String(),
+		"data_dir", cfg.dataDir,
+		"max_bytes", cfg.maxBytes,
+		"auth", enabledOrDisabled(cfg.username != ""),
+		"tls", enabledOrDisabled(tlsOn),
+		"fips140", bi.FIPSNote(),
+	)
+}
+
+func enabledOrDisabled(on bool) string {
+	if on {
+		return "enabled"
+	}
+	return "disabled"
+}
+
 // serve is the full server lifecycle under an injectable shutdown
 // context. ready, when non-nil, is called once the HTTP server has been
 // handed off to its goroutine — tests use it to drive a deterministic
@@ -519,17 +560,9 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	}()
 
 	if wasUnclean {
-		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
-		began := time.Now()
-		stats, err := cacheReconcile(c, context.Background())
-		if err != nil {
-			return fmt.Errorf("startup reconciliation: %w", err)
+		if err := reconcileAfterCrash(c, log); err != nil {
+			return err
 		}
-		log.Info("fscache: reconciled",
-			"duration", reconcileDuration(time.Since(began)),
-			"adopted_blobs", stats.AdoptedBlobs,
-			"dropped_records", stats.DroppedRecords,
-			"removed_temp_files", stats.RemovedTempFiles)
 	}
 
 	// The store sample (writable, free bytes) is taken once here, before the
@@ -559,30 +592,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	// also strips the socket addresses from each line (REQ-OBS-006).
 	httpServer.ErrorLog = server.NewErrorLog(log.Handler())
 
-	authNote := "disabled"
-	if cfg.username != "" {
-		authNote = "enabled"
-	}
-	tlsNote := "disabled"
-	if tlsCfg != nil {
-		tlsNote = "enabled"
-	}
-	// fips140 announces the one property the -fips build exists for.
-	// Until now the startup line reported addr, data_dir, max_bytes and
-	// auth and said nothing about FIPS, so the property a compliance buyer
-	// chose this build for was unobservable at runtime. Same
-	// posture-announcement shape as the auth field beside it; this is the
-	// line an assessor screenshots.
-	bi := buildinfo.Read()
-	log.Info("fscache: starting",
-		"version", bi.Version,
-		"addr", ln.Addr().String(), // the address actually bound (":0" shows the real port)
-		"data_dir", cfg.dataDir,
-		"max_bytes", cfg.maxBytes,
-		"auth", authNote,
-		"tls", tlsNote,
-		"fips140", bi.FIPSNote(),
-	)
+	logStarting(log, ln, cfg, tlsCfg != nil)
 
 	errCh := make(chan error, 1)
 	served = true // Serve owns and closes the listener from here on
