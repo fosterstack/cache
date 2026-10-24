@@ -2856,10 +2856,22 @@ requirements:
         then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC30
+        given: "bin/acceptance-serve.sh started with an IMAGE_REF, and bin/check-acceptance.sh, which loads Build's production candidate and starts it through that script"
+        when: "the IMAGE_REF is not content-addressed: not exactly name@sha256:<64 lowercase hex> (name = [host[:port]/]path[/path]...[:tag]) and not exactly an image ID sha256:<64 lowercase hex> as one whole string (a tag only, an upper-case or short digest, trailing text, a second line, a leading option character)"
+        then: "serve refuses it with exit 2 and a message naming the ref, before docker run; serve tags only the image's inspected ID to its fixed local name, checks that name still resolves to exactly that ID right before docker run (a re-tag is refused) and runs that name; check-acceptance.sh turns the tag that docker load printed into the loaded image's ID (docker image inspect) and hands serve that ID, never the tag; this is the owner's plain form for an image: pinned by digest"
+        verification: { method: unit, release_blocking: false }
+        status: approved
       - id: REQ-SUP-001-AC33
         given: "a Check script (bin/check-acceptance.sh, bin/check-fips.sh, bin/check-artifacts.sh) loads a candidate image layout into docker"
         when: "the layout holds anything beyond the files its index and manifests name (a root manifest.json, a stray tar, a blob nothing names)"
         then: "only oci-layout, index.json and the blobs the layout's index and child manifests name go into the archive docker load reads, everything else is left out, and a layout whose index names a blob it lacks is refused before any load. Extends the named-members rule of REQ-CHAIN-006-AC4 from the scan to docker load. Tighten-only; approved by the advisor Oct 23"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SUP-001-AC34
+        given: "a pull request that adds or changes a checksum file for an upstream artifact (a file whose name says sha256 or checksum, an item whose identity is the file's content) that is no base input"
+        when: "the age check runs and the exceptions file the base branch holds has a file_pins row {file, content, upstream, version, published} for that file and exactly that content"
+        then: "the file is dated by the row's published time and still needs 7 days public (too young fails, a future or unreadable time fails); a row for other content, another file, one that omits a field or one that only the pull request's own tree carries rules nothing (exit 1); two rows for one file and content, a file_pins that is not a list or an unreadable exceptions file stop the check (exit 2); owner's plain-forms rule: a pin has a version and a date the checker can read. Advisor ruling Oct 23 (fix to an existing coded check that blocks work)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-UAT-001
@@ -4759,7 +4771,7 @@ requirements:
     notes: >
       A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite
       once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain
-      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job), runs the rest, and fails on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
+      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job that is a required check or is needed by one, one counting step per suite), runs the rest without echoing their output, and fails on a second counting step for one suite, on a ci.yml whose jobs are not a mapping, and on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
       is not the file name of its PATH. The floors only rise as before.
     acceptance_criteria:
       - id: REQ-CI-005-AC1
@@ -4784,5 +4796,11 @@ requirements:
         given: "the suite guard's floors"
         when: "a pull request lowers or drops a floor"
         then: "the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-005-AC5
+        given: "the committed ci.yml and floors file (Fable ruling on cache#695: PR 2 of the wrap left eight suites in `all`, PR 3 migrated five of them)"
+        when: "the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them"
+        then: "it runs exactly these three, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: required-check-guard-test.sh (2 runs: its job holds a `permissions:` block, so it is not a plain job and its step cannot be a counting step; advisor Oct 24, AC1 unchanged) and marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run), the last two known-red by design: no step of their own, run only by `all`. Every other floored suite is counted by its own step and runs once. The count is of the steps of ci.yml; a suite that another suite runs inside itself (the matrix suite's variant harness) is not counted here"
         verification: { method: unit, release_blocking: false }
         status: approved

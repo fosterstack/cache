@@ -3837,11 +3837,12 @@ try:
     P.parse_panel(bad, "grype"); err = "none"
 except P.ParseError:
     err = "ParseError"
-print("grype=%d inspector=%d scout=%d google=%d imgs=%s err=%s scanner=%s id=%s purl=%s" % (
-  len(g), len(i), len(s), len(gg), ",".join(sorted(g[0]["extra"]["images"])), err, g[0]["scanner"], g[0]["finding_id"], g[0]["purl"]))
+carried = [x for x in i if (x.get("extra") or {}).get("carried")]       # the tally's vex_covered entry for Inspector rides along flagged carried (rc-5b fix 5)
+print("grype=%d inspector=%d(+%d carried) scout=%d google=%d imgs=%s err=%s scanner=%s id=%s purl=%s" % (
+  len(g), len(i) - len(carried), len(carried), len(s), len(gg), ",".join(sorted(g[0]["extra"]["images"])), err, g[0]["scanner"], g[0]["finding_id"], g[0]["purl"]))
 PYEOF
 )"
-{ eq "$r" "grype=2 inspector=3 scout=1 google=0 imgs=production-amd64,production-arm64 err=ParseError scanner=grype id=CVE-2099-0001 purl=pkg:apk/wolfi/openssl@3.0.1"; } && ok || no "parse_panel: grype 2 (0001 deduped over two images, 0003), inspector 3, scout 1, google 0; malformed verdict is a ParseError" "[$r]"
+{ eq "$r" "grype=2 inspector=3(+1 carried) scout=1 google=0 imgs=production-amd64,production-arm64 err=ParseError scanner=grype id=CVE-2099-0001 purl=pkg:apk/wolfi/openssl@3.0.1"; } && ok || no "parse_panel: grype 2 (0001 deduped over two images, 0003), inspector 3, scout 1, google 0; malformed verdict is a ParseError" "[$r]"
 
 begin "panel-2-panel-inventory-records-a-scanner-that-missed-an-image-as-did-not-run" "from the verdict, a scanner counts as ran only if it ran on EVERY image it was expected on; one image where it did not run makes it 'did not run' (never clean), named with the image; the report path is null for it and the verdict path for the rest; the quorum rule is not recomputed here (the panel owns it)"
 r="$(MF="$pv" "$PY" - <<'PYEOF'
@@ -4220,6 +4221,46 @@ PP
 eq "$r14" "OK" && ok || no "rc-5b fix 14: refusals logged and billed, one stop issue with a stable title, budget stop silent, full counts, failed delivery incomplete, header escaped" "$r14"
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
+# rc-5b fix 5 (A3, Fable): a carried VEX statement that our own VEX hides from Inspector/Google (the tally's vex_covered entries) is re-judged every run; one that NO scanner reports is
+# listed in the report as "not re-checkable (hidden from all scanners)", never silently kept. A vex_covered entry no carried statement matches is dropped.
+r5="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
+import json,os,sys,io,contextlib,importlib.util,glob,tempfile,subprocess as _sp
+FX=sys.argv[1]; W=tempfile.mkdtemp(); ws=W+"/ws"; os.makedirs(ws+"/.vex"); os.makedirs(ws+"/.auditor")
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+from auditorlib import vex, parsers
+from unittest.mock import patch
+mp=FX+"/manifest-mediumnofix.json"; m=json.load(open(mp)); d=json.load(open(m["panel"]["verdict"]))
+c="CVE-2099-9400"; purl="pkg:deb/debian/libmed@1?arch=amd64&distro=debian-12.0"
+json.dump(vex.doc(c,"not_affected","2026-08-24T00:00:00Z",justification="vulnerable_code_not_present",subcomponents=[purl]),open(ws+"/.vex/fosterstack-cache.openvex.json","w"))
+_real_run=_sp.run                                  # saved BEFORE R.subprocess.run is patched (same module object): the fake must call the saved one, never itself
+def run(cov,tag):
+    d2=json.loads(json.dumps(d)); d2["vex_covered"]=cov
+    vp2=W+"/verdict-"+tag+".json"; json.dump(d2,open(vp2,"w"))
+    m2=json.loads(json.dumps(m)); m2["panel"]["verdict"]=vp2; mp2=W+"/m-"+tag+".json"; json.dump(m2,open(mp2,"w"))
+    def fake2(cmd,*a,**kw):
+        if cmd and cmd[0] in ("git","gh"): return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
+        return _real_run(cmd,*a,**kw)
+    out=W+"/out-"+tag
+    with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake2),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+        R.run(mp2,True,out,"2026-09-24",adjudicator="offline-probe")
+    rep=open(out+"/report.md").read()
+    if "consistency check did not complete" in rep: raise SystemExit("the run's consistency check did not complete")
+    return os.path.exists(out+"/vex/%s.openvex.json"%c), [l for l in rep.split("\n") if "Not re-checkable" in l], vp2
+cov=[{"image":"production-amd64","scanner":"inspector","id":c,"package":"libmed","version":"1"}]
+rejudged,hid,vp=run(cov,"a")
+recs=[r for r in parsers.parse_panel(vp,"inspector") if r["finding_id"]==c]
+parsed_ok = len(recs)==1 and recs[0]["extra"].get("carried") is True and recs[0]["extra"]["images"]==["production-amd64"] and not [r for r in parsers.parse_panel(vp,"google") if r["finding_id"]==c]
+rej_b,hid_b,_=run([],"b")
+rej_c,hid_c,_=run([dict(cov[0],package="otherpkg")],"c")
+# aliases: the carried statement is named by a GHSA id that lists the CVE the scanner reports as its alias (the panel's coverage predicate indexes both); it must resolve and not be called hidden
+st2=vex.doc("GHSA-aaaa-bbbb-cccc","not_affected","2026-08-24T00:00:00Z",justification="vulnerable_code_not_present",subcomponents=[purl]); st2["statements"][0]["vulnerability"]["aliases"]=[c]
+json.dump(st2,open(ws+"/.vex/fosterstack-cache.openvex.json","w"))
+rej_d,hid_d,_=run(cov,"d")
+print("OK" if (rejudged and not hid and parsed_ok and not rej_b and len(hid_b)==1 and c in hid_b[0] and not rej_c and len(hid_c)==1 and c in hid_c[0] and not hid_d) else "BAD rejudged=%s hid=%s parsed=%s b=%s/%s c=%s/%s d=%s/%s"%(rejudged,hid,parsed_ok,rej_b,hid_b,rej_c,hid_c,rej_d,hid_d))
+PP
+)"
+eq "$r5" "OK" && ok || no "rc-5b fix 5: a carried statement hidden by our VEX from Inspector is re-judged (flagged carried by the parser, resolved to its scope), one no scanner reports is listed 'not re-checkable', an unmatched entry is dropped" "$r5"
 # rc-5b fix 12 (R4 + R5): the production client reads the category and the refusal from the JSON answer's own keys (exact), and the driver refuses a model proposal by shape and by
 # vendor/model name (the proposal, not the run).
 begin "rc5b-12-client-category-is-exact-json" "the adjudicator client takes the category and the refusal from the JSON keys, exact match: 'not a false_positive' in prose is not false_positive, a word 'cannot' in prose is not a refusal, no JSON is under_investigation"
@@ -4288,9 +4329,16 @@ good_items={"accepted_items":[{"cve":c,"severity":"Medium","package":"libmed","t
 def write_good():
     json.dump(old,open(vp,"w")); json.dump(good_items,open(ap,"w"))
 write_good()
-corrupt_at="start"
+corrupt_at="start"; reopened_body="{bad"
 if variant=="vex-malformed": open(vp,"w").write("{not json")
 elif variant=="vex-notobject": open(vp,"w").write("[]")
+elif variant=="vex-empty-object": open(vp,"w").write("{}")
+elif variant=="vex-null-statements": json.dump(dict(old,statements=None),open(vp,"w"))
+elif variant=="vex-no-statements": json.dump({k:v for k,v in old.items() if k!="statements"},open(vp,"w"))
+elif variant=="vex-empty-list": json.dump(dict(old,statements=[]),open(vp,"w"))
+elif variant=="items-empty-object": open(ap,"w").write("{}")
+elif variant=="items-null-list": json.dump({"accepted_items":None},open(ap,"w"))
+elif variant=="items-empty-list": json.dump({"accepted_items":[]},open(ap,"w"))
 elif variant=="vex-null-statement": json.dump(dict(old,statements=[None]),open(vp,"w"))
 elif variant=="items-malformed": open(ap,"w").write("{not json")
 elif variant=="items-notobject": open(ap,"w").write("[]")
@@ -4305,17 +4353,24 @@ elif variant=="items-bad-at-delivery": corrupt_at="delivery"
 elif variant=="missing": os.remove(vp); os.remove(ap)
 elif variant=="vex-parent-noaccess": os.chmod(ws+"/.vex",0)          # EACCES on the parent: lstat of the file fails, which is not "absent"
 elif variant=="reopened-bad-at-delivery": corrupt_at="reopened"
+elif variant=="reopened-empty-at-delivery": corrupt_at="reopened"; reopened_body="{}"
+elif variant=="reopened-nokey-at-delivery": corrupt_at="reopened"; reopened_body='{"other": []}'
 calls=[]
 def fake(cmd,*a,**kw):
     calls.append(list(cmd))
     if cmd and cmd[0]=="git":
         if corrupt_at=="delivery" and cmd[1:2]==["checkout"]: open(ap,"w").write("{bad")
         if corrupt_at=="reopened" and cmd[1:2]==["checkout"]:
-            os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write("{bad")
+            os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write(reopened_body)
         return _sp.CompletedProcess(cmd,0,"","")
     if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
     return _sp.run(cmd,*a,**kw)
 mp=FX+"/manifest-mediumnofix.json"
+if variant in ("defectlog-dangling","defectlog-keyless"):      # a PRESENT defect log the run cannot use: a dangling symlink, or {} (cache#701 r2): a stop before any mutating call
+    _m=json.load(open(mp)); _dl=tmp+"/known-defect-log.json"
+    if variant=="defectlog-dangling": os.symlink(tmp+"/nowhere",_dl)
+    else: open(_dl,"w").write("{}")
+    _m["known_defect_log"]=_dl; mp=FX+"/manifest-dl-"+variant+".json"; json.dump(_m,open(mp,"w"))
 R.cli.ARGS[:]=["--manifest",mp,"--out",tmp+"/out","--dry-run","false","--today","2026-09-24","--adjudicator","offline-probe"]
 with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
     try: rc=R.main()
@@ -4327,7 +4382,7 @@ print("rc=%s mutating=%d%s"%(rc,len(mut)," (checked at delivery)" if corrupt_at=
 PP
 begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
-for variant in vex-malformed vex-notobject vex-null-statement items-malformed items-notobject items-null-entry items-scalar-entry items-bad-fields items-mixed-expiry vex-bad-vulnerability vex-dir items-dir; do
+for variant in defectlog-dangling defectlog-keyless vex-malformed vex-notobject vex-null-statement vex-empty-object vex-null-statements vex-no-statements items-empty-object items-null-list items-malformed items-notobject items-null-entry items-scalar-entry items-bad-fields items-mixed-expiry vex-bad-vulnerability vex-dir items-dir; do
   r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r6" "rc=3 mutating=0" && ok || no "an unreadable or malformed reviewed input ($variant) stops the run: main() returns 3 and makes no mutating git/gh call" "$r6"
 done
@@ -4337,6 +4392,10 @@ if [ "$is_root" = 0 ]; then
 else ok; fi
 r6="$("$PY" "$WORK/r6main.py" "$FXRUN" reopened-bad-at-delivery 2>/dev/null | tail -1)"
 eq "$r6" "rc=3 mutating=0" && ok || no "a reopened-expired.json this run wrote that does not parse stops the run (exit 3) at every reader, nothing delivered" "$r6"
+for variant in reopened-empty-at-delivery reopened-nokey-at-delivery; do
+  r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r6" "rc=3 mutating=0" && ok || no "a reopened-expired.json this run wrote that is {} or lacks its reopened list ($variant) stops the run (exit 3), nothing delivered" "$r6"
+done
 r6g="$("$PY" - <<'PP' 2>&1 | tail -1
 import os,sys,tempfile,importlib.util
 sys.path.insert(0,".github/agent/bin")
@@ -4350,6 +4409,10 @@ PP
 eq "$r6g" "STOP" && ok || no "a per-finding VEX file this run wrote that does not parse stops _consolidate instead of producing 'statements: []'" "$r6g"
 r6="$("$PY" "$WORK/r6main.py" "$FXRUN" items-bad-at-delivery 2>/dev/null | tail -1)"
 case "$r6" in rc=3\ mutating=0*) ok ;; *) no "a reviewed input that stops parsing only in the delivery checkout also stops the run (exit 3), not an ordinary staging error" "$r6" ;; esac
+for variant in vex-empty-list items-empty-list; do   # an empty list is a valid file: the run proceeds (it is not the stop of a missing key)
+  r6e="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  case "$r6e" in rc=3*|"rc=EXC"*|"") no "a published VEX with statements: [] / accepted-items with accepted_items: [] ($variant) is valid and does not stop the run" "$r6e" ;; *) ok ;; esac
+done
 r6m="$("$PY" "$WORK/r6main.py" "$FXRUN" missing 2>/dev/null | tail -1)"
 case "$r6m" in rc=3*|"rc=EXC"*|"") no "a MISSING VEX and accepted-items file is the first run and does not stop" "$r6m" ;; *) ok ;; esac
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"

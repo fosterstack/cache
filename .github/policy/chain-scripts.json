@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "8466d10c222192c5e4363b2eaa038faae003d2696128e528d5e4acd7f9cb1f2f",
+      "sha256": "5df724aac2c74d37a5f513c53aad2b8520d2431f80235fdb90583becaa1470f1",
       "tools": [
         "make",
         "at",
@@ -611,7 +611,7 @@
       ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "2d3f35644cc0d035f4988592441806a8aeabf2a26c473f9f09cddb648b84f54f"
+      "sha256": "5bd31680dc7cc66eafda3d5cae3fbaa0f28432adfc8a499ce7ee622699f23dae"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -783,7 +783,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "4b6ad729091e1c4cdd03b8851c14a55d5c0a6b9c92d0aedeefe2d6215bc26d92",
+      "sha256": "4c34116854e90dcb156e28df332498d61e83978ce19a25145dba65dad522fa03",
       "tools": [
         "find",
         "python3",
@@ -902,7 +902,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "625139a11962384c52752c283bd4b3f7c968c5be56329605cc8eb1b8c5434a17",
+      "sha256": "62708883efa8b77b4ccd0dd8b73af8a5ed158e1b904d82fd3f9b8a7d3b07f7e0",
       "tools": [
         "bash",
         "docker",
@@ -1406,7 +1406,7 @@
     },
     {
       "path": "bin/acceptance-serve.sh",
-      "sha256": "26f711ac440240a0baa0057bb5fa0c6b4b4602f20ebd0c5b110a5f2b8dc5acc7",
+      "sha256": "36d088685db1fe88b0d69043988f367ea6bb7c6586cbe8696c02adf55946e5b1",
       "tools": [
         "curl",
         "docker",

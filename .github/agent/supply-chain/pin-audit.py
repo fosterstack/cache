@@ -1257,17 +1257,18 @@ def file_issues(gh, plan, today):
 
 
 # ---------- held pull requests ----------
-def rerun_held(gh, net, now):
+def rerun_held(gh, net, now, exceptions=None):
     n = 0
     base_inputs = age.load_base_inputs(age.DEFAULT_BASE_INPUTS)
+    src = age.FilePinSource(net, age.load_file_pins(exceptions or age.DEFAULT_EXCEPTIONS, required=bool(exceptions)))   # REQ-SUP-001-AC34: the same trusted file-pin proof the age check takes, or a held update never turns green on day seven
     for pr in net.prs():
         try:  # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being re-run
-            items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
+            items = pr.get("_items") or [_item_from_key(k) for k in pr["moved"]]
             for it in items:     # a key-built item (fixtures): its repository path is the part after file:
                 if it.raw is None and it.kind == "tool" and it.version == "(file)" and it.name.startswith("file:"):
                     it.raw = it.name[5:]
             items, _ = age.split_base_inputs(items, base_inputs)   # REQ-SUP-001-AC21: the same trusted decision the age check takes, or a mixed pull request is never re-run
-            rows = [age.judge_item(it, net.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
+            rows = [age.judge_item(it, src.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
         except (Fail, age.CouldNotLook, RuntimeError, ValueError) as e:
             print(f"information: pull request #{pr.get('number')} was skipped: {clean(e)}")
             continue
@@ -1281,6 +1282,14 @@ def rerun_held(gh, net, now):
             n += 1
     if not n:
         print("audit: no held pull request is ready to re-run")
+
+
+def _item_from_key(k):
+    """The item a key names; a file item's key ends in #content:<hex> (its identity), which is its step and not part of the version."""
+    it = inv.Item(*_split_key(k.split("#", 1)[0]))
+    if "#" in k:
+        it.step = k.split("#", 1)[1]
+    return it
 
 
 def _split_key(k):
@@ -1315,7 +1324,7 @@ def main(argv=None):
         gh = Gh(a.gh)
         net = FixtureNet(fx) if fx is not None else LiveNet(gh.cmd, a.root)
         if a.rerun_held:
-            rerun_held(gh, net, now)
+            rerun_held(gh, net, now, a.exceptions)
             return 0
         default_ex = os.path.join(a.root, ".github", "supply-chain-exceptions.json")
         exceptions = load_exceptions(a.exceptions or default_ex, bool(a.exceptions))

@@ -639,6 +639,13 @@ class PurlVersion(unittest.TestCase):
         self.assertIsNone(R._ver_from_purl(None))
 
 
+class ResolveCarried(unittest.TestCase):
+    def test_a_statement_without_a_vulnerability_name_is_skipped(self):
+        """a carried statement that names no vulnerability cannot match a flagged entry, and is never reported as not re-checkable"""
+        stmts = [{"products": []}, {"vulnerability": {"name": "CVE-2099-1"}, "products": []}]
+        self.assertEqual(R._resolve_carried({}, stmts), ["CVE-2099-1"])
+
+
 class MergeConsolidate(Base):
     def _stmt(self, cve, purls, status="affected"):
         return R.vex.doc(cve, status, "2026-09-22T00:00:00Z", action="x", subcomponents=purls)["statements"][0]
@@ -649,6 +656,19 @@ class MergeConsolidate(Base):
                 {"@context": "c", "@id": policy.VEX_BASE, "author": "a", "role": "vendor",
                  "timestamp": "t", "version": version, "statements": statements})
         return out, supp
+
+    def test_two_retained_statements_without_an_id_are_made_separately_addressable(self):
+        # AC2 safety net: statements of DIFFERENT scopes that arrive with no @id (or the same one) never leave the merge sharing an @id
+        ws = self.d("ws"); a = self._stmt("CVE-2099-30", ["pkg:deb/a@1"]); b = self._stmt("CVE-2099-30", ["pkg:deb/b@1"])
+        a.pop("@id"); b.pop("@id")
+        self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"),
+                {"@context": "c", "@id": policy.VEX_BASE, "author": "a", "role": "vendor", "timestamp": "t", "version": 2, "statements": [a, b]})
+        _out, supp = self._supp([self._stmt("CVE-2099-31", ["pkg:deb/c@1"])], version=3)
+        R._merge_suppressions(ws, supp)
+        got = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))["statements"]
+        ids = [s["@id"] for s in got]
+        self.assertEqual(len(got), 3)
+        self.assertEqual(len(set(ids)), 3, ids)
 
     def test_corrupt_existing_vex_stops_the_run(self):
         # rc-5b fix 13: a reviewed file that is present but unreadable is a stop, never "no statements"
@@ -683,6 +703,19 @@ class MergeConsolidate(Base):
         p = os.path.join(self.d("ro2"), "reopened-expired.json"); self.wj(p, {"reopened": [["CVE-1", ["prod"], ["pkg:deb/a@1"]]]})
         self.assertEqual(R._read_reopened(p), [["CVE-1", ["prod"], ["pkg:deb/a@1"]]])
         self.assertEqual(R._read_reopened(os.path.join(self.d("ro3"), "absent.json")), [])      # absent = none
+
+    def test_a_published_vex_and_the_accepted_items_file_must_carry_their_list(self):
+        # a present file of the right name must hold its key as a list of objects: {} and a null list are a stop, [] is a valid empty list (rc-5b fix 13)
+        for name, key in (("fosterstack-cache.openvex.json", "statements"), ("accepted-items.json", "accepted_items"), ("f-CVE-2099-1.openvex.json", "statements")):
+            for bad in ({}, {key: None}, {"other": []}, {key: {}}, {key: "x"}, {key: [None]}, {key: [3]}, {key: [{}, "x"]}):
+                p = os.path.join(self.d("rq"), name); self.wj(p, bad)
+                with self.assertRaises(R.ReviewedInputInvalid, msg=repr((name, bad))):
+                    R._read_reviewed_json(p)
+            for good in ({key: []}, {key: [{}]}, {key: [{"a": 1}], "other": 1}):
+                p = os.path.join(self.d("rq2"), name); self.wj(p, good)
+                self.assertEqual(R._read_reviewed_json(p), good)
+        p = os.path.join(self.d("rq3"), "run-state.json"); self.wj(p, {})      # a file the reader has no rule for is read as before
+        self.assertEqual(R._read_reviewed_json(p), {})
 
     def test_lstat_failure_other_than_absent_is_a_stop(self):
         import errno
