@@ -296,7 +296,7 @@
       "runs": [],
       "signs": false,
       "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
-      "sha256": "71660fbb88c0c317f05cef915717530c5953a651c3483baccb6aa754b3c3507c"
+      "sha256": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d"
     },
     {
       "path": "bin/witnessed.sh",
@@ -783,7 +783,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "4c34116854e90dcb156e28df332498d61e83978ce19a25145dba65dad522fa03",
+      "sha256": "a08f30aeeb55a85acf24961c8d17e855e1c9c31b6af31dd4b2317c7f6c2ab3ba",
       "tools": [
         "find",
         "python3",
@@ -988,7 +988,7 @@
     },
     {
       "path": "bin/acceptance-gradle.sh",
-      "sha256": "6b4b3e150a8f562715f8b882a2e7fe67f4c06b4d846e2f5ca8fb0a0363961290",
+      "sha256": "c1c96768f690f949da407538f664c7b35b4b80d3b9139c4baa3ccfb985d04f14",
       "tools": [
         "at",
         "awk",
@@ -1092,7 +1092,7 @@
     },
     {
       "path": "bin/acceptance-gradle-capped.sh",
-      "sha256": "aab318ef556e89bc9b4871be6cf4458fc5eb81c562f0af56b0425e8d4c71d1ee",
+      "sha256": "ef70a1c5a204629bc7a96d82c9043012b185c53b98938f07f59cb377c0ddacf6",
       "tools": [
         "awk",
         "bash",
@@ -1849,7 +1849,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
-      "sha256": "2b706582f3d46ec1f22e0ebda52f0878376c75e77ccf36212054f58b41e84f9b",
+      "sha256": "c55e049c80aa4a2d0873d6eae090793ba132ec5630b7544cf0194b405ab76d4d",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -1877,7 +1877,7 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "8a030a98d013b754c5c8e9806bac1c98e1adf4cdced1ca71aaa17516a5f42b76",
+      "sha256": "f0f2083bca437f02dece6af7dce3fb03bd40d9f5e667c4fe0bbc236949e96a46",
       "env_mentions": [
         {
           "name": "ENV",
@@ -2089,7 +2089,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "7148c225516cd40d754c40f93b58e1c54c4af1ebea78c39b5ab644e7d9b2ebf2",
+      "sha256": "ec4c3549b7bece428ea93db4bba00e03a00a2e9b2a242f3675fbc0d445e871e6",
       "tools": [
         "at",
         "python3"
