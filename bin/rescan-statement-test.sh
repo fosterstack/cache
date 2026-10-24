@@ -31,12 +31,17 @@ STMT_EXTRA=(--vex "$VEX0")
 
 # ---- statement helpers ---------------------------------------------------
 # Write one child report file and append its manifest line.
-child() { # manifest-file  childno  platform  exit  report-json
-  local mf="$1" no="$2" plat="$3" code="$4" body="$5"
+child() { # manifest-file  childno  platform  exit  report-json  [packages: a number, or "none" to leave the key out; default 5]
+  local mf="$1" no="$2" plat="$3" code="$4" body="$5" pk="${6:-5}"
   local rp="$D/report-${no}.json"
   printf '%s' "$body" > "$rp"
-  jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg f "$rp" \
-    '{platform:$p, ref:$r, exit:$e, report:$f}' >> "$mf"
+  if [ "$pk" = none ]; then
+    jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg f "$rp" \
+      '{platform:$p, ref:$r, exit:$e, report:$f}' >> "$mf"
+  else
+    jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg f "$rp" --argjson k "$pk" \
+      '{platform:$p, ref:$r, exit:$e, report:$f, packages:$k}' >> "$mf"
+  fi
 }
 # A child whose scanner produced NO file at all (operational crash).
 child_missing() { # manifest-file  childno  platform  exit
@@ -602,7 +607,7 @@ n=$(jq '.statements | length' .vex/fosterstack-cache.openvex.json)
 for i in $(seq 0 $((n-1))); do
   name=$(jq -r ".statements[$i].vulnerability.name" .vex/fosterstack-cache.openvex.json)
   sub=$(jq -r "[.statements[$i].products[] | .subcomponents // [] | .[] | .\"@id\"][0] // empty" .vex/fosterstack-cache.openvex.json)
-  if [ -n "$sub" ]; then pname=$(printf '%s' "$sub" | sed 's#^pkg:[a-z]*/##; s#@.*##'); pver=${sub##*@}; else pname="github.com/golang-jwt/jwt/v4"; pver="v4.5.0"; fi
+  if [ -n "$sub" ]; then pname=$(printf '%s' "$sub" | sed 's#^pkg:[a-z]*/##; s#@.*##'); case $sub in *@*) pver=${sub##*@};; *) pver=v4.5.0;; esac; else pname="github.com/golang-jwt/jwt/v4"; pver="v4.5.0"; fi
   rep=$(jq -nc --arg n "$name" --arg p "$pname" --arg v "$pver" '{"results":[{"source":{"path":"x","type":"lockfile"},"packages":[{"package":{"name":$p,"version":$v},"vulnerabilities":[{"id":$n,"aliases":[]}]}]}]}')
   vrun osv-scanner 1 "$rep" ".vex/fosterstack-cache.openvex.json" production linux/amd64 "$REPO@$AMD"
   expect "the published VEX statement $i ($name, $pname@$pver) removes its finding from the cache image" clean false 0 1
@@ -638,7 +643,13 @@ vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":
 expect "snyk: a well-formed applications list still works (one suppressed, the application finding counts)" findings true 1 1
 # namespace-preserving package match against the PUBLISHED VEX (pkg:generic/busybox@1.37.0 covers busybox 1.37.0 only, not another namespace's busybox)
 osvrep() { jq -nc --arg n "$1" --arg p "$2" --arg v "$3" '{"results":[{"source":{"path":"x","type":"lockfile"},"packages":[{"package":{"name":$p,"version":$v},"vulnerabilities":[{"id":$n,"aliases":[]}]}]}]}'; }
-PUBVEX=.vex/fosterstack-cache.openvex.json
+PUBVEX=test-evidence/vex-scope/busybox.openvex.json   # the retired busybox statements (rc-5a G): the namespace-preserving match still needs a document that holds them
+# the COMMITTED document says no more than it names (rc-5a G review round 1): the jwt/v4 module at any version, not CVE-2024-51744 anywhere, not another module, not a bare "v4"
+LIVE=.vex/fosterstack-cache.openvex.json
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.0.0)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: jwt/v4 at any version is suppressed" clean false 0 1
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v5 v5.2.1)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: jwt/v5 is another module, its finding counts" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 v4 v4.5.0)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: a bare package named v4 is not the jwt/v4 module, its finding counts" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 busybox 1.37.0)" "$LIVE" production linux/amd64 "$REPO@$AMD"; expect "the committed VEX: busybox is not the jwt/v4 module, its finding counts" findings true 1 0
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 evil/busybox 1.37.0)" "$PUBVEX"; expect "published VEX: evil/busybox 1.37.0 is NOT busybox (namespace kept, finding counts)" findings true 1 0
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX"; expect "published VEX: busybox 1.37.0 is suppressed in the cache image" clean false 0 1
 vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX" debug linux/arm64 "$CAND_REPO@$AMD"; expect "published VEX: busybox 1.37.0 is suppressed in the candidates image" clean false 0 1
@@ -675,7 +686,7 @@ open(sys.argv[2], "w").write(src.replace(sys.argv[3], sys.argv[4]))
 P
   echo "$md/rescan-statement.py"
 }
-M=$(mutant pkg 'return name == sub_name and version == sub_version' 'return _gate.same_pkg((name.lower(), version), (sub_name.lower(), sub_version))')
+M=$(mutant pkg 'return name == sub_name and (not sub_version or version == sub_version)' 'return _gate.same_pkg((name.lower(), version), (sub_name.lower(), sub_version))')
 SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vrun osv-scanner 1 "$(osvrep CVE-2025-60876 evil/busybox 1.37.0)" "$PUBVEX"; SCRIPT=$SCRIPT_SAVE
 [ "$V" = clean ] && ok || bad "mutant (last-segment package match) was not caught by the evil/busybox case (got $V)"
 M=$(mutant apps 'apps = _bad(bad) or []' 'apps = []')
@@ -702,6 +713,49 @@ for cve in CVE-2025-60876 CVE-2025-46394 CVE-2024-58251; do
   vrun osv-scanner 1 "$(osvrep $cve busybox 1.37.0)" "$PUBVEX"; expect "published VEX ($cve, busybox 1.37.0) still suppresses after the qualifier rule" clean false 0 1
 done
 vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.5.0)" "$PUBVEX"; expect "published VEX (CVE-2024-51744, Go product) still suppresses after the qualifier rule" clean false 0 1
+
+# ---- rc-5a D (astra B6, Fable R3): a child that COMPLETED but inventoried no package is not clean ----------------------------------------------------
+# The published-release rescan used to take `matches: []` as clean whatever the scanner had looked at. Register row 53: zero packages = did not run.
+# Each child's package count is recorded by the workflow (children-scanned.jsonl `packages`); a completed child without one, or with zero, is an error.
+OSV_CLEAN='{"results":[]}'
+mf=$D/pk1; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 3; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+assert_stmt "grype: every child inventoried packages and found nothing is clean" grype "$mf" clean false 0
+mf=$D/pk2; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 0; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+assert_stmt "grype: one child with zero packages makes the whole rescan an error, not clean" grype "$mf" error false 0
+mf=$D/pk3; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" none; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+assert_stmt "grype: a completed child with no package count is an error" grype "$mf" error false 0
+mf=$D/pk4; : >"$mf"; child "$mf" 1 linux/amd64 0 "$OSV_CLEAN" 0
+assert_stmt "osv-scanner: an empty results list with zero packages is an error, not clean" osv-scanner "$mf" error false 0
+mf=$D/pk5; : >"$mf"; child "$mf" 1 linux/amd64 0 "$OSV_CLEAN" 4
+assert_stmt "osv-scanner: packages inventoried and no finding is clean" osv-scanner "$mf" clean false 0
+mf=$D/pk6; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" '"3"'
+assert_stmt "grype: a package count that is not a number is an error" grype "$mf" error false 0
+mf=$D/pk7; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" -1
+assert_stmt "grype: a negative package count is an error" grype "$mf" error false 0
+if python3 "$SCRIPT" statement --scanner grype --children "$D/pk2" "${STMT_EXTRA[@]}" --raw-out "$D/raw.json" --out "$D/stmt.json" --release v0.2.0 --variant production \
+     --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00 2>&1 >/dev/null | grep -q "inventoried no package"; then ok; else bad "the zero-package error names what happened (inventoried no package)"; fi
+
+# ---- rc-5a D2 round 2 (first look): a manifest shorter than the children that were enumerated is an incomplete rescan, a zero-package child's findings
+# still count, and a JSON true is not a package count ------------------------------------------------------------------------------------------------
+stmt_expect() { # manifest expected-children  -> prints the verdict
+  python3 "$SCRIPT" statement --scanner grype --children "$1" "${STMT_EXTRA[@]}" --expect-children "$2" --raw-out "$D/raw.json" --out "$D/stmt.json" --release v0.2.0 \
+    --variant production --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00 2>/dev/null | jq -r .verdict
+}
+mf=$D/ec1; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 3
+[ "$(stmt_expect "$mf" 2)" = error ] && ok || bad "a manifest with one child where two were enumerated is an error, not clean (the second child's record is missing)"
+mf=$D/ec2; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" 3; child "$mf" 2 linux/arm64 0 "$GRYPE_CLEAN" 3
+[ "$(stmt_expect "$mf" 2)" = clean ] && ok || bad "a manifest with every enumerated child is clean"
+[ "$(stmt_expect "$mf" 3)" = error ] && ok || bad "a manifest with fewer children than enumerated (3) is an error"
+mf=$D/pk8; : >"$mf"; child "$mf" 1 linux/amd64 0 "$GRYPE_CLEAN" true
+assert_stmt "grype: a package count of JSON true is an error, not 1" grype "$mf" error false 0
+GRYPE_FIND='{"matches":[{"vulnerability":{"id":"CVE-2099-0001","severity":"High","fix":{"versions":[],"state":"unknown"}},"artifact":{"name":"tzdata","version":"2026c","type":"deb","purl":"pkg:deb/debian/tzdata@2026c"}}],"descriptor":{"name":"grype","version":"0.118.0"}}'
+mf=$D/pk9; : >"$mf"; child "$mf" 1 linux/amd64 2 "$GRYPE_FIND" 0
+assert_stmt "grype: a finding in a child that inventoried no package still counts (verdict error, has_findings true)" grype "$mf" error true 1
+
+# the retired trivy path records no package count and keeps its contract: a clean exit with a valid report is clean (first look, #665)
+TRIVY_CLEAN='{"SchemaVersion":2,"Results":[]}'
+mf=$D/trv; : >"$mf"; child "$mf" 1 linux/amd64 0 "$TRIVY_CLEAN" none
+assert_stmt "trivy (retired path, no package count recorded): unchanged, clean" trivy "$mf" clean false 0
 
 # the LATEST statement per (vulnerability id, product, subcomponent set) wins (rc-5a, ruling cache-667 item 4): by timestamp when both parse, else by document order
 lw() { # name want-verdict want-has want-count want-suppressed status[@ts] status[@ts]... : two statements for the finding CVE-2024-9999 on the cache image

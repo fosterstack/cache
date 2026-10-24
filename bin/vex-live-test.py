@@ -586,8 +586,10 @@ def _semver(tag):
 
 
 def release_under_test(releases):
+    # a release carries the rule-10 files only when it carries all three the guide downloads (OpenVEX, the Inspector filters and the CSAF file)
     ok = [r["tagName"] for r in releases if not r.get("isDraft") and _semver(r["tagName"]) and _semver(r["tagName"])[3] == 1 << 30
-          and "fosterstack-cache-%s.csaf.json" % r["tagName"] in r.get("assets", [])]
+          and all(a in r.get("assets", []) for a in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.inspector-filters.json" % r["tagName"],
+                                                    "fosterstack-cache-%s.csaf.json" % r["tagName"]))]
     return max(ok, key=_semver) if ok else None
 
 

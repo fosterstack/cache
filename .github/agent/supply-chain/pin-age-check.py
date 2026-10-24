@@ -71,17 +71,35 @@ def is_pin(version):
     return bool(version) and bool(_PIN.match(version)) and "*" not in version and not re.search(r"(?i)(^|[.\-_])(x|latest|main|master|nightly|stable|lts)($|[.\-_])", version)
 
 
+FILE_PIN_SOURCE = "file-pin-ruling"
+
+
+def is_file_item(item):
+    """A checksum or version FILE item (its identity is the file's content), the only kind a file_pins row can date."""
+    path = getattr(item, "raw", None) or ""
+    return item.kind == "tool" and (item.name or "").startswith("file:") and item.version == "(file)" and (getattr(item, "step", "") or "").startswith("content:") \
+        and bool(re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1])) and path.rsplit("/", 1)[-1] not in inv.VERSION_FILES   # a checksum file only: never a version file (.python-version ...)
+
+
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
-            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
+    ruled_file = is_file_item(item) and any(src == FILE_PIN_SOURCE for _, src in proofs)    # REQ-SUP-001-AC34: a file pin the base branch's file_pins row dates
+    if ruled_file:
+        proofs = [p for p in proofs if p[1] == FILE_PIN_SOURCE]    # the row's published time decides, never an earlier clock of the pull request
+    if not ruled_file and (re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
+            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or ""))):
         return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
     if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
         return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
+    bad = next((src[len("bad-label:"):] for _, src in proofs if str(src).startswith("bad-label:")), None)
+    if bad is not None:
+        return False, f"age not provable: the label '# {bad}' does not name the pinned commit (the label is wrong; this is not a missing clock)", None
+    if item.kind in ("tool", "package") and any(src in SERVER_SIDE and src not in ("pr-clock", "observer") for t, src in proofs):
+        proofs = [(t, src) for t, src in proofs if src not in ("pr-clock", "first-seen")]   # a registry's or a release's own time beats the PR clock: a replaced asset is not out-aged by the version's old clock (rc-5b item 6)
     best, seen = None, []
     for t, src in proofs:
         seen.append(src)
-        if src not in SERVER_SIDE and src != "first-seen":
+        if src not in SERVER_SIDE and src != "first-seen" and not (src == FILE_PIN_SOURCE and ruled_file):
             continue
         if src == "github-release" and item.kind == "action":
             continue  # never alone for an action: the tag may point somewhere new (tj-actions); our observer or our PR clock must have seen the commit
@@ -210,11 +228,16 @@ def _commit_date(repo, sha):
     return ((c or {}).get("commit", {}).get("committer") or {}).get("date")
 
 
+def _go_escape(path):
+    """The Go module proxy's case encoding: each upper-case letter is written "!" and its lower-case form."""
+    return re.sub(r"[A-Z]", lambda m: "!" + m.group(0).lower(), path)
+
+
 def _go_module(path, version):
     parts = path.split("/")
     for n in range(len(parts), 0, -1):
         mod = "/".join(parts[:n])
-        info = _http_json(f"https://proxy.golang.org/{urllib.parse.quote(mod, safe='/').lower()}/@v/{urllib.parse.quote(version)}.info")
+        info = _http_json(f"https://proxy.golang.org/{urllib.parse.quote(_go_escape(mod), safe='/!')}/@v/{urllib.parse.quote(version)}.info")
         if info and info.get("Version"):
             return mod, info
     return None, None
@@ -231,7 +254,7 @@ def _go_index_time(mod, version, vcs_time):
         except (OSError, ValueError):
             return None
         for row in rows:
-            if row.get("Path", "").lower() == mod.lower() and row.get("Version") == version:
+            if row.get("Path", "") == mod and row.get("Version") == version:
                 return row["Timestamp"]
         if len(rows) < 2000:
             return None
@@ -284,21 +307,34 @@ def _pr_clock(item, root, base, head="HEAD"):
     if not repo or not base or not item.version:
         return None
     r = _gh_run(["git", "-C", root, "rev-list", "--reverse", f"{base}..{head}"], capture_output=True, text=True)
+    commits = r.stdout.split()
     first = None
-    for c in r.stdout.split():
+    for i, c in enumerate(commits):
         try:
             if (root, c) not in _INV_CACHE:
                 _INV_CACHE[(root, c)] = inv.load_at(root, c)     # one parse per commit, not one per moved item
-            if item.key in _INV_CACHE[(root, c)]:
-                first = c
+            got = _INV_CACHE[(root, c)].get(item.key)
+            if got is not None and got.sum == item.sum:
+                first = i
                 break
         except RuntimeError:
             continue
-    if not first:
+    if first is None:
         return None
-    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100") or {}).get("workflow_runs", [])
+    intro = commits[first]
+    for c in commits[first:]:      # the earliest run whose head CONTAINS the commit: a commit that was never a pushed head has no run of its own (base..head bounds the walk)
+        if c != intro and _gh_run(["git", "-C", root, "merge-base", "--is-ancestor", intro, c], capture_output=True).returncode != 0:
+            continue      # a sibling in a merge does not contain the introducing commit: its runs lend no clock
+        times = _run_times(repo, c)
+        if times:
+            return min(times)
+    return None
+
+
+def _run_times(repo, commit):
+    runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={commit}&per_page=100") or {}).get("workflow_runs", [])
     times = [x["created_at"] for x in runs if x.get("created_at")]
-    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{first}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
+    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{commit}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
     if r2.returncode:
         _gh_failed(r2)
     else:
@@ -309,7 +345,7 @@ def _pr_clock(item, root, base, head="HEAD"):
                 continue
             if c:
                 times.append(c)    # a check from a non-Actions app counts too: the EARLIEST server-side sign of the commit
-    return min(times) if times else None
+    return times
 
 
 def _release_with_assets(repo, tags):
@@ -330,12 +366,13 @@ def live_proofs(item, root, base=None, head="HEAD"):
         # or the PR clock; the tag in the `# vX` label must itself resolve to the pinned commit
         tags = _tags_for_commit(item.name, item.version)
         want = [item.label] if item.label else tags
-        if not item.label or item.label in tags:
-            state = observed()
-            for tag in want:
-                t = tobs.first_seen(state, item.name, tag, item.version)
-                if t:
-                    out.append((t, "observer"))
+        if item.label and item.label not in tags:
+            return [(None, "bad-label:" + item.label)]    # the label Dependabot bumps does not resolve to this commit: age not provable, with no PR clock to lean on
+        state = observed()
+        for tag in want:
+            t = tobs.first_seen(state, item.name, tag, item.version)
+            if t:
+                out.append((t, "observer"))
     elif item.kind == "tool":
         repo = TOOL_REPOS.get(item.name) or (item.name if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)  # owner/repo: a downloaded release asset
         if repo:
@@ -427,6 +464,9 @@ def check(moved_items, source, now, min_days):
     rows = []
     for it in moved_items:
         ok, reason, proof = judge_item(it, source.proofs(it), now, min_days)
+        note = getattr(source, "notes", {}).get(it.key)
+        if note:
+            reason += f" ({note})"
         rows.append({"item": it.key, "label": it.label, "ok": ok, "reason": reason, "proof": proof})
     return rows
 
@@ -1294,6 +1334,58 @@ def load_ruled_text(path, required=False):
 DEFAULT_BASE_INPUTS = os.path.normpath(os.path.join(HERE, "..", "..", "policy", "base-inputs.json"))
 
 
+_STRICT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)?")   # a time with a real zone or none (UTC, as parse_time reads it); nothing parse_time would bend (a +99:99 offset)
+
+
+def load_file_pins(path, required=False):
+    """REQ-SUP-001-AC34: {(file, content hash): (published, upstream, version)} from the exceptions file's file_pins list (the BASE branch's copy: rows a pull request brings
+    do nothing until merged). A row missing a field, with a content that is not 64 lowercase hex or a published time that is not a time rules nothing. Two rows for
+    one (file, content), a list that is not a list or an unreadable file stop the check (RuntimeError, exit 2): never 'nothing ruled' by guesswork and never the older of two."""
+    if not os.path.exists(path):
+        if required:
+            raise RuntimeError(f"the exceptions file {path} (file_pins) does not exist")
+        return {}
+    try:
+        with open(path) as f:
+            d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"the exceptions file {path} (file_pins) is unreadable: {e}")
+    rows = d.get("file_pins", []) if isinstance(d, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{path}: file_pins is not a list")
+    out, seen = {}, set()
+    for i, r in enumerate(rows):
+        if not isinstance(r, dict):
+            raise RuntimeError(f"{path}: file_pins row {i} is not an object")
+        f_, c_ = r.get("file"), r.get("content")
+        if isinstance(f_, str) and isinstance(c_, str):
+            if (f_, c_) in seen:
+                raise RuntimeError(f"{path}: file_pins repeats the row for {f_} with content {c_}")
+            seen.add((f_, c_))
+        fields = [r.get(k) for k in ("file", "content", "upstream", "version", "published")]
+        if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) or not r["upstream"].startswith("https://") \
+                or not _STRICT_TIME.fullmatch(r["published"]) or parse_time(r["published"]) is None:
+            continue
+        out[(f_, c_)] = (r["published"], r["upstream"], r["version"])
+    return out
+
+
+class FilePinSource:
+    """Wraps a proof source: a file item the base branch's file_pins names (same file AND same content) gets the row's published time as its proof."""
+
+    def __init__(self, inner, pins):
+        self.inner, self.pins, self.notes = inner, pins, {}
+
+    def proofs(self, item, *args):
+        out = list(self.inner.proofs(item, *args))
+        if is_file_item(item):
+            row = self.pins.get((item.raw, item.step[len("content:"):]))
+            if row:
+                out.append((row[0], FILE_PIN_SOURCE))
+                self.notes[item.key] = f"file pin ruled by the base branch: {row[1]} version {row[2]}"
+        return out
+
+
 def load_base_inputs(path, required=False):
     """REQ-SUP-001-AC21: the set of paths .github/policy/base-inputs.json lists (read from the base branch's copy beside this script, never the pull request's tree).
     A missing default file lists nothing; anything malformed raises RuntimeError (exit 2): never 'nothing exempted' and never 'everything'."""
@@ -1509,7 +1601,7 @@ def _run(a, moved, fx, now):
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
-        rows = check(moved, Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), now, a.min_days)
+        rows = check(moved, FilePinSource(Fixture(fx) if fx is not None else Live(a.root, a.base, a.head), load_file_pins(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))), now, a.min_days)
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")

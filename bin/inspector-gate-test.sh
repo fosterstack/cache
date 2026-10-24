@@ -8,7 +8,7 @@
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 sut="${here}/inspector-gate.py"
-vex="${here}/../.vex/fosterstack-cache.openvex.json"
+vex="${here}/../test-evidence/vex-scope/busybox.openvex.json"
 pass=0; fail=0
 w="$(mktemp -d)"; trap 'rm -rf "$w"' EXIT
 
@@ -59,8 +59,16 @@ f '{"id":"CVE-2099-0002","ratings":[{"severity":"high"}],"affects":[{"ref":"c2"}
 
 check "clean scan passes with counts"       0 "3 packages, 0 finding"          t "$w/sbom.json" "$w/clean.json" "$vex"
 check "zero packages = did not run"         2 "0 packages.*did not run"         t "$w/empty.json" "$w/clean.json" "$vex"
+# rc-5a C round 2 (first look): the package count is the components that carry a package URL, as in the grype gate and the panel; files and
+# components with an empty, null or non-string purl are not packages
+echo '{"bomFormat":"CycloneDX","components":[{"type":"operating-system","name":"debian"},{"type":"file","name":"/usr/lib/f0"}]}' > "$w/filesonly.json"
+echo '{"bomFormat":"CycloneDX","components":[{"type":"library","name":"a","purl":""},{"type":"library","name":"b","purl":null},{"type":"library","name":"c","purl":7},{"type":"library","name":"d","purl":{}}]}' > "$w/badpurls.json"
+echo '{"bomFormat":"CycloneDX","components":[{"type":"operating-system","name":"debian"},{"type":"library","name":"tzdata","purl":"pkg:deb/debian/tzdata@2025b-0+deb12u1"}]}' > "$w/onepkg.json"
+check "a components-without-purl inventory = did not run"      2 "0 packages.*did not run"  t "$w/filesonly.json" "$w/clean.json" "$vex"
+check "empty, null, number and object purls are not packages"   2 "0 packages.*did not run"  t "$w/badpurls.json" "$w/clean.json" "$vex"
+check "an operating-system component plus one package is 1 package" 0 "1 packages"            t "$w/onepkg.json" "$w/clean.json" "$vex"
 check "unreadable output = did not run"     2 "could not read.*did not run"     t "$w/sbom.json" "$w/missing.json" "$vex"
-check "published VEX covers busybox"        0 "1 covered by the published VEX"  t "$w/sbom.json" "$w/vexed.json" "$vex"
+check "the busybox fixture VEX covers busybox"        0 "1 covered by the published VEX"  t "$w/sbom.json" "$w/vexed.json" "$vex"
 check "unvexed finding blocks"              1 "error::inspector t: CVE-2099-0001 debian/tzdata" t "$w/sbom.json" "$w/novex.json" "$vex"
 check "VEX at another version does not suppress" 1 "busybox@1.36.1"             t "$w/otherver-sbom.json" "$w/otherver.json" "$vex"
 check "product-level VEX statement covers"  0 "1 covered"                       t "$w/sbom.json" "$w/prodlevel.json" "$vex"
@@ -104,7 +112,7 @@ check "unscoped statement still covers every image"      0 "1 covered"   cand-fi
 check "scoped statement, label without identity: blocks" 1 "1 finding"   t "$w/sbom.json" "$w/vexed.json" "$w/sc-prod-amd64.json"
 check "unscoped statement, label without identity: covers" 0 "1 covered" t "$w/sbom.json" "$w/vexed.json" "$w/sc-none.json"
 check "a repeated qualifier is not read as a match"      1 "1 finding"   cand-production-arm64 "$w/sbom.json" "$w/vexed.json" "$w/sc-dup.json"
-check "the published VEX still covers a real tag label"  0 "1 covered"   cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$vex"
+check "the busybox fixture VEX still covers a real tag label"  0 "1 covered"   cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$vex"
 
 # Round-1 rulings (audit orchestrator, cache#548): the label is exactly cand-<variant>-<arch> (no suffix search), and a product's scope is read in
 # bin/rescan-statement.py's grammar (raw split on &, no percent-decoding, only repository_url/variant/arch, lowercase, once, non-blank, known values);
@@ -254,6 +262,27 @@ PYI
 echo "$IDXOUT" | sed 's/^/  /'
 [ "$idx_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 57 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 57, or the section exited non-zero (a crash or a skipped case)"; fail=$((fail+1)); }
 pass=$((pass + $(grep -c '^ok:' <<<"$IDXOUT"))); fail=$((fail + $(grep -c '^FAIL:' <<<"$IDXOUT")))
+
+# The COMMITTED document (rc-5a G review round 1): the one statement covers the jwt/v4 module at any version, in the image and in the Go product, and nothing else.
+live="${here}/../.vex/fosterstack-cache.openvex.json"
+cat > "$w/live-sbom.json" <<'EOF'
+{"components":[
+ {"bom-ref":"j4","name":"github.com/golang-jwt/jwt/v4","purl":"pkg:golang/github.com/golang-jwt/jwt/v4@v4.5.0"},
+ {"bom-ref":"j4b","name":"github.com/golang-jwt/jwt/v4","purl":"pkg:golang/github.com/golang-jwt/jwt/v4@v4.0.0"},
+ {"bom-ref":"j5","name":"github.com/golang-jwt/jwt/v5","purl":"pkg:golang/github.com/golang-jwt/jwt/v5@v5.2.1"},
+ {"bom-ref":"v4","name":"v4","purl":"pkg:generic/v4"},
+ {"bom-ref":"bb","name":"busybox","purl":"pkg:generic/busybox@1.37.0"}]}
+EOF
+f '{"id":"CVE-2024-51744","ratings":[{"severity":"low"}],"affects":[{"ref":"j4"}]}' live-j4.json
+f '{"id":"CVE-2024-51744","ratings":[{"severity":"low"}],"affects":[{"ref":"j4b"}]}' live-j4b.json
+f '{"id":"CVE-2024-51744","ratings":[{"severity":"low"}],"affects":[{"ref":"j5"}]}' live-j5.json
+f '{"id":"CVE-2024-51744","ratings":[{"severity":"low"}],"affects":[{"ref":"v4"}]}' live-v4.json
+f '{"id":"CVE-2024-51744","ratings":[{"severity":"low"}],"affects":[{"ref":"bb"}]}' live-bb.json
+check "live document: CVE-2024-51744 on jwt/v4 v4.5.0 is covered"          0 "1 covered" cand-production-amd64 "$w/live-sbom.json" "$w/live-j4.json" "$live"
+check "live document: ...on jwt/v4 at another version is covered (the subcomponent names none)" 0 "1 covered" cand-fips-arm64 "$w/live-sbom.json" "$w/live-j4b.json" "$live"
+check "live document: ...on jwt/v5 is NOT covered (another module)"        1 "1 finding" cand-production-amd64 "$w/live-sbom.json" "$w/live-j5.json" "$live"
+check "live document: ...on a bare package named v4 is NOT covered (no last-segment match for a module path)" 1 "1 finding" cand-production-amd64 "$w/live-sbom.json" "$w/live-v4.json" "$live"
+check "live document: ...on busybox is NOT covered (scoped to the module, not the image)" 1 "1 finding" cand-production-amd64 "$w/live-sbom.json" "$w/live-bb.json" "$live"
 
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"

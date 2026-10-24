@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10
+# proves: REQ-SUP-001-AC5, REQ-SUP-001-AC6, REQ-SUP-001-AC7, REQ-SUP-001-AC8, REQ-SUP-001-AC9, REQ-SUP-001-AC10, REQ-SUP-001-AC34
 # The daily supply-chain audit (owner ratified Oct 5, rules 2, 3 and 5; advisor 0172, 0175, 0177), proved offline against a fixtures file that stands in for the
 # advisory databases, the actions' own repositories and the registries, with a recording `gh`:
 #   python3 bin/pin-audit.py --root REPO --fixtures FILE --now ISO --gh CMD [--exceptions FILE] [--rerun-held]
@@ -337,6 +337,21 @@ check grep -q '"rerun", "99"' "$work/heldfirst.gh"
 run heldunprov "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 7, \"title\": \"x\", \"run_id\": 99, \"moved\": [\"$ITEM_CO\"]}], \"times\": {}}" "$work/r-clean" --rerun-held
 CASE="a held PR whose age cannot be proven is not re-run (it stays red)"
 check bash -c "! grep -q 'rerun' '$work/heldunprov.gh'"
+
+# --- REQ-SUP-001-AC34: a held file-pin update is re-run once the base branch's file_pins row is old enough (the same proof the age check takes) ---
+FPP=.github/policy/gradle-wrapper-jar-sha256.txt; FPT="7a9ce74cff467ca1bf60a4fcd9f05185acceda4d0f382434d393e17864262c5d  bench/gradle-sample/gradle/wrapper/gradle-wrapper.jar"
+FPH=$(python3 -c "import hashlib;print(hashlib.sha256(('$FPP' + chr(0) + '$FPT\n').encode()).hexdigest())")
+fpex() { printf '{"exceptions": [], "unmeasured_text": [], "file_pins": [{"file": "%s", "content": "%s", "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "%s"}]}' "$FPP" "$FPH" "$1" >"$work/fpex-$2.json"; }
+fpheld() { echo "{\"lists\": {}, \"upstream\": {}, \"nested\": {}, \"versions\": {}, \"prs\": [{\"number\": 11, \"title\": \"jar sum\", \"run_id\": 77, \"moved\": [\"tool:file:$FPP@(file)#content:$1\"]}], \"times\": {}}"; }
+fpex "$(dago 8)" old; run fpheld "$(fpheld $FPH)" "$work/r-clean" --rerun-held --exceptions "$work/fpex-old.json"
+CASE="AC34: a held PR whose file pin is dated by a base-branch row 8 days old is RE-RUN (gh run rerun 77)"
+check grep -q '"rerun", "77"' "$work/fpheld.gh"
+fpex "$(dago 2)" young; run fpheld2 "$(fpheld $FPH)" "$work/r-clean" --rerun-held --exceptions "$work/fpex-young.json"
+CASE="AC34: the same row 2 days old: not re-run"
+check bash -c "! grep -q 'rerun' '$work/fpheld2.gh'"
+run fpheld3 "$(fpheld $(printf 'b%.0s' $(seq 64)))" "$work/r-clean" --rerun-held --exceptions "$work/fpex-old.json"
+CASE="AC34: a file pin whose content differs from the row's is not re-run"
+check bash -c "! grep -q 'rerun' '$work/fpheld3.gh'"
 
 # --- the live source's own logic, with no network: how a database record is read -----------------------------------------------------------------------------
 CASE="OSV's affected entries are judged range by range and OR-ed (a merged event list once marked codeql-action 4.x affected by a stale 2.x range), GitHub's comparator ranges too, and a ref that is not a commit is never upstream-checked"
@@ -997,6 +1012,193 @@ t = time.time()
 pa.history_items(sys.argv[2], "HEAD", dt.datetime(2026, 10, 5, tzinfo=dt.timezone.utc))
 print(f"history scan: {calls[0]} inventories in {time.time() - t:.2f}s")
 assert calls[0] <= 4, calls[0]    # 9 commits in the lookback (3 pin commits + 6 noise), at most 4 distinct trees the inventory reads
+PY
+
+# --- cache#692-era follow-up (pin-age timeout, advisor read-back Oct 24): one inventory is memoised PER FILE (path, blob, and the blobs of the local workflows it names), so a
+# new tree re-reads only the files that changed. The verdicts must not move: byte-identical items, a changed callee invalidates its caller, a raise is never cached. ---
+CASE="file memo: over a real slice of this repository's history the memoised inventories equal the unmemoised ones, field for field, in history order and in a scrambled order"
+check python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, random, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "20", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 10, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
+inv._MEMO_ON[0] = False
+ref = {r: dump(inv.load_at(root, r)) for r in revs}
+inv._MEMO_ON[0] = True
+for order in (list(reversed(revs)), random.Random(7).sample(revs, len(revs))):   # oldest first, then scrambled
+    inv._FILE_MEMO.clear()
+    for r in order:
+        assert dump(inv.load_at(root, r)) == ref[r], r
+assert any(len(v) > 2 for v in ref.values()), "the slice held no items"
+PY
+CASE="file memo: a changed callee invalidates its caller (the same caller blob, a local reusable workflow gaining then losing workflow_call)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n"
+callee_ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+callee_no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+keys = lambda files: sorted(inv.inventory(files))
+inv._MEMO_ON[0] = False
+plain = {c: keys({".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}) for c in (callee_ok, callee_no)}
+assert plain[callee_ok] != plain[callee_no], "the probe does not exercise the callee"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in (callee_ok, callee_no, callee_ok, callee_no):
+    assert keys({".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}) == plain[c]
+# the callee leaves the tree altogether: the caller's items follow it
+alone = {".github/workflows/caller.yml": caller}
+got = keys(alone); inv._MEMO_ON[0] = False
+assert got == keys(alone)
+PY
+CASE="file memo: a file that does not parse raises every time (a raise is never remembered) and one file is read once per distinct blob across a history scan"
+check python3 - "$aud" "$r" <<'PY'
+import datetime as dt, importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+bad = {".github/workflows/x.yml": "on: [\n  broken: : :\n"}
+for _ in range(2):
+    try:
+        inv.inventory(dict(bad)); raise SystemExit("no raise")
+    except RuntimeError:
+        pass
+calls = [0]; real = inv._file_found
+def counting(path, text):
+    calls[0] += 1
+    return real(path, text)
+inv._file_found = counting
+inv._FILE_MEMO.clear()
+files = {".github/workflows/a.yml": "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "1" * 40 + " # v4\n", "bin/install-scanner.sh": "TRIVY_VER=0.74.0\n"}
+for n in range(5):
+    inv.inventory(dict(files, **{".github/workflows/b%d.yml" % n: "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo %d\n" % n}))
+assert calls[0] == 2 + 5, calls[0]    # a.yml and the script once, each b file once
+PY
+
+# --- cache#693 first look (advisor ruling Oct 24): the memo revalidates the callees the walk actually READ, the context is neutral for every file, and the oracle is the parent ---
+CASE="file memo: a caller whose callee is spelled with YAML escapes (\\x2e) is re-read when the callee changes: the memo decides on the reads the walk made, not on a regex of the text"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = 'on: pull_request\njobs:\n  c:\n    uses: "\\x2e/.github/workflows/c\\x61llee.yml"\n'
+callee_ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+callee_no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+files = lambda c: {".github/workflows/caller.yml": caller, ".github/workflows/callee.yml": c}
+inv._MEMO_ON[0] = False
+plain = {c: sorted(inv.inventory(files(c))) for c in (callee_ok, callee_no)}
+assert plain[callee_ok] != plain[callee_no], "the probe does not exercise the escaped callee"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in (callee_ok, callee_no, callee_ok, callee_no):
+    assert sorted(inv.inventory(files(c))) == plain[c]
+PY
+CASE="file memo: a caller with TWO local callees is re-read when either one changes, and only then (each call records its own read)"
+check python3 - "$aud" <<'PY'
+import importlib.util, itertools, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = "on: pull_request\njobs:\n  a:\n    uses: ./.github/workflows/one.yml\n  b:\n    uses: ./.github/workflows/two.yml\n"
+ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+files = lambda one, two: {".github/workflows/caller.yml": caller, ".github/workflows/one.yml": one, ".github/workflows/two.yml": two}
+combos = list(itertools.product((ok, no), repeat=2))
+inv._MEMO_ON[0] = False
+plain = {c: sorted(inv.inventory(files(*c))) for c in combos}
+assert len({tuple(v) for v in plain.values()}) == 4, "the probe does not tell the four outcomes apart"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in combos + combos[::-1] + combos:
+    assert sorted(inv.inventory(files(*c))) == plain[c], c
+# "and only then": count the walks of the caller (the callees are walked when their own text is new)
+walks = []; real = inv._file_found
+inv._file_found = lambda p, x: (walks.append(p), real(p, x))[1]
+caller_path = ".github/workflows/caller.yml"
+inv._FILE_MEMO.clear(); inv.inventory(files(ok, ok)); walks.clear()
+inv.inventory(files(ok, ok)); assert caller_path not in walks, "an unchanged tree re-walked the caller"
+inv.inventory(files(no, ok)); assert walks.count(caller_path) == 1, "callee one changed: the caller is walked once"
+walks.clear(); inv.inventory(files(no, ok)); assert caller_path not in walks, "nothing changed: not walked"
+walks.clear(); inv.inventory(files(no, no)); assert walks.count(caller_path) == 1, "callee two changed: the caller is walked once"
+inv._file_found = real
+PY
+CASE="file memo: the context is neutral for every file: a workflow that raises in the middle of a job leaves nothing for the next file (a script read after it equals a neutral run, memo cold and warm)"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+bad = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: echo " + "0123456789abcdef" * 4 + "\n      - run: " + "x" * 4500 + "\n"
+script = "#!/usr/bin/env bash\npip install missingversion\ncurl -L -o /tmp/t https://example.org/releases/download/v${VER}/tool-${VER}.tgz\n"
+dump = lambda d: sorted((k, i.step, i.path, i.src) for k, i in d.items())
+inv._MEMO_ON[0] = False
+neutral = dump(inv.inventory({"bin/x.sh": script}))
+assert neutral, "the probe has no items"
+many = "on: push\nenv:\n  A: b\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      X: y\n    steps:\n      - run: |\n" + "".join("          pip install p%d==1.0\n" % i for i in range(600))
+for memo, poison in ((m, p) for m in (False, True) for p in (bad, many)):
+    inv._MEMO_ON[0] = memo; inv._FILE_MEMO.clear()
+    for _ in range(2):    # cold, then warm
+        try:
+            inv.inventory({".github/workflows/bad.yml": poison}); raise SystemExit("the limit did not raise")
+        except RuntimeError:
+            pass
+        assert dump(inv.inventory({"bin/x.sh": script})) == neutral, ("memo", memo)
+        for v in (inv._ENV_CTX[0], inv._INPUT_CTX[0]): assert v == "", v
+        assert inv._ENV_PRESENT[0] is False and inv._JOB_RUNS[0] == [] and inv._JOB_SUMS[0] == []
+PY
+CASE="file memo: a returned item can be changed without reaching the memo or a later inventory; a file that breaks a limit raises on every use"
+check python3 - "$aud" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+wf = ".github/workflows/a.yml"
+files = {wf: "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@" + "1" * 40 + " # v4\n      - run: curl -L https://example.org/x/${V}/t.tgz\n", "bin/a.sh": "curl -L https://example.org/x/${V}/t.tgz\n"}
+dump = lambda d: sorted((k, i.step, i.label, i.version) for k, i in d.items())
+first = inv.inventory(dict(files)); pristine = dump(first)
+for it in first.values():
+    it.step = "changed"; it.label = "changed"; it.version = "changed"
+assert dump(inv.inventory(dict(files))) == pristine
+callee_bad = {".github/workflows/caller.yml": "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n", ".github/workflows/callee.yml": "on: [\n  broken: : :\n"}
+callee_ok = dict(callee_bad, **{".github/workflows/callee.yml": "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"})
+for files_ in (callee_ok, callee_bad, callee_ok, callee_bad):      # a warm caller whose callee becomes unreadable raises, every time
+    try:
+        inv.inventory(dict(files_)); assert files_ is callee_ok
+    except RuntimeError:
+        assert files_ is callee_bad
+long_line = {"bin/b.sh": "echo " + "y" * 4500 + "\n"}
+for _ in range(3):
+    try:
+        inv.inventory(dict(long_line)); raise SystemExit("no raise")
+    except RuntimeError:
+        pass
+PY
+CASE="file memo: the memoised inventories equal the PARENT commit's inventories over the same real slice, items and raises (the parent's own file is the oracle)"
+check python3 - "$aud" "$here/../../.." <<'PY'
+import importlib.util, json, subprocess, sys, tempfile, os
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv, root = pa.inv, sys.argv[2]
+ipath = ".github/agent/supply-chain/pin-inventory.py"
+intro = subprocess.run(["git", "-C", root, "log", "-S_FILE_MEMO", "--reverse", "--format=%H", "HEAD", "--", ipath], capture_output=True, text=True).stdout.split()
+assert intro, "the commit that introduced the memo is not in this checkout's history"
+src = subprocess.run(["git", "-C", root, "show", intro[0] + "^:" + ipath], capture_output=True, text=True)      # the file as it was before the memo existed, whatever the parents of HEAD are
+assert src.returncode == 0, src.stderr[:200]
+assert "_FILE_MEMO" not in src.stdout, "the oracle is the memoising implementation"
+with tempfile.TemporaryDirectory() as d:
+    p = os.path.join(d, "parent_inventory.py"); open(p, "w").write(src.stdout)
+    ps = importlib.util.spec_from_file_location("parent_inventory", p); parent = importlib.util.module_from_spec(ps); ps.loader.exec_module(parent)
+paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
+revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).split()
+assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
+dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
+def run(mod, r):
+    try:
+        return dump(mod.load_at(root, r))
+    except RuntimeError as e:
+        return "raise:" + str(e)
+want = {r: run(parent, r) for r in revs}
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for r in revs + list(reversed(revs)):
+    assert run(inv, r) == want[r], r
 PY
 
 CASE="no vendor or model name anywhere in the checks (the daily check is plain code, no AI; this repo is public)"
