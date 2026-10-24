@@ -187,9 +187,14 @@ GIT
   fi
   if [ "$chk" = 1 ]; then
     # the request the API receives: this branch, this base, no deletions, exactly the eight bumped files' bytes (the two go.mod files, the installer and its policy row), a headline, no author override
-    jq -e --arg b "$B" --arg base "$BASE" --arg r "$(base64 < "$work/go.mod" | tr -d '\n')" --arg t "$(base64 < "$work/tools/requirements/go.mod" | tr -d '\n')" \
-          --arg ins "$(base64 < "$work/bin/install-scanner.sh" | tr -d '\n')" --arg pol "$(base64 < "$work/.github/policy/chain-scripts.json" | tr -d '\n')" \
-          --arg mm "$(base64 < "$work/build/melange.yaml.tmpl" | tr -d '\n')" --arg gg "$(base64 < "$work/bin/gen-recipes.py" | tr -d '\n')" --arg yy "$(base64 < "$work/build/melange.yaml" | tr -d '\n')" --arg zz "$(base64 < "$work/build/melange-fips.yaml" | tr -d '\n')" '
+    # the expected encodings go to files and into jq by --rawfile: a padded policy file is far over one argument's size limit on Linux
+    mkdir -p "$work/exp"
+    base64 < "$work/go.mod" | tr -d '\n' > "$work/exp/r"; base64 < "$work/tools/requirements/go.mod" | tr -d '\n' > "$work/exp/t"
+    base64 < "$work/bin/install-scanner.sh" | tr -d '\n' > "$work/exp/ins"; base64 < "$work/.github/policy/chain-scripts.json" | tr -d '\n' > "$work/exp/pol"
+    base64 < "$work/build/melange.yaml.tmpl" | tr -d '\n' > "$work/exp/mm"; base64 < "$work/bin/gen-recipes.py" | tr -d '\n' > "$work/exp/gg"
+    base64 < "$work/build/melange.yaml" | tr -d '\n' > "$work/exp/yy"; base64 < "$work/build/melange-fips.yaml" | tr -d '\n' > "$work/exp/zz"
+    jq -e --arg b "$B" --arg base "$BASE" --rawfile r "$work/exp/r" --rawfile t "$work/exp/t" --rawfile ins "$work/exp/ins" --rawfile pol "$work/exp/pol" \
+          --rawfile mm "$work/exp/mm" --rawfile gg "$work/exp/gg" --rawfile yy "$work/exp/yy" --rawfile zz "$work/exp/zz" '
       .variables.input as $i
       | $i.branch.branchName == $b and $i.expectedHeadOid == $base
         and ($i.message.headline | startswith("chore(go): bump toolchain 1.26.6 -> 1.27.0"))
@@ -338,7 +343,7 @@ mutant() {
 FRESH_CASE=('[]' 0 0 0 "$LIST"$'\n'"$LSR"$'\n'"$FRESH_OK"$'\n'"$CREATE"$'\n'"$PRVIEW" new ok true 1)
 # round 1 of take 30 (Codex sol B1/B2): the request is built from FILES (jq --rawfile), never from an argument (the real policy's base64 is over Linux's 128 KiB limit for one argument), and an encoder
 # that fails stops the bump before anything is pushed (no empty installer in a signed commit)
-BUMP_POLICYPAD=1 run_case "a 200 KB policy file -> the request still carries the four files exactly (built from files, not arguments)" "$SUT" "${FRESH_CASE[@]}"
+BUMP_POLICYPAD=1 run_case "a 200 KB policy file -> the request still carries the eight files exactly (built from files, not arguments)" "$SUT" "${FRESH_CASE[@]}"
 BUMP_B64=fail run_case "an encoder that fails -> nothing pushed, no API commit, no PR, exit 1" "$SUT" '[]' 0 0 1 "$LIST"$'\n'"$LSR"$'\n'"$REVP" skip
 if grep -Eq -- '--arg +[A-Za-z_]+ +"\$\((base64|cat)' "$SUT"; then echo "FAIL: the bump script passes file contents through jq --arg"; fail=$((fail+1)); else echo "ok: the bump script passes no file contents through jq --arg"; pass=$((pass+1)); fi
 { cat "$SUT"; printf '\ngh pr ready "$branch"\ngh pr merge --squash --auto "$branch"\n'; } > "$mut"
