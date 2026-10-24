@@ -296,7 +296,7 @@
       "runs": [],
       "signs": false,
       "reason": "turns each image's built OCI index into the final index that carries the release's OpenVEX as attestation children, and moves the image's digest file with it (REQ-REL-010-AC1); no network code, standard library only",
-      "sha256": "8850c5c980614c38046cb7427bbc3aab1104d20191a6b3ee7582167430d5eb1b"
+      "sha256": "3306a83ca4704a9069b44a72bc853d2d9f0c2e668a5454f6b07e0bd52bfbfe3d"
     },
     {
       "path": "bin/witnessed.sh",
