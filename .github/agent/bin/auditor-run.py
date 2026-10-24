@@ -334,6 +334,27 @@ def _find_pr(ws, branch):
     return (q.stdout or "").strip(), None
 
 
+def _base_file_ok(ws, rel):
+    """The reviewed file `rel` as the delivery base (origin/main) holds it, read as a git object so the workspace is not touched: absent = the first run, anything else must be the
+    JSON object the reader requires (the checks _merge_suppressions makes AFTER the checkout, made before it), or ReviewedInputInvalid."""
+    r = subprocess.run(["git", "show", "origin/main:" + rel], cwd=ws, capture_output=True, text=True)
+    if r.returncode != 0:
+        if "does not exist in" in (r.stderr or "") or "exists on disk, but not in" in (r.stderr or ""):
+            return
+        raise ReviewedInputInvalid("origin/main:%s cannot be read (%s)" % (rel, (r.stderr or "").strip()[:200]))
+    reviewed.parse(r.stdout, "origin/main:" + rel, as_name=rel)
+
+
+def _preflight_delivery(ws, out, supp):
+    """Everything _merge_suppressions reads, validated BEFORE `git checkout -B` touches the workspace (cache#701 ruling F3/B3: exit 3 never follows a mutating call): the delivery base's
+    two reviewed files (git show), and the files this run wrote (the consolidated VEX, the reopened-expired ledger, the accepted-items inventory)."""
+    _base_file_ok(ws, ".vex/fosterstack-cache.openvex.json")
+    _base_file_ok(ws, ".auditor/accepted-items.json")
+    _read_reviewed_json(os.path.join(supp, "fosterstack-cache.openvex.json"))      # absent is the staging error _merge_suppressions reports; present must be the VEX object
+    _read_reopened(os.path.join(out, ".auditor", "reopened-expired.json"))
+    _read_reviewed_json(os.path.join(out, ".auditor", "accepted-items.json"))
+
+
 def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test=False):
     """Deliver the consolidated suppressions (R16) as ONE non-stacked draft PR against main,
     carrying .vex/fosterstack-cache.openvex.json (the only exception there is, rule 4) in a single commit
@@ -397,6 +418,7 @@ def _deliver_suppression_pr(out, supp, nstmt, today, commit, dry, would, is_test
     r = _git("fetch", "origin", "main")
     if r.returncode != 0:
         return None, ("git fetch: " + (r.stderr or "").strip())
+    _preflight_delivery(ws, out, supp)                    # every read the merge makes after the checkout, made before it: a stop (exit 3) leaves the workspace as it was
     r = _git("checkout", "-B", branch, "origin/main")     # off main => not stacked
     if r.returncode != 0:
         return None, ("git checkout: " + (r.stderr or "").strip())
@@ -819,21 +841,28 @@ def _merge_suppressions(ws, supp):
 
 
 
+def _collect_vex(out, ts):
+    """Read every per-CVE VEX this run wrote and validate the merged document; writes nothing. Returns (document, statements). run() calls it BEFORE the first owner-decision issue
+    so a damaged per-finding VEX stops the run (exit 3) while nothing outside the run's own directory has been touched (cache#701 ruling F3/B3); _consolidate does the same read."""
+    import glob
+    statements = []
+    for vf in sorted(glob.glob(os.path.join(out, "vex", "*.openvex.json"))):
+        statements.extend((_read_reviewed_json(vf) or {}).get("statements", []))      # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
+    document = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
+                "author": "FosterStack LLC", "role": "vendor", "timestamp": ts, "version": 1,
+                "statements": statements}
+    vex.validate(document)
+    return document, statements
+
+
 def _consolidate(out, ts):
     """Merge every per-CVE VEX this run wrote into ONE canonical
     suppressions/fosterstack-cache.openvex.json (the file scan/rescan/release-authz read),
     Returns
     (suppression_dir, statement_count). (R1 round-3: the auditor's VEX must reach the
     canonical file, and the consistency check must read the layout the run actually writes.)"""
-    import glob
-    statements = []
-    for vf in sorted(glob.glob(os.path.join(out, "vex", "*.openvex.json"))):
-        statements.extend((_read_reviewed_json(vf) or {}).get("statements", []))      # a per-finding VEX this run wrote that does not parse: the run is broken, it stops
+    document, statements = _collect_vex(out, ts)
     supp = os.path.join(out, "suppressions")
-    document = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": policy.VEX_BASE,
-                "author": "FosterStack LLC", "role": "vendor", "timestamp": ts, "version": 1,
-                "statements": statements}
-    vex.validate(document)
     cli.writej(os.path.join(supp, "fosterstack-cache.openvex.json"), document)
     return supp, len(statements)
 
@@ -1834,6 +1863,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     adj_err_msgs = sorted((state.get("adj_errors") or {}).values())
     adjudicator_down = bool(adj_unavailable)
     adj_cause = "; ".join(adj_err_msgs) or "model calls failed"
+    _collect_vex(out, ts)       # every per-finding VEX the run wrote is read and validated BEFORE the first owner-decision issue: exit 3 never follows a mutating call (cache#701 ruling F3/B3)
     if adjudicator_down:
         n = len(adj_unavailable)
         ids = ", ".join(sorted({r["id"] for r in adj_unavailable}))

@@ -56,6 +56,17 @@ def present(path):
     return True
 
 
+def parse(text, label, as_name=None):
+    """The same rules for a document already in hand (a git object read with `git show`): the parsed JSON object carrying its required keys, or ReviewedInputInvalid. `label` names it in the stop."""
+    try:
+        doc = json.loads(text)
+    except (ValueError, UnicodeError) as ex:
+        raise ReviewedInputInvalid("%s cannot be read as JSON (%s)" % (label, type(ex).__name__))
+    if not isinstance(doc, dict):
+        raise ReviewedInputInvalid("%s is not a JSON object" % label)
+    return check(doc, label, as_name)
+
+
 def read(path, as_name=None):
     """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else that is not a readable JSON object carrying its required keys
     is a stop. `as_name` reads a file under the rules of another name (the release gate's per-finding VEX files)."""

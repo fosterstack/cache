@@ -29,7 +29,9 @@ class FakeRun:
     (rc, stdout, stderr), a list of responses consumed in order, or an Exception to raise.
     The longest matching prefix wins; unmatched argv -> rc 0, empty output."""
     def __init__(self, rules=None):
-        self.rules = dict(rules or {}); self.calls = []
+        # the delivery base holds no reviewed file yet unless a test says so (git show of origin/main:<path> is read before the checkout)
+        self.rules = {("git", "show"): (128, "", "fatal: path 'x' does not exist in 'origin/main'")}
+        self.rules.update(rules or {}); self.calls = []
 
     def __call__(self, argv, **kw):
         argv = list(argv); self.calls.append((argv, kw))
@@ -935,7 +937,8 @@ class SuppressionPR(Base):
         fr = ApiRun()
         url, err = self.real(fr, supp=self.d("empty-supp"))               # no openvex file to merge
         self.assertIsNone(url); self.assertTrue(err.startswith("stage files: "), err)
-        self.assertEqual(fr.argvs(), [["git", "fetch", "origin", "main"], ["git", "checkout", "-B", self.BR, "origin/main"]])
+        self.assertEqual(fr.argvs(), [["git", "fetch", "origin", "main"], ["git", "show", "origin/main:.vex/fosterstack-cache.openvex.json"],
+                                      ["git", "show", "origin/main:.auditor/accepted-items.json"], ["git", "checkout", "-B", self.BR, "origin/main"]])
 
     def test_existing_pr_reused_and_armed(self):
         fr = ApiRun({("gh", "pr", "list"): (0, "https://x/pull/7\n", "")})
@@ -1531,6 +1534,53 @@ class Run(Base):
         self.assertEqual(cls[c]["section"], 3)
         self.assertEqual(cls[c]["action"], "fix not resolvable: example.com/m@v9.9.9 did not resolve from the module proxy — stays in section 3")
         self.assertIn(["go", "get", "example.com/m@v9.9.9"], fr.argvs())
+
+
+class ExitThreeBeforeMutation(unittest.TestCase):
+    """cache#701 ruling F3/B3: every validation that can end the run with exit 3 runs before the first mutating call: the per-finding VEX before the first owner-decision issue,
+    the delivery base's reviewed files (git show) and the run's own outputs before `git checkout -B`."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.d, True)
+
+    def _show(self, rc, out="", err=""):
+        return FakeRun({("git", "show"): (rc, out, err)})
+
+    def test_base_file_absent_is_the_first_run_and_good_files_pass(self):
+        with mock.patch.object(R.subprocess, "run", self._show(128, "", "fatal: path 'x' exists on disk, but not in 'origin/main'")):
+            R._base_file_ok(self.d, ".vex/fosterstack-cache.openvex.json")
+        with mock.patch.object(R.subprocess, "run", self._show(0, json.dumps({"statements": []}))):
+            R._base_file_ok(self.d, ".vex/fosterstack-cache.openvex.json")
+
+    def test_a_base_file_that_cannot_be_read_or_is_not_the_required_object_is_a_stop(self):
+        bad = (self._show(128, "", "fatal: bad object"), self._show(0, "{not json"), self._show(0, "[]"), self._show(0, "{}"))
+        for fake in bad:
+            with mock.patch.object(R.subprocess, "run", fake):
+                with self.assertRaises(R.ReviewedInputInvalid):
+                    R._base_file_ok(self.d, ".vex/fosterstack-cache.openvex.json")
+
+    def test_preflight_validates_what_the_merge_will_read(self):
+        out = os.path.join(self.d, "out"); supp = os.path.join(out, "suppressions"); os.makedirs(supp)
+        with mock.patch.object(R.subprocess, "run", FakeRun()):
+            R._preflight_delivery(self.d, out, supp)                       # nothing of the run is written yet: first-run shaped, passes
+            vp = os.path.join(supp, "fosterstack-cache.openvex.json")
+            open(vp, "w").write("{}")
+            with self.assertRaises(R.ReviewedInputInvalid):
+                R._preflight_delivery(self.d, out, supp)                   # a consolidated VEX without its statements stops it
+            json.dump({"statements": []}, open(vp, "w"))
+            R._preflight_delivery(self.d, out, supp)
+            os.makedirs(os.path.join(out, ".auditor"))
+            open(os.path.join(out, ".auditor", "reopened-expired.json"), "w").write("{}")
+            with self.assertRaises(R.ReviewedInputInvalid):
+                R._preflight_delivery(self.d, out, supp)                   # a damaged ledger of the run stops it before the checkout
+
+    def test_collect_vex_reads_and_validates_without_writing(self):
+        os.makedirs(os.path.join(self.d, "vex"))
+        doc, st = R._collect_vex(self.d, "2026-09-24T00:00:00Z")
+        self.assertEqual((st, doc["statements"]), ([], []))
+        self.assertFalse(os.path.exists(os.path.join(self.d, "suppressions")))
+        open(os.path.join(self.d, "vex", "a.openvex.json"), "w").write("{}")
+        with self.assertRaises(R.ReviewedInputInvalid):
+            R._collect_vex(self.d, "2026-09-24T00:00:00Z")
 
 
 class SupplyCves(unittest.TestCase):

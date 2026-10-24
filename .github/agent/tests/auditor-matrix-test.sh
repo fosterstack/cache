@@ -1414,6 +1414,7 @@ EOF
 cat > "$fb/git" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$gitlog"
+if [ "\$1" = "show" ]; then case "\$2" in origin/main:*) echo "fatal: path '\${2#*:}' does not exist in 'origin/main'" >&2; exit 128;; esac; fi   # the delivery base holds no reviewed file yet (the first run)
 if [ "\$1" = "status" ]; then printf ' M .vex/fosterstack-cache.openvex.json\\0'; fi
 if [ "\$1" = "rev-parse" ]; then echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; fi
 exit 0
@@ -1573,6 +1574,7 @@ exit 0
 EOF
 cat > "$fb/git" <<'EOF'
 #!/usr/bin/env bash
+if [ "$1" = "show" ]; then case "$2" in origin/main:*) echo "fatal: path '${2#*:}' does not exist in 'origin/main'" >&2; exit 128;; esac; fi   # the delivery base holds no reviewed file yet (the first run)
 exit 0
 EOF
 chmod +x "$fb/gh" "$fb/git"
@@ -1930,6 +1932,7 @@ sys.path.insert(0,".github/agent/bin")
 from unittest.mock import patch
 tmp=sys.argv[1]; mp=sys.argv[2]; ws=os.path.join(tmp,"ws")
 def fake(cmd,*a,**kw):
+    if cmd[:2]==["git","show"]: return subprocess.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
     if cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
@@ -1939,6 +1942,7 @@ def fake(cmd,*a,**kw):
     return R.subprocess.run.__wrapped__(cmd,*a,**kw) if hasattr(R.subprocess.run,"__wrapped__") else __import__("subprocess").run(cmd,*a,**kw)
 import subprocess as _sp
 def fake2(cmd,*a,**kw):
+    if cmd[:2]==["git","show"]: return _sp.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
     if cmd and cmd[0]=="git": return _sp.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return _sp.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return _sp.CompletedProcess(cmd,0,"[]","")
@@ -2065,6 +2069,7 @@ tmp=tempfile.mkdtemp(); ws=os.path.join(tmp,"ws"); os.makedirs(os.path.join(ws,"
 c="CVE-2099-9200"   # the finding in manifest-mediumnofix
 mp=os.environ["FXRUN"]+"/manifest-mediumnofix.json"
 def fake(cmd,*a,**kw):
+    if cmd[:2]==["git","show"]: return subprocess.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")   # the delivery base holds no reviewed file yet (the first run)
     if cmd and cmd[0]=="git": return subprocess.CompletedProcess(cmd,0,"","")
     if cmd[:3]==["gh","pr","list"]: return subprocess.CompletedProcess(cmd,0,"https://x.invalid/pull/1","")
     if cmd[:3]==["gh","issue","list"]: return subprocess.CompletedProcess(cmd,0,"[]","")
@@ -4309,6 +4314,8 @@ elif variant=="vex-bad-vulnerability": json.dump(dict(old,statements=[dict(old["
 elif variant=="vex-dir": os.remove(vp); os.mkdir(vp)
 elif variant=="items-dir": os.remove(ap); os.mkdir(ap)
 elif variant=="items-bad-at-delivery": corrupt_at="delivery"
+elif variant=="delivery-base-vex-empty": corrupt_at="delivery-vex"
+elif variant=="delivery-base-items-keyless": corrupt_at="delivery-items"
 elif variant=="missing": os.remove(vp); os.remove(ap)
 elif variant=="vex-parent-noaccess": os.chmod(ws+"/.vex",0)          # EACCES on the parent: lstat of the file fails, which is not "absent"
 elif variant=="reopened-bad-at-delivery": corrupt_at="reopened"
@@ -4318,9 +4325,16 @@ calls=[]
 def fake(cmd,*a,**kw):
     calls.append(list(cmd))
     if cmd and cmd[0]=="git":
-        if corrupt_at=="delivery" and cmd[1:2]==["checkout"]: open(ap,"w").write("{bad")
-        if corrupt_at=="reopened" and cmd[1:2]==["checkout"]:
-            os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write(reopened_body)
+        if cmd[1:2]==["fetch"]:      # the delivery base turns bad / the run's own ledger is damaged AFTER the run wrote it, before any checkout (the first moment the delivery looks)
+            if corrupt_at=="delivery": open(ap,"w").write("{bad")
+            if corrupt_at=="delivery-vex": open(vp,"w").write("{}")
+            if corrupt_at=="delivery-items": open(ap,"w").write('{"other": []}')
+            if corrupt_at=="reopened":
+                os.makedirs(tmp+"/out/.auditor",exist_ok=True); open(tmp+"/out/.auditor/reopened-expired.json","w").write(reopened_body)
+        if cmd[1:2]==["show"] and len(cmd)>2 and cmd[2].startswith("origin/main:"):      # origin/main is the workspace's own reviewed files here
+            _rel=cmd[2].split(":",1)[1]; _p=ws+"/"+_rel
+            if os.path.isfile(_p): return _sp.CompletedProcess(cmd,0,open(_p).read(),"")
+            return _sp.CompletedProcess(cmd,128,"","fatal: path '%s' does not exist in 'origin/main'"%_rel)
         return _sp.CompletedProcess(cmd,0,"","")
     if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
     return _sp.run(cmd,*a,**kw)
@@ -4336,8 +4350,39 @@ with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),
     except Exception as e: rc="EXC %s"%type(e).__name__
 try: os.chmod(ws+"/.vex",0o755)
 except OSError: pass
-mut=[x for x in calls if x[:3] in (["gh","issue","create"],["gh","pr","create"]) or x[:2] in (["git","push"],["git","commit"]) or x[:2]==["gh","api"]]
+mut=[x for x in calls if x[:3] in (["gh","issue","create"],["gh","issue","comment"],["gh","issue","close"],["gh","pr","create"],["gh","pr","merge"],["gh","pr","comment"]) or x[:2] in (["git","checkout"],["git","push"],["git","commit"]) or x[:2]==["gh","api"]]   # every mutating kind: issues, PRs, the API, and the workspace-changing git calls (cache#701 ruling F3/B3)
 print("rc=%s mutating=%d%s"%(rc,len(mut)," (checked at delivery)" if corrupt_at=="delivery" else ""))
+PP
+cat > "$WORK/r7main.py" <<'PP'
+# an owner-escalating finding whose per-finding VEX the run wrote damaged: the stop (exit 3) must come before the owner-decision issue is created (cache#701 ruling F3/B3)
+import json,os,sys,io,contextlib,importlib.util,tempfile,subprocess as _sp
+FX,variant=sys.argv[1],sys.argv[2]
+tmp=tempfile.mkdtemp(); ws=tmp+"/ws"; os.makedirs(ws+"/.vex"); os.makedirs(ws+"/.auditor")
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+from auditorlib import vex
+from unittest.mock import patch
+_orig=vex.write
+def dmg_write(*a,**kw):
+    p=_orig(*a,**kw)
+    if variant=="finding-vex-empty-object": open(p,"w").write("{}")
+    elif variant=="finding-vex-invalid-statement": json.dump({"statements":[{}]},open(p,"w"))
+    return p
+calls=[]
+def fake(cmd,*a,**kw):
+    calls.append(list(cmd))
+    if cmd and cmd[0]=="git":
+        if cmd[1:2]==["show"]: return _sp.CompletedProcess(cmd,128,"","fatal: path 'x' does not exist in 'origin/main'")
+        return _sp.CompletedProcess(cmd,0,"","")
+    if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
+    return _sp.run(cmd,*a,**kw)
+R.cli.ARGS[:]=["--manifest",FX+"/manifest-ownerissue.json","--out",tmp+"/out","--dry-run","false","--today","2026-09-24","--adjudicator","offline-probe"]
+with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake),patch.object(vex,"write",dmg_write),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
+    try: rc=R.main()
+    except Exception as e: rc="EXC %s"%type(e).__name__
+issues=[x for x in calls if x[:3]==["gh","issue","create"]]
+mut=[x for x in calls if x[:3] in (["gh","issue","create"],["gh","issue","comment"],["gh","issue","close"],["gh","pr","create"],["gh","pr","merge"],["gh","pr","comment"]) or x[:2] in (["git","checkout"],["git","push"],["git","commit"]) or x[:2]==["gh","api"]]
+print("rc=%s issues=%d mutating=%d"%(rc,len(issues),len(mut)))
 PP
 begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
@@ -4374,6 +4419,16 @@ for variant in vex-empty-list items-empty-list; do   # an empty list is a valid 
 done
 r6m="$("$PY" "$WORK/r6main.py" "$FXRUN" missing 2>/dev/null | tail -1)"
 case "$r6m" in rc=3*|"rc=EXC"*|"") no "a MISSING VEX and accepted-items file is the first run and does not stop" "$r6m" ;; *) ok ;; esac
+for variant in delivery-base-vex-empty delivery-base-items-keyless; do
+  r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r6" "rc=3 mutating=0" && ok || no "a delivery base whose reviewed file is {} or lacks its list ($variant) stops the run (exit 3) BEFORE git checkout: the delivery base is read with git show, the workspace is not touched" "$r6"
+done
+r7="$("$PY" "$WORK/r7main.py" "$FXRUN" control 2>/dev/null | tail -1)"
+case "$r7" in "rc=3 "*|"rc=EXC"*|"") no "control: an owner-escalating finding with intact per-finding VEX runs and opens its owner-decision issue (so the stop cases below are not vacuous)" "$r7" ;; *"issues=0 "*) no "control: no owner-decision issue was opened, the stop cases below prove nothing" "$r7" ;; *) ok ;; esac
+for variant in finding-vex-empty-object finding-vex-invalid-statement; do
+  r7="$("$PY" "$WORK/r7main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
+  eq "$r7" "rc=3 issues=0 mutating=0" && ok || no "an owner-escalating finding whose per-finding VEX is damaged ($variant) stops the run (exit 3) BEFORE the owner-decision issue is created: no gh issue, no checkout, no push" "$r7"
+done
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"
