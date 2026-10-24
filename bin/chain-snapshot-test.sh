@@ -254,11 +254,11 @@ for flag, what, name in (("--snapshot", "Build (capital B)", "Build"), ("--snaps
           rc == 1 and first.startswith("refused at rebuild: ") and "Traceback" not in err and "digest: items.json" not in first,
           "exit %s, first line %r" % (rc, first[:140]))
 # ---- REQ-CHAIN-004-AC15: the snapshot version -------------------------------------------------------------------------------------------------------------
-COLLECTION = {"check": "scanners"}   # the check stage reads the collections scanners, acceptance, runtime and arm64 (#683 split it); the fixture names one of them
+CHECK_COLLECTION = {"check": "scanners"}   # the check stage reads the collections scanners, acceptance, runtime and arm64 (#683 split it); the fixture names one of them
 SNAP_APK, REAL_APK = "out/x86_64/fscache-0.0.0_rc1-r0.apk", "out/x86_64/fscache-0.3.0-r0.apk"
 for label, args, stage, env in SUBCOMMANDS:
     for files, want_snapshot in (([SNAP_APK], True), ([REAL_APK], False)):
-        record("rec.json", COLLECTION.get(stage, stage), files)
+        record("rec.json", CHECK_COLLECTION.get(stage, stage), files)
         rc, out, err = run([a.replace("{rec}", "rec.json") for a in args], env)
         first = err.split("\n", 1)[0]
         if want_snapshot:
