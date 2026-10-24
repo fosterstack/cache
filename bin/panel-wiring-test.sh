@@ -394,7 +394,7 @@ else:
     if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in g_:
         bad.append("the published grype step's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
     pk_lines = [ln for ln in g_.splitlines() if ln.strip().startswith("pk=$(jq ")]   # a comment that quotes the line is not the line
-    pk_ = re.search(r"pk=\$\(jq '([^']+)' \"\$\{sbom\}\"", pk_lines[0]) if len(pk_lines) == 1 else None
+    pk_ = re.fullmatch(r"pk=\$\(jq '([^']+)' \"\$\{sbom\}\" 2>/dev/null\) \|\| pk=0", pk_lines[0].strip()) if len(pk_lines) == 1 else None
     if not pk_ or "packages:$k" not in g_.replace(" ", ""):
         bad.append("the published grype step does not record the child's package count (components with a package URL) in children-scanned.jsonl")
     else:   # the count runs on inventories: only a package URL (pkg:<type>/<name>) is a package, never a file, a number or not-a-purl
