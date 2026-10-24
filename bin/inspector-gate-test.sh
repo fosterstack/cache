@@ -59,6 +59,14 @@ f '{"id":"CVE-2099-0002","ratings":[{"severity":"high"}],"affects":[{"ref":"c2"}
 
 check "clean scan passes with counts"       0 "3 packages, 0 finding"          t "$w/sbom.json" "$w/clean.json" "$vex"
 check "zero packages = did not run"         2 "0 packages.*did not run"         t "$w/empty.json" "$w/clean.json" "$vex"
+# rc-5a C round 2 (first look): the package count is the components that carry a package URL, as in the grype gate and the panel; files and
+# components with an empty, null or non-string purl are not packages
+echo '{"bomFormat":"CycloneDX","components":[{"type":"operating-system","name":"debian"},{"type":"file","name":"/usr/lib/f0"}]}' > "$w/filesonly.json"
+echo '{"bomFormat":"CycloneDX","components":[{"type":"library","name":"a","purl":""},{"type":"library","name":"b","purl":null},{"type":"library","name":"c","purl":7},{"type":"library","name":"d","purl":{}}]}' > "$w/badpurls.json"
+echo '{"bomFormat":"CycloneDX","components":[{"type":"operating-system","name":"debian"},{"type":"library","name":"tzdata","purl":"pkg:deb/debian/tzdata@2025b-0+deb12u1"}]}' > "$w/onepkg.json"
+check "a components-without-purl inventory = did not run"      2 "0 packages.*did not run"  t "$w/filesonly.json" "$w/clean.json" "$vex"
+check "empty, null, number and object purls are not packages"   2 "0 packages.*did not run"  t "$w/badpurls.json" "$w/clean.json" "$vex"
+check "an operating-system component plus one package is 1 package" 0 "1 packages"            t "$w/onepkg.json" "$w/clean.json" "$vex"
 check "unreadable output = did not run"     2 "could not read.*did not run"     t "$w/sbom.json" "$w/missing.json" "$vex"
 check "published VEX covers busybox"        0 "1 covered by the published VEX"  t "$w/sbom.json" "$w/vexed.json" "$vex"
 check "unvexed finding blocks"              1 "error::inspector t: CVE-2099-0001 debian/tzdata" t "$w/sbom.json" "$w/novex.json" "$vex"

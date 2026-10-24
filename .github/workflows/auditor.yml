@@ -224,6 +224,11 @@ jobs:
           mkdir -p "${RUNNER_TEMP}/gobin"
           ./bin/install-scanner.sh syft "${RUNNER_TEMP}/gobin" \
             || echo "::warning::could not install syft; the package inventory falls back to matched packages"
+          # the build's pinned Go toolchain at its fixed install path (/usr/local/bin/fscache-go/bin/go): the provenance records step of a
+          # dependency bump runs it (REQ-VEND-001-AC15). Installed here, in this existing step, and never fatal: without it a bump PR simply
+          # does not regenerate its dependency provenance.
+          ./bin/install-scanner.sh go \
+            || echo "::warning::could not install the pinned Go toolchain; a bump PR will not regenerate its dependency provenance"
           export PATH="${RUNNER_TEMP}/gobin:${PATH}"
           # No scanner runs here: the manifest takes the four panel scanners' results from the rescan's verdict.json
           # (the panel directory option), and a scanner that did not run is recorded 'did not run', never clean.

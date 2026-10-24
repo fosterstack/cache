@@ -307,6 +307,18 @@ class SourceBinding(Harness):
         self.assertEqual(m["commit"], "unknown")
         self.assertIsNone(m["govulncheck"])
 
+    def test_a_tree_with_no_govulncheck_installed_is_did_not_run(self):
+        self.rules(GOOD_RULES)
+        real = M._version
+
+        def no_govulncheck(tool, args=("--version",)):
+            return None if tool == "govulncheck" else real(tool, args)
+        with mock.patch.object(M, "_version", no_govulncheck):
+            out = self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
+        self.assertEqual(self.gv(), [])                      # the tool is never run
+        self.assertIsNone(_rj(self.out)["govulncheck"])
+        self.assertIn("govulncheck did not run: the tool is not installed", out)
+
     def test_a_scan_that_fails_says_why(self):
         self.rules([r for r in GOOD_RULES if r.get("has") != ["-json"]] + [{"tool": "govulncheck", "has": ["-json"], "stdout": "", "stderr": "go: inconsistent vendoring in /src", "rc": 1}])
         out = self.run_main(self.base_args("--panel-dir", self.panel_dir(), "--commit", HEAD40))
