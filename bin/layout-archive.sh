@@ -5,7 +5,7 @@
 # published VEX applies), then the child's config blob and its layer blobs, and nothing else of the layout.
 # Prints "child sha256:<child manifest> config sha256:<config>", for the caller to check against the scanner.
 set -euo pipefail
-layout=${1:?usage: layout-archive.sh LAYOUT ARCH ARCHIVE TAG}
+layout=${1:?}
 arch=${2:?}; archive=${3:?}; tag=${4:?}
 die() { echo "layout-archive: $*" >&2; exit 1; }
 blob() { echo "$layout/blobs/sha256/${1#sha256:}"; }
