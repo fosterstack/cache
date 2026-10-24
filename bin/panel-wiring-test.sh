@@ -31,7 +31,7 @@ for j in ("panel-grype", "panel-scout", "panel-inspector"):
         bad.append(f"{j} does not scan the four images (production and fips, each on both architectures), fixed in the workflow")
 tg = text("panel-google")
 if "for v in production fips" not in tg or "arm64" in tg or "for arch" in tg \
-        or "--override-arch amd64" not in tg or 'cand-${v}-amd64"' not in tg:
+        or "layout-archive.sh \"/tmp/oci/${v}\" amd64" not in tg or 'cand-${v}-amd64"' not in tg:
     bad.append("panel-google does not scan exactly the two variants on linux/amd64 (and never arm64)")
 for j in jobs:
     # manifests/rescan are the PUBLISHED-release rescan (merged from daily-rescan.yml, consolidation 3 of 4;
@@ -357,9 +357,9 @@ for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
 # rc-5a D1 (Fable R4, astra B4): Grype runs with an empty config file and refuses GRYPE_* variables (as bin/grype-scan.sh does), and a failed Grype or Scout
 # command removes that image's output directory, so a readable partial report can never count as "ran" (the contract: fewer outputs = did not run)
 tg_ = text("panel-grype")
-if not re.search(r'grype "docker:\$\{ref\}" -c "\$RUNNER_TEMP/empty-grype\.yaml"', tg_) or not re.search(r': > "\$RUNNER_TEMP/empty-grype\.yaml"', tg_):
+if not re.search(r'grype "docker-archive:/tmp/arc/\$\{v\}-\$\{arch\}\.tar" -c "\$RUNNER_TEMP/empty-grype\.yaml"', tg_) or not re.search(r': > "\$RUNNER_TEMP/empty-grype\.yaml"', tg_):
     bad.append("panel-grype does not run grype with -c on an empty file made in the step")
-if "grype db update -c \"$RUNNER_TEMP/empty-grype.yaml\"" not in tg_ or len(re.findall(r"\bgrype (?:db update|\"docker:)", tg_)) != len(re.findall(r"\bgrype (?:db update -c|\"docker:\$\{ref\}\" -c) \"\$RUNNER_TEMP/empty-grype\.yaml\"", tg_)):
+if "grype db update -c \"$RUNNER_TEMP/empty-grype.yaml\"" not in tg_ or len(re.findall(r"\bgrype (?:db update|\"docker(?:-archive)?:)", tg_)) != len(re.findall(r"\bgrype (?:db update -c|\"docker-archive:[^\"]*\" -c) \"\$RUNNER_TEMP/empty-grype\.yaml\"", tg_)):
     bad.append("panel-grype runs a grype command (the database update or a scan) without -c on the empty config")
 if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in tg_:
     bad.append("panel-grype's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
@@ -432,8 +432,10 @@ if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.split("#")[0].strip()) fo
 # the exact scan commands: each architecture once, Google's package count from its request log
 for j in ("panel-grype", "panel-inspector"):
     t = text(j)
-    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != 1 \
-            or '--override-arch "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
+    # panel-inspector makes its tars in a step of their own, before the cache restore, then scans each: two loops
+    loops = 2 if j == "panel-inspector" else 1
+    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != loops \
+            or 'layout-archive.sh "/tmp/oci/${v}" "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
         bad.append(f"{j} does not load each architecture once by the loop variable")
 t = text("panel-scout")      # Scout names the platform of an attested index, each architecture once
 if not re.search(r"for arch in amd64 arm64; do", t) or '--platform "linux/${arch}"' not in t or "for v in production fips" not in t:
@@ -596,6 +598,8 @@ case_ grype-keeps-partial     bad "s=$(step_of panel-grype 'for v in'); s['run']
 case_ scout-keeps-partial     bad "s=$(step_of panel-scout 'docker scout sbom'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
 case_ grype-repo-config       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(' -c \"\$RUNNER_TEMP/empty-grype.yaml\"', '')"
 case_ grype-update-repo-config bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype db update -c \"\$RUNNER_TEMP/empty-grype.yaml\"', 'grype db update')"
+case_ grype-extra-archive-scan bad "s=$(step_of panel-grype 'for v in'); \
+  s['run'] = s['run'] + chr(10) + 'grype \"docker-archive:/tmp/arc/x.tar\" -o json'"
 case_ grype-no-env-refusal    bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
 case_ pub-grype-repo-config   bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' -c /tmp/empty-grype.yaml', '')"
 case_ pub-grype-no-env-refusal bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
@@ -617,7 +621,7 @@ case_ panel-dl-wrong-folder   bad "s=[x for x in $J['panel']['steps'] if 'panel-
 case_ panel-job-no-output     bad "$J['panel-scout'].pop('outputs')"
 case_ panel-upload-wrong-name bad "[x for x in $J['panel-grype']['steps'] if x.get('id') == 'upload'][0]['with']['name'] = 'panel-scout'"
 case_ panel-writes-other      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'] + chr(10) + 'mkdir -p /tmp/panel/scout/x'"
-case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
+case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('\"/tmp/oci/\${v}\" amd64', '\"/tmp/oci/\${v}\" arm64')"
 case_ grype-three-images      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production fips', 'for v in production')"
 case_ computed-images         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in \$ARCHES')"
 case_ scanner-reports-back    bad "$J['scanner-reports'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'osv-scanner scan image x'}]}"

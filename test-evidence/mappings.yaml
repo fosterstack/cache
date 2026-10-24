@@ -406,6 +406,7 @@ mappings:
   - ac: REQ-REL-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
+      - { type: shell-test, ref: "bin/layout-archive-test.sh" }
       - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
@@ -440,10 +441,10 @@ mappings:
   - ac: REQ-REL-004-AC10
     evidence:
       - { type: inspection, ref: "Verified by reviewer inspection; there is no coded check." }
-      - { type: inspection, ref: "The guard before every first use of skopeo, in these 8 jobs, spelled the same in each:" }
+      - { type: inspection, ref: "The guard before every first use of skopeo, in these 3 jobs, spelled the same in each:" }
       - { type: inspection, ref: "command -v skopeo > /dev/null || { echo \"::error::skopeo is not on this runner image\"; exit 1; }" }
-      - { type: inspection, ref: "scan.yml: scanner, inspector. auditor.yml: audit." }
-      - { type: inspection, ref: "main-candidate-rescan.yml: vex-attach, panel-grype, scout-root-cause, panel-inspector, panel-google." }
+      - { type: inspection, ref: "auditor.yml: audit. main-candidate-rescan.yml: vex-attach, scout-root-cause." }
+      - { type: inspection, ref: "The scan and panel jobs that scan the candidate read a tar made by bin/layout-archive.sh and use no skopeo." }
       - { type: inspection, ref: "No job installs skopeo. The job token reaches docker login only through env: GH_TOKEN," }
       - { type: inspection, ref: "in main-candidate-rescan.yml (rescan); acceptance.yml's two login lines follow in their own change." }
   - ac: REQ-REL-005-AC1
