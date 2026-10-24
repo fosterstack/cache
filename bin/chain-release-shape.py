@@ -29,6 +29,7 @@ CRED_RE = re.compile(r"secrets\s*(\.|\[)|github\s*(\.\s*token|\[\s*['\"]?\s*toke
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
+RECORD_ENV_VERIFY = "python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json"      # rc-2 R4: the verify job's own record, checked before it is uploaded
 MELANGE_INSTALL = "bash bin/install-build-tools.sh melange"     # REQ-CHAIN-007-AC1 (Astra R4): the one build tool Release needs, for release-sign-apks.sh; the fourth install, after crane
 DOWN = {"signed-witness-build", "signed-witness-rebuild", "signed-witness-check", "signed-witness-check-arm64", "check-results", "provenance", "digests", "items", "admission-baseline", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "apk-compare"}   # the artifacts the verify and release jobs may download: Build's real names (AC17) and the compare job's small result; NEVER a rapk (the owner's rule of Oct 21 2026)
 COMPARE_PAIRS = {"apk-ubuntu-24.04": "apks/ubuntu-24.04", "apk-ubuntu-24.04-arm": "apks/ubuntu-24.04-arm", "rapk-ubuntu-24.04": "rapks/ubuntu-24.04", "rapk-ubuntu-24.04-arm": "rapks/ubuntu-24.04-arm", "signed-witness-rapk-ubuntu-24.04": "witness-rapk-ubuntu-24.04", "signed-witness-rapk-ubuntu-24.04-arm": "witness-rapk-ubuntu-24.04-arm"}   # the compare job: Build's apks and Rebuild's, nothing else
@@ -143,8 +144,10 @@ def verify_job(j):
             kinds.append("install:witness")
         elif r == "bash bin/witnessed.sh release-verify bin/release-verify.sh":
             kinds.append("W:release-verify")
+        elif r == RECORD_ENV_VERIFY:
+            kinds.append("RE")          # rc-2 R4 (Fable): the verify job holds id-token write and uploads its Witness record, so it checks it for a token first, with no if
         else:
-            bad.append("verify job: a step that is none of checkout, the Witness install, download, release-verify or upload: %r" % (r or s.get("name")))
+            bad.append("verify job: a step that is none of checkout, the Witness install, download, release-verify, its record check or upload: %r" % (r or s.get("name")))
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [i for i, k in enumerate(kinds) if k == "W:release-verify"]
     ups = [i for i, k in enumerate(kinds) if k == "up"]
@@ -156,8 +159,11 @@ def verify_job(j):
     for nm, want in (("signed-witness-check", "witness-check"), ("admission-baseline", "witness-build"), ("check-results", "check-results"), ("signed-witness-check-arm64", "witness-check/witness-arm64")):
         if dl.get(nm) != want:
             bad.append("verify job: artifact %s must be downloaded to %s (where release-verify reads it), got %r" % (nm, want, dl.get(nm)))
+    res = [i for i, k in enumerate(kinds) if k == "RE"]
+    if len(ws) != 1 or res != [ws[0] + 1]:
+        bad.append("verify job: right after release-verify the job must check its own Witness record for a token (%s, no if), exactly once: %s" % (RECORD_ENV_VERIFY, kinds))
     if not ups or ups != list(range(len(kinds) - len(ups), len(kinds))):
-        bad.append("verify job: only uploads may follow release-verify, and there must be at least one")
+        bad.append("verify job: only uploads may follow the record check, and there must be at least one")
     upl = [(x.get("with") or {}) for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/upload-artifact@")]
     if upl != [{"name": "witness-release-verify", "path": "witness-release-verify", "if-no-files-found": "error"}]:
         bad.append("verify job: its one upload must be exactly name witness-release-verify, path witness-release-verify and if-no-files-found error (the Witness record of release-verify; a missing record fails the job; the release job's own upload is witness-release): %s" % upl)
@@ -267,9 +273,11 @@ def stage(path):
             kinds.append("install:melange")
         elif re.fullmatch(r"bash bin/witnessed\.sh (release-[a-z]+) bin/\1\.sh", r):
             kinds.append("W:" + r.split()[2])
+        elif re.fullmatch(r"python3 -I bin/chain-verify\.py record-env --record witness-(release-[a-z]+)/\1-collection\.json", r):   # rc-2 R4: the Release job checks its own six Witness records for a token before they are uploaded (REQ-CHAIN-007-AC12)
+            kinds.append("RE:" + r.split()[-1].split("/")[0][len("witness-"):])
         else:
             bad.append("a step that is none of checkout, install, download, witnessed or upload: %r" % (r or s.get("name")))
-        want_if = RC_IF if kinds and kinds[-1].startswith("W:") and kinds[-1] != "W:release-verify" else None
+        want_if = RC_IF if kinds and kinds[-1][:2] in ("W:", "RE") and kinds[-1] not in ("W:release-verify", "RE:release-verify") else None
         if len(kinds) > nk and s.get("if") != want_if:   # nk: kinds before this step; only a step that was classified is judged for its if
             bad.append("step %r must carry %s, found %r (a release candidate ends after release-verify; release-verify and every non-Witness step carry no if)"
                        % (r or u, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
@@ -303,8 +311,11 @@ def stage(path):
         bad.append("between the first and the last Witness step there must be Witness steps only (an install, a download or an upload in between is refused): %s" % kinds[first_w:last_w + 1])
     if any(k.startswith("install:") for k in kinds[5:]):
         bad.append("between the checkout and the downloads exactly the four installs are allowed, and no install after them: %s" % kinds)
-    if any(k != "up" for k in kinds[last_w + 1:]) or not ups:
-        bad.append("only uploads may follow the witnessed steps, and there must be at least one")
+    after = kinds[last_w + 1:]
+    if after[:len(STEPS)] != ["RE:" + s for s in STEPS]:
+        bad.append("right after the witnessed steps the Release job must check each of its own six Witness records for a token (python3 -I bin/chain-verify.py record-env --record witness-STEP/STEP-collection.json, REQ-CHAIN-007-AC12), exactly %s in this order, found %s" % (STEPS, [k[3:] for k in after if k.startswith("RE:")]))
+    if any(k != "up" for k in after[len(STEPS):]) or not ups:
+        bad.append("only uploads may follow the witnessed steps and their record checks, and there must be at least one")
     text = open(path).read()
     if re.search(r"docker\s+login|build-push|buildx|goreleaser|\bgo build\b", text):
         bad.append("a registry login or a build command appears in the stage file")

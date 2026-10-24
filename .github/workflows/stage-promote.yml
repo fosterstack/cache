@@ -115,6 +115,8 @@ jobs:
           path: apk-compare
       - name: release-verify under Witness
         run: bash bin/witnessed.sh release-verify bin/release-verify.sh
+      - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witness-release-verify
@@ -228,6 +230,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh
+      - name: release-verify record holds no token (REQ-CHAIN-007-AC12)
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-verify/release-verify-collection.json
+      - name: release-apks record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-apks/release-apks-collection.json
+      - name: release-publish record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-publish/release-publish-collection.json
+      - name: release-sign record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-sign/release-sign-collection.json
+      - name: release-assets record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-assets/release-assets-collection.json
+      - name: release-postverify record holds no token (REQ-CHAIN-007-AC12)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: python3 -I bin/chain-verify.py record-env --record witness-release-postverify/release-postverify-collection.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-evidence

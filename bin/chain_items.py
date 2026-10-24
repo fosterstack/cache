@@ -28,7 +28,8 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}            # the apk architecture name -> the image and archive name
 IMAGES = {"production": "standard", "fips": "fips"}         # image -> apk variant
 TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL",
-               "GH_TOKEN", "GITHUB_TOKEN", "SIGSTORE_ID_TOKEN")
+               "GH_TOKEN", "GITHUB_TOKEN", "SIGSTORE_ID_TOKEN",
+               "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "APK_RELEASE_SIGNING_KEY")      # rc-2 R4 (Fable): Release's own three credentials, which its six Witness records could carry
 
 
 # ---- the names a record may carry (REQ-CHAIN-004-AC13 and AC15; REQ-CHAIN-005-AC7) ----------------------------------------------------------
@@ -467,13 +468,17 @@ def check_record_env(stage, envelope, payload):
     """AC8 on an already-read record (REQ-CHAIN-004-AC8): no ACTIONS_ID_TOKEN_REQUEST_* name (the whole prefix), runtime-token name, GH_TOKEN or GITHUB_TOKEN, no compact JWT
     and no GitHub token value anywhere in the envelope or the decoded payload. The verifiers call it for every verified Witness collection, naming the record's own stage."""
     text = json.dumps(envelope) + "\n" + payload.decode("utf-8", "replace")
-    found = sorted(set(re.findall(r"ACTIONS_ID_TOKEN_REQUEST_[A-Za-z0-9_]*", text)) | {n for n in TOKEN_NAMES if n in text})
+    found = sorted(set(re.findall(r"ACTIONS_ID_TOKEN_REQUEST_[A-Za-z0-9_]*|ACTIONS_RUNTIME_[A-Za-z0-9_]*", text)) | {n for n in TOKEN_NAMES if n in text})
     if found:
         refuse(stage, "env: the record names " + " ".join(found))
     if re.search(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*", text):
         refuse(stage, "env: the record holds a compact JWT")
     if re.search(r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}", text):
         refuse(stage, "env: the record holds a GitHub token")
+    if re.search(r"\bdckr_pat_[A-Za-z0-9_-]{20,}", text):
+        refuse(stage, "env: the record holds a Docker Hub token")
+    if re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", text.replace("\\n", "\n")):
+        refuse(stage, "env: the record holds a private key block")
 
 
 def cmd_record_env(a):
