@@ -57,7 +57,7 @@
     },
     {
       "path": "bin/chain-verify.py",
-      "sha256": "8466d10c222192c5e4363b2eaa038faae003d2696128e528d5e4acd7f9cb1f2f",
+      "sha256": "06d532be94eec391f6068401bb571ba2b28b7ad7cd5f3725ebb1090a827b55da",
       "tools": [
         "make",
         "at",
@@ -764,14 +764,15 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "50c24d360d311fa88bfba26fc2734c5e2622319bf1d966623aa6aa171bb888c4",
+      "sha256": "3b61991b22cf0c4b005da92c2aacd5b2200b93aa3b3053646448c85d004c118f",
       "tools": [
         "env",
+        "go",
         "source"
       ],
       "runs": [],
       "signs": false,
-      "reason": "Check's Go scan of the module's code: `govulncheck -json ./...` in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the pinned Go first on the tool's search path), the stream written unchanged to check-results/govulncheck.json, a called symbol fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs",
+      "reason": "Check's Go scan of the module's code in the pinned Go environment (GOFLAGS=-mod=vendor, GOPROXY=off, GOTOOLCHAIN=local, the Go directory of the pinned search path first): `govulncheck -json` on ./... and on the shipped main package, read from the two build recipes with a closed line grammar (the one exact build line, `go version -m`, the PATH/GOPATH/GOCACHE exports and, in the FIPS recipe only, its GOFIPS140 selection; CGO_ENABLED only from the environment block), on linux/amd64 and linux/arm64, plus the shipped main again with the FIPS recipe's GOFIPS140 selection on both, after `go mod edit -json` has shown no go.mod ignore directive; the amd64 ./... stream is written unchanged to check-results/govulncheck.json, a called symbol in any run fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs, and go is the Go on the pinned search path, which it reads go.mod with",
       "env_mentions": [
         {
           "name": "PATH",
@@ -782,7 +783,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "62e453e653c7b693a6c31f4667c8c99556485ed454d5571eafdb6d866b554f56",
+      "sha256": "4b6ad729091e1c4cdd03b8851c14a55d5c0a6b9c92d0aedeefe2d6215bc26d92",
       "tools": [
         "find",
         "python3",
@@ -881,7 +882,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "c0734a5e15604218fafded054a0f5c4c07b9cb0a87ad72b3db2a3a64a99b305d",
+      "sha256": "5f021d2ae72110ec0ac030d9a216a9c0fd4da01c33591282441b150315ce77f0",
       "tools": [
         "curl",
         "docker",
@@ -901,7 +902,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "e4e68f95fd045da4878c68f71298306367f884143b12a420ec5af2d6151e7647",
+      "sha256": "625139a11962384c52752c283bd4b3f7c968c5be56329605cc8eb1b8c5434a17",
       "tools": [
         "bash",
         "docker",
@@ -1905,7 +1906,7 @@
       "runs": [],
       "signs": false,
       "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
-      "sha256": "d3cfa3fca4ce9e7e639d0dc80fa65d2386fc63a6ee3de05c501c9bf72c7ca21a",
+      "sha256": "efbd2bb935a223d4abb4b26ff6ac78f72a3758c1f1f959a9ac7798bcbb19881f",
       "exceptions": [
         {
           "rule": "deny",
@@ -1954,7 +1955,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "17b9bf66d3e04bb0dfd38ac21310f20ef37b6c34b8aa5b6f2993889e44b64d0d",
+      "sha256": "56fa6d8abe7d4bf2d85b8fc8920d5fa3031a63c794732a80dc4e501b45798b6b",
       "tools": [
         "at",
         "curl",
@@ -2025,7 +2026,7 @@
     },
     {
       "path": "bin/check-bind.py",
-      "sha256": "adeade6b12c7f7c4682a09cfdef29bd2d81955534acf476e7c41e7106a8563ad",
+      "sha256": "a96e9a2b761815592516e642fccb8fba6453a724716cccca4442a76abe78e8c3",
       "tools": [],
       "runs": [
         "bin/chain_items.py"
@@ -2045,7 +2046,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "e633d170732c81253149c9a60f56b5e98a0aedfdba7c84dbd2ad7364cc5e2861",
+      "sha256": "17b8fd7cd291e117570cd12a78e0594bbe35af2511661e2b46d554fb6b35aa7a",
       "tools": [
         "at",
         "gh",
@@ -2088,7 +2089,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "a74d72fe7a01425fc5f75dee7d00b2a8fa9a92ee4059c1c5eb673781f21ccacd",
+      "sha256": "7148c225516cd40d754c40f93b58e1c54c4af1ebea78c39b5ab644e7d9b2ebf2",
       "tools": [
         "at",
         "python3"
@@ -2279,7 +2280,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "0a5bff4d853b6e407eb37c994f5cbb8bf6f078651190268da1b14e9da3169232",
+      "sha256": "d4a5b950ee47a116b69b199636d78085d77f2cf91b77dce0cf58f24ec658ca05",
       "exceptions": [
         {
           "rule": "script-name",
