@@ -78,7 +78,7 @@ pick_port() {
   for _ in $(seq 100); do
     pp=$((20000 + RANDOM % 40000))
     case " $port_std $port_fips " in *" $pp "*) continue ;; esac
-    ( : < "/dev/tcp/127.0.0.1/$pp" ) > /dev/null 2>&1 || { echo "$pp"; return 0; }   # nothing accepts a connection there (bash's own /dev/tcp: a refused connection fails the redirect)
+    ( : < "/dev/tcp/127.0.0.1/$pp" ) > /dev/null 2>&1 || { echo "$pp"; return 0; }   # nothing accepts a connection there (a refused connection fails the redirect)
   done
   return 1
 }
