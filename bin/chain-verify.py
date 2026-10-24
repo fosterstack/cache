@@ -665,13 +665,17 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
     entry = dsse["signatures"][0]
     try:
         leaf_der = single_cert_der(b64d(entry["certificate"]).decode())
-        leaf = parse_cert(leaf_der)
         cert_pem = der_to_pem(leaf_der)
         intermediates = [b64d(x).decode() for x in entry.get("intermediates", [])]
         sig = b64d(entry["sig"])
     except Exception as ex:
         refuse(stage, "record certificate or signature is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__))
-    chain = check_chain(stage, pol, cert_pem, intermediates, tmp)   # rc-2 R8: the chain is verified before any field of the certificate is read (the DER reader's own boundary note)
+    # rc-2 R8: the certificate chain is verified (by openssl) BEFORE the DER reader sees a single field of the leaf (its boundary note: never point it at bytes nobody has verified)
+    chain = check_chain(stage, pol, cert_pem, intermediates, tmp)
+    try:
+        leaf = parse_cert(leaf_der)
+    except Exception as ex:
+        refuse(stage, "record certificate or signature is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__))
     check_identity(stage, pol, leaf)
     check_signature(stage, chain[0], ptype, payload, sig, tmp)
     stamped = check_timestamp(stage, pol, entry, sig, leaf, now, tmp, expected_stamp_kind(ptype, payload))
