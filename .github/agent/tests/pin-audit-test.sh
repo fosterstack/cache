@@ -1080,6 +1080,23 @@ inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
 for c in (callee_ok, callee_no, callee_ok, callee_no):
     assert sorted(inv.inventory(files(c))) == plain[c]
 PY
+CASE="file memo: a caller with TWO local callees is re-read when either one changes, and only then (each call records its own read)"
+check python3 - "$aud" <<'PY'
+import importlib.util, itertools, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+inv = pa.inv
+caller = "on: pull_request\njobs:\n  a:\n    uses: ./.github/workflows/one.yml\n  b:\n    uses: ./.github/workflows/two.yml\n"
+ok = "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+no = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"
+files = lambda one, two: {".github/workflows/caller.yml": caller, ".github/workflows/one.yml": one, ".github/workflows/two.yml": two}
+combos = list(itertools.product((ok, no), repeat=2))
+inv._MEMO_ON[0] = False
+plain = {c: sorted(inv.inventory(files(*c))) for c in combos}
+assert len({tuple(v) for v in plain.values()}) == 4, "the probe does not tell the four outcomes apart"
+inv._MEMO_ON[0] = True; inv._FILE_MEMO.clear()
+for c in combos + combos[::-1] + combos:
+    assert sorted(inv.inventory(files(*c))) == plain[c], c
+PY
 CASE="file memo: the context is neutral for every file: a workflow that raises in the middle of a job leaves nothing for the next file (a script read after it equals a neutral run, memo cold and warm)"
 check python3 - "$aud" <<'PY'
 import importlib.util, sys
