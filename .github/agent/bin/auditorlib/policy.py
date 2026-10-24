@@ -1,6 +1,8 @@
 """Auditor policy constants — the thresholds and tables the code applies exactly.
 No vendor or model names live here; model ids come from the agent environment."""
 
+import re
+
 # Vote lineage: which scanners share a vulnerability database lineage. The panel's four (scanner-panel rule 1)
 # each keep their own advisory data, so each is its own vote; so is the Go vulnerability database.
 LINEAGE = {
@@ -57,6 +59,11 @@ def subject(text):
 
 # Run bounds.
 MAX_ITERATIONS = 5
+# REQ-AUD-9 AC3 "a five-iteration stop" (register row 38, advisor reading Oct 24): the owner hears when the same finding is still unsettled after this many CONSECUTIVE runs
+UNSETTLED_RUNS = 5
+# the one grammar of a finding id (the panel verdict's, with the tally's "?" for an id-less result), capped: the verdict parser and the unsettled-run counter both use it, so an id
+# the parser accepts is always one the counter can write and read back
+FINDING_ID = re.compile(r"[A-Za-z0-9?][A-Za-z0-9._:+-]{0,199}")
 TOKEN_BUDGET = 200000
 
 # VEX product scope and statement-id scheme.
