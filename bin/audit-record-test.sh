@@ -282,6 +282,7 @@ def rel(tag="v0.3.0", obj=APPROVED, sha=HEAD, ref=REF, commit=COMMIT, policy=WRI
     return A.verify_release(tag, obj, sha, ref, commit, policy)
 ok, why = rel(); check("release: an owner-signed v0.3.0 whose message approves the record of the tagged commit -> passes", ok and why == "", (ok, why))
 ok, why = rel(tag="v0.3.0-rc.1"); check("release: a release candidate tag is held to the same rule", ok, (ok, why))
+ok, why = rel(obj=tagobj(["-----BEGIN EXAMPLE SIGNATURE-----", "Release v0.3.0", "-----END EXAMPLE SIGNATURE-----", "Audit-approved: " + REC])); check("release: an example block before the approval line is message text, not the signature: still passes", ok, (ok, why))
 ok, why = rel(tag="v0.3.1", obj="", ref=None, commit=None); check("release: a patch tag needs no record and no approval line", ok, (ok, why))
 ok, why = rel(tag="v0.3.12", obj=None, ref=None, commit=None); check("release: a two-digit patch tag is a patch tag too", ok, (ok, why))
 for name, kw in (
@@ -294,6 +295,7 @@ for name, kw in (
     ("trailing text on the line", dict(obj=tagobj(["Audit-approved: " + REC + " ok"]))),
     ("the line indented", dict(obj=tagobj(["  Audit-approved: " + REC]))),
     ("the line inside the signature block", dict(obj=tagobj(["Release v0.3.0"], sig="-----BEGIN SSH SIGNATURE-----\nAudit-approved: " + REC + "\n-----END SSH SIGNATURE-----\n"))),
+    ("a second approval line inside an example block that is message text, not the signature", dict(obj=tagobj(["Audit-approved: " + REC, "-----BEGIN EXAMPLE SIGNATURE-----", "Audit-approved: " + "d" * 40, "-----END EXAMPLE SIGNATURE-----"]))),
     ("no tag object", dict(obj=None)), ("an empty tag object", dict(obj="")),
     ("no record branch", dict(ref=None)), ("no record commit", dict(commit=None)),
     ("a record for another tagged commit", dict(sha="c" * 40)),

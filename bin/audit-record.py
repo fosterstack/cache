@@ -97,6 +97,7 @@ def verify_record(head, base_ref, ref, commit, writers):
 _RELEASE_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[0-9]+)?$")
 _PATCH_TAG = re.compile(r"^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*$")
 _APPROVED = re.compile(r"^Audit-approved: ([0-9a-f]{40})$")
+_SIG_BEGIN = ("-----BEGIN SSH SIGNATURE-----", "-----BEGIN SIGNED MESSAGE-----", "-----BEGIN PGP SIGNATURE-----")
 
 
 def is_patch_tag(tag):
@@ -111,7 +112,7 @@ def _approval(tag_object):
     msg = tag_object.split("\n\n", 1)[1]
     found = []
     for ln in msg.split("\n"):
-        if re.match(r"-----BEGIN [A-Z0-9 ]*SIGNATURE-----", ln):
+        if ln in _SIG_BEGIN:      # exactly the labels the admission signer recognises (bin/admission-tag-signer.py BLOCKS); any other PEM-looking block is message text
             break
         if ln.strip().lower().startswith("audit-approved"):
             m = _APPROVED.match(ln)
