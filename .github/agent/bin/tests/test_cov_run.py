@@ -479,6 +479,20 @@ class MergeConsolidate(Base):
         self.assertEqual(len(items), 1)                                   # kept at CVE level
         self.assertNotIn("vex_id", items[0])                              # but no scope to point at
 
+    def test_two_scopes_sharing_an_id_are_delivered_with_distinct_ids(self):
+        # REQ-AUD-13 AC2 safety net: never deliver two statements sharing an @id (scopes are distinct, the ids collide: the later gets a suffix, the first keeps its id)
+        ws = self.d("ws")
+        s1 = self._stmt("CVE-2099-26", ["pkg:deb/debian/libfoo@1.0"])
+        s2 = self._stmt("CVE-2099-26", ["pkg:deb/debian/libfoo@2.0"])
+        s2["@id"] = s1["@id"]
+        _out, supp = self._supp([s1, s2])
+        R._merge_suppressions(ws, supp)
+        ids = [s["@id"] for s in json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))["statements"]]
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2)
+        self.assertEqual(ids[0], s1["@id"])
+        self.assertEqual(ids[1], s1["@id"] + "0")
+
     def test_panel_mode_merge_regenerates_no_scanner_ignore_files(self):
         ws = self.d("ws"); _out, supp = self._supp([self._stmt("CVE-2099-25", ["pkg:deb/a@1"])])
         R._merge_suppressions(ws, supp)
