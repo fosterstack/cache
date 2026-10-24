@@ -394,6 +394,7 @@ mappings:
   - ac: REQ-REL-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/scan.yml: the required aggregation job 'scan' needs every scanner leg (Grype over the image children and archives; Amazon Inspector over the image children from an SBOM made on the runner) on pull_request, push to main and v* tags, blocking at any severity with the published VEX as the only exception; govulncheck runs in ci.yml over the root module (row 73)" }
   - ac: REQ-REL-004-AC2
     evidence:
@@ -1725,5 +1726,8 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }
   - ac: REQ-CI-005-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+  - ac: REQ-CI-005-AC5
     evidence:
       - { type: shell-test, ref: "bin/suite-guard-test.sh" }

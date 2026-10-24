@@ -4759,7 +4759,7 @@ requirements:
     notes: >
       A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite
       once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain
-      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job), runs the rest, and fails on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
+      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job that is a required check or is needed by one, one counting step per suite), runs the rest without echoing their output, and fails on a second counting step for one suite, on a ci.yml whose jobs are not a mapping, and on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
       is not the file name of its PATH. The floors only rise as before.
     acceptance_criteria:
       - id: REQ-CI-005-AC1
@@ -4784,5 +4784,11 @@ requirements:
         given: "the suite guard's floors"
         when: "a pull request lowers or drops a floor"
         then: "the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-005-AC5
+        given: "the committed ci.yml and floors file (PLANNED, Fable ruling on cache#695: the split of the wrap; the requirements tool accepts only approved or proposed, so the status field reads approved and this word says planned)"
+        when: "the floor check of the workflow run (`suite-guard-run.py all`) is asked which floored suites it runs itself, because no trusted counting step runs them"
+        then: "it runs exactly these eight, and each suite runs this many times in a workflow run, its plain steps plus the one run of `all`: auditor-labels-test.sh (2 runs), auditor-matrix-test.sh (2 runs), required-check-guard-test.sh (2 runs), suite-guard-test.sh (2 runs), vex-index-test.sh (3 runs: two plain steps and `all`) and vex-scope-test.sh (2 runs) are six whose steps are not counting steps yet, so they run more than once until PR 3 migrates them (this AC then shrinks to the last two); marker-gate-test.sh (1 run) and pin-audit-go-major-test.sh (1 run) are known-red by design: no step of their own, run only by `all`"
         verification: { method: unit, release_blocking: false }
         status: approved
