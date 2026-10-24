@@ -10,36 +10,6 @@
    "file": "release.yml",
    "tool": "gitsign",
    "reason": "signs the automatic patch tag with release.yml's own keyless identity (REQ-REL-009-AC5)"
-  },
-  {
-   "file": "stage-admission.yml",
-   "tool": "actions/attest",
-   "reason": "old chain: signs the source-admission predicate; removed in PR 2 (admission moves into Build's first step)"
-  },
-  {
-   "file": "stage-admission.yml",
-   "tool": "gitsign",
-   "reason": "verifies/uses gitsign for the CI patch-tag identity check (REQ-REL-009-AC6); moves into Build's first step in PR 2"
-  },
-  {
-   "file": "stage-build.yml",
-   "tool": "actions/attest",
-   "reason": "old chain: signs the build predicate; replaced by Witness in PR 2"
-  },
-  {
-   "file": "stage-image.yml",
-   "tool": "actions/attest",
-   "reason": "old chain: signs the image-build predicate; removed in PR 2"
-  },
-  {
-   "file": "stage-reproducibility.yml",
-   "tool": "actions/attest",
-   "reason": "old chain: signs the reproducibility predicate; replaced by Rebuild's Witness record in PR 2"
-  },
-  {
-   "file": "stage-verify.yml",
-   "tool": "actions/attest",
-   "reason": "old chain: signs one scan predicate per scanner; replaced by Check's Witness record in PR 3"
   }
  ]
 }
