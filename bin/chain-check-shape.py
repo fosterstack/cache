@@ -326,8 +326,8 @@ def stage(path):
     body = [x for x in kinds if x != "down"]
     if body[:k] != want or body[k:k + 3] != ["witnessed"] * 3 or body[k + 3:k + 4] != ["rec"] or any(x != "up" for x in body[k + 4:]) or len(body) < k + 5:
         bad.append("steps must be checkout, install Witness, install each listed scanner, the kind and kubectl check "
-                       "(KIND_STEP), downloads, THREE witnessed steps, the records step, uploads (in that order); got %s"
-                   % kinds)
+                   "(KIND_STEP), downloads, THREE witnessed steps, the records step, uploads (in that order); "
+                   "got %s" % kinds)
     if "kind" in kinds and "down" in kinds and kinds.index("down") < kinds.index("kind"):
         bad.append("the downloads come after the installs")
     want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", GO_INSTALL)] + [("downid", "govulncheck-dl"), ("run", GV_HAND_LINE)] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
