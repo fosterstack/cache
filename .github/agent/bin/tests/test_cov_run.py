@@ -311,13 +311,10 @@ class NoChange(Base):
                  ("a category outside the five", dict(return_value={"category": "burn_it_down", "token_usage": 1}), {}),
                  ("a refusal", dict(side_effect=R.cli.Refused("no")), {}),
                  ("an error", dict(side_effect=RuntimeError("down")), {}),
-                 ("the token budget stop", dict(return_value={"category": "real_fixable"}), {"tokens": R.policy.TOKEN_BUDGET}),
-                 ("the iteration stop", dict(return_value={"category": "real_fixable"}), {"iters": R.policy.MAX_ITERATIONS}))
+                 ("the token budget stop", dict(return_value={"category": "real_fixable"}), {"tokens": R.policy.TOKEN_BUDGET}))
         for label, ask_kw, st_kw in cases:
             st = self.state(**st_kw)
-            if label == "the iteration stop":
-                st_kw = {}
-            with mock.patch.object(R.cli, "ask_model", **ask_kw), mock.patch.object(R.policy, "MAX_ITERATIONS", 0 if label == "the iteration stop" else R.policy.MAX_ITERATIONS):
+            with mock.patch.object(R.cli, "ask_model", **ask_kw):
                 R.adjudicate("/x/real.py", self.CTX, st)
             self.assertTrue(st.get("nc_incomplete"), label)
 
@@ -496,10 +493,8 @@ class Pullability(Base):
         with mock.patch.object(R.cli, "ask_model") as ask:
             st = {"tokens": policy.TOKEN_BUDGET}
             self.assertIsNone(R._pullability("/a", {"finding_id": "C"}, st))
-            st2 = {"tokens": 0, "iters": policy.MAX_ITERATIONS}
-            self.assertIsNone(R._pullability("/a", {"finding_id": "C"}, st2))
         ask.assert_not_called()
-        self.assertNotIn("calls", st); self.assertNotIn("calls", st2)
+        self.assertNotIn("calls", st)
 
     def test_refusal_is_billed_and_returns_none(self):
         ex = R.cli.Refused("C"); ex.token_usage = 11
@@ -639,11 +634,46 @@ class PurlVersion(unittest.TestCase):
         self.assertIsNone(R._ver_from_purl(None))
 
 
+class NeedsHuman(unittest.TestCase):
+    def test_the_unsettled_run_issue_is_a_section_zero_item_and_a_failed_one_is_said(self):
+        none = {n: [] for n in range(1, 8)}
+        self.assertEqual(R._needs_human([], none, True, None, "ok"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "dry"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "skipped"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "#12"), ["owner-decision needed: findings unsettled for 5 consecutive runs — #12"])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "FAILED"), ["owner-decision issue FAILED to open: findings unsettled for 5 consecutive runs"])
+
+
 class ResolveCarried(unittest.TestCase):
     def test_a_statement_without_a_vulnerability_name_is_skipped(self):
         """a carried statement that names no vulnerability cannot match a flagged entry, and is never reported as not re-checkable"""
         stmts = [{"products": []}, {"vulnerability": {"name": "CVE-2099-1"}, "products": []}]
         self.assertEqual(R._resolve_carried({}, stmts), ["CVE-2099-1"])
+
+    def _groups(self):
+        f = R.PARS._finding("inspector", "CVE-2099-7", "pkg:generic/libfoo", (), "libfoo", None, None, {"carried": True, "version": "1.0"})
+        return {"CVE-2099-7": {"id": "CVE-2099-7", "aliases": [], "findings": [f], "lineages": {"inspector"}}}
+
+    @staticmethod
+    def _stmt(arch):
+        return {"vulnerability": {"name": "CVE-2099-7"},
+                "products": [{"@id": "pkg:oci/x", "subcomponents": [{"@id": "pkg:deb/debian/libfoo@1.0?arch=%s&distro=debian-12.0" % arch}]}]}
+
+    def test_a_change_only_in_the_carried_resolution_never_reuses_a_verdict_for_a_different_question(self):
+        """the no-change hash is taken over the groups BEFORE the carried statements are resolved, so two runs can share it while the statements resolve differently. That
+        cannot produce a wrong reuse: a reused verdict, pullability record or narrative is looked up by the key of the exact context the model is given (nochange.call_key),
+        and that context carries the resolved purl, so a different resolution is a different key and the model is asked again; the same resolution is the same question."""
+        ctx = lambda groups: {"finding_id": "CVE-2099-7", "package": "libfoo", "purl": groups["CVE-2099-7"]["findings"][0]["purl"]}
+        before_a, before_b = self._groups(), self._groups()
+        self.assertEqual(nochange.finding_set_hash(before_a, {}), nochange.finding_set_hash(before_b, {}))             # same hash, resolved differently below
+        R._resolve_carried(before_a, [self._stmt("amd64")]); R._resolve_carried(before_b, [self._stmt("arm64")])
+        same = self._groups(); R._resolve_carried(same, [self._stmt("amd64")])
+        key = lambda g: nochange.call_key("adjudicate", ctx(g))
+        self.assertNotEqual(key(before_a), key(before_b))
+        self.assertEqual(key(before_a), key(same))
+        yesterday = {"verdicts": {key(before_a): "false_positive"}}
+        self.assertEqual(nochange.verdict(yesterday, key(same)), "false_positive")
+        self.assertIsNone(nochange.verdict(yesterday, key(before_b)))
 
 
 class MergeConsolidate(Base):

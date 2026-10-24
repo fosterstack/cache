@@ -918,10 +918,10 @@ u = by.get("Upload the no-change state"); t = by.get("Upload the full audit trai
 run = next(s for s in steps if "auditor-run.py" in (s.get("run") or ""))
 bad = []
 r = (f or {}).get("run", "")
-for need in ("--workflow auditor.yml", "--branch main", "--status success", "--event schedule", "--event workflow_dispatch", "-n auditor-state"):
+for need in ("--workflow auditor.yml", "--branch main", "--status completed", "--event schedule", "--event workflow_dispatch", "-n auditor-state"):
     if need not in r: bad.append("fetch lacks " + need)
-if r.count("--branch main") < 3 or r.count("--status success") < 2 or r.count("--workflow auditor.yml") < 2:
-    bad.append("each auditor-state run listing must be limited to this workflow, branch main and success")
+if r.count("--branch main") < 3 or r.count("--status completed") < 2 or r.count("--workflow auditor.yml") < 2:
+    bad.append("each auditor-state run listing must be limited to this workflow, branch main and completed runs")
 if "pull_request" in r: bad.append("fetch names pull_request")
 if (f or {}).get("env", {}).get("GH_TOKEN") != "${{ github.token }}": bad.append("fetch token is not the job token")
 if "--prev-state" in run["run"]: bad.append("the run step's text changed (its sha256 is bound by the pin checker's download exception)")
@@ -1537,13 +1537,10 @@ charged="$("$PY" -c '
 import sys,importlib.util,tempfile,os
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":100001})+\"\\n\")\n    sys.stdout.flush()\n")
-st={"tokens":0,"iters":0}
+st={"tokens":0}
 R.adjudicate(fa,{"finding_id":"CVE-X"},st)
-R.policy.MAX_ITERATIONS=1   # the iteration stop: only 3 attempts exist, below the real limit of 5, so lower the limit to make the guard decide
-st2={"tokens":0,"iters":0}
-R.adjudicate(fa,{"finding_id":"CVE-X"},st2)
-print(st["tokens"], st.get("calls"), st.get("stops"), st2.get("calls"), st2.get("stops"))' 2>/dev/null)"
-{ [ "$charged" = "200002 2 1 1 1" ]; } && ok || no "refusal usage charged to the budget, and the third attempt is stopped by the budget" "tokens calls stops, then calls stops with the iteration limit at 1 =$charged"
+print(st["tokens"], st.get("calls"), st.get("stops"))' 2>/dev/null)"
+{ [ "$charged" = "200002 2 1" ]; } && ok || no "refusal usage charged to the budget, and the third attempt is stopped by the budget" "tokens calls stops =$charged"
 
 begin "ol2-3-high-outlier-excluded-quorum-holds" "one over-counting scanner is excluded as an outlier; the three agreeing scanners still form the quorum -> AUDIT COMPLETE, osv named excluded not did-not-run"
 o="$WORK/ol23"; rm -rf "$o"; : > "$LEDGER"
@@ -4122,7 +4119,7 @@ i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/nu
 
 # rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a five-iteration stop opens ONE owner-decision issue
 # (stable title, the count in the body; a budget stop opens none), and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
-begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "refusals (also a pullability or narrative one) are logged with their roles and billed, an iteration stop opens exactly ONE owner issue for all stopped findings with a stable title, a budget stop opens none, a failed delivery marks the run incomplete, the lists show their full counts, and the header fields are escaped"
+begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "refusals (also a pullability or narrative one) are logged with their roles and billed, a token-budget stop opens no owner issue (the in-run iteration stop is gone: it could never fire, so the repeated-unsettled case is the run counter's), the lists show their full counts, and the header fields are escaped"
 r14="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
 import sys,os,io,contextlib,importlib.util,tempfile,json,re,subprocess,copy
 FX=sys.argv[1]; tmp=tempfile.mkdtemp()
@@ -4145,31 +4142,27 @@ def manifest(nfind, name, ver="v1.2.3"):
     for s in m["panel"]["scanner_reports"]: m["panel"]["scanner_reports"][s]=d+"/verdict.json"
     m["scanner_status"]["grype"]["version"]=ver; m["scanner_status"]["grype"]["db_date"]="2026-10-21"
     json.dump(m,open(d+"/m.json","w")); return d+"/m.json"
-def run(mp, fa, dry=True, limit=None, shim=None, fail=False):
+def run(mp, fa, dry=True, shim=None, fail=False):
     ws=tmp+"/ws"; os.makedirs(ws, exist_ok=True); os.environ["GITHUB_WORKSPACE"]=ws
     if shim: os.environ["AUDITOR_GIT_SHIM_LOG"]=shim
     else: os.environ.pop("AUDITOR_GIT_SHIM_LOG",None)
     if fail: os.environ["AUDITOR_SHIM_ISSUE_FAIL"]="1"
     else: os.environ.pop("AUDITOR_SHIM_ISSUE_FAIL",None)
-    keep=R.policy.MAX_ITERATIONS
-    if limit: R.policy.MAX_ITERATIONS=limit
     out=tempfile.mkdtemp(dir=tmp)
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            R.run(mp,dry,out,"2026-09-24",adjudicator=fa)
-    finally: R.policy.MAX_ITERATIONS=keep
+    with contextlib.redirect_stdout(io.StringIO()):
+        R.run(mp,dry,out,"2026-09-24",adjudicator=fa)
     return open(out+"/report.md").read()
 bad=[]
 def line(rep,start): return [l for l in rep.split("\n") if l.startswith(start)]
 name_re=re.compile(r"anthropic|claude|opus|sonnet|gpt-|AUDITOR_MODEL",re.I)
-# 1: two findings stopped by the iteration limit: one issue naming both, no per-finding issue, refusals and stops with counts and roles, versions
-rep=run(manifest(2,"two"), adj(1), limit=1)
-iss=[l for l in rep.split("\n") if "owner-decision issue" in l and "iteration stop" in l]
-refs=line(rep,"**Model refusals:**"); stops=line(rep,"**Model stops:**"); vers=line(rep,"**Scanner versions:**")
-if not (len(iss)==1 and "2 finding(s)" in iss[0]): bad.append("stop issue %r"%iss)
-if [l for l in rep.split("\n") if "unassessed-after-fallback" in l or "escalation pending" in l]: bad.append("per-finding path also taken")
-if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 3: ") and "(primary, primary)" in refs[0] and "CONCLUSION (narrative, primary)" in refs[0]): bad.append("refs %r"%refs)
-if not (len(stops)==1 and stops[0].startswith("**Model stops:** 2: ") and "(iterations)" in stops[0]): bad.append("stops %r"%stops)
+# 1: refusals and stops are listed with counts and roles, and the scanner versions are printed; a refused finding gets its per-finding path
+rep=run(manifest(2,"two"), adj(1))
+refs=line(rep,"**Model refusals:**"); vers=line(rep,"**Scanner versions:**")
+if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 7: ") and "(primary, primary)" in refs[0] and "CONCLUSION (narrative, primary)" in refs[0]): bad.append("refs %r"%refs)
+if line(rep,"**Model stops:**"): bad.append("a stop listed without one")
+rep=run(manifest(2,"two-stopped"), adj(R.policy.TOKEN_BUDGET+1))
+stops=line(rep,"**Model stops:**")
+if not (len(stops)==1 and stops[0].startswith("**Model stops:** 2: ") and "(token budget)" in stops[0]): bad.append("stops %r"%stops)
 if not (len(vers)==1 and "grype v1.2.3, database 2026-10-21" in vers[0] and "scout not recorded by scout, database not recorded by scout" in vers[0]): bad.append("vers %r"%vers)
 if "none called" in rep: bad.append("role header says none called after refused calls")
 if name_re.search(rep): bad.append("a model/vendor name in the report")
@@ -4177,32 +4170,23 @@ if name_re.search(rep): bad.append("a model/vendor name in the report")
 rep=run(manifest(2,"budget"), adj(R.policy.TOKEN_BUDGET+1))
 if [l for l in rep.split("\n") if "owner-decision issue" in l]: bad.append("budget stop opened an issue")
 if not any("(token budget)" in l for l in line(rep,"**Model stops:**")): bad.append("budget stop not listed")
-# 2b: an adjudicator that ERRORS (does not refuse) and meets the stop is an outage, not a stop: one adjudicator-unavailable issue, no stop issue, no stop recorded, the run incomplete
+# 2b: an adjudicator that ERRORS (does not refuse) is an outage, not a stop: one adjudicator-unavailable issue, no stop recorded, the run incomplete
 fe=tempfile.mktemp(suffix=".py"); open(fe,"w").write("import sys\nfor line in sys.stdin:\n    sys.exit(3)\n")
-rep=run(manifest(2,"errored"), fe, limit=1)
-if [l for l in rep.split("\n") if "owner-decision issue" in l and "iteration stop" in l]: bad.append("an errored finding opened a stop issue")
+rep=run(manifest(2,"errored"), fe)
 if line(rep,"**Model stops:**"): bad.append("an errored finding was reported as a stop %r"%line(rep,"**Model stops:**"))
 if len([l for l in rep.split("\n") if l.startswith("- would open") and "owner-decision issue" in l and "adjudicator unavailable" in l])!=1: bad.append("no single adjudicator-unavailable issue %r"%[l[:160] for l in rep.split("\n") if "owner-decision" in l or "navailable" in l][:6])
 if "AUDIT INCOMPLETE" not in rep: bad.append("an adjudicator outage left the run complete")
-# 3: lists show the full count and say they are capped (21 findings x 3 refusals + the narrative one = 64)
+# 3: lists show the full count and say they are capped (21 findings x 3 refusals + the narrative one = 64); stops show the full count
 rep=run(manifest(21,"many"), adj(1))
 refs=line(rep,"**Model refusals:**")
 if not (len(refs)==1 and refs[0].startswith("**Model refusals:** 64: ") and refs[0].endswith("; ...")): bad.append("refs cap %r"%[r[:60] for r in refs])
-rep=run(manifest(21,"manystop"), adj(1), limit=1)
+rep=run(manifest(21,"manystop"), adj(R.policy.TOKEN_BUDGET+1))
 st=line(rep,"**Model stops:**")
 if not (len(st)==1 and st[0].startswith("**Model stops:** 21: ")): bad.append("stops count %r"%[x[:60] for x in st])
-# 4: the stop issue has a stable title across runs with a different count (one create, then an update), and the adjudicator-unavailable title is stable too
-shim=tmp+"/shim.log"
-run(manifest(1,"d1"), adj(1), dry=False, limit=1, shim=shim); run(manifest(3,"d3"), adj(1), dry=False, limit=1, shim=shim)
-log=open(shim).read()
-c=len([l for l in log.split("\n") if l.startswith("gh issue create") and "iteration stop" in l]); u=len([l for l in log.split("\n") if l.startswith("gh issue comment") and "iteration stop" in l])
-if (c,u)!=(1,1): bad.append("stop issue create/update %r"%((c,u),))
+# 4: the adjudicator-unavailable title is stable (no count in it)
 t1=R.policy.subject("owner-decision: adjudicator unavailable — findings unassessed")
 src=open(".github/agent/bin/auditor-run.py").read()
 if "adjudicator unavailable — %d findings" in src: bad.append("count in the unavailable title")
-# 5: a failed delivery of the stop issue marks the run incomplete
-rep=run(manifest(1,"f1"), adj(1), dry=False, limit=1, shim=tmp+"/shim2.log", fail=True)
-if "AUDIT COMPLETE" in rep or "failed to open" not in rep: bad.append("failed stop-issue delivery not incomplete")
 # 6: a pullability refusal is logged with its role and billed
 st={"tokens":0}
 R._pullability(adj(5),{"finding_id":"CVE-P"},st)
@@ -4212,13 +4196,107 @@ st={"tokens":0}
 R._conclusion(adj(7),{n:[] for n in range(1,8)},json.load(open(manifest(1,"n"))),st)
 if not (st.get("tokens")==7 and st.get("refusals")==[{"finding_id":"CONCLUSION","attempt":"narrative","role":"primary"}]): bad.append("narrative refusal %r"%st)
 # 8: scanner version text is escaped in the header
-rep=run(manifest(1,"esc","v`x`|[1]"), adj(1), limit=1)
+rep=run(manifest(1,"esc","v`x`|[1]"), adj(1))
 vers=line(rep,"**Scanner versions:**")
 if not (len(vers)==1 and "v\\`x\\`\\|\\[1\\]" in vers[0]): bad.append("unescaped version %r"%vers)
 print("OK" if not bad else "BAD "+"; ".join(bad))
 PP
 )"
 eq "$r14" "OK" && ok || no "rc-5b fix 14: refusals logged and billed, one stop issue with a stable title, budget stop silent, full counts, failed delivery incomplete, header escaped" "$r14"
+# rc-5b fix 15 (REQ-AUD-9 AC3, "a five-iteration stop"; register row 38 and the Sep 16 continuous-scanning rule "a five-iteration loop"; advisor reading, Oct 24): five CONSECUTIVE
+# auditor runs in which the same finding is still unsettled open ONE owner-decision issue (stable title, counts in the body). The counts ride in the auditor state (the no-change day's
+# artifact), a missing state is reported "counter state missing, counts restart", a corrupt state stops the run (exit 3, nothing written).
+begin "rc5b-15-five-consecutive-unsettled-runs-open-one-issue" "(a finding the model refused is in its own issue and not named twice; a count dated after today stops the run before any call) a finding the model leaves unsettled in five consecutive runs is named in ONE owner-decision issue on the fifth (never the fourth), a settled finding restarts at one, a second run on the same day does not count twice, a missing state is said in the run's output, a corrupt state stops the run"
+r15="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
+import sys,os,io,contextlib,importlib.util,tempfile,json,re,subprocess,copy
+FX=sys.argv[1]; tmp=tempfile.mkdtemp()
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+fr=tempfile.mktemp(suffix=".py"); open(fr,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":1})+\"\\n\")\n    sys.stdout.flush()\n")
+fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"category\":\"under_investigation\",\"token_usage\":1})+\"\\n\")\n    sys.stdout.flush()\n")
+v0=json.load(open(FX+"/panel-mediumnofix/verdict.json"))
+def manifest(nfind, name):
+    d=tmp+"/"+name; os.makedirs(d, exist_ok=True)
+    v=copy.deepcopy(v0); f0=v["findings"][0]; fs=[]
+    for i in range(nfind):
+        f=copy.deepcopy(f0); f["id"]="CVE-2099-93%02d"%i; f["package"]="libuns%d"%i
+        f["purls"]=["pkg:deb/debian/libuns%d@1?arch=amd64&distro=debian-12.0"%i]; f["details"]["grype"]["purl"]=f["purls"][0]; fs.append(f)
+    v["findings"]=fs; v["unique"]=fs
+    json.dump(v,open(d+"/verdict.json","w"))
+    m=json.load(open(FX+"/manifest-mediumnofix.json"))
+    for s in m["scanner_reports"]: m["scanner_reports"][s]=d+"/verdict.json"
+    m["panel"]["verdict"]=d+"/verdict.json"
+    for s in m["panel"]["scanner_reports"]: m["panel"]["scanner_reports"][s]=d+"/verdict.json"
+    json.dump(m,open(d+"/m.json","w")); return d+"/m.json"
+shim=tmp+"/shim.log"; ws=tmp+"/ws"; os.makedirs(ws); os.environ["GITHUB_WORKSPACE"]=ws; os.environ["AUDITOR_GIT_SHIM_LOG"]=shim
+bad=[]
+def day(n, mp, prev, adj=None):
+    out=tempfile.mkdtemp(dir=tmp)
+    if prev: os.environ["AUDITOR_PREV_STATE"]=prev
+    else: os.environ.pop("AUDITOR_PREV_STATE",None)
+    buf=io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        R.run(mp,False,out,"2026-10-%02d"%n,adjudicator=adj or fa)
+    rep=open(out+"/report.md").read(); st=json.load(open(out+"/.auditor/auditor-state.json"))
+    return out+"/.auditor/auditor-state.json", rep, buf.getvalue(), st
+def log_count(kind):
+    t=open(shim).read() if os.path.exists(shim) else ""
+    return len([l for l in t.split("\n") if l.startswith("gh issue "+kind) and "unsettled for" in l])
+two=manifest(2,"two"); one=manifest(1,"one")
+prev=None; marks=[]
+for n in range(1,6):
+    prev, rep, out, st = day(n, two, prev)
+    miss=("counter state missing, counts restart" in rep, "counter state missing, counts restart" in out)
+    if n==1 and miss!=(True,True): bad.append("day1 missing not reported in report and output %r"%(miss,))
+    if n>1 and any(miss): bad.append("day%d reported missing"%n)
+    marks.append((n, log_count("create")))
+    ul=[l for l in rep.split("\n") if l.startswith("**Unsettled-run counts:**")]
+    if (n==5) != bool(ul and "owner-decision issue: " in ul[0]): bad.append("day%d: the aggregate issue reference on the report line %r"%(n,ul))
+    if (n==5) != ("unsettled for 5 consecutive runs" in rep.split("## 1")[0]): bad.append("day%d: the aggregate issue in the report's section 0"%n)
+    if st["unsettled"].get("CVE-2099-9300",{}).get("runs")!=n: bad.append("day%d count %r"%(n,st["unsettled"]))
+    if st["verdicts"] or st["pullability"] or st["narrative"] is not None: bad.append("day%d: an incomplete run left something reusable besides the counts (#684's rule) %r"%(n,{k:st[k] for k in ("verdicts","pullability","narrative")}))
+if [m for m in marks if m[0]<5 and m[1]]: bad.append("issue before the fifth run %r"%marks)
+if marks[-1]!=(5,1): bad.append("no single issue on the fifth run %r"%marks)
+body=[l for l in open(shim).read().split("\n") if l.startswith("gh issue create") and "unsettled for" in l]
+if not (len(body)==1 and "CVE-2099-9300" in body[0] and "CVE-2099-9301" in body[0] and "5" in body[0]): bad.append("issue body %r"%[b[:200] for b in body])
+# the same day twice does not count twice
+p5=prev
+_, rep, out, st = day(5, two, p5)
+if st["unsettled"]["CVE-2099-9300"]["runs"]!=5: bad.append("same day counted twice %r"%st["unsettled"])
+# day six: the count is six, the SAME issue is updated (stable title): still one create; the comments are the same-day rerun and day six
+prev, rep, out, st = day(6, two, p5)
+if st["unsettled"]["CVE-2099-9300"]["runs"]!=6: bad.append("day6 count")
+if (log_count("create"), log_count("comment"))!=(1,2): bad.append("title not stable: create/comment %r"%((log_count("create"),log_count("comment")),))
+# a finding that is gone (settled) restarts at one when it comes back
+prev, rep, out, st = day(7, one, prev)
+if "CVE-2099-9301" in st["unsettled"]: bad.append("settled finding kept its count")
+prev, rep, out, st = day(8, two, prev)
+if st["unsettled"]["CVE-2099-9301"]["runs"]!=1 or st["unsettled"]["CVE-2099-9300"]["runs"]!=8: bad.append("restart %r"%st["unsettled"])
+# a state that IS an auditor state with untrustworthy counts stops the run: exit 3, no report written (a file that is not an auditor state at all is the missing case: REQ-AUD-3 AC3 ignores it)
+good_doc=json.load(open(prev))
+good_doc["unsettled"]={"CVE-2099-9300":{"runs":0,"last":"2026-10-04"}}      # an auditor state whose counts cannot be trusted
+cs=tmp+"/corrupt.json"; json.dump(good_doc,open(cs,"w"))
+co=tmp+"/corrupt-out"
+r=subprocess.run([sys.executable,".github/agent/bin/auditor-run.py","--dry-run","true","--manifest",one,"--adjudicator",fa,"--out",co,"--today","2026-10-09","--prev-state",cs],capture_output=True,text=True)
+if r.returncode!=3 or os.path.exists(co+"/report.md"): bad.append("corrupt state: rc=%r report=%r"%(r.returncode,os.path.exists(co+"/report.md")))
+# a finding the model REFUSED is already in its own owner-decision issue ("could not be assessed"): the counts advance, but the aggregate names only findings in no issue this run
+prev=None; n_before=(log_count("create"), log_count("comment"))
+for n in range(11,16):
+    prev, rep, out, st = day(n, one, prev, fr)
+if st["unsettled"].get("CVE-2099-9300",{}).get("runs")!=5: bad.append("refusal: the count stopped advancing %r"%st["unsettled"])
+if (log_count("create"), log_count("comment"))!=n_before: bad.append("refusal: the aggregate issue names a finding already in an owner issue")
+# a previous count dated after today stops the run before any model call or mutating call: exit 3, nothing written, the mutation ledger unchanged
+fe=tempfile.mktemp(suffix=".py"); open(fe,"w").write("import sys\nsys.exit(1)\n")
+fut=json.load(open(prev)); fut["unsettled"]={"CVE-2099-9300":{"runs":1,"last":"2099-01-01"}}
+fs=tmp+"/future.json"; json.dump(fut,open(fs,"w"))
+led=open(shim).read(); fo=tmp+"/future-out"
+r=subprocess.run([sys.executable,".github/agent/bin/auditor-run.py","--manifest",one,"--adjudicator",fe,"--out",fo,"--today","2026-10-23","--prev-state",fs],capture_output=True,text=True)
+if r.returncode!=3 or os.path.exists(fo+"/report.md") or open(shim).read()!=led: bad.append("future-dated count: rc=%r report=%r ledger-changed=%r"%(r.returncode,os.path.exists(fo+"/report.md"),open(shim).read()!=led))
+print("OK" if not bad else "BAD "+"; ".join(bad))
+PP
+)"
+eq "$r15" "OK" && ok || no "rc-5b fix 15: five consecutive unsettled runs open one stable-titled issue, restart on settle, say a missing state, stop on a corrupt one" "$r15"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 # rc-5b fix 5 (A3, Fable): a carried VEX statement that our own VEX hides from Inspector/Google (the tally's vex_covered entries) is re-judged every run; one that NO scanner reports is

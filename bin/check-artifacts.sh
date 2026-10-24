@@ -44,7 +44,9 @@ shopt -s nullglob
 tmp=$(mktemp -d)
 mkdir -p "$out" "$tmp/bin"
 pids=()
-cleanup() { for p in ${pids[@]+"${pids[@]}"}; do kill "$p" > /dev/null 2>&1 || true; done; docker rm -f fscache-art-production fscache-art-fips > /dev/null 2>&1 || true; rm -rf "$tmp"; }
+# stop one of this check's servers and wait until it is gone, so a server never outlives the check (a dying server must not meet a later run)
+stop_pid() { local p=$1 _; kill "$p" > /dev/null 2>&1 || true; for _ in $(seq 40); do kill -0 "$p" > /dev/null 2>&1 || break; sleep 0.25; done; kill -9 "$p" > /dev/null 2>&1 || true; wait "$p" > /dev/null 2>&1 || true; }
+cleanup() { for p in ${pids[@]+"${pids[@]}"}; do stop_pid "$p"; done; docker rm -f fscache-art-production fscache-art-fips > /dev/null 2>&1 || true; rm -rf "$tmp"; }
 trap cleanup EXIT
 
 checks="[]"
@@ -53,7 +55,7 @@ healthy() { for _ in $(seq 20); do lg -sf --max-time 2 "http://127.0.0.1:$1/heal
 roundtrip() { lg -sf ${3:+-u "$3"} -X PUT --data-binary "$2" "http://127.0.0.1:$1/acckey" > /dev/null && [ "$(lg -sf ${3:+-u "$3"} "http://127.0.0.1:$1/acckey")" = "$2" ]; }
 # the posture as one string, boolean first: it is compared whole, so the boolean and the note are checked together (round 1 F5)
 posture() { lg -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type == "object" and (.fips140 | type) == "boolean" and (.fips140_note | type) == "string" then "\(.fips140)|\(.fips140_note)|end" else "unreadable" end'; }
-stop_last() { kill "${pids[${#pids[@]}-1]}" > /dev/null 2>&1 || true; }
+stop_last() { stop_pid "${pids[${#pids[@]}-1]}"; }
 
 # the binaries of this architecture out of the archives (REQ-PLAT-001-AC1: each of the four archives must exist; this architecture's are executed)
 for n in fscache fscache-fips; do
@@ -70,20 +72,37 @@ done
 python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" --members-out "$tmp" || exit 1
 
 # REQ-PLAT-001-AC1: the binaries execute (they start, answer /healthz and round-trip a key); the fips one runs with the credentials of its image
-FSCACHE_ADDR=":19101" FSCACHE_DATA_DIR="$tmp/data-std" "$tmp/bin/fscache" > "$tmp/log-std" 2>&1 &
+# three free ports for this run's servers (suites running side by side, or a server left on a fixed port, must never answer for the binary under test)
+port_std="" port_fips=""
+pick_port() {
+  for _ in $(seq 100); do
+    pp=$((20000 + RANDOM % 40000))
+    case " $port_std $port_fips " in *" $pp "*) continue ;; esac
+    ( : < "/dev/tcp/127.0.0.1/$pp" ) > /dev/null 2>&1 || { echo "$pp"; return 0; }   # nothing accepts a connection there (a refused connection fails the redirect)
+  done
+  return 1
+}
+# the server answering on a port must be the one this run started: after its answers the process must still be there (a process that lost the port to another run's
+# server exits at once, and the answers were that other server's)
+still_ours() { sleep 0.5; kill -0 "$1" > /dev/null 2>&1; }
+port_std=$(pick_port) && port_fips=$(pick_port) && port_forced=$(pick_port) || fail "no free ports for the binaries under test"
+FSCACHE_ADDR=":$port_std" FSCACHE_DATA_DIR="$tmp/data-std" "$tmp/bin/fscache" > "$tmp/log-std" 2>&1 &
 pids+=("$!")
-healthy 19101 || fail "fscache (linux/$arch) never answered /healthz: it does not execute"
-roundtrip 19101 std-bytes || fail "fscache (linux/$arch) answered /healthz but did not round-trip a key"
-note_std=$(posture 19101) || note_std=""
-FSCACHE_ADDR=":19102" FSCACHE_DATA_DIR="$tmp/data-fips" "$tmp/bin/fscache-fips" > "$tmp/log-fips" 2>&1 &
+healthy "$port_std" || fail "fscache (linux/$arch) never answered /healthz: it does not execute"
+roundtrip "$port_std" std-bytes || fail "fscache (linux/$arch) answered /healthz but did not round-trip a key"
+note_std=$(posture "$port_std") || note_std=""
+still_ours "${pids[0]}" || fail "fscache (linux/$arch) exited right after it answered: the answers were not its own"
+FSCACHE_ADDR=":$port_fips" FSCACHE_DATA_DIR="$tmp/data-fips" "$tmp/bin/fscache-fips" > "$tmp/log-fips" 2>&1 &
 pids+=("$!")
-healthy 19102 || fail "fscache-fips (linux/$arch) never answered /healthz: it does not execute"
-roundtrip 19102 fips-bytes || fail "fscache-fips (linux/$arch) answered /healthz but did not round-trip a key"
-note_fips=$(posture 19102) || note_fips=""
-FSCACHE_ADDR=":19103" FSCACHE_DATA_DIR="$tmp/data-forced" GODEBUG=fips140=on "$tmp/bin/fscache" > "$tmp/log-forced" 2>&1 &
+healthy "$port_fips" || fail "fscache-fips (linux/$arch) never answered /healthz: it does not execute"
+roundtrip "$port_fips" fips-bytes || fail "fscache-fips (linux/$arch) answered /healthz but did not round-trip a key"
+note_fips=$(posture "$port_fips") || note_fips=""
+still_ours "${pids[1]}" || fail "fscache-fips (linux/$arch) exited right after it answered: the answers were not its own"
+FSCACHE_ADDR=":$port_forced" FSCACHE_DATA_DIR="$tmp/data-forced" GODEBUG=fips140=on "$tmp/bin/fscache" > "$tmp/log-forced" 2>&1 &
 pids+=("$!")
-healthy 19103 || fail "fscache (linux/$arch, GODEBUG=fips140=on) never answered /healthz"
-note_forced=$(posture 19103) || note_forced=""
+healthy "$port_forced" || fail "fscache (linux/$arch, GODEBUG=fips140=on) never answered /healthz"
+note_forced=$(posture "$port_forced") || note_forced=""
+still_ours "${pids[2]}" || fail "fscache (linux/$arch, GODEBUG=fips140=on) exited right after it answered: the answers were not its own"
 passed REQ-PLAT-001-AC1 "linux/$arch fscache and fscache-fips"
 
 # REQ-FIPS-001-AC1: the module selection is read from the binaries' build info, not from a runtime self-report

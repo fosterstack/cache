@@ -348,7 +348,7 @@ CASE="a tool's release proof is the newest asset time: an asset replaced yesterd
 check python3 - "$chk" "$stubpy" "$work" <<'PY'
 import importlib.util, json, os, subprocess, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-json.dump({"repos/aquasecurity/trivy/releases/tags/0.75.0": {"message": "x"}, "repos/aquasecurity/trivy/releases/tags/v0.75.0": {"published_at": "2026-01-01T00:00:00Z", "draft": False,
+json.dump({"repos/aquasecurity/trivy/releases/tags/v0.75.0": {"published_at": "2026-01-01T00:00:00Z", "draft": False,
            "assets": [{"created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-10-04T00:00:00Z"}]}}, open(sys.argv[3] + "/map.json", "w"))
 os.environ["GH_MAP"] = sys.argv[3] + "/map.json"
 orig = subprocess.run
@@ -4520,5 +4520,36 @@ assert not any(it.sums == ["a" * 64] for it in dl), [it.sums for it in dl]      
 assert inv.moved(a, b), "a sum-only edit of the second arm was not a moved item"
 assert not inv.moved(a, inv.inventory(files("b" * 64)))
 PY
+CASE="structural closure: an unexpected KeyError/AttributeError/TypeError/IndexError/ValueError while reading an answer ends the age check with exit 2 (cannot run, not a pass)"
+newcase struct-guard "$(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')"
+check python3 - "$chk" "$work/struct-guard" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+fx = sys.argv[2] + ".fx.json"; json.dump({"times": {}}, open(fx, "w"))
+for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"), ValueError("v")):
+    def boom(self, item, _e=exc): raise _e
+    ac.Fixture.proofs = boom
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+        rc = ac.main(["--root", sys.argv[2], "--base", "HEAD~1", "--head", "HEAD", "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"])
+    assert rc == 2 and "cannot run" in err.getvalue(), (exc, rc, err.getvalue()[:200])
+PY
+# --- REQ-SUP-001-AC34: the committed file_pins row dates the committed Gradle wrapper jar sum (the repository's own exceptions file, read as the base branch's) ---
+newcase gjar "
+import pathlib
+p = pathlib.Path('.github/policy'); p.mkdir(parents=True, exist_ok=True)
+(p / 'gradle-wrapper-jar-sha256.txt').write_text('$FPTEXT\\n')"
+rc=0; python3 "$chk" --root "$work/gjar" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$root/.github/supply-chain-exceptions.json" >"$work/gjar.out" 2>&1 || rc=$?
+CASE="AC34: the committed row dates a checksum file holding the Gradle 9.7.1 wrapper jar sum (the file itself arrives with the wrapper-jar guard, cache#610): exit 0, names the file and the version"
+check test "$rc" -eq 0; check grep -q '9.7.1' "$work/gjar.out"; check grep -q 'gradle-wrapper-jar-sha256.txt' "$work/gjar.out"
+CASE="AC34: the committed row is exactly the Gradle 9.7.1 ruling: the canonical upstream URL alone, version 9.7.1, published 2026-08-19T15:30:28Z (the GitHub release v9.7.1 of gradle/gradle), the sum 44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42 (a wrong version, date or URL here is a failing case, not a silent pass)"
+check python3 - "$root/.github/supply-chain-exceptions.json" <<'PYROW'
+import json, sys
+rows = json.load(open(sys.argv[1]))["file_pins"]
+assert len(rows) == 1, rows
+r = rows[0]
+assert r == {"file": ".github/policy/gradle-wrapper-jar-sha256.txt", "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
+             "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "2026-08-19T15:30:28Z"}, r
+PYROW
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
