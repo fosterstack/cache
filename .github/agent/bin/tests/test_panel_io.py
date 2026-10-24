@@ -564,6 +564,46 @@ class Judge(Tmp):
         self.assertEqual(day["profiles"][0]["behavior"], "reads status.d")
 
 
+class StateMembers(Tmp):
+    """cache#707 first look B4 (Fable ruling): the members of the state's lists are checked BEFORE any seat is called; extra metadata is allowed."""
+    a = Judge.a
+    GOOD_ENTRY = {"image": "fips-amd64", "id": "CVE-2099-1", "package": "tzdata", "version": "1", "seen_by": ["grype"], "since": "2026-10-01", "last_seen": "2026-10-02", "vex": False, "purls": ["pkg:deb/debian/tzdata@1"], "extra": 5}
+    GOOD_DEBATE = {"image": "fips-amd64", "id": "CVE-2099-2", "package": "libx", "version": "2", "on": "2026-10-01", "settled": None, "installed_then": True,
+                   "sides": {"A": "real", "B": "false"}, "outcome": "split", "prevailing": None, "extra": [1]}
+
+    def state(self, **kw):
+        st = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"}
+        st.update(kw)
+        return st
+
+    def test_validate_state_accepts_what_the_panel_writes_and_names_what_it_would_choke_on(self):
+        self.assertEqual(P.validate_state(self.state(false=[self.GOOD_ENTRY], real=[self.GOOD_ENTRY], debates=[self.GOOD_DEBATE])), [])
+        settled = dict(self.GOOD_DEBATE, settled={"truth": "real", "by": "corroborated", "on": "2026-10-02"}, outcome="agreed-false", prevailing="A")
+        self.assertEqual(P.validate_state(self.state(debates=[settled])), [])
+        bad_entries = [{}, dict(self.GOOD_ENTRY, id=""), dict(self.GOOD_ENTRY, package=None), dict(self.GOOD_ENTRY, version=1), dict(self.GOOD_ENTRY, image=3),
+                       dict(self.GOOD_ENTRY, seen_by="grype"), dict(self.GOOD_ENTRY, seen_by=[1]), dict(self.GOOD_ENTRY, purls="x"), dict(self.GOOD_ENTRY, vex="no")]
+        for bad in bad_entries:
+            for key in ("false", "real"):
+                self.assertTrue(P.validate_state(self.state(**{key: [bad]})), (key, bad))
+        bad_debates = [{}, {"settled": {"truth": "real"}}, dict(self.GOOD_DEBATE, sides=None), dict(self.GOOD_DEBATE, sides=[]), dict(self.GOOD_DEBATE, sides={"A": 1}),
+                       dict(self.GOOD_DEBATE, settled={"truth": "maybe"}), dict(self.GOOD_DEBATE, settled={}), dict(self.GOOD_DEBATE, settled="yes"),
+                       dict(self.GOOD_DEBATE, prevailing="C"), dict(self.GOOD_DEBATE, outcome=5), dict(self.GOOD_DEBATE, installed_then="yes"), dict(self.GOOD_DEBATE, version=None)]
+        for bad in bad_debates:
+            self.assertTrue(P.validate_state(self.state(debates=[bad])), bad)
+
+    def test_a_malformed_member_stops_the_judge_before_any_seat_is_asked(self):
+        calls = []
+        seat = lambda *a, **k: calls.append(1) or {}
+        for lst, bad in (("false", {}), ("real", {}), ("debates", {}), ("debates", {"settled": {"truth": "real"}}), ("false", {"image": "x"})):
+            p = os.path.join(self.d, "state.json"); json.dump(self.state(**{lst: [bad]}), open(p, "w"))
+            with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_judge(self.a(state=p, seats="real"), seats={"A": seat, "B": seat}, bundles=lambda f: BUNDLE)
+            self.assertEqual(rc, 3, (lst, bad))
+            self.assertIn("nothing was judged", err.getvalue())
+            self.assertEqual(calls, [], (lst, bad))
+            self.assertFalse(os.path.exists(os.path.join(self.d, "out", "day.json")))
+
+
 class Deliver(Tmp):
     def setUp(self):
         super().setUp()
@@ -606,6 +646,38 @@ class Deliver(Tmp):
             return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
         run.stdins = []
         return calls, run
+
+    def test_damaged_checkout_inputs_stop_the_delivery_before_any_call_or_write(self):
+        # cache#707 first look B2 (Fable ruling): the checkout's state, VEX and profiles are validated BEFORE the tip check, the disarm and checkout -B
+        def attempt(files, vex=(), profiles=()):
+            for rel, doc in files.items():
+                path = os.path.join(self.repo, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                if doc is None:
+                    if os.path.exists(path): os.remove(path)
+                else:
+                    json.dump(doc, open(path, "w"))
+            self.day(vex=list(vex), profiles=list(profiles))
+            calls, run = self.fake()
+            with mock.patch.dict(os.environ, {"AUDITOR_ALLOW_REAL_GH": "1", "GH_TOKEN": "app", "GITHUB_SHA": SHA40}), mock.patch("sys.stdout", new=io.StringIO()), \
+                    mock.patch("sys.stderr", new=io.StringIO()) as err:
+                rc = P.cmd_deliver(self.a(), run=run)
+            return rc, calls, err.getvalue()
+        proposal = [{"image": "fips-arm64", "id": "CVE-2099-0003", "package": "tzdata", "version": "1", "status": "not_affected",
+                     "purls": ["pkg:deb/debian/tzdata@1"], "impact_statement": "x"}]
+        entry = [{"scanner": "scout", "kind": "sees_alone", "match": {"package": "^tzdata$"}, "behavior": "b", "finding": "f", "evidence": "e"}]
+        good_vex = {"@id": "https://x/vex", "version": 3, "timestamp": "t", "statements": []}
+        for label, files, kw in (("state {}", {P.STATE: {}}, {}), ("state keyless", {P.STATE: {"version": 1}}, {}), ("state []", {P.STATE: []}, {}),
+                                 ("profiles {}", {P.PROFILES: {}}, {"profiles": entry}), ("profiles absent", {P.PROFILES: None}, {"profiles": entry}),
+                                 ("profiles absent, no proposal", {P.PROFILES: None}, {}),
+                                 ("vex {}", {P.VEX: {}}, {"vex": proposal}), ("vex absent with a proposal", {P.VEX: None}, {"vex": proposal}), ("vex {} without a proposal", {P.VEX: {}}, {})):
+            files = dict({P.VEX: good_vex, P.PROFILES: {"entries": []}, P.STATE: None}, **files)
+            rc, calls, err = attempt(files, **kw)
+            self.assertEqual(rc, 3, label)
+            self.assertEqual(calls, [], label)                                                   # not even a read: nothing was asked of gh or git
+            self.assertIn("::error::", err, label)
+        rc, calls, err = attempt({P.VEX: None, P.PROFILES: {"entries": []}, P.STATE: None})        # an absent VEX with no VEX proposal, an absent state: a first delivery
+        self.assertEqual(rc, 0, err)
 
     def test_nothing_to_deliver(self):
         with mock.patch("sys.stderr", new=io.StringIO()):
@@ -1129,6 +1201,53 @@ class RebuildReal(Tmp):
             self.deliver()
         self.assertIn("conflict", str(e.exception).lower())
 
+    def test_a_damaged_document_on_the_pr_branch_stops_the_carry_before_any_write(self):
+        # cache#707 B2: the open PR's own VEX / profiles are checked with the shared rules before they are merged into main's files
+        for rel, bad in ((P.VEX, {}), (P.VEX, {"statements": None}), (P.PROFILES, {}), (P.PROFILES, {"entries": {}})):
+            self.git("checkout", "-q", "-f", "auditor/panel")
+            self.write(rel, bad); self.git("add", "-A"); self.git("commit", "-q", "-m", "damaged"); self.git("push", "-q", "-f", "origin", "auditor/panel")
+            self.git("checkout", "-q", "-f", "main")
+            before = {p: open(os.path.join(self.work, p)).read() for p in (P.VEX, P.PROFILES)}
+            rc, calls = self.deliver()
+            self.assertEqual(rc, 3, (rel, bad))
+            self.assertFalse([c for c in calls if c[:3] in (["gh", "api", "graphql"], ["gh", "pr", "create"], ["gh", "pr", "edit"]) or c[:3] == ["gh", "pr", "merge"]], (rel, bad))
+            self.assertEqual({p: open(os.path.join(self.work, p)).read() for p in (P.VEX, P.PROFILES)}, before, (rel, bad))      # main's files were not touched
+            self.git("checkout", "-q", "-f", "main")
+
+    def test_state_source_reads_through_the_shared_reader(self):
+        # cache#707 B3: no os.path.exists: a dangling link or a damaged state (main's or the PR branch's) is a stop, never "no state"
+        out = os.path.join(self.d, "st.json"); shaf = os.path.join(self.d, "sha2")
+        a = types.SimpleNamespace(repo=self.work, state=out, sha_out=shaf)
+
+        def nopr(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+        path = os.path.join(self.work, P.STATE)
+        saved = open(path).read()
+        os.remove(path); os.symlink(os.path.join(self.d, "nowhere"), path)
+        with mock.patch("sys.stderr", new=io.StringIO()) as err, mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(P.cmd_state_source(a, run=nopr), 3)
+        self.assertIn("::error::", err.getvalue()); self.assertFalse(os.path.exists(shaf))
+        os.remove(path)
+        for bad in ({}, {"version": 1}, []):
+            json.dump(bad, open(path, "w"))
+            with mock.patch("sys.stderr", new=io.StringIO()), mock.patch("sys.stdout", new=io.StringIO()):
+                self.assertEqual(P.cmd_state_source(a, run=nopr), 3, bad)
+        open(path, "w").write(saved)
+        self.git("checkout", "-q", "-f", "auditor/panel"); self.write(P.STATE, {"version": 1}); self.git("add", "-A"); self.git("commit", "-q", "-m", "bad state"); self.git("push", "-q", "-f", "origin", "auditor/panel")
+        self.git("checkout", "-q", "-f", "main")
+
+        def withpr(cmd, **kw):
+            if cmd[0] == "git":
+                return subprocess.run(cmd, capture_output=True, text=True)
+            o = {("gh", "pr", "list"): "17\n"}.get(tuple(cmd[:3]), "")
+            if cmd[:2] == ["gh", "api"] and "check-runs" in cmd[2]:
+                o = self.guard
+            return types.SimpleNamespace(returncode=0, stdout=o, stderr="")
+        with mock.patch("sys.stderr", new=io.StringIO()), mock.patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(P.cmd_state_source(a, run=withpr), 3)                       # the PR branch's own state is damaged
+
     def test_a_tip_that_did_not_pass_the_reserved_branch_guard_is_never_carried(self):      # reviewer r2 blocker: a human's push must not be laundered
         for verdict in ("failure", "", "success,failure", "cancelled"):
             self.guard = verdict
@@ -1223,7 +1342,7 @@ class RebuildReal(Tmp):
         out = os.path.join(self.d, "state.json"); shaf = os.path.join(self.d, "sha")
         a = types.SimpleNamespace(repo=self.work, state=out, sha_out=shaf)
         self.git("checkout", "-q", "main")
-        self.write(P.STATE, {"version": 1, "false": [], "real": [{"id": "NEWER-ON-MAIN"}], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"})
+        self.write(P.STATE, {"version": 1, "false": [], "real": [{"image": "fips-amd64", "id": "NEWER-ON-MAIN", "package": "p", "version": "1"}], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"})
         self.git("add", "-A"); self.git("commit", "-q", "-m", "main's state moved"); self.git("push", "-q", "origin", "main")
 
         def run(cmd, **kw):
