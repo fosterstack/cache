@@ -607,6 +607,10 @@ def _merge_raw(scanner, valid_reports):
 # B04d + B04e — statement assembly and classification.
 # --------------------------------------------------------------------------
 
+# the scanners whose workflow step records each child's package count (the ones scanners.json lists); the retired trivy and snyk paths record none and are unchanged
+COUNTED = ("grype", "osv-scanner")
+
+
 def cmd_statement(args):
     scanner = args.scanner
     if scanner not in CONTRACTS:
@@ -621,11 +625,16 @@ def cmd_statement(args):
             if line:
                 children.append(json.loads(line))
 
+    op_fail = False
+    if args.expect_children is not None and len(children) != args.expect_children:
+        # a child's record is written after its scan: a scan that died before writing its line leaves a manifest shorter than the enumeration
+        err("the manifest holds %d child record(s) but %d child(ren) were enumerated; the rescan is incomplete, never clean" % (len(children), args.expect_children))
+        op_fail = True
+
     findings = []
     consistent = True   # every child exited clean, or exited with the findings code AND the report really held findings
     valid_reports = []
     scanned_platforms = []
-    op_fail = False
     max_rc = 0
 
     for child in children:
@@ -660,6 +669,12 @@ def cmd_statement(args):
             op_fail = True
             continue
         valid_reports.append(report)
+        pk = child.get("packages")
+        if scanner in COUNTED and (isinstance(pk, bool) or not isinstance(pk, int) or pk <= 0):
+            # Register row 53 (zero packages = did not run): a scanner that completed but inventoried no package looked at nothing, so `no findings` proves
+            # nothing. The workflow records each child's package count; a missing, zero, negative or non-numeric one is an error, never clean.
+            err("the %s report of %s completed but the scan inventoried no package (packages=%r); the rescan is incomplete, never clean" % (scanner, platform, pk))
+            op_fail = True
         bad = []
         got = _normalize(scanner, report, platform, bad)
         if bad:
@@ -812,6 +827,7 @@ def main(argv):
     ps.add_argument("--meta")
     ps.add_argument("--vex")
     ps.add_argument("--scope-file")
+    ps.add_argument("--expect-children", type=int, help="how many children the workflow enumerated; fewer records than that is an incomplete rescan")
     ps.add_argument("--release", default="")
     ps.add_argument("--variant", default="")
     ps.add_argument("--digest", default="")

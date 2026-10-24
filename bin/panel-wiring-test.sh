@@ -281,6 +281,37 @@ else:
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
+# rc-5a D2 (astra B6, Fable R3 and R4): the published-release rescan holds to the same rules as the gates. Grype reads an empty config, refuses GRYPE_*, and also writes
+# a CycloneDX inventory; osv-scanner reads an empty config, refuses OSV_SCANNER_*, and lists every package and every vulnerability; each child's package count
+# (components with a purl; osv's results[].packages[]) goes into children-scanned.jsonl, and bin/rescan-statement.py refuses a completed child without one.
+rs_ = (jobs.get("rescan") or {}).get("steps", [])
+gs_ = [x.get("run") or "" for x in rs_ if x.get("id") == "grype"]
+os_ = [x.get("run") or "" for x in rs_ if x.get("id") == "osv"]
+if len(gs_) != 1 or len(os_) != 1:
+    bad.append("the rescan job lacks its one grype step or its one osv-scanner step")
+else:
+    g_, o_ = gs_[0], os_[0]
+    if not re.search(r'grype "registry:\$\{ref\}" \$plat_arg\s+-c /tmp/empty-grype\.yaml', g_) or not re.search(r': > /tmp/empty-grype\.yaml', g_):
+        bad.append("the published grype step does not run with -c on an empty file made in the step")
+    if not re.search(r"compgen -e \| grep '\^GRYPE_'", g_) or "exit 2" not in g_.split("compgen -e", 1)[-1].split("install-scanner", 1)[0]:
+        bad.append("the published grype step does not refuse a GRYPE_* variable before it runs")
+    if '-o "json=${out}"' not in g_ or '-o "cyclonedx-json=${sbom}"' not in g_:
+        bad.append("the published grype step does not write both its JSON report and a CycloneDX inventory")
+    if "[[ \"${pk}\" =~ ^[0-9]+$ ]] || pk=0" not in g_ or "[[ \"${pk}\" =~ ^[0-9]+$ ]] || pk=0" not in o_:
+        bad.append("a published step records a package count that is not a plain integer (an empty or odd jq result would stop the loop before the child's record is written)")
+    st_ = [x.get("run") or "" for x in rs_ if x.get("id") == "statement"]
+    if len(st_) != 1 or '--expect-children "$(grep -c . /tmp/children.txt)"' not in st_[0]:
+        bad.append("the statement step does not pass the number of enumerated children (--expect-children): a shorter manifest must be an error")
+    if "grep -vx 'GRYPE_DB_CACHE_DIR\\|GRYPE_DB_AUTO_UPDATE'" not in g_:
+        bad.append("the published grype step's GRYPE_* refusal does not allow the two cache variables bin/grype-scan.sh allows")
+    if "select((.purl // \"\") != \"\")" not in g_ or "packages:$k" not in g_.replace(" ", ""):
+        bad.append("the published grype step does not record the child's package count (components with a package URL) in children-scanned.jsonl")
+    if not re.search(r"osv-scanner scan image --config /tmp/empty-osv\.toml --all-packages --all-vulns --format json", o_) or not re.search(r': > /tmp/empty-osv\.toml', o_):
+        bad.append("the published osv-scanner step does not run with an empty config, --all-packages and --all-vulns")
+    if not re.search(r"compgen -e \| grep '\^OSV_SCANNER_'", o_) or "exit 2" not in o_.split("compgen -e", 1)[-1].split("install-scanner", 1)[0]:
+        bad.append("the published osv-scanner step does not refuse an OSV_SCANNER_* variable before it runs")
+    if "results[]?.packages[]?" not in o_ or "packages:$k" not in o_.replace(" ", ""):
+        bad.append("the published osv-scanner step does not record the child's package count in children-scanned.jsonl")
 # rule 9 (owner, Oct 3): the AI judging lives in the auditor; the rescan's panel job tallies and cannot audit
 pj = jobs["panel"]
 if "id-token" in (pj.get("permissions") or {}) or pj.get("environment") or re.search(r"profiles|audit|--prior", text("panel")):
@@ -462,6 +493,17 @@ if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"
   pass=$((pass+1)); echo "PASS probe-document: our author, one CVE per form, our published form among them"
 else failn=$((failn+1)); echo "FAIL probe-document"; fi
 case_ real                    ok  ""
+case_ pub-grype-repo-config   bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' -c /tmp/empty-grype.yaml', '')"
+case_ pub-grype-no-env-refusal bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
+case_ pub-grype-no-inventory  bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' -o \"cyclonedx-json=\${sbom}\"', '')"
+case_ pub-grype-no-count      bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' --argjson k \"\${pk}\"', '').replace(', packages:\$k', '')"
+case_ pub-osv-all-packages-off bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --all-packages', '')"
+case_ pub-osv-all-vulns-off   bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --all-vulns', '')"
+case_ pub-osv-repo-config     bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(' --config /tmp/empty-osv.toml', '')"
+case_ pub-osv-no-env-refusal  bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(\"compgen -e | grep '^OSV_SCANNER_'\", 'echo')"
+case_ pub-pk-not-checked      bad "s=$(step_of rescan 'grype \"registry:'); s['run'] = s['run'].replace('[[ \"\${pk}\" =~ ^[0-9]+\$ ]] || pk=0', 'true')"
+case_ pub-no-expect-children  bad "s=$(step_of rescan 'rescan-statement.py statement'); s['run'] = s['run'].replace(' --expect-children \"\$(grep -c . /tmp/children.txt)\"', '')"
+case_ pub-osv-no-count        bad "s=$(step_of rescan 'osv-scanner scan image'); s['run'] = s['run'].replace(', packages:\$k', '')"
 case_ panel-dl-same-id        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with']['artifact-ids'] = '\${{ needs.panel-grype.outputs.artifact-id }}'"
 case_ panel-dl-by-name        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'name': 'panel-scout', 'path': '/tmp/panel/panel-scout'}"
 case_ panel-dl-pattern        bad "s=[x for x in $J['panel']['steps'] if 'panel-scout' in str((x.get('with') or {}).get('path'))][0]; s['with'] = {'pattern': 'panel-*', 'path': '/tmp/panel/'}"
