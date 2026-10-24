@@ -379,7 +379,7 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 net = pa.LiveNet([sys.argv[2]], ".")
 try:
-    net._gh_json("advisories/GHSA-x")
+    net._gh_json("advisories/GHSA-x", need=())
 except pa.Fail as e:
     assert "rate limit" in str(e)
 else:
@@ -726,10 +726,10 @@ N.versions_of = lambda self, i: ["v3.30.0", "v3.31.0"]
 assert pa.excepted(it, {"A"}, {"A": "t1"}, [e], N(), {}) == "pass"
 # a moving tag resolves to its current commit (annotated tags peeled)
 net = pa.LiveNet(["false"], ".")
-net._gh_json = lambda path, strict=False: {"repos/o/r/git/ref/tags/v4": {"object": {"type": "tag", "sha": "t" * 40}}, "repos/o/r/git/tags/" + "t" * 40: {"object": {"type": "commit", "sha": "c" * 40}}}.get(path)
+net._gh_json = lambda path, need=None, rows=None, strict=False: {"repos/o/r/git/ref/tags/v4": {"object": {"type": "tag", "sha": "t" * 40}}, "repos/o/r/git/tags/" + "t" * 40: {"object": {"type": "commit", "sha": "c" * 40}}}.get(path)
 assert net.resolve_ref("o/r", "v4") == "c" * 40
 # unreadable PR listing fails loudly
-pa.age._gh_pages = lambda path: None
+pa.age._gh_pages = lambda path, rows: None
 os_env = __import__("os").environ; os_env["GITHUB_REPOSITORY"] = "o/r"
 try:
     net.open_pr_items()
@@ -1351,5 +1351,535 @@ for listed in (sys.argv[3], sys.argv[4], sys.argv[5]):
     assert sys.argv[8] in " ".join(repr(k) for k in items)
 PY
 
+# --- rc-5b item 7 (R9a, R9b): a proxy failure is CouldNotLook, never "not checked"; an advisory for our package with no readable range is a hit under its GHSA id ---------------------------------
+CASE="proxy: a Go proxy outage (network error or a 5xx) while resolving a go install module is CouldNotLook (exit 2, no 'as of' sentence); a plain 404 only means a shorter path is tried"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.error, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+it = pa.inv.Item("gotool", "github.com/o/r/cmd/x", "v1.0.0")
+net = pa.LiveNet(["false"], ".")
+def boom(exc):
+    def f(*a, **k): raise exc
+    return f
+for exc in (urllib.error.URLError("down"), urllib.error.HTTPError("u", 503, "unavailable", {}, io.BytesIO(b"")), TimeoutError("slow")):
+    urllib.request.urlopen = boom(exc)
+    try:
+        net._query(it, "v1.0.0")
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("no CouldNotLook", exc))
+urllib.request.urlopen = boom(urllib.error.HTTPError("u", 404, "not found", {}, io.BytesIO(b"")))
+assert net._query(it, "v1.0.0") is None          # every prefix is a plain 404: the module is not found, as before
+assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None)   # the age check keeps its non-strict behaviour
+PY
+GHSA_N=GHSA-nnnn-nnnn-nnnn
+CASE="null range: a GitHub-only advisory whose entry for our package has a null, empty or missing vulnerable_version_range is a HIT under its GHSA id (an entry for another package changes nothing)"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]
+def lists(vulns):
+    adv = [{"ghsa_id": "GHSA-nnnn-nnnn-nnnn", "updated_at": "2026-01-01T00:00:00Z", "vulnerabilities": vulns}]
+    json.dump({"advisories?ecosystem=actions&affects=o/r&per_page=100&page=1": adv, "advisories?ecosystem=actions&affects=o/r&type=malware&per_page=100&page=1": []}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
+    net = pa.LiveNet([work + "/ghmap"], "."); net._osv_post = lambda q: []; net._osv_get = lambda i: None
+    return net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
+for vulns in ([{"package": {"name": "o/r"}, "vulnerable_version_range": None}], [{"package": {"name": "o/r"}, "vulnerable_version_range": ""}], [{"package": {"name": "o/r"}}]):
+    gh, osv = lists(vulns)
+    assert [g["id"] for g in gh] == ["GHSA-nnnn-nnnn-nnnn"] and gh[0]["affected"], (vulns, gh)
+assert lists([{"package": {"name": "other/pkg"}, "vulnerable_version_range": None}]) == ([], [])
+gh, _ = lists([{"package": {"name": "o/r"}, "vulnerable_version_range": ">= 2.0, < 3.0"}])
+assert gh == [], gh        # a readable range that excludes the version is still not a hit
+PY
+CASE="null range: an OSV record that is itself a GHSA id whose GitHub entry for our package has no readable range is a hit"
+check python3 - "$aud" "$work" <<'PY'
+import importlib.util, json, os, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+work = sys.argv[2]
+json.dump({"advisories/GHSA-aaaa-bbbb-cccc": {"ghsa_id": "GHSA-aaaa-bbbb-cccc", "updated_at": "2026-01-01T00:00:00Z", "vulnerabilities": [{"package": {"name": "o/r"}, "vulnerable_version_range": None}]},
+           "advisories?ecosystem=actions&affects=o/r&per_page=100&page=1": [], "advisories?ecosystem=actions&affects=o/r&type=malware&per_page=100&page=1": []}, open(work + "/map.json", "w")); os.environ["GH_MAP"] = work + "/map.json"
+net = pa.LiveNet([work + "/ghmap"], ".")
+net._osv_records = lambda q, paths, strict=False: {"k": [{"id": "GHSA-aaaa-bbbb-cccc", "aliases": [], "modified": "2026-01-01T00:00:00Z"}]}
+net._osv_says = lambda *a, **k: False
+net._osv_get = lambda i: None
+gh, osv = net.lists(pa.inv.Item("action", "o/r", "v1.5", ""))
+assert [g["id"] for g in gh] == ["GHSA-aaaa-bbbb-cccc"] and gh[0]["affected"], gh
+PY
+
+CASE="proxy: a 200 answer that is not a module info object ([], null, {}, a non-empty array, a missing, null or empty Version) is CouldNotLook, never 'module not found' (strict mode only)"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+for body in (b"[]", b"null", b"{}", b"[1]", b'{"Version": null}', b'{"Version": ""}', b'{"Version": 3}', b"not json"):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    try:
+        age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("no CouldNotLook", body))
+urllib.request.urlopen = lambda *a, **k: R(b'{"Version": "v1.0.0", "Time": "2020-01-01T00:00:00Z"}')
+mod, info = age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+assert info["Version"] == "v1.0.0", (mod, info)
+urllib.request.urlopen = lambda *a, **k: R(b"[1]")
+try:
+    age._go_module("github.com/o/r/cmd/x", "v1.0.0")      # the age check's lenient mode: a list answer is a wrong shape, CouldNotLook, no crash
+except age.CouldNotLook:
+    pass
+else:
+    raise AssertionError("lenient proxy skipped a wrong shape")
+PY
+CASE="proxy (round 2 findings): a cut-off or malformed HTTP answer (http.client exceptions) is CouldNotLook in strict mode and no crash in lenient mode; a missing Time or a null Time never crashes the go-index proof; a bad answer reaches covered() as CouldNotLook"
+check python3 - "$aud" <<'PY'
+import http.client, importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+def boom(exc):
+    def f(*a, **k): raise exc
+    return f
+for exc in (http.client.IncompleteRead(b'{"Ver'), http.client.BadStatusLine("x"), http.client.LineTooLong("status line")):
+    urllib.request.urlopen = boom(exc)
+    try:
+        age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True)
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("no CouldNotLook", exc))
+    assert age._go_module("github.com/o/r/cmd/x", "v1.0.0") == (None, None), exc      # lenient: no traceback, no proof
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+it = pa.inv.Item("gotool", "github.com/o/r/cmd/x", "v1.0.0")
+net = pa.LiveNet(["false"], ".")
+for body in (b'{"Time": "2020-01-01T00:00:00Z"}', b"{}", b"[]", b"null", b'{"Version": null, "Time": null}'):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    try:
+        net.covered(it)
+    except age.CouldNotLook:
+        pass
+    else:
+        raise AssertionError(("covered() read an unreadable answer as an answer", body))
+for info in ({"Version": "v1.0.0"}, {"Version": "v1.0.0", "Time": None}, {"Version": "v1.0.0", "Time": 5}):
+    age._go_module = lambda path, version, strict=False, _i=info: ("github.com/o/r", _i)
+    age._pr_clock = lambda *a, **k: None
+    assert age.live_proofs(it, ".") == [], info      # no go-index proof, no crash: the pin then fails as unprovable
+PY
+CASE="shapes (round 3 findings): a wrong-shaped but valid answer is CouldNotLook, never a traceback or 'nothing there' - one case per consumer (go index rows, PyPI release files, Docker Hub tags, the advisory tool's PyPI info and release list)"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, json, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+def must_refuse(label, fn):
+    try:
+        fn()
+    except age.CouldNotLook:
+        return
+    except BaseException as e:
+        raise AssertionError((label, "crashed", type(e).__name__, str(e)[:80]))
+    raise AssertionError((label, "no CouldNotLook"))
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+# 1. go index rows
+for body in (b"[]\n", b"null\n", b'{"Path":null,"Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n', b'{"Path":"github.com/o/r","Version":"v1.0.0"}\n', b'{"Path":"github.com/o/r","Version":"v1.0.0","Timestamp":5}\n'):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    must_refuse(("index", body), lambda: age._go_index_time("github.com/o/r", "v1.0.0", "2020-01-01T00:00:00Z"))
+# 2. PyPI release files (age proof)
+pkg = pa.inv.Item("package", "pypi/p", "1.0")
+for ans in ([], {"urls": 5}, {"urls": [1]}, {"urls": [{"upload_time_iso_8601": 7}]}):
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
+    age._pr_clock = lambda *a, **k: None
+    must_refuse(("pypi", ans), lambda: age.live_proofs(pkg, "."))
+# 3. Docker Hub tags
+img = pa.inv.Item("image", "ns/repo", "sha256:" + "a" * 64)
+for ans in ([], {"results": 5}, {"results": [1]}, {"results": [{"digest": "x", "images": 5}]}):
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
+    must_refuse(("hub", ans), lambda: age._registry_push(img))
+# 4. the advisory tool's PyPI info (published name) and release list
+net = pa.LiveNet(["false"], ".")
+for ans in ([], {"info": []}, {"info": 5}):
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
+    net._osv_records = lambda *a, **k: {}
+    net._gh_json = lambda *a, **k: []
+    must_refuse(("pypi info", ans), lambda: net._lists_for(pkg, "1.0"))
+for ans in ([], {"releases": []}, {"releases": {"1.0": 5}}, {"releases": {"1.0": [1]}}):
+    urllib.request.urlopen = lambda *a, _b=json.dumps(ans).encode(), **k: R(_b)
+    must_refuse(("releases", ans), lambda: net.versions(pkg))
+PY
+CASE="absence (round 4 rulings): a malformed index line, a valid match followed by a bad row, a JSON null body (PyPI, Docker Hub, the lenient proxy) and a Docker Hub next link that is not a hub URL are CouldNotLook, never 'nothing there'"
+check python3 - "$aud" <<'PY'
+import importlib.util, io, sys, urllib.request
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age = pa.age
+def must_refuse(label, fn):
+    try:
+        fn()
+    except age.CouldNotLook:
+        return
+    except BaseException as e:
+        raise AssertionError((label, "crashed", type(e).__name__, str(e)[:80]))
+    raise AssertionError((label, "no CouldNotLook"))
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+good = b'{"Path":"github.com/o/r","Version":"v1.0.0","Timestamp":"2026-01-01T00:00:00Z"}\n'
+for body in (b"{not-json}\n", good + b"null\n", good + b'{"Path":"x"}\n', b'{"Path":"a","Version":"v","Timestamp":"t"}\n' + good + b"[]\n"):
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    must_refuse(("index", body), lambda: age._go_index_time("github.com/o/r", "v1.0.0", "2020-01-01T00:00:00Z"))
+pkg = pa.inv.Item("package", "pypi/p", "1.0")
+img = pa.inv.Item("image", "ns/repo", "sha256:" + "a" * 64)
+age._pr_clock = lambda *a, **k: None
+urllib.request.urlopen = lambda *a, **k: R(b"null")
+must_refuse("pypi null", lambda: age.live_proofs(pkg, "."))
+must_refuse("hub null", lambda: age._registry_push(img))
+must_refuse("proxy null (lenient)", lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0"))
+for body in (b"{}", b'{"info": {}}'):      # round 5: an object without the list the check reads is an answer we cannot read, never 'no files / no tags'
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    must_refuse(("pypi no urls", body), lambda: age.live_proofs(pkg, "."))
+    must_refuse(("hub no results", body), lambda: age._registry_push(img))
+for nxt in (7, "http://evil.example/x", "https://evil.example/x", ["a"]):
+    urllib.request.urlopen = lambda *a, _n=nxt, **k: R(__import__("json").dumps({"results": [], "next": _n}).encode())
+    must_refuse(("hub next", nxt), lambda: age._registry_push(img))
+PY
+CASE="structural closure: an unexpected AttributeError/KeyError/TypeError/IndexError/ValueError while reading an answer ends the daily audit with exit 2, 'cannot do its job' and no 'as of' sentence"
+check python3 - "$aud" "$root" "$work" <<'PY'
+import contextlib, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+fx = sys.argv[3] + "/struct-fx.json"; json.dump({"lists": {}}, open(fx, "w"))
+for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"), ValueError("v")):
+    def boom(self, item, _e=exc): raise _e
+    pa.FixtureNet.lists = boom
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = pa.main(["--root", sys.argv[2], "--fixtures", fx, "--now", "2026-10-05T12:00:00Z", "--gh", "false"])
+    assert rc == 2 and "cannot do its job" in err.getvalue() and "as of" not in out.getvalue(), (exc, rc, err.getvalue()[:200])
+PY
+CASE="structural closure (Fable ruling, round 6): every reader takes a mandatory need/rows with no default, and EVERY site that reads an answer (AST-enumerated in both programs: _http_dict, _gh_api, _gh_list, _gh_pages, _gh_json, _fetch_json, json.load/loads) has a {} / [{}] / null case that is refused; the optional keys are named (OSV vulns and next_page_token, a commit committer date, a Docker digest/images/push time, a PyPI file upload time, a release date on a draft) and accepted when absent; local policy and fixture files are covered too"
+check python3 - "$aud" <<'PY'
+import ast, collections, importlib.util, inspect, io, json, os, subprocess, sys, tempfile, urllib.request
+aud = sys.argv[1]
+spec = importlib.util.spec_from_file_location("pa", aud); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
+age, inv = pa.age, pa.inv
+chk = os.path.join(os.path.dirname(aud), "pin-age-check.py")
+REFUSE = (age.CouldNotLook, pa.Fail)
+tmp = tempfile.mkdtemp()
+
+# ---- 1. no reader has a default: the caller must say what it reads
+for fn, name in ((age._http_dict, "need"), (age._http_json_strict, "need"), (age._gh_api, "need"), (age._dicts, "need"), (age._shaped, "need"), (age._gh_pages, "rows"), (age._gh_list, "rows")):
+    assert inspect.signature(fn).parameters[name].default is inspect.Parameter.empty, (fn.__name__, name, "has a default")
+net0 = pa.LiveNet(["false"], ".")
+for kw in ({}, {"need": (), "rows": ()}):
+    try:
+        net0._gh_json("x", **kw)
+    except TypeError:
+        pass
+    else:
+        raise AssertionError(("_gh_json accepted", kw))
+
+# ---- 2. every site that reads an answer is in the table below, and every site has its case
+READERS = {"_http_dict", "_http_json_strict", "_gh_json_raw", "_gh_api", "_gh_list", "_gh_pages", "_gh_json", "_fetch_json", "load", "loads"}
+def sites(path):
+    tree = ast.parse(open(path).read()); parents = {}
+    for n in ast.walk(tree):
+        for c in ast.iter_child_nodes(n): parents[c] = n
+    found = collections.Counter()
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call): continue
+        c = n.func; name = c.attr if isinstance(c, ast.Attribute) else getattr(c, "id", None)
+        if name not in READERS: continue
+        if name in ("load", "loads") and not (isinstance(c, ast.Attribute) and getattr(c.value, "id", "") == "json"): continue
+        p = n
+        while p in parents:
+            p = parents[p]
+            if isinstance(p, ast.FunctionDef): break
+        found[(os.path.basename(path), p.name if isinstance(p, ast.FunctionDef) else "<module>", name)] += 1
+        # a reader call names what it reads (a shape argument), never a bare read
+        if name == "_http_json_strict": assert len(n.args) + len(n.keywords) >= 2, ("_http_json_strict without need", n.lineno)
+        if name == "_http_dict": assert len(n.args) + len(n.keywords) >= 2, ("_http_dict without need", n.lineno)
+        if name in ("_gh_api", "_gh_pages", "_gh_list"): assert len(n.args) + len(n.keywords) >= 2, (name + " without a shape", n.lineno)
+        if name == "_gh_json": assert {k.arg for k in n.keywords} & {"need", "rows"}, ("_gh_json without need/rows", n.lineno)
+    return found
+actual = sites(chk) + sites(aud)      # a Counter: how many calls of each reader sit in each function
+
+class P:
+    def __init__(self, out, rc=0): self.stdout, self.stderr, self.returncode = out, "", rc
+class R(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+
+def http(body):
+    urllib.request.urlopen = lambda *a, _b=body if isinstance(body, bytes) else json.dumps(body).encode(), **k: R(_b)
+def gh(answers):
+    """gh api answers by substring of the path (the first key contained in the command line); anything else is a 404."""
+    def run(cmd, **k):
+        line = " ".join(map(str, cmd))
+        for key, val in answers.items():
+            if key in line:
+                return P(val if isinstance(val, str) else json.dumps(val))
+        return P("", 1) if False else _miss()
+    def _miss():
+        p = P("", 1); p.stderr = "HTTP 404"; return p
+    age._gh_run = run; pa._run = run
+def refuse(label, fn):
+    try:
+        fn()
+    except REFUSE:
+        return
+    except BaseException as e:
+        raise AssertionError((label, "crashed", type(e).__name__, str(e)[:100]))
+    raise AssertionError((label, "no refusal"))
+def accepts(label, fn):
+    try:
+        return fn()
+    except BaseException as e:
+        raise AssertionError((label, "refused a legitimate answer", type(e).__name__, str(e)[:100]))
+
+OBJ, ROWS = (("k", str),), (("k", str),)
+pk = inv.Item("package", "pypi/p", "1.0"); img = inv.Item("image", "ns/repo", "sha256:" + "a" * 64); gimg = inv.Item("image", "ghcr.io/o/p", "sha256:" + "a" * 64)
+tool = inv.Item("tool", "trivy", "0.75.0"); act = inv.Item("action", "o/r", "a" * 40, "v1")
+net = pa.LiveNet(["gh"], ".")
+os.environ["GITHUB_REPOSITORY"] = "o/r"
+
+def c_gh_pages():
+    gh({"api": "{}\n"}); refuse("pages {}", lambda: age._gh_pages("repos/x", ROWS))
+    gh({"api": "not json\n"}); refuse("pages text", lambda: age._gh_pages("repos/x", ROWS))
+def c_gh_api():
+    for body in ("{}", "null", "not json", "[]"):
+        gh({"api": body}); refuse(("api", body), lambda: age._gh_api("repos/x", OBJ))
+def c_gh_list():
+    for body in ("[{}]", "{}", "null", "not json"):
+        gh({"api": body}); refuse(("list", body), lambda: age._gh_list("repos/x", ROWS))
+def c_fetch_and_dict():
+    for body in (b"{}", b"null", b"[]", b"[{}]"):
+        http(body); refuse(("http_dict", body), lambda: age._http_dict("https://h.example/x", OBJ))
+def c_http_strict():
+    for body in (b"{}", b"null", b"[]", b"[{}]"):
+        http(body); refuse(("http_json_strict", body), lambda: age._http_json_strict("https://h.example/x", OBJ))
+    def err(code):
+        def f(*a, **k): raise urllib.error.HTTPError("https://h.example/x", code, "x", {}, None)
+        return f
+    for code in (404, 410):
+        urllib.request.urlopen = err(code); assert accepts(("strict", code), lambda: age._http_json_strict("https://h.example/x", OBJ)) is None
+    for code in (500, 403):
+        urllib.request.urlopen = err(code); refuse(("strict http", code), lambda: age._http_json_strict("https://h.example/x", OBJ))
+    for body in (b"{}", b"null", b"[{}]"):
+        http(body); refuse(("go strict", body), lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0", strict=True))
+def c_go_lenient():
+    for body in (b"{}", b"null", b"[{}]"):
+        http(body); refuse(("go lenient", body), lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0"))
+def c_go_index():
+    for body in (b"{}\n", b"[{}]\n", b"null\n"):
+        http(body); refuse(("index", body), lambda: age._go_index_time("github.com/o/r", "v1.0.0", "2020-01-01T00:00:00Z"))
+def c_release_time():
+    gh({"releases/tags": "{}"}); refuse("release_time {}", lambda: age._release_time("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z"}}); refuse("release_time no draft", lambda: age._release_time("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": None, "draft": True}}); assert accepts("release_time draft", lambda: age._release_time("o/r", ["v1"])) is None
+def c_release_assets():
+    gh({"releases/tags": "{}"}); refuse("assets {}", lambda: age._release_with_assets("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z", "draft": False, "assets": [{}]}}); assert accepts("assets [{}] (name and times are optional)", lambda: age._release_with_assets("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z", "draft": False, "assets": [5]}}); refuse("assets [5]", lambda: age._release_with_assets("o/r", ["v1"]))
+    gh({"releases/tags": {"published_at": "2026-01-01T00:00:00Z", "draft": False}}); refuse("assets absent", lambda: age._release_with_assets("o/r", ["v1"]))
+def c_commit_date():
+    gh({"commits/": "{}"}); refuse("commit {}", lambda: age._commit_date("o/r", "a" * 40))
+    gh({"commits/": {"commit": {"committer": {"date": 7}}}}); refuse("commit date 7", lambda: age._commit_date("o/r", "a" * 40))
+    gh({"commits/": {"commit": {"committer": {}}}}); assert accepts("committer {} (optional date)", lambda: age._commit_date("o/r", "a" * 40)) is None
+def c_observed():
+    age._OBS.clear(); age.tobs.accept_run = lambda r: True
+    gh({"supply-chain.yml/runs": "{}"}); refuse("runs {}", age.observed)
+    age._OBS.clear(); gh({"supply-chain.yml/runs": {"workflow_runs": [{}]}}); refuse("runs [{}]", age.observed)
+    age._OBS.clear(); gh({"supply-chain.yml/runs": {"workflow_runs": [{"id": 1}]}, "/artifacts": "{}"}); refuse("artifacts {}", age.observed)
+    age._OBS.clear(); gh({"supply-chain.yml/runs": {"workflow_runs": [{"id": 1}]}, "/artifacts": {"artifacts": [{}]}}); refuse("artifacts [{}]", age.observed)
+    age._OBS.clear()
+def c_pr_clock():
+    inv_load = age.inv.load_at; age.inv.load_at = lambda root, c: {pk.key: pk}; age._INV_CACHE.clear()
+    base_run = age._gh_run
+    def mk(answers):
+        def run(cmd, **k):
+            if cmd[0] == "git": return P("c1\n")
+            return gh_run(cmd, **k)
+        gh(answers); gh_run = age._gh_run; age._gh_run = run
+    try:
+        mk({"actions/runs": "{}"}); refuse("clock runs {}", lambda: age._pr_clock(pk, ".", "base"))
+        mk({"actions/runs": {"workflow_runs": [{}]}}); refuse("clock runs [{}]", lambda: age._pr_clock(pk, ".", "base"))
+        mk({"actions/runs": {"workflow_runs": []}, "check-suites": "{}\n"}); refuse("clock suites {}", lambda: age._pr_clock(pk, ".", "base"))
+        mk({"actions/runs": {"workflow_runs": []}, "check-suites": "not json\n"}); refuse("clock suites text", lambda: age._pr_clock(pk, ".", "base"))
+    finally:
+        age.inv.load_at = inv_load; age._INV_CACHE.clear()
+def c_live_pypi():
+    for body in (b"{}", b'{"urls": [1]}', b'{"urls": [{"upload_time_iso_8601": 7}]}', b"null"):
+        http(body); age._pr_clock = lambda *a, **k: None; refuse(("pypi", body), lambda: age.live_proofs(pk, "."))
+def c_registry():
+    gh({"packages/container": "[{}]"}); refuse("ghcr [{}]", lambda: age._registry_push(gimg))
+    gh({"packages/container": "{}"}); refuse("ghcr {}", lambda: age._registry_push(gimg))
+    for body in (b"{}", b'{"results": [1]}', b'{"results": [{"images": 5}]}', b'{"results": [{"digest": "%s", "tag_last_pushed": 7}]}' % img.version.encode(), b'{"results": [], "next": 7}'):
+        http(body); refuse(("hub", body), lambda: age._registry_push(img))
+    http(b'{"results": [{"images": [{}]}]}'); assert accepts("hub optional digest", lambda: age._registry_push(img)) is None
+def c_main_fixtures():
+    # --fixtures is the tests' own input, not an answer: a file that is not a JSON object ends both programs in exit 2 (cannot run), before any work
+    import contextlib
+    for body in ("not json", "null", "[]"):
+        fx = os.path.join(tmp, "fx.json"); open(fx, "w").write(body)
+        for main, args in ((pa.main, ["--root", tmp, "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"]), (age.main, ["--root", tmp, "--base", "HEAD", "--head", "HEAD", "--fixtures", fx, "--now", "2026-10-05T12:00:00Z"])):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                rc = main(args)
+            assert rc == 2, (main.__module__, body, rc, out.getvalue()[:160])
+def c_local_files():
+    f = os.path.join(tmp, "x.json"); open(f, "w").write("{}")
+    refuse("base inputs {}", lambda: (_ for _ in ()).throw(age.CouldNotLook("x")) if False else _runtime(lambda: age.load_base_inputs(f, True)))
+    assert accepts("ruled text {} (nothing ruled)", lambda: age.load_ruled_text(f, True)) == {}      # "unmeasured_text" is optional: an absent list rules nothing, which only fails more
+    refuse("exceptions {}", lambda: pa.load_exceptions(f, True))
+    # file_pins (REQ-SUP-001-AC34): {} holds no rows (the key is optional); a file that is not an object, a null, a file_pins that is not a list and a row that is not an object are unreadable, never "nothing ruled"
+    assert accepts("file_pins {} (no rows)", lambda: _runtime(lambda: age.load_file_pins(f, True))) is None
+    for body in ("[]", "null", '{"file_pins": 5}', '{"file_pins": {}}', '{"file_pins": [5]}', '{"file_pins": [[]]}', "not json"):
+        open(f, "w").write(body); refuse(("file_pins", body), lambda: _runtime(lambda: age.load_file_pins(f, True)))
+def _runtime(fn):
+    try:
+        fn()
+    except RuntimeError as e:
+        raise age.CouldNotLook(str(e))
+def c_gh_json_raw():
+    for body in ("null", "not json"):
+        gh({"api": body}); refuse(("gh_json", body), lambda: net._gh_json("repos/x", need=()))
+    gh({"api": "{}"}); refuse("gh_json {} need", lambda: net._gh_json("repos/x", need=OBJ))
+    gh({"api": "[{}]"}); refuse("gh_json [{}] rows", lambda: net._gh_json("repos/x?p=1", rows=ROWS))
+def c_osv_post():
+    http(b"{}"); assert accepts("osv {} (no vulns)", lambda: net._osv_post({"package": {"name": "p"}})) == []      # OSV answers {} for no vulnerabilities: vulns is optional
+    for body in (b'{"vulns": {}}', b'{"vulns": [{}]}', b'{"vulns": [], "next_page_token": 7}', b"[]", b"null"):
+        http(body); refuse(("osv", body), lambda: net._osv_post({"package": {"name": "p"}}))
+def c_osv_get():
+    for body in (b"{}", b"[]", b"null"):
+        http(body); refuse(("osv_get", body), lambda: net._osv_get("GHSA-x"))
+def c_resolve_ref():
+    gh({"git/ref/tags": "{}"}); refuse("ref {}", lambda: net.resolve_ref("o/r", "v1"))
+    gh({"git/ref/tags": {"object": {}}}); refuse("ref object {}", lambda: net.resolve_ref("o/r", "v1"))
+    gh({"git/ref/tags": {"object": {"type": "tag", "sha": "t" * 40}}, "git/tags/": "{}"}); refuse("tag {}", lambda: net.resolve_ref("o/r", "v1"))
+def c_live_ranges():
+    gh({"advisories/": "{}"}); refuse("advisory {}", lambda: net.live_ranges(pk, "github", "GHSA-x"))
+    gh({"advisories/": {"vulnerabilities": [{}]}}); net._query = lambda *a, **k: None
+    # a vulnerability entry without a package or a range is read fail closed (unreadable), not skipped: checked through _ranges_of
+    assert pa.LiveNet._ranges_of({"vulnerabilities": [{}]}, {"p"}) == ([], False)      # no package: not ours
+    refuse("vulnerabilities 5", lambda: pa.LiveNet._ranges_of({"vulnerabilities": [5]}, {"p"}))
+    # live_ranges reads the same list the same way (round 7): a non-object entry is refused, and an entry for our package with a null, empty or missing range makes the answer unreadable (None: the dispute stays), never a narrower list
+    net._version_of = lambda i: "1.0"
+    net._memo.clear(); gh({"advisories/": {"vulnerabilities": [5]}}); refuse("live_ranges vulnerabilities 5", lambda: net.live_ranges(pk, "github", "GHSA-x"))
+    for rng in (None, "", " ", 7):
+        net._memo.clear(); gh({"advisories/": {"vulnerabilities": [{"package": {"name": pk.name}, "vulnerable_version_range": "< 1.0"}, {"package": {"name": pk.name}, "vulnerable_version_range": rng}]}})
+        assert net.live_ranges(pk, "github", "GHSA-x") is None, ("an unreadable range beside a readable one was dropped", rng)
+    net._memo.clear(); gh({"advisories/": {"vulnerabilities": [{"package": {"name": pk.name}, "vulnerable_version_range": "< 1.0"}, {"package": {"name": "other"}, "vulnerable_version_range": None}]}})
+    assert net.live_ranges(pk, "github", "GHSA-x") == ["< 1.0"], "an entry for another package must not hide ours"
+def c_lists_for():
+    net._osv_records = lambda *a, **k: {}
+    http(b"{}"); gh({"advisories?": "[]"}); refuse("pypi info {}", lambda: net._lists_for(pk, "1.0"))
+    http(b'{"info": {"name": 7}}'); refuse("pypi name 7", lambda: net._lists_for(pk, "1.0"))
+    http(b'{"info": {"name": "p"}}'); gh({"advisories?": "[{}]"}); refuse("advisory list [{}]", lambda: net._lists_for(pk, "1.0"))
+    gh({"advisories?": "{}"}); refuse("advisory list {}", lambda: net._lists_for(pk, "1.0"))
+    # the GHSA-alias lookup (the first _gh_json call of _lists_for): an alias answered {} is refused, and a failure that is not a 404 is a Fail, never 'no advisory'
+    net._osv_records = lambda *a, **k: {"k": [{"id": "GHSA-aaaa-bbbb-cccc", "aliases": [], "affected": []}]}
+    http(b'{"info": {"name": "p"}}')
+    net._memo.clear(); gh({"advisories/GHSA-aaaa-bbbb-cccc": "{}"}); refuse("alias {}", lambda: net._lists_for(pk, "1.0"))
+    def run500(cmd, **k):
+        r = P("", 1); r.stderr = "HTTP 500: Server Error"; return r
+    net._memo.clear(); pa._run = run500; age._gh_run = run500; refuse("alias 500", lambda: net._lists_for(pk, "1.0"))
+def c_upstream():
+    def run(cmd, **k):
+        line = " ".join(map(str, cmd))
+        if ".default_branch" in line: return P("main\n")
+        if "compare/" in line: return P("diverged\n")
+        if "branches" in line: return P("[{}]")
+        return P("", 1)
+    pa._run = run
+    refuse("branches [{}]", lambda: net.upstream(act))
+def c_nested():
+    gh({"contents/": "{}"}); refuse("contents {}", lambda: net.nested(act))
+    gh({"contents/": "[]"}); refuse("contents []", lambda: net.nested(act))
+def c_versions():
+    http(b"{}"); refuse("pypi versions {}", lambda: net.versions(pk))
+    http(b'{"info": {}, "releases": {"1": 5}}'); refuse("pypi files 5", lambda: net.versions(pk))
+    http(b'{"info": {}, "releases": []}'); refuse("pypi releases []", lambda: net.versions(pk))
+    http(b'{"info": {}, "releases": {"1": [{}]}}'); assert accepts("pypi file optional fields", lambda: net.versions(pk)) == []
+    gh({"releases?": "[{}]"}); refuse("releases [{}]", lambda: net.versions(act))
+    gh({"releases?": "{}"}); refuse("releases {}", lambda: net.versions(act))
+    rel = [{"tag_name": "v1", "draft": False, "prerelease": False, "published_at": "2026-01-01T00:00:00Z"}]
+    gh({"releases?": rel, "git/ref/tags": "{}"}); refuse("ref {} in versions", lambda: net.versions(act))
+    gh({"releases?": rel, "git/ref/tags": {"object": {"type": "tag", "sha": "t" * 40}}, "git/tags/": "{}"}); refuse("tag {} in versions", lambda: net.versions(act))
+def c_open_pr_items():
+    for body in ("{}\n", '{"number": 1, "base": {}, "head": {}}\n', '{"number": 1, "base": {"ref": "main"}, "head": {}}\n'):
+        gh({"pulls?": body}); refuse(("pulls", body), net.open_pr_items)
+def c_prs():
+    for body in ("[{}]", "{}", "null"):
+        pa._run = lambda cmd, _b=body, **k: P(_b); refuse(("pr list", body), net.prs)
+    gh({"actions/runs": "{}"})
+    def run(cmd, **k):
+        line = " ".join(map(str, cmd))
+        if "pr list" in line: return P(json.dumps([{"number": 1, "title": "t", "headRefOid": "a" * 40, "baseRefName": "main"}]))
+        if "actions/runs" in line: return P("{}")
+        return P("")
+    pa._run = run
+    inv_load, inv_moved = inv.load_at, inv.moved; inv.load_at = lambda r, c: {}; inv.moved = lambda a, b: []
+    try:
+        # the runs answer of a pull request is read fail closed: the PR is reported as not read (information), never as 'no failed run'
+        import contextlib
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            net.prs()
+        assert "could not be read" in out.getvalue(), out.getvalue()
+    finally:
+        inv.load_at, inv.moved = inv_load, inv_moved
+def c_tag_map():
+    for body in ("{}\n", '{"name": "v1", "commit": {}}\n'):
+        gh({"tags?": body}); refuse(("tags", body), lambda: net.tag_map([act]))
+def c_modified():
+    gh({"advisories/": "{}"}); refuse("modified ghsa {}", lambda: net.modified("GHSA-x"))
+    for body in (b"{}", b"[]"):
+        http(body); refuse(("modified osv", body), lambda: net.modified("GO-x"))
+def c_file_issues():
+    class G:
+        def run(self, *a, **k): return P("[{}]" if a[:2] == ("issue", "list") else "")
+    refuse("issues [{}]", lambda: pa.file_issues(G(), [], "2026-10-05"))
+    class G2(G):
+        def run(self, *a, **k): return P("{}" if a[:2] == ("issue", "list") else "")
+    refuse("issues {}", lambda: pa.file_issues(G2(), [], "2026-10-05"))
+
+CASES = {
+    ("pin-age-check.py", "_gh_pages", "loads"): c_gh_pages, ("pin-age-check.py", "_gh_api", "loads"): c_gh_api, ("pin-age-check.py", "_gh_list", "loads"): c_gh_list,
+    ("pin-age-check.py", "_fetch_json", "load"): c_fetch_and_dict, ("pin-age-check.py", "_http_dict", "_fetch_json"): c_fetch_and_dict,
+    ("pin-age-check.py", "_http_json_strict", "_http_dict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_json_strict"): c_http_strict, ("pin-age-check.py", "_go_module", "_http_dict"): c_go_lenient,
+    ("pin-age-check.py", "_go_index_time", "loads"): c_go_index, ("pin-age-check.py", "_release_time", "_gh_api"): c_release_time,
+    ("pin-age-check.py", "_commit_date", "_gh_api"): c_commit_date, ("pin-age-check.py", "observed", "_gh_api"): c_observed,
+    ("pin-age-check.py", "_run_times", "_gh_api"): c_pr_clock, ("pin-age-check.py", "_run_times", "loads"): c_pr_clock,
+    ("pin-age-check.py", "_release_with_assets", "_gh_api"): c_release_assets, ("pin-age-check.py", "live_proofs", "_http_dict"): c_live_pypi,
+    ("pin-age-check.py", "_registry_push", "_gh_list"): c_registry, ("pin-age-check.py", "_registry_push", "_http_dict"): c_registry,
+    ("pin-age-check.py", "main", "load"): c_main_fixtures, ("pin-age-check.py", "load_ruled_text", "load"): c_local_files, ("pin-age-check.py", "load_file_pins", "load"): c_local_files, ("pin-age-check.py", "load_base_inputs", "load"): c_local_files,
+    ("pin-audit.py", "_gh_json_raw", "loads"): c_gh_json_raw, ("pin-audit.py", "_gh_json", "_gh_json_raw"): c_gh_json_raw, ("pin-audit.py", "_osv_post", "load"): c_osv_post, ("pin-audit.py", "_osv_get", "load"): c_osv_get,
+    ("pin-audit.py", "resolve_ref", "_gh_json"): c_resolve_ref, ("pin-audit.py", "live_ranges", "_gh_json"): c_live_ranges,
+    ("pin-audit.py", "_lists_for", "_gh_json"): c_lists_for, ("pin-audit.py", "_lists_for", "_http_dict"): c_lists_for,
+    ("pin-audit.py", "upstream", "_gh_json"): c_upstream, ("pin-audit.py", "nested", "_gh_json"): c_nested,
+    ("pin-audit.py", "versions", "_http_dict"): c_versions, ("pin-audit.py", "versions", "_gh_json"): c_versions,
+    ("pin-audit.py", "open_pr_items", "_gh_pages"): c_open_pr_items, ("pin-audit.py", "prs", "loads"): c_prs, ("pin-audit.py", "prs", "_gh_json"): c_prs,
+    ("pin-audit.py", "tag_map", "_gh_pages"): c_tag_map, ("pin-audit.py", "modified", "_gh_json"): c_modified, ("pin-audit.py", "modified", "load"): c_modified,
+    ("pin-audit.py", "load_exceptions", "load"): c_local_files, ("pin-audit.py", "file_issues", "loads"): c_file_issues, ("pin-audit.py", "main", "load"): c_main_fixtures,
+}
+# a function with more than one call of the same reader lists how many; each call has its probe in the named case (a new call in a known function changes the count and fails here)
+CALLS = {("pin-age-check.py", "observed", "_gh_api"): 2, ("pin-audit.py", "_lists_for", "_gh_json"): 2, ("pin-audit.py", "resolve_ref", "_gh_json"): 2, ("pin-audit.py", "versions", "_gh_json"): 3}
+# raw decoding is private: _fetch_json has exactly one caller, _http_dict, and _gh_json_raw exactly one, _gh_json; each of them shapes the answer before anyone else sees it
+for raw, only in (("_fetch_json", ("pin-age-check.py", "_http_dict")), ("_gh_json_raw", ("pin-audit.py", "_gh_json"))):
+    callers = {k: v for k, v in actual.items() if k[2] == raw}
+    assert callers == {(only[0], only[1], raw): 1}, (raw + " must have exactly one caller, which shapes the answer", callers)
+expect = collections.Counter({k: CALLS.get(k, 1) for k in CASES})
+assert not set(CALLS) - set(CASES), ("CALLS names a site with no case", sorted(set(CALLS) - set(CASES)))
+missing, stale = set(actual) - set(CASES), set(CASES) - set(actual)
+assert not missing, ("a site that reads an answer has no case: add it to CASES with its {} / [{}] case", sorted(missing))
+assert not stale, ("a case names a site that no longer exists", sorted(stale))
+assert actual == expect, ("the number of calls of a reader in a function changed: probe the new call and update CALLS", {k: (actual[k], expect[k]) for k in expect if actual[k] != expect[k]})
+for fn in dict.fromkeys(CASES.values()):
+    net = pa.LiveNet(["gh"], ".")      # a fresh object per case: no stub leaks from one to the next
+    fn()
+PY
 echo "pin-audit: $pass passed, $failn failed"
 test "$failn" -eq 0
