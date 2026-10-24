@@ -440,6 +440,18 @@ jobs:
           path: /tmp/oci/
       - name: install inspector-sbomgen (pinned by checksum)
         run: ./bin/install-scanner.sh inspector-sbomgen
+      # the tars come before the cache restore below: the pin checker will not read a committed script run after a
+      # step that writes into the workspace
+      - name: make a tar of every variant/platform child
+        run: |
+          mkdir -p /tmp/arc
+          for v in production fips; do
+            for arch in amd64 arm64; do
+              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "/tmp/arc/${v}-${arch}.tar" \
+                "ghcr.io/fosterstack/cache:cand-${v}-${arch}" > /dev/null \
+                || echo "::warning::no tar for ${v}-${arch} (the tally counts it as did not run)"
+            done
+          done
       - name: assume the ScanSbom-only role (OIDC; no stored secret)
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
@@ -468,9 +480,9 @@ jobs:
           cdir=/tmp/inspector-cache; fresh=0; mkdir -p "$cdir"
           for v in production fips; do
             for arch in amd64 arm64; do
-              ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
-              ./bin/layout-archive.sh "/tmp/oci/${v}" "${arch}" "${d}.tar" "${ref}" > /dev/null || continue
-              if ! inspector-sbomgen container --image "${d}.tar" --outfile "${d}/sbom.cdx.json" \
+              d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
+              [ -s "/tmp/arc/${v}-${arch}.tar" ] || continue
+              if ! inspector-sbomgen container --image "/tmp/arc/${v}-${arch}.tar" --outfile "${d}/sbom.cdx.json" \
                    --disable-progress-bar; then
                 echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"; continue
               fi
