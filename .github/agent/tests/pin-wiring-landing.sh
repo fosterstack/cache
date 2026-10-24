@@ -94,12 +94,10 @@ elif set(push) != {"branches"}:
 # would carry another context into the reviewed concurrency group.
 if isinstance(on, dict) and sorted(set(on) - {"push", "pull_request", "merge_group"}):
     bad.append("ci.yml has triggers beyond push, pull_request and merge_group: " + ", ".join(sorted(set(on) - {"push", "pull_request", "merge_group"})))
-# no job of ci.yml may carry a concurrency setting: a job group competes with its parent workflow's group and can cancel the whole run. The ONE exception (the release chain's live test,
-# cutover read-back 2026-10-24): the job live-test, whose group is the fixed name vex-live-test and which never cancels (cancel-in-progress false), so it can neither cancel a
-# required check nor share the reviewed workflow group (it runs on push only; the group names only that job and the rescan workflow's live test)
-LIVE_TEST_CONCURRENCY = {"group": "vex-live-test", "cancel-in-progress": "false"}
+# no job of ci.yml may carry a concurrency setting: a job group competes with its parent workflow's group and can cancel the whole run
 for _jid, _j in (d.get("jobs") or {}).items():
-    if isinstance(_j, dict) and "concurrency" in _j and not (_jid == "live-test" and _j["concurrency"] == LIVE_TEST_CONCURRENCY):
+    # the one exception: the live test's one-at-a-time group (REQ-SCAN-012). It never cancels a run in progress and its group is shared with no workflow-level group.
+    if isinstance(_j, dict) and "concurrency" in _j and not (_jid == "live-test" and _j["concurrency"] == {"group": "vex-live-test", "cancel-in-progress": "false"}):
         bad.append(f"the job {_jid} has `concurrency`")
 if "defaults" in d:
     bad.append("the workflow sets `defaults` (a shell override could skip every run)")
@@ -1226,14 +1224,16 @@ case_ name-expr-function      bad "d['jobs']['lint']['name'] = \"x \${{ format('
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
-# cutover (cache-c7, read-back 2026-10-24): the live test's job group is the ONE job-level concurrency ci.yml may carry, in exactly this form (a fixed group, never cancelling); any other value, key or job is refused
-case_ live-test-conc-cancel      bad "d['jobs']['live-test']['concurrency']['cancel-in-progress'] = 'true'"
-case_ live-test-conc-group       bad "d['jobs']['live-test']['concurrency']['group'] = 'ci-pr-1'"
-case_ live-test-conc-extra-key   bad "d['jobs']['live-test']['concurrency']['queue'] = 'max'"
-case_ live-test-conc-expression  bad "d['jobs']['live-test']['concurrency']['group'] = \"\${{ github.workflow }}\""
-case_ live-test-conc-other-job   bad "d['jobs']['live-test-gate']['concurrency'] = dict(d['jobs']['live-test']['concurrency'])"
-case_ live-test-conc-string      bad "d['jobs']['live-test']['concurrency'] = 'vex-live-test'"
 case_ job-concurrency-test       bad "d['jobs']['test']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+# the live test's one-at-a-time group (REQ-SCAN-012, ratified): live-test alone may carry exactly this block (take 30, advisor)
+case_ live-test-concurrency-reviewed   ok  "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
+case_ live-test-concurrency-cancels    bad "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'true'}"
+case_ live-test-concurrency-group      bad "d['jobs']['live-test']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
+case_ live-test-concurrency-extra-key  bad "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false', 'other': 'x'}"
+case_ live-test-concurrency-string     bad "d['jobs']['live-test']['concurrency'] = 'vex-live-test'"
+case_ live-test-concurrency-no-cancel-key bad "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test'}"
+case_ other-job-live-test-block        bad "d['jobs']['test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
+case_ allowlist-live-test-block        bad "d['jobs']['allowlist']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
 case_ job-concurrency-lint-same  bad "d['jobs']['lint']['concurrency'] = d['concurrency'] if 'concurrency' in d else {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
 case_ on-workflow-call           bad "d['on']['workflow_call'] = {}"
 case_ on-workflow-dispatch       bad "d['on']['workflow_dispatch'] = {}"
