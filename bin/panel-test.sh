@@ -336,6 +336,9 @@ put(sd, "cves.json", {"vulnerabilities": [
 ex = {t[0]: t[4] for t in P.read_scout(sd)[1]}
 check("Scout's GitLab-format report: severity and the other identifiers as aliases; Unknown severity is absent",
       ex["CVE-2099-0102"] == {"severity": "medium", "aliases": ["GHSA-dddd-eeee-ffff"]} and ex["CVE-2099-0103"] == {}, ex)
+# rc-5a C round 2 (fix-round seats): the panel counts packages the same way the gates do: a component with a non-empty STRING purl
+pcd = {"components": [{"purl": "pkg:generic/a@1"}, {"purl": ""}, {"purl": None}, {"purl": 7}, {"purl": {"a": 1}}, {"purl": [1]}, {"purl": True}, {"name": "f"}, "x"]}
+check("panel: only a component with a non-empty string purl is a package (7, an object, a list and true are not)", len(P._cdx_packages(pcd)) == 1, P._cdx_packages(pcd))
 # rc-5a B (Fable ruling on astra B2): Scout puts the package URL in dependency.package.name (scout-selfcheck.py:124); the reader names it as the other scanners do
 sp = os.path.join(tempfile.mkdtemp(), "sp")
 put(sp, "sbom.json", {"artifacts": [{"name": "tzdata", "version": "2026c", "purl": "pkg:deb/debian/tzdata@2026c"}]})
