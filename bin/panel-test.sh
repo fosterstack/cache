@@ -87,6 +87,12 @@ W(os.path.join(r, "google", "fips-amd64"), "packages.json", [{}, {"package": ""}
 v = judge(r)
 check("structurally incomplete answers (no bomFormat, empty package records) are did not run",
       v["images"]["fips-amd64"]["did_not_run"] == ["google", "grype", "inspector", "scout"], v["images"]["fips-amd64"])
+r = tree(); W(os.path.join(r, "scout", "fips-amd64"), "cves.json", {})
+W(os.path.join(r, "grype", "fips-amd64"), "result.cdx.json", {"bomFormat": "CycloneDX", "components": [{"type": "file", "name": "/x", "purl": "not-a-purl"}, {"type": "library", "name": "b", "purl": "pkg:"}], "vulnerabilities": []})
+W(os.path.join(r, "inspector", "fips-amd64"), "sbom.cdx.json", {"bomFormat": "CycloneDX", "components": [{"type": "file", "name": "/x", "purl": "not-a-purl"}], "vulnerabilities": []})
+v = judge(r)
+check("a CycloneDX inventory whose only purl strings are not package URLs (not-a-purl, pkg:) holds no package: grype and inspector did not run",
+      "grype" in v["images"]["fips-amd64"]["did_not_run"] and "inspector" in v["images"]["fips-amd64"]["did_not_run"], v["images"]["fips-amd64"])
 check("an incomplete Scout answer (no vulnerabilities list) is did not run", "scout" in v["images"]["fips-amd64"]["did_not_run"], v["images"]["fips-amd64"])
 r = tree(skip={("scout", "production-arm64")}); v = judge(r)
 check("an arm64 image with 2 of its 3 does not count (all three must run)", v["images"]["production-arm64"]["counts_for_day"] is False, v["images"]["production-arm64"])

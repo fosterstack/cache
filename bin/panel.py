@@ -95,10 +95,13 @@ def load_vex(path):
 
 # ----------------------------------------------------------------------------- readers: (count, findings)
 
+_PACKAGE_URL = re.compile(r"pkg:[a-z][a-z0-9.+-]*/.")   # a package URL: scheme, type, slash, something after it (not any non-empty string)
+
+
 def _cdx_packages(doc):
-    """Rule 3's package count: components that are packages (carry a package URL). Grype's CycloneDX also
+    """Rule 3's package count: components that are packages (carry a package URL, pkg:<type>/<name>). Grype's CycloneDX also
     lists every file it catalogued as a component (946 of 965 on production-amd64, run 36957462057)."""
-    return [c for c in doc.get("components") or [] if isinstance(c, dict) and isinstance(c.get("purl"), str) and c["purl"]]
+    return [c for c in doc.get("components") or [] if isinstance(c, dict) and isinstance(c.get("purl"), str) and _PACKAGE_URL.match(c["purl"])]
 
 
 def _purl_name_version(purl):
