@@ -417,6 +417,8 @@ def live_proofs(item, root, base=None, head="HEAD"):
     elif item.kind == "package":
         name = item.name.split("/", 1)[1]
         d = _http_dict(f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(item.version)}/json")
+        if d is not None and "urls" not in d:
+            raise CouldNotLook("pypi.org answered without the list of release files")      # {} is an answer we cannot read, not a release with no files
         ups = [u.get("upload_time_iso_8601") for u in _dicts((d or {}).get("urls", []), "pypi urls") if u.get("upload_time_iso_8601")]
         if not all(isinstance(x, str) for x in ups):
             raise CouldNotLook("pypi.org answered with an upload time that is not text")
@@ -451,9 +453,11 @@ def _registry_push(item):
         url = f"https://hub.docker.com/v2/repositories/{ns}/{repo}/tags?page_size=100"
         for _ in range(5):
             d = _http_dict(url)
-            if not d:
+            if d is None:
                 return None
-            for tag in _dicts(d.get("results", []), "hub.docker.com results"):
+            if "results" not in d:
+                raise CouldNotLook("hub.docker.com answered without the list of tags")      # {} is an answer we cannot read, not a repository with no tags
+            for tag in _dicts(d["results"], "hub.docker.com results"):
                 if tag.get("digest") == item.version or any(i.get("digest") == item.version for i in _dicts(tag.get("images", []), "hub.docker.com images")):
                     return tag.get("tag_last_pushed")
             url = d.get("next")

@@ -1333,6 +1333,10 @@ urllib.request.urlopen = lambda *a, **k: R(b"null")
 must_refuse("pypi null", lambda: age.live_proofs(pkg, "."))
 must_refuse("hub null", lambda: age._registry_push(img))
 must_refuse("proxy null (lenient)", lambda: age._go_module("github.com/o/r/cmd/x", "v1.0.0"))
+for body in (b"{}", b'{"info": {}}'):      # round 5: an object without the list the check reads is an answer we cannot read, never 'no files / no tags'
+    urllib.request.urlopen = lambda *a, _b=body, **k: R(_b)
+    must_refuse(("pypi no urls", body), lambda: age.live_proofs(pkg, "."))
+    must_refuse(("hub no results", body), lambda: age._registry_push(img))
 for nxt in (7, "http://evil.example/x", "https://evil.example/x", ["a"]):
     urllib.request.urlopen = lambda *a, _n=nxt, **k: R(__import__("json").dumps({"results": [], "next": _n}).encode())
     must_refuse(("hub next", nxt), lambda: age._registry_push(img))
