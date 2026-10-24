@@ -1086,7 +1086,7 @@ done
 mkdir -p "$work/fakedir"; rm -f "$work/fakedir/serve-refs"; run check-acceptance.sh gradle --digests digests.json --images images --out out
 if [ "$rc" = 0 ]; then ok "AC30 check-acceptance finishes (rc=0) with the serve stub and valid results lines"; else bad "AC30 check-acceptance rc=$rc: ${out:0:200}"; fi
 if [ -s "$work/fakedir/serve-refs" ] && [ "$(sort -u "$work/fakedir/serve-refs")" = "sha256:$H64" ]; then ok "AC30 check-acceptance passes serve the inspected image ID, never the tag docker load printed"; else bad "AC30 serve got: $(sort -u "$work/fakedir/serve-refs" 2> /dev/null | tr '\n' '|') (rc=$rc) $out"; fi
-if grep -Eq '^docker image inspect .*--format' "$work/log"; then ok "AC30 the ID comes from docker image inspect of the loaded image"; else bad "AC30 no docker image inspect --format ran: $(grep -c '^docker' "$work/log") docker calls"; fi
+if grep -Fq 'docker image inspect --format {{.Id}} fscache:production' "$work/log"; then ok "AC30 the ID comes from docker image inspect of the very name docker load printed (fscache:production)"; else bad "AC30 no docker image inspect --format ran: $(grep -c '^docker' "$work/log") docker calls"; fi
 rm -f "$fx/bin/acceptance-serve.sh" "$fx/bin/acceptance-gradle.sh" "$fx/bin/acceptance-gradle-capped.sh"
 # ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed.sh and its 9-minute cap -------------------------------------------
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
