@@ -4005,6 +4005,35 @@ i3="$( { [ "$rc3" != 0 ] && ! grep -qi 'AUDIT COMPLETE' "$o/report.md" 2>/dev/nu
 
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
+# rc-5b fix 14 (R13 code): every model refusal is logged to the report (finding, attempt, model role - no model identifier), a five-iteration stop opens ONE owner-decision issue,
+# and the header prints each scanner's version and database date or "not recorded by <scanner>", never a blank.
+begin "rc5b-14-refusals-stop-issue-and-scanner-versions" "the report lists the model refusals and the iteration stop, one owner-decision issue is opened for the stops, and the header names each scanner's version and database date or 'not recorded by <scanner>'"
+r14="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
+import sys,os,io,contextlib,importlib.util,tempfile,json,re
+FX=sys.argv[1]; tmp=tempfile.mkdtemp()
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":1})+\"\\n\")\n    sys.stdout.flush()\n")
+R.policy.MAX_ITERATIONS=1
+mp=FX+"/manifest-mediumnofix.json"; m=json.load(open(mp))
+m["scanner_status"]["grype"]["version"]="v1.2.3"; m["scanner_status"]["grype"]["db_date"]="2026-10-21"
+mp2=tmp+"/m.json"; json.dump(m,open(mp2,"w"))
+ws=tmp+"/ws"; os.makedirs(ws); os.environ["GITHUB_WORKSPACE"]=ws
+with contextlib.redirect_stdout(io.StringIO()):
+    R.run(mp2,True,tmp+"/out","2026-09-24",adjudicator=fa)
+rep=open(tmp+"/out/report.md").read()
+lines=rep.split("\n")
+vers=[l for l in lines if l.startswith("**Scanner versions:**")]
+refs=[l for l in lines if l.startswith("**Model refusals:**")]
+stops=[l for l in lines if l.startswith("**Model stops:**")]
+issues=[l for l in lines if "iteration stop on" in l and "owner-decision issue" in l]
+bad_name=re.search(r"anthropic|claude|opus|sonnet|gpt-|AUDITOR_MODEL",rep,re.I)
+good=(len(vers)==1 and "grype v1.2.3, database 2026-10-21" in vers[0] and "scout not recorded by scout, database not recorded by scout" in vers[0] and ", ," not in vers[0]
+      and len(refs)==1 and "(primary, primary)" in refs[0] and len(stops)==1 and "(iterations)" in stops[0] and len(issues)==1 and not bad_name)
+print("OK" if good else "BAD vers=%r refs=%r stops=%r issues=%r name=%r"%(vers,refs,stops,issues,bad_name))
+PP
+)"
+eq "$r14" "OK" && ok || no "rc-5b fix 14: refusals logged, one owner issue for the iteration stop, scanner versions or 'not recorded by'" "$r14"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
 echo "----"
