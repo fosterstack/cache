@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 99 |
-| Acceptance criteria | 480 |
+| Acceptance criteria | 482 |
 | Release-blocking ACs | 129 |
-| ACs with mapped evidence | 469 |
+| ACs with mapped evidence | 471 |
 | Release-blocking ACs with mapped evidence | 129 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 47 |
@@ -64,6 +64,7 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 | REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | approved | none mapped |
 | REQ-PROTO-003-AC3 | Given a key whose leaf segment starts with two dots; when it is stored and read; then it is kept under the fixed shard `__` of its directory, two different keys that differ only in their directory part stay different, and the result stays inside the store root; every key whose leaf does not start with two dots keeps exactly its previous path | component | yes | approved | 8 item(s) |
 | REQ-PROTO-003-AC4 | Given a key whose leaf starts with `.tmp-` stored before an unclean shutdown, at the top level or in a nested directory, including a leaf shaped exactly like a generated temporary name, and stray files in the store's temporary directory; when the store is reconciled at startup; then the blob is still there and still readable, only files in the dedicated temporary directory (and leftover `.tmp-` files directly at the top of the store, where no key's path can lie) are removed, and every key keeps its path | component | yes | approved | 14 item(s) |
+| REQ-PROTO-003-AC5 | Given a key that was never stored whose path in the store is a directory, a symbolic link or any other file that is not a regular file (for example the key `ab` after the key `ab/ab` was stored), or a key whose path lies below a stored blob; when a client sends HEAD or GET for it, or the startup walk meets that path; then the answer is 404, never 200, and neither HEAD nor GET opens anything at that path; the walk reports no entry for it | component |  | approved | 11 item(s) |
 
 ### REQ-PROTO-004 — Method surface
 
@@ -326,6 +327,7 @@ The server shall write a marker file at startup and remove it on clean shutdown.
 | REQ-STORE-005-AC3 | Given a data directory with an unclean-shutdown marker and one of each inconsistency; when the server starts; then reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk | component |  | approved | 2 item(s) |
 | REQ-STORE-005-AC4 | Given a data directory with an unclean-shutdown marker, and a startup reconciliation that fails partway, returning an error after some index changes; when the server starts; then it exits non-zero without serving, naming the reconciliation failure; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles again | component | yes | approved | 3 item(s) |
 | REQ-STORE-005-AC5 | Given a started server (startup reconciliation completed) with an upload in flight, and a serving error or a shutdown error (the HTTP server is forced closed before the handler finishes); when the process exits through that error; then it exits non-zero naming the serving or shutdown error; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles and adopts any blob that was stored but not indexed (adopted_blobs counted) | component | yes | approved | 9 item(s) |
+| REQ-STORE-005-AC6 | Given a metadata record whose value is not exactly 16 bytes (on-disk corruption), at any key; when the index is read for that key or scanned (touch, total size, least recently used, list); then the read returns a corrupt-record error naming the problem; it never indexes past the end of the value, so the process does not panic | unit |  | approved | 3 item(s) |
 
 ## Eviction
 

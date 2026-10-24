@@ -41,7 +41,7 @@
       "runs": [],
       "signs": false,
       "reason": "reads the archive pointer and verifies the archive artifact and each file's sha256 and size against it (run by bin/archive-pull.sh)",
-      "sha256": "55c2c5716053b8b82b0009d6186aba33e1f478e75ebc728b9f7c3714155699ed"
+      "sha256": "0dd011c43a4c0afc4543afbcede9f43849b9ea3f54a91432fe5aaa2768000e31"
     },
     {
       "path": "bin/install-host-bwrap.py",
@@ -560,7 +560,7 @@
       ],
       "signs": false,
       "reason": "the version, revision and clean-tree check of a built binary or apk",
-      "sha256": "dadf64fc26c32813a4cca0028981006b8294226ab2fef7830f50f5e45a704dbc",
+      "sha256": "a25d175c03b3076ef2d9fc550de8acf578d6be3cf3ac24b25fdf156d30659c08",
       "env_mentions": [
         {
           "name": "PATH",
@@ -571,6 +571,15 @@
           "name": "PATH",
           "text": "`go version -m PATH`",
           "why": "a docstring naming the path operand of go version -m; nothing is set"
+        }
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "GO_TOOL = \"/usr/local/bin/fscache-go/bin/go\"  # TEST-SUBST",
+          "line_sha256": "0e226c4829cd0f5e3fec00fe7a6c559176fefe5563112a733da3f81a1db719ce",
+          "count": 1,
+          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go); the version check reads the buildinfo with exactly this go in a closed environment, never the runner's"
         }
       ]
     },
@@ -2035,7 +2044,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "193e0bd7829f10f7aeb77f0326e60f00790439cbbb74b1ff45d62e46ca9ddc90",
+      "sha256": "a1cd81212aeefca716df5089f7beb395ecdff5339bdded38d618c03539aa9e99",
       "tools": [
         "at",
         "gh",
@@ -2078,7 +2087,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "21b40d6a082f6e5ba0724978f62d3de62e1ef48777dc95147ab0638959acaa4b",
+      "sha256": "1047394dff04c900997a7624b3228686d57373f370b433e55d245d40c1714268",
       "tools": [
         "at",
         "python3"

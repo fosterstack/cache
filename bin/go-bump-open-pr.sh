@@ -16,7 +16,7 @@ set -euo pipefail
 CURRENT="${1:?usage: go-bump-open-pr.sh <current> <latest>}"
 LATEST="${2:?usage: go-bump-open-pr.sh <current> <latest>}"
 # both versions go into file names, a regular expression and a template: only the plain Go release form is taken
-[[ "$CURRENT" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ && "$LATEST" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "::error::the Go versions must look like 1.27.3: '$CURRENT' '$LATEST'" >&2; exit 2; }
+{ [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] && [[ "$LATEST" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; } || { echo "::error::the Go versions must look like 1.27.3: '$CURRENT' '$LATEST'" >&2; exit 2; }
 branch="chore/go-${LATEST}"
 
 prs="$(gh pr list --head "$branch" --base main --state all --json number,state,mergedAt)"

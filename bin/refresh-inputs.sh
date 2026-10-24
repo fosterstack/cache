@@ -1224,29 +1224,20 @@ fips-module)
   [ -n "$goroot" ] || die "--go-root is required"
   # The refresh and this check edit the same recipe files in one working tree and their pull requests are opened only after the archive is stored: a
   # second plan would be built on the first one's uncommitted edits. With a plan already staged this check stages nothing and runs again tomorrow.
+  # REQ-REFRESH-001-AC12 (rc-3 astra F4): the strict reading of the certified-module file and of build/locks/fips-module.txt below runs in this case too;
+  # the staged case then only says pending / nothing pending and stages nothing.
+  staged=0
   if [ -n "$plan_dir" ] && [ -d "$plan_dir" ] && ! dir_empty "$plan_dir"; then
     echo "fips-module: a pull request is already staged in $plan_dir; this check stages nothing now and runs again tomorrow (each pull request is built from the committed files alone)"
-    _mf=$repo/build/locks/fips-module.txt _cf=$goroot/lib/fips140/certified.txt _cur= _cert= _l=
-    if [ -r "$_cf" ] && [ -r "$_mf" ]; then
-      read -r _cur <"$_mf" || true
-      while IFS= read -r _l || [ -n "$_l" ]; do case $_l in ''|'#'*) continue;; esac; _cert=$_l; break; done <"$_cf"
-      [ -n "$_cert" ] && [ -n "$_cur" ] || die "$_cf or $_mf holds no module value: the certified-module check cannot tell whether a newer module is pending" 1
-      if [ -n "$_cert" ] && [ -n "$_cur" ] && [ "$_cert" != "$_cur" ]; then
-        echo "fips-module: pending: Go's certified module file names $_cert, the FIPS build uses $_cur; its pull request is staged on the next run without a staged refresh"
-      else
-        echo "fips-module: nothing pending: the certified module is the one the FIPS build uses ($_cur)"
-      fi
-    else
-      die "cannot read $_cf or $_mf: the certified-module check cannot tell whether a newer module is pending" 1
-    fi
-    exit 0
+    staged=1
   fi
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
-  [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
-  /usr/bin/python3 -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY' || exit $?
+  [ "$staged" = 1 ] || [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
+  /usr/bin/python3 -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" "$staged" <<'PY' || exit $?
 import io, json, os, re, secrets, shutil, subprocess, sys
-goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR = sys.argv[1:7]
+goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR, STAGED = sys.argv[1:8]
+STAGED = STAGED == "1"   # a plan is already staged: the checks below run, then the answer is only pending / nothing pending
 cert = os.path.join(goroot, "lib", "fips140", "certified.txt")
 
 
@@ -1288,6 +1279,12 @@ if tuple(int(x) for x in cm.groups()) > max(mods)[0]:
     fail("%s names %s, older than the %s the FIPS build uses; refusing to move backward" % (cert, newest, cur))
 if cm.groups() == PAT.match(newest).groups() and cur != newest:
     fail("%s names %s, the SAME version as the %s the FIPS build uses with a different hash; refusing, a human must look" % (cert, newest, cur))
+if STAGED:
+    if cur != newest:
+        print("fips-module: pending: Go's certified module file names %s, the FIPS build uses %s; its pull request is staged on the next run without a staged refresh" % (newest, cur))
+    else:
+        print("fips-module: nothing pending: the certified module is the one the FIPS build uses (%s)" % cur)
+    sys.exit(0)
 if cur == newest:
     print("up to date: Go's certified module %s is the one the FIPS build already uses; no pull request" % cur)
     open(tmp + "/new", "w").write("")
