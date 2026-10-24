@@ -2024,7 +2024,7 @@
     },
     {
       "path": "bin/check-bind.py",
-      "sha256": "edab48a3e69693622244203bb5895cbc49a06563bbdc38e99921cb8c505319c6",
+      "sha256": "a96e9a2b761815592516e642fccb8fba6453a724716cccca4442a76abe78e8c3",
       "tools": [],
       "runs": [
         "bin/chain_items.py"

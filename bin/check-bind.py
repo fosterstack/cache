@@ -71,6 +71,8 @@ def bind_layout(images, variant, digest, members_out=None):
         fail("%s: the index %s cannot be read for its descriptors (%s)" % (key, digest, e))
     for d in extras:
         if not isinstance(d, str) or not DIGEST.fullmatch(d):
+            if members_out:             # the caller will load this layout: an index descriptor without a canonical sha256 digest is refused, never skipped
+                fail("%s: the index names a descriptor whose digest %r is not sha256:<64 lowercase hex>" % (key, d))
             continue                    # not a digest: nothing to archive for it (the scan names it)
         if d.split(":", 1)[1] not in names:
             fail("%s: the index names a descriptor %s whose blob the layout does not hold" % (key, d))

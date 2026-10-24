@@ -699,6 +699,11 @@ rm -rf "$fx/images/fips"; ATT_ODD=two-values python3 "$work/mkoci.py" "$fx/image
 resetf; want_fail "AC33 an extra descriptor whose manifest is not readable is refused before any load" "check-bind" "${FIPS[@]}"
 if ! grep -q '^docker load' "$work/log"; then ok "AC33 nothing was loaded behind the unreadable extra manifest"; else bad "AC33 docker load ran behind an unreadable extra manifest"; fi
 rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" fips linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+# an extra descriptor whose digest string is not canonical (a trailing space) is refused when the caller will load the layout
+rm -rf "$fx/images/fips"; ATT_DIGEST_PAD=" " python3 "$work/mkoci.py" "$fx/images/fips" fips linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
+resetf; want_fail "AC33 an extra descriptor with a non-canonical digest string is refused before any load" "check-bind" "${FIPS[@]}"
+if ! grep -q '^docker load' "$work/log"; then ok "AC33 nothing was loaded behind the non-canonical descriptor digest"; else bad "AC33 docker load ran behind a non-canonical descriptor digest"; fi
+rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" fips linux/amd64 linux/arm64 unknown/unknown > /dev/null; mkdig "$fx"
 # ... and one whose blob is gone is refused before any load
 rm -f "$fx/images/fips/blobs/sha256/$(jq -r .unknown.manifest "$fx/images/fips.map")"
 resetf; want_fail "AC33 an index naming a descriptor whose blob the layout lacks is refused before any load" "check-bind" "${FIPS[@]}"
@@ -1331,7 +1336,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=435
+EXPECT=437
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
