@@ -893,9 +893,6 @@ def adjudicate(adjudicator, ctx, state):
     errored = False; refused = False
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
         if state["tokens"] >= policy.TOKEN_BUDGET:
-            if errored and not refused:
-                state["nc_incomplete"] = True
-                return "adjudicator_error"             # the model was unavailable, not stopped: the outage has its one aggregate issue, and the finding is not also reported as a stop
             state["stops"] = state.get("stops", 0) + 1
             state["nc_incomplete"] = True                       # REQ-AUD-3 AC3: a stop is an attempted call without a cacheable result
             state.setdefault("stopped", []).append({"finding_id": ctx["finding_id"], "why": "token budget"})
