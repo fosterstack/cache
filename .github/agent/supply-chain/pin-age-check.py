@@ -76,12 +76,16 @@ FILE_PIN_SOURCE = "file-pin-ruling"
 
 def is_file_item(item):
     """A checksum or version FILE item (its identity is the file's content), the only kind a file_pins row can date."""
-    return item.kind == "tool" and (item.name or "").startswith("file:") and item.version == "(file)" and (getattr(item, "step", "") or "").startswith("content:")
+    path = getattr(item, "raw", None) or ""
+    return item.kind == "tool" and (item.name or "").startswith("file:") and item.version == "(file)" and (getattr(item, "step", "") or "").startswith("content:") \
+        and bool(re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1])) and path.rsplit("/", 1)[-1] not in inv.VERSION_FILES   # a checksum file only: never a version file (.python-version ...)
 
 
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
     ruled_file = is_file_item(item) and any(src == FILE_PIN_SOURCE for _, src in proofs)    # REQ-SUP-001-AC34: a file pin the base branch's file_pins row dates
+    if ruled_file:
+        proofs = [p for p in proofs if p[1] == FILE_PIN_SOURCE]    # the row's published time decides, never an earlier clock of the pull request
     if not ruled_file and (re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
             or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or ""))):
         return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
@@ -1306,6 +1310,9 @@ def load_ruled_text(path, required=False):
 DEFAULT_BASE_INPUTS = os.path.normpath(os.path.join(HERE, "..", "..", "policy", "base-inputs.json"))
 
 
+_STRICT_TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)")   # a time with a real zone, nothing parse_time would bend (a +99:99 offset)
+
+
 def load_file_pins(path, required=False):
     """REQ-SUP-001-AC34: {(file, content hash): (published, upstream, version)} from the exceptions file's file_pins list (the BASE branch's copy: rows a pull request brings
     do nothing until merged). A row missing a field, with a content that is not 64 lowercase hex or a published time that is not a time rules nothing. Two rows for
@@ -1333,7 +1340,7 @@ def load_file_pins(path, required=False):
             seen.add((f_, c_))
         fields = [r.get(k) for k in ("file", "content", "upstream", "version", "published")]
         if not all(isinstance(x, str) and x.strip() for x in fields) or not re.fullmatch(r"[0-9a-f]{64}", c_) or not r["upstream"].startswith("https://") \
-                or parse_time(r["published"]) is None:
+                or not _STRICT_TIME.fullmatch(r["published"]) or parse_time(r["published"]) is None:
             continue
         out[(f_, c_)] = (r["published"], r["upstream"], r["version"])
     return out
@@ -1345,10 +1352,10 @@ class FilePinSource:
     def __init__(self, inner, pins):
         self.inner, self.pins, self.notes = inner, pins, {}
 
-    def proofs(self, item):
-        out = list(self.inner.proofs(item))
+    def proofs(self, item, *args):
+        out = list(self.inner.proofs(item, *args))
         if is_file_item(item):
-            row = self.pins.get((item.name[5:], item.step[len("content:"):]))
+            row = self.pins.get((item.raw, item.step[len("content:"):]))
             if row:
                 out.append((row[0], FILE_PIN_SOURCE))
                 self.notes[item.key] = f"file pin ruled by the base branch: {row[1]} version {row[2]}"
