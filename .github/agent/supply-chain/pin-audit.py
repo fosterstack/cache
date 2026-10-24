@@ -1116,6 +1116,7 @@ SKIP_UNREADABLE = {
     "792a2c7029de801fa7afbc16ceb36a636215f4b6": "PR 459 round 6 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "6ff1768c0e63d0f60f6072267817062d53934a08": "PR 459 round 7 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
     "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b": "PR 459 round 8 RED commit (Oct 20 2026): bin/chain-sign-wiring-test.sh held a 12014-character fixture line, since removed",
+    "6b8c70df66651667e530748db9bc22462e307bee": "#597 fix round 3 commit (Oct 23 2026): bin/chain-check-scripts-test.sh held a 4103-character command line, since removed (the tip holds no line over 3500 characters); only this historical commit is skipped",
 }
 
 
