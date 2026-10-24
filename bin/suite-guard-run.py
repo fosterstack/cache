@@ -33,7 +33,7 @@ def guard(*args):
     return p.returncode, p.stdout.strip()
 
 
-def cmd_run(floors, name, path, count_only):
+def cmd_run(floors, name, path, count_only, echo=True):
     try:
         if os.path.islink(path) or os.path.getsize(path) == 0 or not os.path.isfile(path):   # a symlink named for a suite is no suite (as `all` always held)
             raise OSError
@@ -45,8 +45,9 @@ def cmd_run(floors, name, path, count_only):
         proc = subprocess.Popen(["bash", path], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         for chunk in iter(lambda: proc.stdout.read1(65536), b""):   # the suite's own output stays in the step log as it would have under `bash PATH`
             log.write(chunk)
-            sys.stdout.buffer.write(chunk)
-            sys.stdout.buffer.flush()
+            if echo:
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
         rc = proc.wait()
         log.flush()
         grc, n = guard("count", log.name)
@@ -81,6 +82,15 @@ def suite_names(floors):
 COUNTING = re.compile(r"(?:CHAIN_TEST_REQUIRE_NETCUT=1 )?python3 -I bin/suite-guard-run\.py run (\S+) (\S+) (\S+)(?: </dev/null)?")   # the one env prefix the floored steps of ci.yml carry; any other is not a counting step
 
 
+def required_contexts(root):
+    """The required-check contexts of ROOT/.github/policy/required-checks.json, or None when the file cannot be read (then no counting step is trusted)."""
+    try:
+        with open(os.path.join(root, ".github", "policy", "required-checks.json")) as f:
+            return {c["context"] for c in json.load(f)["required_checks"]}
+    except Exception:
+        return None
+
+
 def counting_steps(root, floors, names):
     """{suite name: PATH} of the counting steps of ROOT/.github/workflows/ci.yml that are trusted (REQ-CI-005), and the number of malformed ones.
     A counting step is trusted only if it is the WHOLE run text of its step (one line: no here-document, `exit` or branch around it), the step has no key but name and run,
@@ -95,13 +105,20 @@ def counting_steps(root, floors, names):
         with open(wf) as f:
             doc = yaml.safe_load(f)
         jobs = doc["jobs"]
+        if not isinstance(jobs, dict):
+            raise TypeError("jobs is not a mapping")
     except Exception as e:
         die("%s cannot be read as a workflow (%s)" % (wf, e))
-    got, bad = {}, 0
+    required = required_contexts(root)
+    got, bad, seen = {}, 0, {}
     for jname, job in jobs.items():
         if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
             continue
         plain_job = set(job) <= {"name", "runs-on", "steps"}
+        # a counting step is trusted only in a job whose failure turns the run red: a required check, or a job a required check needs
+        gated = required is not None and (str(job.get("name", jname)) in required or any(
+            isinstance(o, dict) and (str(o.get("name", on)) in required) and jname in (o.get("needs") if isinstance(o.get("needs"), list) else [o.get("needs")])
+            for on, o in jobs.items()))
         for st in job["steps"]:
             if not isinstance(st, dict) or not isinstance(st.get("run"), str):
                 continue
@@ -115,6 +132,10 @@ def counting_steps(root, floors, names):
                     bad = 1
                     continue
                 fl, name, path = m.groups()
+                seen[name] = seen.get(name, 0) + 1
+                if seen[name] == 2:     # every counting line counts, trusted or not and in whatever order: a suite with two of them would run twice
+                    print("suite-guard: the suite %s has more than one counting step (it would run twice)" % name, file=sys.stderr)
+                    bad = 1
                 if fl != floors or name not in names or os.path.basename(path) != name:
                     print("suite-guard: job %s: the counting step %r names a floors file other than %s, an unfloored suite, or a NAME that is not the file name of its PATH" % (jname, line.strip(), floors), file=sys.stderr)
                     bad = 1
@@ -122,7 +143,7 @@ def counting_steps(root, floors, names):
                 if len(lines) != 1:
                     print("suite-guard: job %s: the counting line %r is not the whole of its step" % (jname, line.strip()), file=sys.stderr)
                     bad = 1
-                elif plain_job and set(st) <= {"name", "run"}:
+                elif plain_job and gated and set(st) <= {"name", "run"}:
                     got[name] = os.path.normpath(path)
     return got, bad
 
@@ -165,7 +186,7 @@ def cmd_all(floors, root, count_only):
             else:
                 print("suite-guard: %s: counted by its own step" % s)
             continue
-        if cmd_run(floors, s, found[0], count_only) != 0:
+        if cmd_run(floors, s, found[0], count_only, echo=False) != 0:
             bad = 1
     if bad:
         sys.exit(1)

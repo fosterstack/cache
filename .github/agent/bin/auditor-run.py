@@ -25,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from auditorlib import cli, policy
 from auditorlib import vex
+from auditorlib import reviewed
 from auditorlib import signed_commit
 from auditorlib import knowledge as K
 from auditorlib import nochange
@@ -100,30 +101,8 @@ def _issue_pending_note(ref):
     return "would open (dry run)" if ref == "dry" else "delivery disabled (gh off)"
 
 
-class ReviewedInputInvalid(Exception):
-    """A reviewed file on main (the published VEX, the accepted-items inventory) is present but unreadable or not the JSON object it must be: the run stops (exit 3) rather than guess an
-    empty one, which would delete every statement or renew every time box (rc-5b fix 13; REQ-AUD-13 AC6, REQ-AUD-2 AC5c)."""
-
-
-def _read_reviewed_json(path):
-    """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else that is not a readable JSON object is a stop."""
-    try:
-        os.lstat(path)
-    except (FileNotFoundError, NotADirectoryError):
-        return None                                # absent (the first run); any other failure to look (EACCES on a parent, EIO) is a stop, not "missing"
-    except OSError as ex:
-        raise ReviewedInputInvalid("%s cannot be looked at (%s)" % (path, type(ex).__name__))
-    try:
-        with open(path) as f:
-            doc = json.load(f)
-    except (OSError, ValueError, UnicodeError) as ex:
-        raise ReviewedInputInvalid("%s is present but cannot be read as JSON (%s)" % (path, type(ex).__name__))
-    if not isinstance(doc, dict):
-        raise ReviewedInputInvalid("%s is not a JSON object" % path)
-    key = "statements" if "openvex" in os.path.basename(path) else "accepted_items" if os.path.basename(path) == "accepted-items.json" else None
-    if key and key in doc and (not isinstance(doc[key], list) or not all(isinstance(x, dict) for x in doc[key])):
-        raise ReviewedInputInvalid("%s: %r is not a list of objects" % (path, key))
-    return doc
+ReviewedInputInvalid = reviewed.ReviewedInputInvalid       # the exception and the reader are shared (auditorlib/reviewed.py): the release gate and the consistency check use them too
+_read_reviewed_json = reviewed.read
 
 
 def _workspace():
@@ -135,7 +114,7 @@ def _read_reopened(path):
     """The scopes this run reopened (reopened-expired.json, written by the run itself): a list of [cve, products, purls]. Absent = none; present and unreadable or mis-shaped means the run
     is broken, so it stops (exit 3) rather than deliver without the removals (rc-5b fix 13, item 6)."""
     doc = _read_reviewed_json(path)
-    rows = (doc or {}).get("reopened", [])
+    rows = [] if doc is None else doc["reopened"]                 # a present ledger without its key was refused by the reader
     if not isinstance(rows, list) or not all(isinstance(x, list) and len(x) == 3 and isinstance(x[0], str) and all(isinstance(y, list) and all(isinstance(z, str) for z in y) for y in x[1:]) for x in rows):
         raise ReviewedInputInvalid("%s: 'reopened' is not a list of [cve, [products], [purls]] with strings" % path)
     return rows
@@ -148,8 +127,13 @@ class DefectLogInvalid(Exception):
 
 def load_defect_log(logpath):
     """The known-defect log as a dict ({} when there is none); DefectLogInvalid when unreadable."""
-    if not (logpath and os.path.exists(logpath)):
+    if not logpath:
         return {}
+    try:
+        if not reviewed.present(logpath):          # the reader owns existence (lstat): a dangling link or a log in an unreachable folder is present, and a stop
+            return {}
+    except reviewed.ReviewedInputInvalid as e:
+        raise DefectLogInvalid(str(e))
     try:
         with open(logpath) as fh:
             d = json.load(fh)
@@ -157,7 +141,10 @@ def load_defect_log(logpath):
         raise DefectLogInvalid("%s: %s" % (logpath, e))
     if not isinstance(d, dict):
         raise DefectLogInvalid("%s: top level is %s, want an object" % (logpath, type(d).__name__))
-    return d
+    try:
+        return reviewed.check(d, logpath, "known-defect-log.json")        # a present log must carry "defects" (a list of objects): {} is not an empty history
+    except reviewed.ReviewedInputInvalid as e:
+        raise DefectLogInvalid(str(e))
 
 
 def log_index(log):
@@ -1349,7 +1336,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         row["reachability"] = "govulncheck: %s" % verdict
         # a FRESH unreachable finding closes §5 even if a fix exists (unreachable => not
         # exploitable); only a CARRIED reachability suppression defers to the fix so it can be
-        # LIFTED and bumped (REQ-AUD-13 AC7; R1 refactor round-4 #4).
+        # LIFTED and bumped (REQ-AUD-2 AC7; REQ-AUD-13 AC3; R1 refactor round-4 #4).
         if verdict == "unreachable" and not (gf["fixed"] and _carried):
             # scope the closure to EXACTLY the module@version the trace supports, from the
             # NON-lineage Go findings only; a sibling version the evidence does not cover, or a
@@ -1730,7 +1717,7 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
                 nm = (s.get("vulnerability") or {}).get("name")
                 if nm:
                     # every carried (cve, scope) — including a reachability not_affected that has
-                    # NO time box — so a pullable fix can lift it (REQ-AUD-13 AC7; R1 refactor #4)
+                    # NO time box — so a pullable fix can lift it (REQ-AUD-2 AC7; REQ-AUD-13 AC3; R1 refactor #4)
                     carried_scopes.add((nm, _scope_key(s)))
                     # the PUBLISHED status for this exact scope, so the "in force (main)" display
                     # tag is only applied when THIS run writes the SAME disposition already on main:
@@ -2095,7 +2082,7 @@ def _consistency(out, supp, manifest_path):
                             "--suppression-dir", supp, "--live-findings", manifest_path,
                             "--out", cj], capture_output=True, text=True)
         if r.returncode == 0 and os.path.exists(cj):
-            return json.load(open(cj))
+            return reviewed.read(cj)       # a result without "problems" and "consistent" is not a clean check
         return {"problems": [{"type": "consistency-check-failed",
                               "detail": "rc=%d %s" % (r.returncode, (r.stderr or "").strip()[:200])}]}
     except Exception as e:
