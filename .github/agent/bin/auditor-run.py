@@ -894,10 +894,12 @@ def adjudicate(adjudicator, ctx, state):
         # this run — it takes effect only after the owner merges the audit-lane PR. A proposal is
         # kept ONLY when it names a recognized kind AND carries evidence (AC4 "with evidence"); a
         # malformed / evidence-free / unsupported-kind proposal is dropped, never forwarded.
-        _pr = ans.get("propose")
-        if isinstance(_pr, dict) and _pr.get("kind") in ("defect_log", "knowledge") and _pr.get("evidence"):
+        _pr = _valid_proposal(ans.get("propose"))
+        if _pr is not None:
             state.setdefault("proposals", []).append(
                 {"finding_id": ctx["finding_id"], "package": ctx.get("package"), "propose": _pr})
+        elif ans.get("propose") is not None:
+            state["proposals_refused"] = state.get("proposals_refused", 0) + 1      # the proposal is refused, not the run (rc-5b R4)
         return ans.get("category") or "unknown"
     return "adjudicator_error" if (errored and not refused) else "refused"
 
@@ -2034,6 +2036,96 @@ def _configured_model_values():
         if k.startswith("AUDITOR_MODEL") and v and len(v.strip()) >= 3:
             out.append(re.escape(v.strip()))
     return out
+
+
+_PROP_KEYS = {"kind", "package", "keys", "note", "evidence"}
+_PROP_REQUIRED = {"kind", "evidence", "note"}
+_PROP_KEY_KEYS = {"scanner", "finding_id", "purl"}
+_PROP_MAX = 2000
+# lookalike letters (Cyrillic, Greek) folded to Latin, so a vendor name written with one of them is still a vendor name
+_LOOKALIKE = str.maketrans({"\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0441": "c", "\u0440": "p", "\u0456": "i", "\u0455": "s", "\u0443": "y", "\u0445": "x", "\u0501": "d",
+                            "\u03bf": "o", "\u03bd": "v", "\u03b9": "i", "\u03c1": "p", "\u03b1": "a", "\u03b5": "e", "\u03ba": "k", "\u043d": "h", "\u0442": "t", "\u043c": "m"})
+
+
+def _fold(x):
+    """NFKC, format characters (zero-width and the like) removed, lookalikes folded, lower-cased."""
+    import unicodedata
+    y = unicodedata.normalize("NFKC", x)
+    y = "".join(c for c in y if unicodedata.category(c) not in ("Cf", "Cc") or c in "\n\t")
+    return y.lower().translate(_LOOKALIKE)
+
+
+_FORBIDDEN_LITERALS = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in FORBIDDEN_NAMES.pattern.split("|")]       # the same names with every separator removed
+
+
+def _split_across(lit, squashed):
+    """True when `lit` can be read off the squashed fields laid end to end in SOME order: a suffix of one field, then whole fields, then a prefix of another. A field may be
+    reused, which makes the search a walk over positions in `lit` (at most len(lit) x fields steps, never exponential) and only widens what is refused: fail-closed (it may refuse
+    an innocent proposal, never pass a split name)."""
+    fields = [f for f in set(squashed) if f]
+    reach = set()
+    for f in fields:
+        for a in range(len(f)):
+            suf = f[a:]
+            if len(suf) < len(lit) and lit.startswith(suf):
+                reach.add(len(suf))
+    seen = set(reach)
+    while reach:
+        pos = reach.pop()
+        r = lit[pos:]
+        for f in fields:
+            if f.startswith(r):
+                return True
+            if r.startswith(f) and pos + len(f) not in seen:
+                seen.add(pos + len(f)); reach.add(pos + len(f))
+    return False
+
+
+def _scrubbed_all(texts):
+    """True when no string, taken alone, joined with the others, or split across them in any order (separators removed), holds a vendor/model name or any configured model
+    identifier of this run (row 48: the public repo names none). No minimum length for the configured identifiers. A character outside ASCII after folding refuses the proposal."""
+    folded = [_fold(t) for t in texts]
+    if any(not f.isascii() for f in folded):
+        return False                                               # fail closed: a letter outside ASCII after folding cannot be judged a lookalike or not
+    squashed = [re.sub(r"[^a-z0-9]", "", f) for f in folded]
+    joined = "".join(squashed)
+    cfg = [re.sub(r"[^a-z0-9]", "", _fold(v)) for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and v.strip()]
+    lits = [w for w in _FORBIDDEN_LITERALS if w] + [c for c in cfg if c]
+    if any(FORBIDDEN_NAMES.search(h) for h in folded + [" ".join(folded)]) or any(w in sq for w in lits for sq in squashed + [joined]):
+        return False
+    return not any(_split_across(w, squashed) for w in lits)
+
+
+def _valid_proposal(pr):
+    """A model-proposed defect-log/knowledge entry, validated by SHAPE (rc-5b R4; REQ-AUD-17 AC4 "code validation"): the keys are within kind/package/keys/note/evidence and
+    kind and evidence are present; kind is defect_log|knowledge; evidence a non-empty string; the other fields strings (keys: a list of objects with exactly scanner, finding_id
+    and purl, all strings); each at most 2000 characters; and no string, alone or joined with the others, names a vendor or model. Anything else returns None: the proposal
+    is refused (and counted), never forwarded, and the run goes on."""
+    if not isinstance(pr, dict) or set(pr) - _PROP_KEYS or _PROP_REQUIRED - set(pr) or pr.get("kind") not in ("defect_log", "knowledge"):
+        return None
+    ev = pr.get("evidence")
+    if not isinstance(ev, str) or not ev.strip():
+        return None
+    texts = [pr["kind"], ev]
+    if not isinstance(pr["note"], str) or not pr["note"].strip():
+        return None
+    for k in ("package", "note"):
+        if k in pr:
+            if not isinstance(pr[k], str):
+                return None
+            texts.append(pr[k])
+    if pr["kind"] == "defect_log" and not pr.get("keys"):
+        return None                                                # a defect-log entry names the findings it is about
+    if "keys" in pr:
+        if not isinstance(pr["keys"], list) or len(pr["keys"]) > 20:
+            return None
+        for kk in pr["keys"]:
+            if not isinstance(kk, dict) or set(kk) != _PROP_KEY_KEYS or not all(isinstance(v, str) for v in kk.values()):
+                return None
+            texts += [kk["scanner"], kk["finding_id"], kk["purl"]]
+    if any(len(t) > _PROP_MAX for t in texts) or not _scrubbed_all(texts):
+        return None
+    return pr
 
 
 def _narrative_ok(text, sections):
