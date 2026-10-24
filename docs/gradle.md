@@ -249,6 +249,8 @@ acceptance build sets it for its local server).
 
 ## Migrating from the deprecated Build Cache Node
 
+What the server answers to each request, and why a request is refused: [server responses](server-responses.md).
+
 If you're currently running Gradle's own
 [`gradle/build-cache-node`][bcn-hub] Docker image, see
 ["Migrate off Build Cache Node in 30 minutes"](migrate-from-bcn.md) —
