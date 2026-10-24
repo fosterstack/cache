@@ -1867,9 +1867,9 @@ requirements:
         status: approved
 
   - id: REQ-REL-008
-    title: The workflow set is consolidated to the ratified 23 files
+    title: The workflow set is consolidated to the ratified list (ratified 32 → 23; 19 files today)
     statement: >
-      The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), each merge
+      The repository's workflows shall be consolidated from 32 files to the 23 the owner ratified (Oct 2), and to the 19 files that remain today after the v0.3.0 chain's ratified removals (AC1 fixes the list), each merge
       keeping every required check's name, top-level placement and events, and no new workflow file added without the
       owner's ratification.
     source: [.github/workflows/go-freshness.yml, .github/workflows/ci.yml]
@@ -2862,6 +2862,12 @@ requirements:
         then: "serve refuses it with exit 2 and a message naming the ref, before docker run; serve tags only the image's inspected ID to its fixed local name, checks that name still resolves to exactly that ID right before docker run (a re-tag is refused) and runs that name; check-acceptance.sh turns the tag that docker load printed into the loaded image's ID (docker image inspect) and hands serve that ID, never the tag; this is the owner's plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC33
+        given: "a Check script (bin/check-acceptance.sh, bin/check-fips.sh, bin/check-artifacts.sh) loads a candidate image layout into docker"
+        when: "the layout holds anything beyond the files its index and manifests name (a root manifest.json, a stray tar, a blob nothing names)"
+        then: "only oci-layout, index.json and the blobs the layout's index and child manifests name go into the archive docker load reads, everything else is left out, and a layout whose index names a blob it lacks is refused before any load. Extends the named-members rule of REQ-CHAIN-006-AC4 from the scan to docker load. Tighten-only; approved by the advisor Oct 23"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3448,7 +3454,7 @@ requirements:
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC11
-        given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
+        given: "the Build stage file and its bin/build-stage-*.sh scripts (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
         when: "they are read"
         then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; apko builds the production and fips images from build/apko.yaml and build/apko-fips.yaml with their lock files"
         verification: { method: ci-workflow, release_blocking: true }
@@ -4735,5 +4741,46 @@ requirements:
         given: "the pin-wiring judge"
         when: "it is run against a copy of the workflow with any one step dropped, duplicated across two jobs, moved, edited, reordered or conditioned, or with the gate weakened"
         then: "it fails for each of those mutations, and it accepts the real workflow"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+
+  - id: REQ-CI-005
+    title: A floored suite is run once, by the step that counts it
+    statement: >
+      Every suite named in test-evidence/suite-floors.json is run once per workflow run, by the step that runs it and counts its cases against its floor, and the
+      step that re-runs the suites of the floors file runs only those that no counting step runs.
+    source: [ci-speed read-back of Oct 23 (advisor), the suite guard (bin/suite-guard-run.py), the pin-wiring judge (pin-wiring-test.sh)]
+    tier: community
+    introduced: v0.3.0
+    origin: advisor Oct 23 2026 (CI speed; the floor re-run of every suite took 4876 s on top of the suites themselves; no check is dropped and every test runs exactly once)
+    confidence: documented
+    notes: >
+      A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite
+      once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain
+      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job), runs the rest, and fails on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
+      is not the file name of its PATH. The floors only rise as before.
+    acceptance_criteria:
+      - id: REQ-CI-005-AC1
+        given: "a suite named in the floors file and a counting step that is the whole run text of a step with no key but name and run, in a job with no key but name, runs-on and steps (so no if, needs, strategy or continue-on-error can skip it), whose PATH is the one file of that name"
+        when: "the floor check of the workflow run (`suite-guard-run.py all`) runs"
+        then: "the suite is not run again by it; the suite ran once, in its own step, which required exit 0 and a case count at or above its floor; any other suite is still run by `all`, and a counting line that is not the whole of its step is refused"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-005-AC2
+        given: "a counting step in ci.yml"
+        when: "it names an unfloored suite, a floors file other than test-evidence/suite-floors.json, a NAME that is not the file name of its PATH, a PATH that is not the one file of that name, an env prefix other than CHAIN_TEST_REQUIRE_NETCUT=1, or a form other than `run FLOORS NAME PATH`"
+        then: "`suite-guard-run.py all` fails, and the pin-wiring judge (which reads the floors file of the judged commit) treats the line as unknown run text and refuses it"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-005-AC3
+        given: "a suite run by a counting step"
+        when: "it loses cases (below its floor), prints no case count, or exits non-zero"
+        then: "its step fails"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CI-005-AC4
+        given: "the suite guard's floors"
+        when: "a pull request lowers or drops a floor"
+        then: "the floors-only-rise check fails as before; nothing in the counting step changes how a floor is raised"
         verification: { method: unit, release_blocking: false }
         status: approved

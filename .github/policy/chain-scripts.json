@@ -782,7 +782,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "62e453e653c7b693a6c31f4667c8c99556485ed454d5571eafdb6d866b554f56",
+      "sha256": "4b6ad729091e1c4cdd03b8851c14a55d5c0a6b9c92d0aedeefe2d6215bc26d92",
       "tools": [
         "find",
         "python3",
@@ -881,7 +881,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "c0734a5e15604218fafded054a0f5c4c07b9cb0a87ad72b3db2a3a64a99b305d",
+      "sha256": "5f021d2ae72110ec0ac030d9a216a9c0fd4da01c33591282441b150315ce77f0",
       "tools": [
         "curl",
         "docker",
@@ -901,7 +901,7 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "41763fe2cb9287030ef6895d731a62ecb836ea23d6e38e3e6fcdcf0befb16755",
+      "sha256": "62708883efa8b77b4ccd0dd8b73af8a5ed158e1b904d82fd3f9b8a7d3b07f7e0",
       "tools": [
         "bash",
         "docker",
@@ -1954,7 +1954,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "17b9bf66d3e04bb0dfd38ac21310f20ef37b6c34b8aa5b6f2993889e44b64d0d",
+      "sha256": "56fa6d8abe7d4bf2d85b8fc8920d5fa3031a63c794732a80dc4e501b45798b6b",
       "tools": [
         "at",
         "curl",
@@ -2025,7 +2025,7 @@
     },
     {
       "path": "bin/check-bind.py",
-      "sha256": "adeade6b12c7f7c4682a09cfdef29bd2d81955534acf476e7c41e7106a8563ad",
+      "sha256": "a96e9a2b761815592516e642fccb8fba6453a724716cccca4442a76abe78e8c3",
       "tools": [],
       "runs": [
         "bin/chain_items.py"
@@ -2045,7 +2045,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "e633d170732c81253149c9a60f56b5e98a0aedfdba7c84dbd2ad7364cc5e2861",
+      "sha256": "45baba99fcd4b1c9be538fa7aa1b39cde8d63392248d789a17e7fd627457554c",
       "tools": [
         "at",
         "gh",
@@ -2088,7 +2088,7 @@
     },
     {
       "path": "bin/inspector-gate.py",
-      "sha256": "a74d72fe7a01425fc5f75dee7d00b2a8fa9a92ee4059c1c5eb673781f21ccacd",
+      "sha256": "8dc7ae7b5cfd576bd6bd97252729203bb7336820d57ec1c216e9d3541a43397d",
       "tools": [
         "at",
         "python3"
@@ -2279,7 +2279,7 @@
       ],
       "signs": false,
       "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
-      "sha256": "0a5bff4d853b6e407eb37c994f5cbb8bf6f078651190268da1b14e9da3169232",
+      "sha256": "d4a5b950ee47a116b69b199636d78085d77f2cf91b77dce0cf58f24ec658ca05",
       "exceptions": [
         {
           "rule": "script-name",

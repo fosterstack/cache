@@ -98,7 +98,7 @@ def load_vex(path):
 def _cdx_packages(doc):
     """Rule 3's package count: components that are packages (carry a package URL). Grype's CycloneDX also
     lists every file it catalogued as a component (946 of 965 on production-amd64, run 36957462057)."""
-    return [c for c in doc.get("components") or [] if isinstance(c, dict) and c.get("purl")]
+    return [c for c in doc.get("components") or [] if isinstance(c, dict) and isinstance(c.get("purl"), str) and c["purl"]]
 
 
 def _purl_name_version(purl):
@@ -317,6 +317,8 @@ def scanner_dirs(inp):
         if scanner not in EXPECTED or os.path.islink(path) or not os.path.isdir(path):
             raise LayoutError("%s is not the artifact of a panel scanner (expected a plain folder panel-%s)" % (n, "|".join(sorted(EXPECTED))))
         inner = sorted(os.listdir(path))
+        if inner and scanner not in inner and all(x in DIAG.get(scanner, set()) and not os.path.islink(os.path.join(path, x)) and os.path.isdir(os.path.join(path, x)) for x in inner):
+            continue    # only its diagnostics (every image failed and its step removed the partial output): a scanner with no results, which the tally calls did-not-run
         if [x for x in inner if x not in ({scanner} | DIAG.get(scanner, set()))] or scanner not in inner:
             raise LayoutError("%s holds %s, not only %s%s: one scanner's artifact never carries another scanner's output" % (n, " ".join(inner) or "nothing", scanner, (" and " + " ".join(sorted(DIAG[scanner]))) if scanner in DIAG else ""))
         for x in inner:

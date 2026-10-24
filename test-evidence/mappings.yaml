@@ -98,7 +98,7 @@ mappings:
       - { type: manual, ref: "v0.1.0 anonymous-pull verification (cache PR #28 body): all six published tags returned HTTP 200 to a fresh anonymous registry token, 2026-09-07; the release.yml gate now enforces it before undrafting" }
   - ac: REQ-REL-003-AC1
     evidence:
-      - { type: inspection, ref: ".vex/fosterstack-cache.openvex.json v3 consumed by every scanner in release.yml and main-candidate-rescan.yml (its published-release rescan, merged from daily-rescan.yml; the v0.1.0 one-shot ran as run 34551059239); .grype.yaml ignore list empty since 2026-09-10 (PR #44)" }
+      - { type: inspection, ref: ".vex/fosterstack-cache.openvex.json is the one VEX document: Check's scan applies it to Grype and to OSV-Scanner (bin/check-scan.sh, REQ-CHAIN-006-AC4; the AC4 cases of bin/chain-check-scripts-test.sh refuse an ignore that is not a VEX rule) and the published-release rescan in main-candidate-rescan.yml consumes it (merged from daily-rescan.yml; the v0.1.0 one-shot ran as run 34551059239); .grype.yaml ignore list empty since 2026-09-10 (PR #44)" }
   - ac: REQ-LIC-001-AC1
     evidence:
       - { type: manual, ref: "LICENSE is MIT; v0.1.0 artifact inventory shows one public channel, no gated artifact, no license-key gate (verified 2026-09-11)" }
@@ -599,6 +599,7 @@ mappings:
   - ac: REQ-SCAN-010-AC3
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
   - ac: REQ-SCAN-009-AC5
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-labels-test.sh" }
@@ -700,9 +701,6 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }
   - ac: REQ-SCAN-010-AC2
-    evidence:
-      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
-  - ac: REQ-SCAN-010-AC3
     evidence:
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }
   - ac: REQ-SCAN-010-AC4
@@ -885,6 +883,9 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
   - ac: REQ-SUP-001-AC30
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-SUP-001-AC33
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-REPO-001-AC1
@@ -1675,6 +1676,10 @@ mappings:
   - ac: REQ-SCAN-011-AC2
     evidence:
       - { type: shell-test, ref: "bin/vex-guide-test.sh" }
+  - ac: REQ-SCAN-011-AC3
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/release.yml job live-test-release (MODE release): bin/vex-live-run.sh run executes every command block of docs/using-our-vex.md as written against the real services; the release-candidate live-test job leaves out the blocks listed in docs/using-our-vex.cannot-run.json (they need a published release), and the main-push job in ci.yml runs every block against the newest published release its selection picks (bin/vex-live-test.py release_under_test), printing a notice and skipping when the selection finds none" }
+      - { type: shell-test, ref: "bin/vex-live-test-test.sh" }
   - ac: REQ-SCAN-011-AC4
     evidence:
       - { type: shell-test, ref: "bin/vex-guide-test.sh" }
@@ -1709,3 +1714,16 @@ mappings:
   - ac: REQ-CI-001-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-005-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+  - ac: REQ-CI-005-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+  - ac: REQ-CI-005-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/suite-guard-test.sh" }
+  - ac: REQ-CI-005-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/suite-guard-test.sh" }

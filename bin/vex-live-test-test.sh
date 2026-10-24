@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-012-AC1, REQ-SCAN-012-AC2, REQ-SCAN-012-AC3, REQ-SCAN-012-AC4, REQ-SCAN-012-AC5, REQ-SCAN-012-AC6
+# proves: REQ-SCAN-011-AC3, REQ-SCAN-012-AC1, REQ-SCAN-012-AC2, REQ-SCAN-012-AC3, REQ-SCAN-012-AC4, REQ-SCAN-012-AC5, REQ-SCAN-012-AC6
 # Scanner-panel rule 12 (owner RATIFIED Oct 2; read-back approved, advisor 0098), offline: the live test's plan runs the
 # guide's command blocks byte for byte (only its settings blocks take test values); the test copy of the Inspector file
 # differs from the generator's output only in the live-test tag and the test name prefix (plus exactly the fixture's
@@ -256,11 +256,21 @@ for why, rep_, c, ex in [("a CVE in one package name only", {"inspector": {"CVE-
     check("OWNER-3 pick_scope refuses %s" % why, got == "refused", got)
 
 # --- the release under test on main: the newest published release that carries the rule-10 files
-rels = [{"tagName": "v0.3.0", "isDraft": False, "assets": ["fosterstack-cache-v0.3.0.csaf.json"]},
-        {"tagName": "v0.3.1-rc1", "isDraft": False, "assets": ["fosterstack-cache-v0.3.1-rc1.csaf.json"]},
+def _assets(t): return ["fosterstack-cache.openvex.json", "fosterstack-cache-%s.inspector-filters.json" % t, "fosterstack-cache-%s.csaf.json" % t]
+rels = [{"tagName": "v0.3.0", "isDraft": False, "assets": _assets("v0.3.0")},
+        {"tagName": "v0.3.1-rc1", "isDraft": False, "assets": _assets("v0.3.1-rc1")},
         {"tagName": "v0.2.1", "isDraft": False, "assets": []}, {"tagName": "v0.10.0", "isDraft": False, "assets": []}]
 check("a release candidate tag is never the release under test; the newest published release with the rule-10 files is", L.release_under_test(rels) == "v0.3.0", L.release_under_test(rels))
 check("none yet: empty", L.release_under_test(rels[2:]) is None)
+# Codex terra on #646: a release is the release under test only when it carries ALL THREE files the guide downloads (a CSAF alone is not enough)
+for why, keep in (("only the CSAF file", [2]), ("no CSAF file", [0, 1]), ("no Inspector filters", [0, 2]), ("no OpenVEX file", [1, 2])):
+    part = [{"tagName": "v0.3.2", "isDraft": False, "assets": [_assets("v0.3.2")[i] for i in keep]}] + rels
+    check("a newer release with %s is not the release under test" % why, L.release_under_test(part) == "v0.3.0", L.release_under_test(part))
+check("a release with all three files is", L.release_under_test([{"tagName": "v0.3.2", "isDraft": False, "assets": _assets("v0.3.2")}] + rels) == "v0.3.2")
+check("a draft release with all three files is not", L.release_under_test([{"tagName": "v0.3.2", "isDraft": True, "assets": _assets("v0.3.2")}] + rels) == "v0.3.0")
+# the main-mode selection reads EVERY page of releases, not the first 50 (Codex terra on #646): paginated, then slurped into one list
+_run = open(os.path.join(root, "bin", "vex-live-run.sh")).read()
+check("main mode pages through every release before selecting", "gh api --paginate" in _run and "| jq -s ." in _run and "per_page=50" not in _run and "?per_page=50" not in _run)
 
 # --- AC4: at most 50 pushes per run (the counter in the orchestration script)
 out = subprocess.run(["bash", "-c", 'source "$0"; crane() { :; }; for i in $(seq 1 50); do push_copy a b || exit 9; done; push_copy a b && exit 7; exit 0',
@@ -680,9 +690,9 @@ rc, out = sh('export PUSHED_LOG="$RUNNER_TEMP/p"; push_copy a b || true; cat "$R
 check("SEC-169-09 a failed copy is still in the journal", out.strip().endswith("b"), out)
 # SEC-169-11 (v0.3): main mode with no published release carrying the rule-10 files is an announced skip (no v0.3 release exists yet), never a silent green:
 # the notice names it and the run does no live work
-rc, out = sh("MODE=main; select_release; echo tag=${tag:-none} skip=${skip:-no}", {"gh": "echo '[]'"}, {"GITHUB_REPOSITORY": "fosterstack/cache"})
+rc, out = sh("MODE=main; select_release; echo tag=${tag:-none} skip=${skip:-no}", {"gh": "true"}, {"GITHUB_REPOSITORY": "fosterstack/cache"})
 check("SEC-170-02 main mode with no release is an announced skip", rc == 0 and "::notice::" in out and "skip=yes" in out, (rc, out[-300:]))
-rc, out = sh("MODE=main; select_release; echo tag=${tag:-none} skip=${skip:-no}", {"gh": "echo '[{\"tagName\":\"v0.3.0\",\"isDraft\":false,\"assets\":[\"fosterstack-cache-v0.3.0.csaf.json\"]}]'"}, {"GITHUB_REPOSITORY": "fosterstack/cache"})
+rc, out = sh("MODE=main; select_release; echo tag=${tag:-none} skip=${skip:-no}", {"gh": "echo '{\"tagName\":\"v0.3.0\",\"isDraft\":false,\"assets\":[\"fosterstack-cache.openvex.json\",\"fosterstack-cache-v0.3.0.inspector-filters.json\",\"fosterstack-cache-v0.3.0.csaf.json\"]}'"}, {"GITHUB_REPOSITORY": "fosterstack/cache"})
 check("SEC-170-02 main mode with a published release tests it", rc == 0 and "tag=v0.3.0" in out and "skip=no" in out, (rc, out[-300:]))
 for mode, ref, ok in [("rc", "v0.3.0-rc1", True), ("rc", "v0.3.0", False), ("rc", "v0.3.0-rc.1", False), ("rc", "v0.3.0-rc1-x", False),
                       ("release", "v0.3.0", True), ("release", "v0.3.0-rc1", False), ("release", "v0.3", False), ("release", "main", False)]:
