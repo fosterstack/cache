@@ -81,21 +81,27 @@ pick_port() {
   done
   return 1
 }
+# the server answering on a port must be the one this run started: after its answers the process must still be there (a process that lost the port to another run's
+# server exits at once, and the answers were that other server's)
+still_ours() { sleep 0.5; kill -0 "$1" > /dev/null 2>&1; }
 port_std=$(pick_port) && port_fips=$(pick_port) && port_forced=$(pick_port) || fail "no free ports for the binaries under test"
 FSCACHE_ADDR=":$port_std" FSCACHE_DATA_DIR="$tmp/data-std" "$tmp/bin/fscache" > "$tmp/log-std" 2>&1 &
 pids+=("$!")
 healthy "$port_std" || fail "fscache (linux/$arch) never answered /healthz: it does not execute"
 roundtrip "$port_std" std-bytes || fail "fscache (linux/$arch) answered /healthz but did not round-trip a key"
 note_std=$(posture "$port_std") || note_std=""
+still_ours "${pids[0]}" || fail "fscache (linux/$arch) exited right after it answered: the answers were not its own"
 FSCACHE_ADDR=":$port_fips" FSCACHE_DATA_DIR="$tmp/data-fips" "$tmp/bin/fscache-fips" > "$tmp/log-fips" 2>&1 &
 pids+=("$!")
 healthy "$port_fips" || fail "fscache-fips (linux/$arch) never answered /healthz: it does not execute"
 roundtrip "$port_fips" fips-bytes || fail "fscache-fips (linux/$arch) answered /healthz but did not round-trip a key"
 note_fips=$(posture "$port_fips") || note_fips=""
+still_ours "${pids[1]}" || fail "fscache-fips (linux/$arch) exited right after it answered: the answers were not its own"
 FSCACHE_ADDR=":$port_forced" FSCACHE_DATA_DIR="$tmp/data-forced" GODEBUG=fips140=on "$tmp/bin/fscache" > "$tmp/log-forced" 2>&1 &
 pids+=("$!")
 healthy "$port_forced" || fail "fscache (linux/$arch, GODEBUG=fips140=on) never answered /healthz"
 note_forced=$(posture "$port_forced") || note_forced=""
+still_ours "${pids[2]}" || fail "fscache (linux/$arch, GODEBUG=fips140=on) exited right after it answered: the answers were not its own"
 passed REQ-PLAT-001-AC1 "linux/$arch fscache and fscache-fips"
 
 # REQ-FIPS-001-AC1: the module selection is read from the binaries' build info, not from a runtime self-report

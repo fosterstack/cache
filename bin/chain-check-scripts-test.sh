@@ -718,6 +718,8 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/healthz": return self._send(200, b"ok")
         if self.path == "/statusz":
+            if os.environ.get("FAKE_DIE_AFTER_STATUSZ") and not kind:   # one of the check's own servers (not a fake container) exits right after it answered /statusz
+                import threading; threading.Timer(0.1, lambda: os._exit(1)).start()
             forced = "fips140=on" in os.environ.get("GODEBUG", "")
             if name.endswith("fips") or kind == "fips":
                 note = os.environ.get("FAKE_FIPS_NOTE", "active (Go validated module v1.0.0, CMVP cert #5247)"); on = os.environ.get("FAKE_FIPS_BOOL", "true") == "true"
@@ -731,6 +733,10 @@ class H(http.server.BaseHTTPRequestHandler):
         store[self.path] = self.rfile.read(int(self.headers.get("Content-Length", 0))); self._send(200)
 import signal, time
 term_delay = float(os.environ.get("FAKE_TERM_DELAY", "0"))
+die_after = float(os.environ.get("FAKE_DIE_AFTER", "0"))
+if die_after and not kind:   # one of the check's own servers (not a fake container) that exits shortly after it started answering
+    import threading
+    threading.Timer(die_after, lambda: os._exit(1)).start()
 if term_delay and not kind:   # one of the check's own servers (not a fake container) takes a while to die after SIGTERM, listening meanwhile
     signal.signal(signal.SIGTERM, lambda *a: (time.sleep(term_delay), os._exit(0)))
 addr = os.environ.get("FSCACHE_ADDR", ":8080")
@@ -805,6 +811,8 @@ mkarch "$fa/dist"
 arun FAKE_TERM_DELAY=2 -- "${ART[@]}"
 alive=0; for pf in "$work"/fakedir/pid-*; do [ -f "$pf" ] && kill -0 "$(cat "$pf")" 2> /dev/null && alive=$((alive + 1)); done
 if [ "$rc" = 0 ] && ls "$work"/fakedir/pid-* > /dev/null 2>&1 && [ "$alive" = 0 ]; then ok "ART the check waits for its servers to die: none of its three is alive when it exits"; else bad "ART servers outlived the check (rc=$rc, alive=$alive): $(echo "$out" | tail -3)"; fi
+mkarch "$fa/dist"
+afail "ART a server that answers and then exits (its port taken by another run's server, say) fails the check naming the exit" exited FAKE_DIE_AFTER_STATUSZ=1 -- "${ART[@]}"
 squats=()
 for port in 19101 19102 19103; do
   python3 -c 'import socket,sys,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(5); time.sleep(120)' "$port" &
@@ -1291,7 +1299,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=426
+EXPECT=427
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
