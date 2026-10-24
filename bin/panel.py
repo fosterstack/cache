@@ -219,7 +219,7 @@ def read_grype(d):
 def read_scout(d):
     sbom = _load(os.path.join(d, "sbom.json"))
     cves = _load(os.path.join(d, "cves.json"))
-    arts = [a for a in sbom.get("artifacts") or [] if isinstance(a, dict) and a.get("name") and (a.get("purl") or a.get("version"))]
+    arts = [a for a in sbom.get("artifacts") or [] if isinstance(a, dict) and a.get("name") and isinstance(a.get("purl"), str) and _PACKAGE_URL.match(a["purl"])]
     if not isinstance(cves, dict) or not isinstance(cves.get("vulnerabilities"), list):
         raise ValueError("Scout's CVE report has no vulnerabilities list")   # incomplete answer = did not run
     out = []
