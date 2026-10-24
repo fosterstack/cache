@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/acceptance-k8s.sh: the Kubernetes deployment suite (REQ-DEPLOY-003-AC1), extracted unchanged from stage-acceptance-k8s.yml
 # (advisor ruling Q7; REQ-CHAIN-006-AC5) after two new steps: create the kind cluster (REQ-CHAIN-006-AC14: kind and kubectl come from
-# bin/install-kind.sh, the node image by digest) and load the candidate. CANDIDATE_LOCAL is the candidate's local tag.
+# the runner image, the node image by digest) and load the candidate. CANDIDATE_LOCAL is the candidate's local tag.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only errexit and pipefail are applied here, GitHub's default for a run step (no -u: the bodies never ran with it).
