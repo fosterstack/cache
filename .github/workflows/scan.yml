@@ -110,6 +110,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # This job scans with grype only: its three grype-only steps below are `if: matrix.scanner == 'grype'`. A pr_gate name other than grype would install a tool and scan
+      # nothing, and the `scan` aggregate would read success; a scanner that did not run is a failure, never a pass.
+      - name: refuse a scanner this job cannot run
+        if: matrix.scanner != 'grype'
+        run: |
+          echo "::error::scanners.json pr_gate names a scanner this job does not run; only grype is wired into it" >&2
+          exit 1
+
       # grype reads the OCI images and scans the release archives: the image download + daemon load,
       # the archive download and the archive verify all run in this job.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

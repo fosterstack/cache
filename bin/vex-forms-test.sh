@@ -174,7 +174,7 @@ for name, sts in [("whole image affected, package not_affected", [scoped("CVE-20
         ok = True
     check("conflict refused: " + name, ok)
 try:
-    V.inspector({"statements": [scoped("CVE-2099-22", "not_affected", [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&arch=amd64"}])]}, IMAGES, "v0.3.0"); ok = False
+    V.inspector({"statements": [scoped("CVE-2099-22", "not_affected", [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&tag=latest"}])]}, IMAGES, "v0.3.0"); ok = False
 except ValueError:
     ok = True
 check("a product qualifier the forms cannot represent stops generation (fail closed)", ok)
@@ -461,8 +461,11 @@ for pid in ("pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache#bin/foo" 
     except ValueError:
         ok = True
     check("SEC-165-01 our image's purl with an unrepresentable part stops generation: " + pid, ok)
-check("SEC-165-01 a percent-encoded repository_url without subpath is still our image",
-      V._scopes(scoped("CVE-ENC", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io%%2Ffosterstack%%2Fcache" % D1}]), [D("1")]) == [([D("1")], None)])
+try:
+    V._scopes(scoped("CVE-ENC", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io%%2Ffosterstack%%2Fcache" % D1}]), [D("1")]); got = "accepted"
+except ValueError:
+    got = "refused"
+check("SEC-165-01 a percent-encoded repository_url is ours only after decoding, which the other readers do not do: refused, not honoured", got == "refused", got)
 check("SEC-165-01 a fork whose name extends ours is another repository, not ours",
       V._scopes(scoped("CVE-FORK", "affected", [{"@id": "pkg:oci/cache-fork?repository_url=ghcr.io/fosterstack/cache-fork#x"}]), [D("1")]) == [])
 # Codex #165 r3 (SEC-165-01): identity is never discarded — a namespaced package and an identifiers-only product stop
@@ -497,6 +500,86 @@ check("SEC-165-01 another repository's image named both ways is still not ours",
       V._scopes(scoped("CVE-OT", "affected", [{"@id": "pkg:oci/x?repository_url=ghcr.io/a/x", "identifiers": {"purl": "pkg:oci/x?repository_url=ghcr.io/a/x"}}]), [D("1")]) == [])
 check("SEC-165-01 a Go module product stays out of image scope",
       V._scopes(scoped("CVE-GO", "affected", [{"@id": "pkg:golang/github.com/fosterstack/cache"}]), [D("1")]) == [])
+# --- rc-5a H (handoff 0666; ruling R2, astra R8): ONE scope grammar across the readers. vex-forms accepts variant=/arch= (variant filters the digest
+#     set, arch maps to the platform digests); the rescan no longer accepts debug; the same table of product forms goes through every reader
+OURS_Q = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+def META(images):
+    return {d: (v, plat) for v, plat, d in V._digests(images)}
+ALL6 = {d for _, _, d in V._digests(IMAGES)}
+def digs(pred):
+    return {d for v, plat, d in V._digests(IMAGES) if pred(v, plat)}
+def sc(q, meta=True):
+    st_ = scoped("CVE-H1", "not_affected", [{"@id": OURS_Q + q, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}])
+    return V._scopes(st_, sorted(ALL6), META(IMAGES) if meta else None)
+def covered(q):
+    return {d for ds, _ in sc(q) for d in ds}
+check("H no qualifier covers every digest of the release", covered("") == ALL6)
+check("H variant=production covers the index and both children of production only", covered("&variant=production") == digs(lambda v, p: v == "production"))
+check("H variant=fips covers fips only", covered("&variant=fips") == digs(lambda v, p: v == "fips"))
+check("H arch=amd64 covers the amd64 children of both variants (an index has no one architecture)", covered("&arch=amd64") == digs(lambda v, p: p == "linux/amd64"))
+check("H arch=arm64 covers the arm64 children only", covered("&arch=arm64") == digs(lambda v, p: p == "linux/arm64"))
+check("H variant and arch together are the one child", covered("&variant=fips&arch=arm64") == digs(lambda v, p: v == "fips" and p == "linux/arm64") and len(covered("&variant=fips&arch=arm64")) == 1)
+check("H the order of the qualifiers does not matter", covered("&arch=arm64&variant=fips") == covered("&variant=fips&arch=arm64"))
+check("H the package is kept beside the scope", sc("&variant=fips")[0][1] == ("busybox", "1.37.0"))
+try:
+    sc("&variant=fips", meta=False); got = "accepted"
+except ValueError:
+    got = "refused"
+check("H a scoped product with no digest map cannot be placed: refused, never widened", got == "refused", got)
+ir = V.inspector({"statements": [scoped("CVE-H2", "not_affected", [{"@id": OURS_Q + "&variant=production", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}])]}, IMAGES, "v0.3.0")["filters"]
+check("H the Inspector rule of a variant-scoped statement carries the digests of that variant only",
+      len(ir) == 1 and {c["value"] for c in ir[0]["filterCriteria"]["ecrImageHash"]} == digs(lambda v, p: v == "production"), ir)
+cs = V.csaf({"statements": [scoped("CVE-H3", "not_affected", [{"@id": OURS_Q + "&arch=arm64", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}])]}, IMAGES, "v0.3.0")
+rel = cs["product_tree"].get("relationships", [])
+check("H the CSAF relationships of an arch-scoped statement sit on the arm64 children only", len(rel) == 2, rel)
+# the grammar table, through every reader: accepted by all or by none
+import importlib.util as _iu
+def _load(n, f):
+    sp = _iu.spec_from_file_location(n, os.path.join(root, "bin", f)); m = _iu.module_from_spec(sp); sys.path.insert(0, os.path.join(root, "bin")); sp.loader.exec_module(m); return m
+GATE, RESC = _load("gate_h", "inspector-gate.py"), _load("resc_h", "rescan-statement.py")
+PANEL = _load("panel_h", "panel.py")
+def r_gate(pid): return GATE.scope_of(pid) is not None
+def r_resc(pid):
+    try: return RESC._parse_product(pid) not in (None,) and RESC._parse_product(pid)[0] == "oci"
+    except ValueError: return False
+def r_panel(pid): return any(PANEL._covers(pid, i) for imgs in PANEL.EXPECTED.values() for i in imgs)
+def r_forms(pid):
+    try: V._scopes(scoped("CVE-H4", "not_affected", [{"@id": pid, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)); return True
+    except ValueError: return False
+BASE_Q = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+OKQ = ["", "&variant=production", "&variant=fips", "&arch=amd64", "&arch=arm64", "&variant=fips&arch=arm64", "&arch=arm64&variant=production"]
+BADQ = ["&variant=debug", "&arch=riscv64", "&variant=", "&arch", "&arch=amd64&", "&color=red&arch=amd64", "&variant=production&variant=production",
+        "&Variant=production", "&variant=%70roduction", "&arch=%61md64", "&%61rch=amd64", "&variant=production&arch=amd64&arch=arm64", "&ARCH=arm64", "&variant=Production", "#", "&variant=production#"]
+for q in OKQ + BADQ:
+    want = q in OKQ
+    got = {n: f(BASE_Q + q) for n, f in (("gate", r_gate), ("rescan", r_resc), ("panel", r_panel), ("forms", r_forms))}
+    check("H one grammar: %r is %s by every reader" % (q, "accepted" if want else "refused"), set(got.values()) == {want}, got)
+# the shared table, whole product ids (confirmation round, finding 2): none of these is accepted by ANY of the four readers (forms: refused or not a scope)
+def r_forms_scope(pid):
+    try: return bool(V._scopes(scoped("CVE-H7", "not_affected", [{"@id": pid, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)))
+    except ValueError: return False
+def r_gate_full(pid): return GATE.OUR_PRODUCTS.match(pid) is not None and GATE.scope_of(pid) is not None
+for pid in ("pkg:oci/cache?arch=amd64&repository_url=ghcr.io/fosterstack/cache", "pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache&variant=production",
+            "pkg:oci/cache?repository_url=ghcr.io%252Ffosterstack%252Fcache", "pkg:oci/ca%63he?repository_url=ghcr.io/fosterstack/cache",
+            "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache#", "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=production#"):
+    got = {"gate": r_gate_full(pid), "rescan": r_resc(pid), "panel": r_panel(pid) and GATE.OUR_PRODUCTS.match(pid) is not None, "forms": r_forms_scope(pid)}   # the panel hands its statements to vex_index, whose first filter is OUR_PRODUCTS
+    check("H whole-product table: %s is accepted by no reader" % pid, not any(got.values()), got)
+# rc-5a H review (round 1, finding 1/2): a product the gate, panel and rescan ignore must never be honoured by the forms. Three outcomes per form: accept / ignore / refuse.
+OURS_ENC = "pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache"
+for pid in ("pkg:oci/cache?arch=amd64&repository_url=ghcr.io/fosterstack/cache", OURS_ENC + "&variant=production", "pkg:oci/cache?repository_url=ghcr.io%252Ffosterstack%252Fcache",
+            "pkg:oci/ca%63he?repository_url=ghcr.io/fosterstack/cache"):
+    try:
+        got = "honoured" if V._scopes(scoped("CVE-H5", "not_affected", [{"@id": pid, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)) else "ignored"
+    except ValueError:
+        got = "refused"
+    check("H the forms never honour a product the other readers ignore: %s is %s" % (pid, got), got != "honoured", got)
+    check("H ...and for %s the gate really ignores it (OUR_PRODUCTS first)" % pid, GATE.OUR_PRODUCTS.match(pid) is None, pid)
+try:
+    V._scopes(scoped("CVE-H6", "affected", [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache&variant=fips" % sorted(ALL6)[0].replace(":", "%3A"), "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]), sorted(ALL6), META(IMAGES)); got = "accepted"
+except ValueError:
+    got = "refused"
+fips_or_not = META(IMAGES)[sorted(ALL6)[0]][0]
+check("H a pinned digest that its own variant qualifier excludes stops generation (%s digest, variant=fips)" % fips_or_not, (got == "refused") == (fips_or_not != "fips"), got)
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
