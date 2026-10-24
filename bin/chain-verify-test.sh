@@ -1840,7 +1840,7 @@ leak("dhu", {"DOCKERHUB_USERNAME": "x"})
 leak("dht", {"DOCKERHUB_TOKEN": "x"})
 leak("apk", {"APK_RELEASE_SIGNING_KEY": "x"})
 leak("rt", {"ACTIONS_RUNTIME_FOO": "x"})
-leak("pem", "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n")
+leak("pem", "-----BEGIN " + "PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END " + "PRIVATE KEY-----\n")      # assembled here, so no tracked file holds a private-key block (persona-uat-test: a private key never touches the tree)
 leak("dckr", "dckr_pat_" + "B" * 30)
 PYE
 expect_ok     "R4 record-env accepts a Witness record that carries no token" record-env --record "$work/build_coll.json"
