@@ -918,10 +918,10 @@ u = by.get("Upload the no-change state"); t = by.get("Upload the full audit trai
 run = next(s for s in steps if "auditor-run.py" in (s.get("run") or ""))
 bad = []
 r = (f or {}).get("run", "")
-for need in ("--workflow auditor.yml", "--branch main", "--status success", "--event schedule", "--event workflow_dispatch", "-n auditor-state"):
+for need in ("--workflow auditor.yml", "--branch main", "--status completed", "--event schedule", "--event workflow_dispatch", "-n auditor-state"):
     if need not in r: bad.append("fetch lacks " + need)
-if r.count("--branch main") < 3 or r.count("--status success") < 2 or r.count("--workflow auditor.yml") < 2:
-    bad.append("each auditor-state run listing must be limited to this workflow, branch main and success")
+if r.count("--branch main") < 3 or r.count("--status completed") < 2 or r.count("--workflow auditor.yml") < 2:
+    bad.append("each auditor-state run listing must be limited to this workflow, branch main and completed runs")
 if "pull_request" in r: bad.append("fetch names pull_request")
 if (f or {}).get("env", {}).get("GH_TOKEN") != "${{ github.token }}": bad.append("fetch token is not the job token")
 if "--prev-state" in run["run"]: bad.append("the run step's text changed (its sha256 is bound by the pin checker's download exception)")
@@ -4231,6 +4231,100 @@ print("OK" if not bad else "BAD "+"; ".join(bad))
 PP
 )"
 eq "$r14" "OK" && ok || no "rc-5b fix 14: refusals logged and billed, one stop issue with a stable title, budget stop silent, full counts, failed delivery incomplete, header escaped" "$r14"
+# rc-5b fix 15 (REQ-AUD-9 AC3, "a five-iteration stop"; register row 38 and the Sep 16 continuous-scanning rule "a five-iteration loop"; advisor reading, Oct 24): five CONSECUTIVE
+# auditor runs in which the same finding is still unsettled open ONE owner-decision issue (stable title, counts in the body). The counts ride in the auditor state (the no-change day's
+# artifact), a missing state is reported "counter state missing, counts restart", a corrupt state stops the run (exit 3, nothing written).
+begin "rc5b-15-five-consecutive-unsettled-runs-open-one-issue" "(a finding the model refused is in its own issue and not named twice; a count dated after today stops the run before any call) a finding the model leaves unsettled in five consecutive runs is named in ONE owner-decision issue on the fifth (never the fourth), a settled finding restarts at one, a second run on the same day does not count twice, a missing state is said in the run's output, a corrupt state stops the run"
+r15="$("$PY" - "$FXRUN" <<'PP' 2>&1 | tail -1
+import sys,os,io,contextlib,importlib.util,tempfile,json,re,subprocess,copy
+FX=sys.argv[1]; tmp=tempfile.mkdtemp()
+sys.path.insert(0,".github/agent/bin")
+spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
+fr=tempfile.mktemp(suffix=".py"); open(fr,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"refused\":True,\"token_usage\":1})+\"\\n\")\n    sys.stdout.flush()\n")
+fa=tempfile.mktemp(suffix=".py"); open(fa,"w").write("import json,sys\nfor line in sys.stdin:\n    sys.stdout.write(json.dumps({\"category\":\"under_investigation\",\"token_usage\":1})+\"\\n\")\n    sys.stdout.flush()\n")
+v0=json.load(open(FX+"/panel-mediumnofix/verdict.json"))
+def manifest(nfind, name):
+    d=tmp+"/"+name; os.makedirs(d, exist_ok=True)
+    v=copy.deepcopy(v0); f0=v["findings"][0]; fs=[]
+    for i in range(nfind):
+        f=copy.deepcopy(f0); f["id"]="CVE-2099-93%02d"%i; f["package"]="libuns%d"%i
+        f["purls"]=["pkg:deb/debian/libuns%d@1?arch=amd64&distro=debian-12.0"%i]; f["details"]["grype"]["purl"]=f["purls"][0]; fs.append(f)
+    v["findings"]=fs; v["unique"]=fs
+    json.dump(v,open(d+"/verdict.json","w"))
+    m=json.load(open(FX+"/manifest-mediumnofix.json"))
+    for s in m["scanner_reports"]: m["scanner_reports"][s]=d+"/verdict.json"
+    m["panel"]["verdict"]=d+"/verdict.json"
+    for s in m["panel"]["scanner_reports"]: m["panel"]["scanner_reports"][s]=d+"/verdict.json"
+    json.dump(m,open(d+"/m.json","w")); return d+"/m.json"
+shim=tmp+"/shim.log"; ws=tmp+"/ws"; os.makedirs(ws); os.environ["GITHUB_WORKSPACE"]=ws; os.environ["AUDITOR_GIT_SHIM_LOG"]=shim
+bad=[]
+def day(n, mp, prev, adj=None):
+    out=tempfile.mkdtemp(dir=tmp)
+    if prev: os.environ["AUDITOR_PREV_STATE"]=prev
+    else: os.environ.pop("AUDITOR_PREV_STATE",None)
+    buf=io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        R.run(mp,False,out,"2026-10-%02d"%n,adjudicator=adj or fa)
+    rep=open(out+"/report.md").read(); st=json.load(open(out+"/.auditor/auditor-state.json"))
+    return out+"/.auditor/auditor-state.json", rep, buf.getvalue(), st
+def log_count(kind):
+    t=open(shim).read() if os.path.exists(shim) else ""
+    return len([l for l in t.split("\n") if l.startswith("gh issue "+kind) and "unsettled for" in l])
+two=manifest(2,"two"); one=manifest(1,"one")
+prev=None; marks=[]
+for n in range(1,6):
+    prev, rep, out, st = day(n, two, prev)
+    miss=("counter state missing, counts restart" in rep, "counter state missing, counts restart" in out)
+    if n==1 and miss!=(True,True): bad.append("day1 missing not reported in report and output %r"%(miss,))
+    if n>1 and any(miss): bad.append("day%d reported missing"%n)
+    marks.append((n, log_count("create")))
+    ul=[l for l in rep.split("\n") if l.startswith("**Unsettled-run counts:**")]
+    if (n==5) != bool(ul and "owner-decision issue: " in ul[0]): bad.append("day%d: the aggregate issue reference on the report line %r"%(n,ul))
+    if (n==5) != ("unsettled for 5 consecutive runs" in rep.split("## 1")[0]): bad.append("day%d: the aggregate issue in the report's section 0"%n)
+    if st["unsettled"].get("CVE-2099-9300",{}).get("runs")!=n: bad.append("day%d count %r"%(n,st["unsettled"]))
+    if st["verdicts"] or st["pullability"] or st["narrative"] is not None: bad.append("day%d: an incomplete run left something reusable besides the counts (#684's rule) %r"%(n,{k:st[k] for k in ("verdicts","pullability","narrative")}))
+if [m for m in marks if m[0]<5 and m[1]]: bad.append("issue before the fifth run %r"%marks)
+if marks[-1]!=(5,1): bad.append("no single issue on the fifth run %r"%marks)
+body=[l for l in open(shim).read().split("\n") if l.startswith("gh issue create") and "unsettled for" in l]
+if not (len(body)==1 and "CVE-2099-9300" in body[0] and "CVE-2099-9301" in body[0] and "5" in body[0]): bad.append("issue body %r"%[b[:200] for b in body])
+# the same day twice does not count twice
+p5=prev
+_, rep, out, st = day(5, two, p5)
+if st["unsettled"]["CVE-2099-9300"]["runs"]!=5: bad.append("same day counted twice %r"%st["unsettled"])
+# day six: the count is six, the SAME issue is updated (stable title): still one create; the comments are the same-day rerun and day six
+prev, rep, out, st = day(6, two, p5)
+if st["unsettled"]["CVE-2099-9300"]["runs"]!=6: bad.append("day6 count")
+if (log_count("create"), log_count("comment"))!=(1,2): bad.append("title not stable: create/comment %r"%((log_count("create"),log_count("comment")),))
+# a finding that is gone (settled) restarts at one when it comes back
+prev, rep, out, st = day(7, one, prev)
+if "CVE-2099-9301" in st["unsettled"]: bad.append("settled finding kept its count")
+prev, rep, out, st = day(8, two, prev)
+if st["unsettled"]["CVE-2099-9301"]["runs"]!=1 or st["unsettled"]["CVE-2099-9300"]["runs"]!=8: bad.append("restart %r"%st["unsettled"])
+# a state that IS an auditor state with untrustworthy counts stops the run: exit 3, no report written (a file that is not an auditor state at all is the missing case: REQ-AUD-3 AC3 ignores it)
+good_doc=json.load(open(prev))
+good_doc["unsettled"]={"CVE-2099-9300":{"runs":0,"last":"2026-10-04"}}      # an auditor state whose counts cannot be trusted
+cs=tmp+"/corrupt.json"; json.dump(good_doc,open(cs,"w"))
+co=tmp+"/corrupt-out"
+r=subprocess.run([sys.executable,".github/agent/bin/auditor-run.py","--dry-run","true","--manifest",one,"--adjudicator",fa,"--out",co,"--today","2026-10-09","--prev-state",cs],capture_output=True,text=True)
+if r.returncode!=3 or os.path.exists(co+"/report.md"): bad.append("corrupt state: rc=%r report=%r"%(r.returncode,os.path.exists(co+"/report.md")))
+# a finding the model REFUSED is already in its own owner-decision issue ("could not be assessed"): the counts advance, but the aggregate names only findings in no issue this run
+prev=None; n_before=(log_count("create"), log_count("comment"))
+for n in range(11,16):
+    prev, rep, out, st = day(n, one, prev, fr)
+if st["unsettled"].get("CVE-2099-9300",{}).get("runs")!=5: bad.append("refusal: the count stopped advancing %r"%st["unsettled"])
+if (log_count("create"), log_count("comment"))!=n_before: bad.append("refusal: the aggregate issue names a finding already in an owner issue")
+# a previous count dated after today stops the run before any model call or mutating call: exit 3, nothing written, the mutation ledger unchanged
+fe=tempfile.mktemp(suffix=".py"); open(fe,"w").write("import sys\nsys.exit(1)\n")
+fut=json.load(open(prev)); fut["unsettled"]={"CVE-2099-9300":{"runs":1,"last":"2099-01-01"}}
+fs=tmp+"/future.json"; json.dump(fut,open(fs,"w"))
+led=open(shim).read(); fo=tmp+"/future-out"
+r=subprocess.run([sys.executable,".github/agent/bin/auditor-run.py","--manifest",one,"--adjudicator",fe,"--out",fo,"--today","2026-10-23","--prev-state",fs],capture_output=True,text=True)
+if r.returncode!=3 or os.path.exists(fo+"/report.md") or open(shim).read()!=led: bad.append("future-dated count: rc=%r report=%r ledger-changed=%r"%(r.returncode,os.path.exists(fo+"/report.md"),open(shim).read()!=led))
+print("OK" if not bad else "BAD "+"; ".join(bad))
+PP
+)"
+eq "$r15" "OK" && ok || no "rc-5b fix 15: five consecutive unsettled runs open one stable-titled issue, restart on settle, say a missing state, stop on a corrupt one" "$r15"
+
 begin "req18-suite-leaves-checkout-untouched" "the suite writes only under its temp dir: the checkout's git status is identical before and after (a case once rewrote the real .vex/.snyk/.auditor)"
 REPO_STATE1="$(git status --porcelain --untracked-files=all 2>/dev/null)"
 # rc-5b fix 5 (A3, Fable): a carried VEX statement that our own VEX hides from Inspector/Google (the tally's vex_covered entries) is re-judged every run; one that NO scanner reports is

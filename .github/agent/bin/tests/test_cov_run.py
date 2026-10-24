@@ -649,6 +649,16 @@ class PurlVersion(unittest.TestCase):
         self.assertIsNone(R._ver_from_purl(None))
 
 
+class NeedsHuman(unittest.TestCase):
+    def test_the_unsettled_run_issue_is_a_section_zero_item_and_a_failed_one_is_said(self):
+        none = {n: [] for n in range(1, 8)}
+        self.assertEqual(R._needs_human([], none, True, None, "ok"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "dry"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "skipped"), [])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "#12"), ["owner-decision needed: findings unsettled for 5 consecutive runs — #12"])
+        self.assertEqual(R._needs_human([], none, True, None, "ok", "FAILED"), ["owner-decision issue FAILED to open: findings unsettled for 5 consecutive runs"])
+
+
 class ResolveCarried(unittest.TestCase):
     def test_a_statement_without_a_vulnerability_name_is_skipped(self):
         """a carried statement that names no vulnerability cannot match a flagged entry, and is never reported as not re-checkable"""

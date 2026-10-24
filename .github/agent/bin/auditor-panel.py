@@ -21,7 +21,7 @@ environment's secrets (rule 8(b), rule 14, REQ-AUD-6 AC1).
 import argparse, copy, datetime, hashlib, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from auditorlib import parsers, policy, signed_commit  # noqa: E402
+from auditorlib import parsers, policy, reviewed, signed_commit  # noqa: E402
 
 SEATS = ("A", "B")
 DEBATE_ROUNDS = (2, 3, 4)
@@ -85,8 +85,14 @@ def key_of(f):
 
 def validate_profiles(doc):
     errs = []
-    for i, e in enumerate((doc or {}).get("entries") or []):
+    entries = (doc or {}).get("entries") or []
+    if not isinstance(entries, list):
+        return ["entries is not a list"]
+    for i, e in enumerate(entries):
         where = "entry %d" % i
+        if not isinstance(e, dict):
+            errs.append("%s: is not an object" % where)
+            continue
         if e.get("scanner") not in SCANNERS:
             errs.append("%s: scanner %r is not one of %s" % (where, e.get("scanner"), ", ".join(SCANNERS)))
         if e.get("kind") not in KINDS:
@@ -94,7 +100,14 @@ def validate_profiles(doc):
         for k in ("behavior", "finding", "evidence"):
             if not str(e.get(k) or "").strip():
                 errs.append("%s: no %s (an entry cites the finding and the evidence from the image)" % (where, k))
-        pat = (e.get("match") or {}).get("package")
+        match = e.get("match")
+        if match is not None and not isinstance(match, dict):
+            errs.append("%s: match is not an object" % where)
+            continue
+        pat = (match or {}).get("package")
+        if pat is not None and not isinstance(pat, str):
+            errs.append("%s: match.package is not text" % where)
+            continue
         if e.get("kind") == "sees_alone" and not pat:
             errs.append("%s: a sees_alone entry needs match.package" % where)
         if pat:
@@ -102,6 +115,51 @@ def validate_profiles(doc):
                 re.compile(pat)
             except re.error as x:
                 errs.append("%s: match.package is not a regular expression (%s)" % (where, x))
+    return errs
+
+
+def validate_state(doc):
+    """The members of the panel state's lists, which the judge indexes and scores: checked before any seat is asked, so a damaged entry is a named stop and not a crash after the
+    model spend. Extra metadata is allowed (cache#707, B4). Returns the errors."""
+    errs = []
+    def text(e, k, where, required=True, empty=False):
+        v = e.get(k)
+        if v is None and not required:
+            return
+        if not isinstance(v, str) or (required and not empty and not v.strip()):
+            errs.append("%s: %r is missing or is not text" % (where, k))
+    for lst in ("false", "real", "debates"):
+        if not isinstance(doc.get(lst) or [], list):
+            errs.append("%s: is not a list" % lst)
+            continue
+        for i, e in enumerate(doc.get(lst) or []):
+            where = "%s %d" % (lst, i)
+            if not isinstance(e, dict):
+                errs.append("%s: is not an object" % where)
+                continue
+            for k in ("image", "id", "package"):
+                text(e, k, where)
+            text(e, "version", where, empty=True)          # the scanners' unknown version is the empty string, and the panel writes it
+            for k in ("seen_by", "purls"):
+                if k in e and not (isinstance(e[k], list) and all(isinstance(x, str) for x in e[k])):
+                    errs.append("%s: %r is not a list of text" % (where, k))
+            for k in ("last_seen", "since", "on"):
+                text(e, k, where, required=False)
+            if "vex" in e and not isinstance(e["vex"], bool):
+                errs.append("%s: 'vex' is not true or false" % where)
+            if lst != "debates":
+                continue
+            if not (isinstance(e.get("sides"), dict) and all(isinstance(v, str) for v in e["sides"].values())):
+                errs.append("%s: 'sides' is missing or is not an object of text" % where)
+            settled = e.get("settled")
+            if settled is not None and not (isinstance(settled, dict) and settled.get("truth") in ("real", "false")):
+                errs.append("%s: 'settled' is neither null nor an object with truth real or false" % where)
+            if "outcome" in e and not isinstance(e["outcome"], str):
+                errs.append("%s: 'outcome' is not text" % where)
+            if e.get("prevailing") not in (None, "A", "B"):
+                errs.append("%s: 'prevailing' is not A or B" % where)
+            if not (e.get("installed_then") is None or isinstance(e.get("installed_then"), bool)):      # a real boolean: 1 is not true (the settlement tests `is True`)
+                errs.append("%s: 'installed_then' is not true, false or null" % where)
     return errs
 
 
@@ -957,6 +1015,12 @@ def make_seats(mode, env=os.environ, a=seat_a, b=seat_b, retries=None):
 
 # ------------------------------------------------------------------------------------------------ commands
 
+# The required content of the panel's two persistent inputs (rc-5b fix 13; cache#701 ruling, row 5), read through the shared reader: a PRESENT file without it is a stop, never a fresh start
+# or zero profiles. They live here, not in auditorlib/reviewed.py, because the CVE auditor's library never names the panel's state (REQ-SCAN-014-AC3).
+SPECS = {
+    "panel-state.json": (("version", ("int", 1)), ("false", "objects"), ("real", "objects"), ("debates", "objects"), ("scores", ("ints", ("A", "B"))), ("seat", ("choice", ("A", "B")))),
+    "scanner-profiles.json": (("entries", "objects"),),
+}
 STATE = ".auditor/panel-state.json"
 PROFILES = ".github/policy/scanner-profiles.json"
 VEX = ".vex/fosterstack-cache.openvex.json"
@@ -1026,13 +1090,24 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
     except (parsers.ParseError, ValueError, OSError) as e:
         sys.stderr.write("::error::auditor-panel: the rescan run has no panel verdict (%s: %s); nothing was judged\n" % (a.verdict, e))
         return 2
-    state = _load_json(a.state) or new_state()
-    profiles = _load_json(a.profiles, {"entries": []})
+    try:
+        state = reviewed.read(a.state, spec=SPECS["panel-state.json"]) or new_state()      # absent = the first run; a PRESENT state without its content is a stop, never a fresh start
+        profiles = reviewed.read(a.profiles, spec=SPECS["scanner-profiles.json"])
+        if profiles is None:
+            raise reviewed.ReviewedInputInvalid("%s does not exist: the scanner profiles are checked-in policy, so an absent file means the tree is wrong" % a.profiles)
+    except reviewed.ReviewedInputInvalid as e:
+        sys.stderr.write("::error::auditor-panel: %s; nothing was judged\n" % e)
+        return 3
+    bad = validate_state(state)
+    if bad:
+        for e in bad:
+            sys.stderr.write("::error::panel state %s: %s; nothing was judged\n" % (a.state, e))
+        return 3
     errs = validate_profiles(profiles)
     if errs:
         for e in errs:
-            sys.stderr.write("::error::scanner profiles: %s\n" % e)
-        return 2
+            sys.stderr.write("::error::scanner profiles: %s; nothing was judged\n" % e)
+        return 3
     rescan, why = rescan_binding(a.rescan, a.oci)
     if why:
         sys.stderr.write("::error::auditor-panel: %s; nothing was judged\n" % why)
@@ -1145,19 +1220,89 @@ def statement_id(v):
     return policy.scope_id(v["id"], policy.VEX_PRODUCT, vex_subcomponents(v.get("purls")) or v.get("purls") or [])
 
 
+def validate_vex(doc):
+    """The fields of a published VEX the delivery reads and rewrites (statement @id, version, timestamp): checked before any write (cache#707, B4). Returns the errors."""
+    errs = []
+    if "version" in doc and not (type(doc["version"]) is int):
+        errs.append("'version' is not an integer")
+    if "timestamp" in doc and not isinstance(doc["timestamp"], str):
+        errs.append("'timestamp' is not text")
+    for i, s in enumerate(doc.get("statements") or []):
+        if not isinstance(s, dict):
+            errs.append("statement %d: is not an object" % i)
+        elif "@id" in s and not isinstance(s["@id"], str):
+            errs.append("statement %d: '@id' is not text" % i)
+    return errs
+
+
+def validate_day(day):
+    """The run-written day.json the delivery consumes (the issue text, the VEX proposals, the profile proposals, the owner items): checked before anything is fetched or written."""
+    errs = []
+    if not isinstance(day.get("issue"), str):
+        errs.append("day: 'issue' is missing or is not text")
+    for k in ("vex", "profiles", "owner"):                       # what the delivery consumes (misses and log are the report's)
+        if not isinstance(day.get(k), list):
+            errs.append("day: %r is missing or is not a list" % k)
+    for k in ("misses", "log"):
+        if k in day and not isinstance(day[k], list):
+            errs.append("day: %r is not a list" % k)
+    if not (isinstance(day.get("owner"), list) and all(isinstance(x, str) for x in day["owner"])):
+        errs.append("day: 'owner' is not a list of text")
+    for i, v in enumerate(day.get("vex") if isinstance(day.get("vex"), list) else []):
+        if not isinstance(v, dict):
+            errs.append("day vex %d: is not an object" % i)
+            continue
+        for k in ("id", "impact_statement"):
+            if not isinstance(v.get(k), str) or not v[k].strip():
+                errs.append("day vex %d: %r is missing or is not text" % (i, k))
+        if v.get("status") not in ("not_affected", "affected"):
+            errs.append("day vex %d: 'status' is neither not_affected nor affected" % i)
+        if "purls" in v and not (isinstance(v["purls"], list) and all(isinstance(x, str) for x in v["purls"])):
+            errs.append("day vex %d: 'purls' is not a list of text" % i)
+    errs += ["day profiles: " + e for e in validate_profiles({"entries": day["profiles"]})] if isinstance(day.get("profiles"), list) else []
+    return errs
+
+
+def check_delivery_inputs(root, day, st=None):
+    """The checkout's state, VEX and profiles, validated with the shared rules before anything is fetched, checked out, written or published (cache#707, B2). An absent state is the
+    first delivery; absent profiles are a stop (checked-in policy); an absent VEX is a stop when the day proposes VEX statements. Raises ReviewedInputInvalid."""
+    if st is not None:                                                # the judgment's own outputs of this run (out/state.json, out/day.json) are checked like any other input
+        if not isinstance(st, dict):
+            raise reviewed.ReviewedInputInvalid("state.json of this run is not a JSON object")
+        reviewed.check(st, "state.json of this run", spec=SPECS["panel-state.json"])
+        bad = validate_state(st)
+        if bad:
+            raise reviewed.ReviewedInputInvalid("state.json of this run: %s" % "; ".join(bad))
+    bad = validate_day(day)
+    if bad:
+        raise reviewed.ReviewedInputInvalid("day.json of this run: %s" % "; ".join(bad))
+    _main_state_text(root)
+    prof = reviewed.read(os.path.join(root, PROFILES), spec=SPECS["scanner-profiles.json"])
+    if prof is None:
+        raise reviewed.ReviewedInputInvalid("%s does not exist: the scanner profiles are checked-in policy, so an absent file means the tree is wrong" % os.path.join(root, PROFILES))
+    errs = validate_profiles(prof)
+    if errs:
+        raise reviewed.ReviewedInputInvalid("%s: %s" % (PROFILES, "; ".join(errs)))
+    vdoc = reviewed.read(os.path.join(root, VEX))
+    if vdoc is None and day.get("vex"):
+        raise reviewed.ReviewedInputInvalid("%s does not exist but the day proposes VEX statements" % os.path.join(root, VEX))
+    if vdoc is not None and validate_vex(vdoc):
+        raise reviewed.ReviewedInputInvalid("%s: %s" % (VEX, "; ".join(validate_vex(vdoc))))
+
+
 def apply_files(root, st, day, today):
     """Write the day's state, VEX proposals and profile proposals into the checkout; returns the changed paths."""
     changed = []
     path = os.path.join(root, STATE)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    if _load_json(path) != st:
+    if reviewed.read(path, spec=SPECS["panel-state.json"]) != st:
         with open(path, "w") as fh:
             json.dump(st, fh, indent=1, sort_keys=True)
             fh.write("\n")
         changed.append(STATE)
     if day["vex"]:
         vpath = os.path.join(root, VEX)
-        doc = _load_json(vpath)
+        doc = reviewed.read(vpath)
         ts = "%sT00:00:00Z" % today
         for v in day["vex"]:
             sid = statement_id(v)
@@ -1186,7 +1331,7 @@ def apply_files(root, st, day, today):
             fh.write("\n")
         changed.append(VEX)
     ppath = os.path.join(root, PROFILES)
-    prof = _load_json(ppath) if day["profiles"] else None
+    prof = reviewed.read(ppath, spec=SPECS["scanner-profiles.json"]) if day["profiles"] else None
     key = lambda e: (e.get("scanner"), e.get("kind"), (e.get("match") or {}).get("package"))
     # never twice: an entry the file (or its open PR) already holds is skipped
     new = [e for e in day["profiles"] if prof is not None and key(e) not in {key(x) for x in prof["entries"]}]
@@ -1223,6 +1368,48 @@ def _require_app_tip(repo, tip, plan, real, run):
                            % (tip[:12], verdict))
 
 
+def _checked_state_text(text, where):
+    """A state document read as text (git show): it must be a JSON object that passes the panel's rules; returns the text."""
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        raise reviewed.ReviewedInputInvalid("%s: the panel state of %s is not JSON" % (STATE, where))
+    if not isinstance(doc, dict):
+        raise reviewed.ReviewedInputInvalid("%s: the panel state of %s is not a JSON object" % (STATE, where))
+    reviewed.check(doc, "%s of %s" % (STATE, where), spec=SPECS["panel-state.json"])
+    bad = validate_state(doc)
+    if bad:
+        raise reviewed.ReviewedInputInvalid("%s of %s: %s" % (STATE, where, "; ".join(bad)))
+    return text
+
+
+def _main_state_text(repo):
+    """main's state file as text, or None on the first day. The reader owns existence (lstat): a dangling link or an unreachable file is a stop."""
+    path = os.path.join(repo, STATE)
+    doc = reviewed.read(path, spec=SPECS["panel-state.json"])
+    if doc is None:
+        return None
+    bad = validate_state(doc)
+    if bad:
+        raise reviewed.ReviewedInputInvalid("%s: %s" % (path, "; ".join(bad)))
+    with open(path) as fh:
+        return fh.read()
+
+
+def _stops_on_damaged_input(fn):
+    """The panel's commands answer a damaged reviewed or persistent input with a named ::error:: and exit 3, before anything is written or published."""
+    def run(*a, **k):
+        try:
+            return fn(*a, **k)
+        except reviewed.ReviewedInputInvalid as e:
+            sys.stderr.write("::error::auditor-panel: %s; nothing was written or published\n" % e)
+            return 3
+    run.__name__ = fn.__name__
+    run.__doc__ = fn.__doc__
+    return run
+
+
+@_stops_on_damaged_input
 def cmd_state_source(a, run=subprocess.run):
     """Yesterday's judgments for the judge: the open panel PR's branch if there is one (same repository, and its tip PASSED the reserved-branch guard), else main's
     file. The exact commit read is recorded, and the delivery refuses to carry anything from a different tip (a human push between judgment and delivery)."""
@@ -1235,22 +1422,22 @@ def cmd_state_source(a, run=subprocess.run):
         tip = _sh(["git", "-C", a.repo, "rev-parse", "FETCH_HEAD"], plan, True, run).strip()
         _require_app_tip(a.repo, tip, plan, True, run)
         if _sh(["git", "-C", a.repo, "ls-tree", "FETCH_HEAD", "--", STATE], plan, True, run).strip():
-            text = _sh(["git", "-C", a.repo, "show", "FETCH_HEAD:" + STATE], plan, True, run)
+            text = _checked_state_text(_sh(["git", "-C", a.repo, "show", "FETCH_HEAD:" + STATE], plan, True, run), "the open PR's branch")
         # main's own state must not have moved since the PR's base (someone merged a newer state): continuing from the PR's older one would publish a regression
         _sh(["git", "-C", a.repo, "fetch", "--no-tags", "--depth=1000", "origin", "main"], plan, True, run, check=False)
         mb = _sh(["git", "-C", a.repo, "merge-base", tip, "HEAD"], plan, True, run).strip()
-        main_file = os.path.join(a.repo, STATE)
-        main_text = open(main_file).read() if os.path.exists(main_file) else ""
+        main_text = _main_state_text(a.repo) or ""
         base_text = _sh(["git", "-C", a.repo, "show", "%s:%s" % (mb, STATE)], plan, True, run) if mb and _sh(["git", "-C", a.repo, "ls-tree", mb, "--", STATE], plan, True, run).strip() else ""
         if mb and main_text != base_text and main_text != (text or ""):
             raise RuntimeError("auditor-panel: main's panel state changed since the open PR's base, and the PR's older state would overwrite it; close the PR so the next run starts from main")
     where = "the open panel PR #%s" % existing
     if text is None:
-        main_file = os.path.join(a.repo, STATE)
-        text = open(main_file).read() if os.path.exists(main_file) else None
+        text = _main_state_text(a.repo)
         where = "main" if text is not None else "none (the first day)"
-    if os.path.exists(a.state):
+    try:
         os.remove(a.state)
+    except FileNotFoundError:
+        pass
     if text is not None:
         with open(a.state, "w") as fh:
             fh.write(text)
@@ -1279,6 +1466,48 @@ def _later(a, b):
 
 def _conflict(path, why):
     return RuntimeError("auditor-panel: %s: the open PR and main both changed %s since the PR's base (conflict); refusing to pick a winner" % (path, why))
+
+
+def _checked_doc(text, path, where, rel):
+    """A VEX or profiles document read as text from git: JSON, an object, and the shared rules of its file (cache#707, B2); the parsed document."""
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        raise reviewed.ReviewedInputInvalid("%s of %s is not JSON" % (path, where))
+    if not isinstance(doc, dict):
+        raise reviewed.ReviewedInputInvalid("%s of %s is not a JSON object" % (path, where))
+    reviewed.check(doc, "%s of %s" % (path, where), spec=SPECS["scanner-profiles.json"] if rel == PROFILES else None, as_name="x.openvex.json")
+    bad = validate_profiles(doc) if rel == PROFILES else validate_vex(doc)
+    if bad:
+        raise reviewed.ReviewedInputInvalid("%s of %s: %s" % (path, where, "; ".join(bad)))
+    return doc
+
+
+def check_carried_documents(repo, ref, base_ref, pr_files, plan, real, run):
+    """The documents carry_forward will merge, validated BEFORE the checkout moves anything: the open PR's branch, the PR's base and main's working copy (VEX and profiles). A document that is
+    present but empty is invalid (absent is not): the distinction is made by the tree, not by the text (cache#707 round 2). Raises ReviewedInputInvalid."""
+    if not real:
+        return
+    def in_tree(r, path):
+        return bool(_sh(["git", "-C", repo, "ls-tree", r, "--", path], plan, real, run).strip())
+    for path in sorted(set(pr_files)):
+        if path not in (VEX, PROFILES):
+            continue
+        pr_here, base_here = in_tree(ref, path), bool(base_ref) and in_tree(base_ref, path)
+        if not pr_here:
+            continue                                       # the PR does not hold it (a deletion is carry_forward's conflict, loud there)
+        pr_txt = _sh(["git", "-C", repo, "show", "%s:%s" % (ref, path)], plan, real, run)
+        base_txt = _sh(["git", "-C", repo, "show", "%s:%s" % (base_ref, path)], plan, real, run) if base_here else None
+        cur = os.path.join(repo, path)
+        cur_txt = open(cur).read() if os.path.lexists(cur) else None
+        if pr_txt == base_txt or pr_txt == cur_txt:
+            continue                                       # untouched by the PR, or already on main: not merged
+        _checked_doc(pr_txt, path, "the open PR's branch", path)
+        if base_txt is not None:
+            _checked_doc(base_txt, path, "the PR's base", path)
+        if cur_txt is None:
+            raise reviewed.ReviewedInputInvalid("%s does not exist in the checkout but the open PR changes it" % cur)
+        _checked_doc(cur_txt, path, "main", path)
 
 
 def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
@@ -1315,7 +1544,8 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
         if cur_txt == pr_txt:
             continue                                   # main already has exactly this
         if path == VEX:
-            pr_doc, base_doc, cur_doc = json.loads(pr_txt), json.loads(base_txt or '{"statements": []}'), json.loads(cur_txt)
+            pr_doc, base_doc, cur_doc = (_checked_doc(pr_txt, path, "the open PR's branch", VEX), _checked_doc(base_txt or '{"statements": []}', path, "the PR's base", VEX),
+                                         _checked_doc(cur_txt, path, "main", VEX))
             # a statement is known by its @id; the hand-written ones in the real file have none, so they are known by their whole content
             # (never all collapsed onto one key: that once overwrote a published statement with another CVE's)
             ident = lambda x: x.get("@id") or json.dumps(x, sort_keys=True)
@@ -1344,7 +1574,8 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
                 write(path, json.dumps(cur_doc, indent=2) + "\n")
                 carried.append(path)
         elif path == PROFILES:
-            pr_doc, base_doc, cur_doc = json.loads(pr_txt), json.loads(base_txt or '{"entries": []}'), json.loads(cur_txt)
+            pr_doc, base_doc, cur_doc = (_checked_doc(pr_txt, path, "the open PR's branch", PROFILES), _checked_doc(base_txt or '{"entries": []}', path, "the PR's base", PROFILES),
+                                         _checked_doc(cur_txt, path, "main", PROFILES))
             key = lambda e: (e.get("scanner"), e.get("kind"), (e.get("match") or {}).get("package"))
             for doc_ in (pr_doc, base_doc, cur_doc):
                 ks = [key(e) for e in doc_["entries"]]
@@ -1374,6 +1605,7 @@ def carry_forward(repo, ref, base_ref, pr_files, plan, real, run):
     return carried
 
 
+@_stops_on_damaged_input
 def cmd_deliver(a, run=subprocess.run):
     """Rule 0: the day's changes reach main only through a pull request from the auditor lane's branch; the tracking
     issue (rule 5) and the owner report (rules 8, 9, 14) are issues. Real git/gh only with AUDITOR_ALLOW_REAL_GH=1
@@ -1383,6 +1615,7 @@ def cmd_deliver(a, run=subprocess.run):
     if st is None or day is None:
         sys.stderr.write("::error::auditor-panel: nothing to deliver (no judgment in %s)\n" % a.out)
         return 2
+    check_delivery_inputs(a.repo, day, st)     # BEFORE the tip check, the disarm and the checkout: a damaged state, VEX or profiles file stops the delivery here
     real = (not a.dry_run) and os.environ.get("AUDITOR_ALLOW_REAL_GH") == "1"
     plan, branch, notes = [], "auditor/panel", []
     # the base is ALWAYS the main commit this run is on (advisor 0186): a branch that builds on the open PR's old tip stays on the day it was first
@@ -1410,6 +1643,7 @@ def cmd_deliver(a, run=subprocess.run):
     if existing and real:
         if pr_files:
             _require_app_tip(a.repo, tip, plan, real, run)
+        check_carried_documents(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run)       # BEFORE the checkout below moves anything
     _sh(["git", "-C", a.repo, "checkout", "--force", "-B", branch, base], plan, real, run)
     carried = carry_forward(a.repo, "FETCH_HEAD", merge_base, pr_files, plan, real, run) if existing and merge_base else []
     changed = list(carried)
