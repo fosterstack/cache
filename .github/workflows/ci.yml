@@ -319,7 +319,7 @@ jobs:
       - name: the pin check's wiring cannot be skipped or weakened (REQ-REL-005-AC1)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pin-wiring-test.sh .github/agent/tests/pin-wiring-test.sh
       - name: the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)
-        run: bash .github/agent/tests/pip-pin-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pip-pin-test.sh .github/agent/tests/pip-pin-test.sh
       - name: the documented Gradle and Maven snippets have the structure acceptance runs, and the Kubernetes reset order
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json docs-snippets-test.sh .github/agent/tests/docs-snippets-test.sh
 
@@ -811,11 +811,11 @@ jobs:
       - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json k8s-harness-fence-test.sh .github/agent/tests/k8s-harness-fence-test.sh
       - name: the pin age check — 7 days by a server-side time, named per moved version (REQ-SUP-001 AC2, AC3)
-        run: bash .github/agent/tests/pin-age-check-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pin-age-check-test.sh .github/agent/tests/pin-age-check-test.sh
       - name: the daily supply-chain audit — advisories, upstream, disputed hits with checked-in exceptions, held-PR re-runs (REQ-SUP-001 AC5-AC10)
-        run: bash .github/agent/tests/pin-audit-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pin-audit-test.sh .github/agent/tests/pin-audit-test.sh
       - name: where the supply-chain checks run — Dependabot cooldown, the PR job's read-only token, one writer per job (REQ-SUP-001 AC1, AC4, AC6)
-        run: bash .github/agent/tests/supply-chain-wiring-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json supply-chain-wiring-test.sh .github/agent/tests/supply-chain-wiring-test.sh
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must

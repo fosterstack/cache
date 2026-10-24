@@ -221,7 +221,7 @@ expect 1 "REQ-CI-005-AC3 run: a counted suite that lost cases (below its floor) 
 expect 1 "REQ-CI-005-AC3 run: a counted suite that prints no count fails its step" "no case count" -- run "$work/rc.json" silent "$work/s/silent.sh"
 
 # REQ-CI-005 on the real tree and the rulings of the audit record (cache#679 round 3, items 1 to 5)
-# (1) the real ci.yml: every floored suite that has its own step is counted by it; the residual `all` runs is exactly twelve suites: those whose own tests need the plain `bash PATH` step, and those with no step of their own
+# (1) the real ci.yml: every floored suite that has its own step is counted by it; the residual the all step runs is exactly eight suites: those whose own tests need the plain `bash PATH` step, and those with no step of their own
 real=$(cd "$root" && python3 -I - <<'PY'
 import importlib.util, json
 sp = importlib.util.spec_from_file_location("r", "bin/suite-guard-run.py"); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
@@ -231,10 +231,13 @@ rest = names - set(got)
 print(bad, len(rest))
 PY
 )
-if [ "$real" = "0 12" ]; then ok "REQ-CI-005-AC1 the real ci.yml: every floored suite with its own step is counted by it; exactly twelve stay in the residual (run by `all`)"; else bad "real ci.yml residual (bad, residual): $real"; fi
+if [ "$real" = "0 8" ]; then ok "REQ-CI-005-AC1 the real ci.yml: every floored suite with its own step is counted by it; exactly eight stay in the residual (run by the all step)"; else bad "real ci.yml residual (bad, residual): $real"; fi
 # (2) two counting steps for one suite: refused
 cwf "" "$CNT a-test.sh bin/a-test.sh" "$CNT a-test.sh bin/a-test.sh"
 out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'more than one counting step' <<< "$out"; then ok "REQ-CI-005-AC1 all: two counting steps for one suite are refused (the suite would run twice)"; else bad "duplicate counting step: rc=$rc ${out:0:200}"; fi
+# (2b) the same, the first counting step untrusted (an env key) and the second trusted: still refused, whatever the order
+cwf "" "$CNT a-test.sh bin/a-test.sh|env: {A: b}" "$CNT a-test.sh bin/a-test.sh"
+out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'more than one counting step' <<< "$out"; then ok "REQ-CI-005-AC1 all: two counting steps for one suite are refused even when the first is untrusted"; else bad "duplicate, untrusted first: rc=$rc ${out:0:200}"; fi
 # (3) a counting step in a job that is not a required check, nor needed by one: not trusted, the suite is still run by `all`
 printf '{"required_checks": [{"context": "other", "integration_id": 15368, "scope": "push"}]}\n' > "$work/cw/.github/policy/required-checks.json"
 cwf "" "$CNT a-test.sh bin/a-test.sh"
@@ -252,7 +255,7 @@ out=$(cwall) && rc=0 || rc=$?; if [ "$rc" != 0 ] && ! grep -q Traceback <<< "$ou
 cwf "" "bash bin/a-test.sh"
 out=$(cwall) || true; if ! grep -q 'x: 60 passed' <<< "$out" && grep -q 'a-test.sh: count 60' <<< "$out"; then ok "REQ-CI-005-AC1 all: the suites it runs are counted, their own output is not reprinted"; else bad "all echoes suites: ${out:0:200}"; fi
 
-EXPECT=98
+EXPECT=99
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]

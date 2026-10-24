@@ -110,7 +110,7 @@ def counting_steps(root, floors, names):
     except Exception as e:
         die("%s cannot be read as a workflow (%s)" % (wf, e))
     required = required_contexts(root)
-    got, bad = {}, 0
+    got, bad, seen = {}, 0, {}
     for jname, job in jobs.items():
         if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
             continue
@@ -132,15 +132,16 @@ def counting_steps(root, floors, names):
                     bad = 1
                     continue
                 fl, name, path = m.groups()
+                seen[name] = seen.get(name, 0) + 1
+                if seen[name] == 2:     # every counting line counts, trusted or not and in whatever order: a suite with two of them would run twice
+                    print("suite-guard: the suite %s has more than one counting step (it would run twice)" % name, file=sys.stderr)
+                    bad = 1
                 if fl != floors or name not in names or os.path.basename(path) != name:
                     print("suite-guard: job %s: the counting step %r names a floors file other than %s, an unfloored suite, or a NAME that is not the file name of its PATH" % (jname, line.strip(), floors), file=sys.stderr)
                     bad = 1
                     continue
                 if len(lines) != 1:
                     print("suite-guard: job %s: the counting line %r is not the whole of its step" % (jname, line.strip()), file=sys.stderr)
-                    bad = 1
-                elif name in got:
-                    print("suite-guard: the suite %s has more than one counting step (it would run twice)" % name, file=sys.stderr)
                     bad = 1
                 elif plain_job and gated and set(st) <= {"name", "run"}:
                     got[name] = os.path.normpath(path)

@@ -946,7 +946,7 @@ for r in "bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh" "bash b
   case_ "$n-twice"       bad "$csteps.append(dict($cs))"
 done
 # the two suite-floor guard steps (an `if` or an `env` on purpose): every key and value is judged
-for g in "floors-vs-base" "suite-guard-run.py"; do
+for g in "floors-vs-base" "suite-guard-run.py all"; do
   csteps="d[\"jobs\"][\"$(shard_of has "$g")\"][\"steps\"]"; gs="[s for s in $csteps if '$g' in (s.get('run') or '')][0]"
   case_ "guard-$g-removed"  bad "$csteps[:] = [s for s in $csteps if '$g' not in (s.get('run') or '')]"
   case_ "guard-$g-if"       bad "$gs['if'] = 'false'"
