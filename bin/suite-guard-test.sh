@@ -221,7 +221,7 @@ expect 1 "REQ-CI-005-AC3 run: a counted suite that lost cases (below its floor) 
 expect 1 "REQ-CI-005-AC3 run: a counted suite that prints no count fails its step" "no case count" -- run "$work/rc.json" silent "$work/s/silent.sh"
 
 # REQ-CI-005 on the real tree and the rulings of the audit record (cache#679 round 3, items 1 to 5)
-# (1) the real ci.yml (REQ-CI-005-AC5): the suites `all` runs itself are exactly the ones the AC names; every other floored suite is counted by its own step
+# (1) the real ci.yml (REQ-CI-005-AC5): the suites `all` runs itself are exactly the ones the AC names, each with the number of runs the AC states (its plain steps plus `all`'s one); every other floored suite is counted by its own step
 real=$(cd "$root" && python3 -I - <<'PY'
 import importlib.util, json, re, yaml
 sp = importlib.util.spec_from_file_location("r", "bin/suite-guard-run.py"); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
@@ -229,11 +229,13 @@ names = set(json.load(open("test-evidence/suite-floors.json")))
 got, bad = m.counting_steps(".", "test-evidence/suite-floors.json", names)
 rest = names - set(got)
 ac = next(a for r in yaml.safe_load(open("requirements/requirements.yaml"))["requirements"] if r["id"] == "REQ-CI-005" for a in r["acceptance_criteria"] if a["id"] == "REQ-CI-005-AC5")
-pinned = set(re.findall(r"[a-z0-9-]+-test\.sh", ac["then"]))
-print("ok" if bad == 0 and rest == pinned and len(pinned) == 8 else "bad %s only-run %s only-pinned %s" % (bad, sorted(rest - pinned), sorted(pinned - rest)))
+pinned = {n: int(k) for n, k in re.findall(r"([a-z0-9-]+-test\.sh) \((\d) runs?", ac["then"])}
+ci = [l for l in open(".github/workflows/ci.yml").read().splitlines() if not l.lstrip().startswith("#")]
+actual = {n: sum(1 for l in ci if re.search(r"\bbash [./A-Za-z0-9_-]*/%s\b" % re.escape(n), l)) + 1 for n in rest}
+print("ok" if bad == 0 and rest == set(pinned) and len(pinned) == 8 and actual == pinned else "bad %s residual %s pinned %s actual %s" % (bad, sorted(rest), pinned, actual))
 PY
 )
-if [ "$real" = "ok" ]; then ok "REQ-CI-005-AC5 the real ci.yml: all runs itself exactly the eight suites the AC names; every other floored suite is counted by its own step"; else bad "real ci.yml residual: $real"; fi
+if [ "$real" = "ok" ]; then ok "REQ-CI-005-AC5 the real ci.yml: all runs itself exactly the eight suites the AC names, each run as many times as the AC states; every other floored suite is counted by its own step"; else bad "real ci.yml residual: $real"; fi
 # (2) two counting steps for one suite: refused
 cwf "" "$CNT a-test.sh bin/a-test.sh" "$CNT a-test.sh bin/a-test.sh"
 out=$(cwall) && rc=0 || rc=$?; if [ "$rc" = 1 ] && grep -q 'more than one counting step' <<< "$out"; then ok "REQ-CI-005-AC1 all: two counting steps for one suite are refused (the suite would run twice)"; else bad "duplicate counting step: rc=$rc ${out:0:200}"; fi
