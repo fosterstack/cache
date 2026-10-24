@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC17, REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6, REQ-REL-010-AC1, REQ-REL-010-AC2, REQ-REL-010-AC3, REQ-REL-010-AC4, REQ-REL-010-AC5, REQ-CHAIN-004-AC16 — the flags; PR 1's verify cases cover the identity
-# Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain_items.py (bind, items-apk,
+# Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed-local.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
 # Build and Rebuild: the shape of the two stage files, the four stage scripts, the one Witness helper, the job graph of release.yml and what the
@@ -18,7 +18,7 @@
 #   bin/build-stage-assemble.sh); stage-reproducibility.yml: the same two jobs (bin/build-stage-rebuild-apk.sh and -rebuild-assemble.sh). Four scripts,
 #   so there is no dispatch to analyse, each a row of .github/policy/chain-scripts.json with its sha256 (PR 1's design).
 #   Each job: checkout -> ./bin/install-scanner.sh witness -> the downloads (exact name and path, each into a fresh directory) -> ONE Witness
-#   step, one line through bin/witnessed.sh -> the uploads (exact name, ONE path each). No witness -d: the command runs from the repo root, so Witness
+#   step, one line through bin/witnessed-local.sh -> the uploads (exact name, ONE path each). No witness -d: the command runs from the repo root, so Witness
 #   names product subjects relative to it.
 # THE ARTIFACT LAYOUT (fix round 2): actions/upload-artifact roots an artifact at the common ancestor of its paths, so every upload names ONE path.
 #   The apk job uploads `out` (apks, indexes, SBOMs and the items fragment out/items-apk.json) and its record directory; the assemble job downloads
@@ -33,9 +33,9 @@
 #   X.Y.Z and X.Y.Z-rc.N and names the apk fscache-0.3.0-r0.apk (final) or fscache-0.3.0_rc1-r0.apk (rc), fips as fscache-fips-.... Both forms run below.
 #   The stage names no apk file: bin/build-version-check.py and `items-apk` find the apk of a variant in a directory.
 # THE GH TOKEN: bin/build-admit.py gets GH_TOKEN only through the apk job's Witness step env (job permissions contents, checks, statuses, pull-requests
-#   read + id-token write; advisor ruling, confirmed). The script runs `unset GH_TOKEN` right after the admission line, so cache's scripts never see it.
+#   read, no id-token; advisor ruling, confirmed; the Witness move of Oct 22 removed the token). The script runs `unset GH_TOKEN` right after the admission line, so cache's scripts never see it.
 #
-# THE WITNESS SEAM (advisor ruling; owner's amendment of rule 68): bin/witnessed.sh holds ALL the Witness flags and `timeout 540`; the judge is the
+# THE WITNESS SEAM (advisor ruling; owner's amendment of rule 68): bin/witnessed-local.sh holds ALL the Witness flags and `timeout 540`; the judge is the
 # three functions witness_seam, helper and directwitness in bin/chain-test-shape.py and the fixture side is witness_block and witnessed_text below. If
 # harness spike (d) changes the wrapping, only those change; the script grammar never names Witness.
 #
@@ -102,15 +102,15 @@ json.dump({"actions": [CHECKOUT, UPLOAD, DOWNLOAD]}, open(w + "/allowed-actions.
 
 def witness_block(spec_):       # the stage's Witness step(s): one line through the helper (the fixture side of the seam, 1/2)
     env = "        env:\n          GH_TOKEN: ${{ github.token }}\n" if spec_["gh"] else ""
-    run = "bash bin/witnessed.sh %s bin/build-stage-%s.sh" % (spec_["step"], spec_["kind"])
+    run = "bash bin/witnessed-local.sh %s bin/build-stage-%s.sh" % (spec_["step"], spec_["kind"])
     if not spec_.get("mode"):
         return "      - name: %s under Witness\n%s        run: %s\n" % (spec_["step"], env, run)
     out = "      - name: %s under Witness\n        if: %s\n%s        run: %s\n" % (spec_["step"], S.MODE_RELEASE_IF, env, run)
-    snap = "bash bin/witnessed.sh %s bin/build-stage-snapshot-%s.sh" % (S.SNAPSHOT_STEP[spec_["step"]], spec_["kind"])
+    snap = "bash bin/witnessed-local.sh %s bin/build-stage-snapshot-%s.sh" % (S.SNAPSHOT_STEP[spec_["step"]], spec_["kind"])
     return out + "      - name: %s under Witness\n        if: %s\n        run: %s\n" % (S.SNAPSHOT_STEP[spec_["step"]], S.MODE_SNAPSHOT_IF, snap)
 
 
-def witnessed_text():           # bin/witnessed.sh, the exec line broken at its flag groups (the fixture side of the seam, 2/2)
+def witnessed_text():           # bin/witnessed-local.sh, the exec line broken at its flag groups (the fixture side of the seam, 2/2)
     lines = S.witnessed_lines()
     for flag in (" --signer-fulcio-url", " -t ", " -a ", " -o "):
         lines[-1] = lines[-1].replace(flag, " \\\n  " + flag.strip() + " ", 1) if flag.endswith(" ") else lines[-1].replace(flag, " \\\n " + flag, 1)
@@ -129,19 +129,22 @@ def wrap(line, width=110):      # break a long command at its option boundaries,
 
 
 def stage_text(family):
-    call = "    inputs:\n      mode:\n        description: release or snapshot\n        type: string\n        default: release\n" if family == "rebuild" else ""
+    call = "    inputs:\n      mode:\n        description: release or snapshot\n        type: string\n        default: release\n    outputs:\n      records:\n        description: the record digests, for Sign\n        value: %s\n" % S.RECORDS_STAGE_OUTPUT if family == "rebuild" else ""
     if family == "build":
         call = "    inputs:\n      hostile:\n        description: dry run only\n        type: boolean\n        default: false\n"
         call += "      mode:\n        description: release or snapshot\n        type: string\n        default: release\n"
         call += "    outputs:\n      digests:\n        description: the digests.json text, for Sign\n        value: %s\n" % S.STAGE_OUTPUT
     out = "name: 'Stage: %s'\non:\n  workflow_call:\n%spermissions:\n  contents: read\njobs:\n" % (family, call)
-    for job in ("apk", "assemble"):
+    for job in (("rapk", "rapk-arm", "assemble") if family == "rebuild" else ("apk", "assemble")):
         sp = S.JOBS[(family, job)]
         out += "  %s:\n" % job
         out += ("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n" if sp["matrix"]
+                else "    runs-on: %s\n" % sp["runner"] if sp.get("runner")
+                else "    needs: [rapk, rapk-arm]\n    runs-on: ubuntu-24.04\n" if family == "rebuild"
                 else "    needs: apk\n    runs-on: ubuntu-24.04\n")
         out += "    permissions:\n" + "".join("      %s: %s\n" % kv for kv in sp["perm"].items())
         if sp.get("expose"): out += "    outputs:\n      digests: %s\n" % S.JOB_OUTPUT
+        if sp.get("expose_records") or sp.get("expose_rapk"): out += "    outputs:\n      records: %s\n" % S.RECORDS_JOB_OUTPUT
         out += "    steps:\n"
         out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
         out += "          persist-credentials: false\n          fetch-depth: 0\n"
@@ -155,8 +158,12 @@ def stage_text(family):
         out += "      - name: pull the archive by its committed digest\n        run: %s\n" % S.ARCHIVE_PULL
         if sp.get("hosttools"): out += "      - name: unpack the host tools from the archive (bubblewrap for melange's runner)\n        run: %s\n" % S.INSTALL_HOSTTOOLS
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
+        if sp.get("check_rapk"):
+            out += "      - name: check the rapk records against their jobs' outputs\n        if: %s\n        env:\n" % S.MODE_RELEASE_IF + "".join("          %s: %s\n" % kv for kv in S.RAPK_CHECK_ENV.items()) + "        run: %s\n" % S.RAPK_CHECK_RUN
         out += witness_block(sp)
+        if sp.get("expose_rapk"): out += "      - id: records\n        name: expose the record digests of this apk job as its output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.exposerapk(sp["runner"]))
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
+        if sp.get("expose_records"): out += "      - id: records\n        name: expose the record digests as the stage output\n        if: %s\n        run: %s\n" % (S.MODE_RELEASE_IF, S.EXPOSE_RECORDS)
         if sp.get("hostile"):
             out += "      - name: hostile step (dry run only)\n        if: %s\n        run: %s\n" % (S.HOSTILE_IF, S.HOSTILE_RUN)
             out += "      - name: upload the hostile attempts (dry run only)\n        if: %s\n" % S.HOSTILE_IF
@@ -208,15 +215,37 @@ jobs:
     uses: ./.github/workflows/stage-sign.yml
     with:
       digests: ${{ needs.build.outputs.digests }}
+      stage: build
   rebuild:
-    needs: build
+    needs: [build, sign]
     uses: ./.github/workflows/stage-reproducibility.yml
+  sign-rebuild:
+    needs: [build, rebuild]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      stage: rebuild
+      records: ${{ needs.rebuild.outputs.records }}
   check:
-    needs: build
+    needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
+  sign-check:
+    needs: [build, check]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/stage-sign.yml
+    with:
+      digests: ${{ needs.build.outputs.digests }}
+      stage: check
+      records: ${{ needs.check.outputs.records }}
+      records-arm64: ${{ needs.check.outputs.records-arm64 }}
   release:
     if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
-    needs: [rebuild, check, sign]
+    needs: [check, sign, sign-rebuild, sign-check]
     concurrency:
       group: release-publish
       cancel-in-progress: false
@@ -242,7 +271,7 @@ jobs:
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
-    needs: [build, sign, rebuild, check, release]
+    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]
     if: ${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     permissions:
@@ -279,12 +308,12 @@ st s_incl "AC1 an include entry in the matrix" matrix 'runner: [ubuntu-24.04, ub
        'runner: [ubuntu-24.04, ubuntu-24.04-arm]\n        include:\n          - runner: ubuntu-22.04'
 st s_asmarm "AC1 the assemble job on the arm runner" "assemble job must run directly on" "$ASM" 'needs: apk\n    runs-on: ubuntu-24.04-arm\n'
 st s_noneed "AC1 the assemble job does not need the apk jobs" "must need exactly apk" 'needs: apk' 'needs: []'
-st s_pkg    "AC1 packages: write" permissions 'id-token: write' 'id-token: write\n      packages: write'
-st s_noid   "AC1 no id-token (Witness cannot sign keyless)" permissions '      id-token: write\n    steps' '    steps'
+st s_pkg    "AC1 packages: write" permissions '      checks: read\n' '      checks: read\n      packages: write\n'
+st s_noid   "AC1 id-token: write on a building job (the building jobs hold no identity token: owner Oct 22)" permissions '      checks: read\n' '      checks: read\n      id-token: write\n'
 st s_nochk  "AC1 the admission job without checks: read (the required-checks check could not run)" permissions '      checks: read\n' ''
 st s_wfperm "AC1 workflow-level permissions beyond contents: read" permissions 'permissions:\n  contents: read\njobs' 'permissions:\n  contents: write\njobs'
 st s_push   "AC1 an extra trigger" workflow_call 'workflow_call:' 'push:\n  workflow_call:'
-st s_job3 "AC1 a third job (one stage = one file = two jobs)" "exactly two jobs" '  assemble:' \
+st s_job3 "AC1 a third job (one stage = one file = two jobs)" "required (one stage = one file = one identity)" '  assemble:' \
        '  third:\n    runs-on: ubuntu-24.04\n    steps: []\n  assemble:'
 st s_top    "AC1 a top-level env" top-level 'permissions:\n  contents: read\njobs' 'permissions:\n  contents: read\nenv:\n  X: y\njobs'
 st s_unpin  "AC2 checkout not pinned by digest" checkout 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v7'
@@ -358,7 +387,7 @@ st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "insta
 st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
 st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        if: always()\n'
 # Codex A r4 #1 (advisor reading of rule 51, a reading and not a reworded rule): admission is the first TRUST decision of Build. Before the step that runs
-# bin/witnessed.sh apk (admission is its first command) the apk job may hold ONLY the checkout, the mode guard (a non-secret input, refuses only) and the two
+# bin/witnessed-local.sh apk (admission is its first command) the apk job may hold ONLY the checkout, the mode guard (a non-secret input, refuses only) and the two
 # checksum-verified install lines; nothing with a token, a secret, a build command, a download, an upload or the identity token may come before it.
 st s_pre_env   "AC4 an env on an install step before admission (a token or secret could reach tagged code)" "before admission" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
 st s_pre_sec   "AC4 a secret on a step before admission" "before admission" 'name: install Witness (pinned by checksum)\n' 'name: install Witness (pinned by checksum)\n        env:\n          K: ${{ secrets.KEY }}\n'
@@ -366,7 +395,7 @@ st s_pre_build "AC4 a build command before admission" "before admission" "$GOINS
 st s_pre_up    "AC4 an upload before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: early\n          path: out\n"
 st s_pre_down  "AC4 a download before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        with:\n          name: x\n          path: x\n"
 st s_pre_tok   "AC4 a step that reads the identity token before admission" "before admission" "$GOINST" "$GOINST      - name: token\n        run: bash bin/x.sh \"\$ACTIONS_ID_TOKEN_REQUEST_TOKEN\"\n"
-st s_pre_wit   "AC4 a Witness step before admission (the helper itself runs admission first, so it is the admission step, but a second early one is not)" "before admission" "$GOINST" "$GOINST      - name: early under Witness\n        run: bash bin/witnessed.sh apk bin/build-stage-apk.sh\n"
+st s_pre_wit   "AC4 a Witness step before admission (the helper itself runs admission first, so it is the admission step, but a second early one is not)" "before admission" "$GOINST" "$GOINST      - name: early under Witness\n        run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh\n"
 st s_pre_other "AC4 any other run step before admission" "before admission" "$GOINST" "$GOINST      - name: other\n        run: bash bin/chain-hostile-step.sh\n"
 st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
 FXD_5='run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
@@ -381,12 +410,12 @@ st s_if "AC2 an if: other than the mode on the Witness step" "release Witness st
        '      - name: apk under Witness\n        if: always()\n'
 st s_shell "AC2 a shell: override on the Witness step" "Witness step may carry" '      - name: apk under Witness\n' \
        '      - name: apk under Witness\n        shell: bash -c "{0}"\n'
-st s_two "AC2 a second command in the Witness step" "exactly the one line" 'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: |\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\n          echo second'
-st s_direct "AC2 a direct witness run in a stage file (every stage goes through bin/witnessed.sh)" "witness run" \
-       'run: bash bin/witnessed.sh apk bin/build-stage-apk.sh' 'run: witness run --step apk -- timeout 540 bash bin/build-stage-apk.sh'
+st s_two "AC2 a second command in the Witness step" "exactly the one line" 'run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh' 'run: |\n          bash bin/witnessed-local.sh apk bin/build-stage-apk.sh\n          echo second'
+st s_direct "AC2 a direct witness run in a stage file (every stage goes through bin/witnessed-local.sh)" "witness run" \
+       'run: bash bin/witnessed-local.sh apk bin/build-stage-apk.sh' 'run: witness run --step apk -- timeout 540 bash bin/build-stage-apk.sh'
 st s_kind   "AC2 the apk job running the assemble script" "exactly the one line" 'bin/build-stage-apk.sh' 'bin/build-stage-assemble.sh'
-st s_step "AC2 the Witness step named differently from its job (the step name selects the record path)" "exactly the one line" 'witnessed.sh apk bin' \
-       'witnessed.sh build bin'
+st s_step "AC2 the Witness step named differently from its job (the step name selects the record path)" "exactly the one line" 'witnessed-local.sh apk bin' \
+       'witnessed-local.sh build bin'
 HOSTILE_STEP='      - name: hostile step (dry run only)\n        if: ${{ inputs.hostile }}\n        run: bash bin/chain-hostile-step.sh\n'
 st s_hin_none "AC2 the hostile input is missing from the Build stage" "on: must be" \
               '      hostile:\n        description: dry run only\n        type: boolean\n        default: false\n' ''
@@ -403,8 +432,8 @@ st s_hup_noif   "AC2 the hostile upload has no if" "hostile" '        if: ${{ in
 # closed step names; no admission and no GH_TOKEN in the snapshot step.
 GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
 SNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
-SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
-RSNAP_STEP="      - name: snapshot-rapk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-rapk.sh\n"
+SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
+RSNAP_STEP="      - name: snapshot-rapk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed-local.sh snapshot-rapk bin/build-stage-rapk.sh\n"
 RSNAP_STEP="$RSNAP_STEP      - name: rapk under Witness\n"
 st s_mode_none "AC12 the mode input is missing from the Build stage" "on: must be" \
               '      mode:\n        description: release or snapshot\n        type: string\n        default: release\n' ''
@@ -432,12 +461,12 @@ st s_snap_rel  "AC12 the snapshot Witness step runs the release script (admissio
 st s_snap_name "AC12 the snapshot Witness step uses a step name outside the closed list" "snapshot" \
               'snapshot-apk bin/build-stage-snapshot-apk.sh' 'snapshot bin/build-stage-snapshot-apk.sh'
 st s_snap_relname "AC12 the snapshot script runs under the release step name (its record would not carry the snapshot marker)" "snapshot" \
-              'witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh' 'witnessed.sh apk bin/build-stage-snapshot-apk.sh'
+              'witnessed-local.sh snapshot-apk bin/build-stage-snapshot-apk.sh' 'witnessed-local.sh apk bin/build-stage-snapshot-apk.sh'
 st s_snap_gh   "AC12 the snapshot Witness step holds GH_TOKEN" "snapshot" \
               'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n' \
               'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
 st s_snap_asm  "AC12 the assemble job's snapshot step carries another job's snapshot step name" "snapshot" \
-              'witnessed.sh snapshot-build bin/build-stage-snapshot-assemble.sh' 'witnessed.sh snapshot-rebuild bin/build-stage-snapshot-assemble.sh'
+              'witnessed-local.sh snapshot-build bin/build-stage-snapshot-assemble.sh' 'witnessed-local.sh snapshot-rebuild bin/build-stage-snapshot-assemble.sh'
 st s_outapk  "AC2 the stage output reads the apk job's output, not the assemble job's" "on: must be" 'value: ${{ jobs.assemble.outputs.digests }}' \
              'value: ${{ jobs.apk.outputs.digests }}'
 st s_outnone "AC2 the stage has no digests output (Sign would get nothing)" "on: must be" \
@@ -484,15 +513,21 @@ st s_after "AC2 a third-party action after Witness" "step" \
 st s_comp   "AC2 a local composite action step" "step" '      - name: apk under Witness' '      - uses: ./.github/actions/x\n      - name: apk under Witness'
 st s_docker "AC2 a docker:// step" "step" '      - name: apk under Witness' '      - uses: docker://alpine:3\n      - name: apk under Witness'
 rb() { replace "$work/rebuild.yml" "$work/$1.yml" "$4" "$5" && expect caught "$2" "$3" stage "$work/$1.yml" rebuild "$AL"; return 0; }
-rb r_step "005-AC1 Rebuild's assemble Witness step is named build (Build's record path)" "exactly the one line" 'witnessed.sh rebuild bin' \
-       'witnessed.sh build bin'
+rb r_step "005-AC1 Rebuild's assemble Witness step is named build (Build's record path)" "exactly the one line" 'witnessed-local.sh rebuild bin' \
+       'witnessed-local.sh build bin'
 rb r_up   "005-AC4 Rebuild uploads anything but its verdict directory" "upload-artifact" 'name: witness-rebuild' 'name: dist'
 rb r_dl "005-AC4 Rebuild downloads Build's dist (it takes only the record and the lists)" "download-artifact" \
-       'name: witness-build\n          path: witness-build' 'name: dist\n          path: witness-build'
+       "name: \${{ inputs.mode == 'release' && 'signed-witness-build' || 'witness-build' }}\n          path: witness-build" 'name: dist\n          path: witness-build'
 rb r_gh "005-AC1 a GH_TOKEN on Rebuild (only the admission job holds it)" "env" '      - name: rapk under Witness' \
        '      - name: rapk under Witness\n        env:\n          GH_TOKEN: ${{ github.token }}'
-rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its verdict artifact)" "on: must be" 'workflow_call:\n' \
-             'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
+rb r_out "005-AC1 Rebuild exposes a second stage output (its only output is the record digests)" "on: must be" '    outputs:\n      records:' \
+             '    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n      records:'
+rb r_recgone "R2 the record-digest step is gone from Rebuild's assemble job" "must be exactly id: records" '      - id: records\n        name: expose the record digests as the stage output\n        if: ${{ inputs.mode == '"'"'release'"'"' }}\n        run: r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r" >> "$GITHUB_OUTPUT"\n' ''
+rb r_recid "R2 the record-digest step has another id" "must be exactly id: records" '      - id: records' '      - id: other'
+rb r_recmask "R2 (round 6) the records step masks a failing helper (an echo of the substitution loses its exit status)" "must be exactly id: records" 'r=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm) && echo "records=$r"' 'echo "records=$(bash bin/rebuild-records-digests.sh witness-rebuild rec-rapk/ubuntu-24.04 rec-rapk/ubuntu-24.04-arm)"'
+rb r_recdir "R2 the record-digest step reads another rapk directory" "must be exactly id: records" 'rec-rapk/ubuntu-24.04-arm)' 'rec-rapk/ubuntu-24.04)'
+rb r_recif "R2 the record-digest step runs in snapshot mode too" "must be exactly id: records" "        if: \${{ inputs.mode == 'release' }}\n        run: r=" '        run: r='
+rb r_recjob "R2 the assemble job exposes the records of another step" "must expose exactly" 'steps.records.outputs.records }}\n    steps' 'steps.other.outputs.records }}\n    steps'
 rb r_ht_gone "005-AC17 the host-tools step is missing from Rebuild's apk job" "install-host-bwrap" "$HTSTEP" ''
 rb r_ht_asm  "005-AC17 Rebuild's assemble job unpacks the host tools too (it runs apko only)" "crane" "$APKINST" "$APKINST$HTSTEP"
 rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" '    inputs:\n      mode:' \
@@ -506,7 +541,7 @@ rb r_go_other "005-AC2 Rebuild's Go install is another command (not the pinned i
 # REQ-CHAIN-005-AC7: Rebuild takes the same mode input and has its own snapshot Witness steps, snapshot-rapk and snapshot-rebuild
 RSNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
 RSNAP_OWN="      - name: snapshot-rapk under Witness\n        $RSNAP_IF\n"
-RSNAP_OWN="${RSNAP_OWN}        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh\n"
+RSNAP_OWN="${RSNAP_OWN}        run: bash bin/witnessed-local.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh\n"
 rb r_mode_none "005-AC7 the mode input is missing from the Rebuild stage" "on: must be" \
        '    inputs:\n      mode:\n        description: release or snapshot\n        type: string\n        default: release\n' ''
 rb r_mode_snap "005-AC7 the Rebuild mode defaults to snapshot" "on: must be" 'default: release' 'default: snapshot'
@@ -519,18 +554,33 @@ rb r_snap_none "005-AC7 the snapshot-rapk Witness step is missing" "Witness step
 rb r_snap_rel "005-AC7 the snapshot-rapk step runs the release script (policy and stage-start of a release)" "Witness step" \
        'snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'snapshot-rapk bin/build-stage-rebuild-apk.sh'
 rb r_snap_name "005-AC7 the snapshot-rebuild step uses a name outside the closed list" "Witness step" \
-       'witnessed.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh' 'witnessed.sh snapshot-evil bin/build-stage-snapshot-rebuild-assemble.sh'
+       'witnessed-local.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh' 'witnessed-local.sh snapshot-evil bin/build-stage-snapshot-rebuild-assemble.sh'
 rb r_snap_asmname "005-AC7 the snapshot-rapk step runs under the release step name" "Witness step" \
-       'witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'witnessed.sh rapk bin/build-stage-snapshot-rebuild-apk.sh'
+       'witnessed-local.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'witnessed-local.sh rapk bin/build-stage-snapshot-rebuild-apk.sh'
 # I5 (step-8, Opus): the Rebuild verdict artifact is uploaded under if: always(), so snapshot-verdict.json is readable even when rebuild-compare failed; no other upload is
 VUP="        if: always()\n        with:\n          name: witness-rebuild"
 rb r_verdict_noif "005-AC7 the verdict upload has no if (a failed comparison would leave no artifact for the differences)" "if: always()" "$VUP" \
        "        with:\n          name: witness-rebuild"
 rb r_verdict_success "005-AC7 the verdict upload runs only on success" "if: always()" "        if: always()\n        with:\n          name: witness-rebuild" \
        "        if: success()\n        with:\n          name: witness-rebuild"
-rb r_other_always "005-AC7 another Rebuild upload under always()" "no if" "        with:\n          name: witness-rapk-\${{ matrix.runner }}" \
-       "        if: always()\n        with:\n          name: witness-rapk-\${{ matrix.runner }}"
-rb r_perm "005-AC1 Rebuild with the admission permissions" permissions 'id-token: write' 'id-token: write\n      checks: read'
+rb r_other_always "005-AC7 another Rebuild upload under always()" "no if" "        with:\n          name: witness-rapk-ubuntu-24.04\n          path: witness-rapk" \
+       "        if: always()\n        with:\n          name: witness-rapk-ubuntu-24.04\n          path: witness-rapk"
+CHK="      - name: check the rapk records against their jobs' outputs\n        if: \${{ inputs.mode == 'release' }}\n        env:\n          RAPK_RECORDS: \${{ needs.rapk.outputs.records }}\n          RAPK_ARM_RECORDS: \${{ needs.rapk-arm.outputs.records }}\n        run: bash bin/rebuild-records-digests.sh --check \"\$RAPK_RECORDS\" \"\$RAPK_ARM_RECORDS\"\n"
+rb r_chk_gone "A1 assemble does not check the rapk records against their jobs' outputs" "rapk records are checked" "$CHK" ''
+rb r_chk_noif "A1 the rapk check runs in snapshot mode too" "rapk records are checked" "      - name: check the rapk records against their jobs' outputs\n        if: \${{ inputs.mode == 'release' }}\n" "      - name: check the rapk records against their jobs' outputs\n"
+rb r_chk_swap "A1 the check hands the arm leg's output to the x86 leg" "rapk records are checked" 'RAPK_RECORDS: ${{ needs.rapk.outputs.records }}' 'RAPK_RECORDS: ${{ needs.rapk-arm.outputs.records }}'
+rb r_chk_late "A1 the rapk check runs after the rebuild Witness step (too late)" "rapk records are checked" "$CHK      - name: rebuild under Witness\n" "      - name: rebuild under Witness\n"
+rb r_needs_one "A1 assemble needs only one apk job" "must need exactly rapk and rapk-arm" 'needs: [rapk, rapk-arm]' 'needs: rapk'
+rb r_rapkrec_gone "A1 the x86 apk job exposes no record digests" "must be exactly id: records" "      - id: records\n        name: expose the record digests of this apk job as its output\n        if: \${{ inputs.mode == 'release' }}\n        run: r=\$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04 witness-rapk) && echo \"records=\$r\" >> \"\$GITHUB_OUTPUT\"\n" ''
+rb r_rapkrec_leg "A1 the x86 apk job exposes the arm leg's name" "must be exactly id: records" '--rapk ubuntu-24.04 witness-rapk' '--rapk ubuntu-24.04-arm witness-rapk'
+rb r_rapkrec_dir "A1 the x86 apk job lists another folder than the record it uploads" "must be exactly id: records" '--rapk ubuntu-24.04 witness-rapk)' '--rapk ubuntu-24.04 out)'
+rb r_rapkrec_out "A1 the x86 apk job exposes its records through another output" "must expose exactly outputs: records" 'steps.records.outputs.records }}\n    steps' 'steps.other.outputs.records }}\n    steps'
+rb r_rapk_matrix "A1 the apk jobs are a matrix again (a shared output name, the last leg wins)" "must run directly on ubuntu-24.04" '  rapk:\n    runs-on: ubuntu-24.04\n' '  rapk:\n    runs-on: ${{ matrix.runner }}\n'
+rb r_rapkarm_gone "A1 the arm apk job exposes no record digests" "must be exactly id: records" "      - id: records\n        name: expose the record digests of this apk job as its output\n        if: \${{ inputs.mode == 'release' }}\n        run: r=\$(bash bin/rebuild-records-digests.sh --rapk ubuntu-24.04-arm witness-rapk) && echo \"records=\$r\" >> \"\$GITHUB_OUTPUT\"\n" ''
+rb r_rapkarm_leg "A1 the arm apk job exposes the x86 leg's name" "must be exactly id: records" '--rapk ubuntu-24.04-arm witness-rapk' '--rapk ubuntu-24.04 witness-rapk'
+rb r_chk_armswap "A1 the check hands the x86 leg's output to the arm leg" "rapk records are checked" 'RAPK_ARM_RECORDS: ${{ needs.rapk-arm.outputs.records }}' 'RAPK_ARM_RECORDS: ${{ needs.rapk.outputs.records }}'
+rb r_chk_argswap "A1 the check's arguments are swapped" "rapk records are checked" '--check "$RAPK_RECORDS" "$RAPK_ARM_RECORDS"' '--check "$RAPK_ARM_RECORDS" "$RAPK_RECORDS"'
+rb r_perm "005-AC1 Rebuild with the admission permissions" permissions '      contents: read\n' '      contents: read\n      checks: read\n'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
 expect caught "AC1 an unreadable allowed-actions list fails closed" "unreadable" stage "$work/build.yml" build "$work/does-not-exist.json"
@@ -565,7 +615,7 @@ hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
 hm fout    "AC2 the record written to another path" '"witness-${step#snapshot-}/$step-collection.json"' 'out/x.json'
-hm fopen   "AC2 the step list is open" 'apk|build|rapk|rebuild' '*'
+hm fopen   "AC2 the step list is open" 'release-verify' '*'
 hm fexec   "AC2 witness not exec'd (its exit status could be lost)" 'exec witness run' 'witness run'
 hm ftee "AC2 the token written elsewhere" '| jq -r .value)' '| jq -r .value | tee /tmp/leak)'
 hm ffile "AC2 the token in a file again (the older form): a file under the runner temp folder while the command runs" \
@@ -585,8 +635,8 @@ hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads w
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
     '"witness-${step#snapshot-}/$step-collection.json"' \
        '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
-hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'snapshot-rapk|snapshot-rebuild|' \
-    'snapshot-rapk|snapshot-rebuild|snapshot-evil|'
+hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'in release-verify|' \
+    'in snapshot-evil|release-verify|'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
@@ -595,6 +645,98 @@ expect caught "AC2 a second witness invocation in the helper" "helper command" h
 expect ok "AC2 comments in the helper are not commands" "" helper "$work/h_comment.sh"
 printf 'set -euo pipefail\nwitness run --step apk -- timeout 540 bash bin/build-stage-apk.sh\n' > "$work/direct.sh"
 expect caught "AC2 a stage script naming witness run directly" "witness run" directwitness "$work/direct.sh"
+# ---- the local helper (owner Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md, option 1): a BUILDING step records under Witness with a throwaway ed25519
+# key made in the job and destroyed before it ends; no identity token, no Fulcio, no timestamp; Sign re-signs the payload keyless. Key hygiene is hygiene, not the trust boundary
+# (the wrapped build runs on the same runner as the same user and can be assumed to see anything the job can): the guarantee is Sign's digest check plus verifiers refusing a record
+# whose only signature is the throwaway one. Tests written first.
+python3 - "$shape" "$work/witnessed-local.sh" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("shape", sys.argv[1]); S = importlib.util.module_from_spec(spec); spec.loader.exec_module(S)
+open(sys.argv[2], "w").write("#!/usr/bin/env bash\n" + "\n".join(S.local_lines()) + "\n")
+PY
+expect ok "WIT1 fixture: the known-good bin/witnessed-local.sh is exactly the canonical local helper" "" localhelper "$work/witnessed-local.sh"
+expect ok "WIT1 the real bin/witnessed-local.sh is exactly the canonical local helper" "" localhelper "$root/bin/witnessed-local.sh"
+lm() { replace "$work/witnessed-local.sh" "$work/l_$1.sh" "$3" "$4" && expect caught "$2" "local helper" localhelper "$work/l_$1.sh"; return 0; }
+lm lfulcio  "WIT1 a Fulcio flag (Build must not ask for a certificate)" '--signer-file-key-path' '--signer-fulcio-url https://fulcio.sigstore.dev --signer-file-key-path'
+lm ltsa     "WIT1 a timestamp authority flag" '--env-filter-sensitive-vars' '-t https://timestamp.sigstore.dev/api/v1/timestamp --env-filter-sensitive-vars'
+lm ltoken   "WIT1 the identity token fetched again" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-${step#snapshot-}"\ntok=$(sh bin/loopback-get.sh -sSf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)'
+lm lfixed   "WIT1 the key at a fixed path" '"$kd/key.pem"' '/tmp/key.pem'
+lm lnotemp  "WIT1 the key directory outside the runner temp folder" '"${RUNNER_TEMP:?}/witness-key.XXXXXX"' '/tmp/witness-key.XXXXXX'
+lm lrsa     "WIT1 another key algorithm" 'genpkey -algorithm ed25519' 'genpkey -algorithm RSA'
+lm lnotrap  "WIT1 no trap (a signal would leave the key)" "trap 'rm -rf \"\$kd\"' EXIT HUP INT TERM\n" ''
+lm ltrapx   "WIT1 the trap covers only the normal exit" "EXIT HUP INT TERM" "EXIT"
+lm lnorm    "WIT1 the key not removed after the run" 'rm -rf "$kd"\n[ ! -e' '[ ! -e'
+lm lnocheck "WIT1 no check that the key directory is gone" '[ ! -e "$kd" ] || { echo "witnessed-local: the throwaway key directory still exists" >&2; exit 1; }\n' ''
+lm lignore  "WIT1 a failure of the witnessed command ignored" '|| rc=$?' '|| true'
+lm lexec    "WIT1 witness exec'd (the shell, and with it the cleanup, would be replaced)" 'witness run --step' 'exec witness run --step'
+lm lumask   "WIT1 a looser umask (the key file would be readable by others)" 'umask 077' 'umask 022'
+lm lcopy    "WIT1 the key copied into the record directory (it would be uploaded)" 'rc=0' 'rc=0\ncp "$kd/key.pem" "witness-${step#snapshot-}/key.pem"'
+lm lcat     "WIT1 the key printed" 'rc=0' 'rc=0\ncat "$kd/key.pem"'
+lm lsigned  "WIT1 the record written under the signed name (it must end in .local.json: only Sign signs a trusted one)" '$step-collection.local.json' '$step-collection.json'
+lm lopen    "WIT1 the step list open" 'apk|build|rapk|rebuild|snapshot-apk' '*|apk'
+lm lrelease "WIT1 a Release step in the list (Release keeps the keyless helper)" 'snapshot-rebuild|scanners' 'snapshot-rebuild|release-sign|scanners'
+lm lslsa    "WIT1 the slsa attestor" 'environment,git,material,product' 'environment,git,material,slsa'
+lm lgha     "WIT1 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
+lm lnoflt   "WIT1 no environment filter" '--env-filter-sensitive-vars' ''
+lm lnounset "WIT1 the token variables not unset" 'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL SIGSTORE_ID_TOKEN\n' ''
+lm ltimeout "WIT1 no time limit on the build" '-- timeout -k 20 540 bash' '-- bash'
+lm lsnapdir "WIT1 a snapshot record in its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
+{ cat "$work/witnessed-local.sh"; echo "witness run --step x -- true"; } > "$work/l_second.sh"
+expect caught "WIT1 a second witness invocation in the local helper" "local helper" localhelper "$work/l_second.sh"
+# ---- behaviour of the real local helper against a stub witness (no network, no identity token) -----------------------------------------------
+wl="$work/wl"; mkdir -p "${wl:?}/bin" "${wl:?}/stub" "${wl:?}/keep"
+cp "$root/bin/witnessed-local.sh" "$wl/bin/witnessed-local.sh" 2>/dev/null || : > "$wl/bin/witnessed-local.sh"
+cat > "$wl/stub/witness" <<'STUB'
+#!/usr/bin/env bash
+# a stand-in for Witness: records its arguments, checks the key it was handed, writes a record at the -o path
+printf '%s\n' "$@" > "$STUB_KEEP/argv"
+key=""; out=""; prev=""
+for a in "$@"; do
+  [ "$prev" = --signer-file-key-path ] && key=$a
+  [ "$prev" = -o ] && out=$a
+  prev=$a
+done
+[ -f "$key" ] || { echo "stub: no key file" >&2; exit 41; }
+{ stat -c '%a' "$key" 2>/dev/null || stat -f '%Lp' "$key"; } > "$STUB_KEEP/keymode" 2>/dev/null
+{ stat -c '%a' "$(dirname "$key")" 2>/dev/null || stat -f '%Lp' "$(dirname "$key")"; } > "$STUB_KEEP/dirmode" 2>/dev/null
+cp "$key" "$STUB_KEEP/keycopy"; echo "$key" > "$STUB_KEEP/keypath"; env | grep -E '^(ACTIONS_|SIGSTORE_)' > "$STUB_KEEP/envtokens" || true
+case "${STUB_MODE:-ok}" in
+  fail) exit 3 ;;
+  sleep) echo $$ > "$STUB_KEEP/stubpid"; echo $PPID > "$STUB_KEEP/helperpid"; trap 'exit 143' TERM; : > "$STUB_KEEP/started"; sleep 30 & wait; exit 0 ;;
+esac
+mkdir -p "$(dirname "$out")"; printf '{"stub":"record"}\n' > "$out"
+STUB
+chmod +x "$wl/stub/witness"
+wclean() { find "${wl:?}/tmp" "${wl:?}/keep" -mindepth 1 -delete 2>/dev/null || true; rm -rf "${wl:?}/witness-apk" "${wl:?}/witness-rebuild"; mkdir -p "${wl:?}/tmp" "${wl:?}/keep"; }
+wrun() { # wrun STEP MODE  -> sets wl_rc; the helper runs in $wl with a clean runner temp folder
+  wclean; wl_rc=0
+  ( cd "$wl" && env -i PATH="$wl/stub:$PATH" HOME="$wl" RUNNER_TEMP="$wl/tmp" STUB_KEEP="$wl/keep" STUB_MODE="$2" \
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN=leak-token ACTIONS_ID_TOKEN_REQUEST_URL=https://example.invalid/t SIGSTORE_ID_TOKEN=leak-sig \
+      bash bin/witnessed-local.sh "$1" true > "$wl/out.log" 2>&1 ) || wl_rc=$?; }
+wrun apk ok
+if [ "$wl_rc" = 0 ] && [ -f "$wl/witness-apk/apk-collection.local.json" ] && [ ! -e "$wl/witness-apk/apk-collection.json" ]; then ok "WIT2 a building step writes its record as <step>-collection.local.json and never the signed name"; else bad "WIT2 the record is not at witness-apk/apk-collection.local.json (rc=$wl_rc): $(ls "$wl" | tr '\n' ' ')"; fi
+if [ "$wl_rc" = 0 ] && [ -z "$(ls -A "$wl/tmp")" ]; then ok "WIT2 the key directory is gone after a successful run (runner temp folder empty)"; else bad "WIT2 the runner temp folder still holds: $(ls -A "$wl/tmp" | tr '\n' ' ')"; fi
+if [ "$(cat "$wl/keep/keymode" 2>/dev/null)" = 600 ] && [ "$(cat "$wl/keep/dirmode" 2>/dev/null)" = 700 ]; then ok "WIT2 the key file was 0600 in a 0700 directory while Witness ran (hygiene)"; else bad "WIT2 key modes: file $(cat "$wl/keep/keymode" 2>/dev/null) dir $(cat "$wl/keep/dirmode" 2>/dev/null)"; fi
+if grep -q 'BEGIN PRIVATE KEY' "$wl/keep/keycopy" 2>/dev/null; then ok "WIT2 the key handed to Witness is a PEM private key made in the job"; else bad "WIT2 no PEM key reached Witness"; fi
+if ! grep -qE -- '--signer-fulcio|^-t$|timestamp|audience' "$wl/keep/argv" && grep -qx -- '--signer-file-key-path' "$wl/keep/argv"; then ok "WIT2 Witness gets a file key and no Fulcio, timestamp or token flag"; else bad "WIT2 unexpected Witness arguments: $(tr '\n' ' ' < "$wl/keep/argv")"; fi
+if [ -f "$wl/keep/envtokens" ] && [ ! -s "$wl/keep/envtokens" ]; then ok "WIT2 the identity-token variables are not in the environment Witness (and so the build) sees"; else bad "WIT2 the wrapped environment still holds: $(cat "$wl/keep/envtokens" 2>/dev/null)"; fi
+kb=$(grep -v -- '-----' "$wl/keep/keycopy" 2>/dev/null | tr -d '\n') || kb=""
+if [ -n "$kb" ] && ! grep -rqF -- "$kb" "$wl/witness-apk" "$wl/out.log"; then ok "WIT2 the key bytes appear in no record, no upload directory and no log"; else bad "WIT2 the key bytes are in a record, an upload directory or the log (or no key was made)"; fi
+wrun apk fail
+if [ "$wl_rc" = 3 ] && [ -z "$(ls -A "$wl/tmp")" ]; then ok "WIT2 a failing Witness run keeps its exit status (3) and the key is still destroyed"; else bad "WIT2 failure case: rc=$wl_rc, temp: $(ls -A "$wl/tmp" | tr '\n' ' ')"; fi
+wrun release-sign ok
+if [ "$wl_rc" = 2 ] && [ ! -e "$wl/keep/argv" ]; then ok "WIT2 a non-building step (release-sign) is refused with exit 2 before anything runs"; else bad "WIT2 release-sign was not refused (rc=$wl_rc)"; fi
+wrun snapshot-rebuild ok
+if [ "$wl_rc" = 0 ] && [ -f "$wl/witness-rebuild/snapshot-rebuild-collection.local.json" ]; then ok "WIT2 a snapshot step records under its release directory with the snapshot- name inside the file name"; else bad "WIT2 snapshot-rebuild record missing (rc=$wl_rc): $(ls "$wl" | tr '\n' ' ')"; fi
+# a TERM signal while Witness runs: the trap destroys the key directory
+wclean
+( cd "$wl" && env -i PATH="$wl/stub:$PATH" HOME="$wl" RUNNER_TEMP="$wl/tmp" STUB_KEEP="$wl/keep" STUB_MODE=sleep bash bin/witnessed-local.sh apk true > "$wl/sig.log" 2>&1 ) &
+wl_pid=$!; for _ in $(seq 40); do [ -e "$wl/keep/started" ] && break; sleep 0.25; done
+if [ -s "$wl/keep/helperpid" ]; then kill -TERM "$(cat "$wl/keep/helperpid")" 2>/dev/null || true; fi
+if [ -s "$wl/keep/stubpid" ]; then kill -TERM "$(cat "$wl/keep/stubpid")" 2>/dev/null || true; fi
+for _ in $(seq 40); do { [ -s "$wl/keep/helperpid" ] && kill -0 "$(cat "$wl/keep/helperpid")" 2>/dev/null; } || break; sleep 0.25; done
+wait "$wl_pid" 2>/dev/null || true
+if [ -e "$wl/keep/started" ] && [ -z "$(ls -A "$wl/tmp")" ]; then ok "WIT2 a TERM signal while Witness runs still destroys the key directory (trap)"; else bad "WIT2 after TERM the runner temp folder holds: $(ls -A "$wl/tmp" | tr '\n' ' ')"; fi
 # ---- the four stage scripts: an EXACT line grammar (REQ-CHAIN-004-AC3, AC6, AC11; REQ-CHAIN-005-AC2) --------------------------------------
 KINDS="apk assemble rebuild-apk rebuild-assemble snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble"
 for k in $KINDS; do
@@ -648,11 +790,12 @@ probe assemble "AC11 --melange-repo pointing at an unverified download" \
 probe apk              "AC6 a source dir other than the checkout (another commit)"  '[l.replace("--source-dir . ", "--source-dir /tmp/other ") for l in L]'
 probe apk "AC3 the version check on a directory other than the built one" '[l.replace("--apk-dir \"out/$(uname -m)\"", "--apk-dir /bin") for l in L]'
 probe apk              "AC3 the version check missing for the fips apk (rule 24 covers both)" '[l for l in L if "--variant fips --tag" not in l]'
-probe assemble         "AC3 an apk record not verified"                             '[l for i, l in enumerate(L) if i != 3]'
+probe assemble         "AC3 one apk directory not bound (a bind line missing)"      '[l for i, l in enumerate(L) if i != 1]'
 probe assemble         "AC3 the files not bound to the record (the bind lines missing)" '[l for l in L if "chain-verify.py bind" not in l]'
-probe assemble         "AC3 bound with the Rebuild step name (a Rebuild record can stand in)" '[l.replace("bind --step apk", "bind --step rapk") for l in L]'
-probe assemble         "AC3 the records verified AFTER the files are bound"         'L[:2] + L[4:6] + L[2:4] + L[6:]'
-probe assemble "AC3 verified as the wrong stage" '[l.replace("verify --stage build", "verify --stage rebuild", 1) for l in L]'
+probe assemble         "AC3 bound with the Rebuild step name (a Rebuild record can stand in)" '[l.replace("bind --local --step apk", "bind --local --step rapk") for l in L]'
+probe assemble         "AC3 the admission baseline written BEFORE the files are bound" 'L[:1] + L[3:4] + L[1:3] + L[4:]'
+probe assemble "AC3 bound as a signed record (the building job's record is local and unsigned)" '[l.replace("bind --local ", "bind ") for l in L]'
+probe assemble "AC3 bound to a record named like a signed one" '[l.replace("apk-collection.local.json", "apk-collection.json") for l in L]'
 probe assemble         "AC9 digests.json forged by a plain write after the merge"   'L + ["printf \x27{}\x27 > digests.json"]'
 probe assemble         "AC9 digests.json written by hand instead of by the merge"   '[l for l in L if "items-merge" not in l] + ["echo {} > digests.json"]'
 probe assemble         "AC9 the archives built after the merge (their digests would not be in digests.json)" 'L[:-2] + L[-1:] + L[-2:-1]'
@@ -743,8 +886,8 @@ replace "$LR" "$work/lf_date.sh" 'assemble-image.sh --variant production' 'assem
        && expect caught "005-AC6 Rebuild passes its own --build-date" "not identical" lockflow "$LA" "$work/lf_date.sh"
 replace "$LR" "$work/lf_ver.sh" '--variant production --version "${GITHUB_REF_NAME#v}"' '--variant production --version "9.9.9"' && expect caught \
        "005-AC6 Rebuild's version differs from Build's" "not identical" lockflow "$LA" "$work/lf_ver.sh"
-replace "$work/build.yml" "$work/lf_apko.yml" 'run: bash bin/witnessed.sh build bin/build-stage-assemble.sh' \
-       'run: bash bin/witnessed.sh build bin/build-stage-assemble.sh && apko build build/apko.yaml fscache:x out.tar' && expect caught \
+replace "$work/build.yml" "$work/lf_apko.yml" 'run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh' \
+       'run: bash bin/witnessed-local.sh build bin/build-stage-assemble.sh && apko build build/apko.yaml fscache:x out.tar' && expect caught \
        "AC11 a stage workflow names apko in a run step" apko lockflow "$LA" "$LR" "$work/lf_apko.yml"
 replace "$work/build.yml" "$work/lf_apkoi.yml" 'run: bash bin/install-build-tools.sh apko' 'run: bash bin/install-build-tools.sh apko --version 9' && expect caught \
        "AC11 the apko installer line with an extra argument is not the one admitted line" apko lockflow "$LA" "$LR" "$work/lf_apkoi.yml"
@@ -1048,33 +1191,39 @@ RELIF="\${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
 BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
 BUILD_HEAD="    if: $GATE\n$BUILD_USES"
-REL_HEAD="  release:\n    if: $RELIF\n    needs: [rebuild, check, sign]"
-gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: build' '  rebuild:\n    needs: [build, check]' "rebuild must need exactly"
-gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: build' '  check:\n    needs: [build, rebuild]' "check must need exactly"
-# REQ-CHAIN-005-AC5: Rebuild and Check each need only Build, so they run side by side (Codex B r2 R3: the earlier edge Check -> Sign is gone).
-gr g2b "005-AC5 check also needs sign (AC5: Check needs only Build)" '  check:\n    needs: build' '  check:\n    needs: [build, sign]' \
+REL_HEAD="  release:\n    if: $RELIF\n    needs: [check, sign, sign-rebuild, sign-check]"
+gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: [build, sign]' '  rebuild:\n    needs: [build, sign, check]' "rebuild must need exactly"
+gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: [build, sign]' '  check:\n    needs: [build, sign, rebuild]' "check must need exactly"
+# REQ-CHAIN-005-AC5 (Witness move): Rebuild and Check each need Build and Sign (they start from Build's record as Sign signed it) and run side by side.
+gr g2b "005-AC5 check starts without Sign (it would read an unsigned local record)" '  check:\n    needs: [build, sign]' '  check:\n    needs: build' \
        "check must need exactly"
-gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: build' '  check:\n    needs: sign' "check must need exactly"
-gr g3  "005-AC5 release does not need rebuild" 'needs: [rebuild, check, sign]' 'needs: [check, sign]' "release must need exactly"
+gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: [build, sign]' '  check:\n    needs: sign' "check must need exactly"
+gr g3  "005-AC5 release does not need rebuild" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign, sign-check]' "release must need exactly"
+gr g3b "005-AC5 release does not need Sign's second call (Rebuild's records would be unsigned)" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign, rebuild, sign-check]' "release must need exactly"
+gr g3c "005-AC5 sign-rebuild does not wait for rebuild" '  sign-rebuild:\n    needs: [build, rebuild]' '  sign-rebuild:\n    needs: build' "sign-rebuild must need exactly"
+gr g3x1 "R2 (round 6) sign-rebuild drops the records input (it would sign whatever arrives under the artifact names)" '      records: ${{ needs.rebuild.outputs.records }}\n' '' "sign-rebuild must pass exactly"
+gr g3f "R2 (round 6) sign-rebuild takes its records from Build's output" 'records: ${{ needs.rebuild.outputs.records }}' 'records: ${{ needs.build.outputs.digests }}' "sign-rebuild must pass exactly"
+gr g3d "005-AC5 sign-rebuild signs the build stage (the wrong records)" '      stage: rebuild' '      stage: build' "sign-rebuild must pass exactly"
+gr g3e "005-AC5 sign without the stage input" '      stage: build\n  rebuild:' '  rebuild:' "sign must pass exactly"
 gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: $GATE\n    needs: check" \
     "sign must need exactly"
-gr g5  "005-AC5 rebuild with an if (it runs after build through needs; an if could skip it)" '  rebuild:\n    needs: build' \
-       '  rebuild:\n    needs: build\n    if: always()' "rebuild may not carry an if"
-gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: build' "  check:\n    needs: build\n    if: $GATE" "check may not carry an if"
-gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [rebuild, check, sign]' \
+gr g5  "005-AC5 rebuild with an if (it runs after build through needs; an if could skip it)" '  rebuild:\n    needs: [build, sign]' \
+       '  rebuild:\n    needs: [build, sign]\n    if: always()' "rebuild may not carry an if"
+gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: [build, sign]' "  check:\n    needs: [build, sign]\n    if: $GATE" "check may not carry an if"
+gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [check, sign, sign-rebuild, sign-check]' \
        "release must carry exactly the if"
-gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [rebuild, check, sign]' \
+gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [check, sign, sign-rebuild, sign-check]' \
        "release must carry exactly the if"
-gr g7  "005-AC5 release runs when a stage failed (!cancelled())" "$REL_HEAD" "  release:\n    if: \${{ !cancelled() }}\n    needs: [rebuild, check, sign]" \
+gr g7  "005-AC5 release runs when a stage failed (!cancelled())" "$REL_HEAD" "  release:\n    if: \${{ !cancelled() }}\n    needs: [check, sign, sign-rebuild, sign-check]" \
        "release must carry exactly the if"
-gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)" "$REL_HEAD" "  release:\n    if: $GATE\n    needs: [rebuild, check, sign]" \
+gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)" "$REL_HEAD" "  release:\n    if: $GATE\n    needs: [check, sign, sign-rebuild, sign-check]" \
        "release must carry exactly the if"
-gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: build' \
-       '  rebuild:\n    continue-on-error: true\n    needs: build' "keys outside"
+gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: [build, sign]' \
+       '  rebuild:\n    continue-on-error: true\n    needs: [build, sign]' "keys outside"
 gr g13 "R3 release without its concurrency group (two publications could interleave and roll :X/:latest back)" '    concurrency:\n      group: release-publish\n      cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' '    uses: ./.github/workflows/stage-promote.yml' "release must hold exactly the concurrency"
 gr g14 "R3 the release concurrency group cancels in progress (a running publication would be killed half way)" 'cancel-in-progress: false\n    uses: ./.github/workflows/stage-promote.yml' 'cancel-in-progress: true\n    uses: ./.github/workflows/stage-promote.yml' "release must hold exactly the concurrency"
 gr g15 "R3 the release concurrency group is shared with something else, or not constant" 'group: release-publish' 'group: ${{ github.ref }}' "release must hold exactly the concurrency"
-gr g16 "R3 a concurrency key on any other chain job is outside the allowed keys" '  rebuild:\n    needs: build' '  rebuild:\n    concurrency: x\n    needs: build' "keys outside"
+gr g16 "R3 a concurrency key on any other chain job is outside the allowed keys" '  rebuild:\n    needs: [build, sign]' '  rebuild:\n    concurrency: x\n    needs: [build, sign]' "keys outside"
 PF_IF="\${{ always() && (contains(needs.*.result, 'failure') || needs.release.result == 'cancelled') && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 PF_OLD="\${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 gr r3a "R3 audit: patch-failed with the old failure()-only if (a cancelled/replaced pending release would open no issue)" "if: $PF_IF" "if: $PF_OLD" "patch-failed must carry exactly the if"
@@ -1085,7 +1234,7 @@ gr g9 "005-AC5 check calls another stage file" 'uses: ./.github/workflows/stage-
 gr g10 "005-AC5 secrets: inherit on a stage call" 'uses: ./.github/workflows/stage-reproducibility.yml' \
        'uses: ./.github/workflows/stage-reproducibility.yml\n    secrets: inherit' "keys outside"
 gr g11 "005-AC5 the Rebuild job is not named rebuild (a failure would not name the stage)" '  rebuild:' '  reproducibility:' "rebuild is missing"
-gr g12 "005-AC5 release without sign" 'needs: [rebuild, check, sign]' 'needs: [rebuild, check]' "release must need exactly"
+gr g12 "005-AC5 release without sign" 'needs: [check, sign, sign-rebuild, sign-check]' 'needs: [check, sign-rebuild]' "release must need exactly"
 FAST='  release-fast:\n    needs: [build, sign]\n    uses: ./.github/workflows/stage-promote.yml\n    secrets: inherit\n  decide:'
 EARLY='  publish-early:\n    needs: [build, sign]\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write\n'
 EARLY="$EARLY"'    steps:\n      - run: gh release create v1 dist/*\n  decide:'
@@ -1124,8 +1273,8 @@ HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissi
 gr g28 "005-AC5 hostile-verify with an app-token step" "$HV []" "$HV\n      - run: echo \${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" "may not use secrets."
 gr g29 "005-AC5 patch-notes needing sign as well as decide" "  patch-notes:\n    needs: decide" "  patch-notes:\n    needs: [decide, sign]" \
     "patch-notes must need exactly"
-gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, check, release]" \
-    "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, check, release]" "may not name an environment"
+gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" \
+    "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" "may not name an environment"
 gr g31 "005-AC5 decide whose if is widened (it would run on a tag)" "github.ref == 'refs/heads/main' && " "" "must carry exactly the if"
 gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: agent" \
        "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
@@ -1153,12 +1302,12 @@ gr g51 "AC12 release.yml's build call passes mode: snapshot (the live chain neve
     "build must pass exactly with"
 gr g52 "AC12 release.yml's build call passes mode: release (a second input: the call is exactly hostile)" "$BHOST" "$BHOST\n      mode: release" \
     "build must pass exactly with"
-gr g53 "AC12 release.yml's rebuild call passes an input (Rebuild takes none; mode: snapshot would be a snapshot Rebuild)" "  rebuild:\n    needs: build" \
-       "  rebuild:\n    needs: build\n    with:\n      mode: snapshot" "rebuild may not pass"
+gr g53 "AC12 release.yml's rebuild call passes an input (Rebuild takes none; mode: snapshot would be a snapshot Rebuild)" "  rebuild:\n    needs: [build, sign]" \
+       "  rebuild:\n    needs: [build, sign]\n    with:\n      mode: snapshot" "rebuild may not pass"
 gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "if: $PNIF" "if: always()" "must carry exactly the if"
 gr g43 "005-AC5 patch-notes without its if" "    needs: decide\n    if: $PNIF" "    needs: decide" "must carry exactly the if"
 gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a stage it does not watch)" \
-       "    needs: [build, sign, rebuild, check, release]" "    needs: [build]" "patch-failed must need exactly"
+       "    needs: [build, sign, rebuild, sign-rebuild, check, sign-check, release]" "    needs: [build]" "patch-failed must need exactly"
 gr g45 "005-AC5 the dry-run dispatch input is a string (inputs.dry-run == true would be false and skip the dry run)" \
        "      dry-run:\n        type: boolean" "      dry-run:\n        type: string" "must be type: boolean"
 # REQ-SCAN-012 (the rule-12 live tests of our VEX files): release.yml may hold exactly three non-chain jobs: the two that federate into the dedicated live-test accounts and persona-uat (the release candidate's persona run, REQ-UAT-001-AC1: needs Build only, publishes nothing).
@@ -1383,32 +1532,24 @@ for tag in fixture real; do
     done
     continue
   fi
-  d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ -f "$d/witness-apk/apk-collection.json" ] && grep -Fq -- '--step apk' <<< "$calls" \
+  d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && [ -f "$d/witness-release-verify/release-verify-collection.json" ] && grep -Fq -- '--step release-verify' <<< "$calls" \
      && grep -Fq -- '-- timeout -k 20 540 bash bin/wrapped.sh' <<< "$calls" && grep -Fxq 'timeout -k 20 540' <<< "$calls"; then
     ok "AC2 $tag helper: the command runs through witness with timeout -k 20 540 and the record is written"
   else
     bad "AC2 $tag helper: rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk SLEEP=6 FAKE_TIMEOUT_SECONDS=1)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-apk/apk-collection.json" ] && [ ! -e "$d/digests.json" ]; then
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify SLEEP=6 FAKE_TIMEOUT_SECONDS=1)
+  if [ "$rc" != 0 ] && [ ! -e "$d/witness-release-verify/release-verify-collection.json" ] && [ ! -e "$d/digests.json" ]; then
     ok "AC2 $tag helper: a command that outlives the (test) timeout fails the job and leaves no record and no digests.json"
   else
-    bad "AC2 $tag helper: slow command -> rc=$rc, files left: $(ls "$d/witness-apk" "$d/digests.json" 2> /dev/null | tr '\n' ' ')"
+    bad "AC2 $tag helper: slow command -> rc=$rc, files left: $(ls "$d/witness-release-verify" "$d/digests.json" 2> /dev/null | tr '\n' ' ')"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk WRAPPED_RC=3)
-  if [ "$rc" != 0 ] && [ ! -e "$d/witness-apk/apk-collection.json" ]; then
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify WRAPPED_RC=3)
+  if [ "$rc" != 0 ] && [ ! -e "$d/witness-release-verify/release-verify-collection.json" ]; then
     ok "AC2 $tag helper: a failing command fails the job and leaves no record"
   else
     bad "AC2 $tag helper: failing command -> rc=$rc"
-  fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" snapshot-apk); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ -f "$d/witness-apk/snapshot-apk-collection.json" ] && [ ! -e "$d/witness-snapshot-apk" ] && grep -Fq -- '--step snapshot-apk' \
-      <<< "$calls";
-  then
-    ok "AC12 $tag helper: a snapshot step writes witness-apk/snapshot-apk-collection.json (the release directory, the snapshot name)"
-  else
-    bad "AC12 $tag helper: snapshot-apk -> rc=$rc, files: $(ls "$d" | tr '\n' ' ')"
   fi
   helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" snapshot-evil); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" = 2 ] && ! grep -q '^witness ' <<< "$calls"; then
@@ -1438,7 +1579,7 @@ for tag in fixture real; do
   else
     bad "AC15 $tag helper: release-sign kept an inherited SIGSTORE_ID_TOKEN (rc=$rc)"
   fi
-  for other in release-publish release-assets apk; do
+  for other in release-publish release-assets release-postverify; do
     helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" $other)
     if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt"; then
       ok "AC15 $tag helper: the step $other has no identity token and no request variable in its environment"
@@ -1460,14 +1601,14 @@ for tag in fixture real; do
   else
     bad "AC2 $tag helper: unknown step -> rc=$rc calls=$calls"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
   if [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 1 ] && grep -q '^::add-mask::' < <(grep 'FAKE-JWT-TOKEN-VALUE' <<< "$printed") \
      && ! grep -q SENTINEL-BEARER <<< "$printed"; then
     ok "AC2 $tag helper: the identity token appears only in the add-mask line and the bearer value is never printed"
   else
     bad "AC2 $tag helper: the token was printed more than in the add-mask line, or the bearer leaked"
   fi
-  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk)
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-verify)
   if [ "$rc" = 0 ] && [ "$(cat "$d/signer-token.txt" 2> /dev/null)" = FAKE-JWT-TOKEN-VALUE ] && [ -f "$d/tokfiles-while-running.txt" ] \
      && [ ! -s "$d/tokfiles-at-start.txt" ] && [ ! -s "$d/tokfiles-while-running.txt" ] && [ -z "$(ls "$d/tmp" 2> /dev/null)" ] \
      && ! grep -q FAKE-JWT-TOKEN-VALUE "$d/wrapped-env.txt"; then
@@ -1564,10 +1705,10 @@ beh_apk() { # beh_apk TAGNAME SCRIPT MODE VERSIONTAG
 beh_assemble() { # beh_assemble TAGNAME SCRIPT MODE VERSIONTAG
   local t=$1 s=$2 mode=$3 v=$4 d="$work/b-asm-$1-$4" rc calls nv nb ni gd gi
   mk "$d" assemble "$s" "$mode" "$v"; rc=$(run_stage "$d" assemble "$mode" "$v"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  nv=$(line_of 'verify verify --stage build' "$d"); nb=$(line_of 'verify bind ' "$d"); ni=$(line_of '^image ' "$d")
-  if [ "$rc" = 0 ] && [ "$(n_calls 'verify verify --stage build' "$d")" = 2 ] && [ "$(n_calls 'verify bind --step apk' "$d")" = 2 ] && [ -n "$nv" ] \
-     && [ -n "$nb" ] && [ -n "$ni" ] && [ "$nv" -lt "$nb" ] && [ "$nb" -lt "$ni" ]; then
-    ok "AC3 $t assemble $v: both records are verified, then both artifact directories are bound, then the repo is built, then the images"
+  nv=$(line_of 'verify verify ' "$d"); nb=$(line_of 'verify bind ' "$d"); ni=$(line_of '^image ' "$d")
+  if [ "$rc" = 0 ] && [ -z "$nv" ] && [ "$(n_calls 'verify bind --local --step apk' "$d")" = 2 ] \
+     && [ -n "$nb" ] && [ -n "$ni" ] && [ "$nb" -lt "$ni" ]; then
+    ok "AC3 $t assemble $v: no verify (the apk records are local, unsigned), both artifact directories are bound to them, then the repo is built, then the images"
   else
     bad "AC3 $t assemble $v: rc=$rc verify=$nv bind=$nb image=$ni"
   fi
@@ -1656,7 +1797,7 @@ PY
     done
   fi
   if [ "$v" = v0.3.0 ]; then
-    mk "$d" assemble "$s" "$mode" "$v"; rc=$(run_stage "$d" assemble "$mode" "$v" FAKE_VERIFY_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+    mk "$d" assemble "$s" "$mode" "$v"; rc=$(run_stage "$d" assemble "$mode" "$v" FAKE_BIND_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
     if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls" && [ ! -e "$d/digests.json" ]; then
       ok "AC3 $t assemble: a refused apk record stops the job before any image"
     else
@@ -1715,15 +1856,15 @@ beh_rebuild_assemble() { # beh_rebuild_assemble TAGNAME SCRIPT MODE VERSIONTAG
   else
     bad "005-AC2 $t rebuild-assemble $v: no byte-identical root digests.json (rc=$rc, $(ls "$d" 2> /dev/null | tr '\n' ' ' | head -c 120))"
   fi
-  n1=$(line_of 'verify verify ' "$d")
-  n2=$(line_of 'verify stage-start' "$d")
+  n1=$(line_of 'verify stage-start' "$d")
+  n2=$(line_of 'verify policy' "$d")
   n3=$(line_of 'verify bind ' "$d")
   n4=$(line_of '^image ' "$d")
   n5=$(line_of 'verify items-merge' "$d")
   n6=$(line_of 'verify rebuild-compare' "$d")
   if [ "$rc" = 0 ] && [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$n3" ] && [ -n "$n4" ] && [ -n "$n5" ] && [ -n "$n6" ] && [ "$n2" -lt "$n1" ] \
      && [ "$n1" -lt "$n3" ] && [ "$n3" -lt "$n4" ] && [ "$n4" -lt "$n5" ] && [ "$n5" -lt "$n6" ]; then
-    ok "005-AC2 $t rebuild-assemble $v: stage-start, records verified, binds, images, merge, compare in that order"
+    ok "005-AC2 $t rebuild-assemble $v: policy, stage-start (Build's signed record), local binds, images, merge, compare in that order"
   else
     bad "005-AC2 $t rebuild-assemble $v: rc=$rc order=$n1 $n2 $n3 $n4 $n5 $n6"
   fi
@@ -1756,7 +1897,7 @@ PY
       bad "REQ-REL-010-AC2 $t rebuild-assemble: a different VEX file -> rc=$rc"
     fi
     mk "$d" rebuild-assemble "$s" "$mode" "$v"
-    rc=$(run_stage "$d" rebuild-assemble "$mode" "$v" FAKE_VERIFY_RC=1)
+    rc=$(run_stage "$d" rebuild-assemble "$mode" "$v" FAKE_BIND_RC=1)
     calls=$(cat "$d/calls.log" 2> /dev/null || true)
     if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls"; then
       ok "005-AC2 $t rebuild-assemble: a refused record stops the job before any image"
@@ -1881,7 +2022,7 @@ beh_snapshot_assemble() { # beh_snapshot_assemble TAGNAME SCRIPT MODE
   local t=$1 s=$2 mode=$3 d="$work/b-sasm-$1" rc calls tampered
   REF_NAME=123/merge; mk "$d" snapshot-assemble "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" snapshot-assemble "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls" && [ "$(n_calls 'verify bind --step snapshot-apk' "$d")" = 2 ] \
+  if [ "$rc" = 0 ] && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls" && [ "$(n_calls 'verify bind --local --step snapshot-apk' "$d")" = 2 ] \
      && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" -ge 3 ]; then
     ok \
         "AC12 $t snapshot-assemble: no policy, no verify, no stage-start (a snapshot record is refused by them); both directories bound as snapshot-apk"
@@ -1941,10 +2082,10 @@ beh_snapshot_rebuild_assemble() { # beh_snapshot_rebuild_assemble TAGNAME SCRIPT
   local t=$1 s=$2 mode=$3 d="$work/b-srbs-$1" rc calls n1 n2 n3 n4
   REF_NAME=123/merge; mk "$d" snapshot-rebuild-assemble "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" snapshot-rebuild-assemble "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  n1=$(line_of 'verify bind --step snapshot-rapk' "$d"); n2=$(line_of '^image ' "$d"); n3=$(line_of 'verify items-merge' "$d")
-  n4=$(line_of 'verify rebuild-compare --snapshot --build-record witness-build/snapshot-build-collection.json' "$d")
+  n1=$(line_of 'verify bind --local --step snapshot-rapk' "$d"); n2=$(line_of '^image ' "$d"); n3=$(line_of 'verify items-merge' "$d")
+  n4=$(line_of 'verify rebuild-compare --snapshot --build-record witness-build/snapshot-build-collection.local.json' "$d")
   if [ "$rc" = 0 ] && [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$n3" ] && [ -n "$n4" ] && [ "$n1" -lt "$n2" ] && [ "$n2" -lt "$n3" ] && [ "$n3" -lt "$n4" ] \
-     && [ "$(n_calls 'verify bind --step snapshot-rapk' "$d")" = 2 ] && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls"; then
+     && [ "$(n_calls 'verify bind --local --step snapshot-rapk' "$d")" = 2 ] && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls"; then
     ok \
         "005-AC7 $t snapshot-rebuild-assemble: bind (twice), images, merge, then the --snapshot compare with Build's snapshot-build record; no policy or verify"
   else
@@ -2039,6 +2180,12 @@ bad = []
 own = {(s.get("with") or {}).get("name") for jn, j in (d.get("jobs") or {}).items() for s in (j.get("steps") or []) if jn == "vex-attach" and str(s.get("uses", "")).startswith("actions/upload-artifact@")} & {"vex-attach"}      # what the rescan's own vex-attach job uploads (the digests of its scratch attestations), nothing else
 for jn, j in (d.get("jobs") or {}).items():
     for s in (j.get("steps") or []):
+        w_ = s.get("with") or {}
+        # the daily rescan's panel job downloads each scanner job's artifact by ARTIFACT ID (cache#602: one artifact can never stand for another); bin/panel-wiring-test.sh judges those four in full
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and "artifact-ids" in w_:
+            if jn != "panel" or not re.fullmatch(r"\$\{\{ needs\.panel-(grype|scout|inspector|google)\.outputs\.artifact-id \}\}", w_.get("artifact-ids", "")) or set(w_) != {"artifact-ids", "path"}:
+                bad.append("%s downloads by artifact id %r, which only the panel job may do, and only a scanner job's own artifact" % (jn, w_.get("artifact-ids")))
+            continue
         if str(s.get("uses", "")).startswith("actions/download-artifact@") and "pattern" not in (s.get("with") or {}) and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items") + tuple(own):
             bad.append("%s downloads %r, which neither Build nor this workflow's own vex-attach job uploads" % (jn, (s.get("with") or {}).get("name")))
         if str(s.get("uses", "")).startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") in own and jn != "panel-scout":
@@ -2064,16 +2211,22 @@ f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/sca
 f1 caught "the debug variant in a scan loop is caught" "$root/.github/workflows/scan.yml" 's/for v in production fips/for v in production debug fips/'
 f1 caught "a <variant>.tar archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#oci:/tmp/oci/${v}#oci-archive:/tmp/oci/${v}.tar#'
 f1 caught "a download of an artifact Build never uploads is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: oci-images/'
+f1 caught "a panel download by artifact id of something that is not a scanner job's own artifact is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/artifact-ids: ${{ needs.vex-attach.outputs.artifact-id }}/'
+f1 caught "a download by artifact id outside the panel job is caught" "$root/.github/workflows/main-candidate-rescan.yml" '1,/name: images/s/name: images/artifact-ids: ${{ needs.panel-grype.outputs.artifact-id }}/'
+f1 caught "a panel download by artifact id with a name beside it is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#name: images#'
+f1 caught "a panel download by artifact id with another key (run-id) in place of the path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#path: /tmp/panel/panel-scout#run-id: 123#'
 # Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) runs the REAL `policy make` of bin/chain-verify.py in both assemble scripts (the
 # harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; a near-miss tag stops at the policy, before any build
 for kind in assemble rebuild-assemble; do
   rd="$work/rcp-$kind"; mk "$rd" "$kind" "$root/bin/build-stage-$kind.sh" real v0.3.0-rc1; rc=$(run_stage "$rd" "$kind" real v0.3.0-rc1)
-  if [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" else 1)' "$rd/policy.json" 2> /dev/null; then
+  if [ "$kind" = assemble ] && [ "$rc" = 0 ] && [ ! -e "$rd/policy.json" ]; then
+    ok "AC12/rc $kind: the tag v0.3.0-rc1 completes with no policy (the apk records are local; the REAL admission-baseline reads the full tag)"
+  elif [ "$kind" = rebuild-assemble ] && [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" else 1)' "$rd/policy.json" 2> /dev/null; then
     ok "AC12/rc $kind: the tag v0.3.0-rc1 passes the REAL policy make and the policy carries the full tag"
   else bad "AC12/rc $kind: v0.3.0-rc1 through the real policy make: rc=$rc $(head -c 160 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   for nm in v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x; do
     rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$root/bin/build-stage-$kind.sh" real v0.3.0-rc1; rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
-    if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q 'refused at policy' "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the real policy make, before any image is built"
+    if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q "refused at $([ "$kind" = assemble ] && echo 'build: tag' || echo policy)" "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the real policy make, before any image is built"
     else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   done
 done
@@ -2402,7 +2555,6 @@ jobs:
       checks: read
       statuses: read
       pull-requests: read
-      id-token: write
     uses: ./.github/workflows/stage-build.yml
     with:
       mode: snapshot
@@ -2433,7 +2585,6 @@ rebuild = """  rebuild:
     needs: build
     permissions:
       contents: read
-      id-token: write
     uses: ./.github/workflows/stage-reproducibility.yml
     with:
       mode: snapshot
@@ -2454,8 +2605,8 @@ cl c3  "AC14 no input at all (the stage's default is release)" "    with:\n     
 cl c4  "AC14 secrets: inherit" "      mode: snapshot" "      mode: snapshot\n    secrets: inherit" "keys outside"
 cl c5 "AC14 an if on the call" "    uses: ./.github/workflows/stage-build.yml" \
     "    if: github.event_name == 'push'\n    uses: ./.github/workflows/stage-build.yml" "keys outside"
-cl c6 "AC14 the old wider grants (packages and attestations write)" "      id-token: write\n    uses" \
-    "      id-token: write\n      packages: write\n      attestations: write\n    uses" \
+cl c6 "AC14 the old wider grants (packages and attestations write)" "      pull-requests: read\n    uses" \
+    "      pull-requests: read\n      packages: write\n      attestations: write\n    uses" \
        "exactly the permissions"
 cl c7  "AC14 narrower grants than the stage requests (a startup_failure with zero jobs)" "      statuses: read\n" "" "exactly the permissions"
 cl c8 "AC14 a call of the deleted stage-image.yml" "  scanners:" \
@@ -2508,7 +2659,7 @@ expect caught "AC14 allowlist: main-candidate-rescan.yml has no artifact-accepta
 expect ok "AC14 fixture scan.yml: build then rebuild, both in snapshot mode" "" callers "$work/scanfx/scan.yml"
 expect ok "AC14 fixture main-candidate-rescan.yml: build only" "" callers "$work/rescanfx/main-candidate-rescan.yml"
 cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing"
-SCAN_REBUILD="  rebuild:\n    needs: build\n    permissions:\n      contents: read\n      id-token: write\n"
+SCAN_REBUILD="  rebuild:\n    needs: build\n    permissions:\n      contents: read\n"
 SCAN_REBUILD="$SCAN_REBUILD    uses: ./.github/workflows/stage-reproducibility.yml\n    with:\n      mode: snapshot\n"
 sc s1 "AC14 scan.yml without the Rebuild call (the PR gate would lose rule 31's two-assembly check)" \
       "$SCAN_REBUILD" "" "must also call Rebuild"
@@ -2516,19 +2667,23 @@ sc s2 "AC14 scan.yml's rebuild in release mode" "      mode: snapshot\n  scanner
 sc s3 "AC14 scan.yml's rebuild with an extra input" "      mode: snapshot\n  scanners:" "      mode: snapshot\n      hostile: true\n  scanners:" \
     "rebuild must pass exactly"
 sc s4 "AC14 scan.yml's rebuild that needs nothing (it could run before Build)" "  rebuild:\n    needs: build\n" "  rebuild:\n" "must need exactly build"
-sc s5 "AC14 scan.yml's rebuild with contents: write" "      contents: read\n      id-token: write\n    uses: ./.github/workflows/stage-reproducibility.yml" \
-      "      contents: write\n      id-token: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
-sc s6 "AC14 scan.yml's rebuild with a packages write grant" "      id-token: write\n    uses: ./.github/workflows/stage-reproducibility.yml" \
-      "      id-token: write\n      packages: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
+sc s5 "AC14 scan.yml's rebuild with contents: write" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
+      "      contents: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
+sc s6 "AC14 scan.yml's rebuild with a packages write grant" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
+      "      contents: read\n      packages: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "static ceiling"
 sc s7 "AC14 scan.yml's rebuild with secrets" "      mode: snapshot\n  scanners:" "      mode: snapshot\n    secrets: inherit\n  scanners:" "keys outside"
 mkdir -p "$work/rescanfx2"; cp "$work/scanfx/scan.yml" "$work/rescanfx2/main-candidate-rescan.yml"
 expect caught "AC14 main-candidate-rescan.yml calls Rebuild too (it needs none)" "calls Build only" callers "$work/rescanfx2/main-candidate-rescan.yml"
-# (B) the callers' grants are a STATIC CEILING: no write but id-token, whatever the stage asks for
+# (B) the callers' grants are a STATIC CEILING: read only, whatever the stage asks for (the building jobs hold no identity token)
 cl w1 "AC14 ceiling: contents: write on the build call" "      contents: read\n      checks: read" "      contents: write\n      checks: read" "static ceiling"
-cl w2 "AC14 ceiling: packages: write on the build call" "      id-token: write\n    uses" "      id-token: write\n      packages: write\n    uses" \
+cl w2 "AC14 ceiling: packages: write on the build call" "      pull-requests: read\n    uses" "      pull-requests: read\n      packages: write\n    uses" \
     "static ceiling"
-cl w3 "AC14 ceiling: attestations: write on the build call" "      id-token: write\n    uses" \
-    "      id-token: write\n      attestations: write\n    uses" "static ceiling"
+cl w3 "AC14 ceiling: attestations: write on the build call" "      pull-requests: read\n    uses" \
+    "      pull-requests: read\n      attestations: write\n    uses" "static ceiling"
+cl w6 "AC14 ceiling: id-token: write on the build call (the building jobs hold no identity token, so the caller may not grant one: owner Oct 22)" "      pull-requests: read\n    uses" \
+    "      pull-requests: read\n      id-token: write\n    uses" "exactly the permissions"
+sc s8 "AC14 scan.yml's rebuild with id-token: write (the building jobs hold none)" "      contents: read\n    uses: ./.github/workflows/stage-reproducibility.yml" \
+      "      contents: read\n      id-token: write\n    uses: ./.github/workflows/stage-reproducibility.yml" "exactly the permissions"
 cl w4 "AC14 ceiling: checks: write on the build call" "      checks: read" "      checks: write" "static ceiling"
 cl w5 "AC14 ceiling: statuses: write on the build call" "      statuses: read" "      statuses: write" "static ceiling"
 cl w6 "AC14 ceiling: pull-requests: write on the build call" "      pull-requests: read" "      pull-requests: write" "static ceiling"
@@ -2821,7 +2976,7 @@ for f in files:
             assert not bad, "%s:%d uses the host-tools root as a root or mount (%s)" % (f, i, bad.group(0))
 assert used >= 3, "the scan found no use of the host-tools root"
 PY
-EXPECT=962
+EXPECT=1031
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
