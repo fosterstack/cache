@@ -470,6 +470,7 @@ a trailing slash in the repository|pkg:oci/cache?repository_url=registry.example
 an empty path segment in the repository|pkg:oci/cache?repository_url=registry.example//team/cache|
 a port with no number|pkg:oci/cache?repository_url=registry.example:/team/cache|
 a repository with no path|pkg:oci/cache?repository_url=registry.example|
+a newline after the repository|{"@id":"pkg:oci/cache?repository_url=registry.example/team/cache\n"}|
 a percent-encoded repository|pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache|
 a path after the image name|pkg:oci/cache/extra?repository_url=ghcr.io/fosterstack/cache|
 a product that is not an object|"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"|
@@ -1317,7 +1318,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=454
+EXPECT=456
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
