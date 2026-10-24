@@ -4023,8 +4023,8 @@ def ask(text):
     a=C._handle({'finding_id':'CVE-X','package':'p','kind':'disposition'},Client())
     return a.get('category'), a.get('refused')
 got=[ask('{\"category\": \"false_positive\"}'), ask('This is not a false_positive; it is real_fixable.'), ask('{\"category\": \"not a false_positive\"}'),
-     ask('I cannot assess this.'), ask('{\"refused\": true}'), ask('Analysis: {\"category\": \"real_fixable\", \"x\": 1}'), ask('{\"category\": \"real_fixable or false_positive\"}')]
-want=[('false_positive',False),('under_investigation',False),('under_investigation',False),('under_investigation',False),('under_investigation',True),('real_fixable',False),('under_investigation',False)]
+     ask('I cannot assess this.'), ask('{\"refused\": true}'), ask('{\"category\": \"real_fixable\", \"x\": 1}'), ask('{\"category\": \"real_fixable or false_positive\"}'), ask('Example: {\"category\": \"false_positive\"} then {\"refused\": true}'), ask('{\"refused\": true, \"category\": \"real_fixable\"}'), ask('Analysis: {\"category\": \"real_fixable\"}')]
+want=[('false_positive',False),('under_investigation',False),('under_investigation',False),('under_investigation',False),('under_investigation',True),('real_fixable',False),('under_investigation',False),('under_investigation',False),('under_investigation',True),('under_investigation',False)]
 print('OK' if got==want else 'BAD %r'%(got,))" 2>/dev/null | tail -1)"
 eq "$r12" "OK" && ok || no "client category and refusal are read from exact JSON keys" "$r12"
 begin "rc5b-12-proposals-validated-by-shape-and-name" "a model proposal is kept only with exactly the allowed keys, a known kind, string fields within the length cap and no vendor/model name; a refused proposal does not stop the run"
@@ -4036,12 +4036,19 @@ good={'kind':'defect_log','package':'libpropose','keys':[{'scanner':'grype','fin
 bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''), dict(good,evidence=['x']), dict(good,note=3), dict(good,keys='x'),
      dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'p','extra':'y'}]), dict(good,keys=[{'scanner':'grype','finding_id':1,'purl':'p'}]),
      dict(good,note='proposed by Claude'), dict(good,evidence='per the gpt-5 analysis'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
-     dict(good,note='x'*2001), None, 'x', [], {}]
-os.environ['AUDITOR_MODEL_PRIMARY']='secret-model-id-7'
-bad.append(dict(good,note='uses secret-model-id-7'))
+     dict(good,note='x'*2001), None, 'x', [], {},
+     {'kind':'knowledge'}, {'evidence':'e'}, dict(good,keys=[{}]), dict(good,keys=[{'scanner':'s'}]),
+     dict(good,note='\\uff23\\uff4c\\uff41\\uff55\\uff44\\uff45'), dict(good,note='Cl\\u0430ude'), dict(good,note='Cl\\u200baude'), dict(good,note='Clau',evidence='de says no'),
+     dict(good,package='an',note='thropic'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/\\uff4fpus@1'}])]
 ok=R._valid_proposal(good)==good and R._valid_proposal({'kind':'knowledge','evidence':'e'})=={'kind':'knowledge','evidence':'e'}
 rej=[b for b in bad if R._valid_proposal(b) is not None]
-print('OK' if ok and not rej else 'BAD kept=%r ok=%s'%(rej,ok))" 2>/dev/null | tail -1)"
+# configured model identifiers of this run, one at a time (no minimum length), each also against the kind field
+cfg_rej=[]
+for k,v,prop in (('AUDITOR_MODEL_PRIMARY','secret-model-id-7',dict(good,note='uses secret-model-id-7')), ('AUDITOR_MODEL_FALLBACK','q2',dict(good,note='the q2 route')), ('AUDITOR_MODEL_FALLBACK','knowledge',{'kind':'knowledge','evidence':'e'})):
+    os.environ[k]=v
+    if R._valid_proposal(prop) is not None: cfg_rej.append(v)
+    del os.environ[k]
+print('OK' if ok and not rej and not cfg_rej else 'BAD kept=%r cfg=%r ok=%s'%(rej,cfg_rej,ok))" 2>/dev/null | tail -1)"
 eq "$r12p" "OK" && ok || no "_valid_proposal keeps a well-shaped proposal and refuses every mis-shaped or name-bearing one" "$r12p"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 

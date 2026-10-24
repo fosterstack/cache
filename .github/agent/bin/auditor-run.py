@@ -1997,28 +1997,47 @@ def _configured_model_values():
 
 
 _PROP_KEYS = {"kind", "package", "keys", "note", "evidence"}
+_PROP_REQUIRED = {"kind", "evidence"}
 _PROP_KEY_KEYS = {"scanner", "finding_id", "purl"}
 _PROP_MAX = 2000
+# lookalike letters (Cyrillic, Greek) folded to Latin, so a vendor name written with one of them is still a vendor name
+_LOOKALIKE = str.maketrans({"\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0441": "c", "\u0440": "p", "\u0456": "i", "\u0455": "s", "\u0443": "y", "\u0445": "x", "\u0501": "d",
+                            "\u03bf": "o", "\u03bd": "v", "\u03b9": "i", "\u03c1": "p", "\u03b1": "a", "\u03b5": "e", "\u03ba": "k", "\u043d": "h", "\u0442": "t", "\u043c": "m"})
 
 
-def _scrubbed(x):
-    """True when the text holds no vendor/model attribution and none of this run's configured model identifiers (row 48: the public repo names none)."""
-    if FORBIDDEN_NAMES.search(x):
+def _fold(x):
+    """NFKC, format characters (zero-width and the like) removed, lookalikes folded, lower-cased."""
+    import unicodedata
+    y = unicodedata.normalize("NFKC", x)
+    y = "".join(c for c in y if unicodedata.category(c) not in ("Cf", "Cc") or c in "\n\t")
+    return y.translate(_LOOKALIKE).lower()
+
+
+def _scrubbed_all(texts):
+    """True when no string, taken alone or joined with the others (a name split across fields) and with every separator removed, holds a vendor/model name or any
+    configured model identifier of this run (row 48: the public repo names none). No minimum length for the configured identifiers."""
+    folded = [_fold(t) for t in texts]
+    squashed = [re.sub(r"[^a-z0-9]", "", f) for f in folded]
+    pairs = [a + b for a in squashed for b in squashed]            # a name split across two fields, in either order
+    haystacks = folded + [" ".join(folded)] + squashed + ["".join(squashed)] + pairs
+    if any(FORBIDDEN_NAMES.search(h) for h in haystacks):
         return False
-    cfg = _configured_model_values()
-    return not (cfg and re.search("|".join(cfg), x, re.I))
+    cfg = [re.sub(r"[^a-z0-9]", "", _fold(v)) for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and v.strip()]
+    return not any(c and (c in sq) for c in cfg for sq in squashed + ["".join(squashed)] + pairs) and not any(
+        _fold(v.strip()) in h for k, v in os.environ.items() if k.startswith("AUDITOR_MODEL") and v and v.strip() for h in folded)
 
 
 def _valid_proposal(pr):
-    """A model-proposed defect-log/knowledge entry, validated by SHAPE (rc-5b R4; REQ-AUD-17 AC4 "code validation"): exactly the keys kind/package/keys/note/evidence, kind one of
-    defect_log|knowledge, evidence a non-empty string, the other fields strings (keys: a list of {scanner, finding_id, purl} strings), each at most 2000 characters, and no
-    string naming a vendor or model. Anything else returns None: the proposal is refused (and counted), never forwarded, and the run goes on."""
-    if not isinstance(pr, dict) or set(pr) - _PROP_KEYS or pr.get("kind") not in ("defect_log", "knowledge"):
+    """A model-proposed defect-log/knowledge entry, validated by SHAPE (rc-5b R4; REQ-AUD-17 AC4 "code validation"): the keys are within kind/package/keys/note/evidence and
+    kind and evidence are present; kind is defect_log|knowledge; evidence a non-empty string; the other fields strings (keys: a list of objects with exactly scanner, finding_id
+    and purl, all strings); each at most 2000 characters; and no string, alone or joined with the others, names a vendor or model. Anything else returns None: the proposal
+    is refused (and counted), never forwarded, and the run goes on."""
+    if not isinstance(pr, dict) or set(pr) - _PROP_KEYS or _PROP_REQUIRED - set(pr) or pr.get("kind") not in ("defect_log", "knowledge"):
         return None
     ev = pr.get("evidence")
     if not isinstance(ev, str) or not ev.strip():
         return None
-    texts = [ev]
+    texts = [pr["kind"], ev]
     for k in ("package", "note"):
         if k in pr:
             if not isinstance(pr[k], str):
@@ -2028,10 +2047,10 @@ def _valid_proposal(pr):
         if not isinstance(pr["keys"], list):
             return None
         for kk in pr["keys"]:
-            if not isinstance(kk, dict) or set(kk) - _PROP_KEY_KEYS or not all(isinstance(v, str) for v in kk.values()):
+            if not isinstance(kk, dict) or set(kk) != _PROP_KEY_KEYS or not all(isinstance(v, str) for v in kk.values()):
                 return None
-            texts += list(kk.values())
-    if any(len(t) > _PROP_MAX or not _scrubbed(t) for t in texts):
+            texts += [kk["scanner"], kk["finding_id"], kk["purl"]]
+    if any(len(t) > _PROP_MAX for t in texts) or not _scrubbed_all(texts):
         return None
     return pr
 

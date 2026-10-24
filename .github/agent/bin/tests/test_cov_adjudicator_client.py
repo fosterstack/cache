@@ -283,7 +283,7 @@ class Handle(Base):
         self.assertEqual(client.messages.calls[1]["model"], "claude-primary-x1")
 
     def test_disposition_context_prompt_and_category(self):
-        client = FakeClient([Msg('I judge this: {"category": "false_positive"}', usage=(7, 3))])
+        client = FakeClient([Msg('{"category": "false_positive"}', usage=(7, 3))])
         req = {"finding_id": "CVE-2024-1", "package": "zlib", "installed_version": "1.2",
                "severity": None, "scanners": ["grype", "trivy"]}
         ans = C._handle(req, client)
@@ -325,12 +325,20 @@ class Handle(Base):
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg("I CANNOT decide this.")]))               # a word in prose is not a refusal (rc-5b R5)
         self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"))
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg('{"refused": true, "category": "not_affected_unreachable"}')]))
-        self.assertEqual((ans["refused"], ans["category"]), (False, "not_affected_unreachable"))
+        self.assertEqual((ans["refused"], ans["category"]), (True, "under_investigation"))                  # a refusal is never converted into a disposition
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg("unclear")]))
         self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"))
 
+    def test_the_whole_response_must_be_one_json_object(self):
+        for text in ('example {"category": "false_positive"} final {"category": "real_fixable"}', 'Example only: {"category":"false_positive"}. I decline: {"refused":true}',
+                     '[{"category": "real_fixable"}]', '{"category": "real_fixable"} {"category": "false_positive"}', 'Analysis: {"category": "real_fixable"}', '"real_fixable"', ''):
+            ans = C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
+            self.assertEqual((ans["refused"], ans["category"]), (False, "under_investigation"), text)
+        ans = C._handle({"finding_id": "X"}, FakeClient([Msg('  {"category": "real_fixable"}\n')]))
+        self.assertEqual(ans["category"], "real_fixable")
+
     def test_propose_passthrough_only_when_dict(self):
-        text = 'real_fixable\n```json\n{"category": "real_fixable", "propose": {"kind": "defect", "evidence": "a}b"}}\n```'
+        text = '{"category": "real_fixable", "propose": {"kind": "defect", "evidence": "a}b"}}'
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg(text)]))
         self.assertEqual(ans["propose"], {"kind": "defect", "evidence": "a}b"})
         ans = C._handle({"finding_id": "X"}, FakeClient([Msg('real_fixable {"propose": "free text"}')]))
