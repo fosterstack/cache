@@ -155,6 +155,9 @@ ALLOW_PATTERNS=(
   # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
   # suites with their two test helpers
   '^bin/witnessed\.sh$'
+  '^bin/witnessed-local\.sh$'
+  '^bin/witness-sign-staged\.sh$'
+  '^bin/rebuild-records-digests\.sh$'
   '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble|refuse-mode)\.sh$'
   '^bin/build-(admit|archives|version-check)\.py$'
   '^bin/chain_items\.py$'
@@ -169,6 +172,8 @@ ALLOW_PATTERNS=(
   '^bin/loopback-get-test\.sh$'
   '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
   '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/(un)?pack-govulncheck\.sh$'
+  '^bin/check-records-digests\.sh$'
   '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
@@ -282,7 +287,7 @@ ALLOW_PATTERNS=(
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
   # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
-  '^bin/(apk-tool|gen-recipes|go-module-sbom)\.py$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom|install-host-bwrap)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
