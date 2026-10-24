@@ -83,7 +83,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "6bbc34ef5a13ddf74491a87c55b4a554a0ba00c29cdb754abb2120069b9245b2",
+      "sha256": "45f99586b72c3cc2ae654981e04af9518a7fb03c4c63e5203ec5186e657a23c5",
       "tools": [
         "at",
         "curl",
@@ -1366,7 +1366,7 @@
     },
     {
       "path": "bin/acceptance-k8s.sh",
-      "sha256": "559d11a534978607c3176b899c64239e20127dc9e0a7a4a1da114b5fe19087a9",
+      "sha256": "492fa6c7eda66c28d0a0305ad2e6b588ddbc1eac6a60551863e0533ef41ad265",
       "tools": [
         "at",
         "bash",
@@ -1386,7 +1386,6 @@
       "runs": [
         "bin/acceptance-k8s-manifests.py",
         "bin/acceptance-k8s-smoke.py",
-        "bin/install-kind.sh",
         "bin/loopback-get.sh"
       ],
       "signs": false,
@@ -1424,29 +1423,6 @@
           "rule": "deny",
           "line": "[ -n \"${IMAGE_REF:-}\" ] || { echo \"acceptance-serve: IMAGE_REF is unset\" >&2; exit 2; }",
           "line_sha256": "a7202d42c28be3cd7fd93c0abe990931ff36274c6312ee55b9706a6fc04ade30",
-          "count": 1,
-          "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
-        }
-      ]
-    },
-    {
-      "path": "bin/install-kind.sh",
-      "sha256": "f4e7f3e861fdcb46086f6118d2ef3dcdc8934d0442c721f22c69cd0f2c30fc18",
-      "tools": [
-        "curl",
-        "docker",
-        "kubectl",
-        "node",
-        "trap"
-      ],
-      "runs": [],
-      "signs": false,
-      "reason": "installs kind and kubectl at exact versions against committed sha256 (REQ-CHAIN-006-AC14)",
-      "exceptions": [
-        {
-          "rule": "deny",
-          "line": "[ \"$(uname -s)-$(uname -m)\" = Linux-x86_64 ] || { echo \"install-kind: only linux amd64 is pinned (the Check runner is ubuntu-24.04)\" >&2; exit 1; }",
-          "line_sha256": "af6d30eba1ea58ca8a9c0c6e505928a618923927c3bb79e95e4e1e695719e779",
           "count": 1,
           "why": "a test command ([ ... ] or [[ ... ]]) on this line holds a quoted substitution or parameter expansion: it is a test, not a subscript (REQ-CHAIN-001-AC1; tool-generated waiver reviewed as one batch in PR 452, every waived line is a real test)"
         }
@@ -2647,7 +2623,8 @@
         "wc"
       ],
       "signs": false,
-      "reason": "the only way a script reaches a loopback or in-cluster address: a closed URL and option list over curl (REQ-SUP-001-AC24)"
+      "reason": "the only way a script reaches a loopback or in-cluster address: a closed URL and option list over curl (REQ-SUP-001-AC24)",
+      "runs": []
     },
     {
       "path": "bin/release-compare.sh",
