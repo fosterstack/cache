@@ -261,6 +261,29 @@ CHAIN_GATE = {
         "run": "for r in \"$R1\" \"$R2\" \"$R3\" \"$R4\"; do [ \"$r\" = success ] || { echo \"a shard of allowlist-chain did not succeed: [$r]\"; exit 1; }; done",
     }],
 }
+# REQ-CI-001 for the pins-auditor job (advisor Oct 24: it was the longest job of a PR's CI, 25 min): accepted in EXACTLY TWO forms too, the one job (SPLIT_STEPS below) or three
+# shards allowlist-pins-auditor-1..3 plus a gate that keeps the name allowlist-pins-auditor. The first group is job-isolation-test.sh (8.8 min alone); the second holds the
+# pin-age-check, panel-wiring and four smaller suites (about 8.5); the third shard takes every other suite step. Every shard opens with the five setup steps.
+PA_SHARD_IDS = ["allowlist-pins-auditor-1", "allowlist-pins-auditor-2", "allowlist-pins-auditor-3"]
+PA_GROUPS = [
+    ["bash bin/job-isolation-test.sh"],
+    ["bash .github/agent/tests/pin-age-check-test.sh", "bash bin/panel-wiring-test.sh", "bash bin/go-freshness-wiring-test.sh", "bash bin/rescan-current-only-test.sh",
+     "bash .github/agent/tests/k8s-harness-fence-test.sh", "bash .github/agent/tests/supply-chain-wiring-test.sh"],
+]
+PA_SETUP = 5
+PA_GATE = {
+    "name": "allowlist-pins-auditor",
+    "runs-on": "ubuntu-latest",
+    "needs": PA_SHARD_IDS,
+    "if": "${{ always() }}",
+    "steps": [{
+        "name": "every shard of allowlist-pins-auditor succeeded (a failed, skipped, cancelled or missing result fails)",
+        "env": {"R%d" % k: "${{ needs.allowlist-pins-auditor-%d.result }}" % k for k in range(1, 4)},
+        "run": "for r in \"$R1\" \"$R2\" \"$R3\"; do [ \"$r\" = success ] || { echo \"a shard of allowlist-pins-auditor did not succeed: [$r]\"; exit 1; }; done",
+    }],
+}
+# the jobs that have a split form: (shard ids, groups, setup steps, gate)
+SPLITS = {"allowlist-chain": (CHAIN_SHARD_IDS, CHAIN_GROUPS, CHAIN_SETUP, CHAIN_GATE), "allowlist-pins-auditor": (PA_SHARD_IDS, PA_GROUPS, PA_SETUP, PA_GATE)}
 _jobs_ = d.get("jobs") or {}
 chain_split = any(k in _jobs_ for k in CHAIN_SHARD_IDS)
 if chain_split:   # the suites and guard steps are then spread over the shards: each must still be there exactly once in all of them
@@ -656,32 +679,34 @@ SPLIT_STEPS = json.loads(r'''{
   }
  ]
 }''')
-def chain_shard_steps(k):   # the exact step list of shard k (1-based): the setup steps, then its suites in the one job's order
-    full = SPLIT_STEPS["allowlist-chain"]
+def split_shard_steps(jid, k):   # the exact step list of shard k (1-based) of job jid: the setup steps, then its suites in the one job's order
+    _ids, groups_, setup_, _gate = SPLITS[jid]
+    full = SPLIT_STEPS[jid]
     pos = {}
-    for i in range(CHAIN_SETUP, len(full)):
+    for i in range(setup_, len(full)):
         pos.setdefault((full[i].get("run") or "").strip(), []).append(i)
     groups = []
-    for g in CHAIN_GROUPS:
+    for g in groups_:
         idx = []
         for r in g:
             if len(pos.get(r, [])) != 1:
-                bad.append(f"CHAIN_GROUPS names a step that is not exactly once in the one job's list: {r!r}")
+                bad.append(f"the groups of {jid} name a step that is not exactly once in the one job's list: {r!r}")
             else:
                 idx.append(pos[r][0])
         groups.append(sorted(idx))
     taken = {i for g in groups for i in g}
-    groups.append([i for i in range(CHAIN_SETUP, len(full)) if i not in taken])
-    return full[:CHAIN_SETUP] + [full[i] for i in groups[k - 1]]
+    groups.append([i for i in range(setup_, len(full)) if i not in taken])
+    return full[:setup_] + [full[i] for i in groups[k - 1]]
 for jid, want_steps in SPLIT_STEPS.items():
-    if jid == "allowlist-chain" and chain_split:   # the second exact form: four shards (each exactly its list) and the gate (exactly CHAIN_GATE)
-        extra = sorted(k for k in _jobs_ if k.startswith("allowlist-chain-") and k not in CHAIN_SHARD_IDS)
+    if jid in SPLITS and any(k in _jobs_ for k in SPLITS[jid][0]):   # the second exact form: the shards (each exactly its list) and the gate (exactly its judged gate)
+        shard_ids_, _g, setup_, gate_ = SPLITS[jid]
+        extra = sorted(k for k in _jobs_ if k.startswith(jid + "-") and k not in shard_ids_)
         if extra:
-            bad.append(f"unexpected jobs {extra} next to the allowlist-chain shards")
-        for n_, k in enumerate(CHAIN_SHARD_IDS, 1):
+            bad.append(f"unexpected jobs {extra} next to the {jid} shards")
+        for n_, k in enumerate(shard_ids_, 1):
             sj = _jobs_.get(k)
             if not isinstance(sj, dict):
-                bad.append(f"the shard {k} of allowlist-chain is missing")
+                bad.append(f"the shard {k} of {jid} is missing")
                 continue
             for key in sorted(set(sj) - {"name", "runs-on", "steps"}):
                 bad.append(f"the {k} job has `{key}`")
@@ -689,19 +714,19 @@ for jid, want_steps in SPLIT_STEPS.items():
                 bad.append(f"the {k} job is not named `{k}`")
             if sj.get("runs-on") != "ubuntu-latest":
                 bad.append(f"the {k} job does not run on exactly `ubuntu-latest`")
-            if sj.get("steps") != chain_shard_steps(n_):
+            if sj.get("steps") != split_shard_steps(jid, n_):
                 bad.append(f"the {k} steps are not exactly the judged list (REQ-CI-001-AC1: every step of the one job in exactly one shard, unchanged, in order)")
-        # REQ-CI-001-AC1/AC4, exactly once across the WHOLE workflow: a chain suite appears once more than it does in the other judged jobs (the pins-auditor
-        # job runs one of them too) and nowhere else, so a copy kept in the allowlist job or in a renamed original job is refused
-        others = [st for oj, ws in SPLIT_STEPS.items() if oj != "allowlist-chain" for st in ws]
-        for st_ in SPLIT_STEPS["allowlist-chain"][CHAIN_SETUP:]:
+        # REQ-CI-001-AC1/AC4, exactly once across the WHOLE workflow: a suite of this job appears once more than it does in the other judged jobs and nowhere else, so a copy
+        # kept in the allowlist job, in another judged job or in a renamed original job is refused
+        others = [st for oj, ws in SPLIT_STEPS.items() if oj != jid for st in ws]
+        for st_ in SPLIT_STEPS[jid][setup_:]:
             r_ = (st_.get("run") or "").strip()
             have_ = sum(1 for j_ in _jobs_.values() if isinstance(j_, dict) for x_ in (j_.get("steps") or []) if isinstance(x_, dict) and (x_.get("run") or "").strip() == r_)
             want_ = 1 + sum(1 for x_ in others if (x_.get("run") or "").strip() == r_)
             if have_ != want_:
                 bad.append(f"the step running `{r_}` appears {have_} times in the workflow, not {want_} (REQ-CI-001-AC1: exactly once across the shards, nowhere else)")
-        if _jobs_.get("allowlist-chain") != CHAIN_GATE:
-            bad.append("the allowlist-chain gate job is not exactly the judged gate (REQ-CI-001-AC2: needs the four shards, always runs, no checkout, fails on anything but success)")
+        if _jobs_.get(jid) != gate_:
+            bad.append(f"the {jid} gate job is not exactly the judged gate (REQ-CI-001-AC2: needs every shard, always runs, no checkout, fails on anything but success)")
         continue
     sj = d.get("jobs", {}).get(jid)
     if not isinstance(sj, dict):
@@ -1064,7 +1089,7 @@ case_ split-job-needs         bad "d['jobs']['allowlist-chain']['needs'] = ['lin
 case_ split-job-runs-on       bad "d['jobs']['allowlist-persona']['runs-on'] = 'self-hosted'"
 case_ split-job-continue      bad "d['jobs']['allowlist-chain']['steps'][-1]['continue-on-error'] = 'true'"
 case_ split-step-if           bad "d['jobs']['allowlist-persona']['steps'][-1]['if'] = 'false'"
-case_ split-step-shell        bad "d['jobs']['allowlist-pins-auditor']['steps'][-2]['shell'] = 'bash -c true {0}'"
+case_ split-step-shell        bad "d['jobs']['allowlist-pins-auditor-3']['steps'][-2]['shell'] = 'bash -c true {0}'"
 case_ split-anchor-gone       bad "st = d['jobs']['allowlist-chain-2']['steps']; st[:] = [x for x in st if 'assemble-image-test' not in (x.get('run') or '')]"
 case_ split-no-checkout       bad "d['jobs']['allowlist-persona']['steps'].pop(0)"
 case_ split-job-env           bad "d['jobs']['allowlist-chain']['env'] = {'X': '1'}"
@@ -1081,32 +1106,69 @@ cat > "$work/split.py" <<'PYS'
 import copy
 GROUPS = [["bash bin/chain-sign-wiring-test.sh"], ["bash bin/assemble-image-test.sh", "bash bin/inspector-reuse-test.sh", "bash bin/go-bump-open-pr-test.sh"],
           ["bash bin/refresh-inputs-test.sh", "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh", "bash bin/build-apk-test.sh"]]   # the rest is the fourth shard (it keeps the grype installer with its consumers)
-def split_chain(d):
-    if "allowlist-chain-1" in d["jobs"]:   # ci.yml is already split: the cases then mutate the real shards and gate
+PA_GROUPS = [["bash bin/job-isolation-test.sh"],
+             ["bash .github/agent/tests/pin-age-check-test.sh", "bash bin/panel-wiring-test.sh", "bash bin/go-freshness-wiring-test.sh", "bash bin/rescan-current-only-test.sh",
+              "bash .github/agent/tests/k8s-harness-fence-test.sh", "bash .github/agent/tests/supply-chain-wiring-test.sh"]]   # the rest is the third shard
+PA_ORDER = ["bash bin/dependabot-reviewer-test.sh", "bash bin/dependency-lanes-test.sh", "bash bin/dependabot-reviewer-gather-test.sh", "bash bin/panel-test.sh", "bash bin/vex-" + "index-test.sh </dev/null",      # (the name is built from two parts: a scope test reads this file line by line)
+            "bash .github/agent/tests/auditor-variants-test.sh", "bash bin/patch-decide-test.sh", "bash bin/admission-tag-signer-test.sh", "bash bin/release-patch-wiring-test.sh",
+            "bash bin/acceptance-maven-413-test.sh", "bash .github/agent/tests/release-notes-signed-test.sh", "bash bin/go-freshness-wiring-test.sh", "bash bin/workflow-consolidation-test.sh",
+            "bash bin/job-isolation-test.sh", "bash bin/rescan-current-only-test.sh", "bash bin/panel-wiring-test.sh", "bash .github/agent/tests/k8s-harness-fence-test.sh",
+            "bash .github/agent/tests/pin-age-check-test.sh", "bash .github/agent/tests/pin-audit-test.sh", "bash .github/agent/tests/supply-chain-wiring-test.sh"]   # the one job's suites, in order
+def _plain(r):
+    """a step's run text in its plain form: the counting form of REQ-CI-005 is read back to `bash PATH`"""
+    r = (r or "").strip()
+    pre = "python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json "
+    if r.startswith(pre):
+        t = r[len(pre):].split()
+        return "bash " + t[1] + (" </dev/null" if r.endswith("</dev/null") else "")
+    return r
+def _gate(jid, n):
+    return {"name": jid, "runs-on": "ubuntu-latest", "needs": [f"{jid}-{k}" for k in range(1, n + 1)], "if": "${{ always() }}",
+            "steps": [{"name": f"every shard of {jid} succeeded (a failed, skipped, cancelled or missing result fails)",
+                       "env": {f"R{k}": "${{ needs.%s-%d.result }}" % (jid, k) for k in range(1, n + 1)},
+                       "run": 'for r in ' + " ".join('"$R%d"' % k for k in range(1, n + 1)) + '; do [ "$r" = success ] || { echo "a shard of ' + jid + ' did not succeed: [$r]"; exit 1; }; done'}]}
+def _split(d, jid, groups_, n):
+    if f"{jid}-1" in d["jobs"]:   # ci.yml is already split: the cases then mutate the real shards and gate
         return
-    old = d["jobs"]["allowlist-chain"]
+    old = d["jobs"][jid]
     steps = old["steps"]
-    pre, suites = steps[:5], steps[5:]
-    idx = {(st.get("run") or "").strip(): i for i, st in enumerate(steps) if i >= 5}
-    groups = [sorted(idx[r] for r in g) for g in GROUPS]
+    pre = steps[:5]
+    idx = {_plain(st.get("run")): i for i, st in enumerate(steps) if i >= 5}
+    groups = [sorted(idx[r] for r in g) for g in groups_]
     taken = {i for g in groups for i in g}
     groups.append([i for i in range(5, len(steps)) if i not in taken])
     jobs = {}
     for k, g in enumerate(groups, 1):
-        jobs[f"allowlist-chain-{k}"] = {"name": f"allowlist-chain-{k}", "runs-on": "ubuntu-latest", "steps": copy.deepcopy(pre) + [copy.deepcopy(steps[i]) for i in g]}
-    gate = {"name": "allowlist-chain", "runs-on": "ubuntu-latest", "needs": [f"allowlist-chain-{k}" for k in range(1, 5)], "if": "${{ always() }}",
-            "steps": [{"name": "every shard of allowlist-chain succeeded (a failed, skipped, cancelled or missing result fails)",
-                       "env": {f"R{k}": "${{ needs.allowlist-chain-%d.result }}" % k for k in range(1, 5)},
-                       "run": 'for r in "$R1" "$R2" "$R3" "$R4"; do [ "$r" = success ] || { echo "a shard of allowlist-chain did not succeed: [$r]"; exit 1; }; done'}]}
+        jobs[f"{jid}-{k}"] = {"name": f"{jid}-{k}", "runs-on": "ubuntu-latest", "steps": copy.deepcopy(pre) + [copy.deepcopy(steps[i]) for i in g]}
     new = {}
-    for jid, j in d["jobs"].items():
-        if jid == "allowlist-chain":
-            new.update(jobs); new["allowlist-chain"] = gate
+    for j_, j in d["jobs"].items():
+        if j_ == jid:
+            new.update(jobs); new[jid] = _gate(jid, n)
         else:
-            new[jid] = j
+            new[j_] = j
+    d["jobs"] = new
+def split_chain(d): _split(d, "allowlist-chain", GROUPS, 4)
+def split_pa(d): _split(d, "allowlist-pins-auditor", PA_GROUPS, 3)
+def join_pa(d):
+    """the one-job form of the pins-auditor job, built from the real file whichever shape it has: the cases that mutate the old job's steps keep proving the judge's one-job form"""
+    if "allowlist-pins-auditor-1" not in d["jobs"]:
+        return
+    by = {}
+    for k in (1, 2, 3):
+        for st in d["jobs"][f"allowlist-pins-auditor-{k}"]["steps"][5:]:
+            by[_plain(st.get("run"))] = st
+    pre = d["jobs"]["allowlist-pins-auditor-1"]["steps"][:5]
+    steps = copy.deepcopy(pre) + [copy.deepcopy(by[r]) for r in PA_ORDER]
+    new = {}
+    for j_, j in d["jobs"].items():
+        if j_ == "allowlist-pins-auditor":
+            new[j_] = {"name": j_, "runs-on": "ubuntu-latest", "steps": steps}
+        elif not j_.startswith("allowlist-pins-auditor-"):
+            new[j_] = j
     d["jobs"] = new
 PYS
-SC="exec(open('$work/split.py').read()); split_chain(d); "
+SC="exec(open('$work/split.py').read()); split_chain(d); join_pa(d); "
+SP="exec(open('$work/split.py').read()); split_chain(d); split_pa(d); "
 S1='d["jobs"]["allowlist-chain-1"]'; S4='d["jobs"]["allowlist-chain-4"]'; GT='d["jobs"]["allowlist-chain"]'
 case_ chain-split-accepted        ok  "${SC}"
 # AC1: every step of the old job is in exactly one shard, unchanged, and no other step exists
@@ -1177,10 +1239,69 @@ for k in ("allowlist-chain-1", "allowlist-chain-2", "allowlist-chain-3", "allowl
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PYD
 then pass=$((pass+1)); echo "PASS chain-split-grype-installer-with-consumers → ok"; else failn=$((failn+1)); echo "FAIL chain-split-grype-installer-with-consumers → $(cat "$work/dep.out")"; fi
+# the pins-auditor job is split the same way (cache#7xx, advisor Oct 24: it was the longest job of a PR's CI): three shards and a gate named allowlist-pins-auditor; the groups are above, in split.py
+P1='d["jobs"]["allowlist-pins-auditor-1"]'; P3='d["jobs"]["allowlist-pins-auditor-3"]'; PG='d["jobs"]["allowlist-pins-auditor"]'
+# --- the pins-auditor split cases (the chain's generic cases, for the pins-auditor shards and gate)
+case_ pa-split-accepted        ok  "${SP}"
+# AC1: every step of the old job is in exactly one shard, unchanged, and no other step exists
+case_ pa-split-step-dropped    bad "${SP}${P3}['steps'].pop()"
+case_ pa-split-step-dropped-c  bad "${SP}${P1}['steps'].pop()"
+case_ pa-split-step-in-two     bad "${SP}${P3}['steps'].append(dict(${P1}['steps'][-1]))"
+case_ pa-split-step-moved      bad "${SP}${P3}['steps'].append(${P1}['steps'].pop())"
+case_ pa-split-step-edited     bad "${SP}${P1}['steps'][-1]['run'] += ' || true'"
+case_ pa-split-step-renamed    bad "${SP}${P3}['steps'][-1]['name'] = 'renamed'"
+case_ pa-split-step-reordered  bad "${SP}${P3}['steps'][6], ${P3}['steps'][7] = ${P3}['steps'][7], ${P3}['steps'][6]"
+case_ pa-split-step-added      bad "${SP}${P3}['steps'].append({'name': 'x', 'run': 'true'})"
+case_ pa-split-setup-dropped   bad "${SP}${P3}['steps'].pop(0)"
+case_ pa-split-shard-missing   bad "${SP}d['jobs'].pop('allowlist-pins-auditor-2')"
+case_ pa-split-shard-extra     bad "${SP}d['jobs']['allowlist-pins-auditor-4'] = {'name': 'allowlist-pins-auditor-4', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+case_ pa-split-old-steps-left  bad "${SP}${PG}['steps'].append(dict(${P1}['steps'][-1]))"
+# AC2: the gate keeps the name, needs every shard, always runs, takes no checkout and no action, and fails on anything but success (incl. a missing or empty result)
+case_ pa-split-gate-renamed    bad "${SP}${PG}['name'] = 'allowlist-pins-auditor-gate'"
+case_ pa-split-gate-needs-3    bad "${SP}${PG}['needs'].pop()"
+case_ pa-split-gate-needs-str  bad "${SP}${PG}['needs'] = 'allowlist-pins-auditor-1'"
+case_ pa-split-gate-no-always  bad "${SP}${PG}.pop('if')"
+case_ pa-split-gate-if-false   bad "${SP}${PG}['if'] = 'false'"
+case_ pa-split-gate-success    bad "${SP}${PG}['if'] = '\${{ success() }}'"
+case_ pa-split-gate-checkout   bad "${SP}${PG}['steps'].insert(0, ${P1}['steps'][0])"
+case_ pa-split-gate-or-true    bad "${SP}${PG}['steps'][0]['run'] += ' || true'"
+case_ pa-split-gate-skipped-ok bad "${SP}${PG}['steps'][0]['run'] = 'for r in \"\$R1\" \"\$R2\" \"\$R3\"; do [ \"\$r\" != failure ] || exit 1; done'"
+case_ pa-split-gate-empty-ok   bad "${SP}${PG}['steps'][0]['run'] = 'for r in \"\$R1\" \"\$R2\"; do [ \"\$r\" = success ] || exit 1; done'"
+case_ pa-split-gate-env-wrong  bad "${SP}${PG}['steps'][0]['env']['R3'] = '\${{ needs.allowlist-pins-auditor-2.result }}'"
+case_ pa-split-gate-env-lit    bad "${SP}${PG}['steps'][0]['env']['R2'] = 'success'"
+case_ pa-split-gate-continue   bad "${SP}${PG}['steps'][0]['continue-on-error'] = 'true'"
+case_ pa-split-gate-job-env    bad "${SP}${PG}['env'] = {'X': '1'}"
+case_ pa-split-gate-runs-on    bad "${SP}${PG}['runs-on'] = 'self-hosted'"
+case_ pa-split-gate-permissions bad "${SP}${PG}['permissions'] = {'checks': 'write'}"
+# AC3: no `if`, env, continue-on-error, timeout, container, services, permissions, id-token or secrets on a shard or its steps
+case_ pa-split-shard-if        bad "${SP}${P1}['if'] = 'false'"
+case_ pa-split-shard-needs     bad "${SP}${P1}['needs'] = ['lint']"
+case_ pa-split-shard-env       bad "${SP}${P1}['env'] = {'BASH_ENV': '/tmp/x'}"
+case_ pa-split-shard-timeout   bad "${SP}${P1}['timeout-minutes'] = '1'"
+case_ pa-split-shard-container bad "${SP}${P1}['container'] = 'alpine'"
+case_ pa-split-shard-services  bad "${SP}${P1}['services'] = {'x': {'image': 'alpine'}}"
+case_ pa-split-shard-perms     bad "${SP}${P1}['permissions'] = {'id-token': 'write'}"
+case_ pa-split-shard-continue  bad "${SP}${P3}['continue-on-error'] = 'true'"
+case_ pa-split-step-if         bad "${SP}${P1}['steps'][-1]['if'] = 'false'"
+case_ pa-split-step-env        bad "${SP}${P3}['steps'][-1]['env'] = {'SHELLOPTS': 'noexec'}"
+case_ pa-split-step-shell      bad "${SP}${P3}['steps'][-1]['shell'] = 'bash -c true {0}'"
+case_ pa-split-step-secrets    bad "${SP}${P1}['steps'][-1]['env'] = {'T': '\${{ secrets.X }}'}"
+case_ pa-split-shard-runs-on   bad "${SP}${P1}['runs-on'] = 'self-hosted'"
+case_ pa-split-shard-name      bad "${SP}${P1}['name'] = 'allowlist-pins-auditor'"
+case_ pa-split-impersonate     bad "${SP}d['jobs']['replacement'] = {'name': 'allowlist-pins-auditor', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+
+# a copy of a pins-auditor suite kept in another job is refused, and so is the suite alone in a leftover job; the chain's suites do not leak in either
+case_ pa-split-copy-in-allowlist bad "${SP}d['jobs']['allowlist']['steps'].append(copy.deepcopy(${P3}['steps'][-1]))"
+case_ pa-split-copy-in-chain    bad "${SP}d['jobs']['allowlist-chain-4']['steps'].append(copy.deepcopy(${P1}['steps'][-1]))"
+case_ pa-split-original-kept    bad "${SP}d['jobs']['legacy-pa'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'bash bin/job-isolation-test.sh'}]}"
+case_ pa-split-chain-step-in-pa bad "${SP}${P3}['steps'].append({'name': 'x', 'run': 'bash bin/chain-sign-wiring-test.sh'})"
+case_ pa-split-iso-with-others  bad "${SP}${P1}['steps'].append(${P3}['steps'].pop(5))"
+# the one-job form stays accepted next to a split chain, and the split form next to an unsplit chain
+case_ pa-split-with-one-job-chain ok "exec(open('$work/split.py').read()); join_pa(d); "
 # the judge keeps refusing the old shape with a leftover shard (a half-done split)
 case_ chain-half-split            bad "d['jobs']['allowlist-chain-1'] = {'name': 'allowlist-chain-1', 'runs-on': 'ubuntu-latest', 'steps': d['jobs']['allowlist-chain']['steps'][:5]}"
 # allowlist-pins-auditor is accepted in ONE form only (cache#489 and #521 landed; the transition's other forms are gone): main's list, which carries the VEX step after panel-test and the isolation step after workflow-consolidation, each exactly once
-PA="ps = d['jobs']['allowlist-pins-auditor']['steps']; pth = lambda t: [w for w in t.split() if w.startswith('bin/')][-1:]; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r or ((x.get('run') or '').startswith('python3 -I bin/suite-guard-run.py run ') and pth(x['run']) == pth(r))][0]; "
+PA="exec(open('$work/split.py').read()); join_pa(d); ps = d['jobs']['allowlist-pins-auditor']['steps']; pth = lambda t: [w for w in t.split() if w.startswith('bin/')][-1:]; ix = lambda r: [k for k, x in enumerate(ps) if x.get('run') == r or ((x.get('run') or '').startswith('python3 -I bin/suite-guard-run.py run ') and pth(x['run']) == pth(r))][0]; "
 case_ pa-vex-removed              bad "${PA}del ps[ix('bash bin/vex-index-test.sh </dev/null')]"
 case_ pa-iso-removed              bad "${PA}del ps[ix('bash bin/job-isolation-test.sh')]"
 case_ pa-vex-twice                bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, dict(ps[ix('bash bin/vex-index-test.sh </dev/null')]))"
@@ -1191,7 +1312,7 @@ case_ pa-iso-or-true              bad "${PA}ps[ix('bash bin/job-isolation-test.s
 case_ pa-iso-continue             bad "${PA}ps[ix('bash bin/job-isolation-test.sh')]['continue-on-error'] = 'true'"
 case_ pa-vex-env                  bad "${PA}ps[ix('bash bin/vex-index-test.sh </dev/null')]['env'] = {'X': '1'}"
 case_ pa-other-step-added         bad "${PA}ps.insert(ix('bash bin/panel-test.sh') + 1, {'name': 'x', 'run': 'true'})"
-case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor']['steps'][3]['env'] = {'X': '1'}"
+case_ split-setup-env         bad "d['jobs']['allowlist-pins-auditor-2']['steps'][3]['env'] = {'X': '1'}"
 case_ impersonate-by-name     bad "d['jobs']['replacement'] = {'name': 'allowlist-persona', 'runs-on': 'ubuntu-latest', 'needs': 'allowlist-persona', 'if': '\${{ always() }}', 'steps': [{'run': 'true'}]}"
 case_ impersonate-allowlist   bad "d['jobs']['replacement'] = {'name': 'allowlist', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
 case_ job-name-expression     bad "d['jobs']['lint']['name'] = '\${{ matrix.x }}'"
