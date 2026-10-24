@@ -62,7 +62,11 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
-  loaded="$(bash -c 'eval "$(awk "/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1} f{print} f&&/^\)/{f=0}" "$1")"; echo $((${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]})); printf "%s\n" "${ALLOW_PATTERNS[@]}" "${SUPPRESSION_PATTERNS[@]}"' _ "$f" 2>&1)"
+  loaded="$(bash -c '
+    eval "$(awk "/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1} f{print} f&&/^\)/{f=0}" "$1")"
+    echo $((${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]}))
+    printf "%s\n" "${ALLOW_PATTERNS[@]}" "${SUPPRESSION_PATTERNS[@]}"
+  ' _ "$f" </dev/null 2>&1)"
   python3 - "$f" "$loaded" <<'PYEOF'
 import re, sys, itertools
 path = sys.argv[1]
@@ -245,6 +249,19 @@ mutins "unset an element"                   2 "unset 'ALLOW_PATTERNS[3]'"
 mutins "declare -n alias then append"       2 "declare -n alias=ALLOW_PATTERNS; alias+=('^evil/.*\$')"
 mutins "printf -v element"                  2 "printf -v 'ALLOW_PATTERNS[200]' '%s' '^evil/.*\$'"
 mutins "re-assignment with a new element"   2 "ALLOW_PATTERNS=(\"\${ALLOW_PATTERNS[@]}\" '^evil/.*\$')"
+# The Oct 24 hang: the mutant above opens an ALLOW_PATTERNS=( that never closes, so the extraction in struct_check also
+# prints the rest of the real script, whose read loop then read the CALLER's stdin. With an open pipe on stdin the whole
+# suite stopped here for hours. struct_check must not read its caller's stdin.
+_open_array='ALLOW_PATTERNS=("${ALLOW_PATTERNS[@]}" '"'"'^evil/.*$'"'"')'
+awk -v t="$_open_array" '{print} /^\)$/{c++; if(c==2) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
+( struct_check "$_mut_dir/m.sh" >/dev/null 2>&1 ) < <(sleep 25) & _sp=$!
+for _i in $(seq 1 40); do kill -0 "$_sp" 2>/dev/null || break; sleep 0.25; done
+if kill -0 "$_sp" 2>/dev/null; then
+  kill "$_sp" 2>/dev/null
+  gf "struct_check read the caller's stdin" "still running 10 s after it was started with an open stdin"
+else
+  gp "struct_check does not read the caller's stdin (an open pipe on stdin does not stop it)"
+fi
 awk '/^  # v0.3.0 build chain/{r=1} {print} r&&/^$/{print "  \x27^evil/.*$\x27"; r=0}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
 if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: wide pattern after the region blank line" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern after the region blank line" ""; else gp "struct check kills mutant: wide pattern after the region blank line"; fi
 # a wide pattern line inside an older block (after the first pattern line of ALLOW_PATTERNS)
