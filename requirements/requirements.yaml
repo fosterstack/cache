@@ -2091,6 +2091,67 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
+  - id: REQ-REL-012
+    title: A pull request into the release carries a passed-audit record for its exact head
+    statement: >
+      A pull request into the release carries a passed-audit record for its exact head, or it cannot merge (release
+      process rule 6, owner RATIFIED Oct 23 2026, ops/docs/ratify/2026-10-23-release-process-features-sections-audits.md:
+      "once we agree on this if it can be coded it should be"). The release is main. The record is the branch
+      audit/<head sha>: one commit whose only parent is that head, verified by GitHub, authored by a writer named in
+      .github/policy/audit-writers.json of the base checkout, adding only the file audit-record, which is the record
+      itself. Nothing is stored in the pull request's own files, and a new push changes the head sha, so an earlier
+      record no longer applies. The verdict is part of the
+      existing auditor-review-gate (agent-review-gate.yml): main's copy of the judge runs over the head, so a pull request
+      cannot edit or skip it, and a retarget re-runs it.
+    source: [.github/workflows/agent-review-gate.yml, bin/audit-record-judge.sh, bin/audit-record.py, .github/policy/audit-writers.json]
+    tier: community
+    introduced: v0.3.0
+    origin: release process rule 6 (owner Oct 23 2026); advisor handoff 0668, read-backs 2026-10-23-payments-readback-release-audit-gates and -v2
+    confidence: implementation-only
+    notes: >
+      No new required check: auditor-review-gate is already required on main, so once this lands every pull request into
+      main needs a record. It therefore lands only after the writer (a later pull request) and the dispatch that calls it
+      exist, on the landing day, together with the ruleset rule that only the writer creates branches under audit/** (the
+      owner's step). The record commit adds one file, audit-record, because the API can only make a commit that changes
+      something.
+    acceptance_criteria:
+      - id: REQ-REL-012-AC1
+        given: "a pull request whose base is main, and the head sha it has now"
+        when: "the verdict job of agent-review-gate.yml (and its scheduled sweep) judges it with bin/audit-record-judge.sh and bin/audit-record.py of the default branch"
+        then: "it passes only if the branch audit/<head sha> exists and holds one commit whose only parent is that head, that GitHub verified, that a writer named in .github/policy/audit-writers.json of the default branch authored (login and numeric id, a bot) and that the writer or GitHub itself committed, with the fixed message audit record, adding exactly the one file audit-record; otherwise the auditor-review-gate fails, so the pull request carries a passed-audit record for its exact head or it cannot merge"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC2
+        given: "a record that is missing, for another head, stale (a parent that is not the head, two parents, none), adding another file or none or two, with another message, not verified, authored by anyone but a named writer (another login, another id, not a bot, unknown), committed by anyone but a named writer or GitHub itself, or any answer that is malformed, or a GitHub API error, or a writers policy that is missing or malformed, or a head sha that is not 40 lower-case hex, or an empty base"
+        when: "the judge decides"
+        then: "it fails closed and says why (an API error says it is one); no doubt passes"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC3
+        given: "a pull request whose base is not main"
+        when: "the judge runs"
+        then: "it passes without reading any record (the release is main; a section merging into a feature branch is audited by the process, not by this gate)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC4
+        given: "the verdict job and the sweep of agent-review-gate.yml"
+        when: "the auditor matrix runs them as written with stand-ins for the checks"
+        then: "each calls the passed-audit record judge, publishes success only when it and the four other checks all exit 0, and runs main's copy of the judge and of the writers policy over the pull request's head as data (the existing rules of that workflow: a retarget re-runs it, the pull request cannot edit or skip it)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC5
+        given: "a workflow dispatch of agent-review-gate.yml with a pull request number and a head sha, sent by bin/audit-record-request.sh (which the lane runs once the pull request's review has cleared: it checks the pull request is open into main at exactly that head and requests nothing otherwise; the ops runner's --cleared step may call it)"
+        when: "the record job runs"
+        then: "it takes nothing else from the pull request, writes nothing unless the actor who dispatched it is a dispatcher named in the policy file (anyone with write access can start a workflow; only a named login can vouch for a review), and re-reads the pull request and writes nothing unless it is open, into main, with exactly that head; it leaves a record that already passes alone; otherwise it makes ONE signed commit on audit/<head sha> parented on that head, with the fixed message, adding the file audit-record, through the committed signed-commit CLI with an App token that holds contents write and pull requests read and nothing else, and judges what it wrote with the review gate's own judge; the signed-commit lane guard allows the branch audit/<sha> only on top of that same sha and no other audit/ name"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-012-AC6
+        given: "a pull request whose review-gate verdict is an old failure (older than six hours) and whose head now has a record branch"
+        when: "the scheduled sweep runs"
+        then: "it judges the head again and publishes the verdict, like a recent failure; an old failure whose head has no record branch is left alone, as before. The sweep's existing bound applies: it reads the 200 open pull requests into main that gh lists first, as it always has, and a pull request beyond them is judged by its own run or by a later push"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
   - id: REQ-SCAN-001
     title: The four-scanner panel on the daily rescan
     statement: >

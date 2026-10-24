@@ -32,8 +32,9 @@ MAX_FILE_BYTES = 5 * 1024 * 1024        # createCommitOnBranch is a request body
 BRANCH_PREFIX = "auditor/"              # the reserved lane: the only branches the App writes
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
-ALLOWED_PREFIXES = ("auditor/", "patch-notes/")   # the only lanes the App may write: a caller names which of them it uses
-_BRANCH = re.compile(r"^(?:auditor|patch-notes)/[A-Za-z0-9._/+-]+$")
+ALLOWED_PREFIXES = ("auditor/", "patch-notes/", "audit/")   # the only lanes the App may write: a caller names which of them it uses (audit/ = the passed-audit record, REQ-REL-012)
+_BRANCH = re.compile(r"^(?:auditor|patch-notes|audit)/[A-Za-z0-9._/+-]+$")
+_AUDIT_BRANCH = re.compile(r"^audit/[0-9a-f]{40}$")
 
 MUTATION = ("mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) "
             "{ commit { oid signature { isValid state } } } }")
@@ -100,6 +101,8 @@ def _check_branch(branch, prefixes=(BRANCH_PREFIX,)):
     if not isinstance(branch, str) or not _BRANCH.match(branch) or ".." in branch or branch.endswith(("/", ".lock")) \
             or not branch.startswith(tuple(prefixes)):
         raise CommitError("signed commit: refusing branch %r: the App writes only %s* branches" % (branch, "* or ".join(prefixes)))
+    if branch.startswith("audit/") and not _AUDIT_BRANCH.match(branch):
+        raise CommitError("signed commit: refusing branch %r: the passed-audit record branch is audit/ and a full commit sha, nothing else" % (branch,))
 
 
 def _check(repo, branch, base_sha, message, changes, prefixes=(BRANCH_PREFIX,)):
@@ -108,6 +111,8 @@ def _check(repo, branch, base_sha, message, changes, prefixes=(BRANCH_PREFIX,)):
     _check_branch(branch, prefixes)
     if not isinstance(base_sha, str) or not _SHA.match(base_sha):
         raise CommitError("signed commit: the base %r is not a full commit sha" % (base_sha,))
+    if branch.startswith("audit/") and branch != "audit/" + base_sha:
+        raise CommitError("signed commit: the record branch %s is not audit/ plus its base commit %s" % (branch, base_sha))
     if not isinstance(message, str) or not message.strip():
         raise CommitError("signed commit: an empty commit message")
     if not changes:
