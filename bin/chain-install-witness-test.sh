@@ -215,7 +215,60 @@ else bad "govulncheck: a version token matching the pin as a pattern was accepte
 if ! grep -Eq '\$\{(GOPROXY|GOFLAGS|GOTOOLCHAIN|GOSUMDB|GONOSUMDB|GOPRIVATE|GOWORK)' "$sut" && [ "$(grep -c 'GOPROXY=https://proxy.golang.org' "$sut")" = 1 ] && ! grep -q 'GOSUMDB=off' "$sut"; then
   ok "govulncheck: the proxy is one literal in the script, no Go environment variable is read from the caller, and the checksum database stays on"
 else bad "govulncheck: the installer reads the Go environment from the caller, names another proxy or turns the checksum database off"; fi
-EXPECT=44
+# PR B (read-back approved by the advisor, Oct 23; REQ-CHAIN-006-AC18 is the scan it runs): the pull-request gate's govulncheck job judges the way Check does. It installs the
+# pinned Go (checksum-pinned, bash bin/install-scanner.sh go), installs govulncheck at the version above, and runs bin/check-govulncheck.py by its fixed path on the
+# repository's scanner list; the bare `govulncheck ./...` is gone; the job keeps its name (the required context), contents: read, and holds no secret, no id-token, no environment.
+gvgate_ok() { # gvgate_ok CIYML : the job named govulncheck in a ci.yml
+  python3 - "$1" <<'PY'
+import sys, yaml
+d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+j = (d.get("jobs") or {}).get("govulncheck")
+bad = []
+if not isinstance(j, dict): sys.exit(1)
+if j.get("name") != "govulncheck": bad.append("name")
+if j.get("permissions") != {"contents": "read"}: bad.append("permissions")
+if set(j) - {"name", "runs-on", "permissions", "steps"}: bad.append("keys")
+steps = j.get("steps") or []
+runs = [(s.get("run") or "").strip() for s in steps]
+GO, INST = "bash bin/install-scanner.sh go", "go install golang.org/x/vuln/cmd/govulncheck@"
+SCAN = 'python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"'
+if runs.count(GO) != 1: bad.append("installer step")
+if sum(1 for r in runs if r.startswith(INST)) != 1: bad.append("govulncheck install")
+if runs.count(SCAN) != 1: bad.append("script step")
+if any("govulncheck ./..." in r for r in runs): bad.append("bare govulncheck")
+if not bad:
+    if not (runs.index(GO) < runs.index(SCAN) and [i for i, r in enumerate(runs) if r.startswith(INST)][0] < runs.index(SCAN)): bad.append("order")
+    if runs[-1] != SCAN: bad.append("script is not the last step")
+for s in steps:
+    if set(s) - {"uses", "with", "name", "run", "id"}: bad.append("step keys")
+    if "env" in s or "secrets" in str(s): bad.append("env or secret")
+sys.exit(1 if bad else 0)
+PY
+}
+if gvgate_ok "$root/.github/workflows/ci.yml"; then ok "PR B: the pull-request gate's govulncheck job installs the pinned Go and govulncheck and runs bin/check-govulncheck.py last, with contents: read only (REQ-CHAIN-006-AC18)"
+else bad "PR B: the govulncheck job of ci.yml is not the Check-equivalent judgment"; fi
+gvgate_mut() { # gvgate_mut LABEL PYTHON-REPLACE-EXPR : the ci.yml with one change must be refused
+  python3 - "$root/.github/workflows/ci.yml" "$gv/eq/ci-gate.yml" "$2" <<'PY'
+import sys
+t = open(sys.argv[1]).read(); a, b = (sys.argv[3].split("=>", 1) + [""])[:2]
+i = t.index("  govulncheck:\n    name: govulncheck")
+head, job = t[:i], t[i:]
+j = job.index("\n\n")
+body, rest = job[:j], job[j:]
+assert a in body, a
+open(sys.argv[2], "w").write(head + body.replace(a, b, 1) + rest)
+PY
+  if ! gvgate_ok "$gv/eq/ci-gate.yml"; then ok "PR B: $1 is refused"; else bad "PR B: $1 was accepted"; fi
+}
+gvgate_mut "the old bare govulncheck ./... step restored" 'python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out "$RUNNER_TEMP/gv"=>govulncheck ./...'
+gvgate_mut "a job without the pinned-Go installer step" 'bash bin/install-scanner.sh go=>true'
+gvgate_mut "a changed script path" 'bin/check-govulncheck.py=>bin/check-other.py'
+gvgate_mut "another scanner list" '.github/policy/scanners.json=>/tmp/scanners.json'
+gvgate_mut "the script run without the isolated interpreter flags" 'python3 -I -B bin=>python3 bin'
+gvgate_mut "an id-token permission" 'contents: read=>contents: read
+      id-token: write'
+gvgate_mut "the job renamed (the required context is govulncheck)" 'name: govulncheck=>name: govulncheck-gate'
+EXPECT=52
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
