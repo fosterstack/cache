@@ -2856,6 +2856,12 @@ requirements:
         then: "the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest"
         verification: { method: unit, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC33
+        given: "a Check script (bin/check-acceptance.sh, bin/check-fips.sh, bin/check-artifacts.sh) loads a candidate image layout into docker"
+        when: "the layout holds anything beyond the files its index and manifests name (a root manifest.json, a stray tar, a blob nothing names)"
+        then: "only oci-layout, index.json and the blobs the layout's index and child manifests name go into the archive docker load reads, everything else is left out, and a layout whose index names a blob it lacks is refused before any load. Extends the named-members rule of REQ-CHAIN-006-AC4 from the scan to docker load. Tighten-only; approved by the advisor Oct 23"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >
@@ -3881,6 +3887,14 @@ requirements:
         when: "bin/check-artifacts.sh runs with --arch arm64 under the step arm64"
         then: "before anything of the candidate is loaded or run, the step makes the release policy for the run's tag, verifies Build's record as Sign signed it, for the digests it was given, isolated as python3 -I -B, and a failed verification stops it; then, on the digest file so verified and no other, the linux/arm64 fscache and fscache-fips binaries each start, answer /healthz and round-trip a key; the loaded linux/arm64 production and -fips images serve cache traffic; the three FIPS postures are read from the arm64 binaries as on amd64; the result names the same candidate digests as the amd64 record; the step signs one Witness record, witness-arm64/arm64-collection.json, under the stage file's own identity; Release requires that record beside the three of Check (a missing, extra or unverifiable one is refused and names Check)"
         verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+
+      # Source: advisor, Oct 24 (cache#597 round 8 ruling): carries out the owner's ratified words (scanner-panel rule 4, ratify/2026-10-02-scanner-panel-rules.md; ratify/2026-10-16-govulncheck-scans-what-we-ship.md; the approved read-back 2026-10-23-cache-docs-readback-govulncheck-check.md) for what the Go source scan reads; AC4's text is unchanged.
+      - id: REQ-CHAIN-006-AC18
+        given: "the Go source scan of the scanners step and the tagged checkout"
+        when: "bin/check-govulncheck.py runs"
+        then: "before any scan it reads go.mod with the pinned Go (`go mod edit -json`) and refuses, naming the paths, a go.mod that carries an ignore directive, and refuses a go.mod it cannot read (the tool fails, prints no JSON, or prints JSON that is not an object); it reads the shipped main package of each of the two recipes (build/melange.yaml and build/melange-fips.yaml) and the CGO_ENABLED of their build commands from the recipes themselves, and runs govulncheck six times: `./...` on linux/amd64 and on linux/arm64, and each recipe's shipped main package by explicit path on both; a called finding in any of the six fails, naming the platform and the target, and the file written to check-results/govulncheck.json is the linux/amd64 `./...` stream, byte for byte"
+        verification: { method: unit, release_blocking: true }
         status: approved
 
   # Source: advisor reading Oct 16, Astra release review (R6) and Codex PR 415 round 2. Earlier wording of the changed fragment of the statement below, kept here: "...in a fixed order and before any credential exists in its job, and only then use..."

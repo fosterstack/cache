@@ -32,10 +32,12 @@ for v in production fips; do
   [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-$v digest"
   is_layout "$images/$v" || fail "the $v image $images/$v is missing or not an OCI layout directory (oci-layout and index.json)"
 done
-# Round 1 F1: the images are the ones Build recorded, bound to digests.json before anything is loaded or started.
-python3 bin/check-bind.py --digests "$digests" --images "$images" || exit 1
 mkdir -p "$out"
 tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT   # no docker has run yet: the container cleanup below is installed once the bind has passed
+# Round 1 F1: the images are the ones Build recorded, bound to digests.json before anything is loaded or started; the bind also lists the files of each
+# layout docker may be given (REQ-SUP-001-AC33)
+python3 bin/check-bind.py --digests "$digests" --images "$images" --members-out "$tmp" || exit 1
 cleanup() { rm -rf "$tmp"; for v in production fips; do docker rm -f "fscache-check-$v" > /dev/null 2>&1 || true; done; }
 trap cleanup EXIT
 
@@ -48,7 +50,7 @@ results="[]"
 for v in production fips; do
   d=$(jq -r --arg k "image-$v" '.[$k]' "$digests")
   name="fscache-check-$v"
-  tar -C "$images/$v" -cf "$tmp/$v.tar" . && loaded=$(docker load -i "$tmp/$v.tar") || { echo "check-fips: $v: the image could not be loaded" >&2; failed=1; continue; }
+  tar -C "$images/$v" -cf "$tmp/$v.tar" -T "$tmp/$v.members" && loaded=$(docker load -i "$tmp/$v.tar") || { echo "check-fips: $v: the image could not be loaded" >&2; failed=1; continue; }
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || { echo "check-fips: $v: docker load named no image" >&2; failed=1; continue; }
   docker tag "$ref" "localhost/fscache-$v-image"   # a fixed local name per image, run with --pull=never: no variable image for pin-age to refuse
