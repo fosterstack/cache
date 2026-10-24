@@ -153,6 +153,23 @@ def id_images(at, purl, name):
 check("an empty @id beside an identifiers.purl of our image covers nothing (the @id that is present is the id, as the rescan reads it)", id_images("", R, "e1.json") == 0)
 check("a null @id beside an identifiers.purl is that purl", id_images(None, R, "e2.json") == 4)
 
+# --- the latest statement per vulnerability, product and subcomponent set wins (rc-5a, ruling cache-667 item 4): a later `affected` retracts an earlier `not_affected`
+def lw_images(statuses, name):
+    f = os.path.join(tempfile.mkdtemp(), name)
+    sts = []
+    for status, ts in statuses:
+        st_ = {"vulnerability": {"name": "CVE-2099-0009"}, "status": status, "products": [{"@id": R, "subcomponents": [{"@id": "pkg:generic/tzdata@2026c"}]}]}
+        if ts: st_["timestamp"] = ts
+        sts.append(st_)
+    json.dump({"@context": "x", "statements": sts}, open(f, "w"))
+    r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64", "production-arm64", "fips-arm64")
+              if s_ == "inspector" or img.endswith("amd64")})
+    return len({c["image"] for c in P.tally(r, P.load_vex(f))["vex_covered"]})
+check("latest wins: not_affected alone covers every image", lw_images([("not_affected", None)], "lw0.json") == 4)
+check("latest wins: a later affected retracts the earlier not_affected on every image", lw_images([("not_affected", None), ("affected", None)], "lw1.json") == 0)
+check("latest wins: affected then not_affected covers", lw_images([("affected", None), ("not_affected", None)], "lw2.json") == 4)
+check("latest wins: the timestamps decide when both parse", lw_images([("not_affected", "2026-02-01T00:00:00Z"), ("affected", "2026-01-01T00:00:00Z")], "lw3.json") == 4)
+
 # --- post-merge rulings on cache#563 (P-1, P-2): a product known only by identifiers.purl is read like the gate's vex_index reads it, and the
 # product's REPOSITORY must be this image's (cache), as rescan-statement.py::_vex_match requires
 def vex_with_products(products, name):
