@@ -122,6 +122,14 @@ class TheTable(unittest.TestCase):
         self.assertEqual(reviewed.spec_for("run-state.json"), ())
         self.assertEqual(reviewed.spec_for("whatever.openvex.json")[0][0], "statements")
 
+    def test_the_panel_scores_may_be_negative_integers_because_a_wrong_vote_costs_two_points(self):
+        # rule 13 scoring is +1 / -2 per vendor seat: a state the panel itself wrote carries negative scores and must pass the reader the next day
+        good = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": -4, "B": 3}, "seat": "B"}
+        self.assertEqual(rd(self.write("panel-state.json", good), "panel-state.json"), good)
+        for bad in (1.5, "1", True, None):
+            with self.assertRaises(reviewed.ReviewedInputInvalid, msg=repr(bad)):
+                rd(self.write("panel-state.json", dict(good, scores={"A": bad, "B": 0})), "panel-state.json")
+
     def test_a_file_can_be_read_under_the_rules_of_another_name(self):
         p = self.write("CVE-2099-1.json", {})                       # the release gate's per-finding files carry no openvex in their name
         self.assertEqual(reviewed.read(p), {})

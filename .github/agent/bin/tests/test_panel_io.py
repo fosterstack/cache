@@ -426,6 +426,16 @@ class Judge(Tmp):
         sp = os.path.join(self.d, "state.json"); json.dump(good_state, open(sp, "w"))      # a good state and the real profiles judge as before
         self.judged(state=sp)
 
+    def test_the_state_the_judge_writes_is_read_back_the_next_day_including_negative_scores(self):
+        # cache#707 first look (seat C): rule 13 scores +1 / -2, so a state the panel itself wrote can carry negative scores; it must pass the reader on day two
+        self.judged()
+        written = os.path.join(self.d, "out", "state.json")
+        st = json.load(open(written))
+        self.judged(state=written)                                           # the first day's state, as written
+        st["scores"] = {"A": -4, "B": 3}; st["seat"] = "B"
+        sp = os.path.join(self.d, "negative-state.json"); json.dump(st, open(sp, "w"))
+        self.judged(state=sp)
+
     def test_a_verdict_that_is_not_json_is_refused_with_the_same_diagnostic(self):
         # cache#466 round 4: empty or truncated JSON returns 2 'nothing was judged', not a traceback
         for text in ("", "{not json", "[1, 2"):

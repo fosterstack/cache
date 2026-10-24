@@ -50,7 +50,7 @@ PINS = {
                  'gb = "h\\n%s\\ngo build info /usr/bin/cache: dep golang.org/x/sys v0.47.0 h1:abc\\n" % P.EVIDENCE_MARK',
                  'named = b(["package database: no record names libssl3", "file: /usr/lib/libssl3.so"])'],
         'container-image-internal paths inside evidence text (package-database and go-build-info lines) that the panel voter parses; no filesystem access'),
-    '.github/agent/bin/tests/test_panel_io.py': ('a51e4576bd0bf8ae2872946ffd0d676558fc37aea867769113f80a09b850f81d',
+    '.github/agent/bin/tests/test_panel_io.py': ('f81b27daa74231354629716b5cea4448da955904292c9d15ffbdd226179c54d6',
         [        'self.assertIn("/usr/share/zoneinfo/tzdata.zi", facts["paths"])',
                  'self.assertNotIn("/etc/old-tzdata.conf", facts["paths"])',
                  'self.assertEqual(sorted(facts["status"]), ["/var/lib/dpkg/status", "/var/lib/dpkg/status.d/tzdata"])',

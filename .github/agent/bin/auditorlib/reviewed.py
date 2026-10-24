@@ -38,7 +38,7 @@ def _shaped(value, kind):
             return type(value) is int and value == arg
         if tag == "choice":
             return isinstance(value, str) and value in arg
-        return isinstance(value, dict) and set(value) == set(arg) and all(type(v) is int and v >= 0 for v in value.values())      # "ints"
+        return isinstance(value, dict) and set(value) == set(arg) and all(type(v) is int for v in value.values())      # "ints": integers of any sign (a wrong vote costs points)
     if kind == "bool":
         return isinstance(value, bool)
     return isinstance(value, list) and all(isinstance(x, dict if kind == "objects" else list) for x in value)
@@ -51,7 +51,7 @@ def _expected(kind):
             return "the integer %s" % arg
         if tag == "choice":
             return "one of %s" % ", ".join(arg)
-        return "an object with the integer counts %s" % ", ".join(arg)
+        return "an object with the integers %s" % ", ".join(arg)
     return {"bool": "true or false", "objects": "a list of objects"}.get(kind, "a list of rows")
 
 
