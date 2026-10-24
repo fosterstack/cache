@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 100 |
-| Acceptance criteria | 490 |
+| Acceptance criteria | 491 |
 | Release-blocking ACs | 130 |
-| ACs with mapped evidence | 480 |
+| ACs with mapped evidence | 481 |
 | Release-blocking ACs with mapped evidence | 130 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 48 |
@@ -1055,6 +1055,7 @@ Our workflows shall take no new version of an action, or of a tool, image or pac
 | REQ-SUP-001-AC29 | Given acceptance.yml run with an image-ref (release-chain mode); when the image-ref is not name@sha256:<64 lowercase hex> as one whole string (a tag only, no digest, a short or upper-case or non-hex digest, trailing text or a second line); then the job refuses it with a message naming the ref before any docker run, in every job that starts an image from it; this is the owner's plain form for an image: pinned by digest | unit |  | approved | 1 item(s) |
 | REQ-SUP-001-AC30 | Given bin/acceptance-serve.sh started with an IMAGE_REF, and bin/check-acceptance.sh, which loads Build's production candidate and starts it through that script; when the IMAGE_REF is not content-addressed: not exactly name@sha256:<64 lowercase hex> (name = [host[:port]/]path[/path]...[:tag]) and not exactly an image ID sha256:<64 lowercase hex> as one whole string (a tag only, an upper-case or short digest, trailing text, a second line, a leading option character); then serve refuses it with exit 2 and a message naming the ref, before docker run; serve tags only the image's inspected ID to its fixed local name, checks that name still resolves to exactly that ID right before docker run (a re-tag is refused) and runs that name; check-acceptance.sh turns the tag that docker load printed into the loaded image's ID (docker image inspect) and hands serve that ID, never the tag; this is the owner's plain form for an image: pinned by digest | unit |  | approved | 1 item(s) |
 | REQ-SUP-001-AC33 | Given a Check script (bin/check-acceptance.sh, bin/check-fips.sh, bin/check-artifacts.sh) loads a candidate image layout into docker; when the layout holds anything beyond the files its index and manifests name (a root manifest.json, a stray tar, a blob nothing names); then only oci-layout, index.json and the blobs the layout's index and child manifests name go into the archive docker load reads, everything else is left out, and a layout whose index names a blob it lacks is refused before any load. Extends the named-members rule of REQ-CHAIN-006-AC4 from the scan to docker load. Tighten-only; approved by the advisor Oct 23 | unit |  | approved | 1 item(s) |
+| REQ-SUP-001-AC34 | Given a pull request that adds or changes a checksum file for an upstream artifact (a file whose name says sha256 or checksum, an item whose identity is the file's content) that is no base input; when the age check runs and the exceptions file the base branch holds has a file_pins row {file, content, upstream, version, published} for that file and exactly that content; then the file is dated by the row's published time and still needs 7 days public (too young fails, a future or unreadable time fails); a row for other content, another file, one that omits a field or one that only the pull request's own tree carries rules nothing (exit 1); two rows for one file and content, a file_pins that is not a list or an unreadable exceptions file stop the check (exit 2); owner's plain-forms rule: a pin has a version and a date the checker can read. Advisor ruling Oct 23 (fix to an existing coded check that blocks work) | unit |  | approved | 2 item(s) |
 
 ## UAT
 
