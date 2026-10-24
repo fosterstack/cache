@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 100 |
-| Acceptance criteria | 496 |
+| Acceptance criteria | 497 |
 | Release-blocking ACs | 131 |
-| ACs with mapped evidence | 486 |
+| ACs with mapped evidence | 487 |
 | Release-blocking ACs with mapped evidence | 131 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 48 |
@@ -643,6 +643,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 | REQ-REL-004-AC7 | Given more open issues carry the daily-rescan label than one page holds; when the daily rescan looks for its tracking issue; then it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue' | unit |  | approved | 1 item(s) |
 | REQ-REL-004-AC8 | Given an image whose SBOM component list (package names and versions only, sorted, no timestamps, serial numbers or our own module's version) hashes the same as one Amazon Inspector already scanned the same UTC day; when the scan check or the rescan would call Amazon Inspector for it; then it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-004-AC9 | Given the toolchain-freshness job's bump branch, and a main whose ruleset requires signed commits; when bin/go-bump-open-pr.sh creates a bump branch (no branch and no pull request exist for it); then the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the two bumped go.mod files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token), and the API is asked whether that commit is verified; only then is the draft pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; and no workflow file or script outside the tests runs git commit, git commit-tree or git merge, so no PR-opening bot has a commit path that produces an unsigned commit (rule: main requires signed commits; advisor handoff 0623 after cache#464 was found BLOCKED by an unsigned bump commit, same mechanism as REQ-REFRESH-001-AC34, no new credential) | unit |  | approved | 1 item(s) |
+| REQ-REL-004-AC10 | Given any workflow job that uses skopeo, and any workflow step that needs the job token; when the job starts, and the step runs; then the job uses the skopeo on the runner image, checked by `command -v`, and a job without it fails as a labeled pipeline failure; no job installs it at run time; the job token reaches a step only through `env:`, never interpolated into `run:` script text, in every workflow | inspection |  | approved | 7 item(s) |
 
 ### REQ-REL-005 — Every CI action pinned to a commit digest
 

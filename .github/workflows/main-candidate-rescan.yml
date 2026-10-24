@@ -60,7 +60,7 @@ jobs:
           name: images
           path: /tmp/oci/
       - name: skopeo is on the runner image
-        run: command -v skopeo >/dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
+        run: command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
       - name: log in to GHCR (the scratch package)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -183,7 +183,7 @@ jobs:
       - name: Grype every image, given our VEX (rule 4)
         run: |
           set -uo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
           # Only the VEX file may hide a finding (rule 4): grype reads an EMPTY config here, never the repository's, and a GRYPE_* variable (which can change
           # what it reports) stops the step, as in bin/grype-scan.sh and bin/check-scan.sh. Names only are printed, never values.
@@ -332,7 +332,7 @@ jobs:
           sudo systemctl restart docker
           docker info -f '{{ .DriverStatus }}'
 
-      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0, crane and skopeo (each pinned by checksum, skopeo from apt)
+      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0 and crane (each pinned by checksum); skopeo is the runner image's, checked
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/scout" "$HOME/.docker/cli-plugins"
@@ -345,7 +345,7 @@ jobs:
           mv "$RUNNER_TEMP/docker-scout-1.24.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.24.0"
           # the chain's own copy tool appends the attestation manifest to the scratch index (bin/scout-root-cause.sh: crane index append), by digest
           ./bin/install-scanner.sh crane
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
 
       - name: log in to Docker Hub (read-only token) and GHCR (this job's token)
         env:
@@ -463,7 +463,7 @@ jobs:
         id: insp-scan
         run: |
           set -uo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           # Same-day reuse (REQ-REL-004-AC8): an inventory Inspector already scanned today is copied from the cache
           # to scan.json; anything else calls ScanSbom once and stores the answer. The tally reads scan.json either way.
           cdir=/tmp/inspector-cache; fresh=0; mkdir -p "$cdir"
@@ -548,7 +548,7 @@ jobs:
       - name: Google on-demand scan of the two variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
         run: |
           set -uo pipefail
-          sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           for v in production fips; do
             ref="ghcr.io/fosterstack/cache:cand-${v}-amd64"; d="/tmp/panel/google/${v}-amd64"; mkdir -p "$d"
             skopeo copy --override-arch amd64 --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
@@ -793,9 +793,11 @@ jobs:
       # "os/arch<TAB>childref" per line; a recognized single-image
       # manifest falls back to the index itself.
       - name: enumerate platform children
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin || true
           # the chain's own copy tool reads the candidate index, by digest (pinned by checksum; it uses the docker login above)
           ./bin/install-scanner.sh crane
           ref="ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}"
