@@ -4235,6 +4235,11 @@ def fake(cmd,*a,**kw):
     if cmd and cmd[0]=="gh": return _sp.CompletedProcess(cmd,0,"[]" if cmd[:3]==["gh","issue","list"] else "","")
     return _sp.run(cmd,*a,**kw)
 mp=FX+"/manifest-mediumnofix.json"
+if variant in ("defectlog-dangling","defectlog-keyless"):      # a PRESENT defect log the run cannot use: a dangling symlink, or {} (cache#701 r2): a stop before any mutating call
+    _m=json.load(open(mp)); _dl=tmp+"/known-defect-log.json"
+    if variant=="defectlog-dangling": os.symlink(tmp+"/nowhere",_dl)
+    else: open(_dl,"w").write("{}")
+    _m["known_defect_log"]=_dl; mp=FX+"/manifest-dl-"+variant+".json"; json.dump(_m,open(mp,"w"))
 R.cli.ARGS[:]=["--manifest",mp,"--out",tmp+"/out","--dry-run","false","--today","2026-09-24","--adjudicator","offline-probe"]
 with patch.dict(os.environ,{"AUDITOR_ALLOW_REAL_GH":"1","GITHUB_WORKSPACE":ws}),patch.object(R.subprocess,"run",fake),patch.object(R.cli,"ask_model",return_value={"category":"risk_acceptance","token_usage":0}),contextlib.redirect_stdout(io.StringIO()):
     try: rc=R.main()
@@ -4246,7 +4251,7 @@ print("rc=%s mutating=%d%s"%(rc,len(mut)," (checked at delivery)" if corrupt_at=
 PP
 begin "rc5b-13-reviewed-inputs-stop-the-run" "a reviewed or run-written input that is present but unreadable or mis-shaped stops the run (exit 3) with no mutating call; a missing one is the first run"
 is_root=0; [ "$(id -u)" = 0 ] && is_root=1
-for variant in vex-malformed vex-notobject vex-null-statement vex-empty-object vex-null-statements vex-no-statements items-empty-object items-null-list items-malformed items-notobject items-null-entry items-scalar-entry items-bad-fields items-mixed-expiry vex-bad-vulnerability vex-dir items-dir; do
+for variant in defectlog-dangling defectlog-keyless vex-malformed vex-notobject vex-null-statement vex-empty-object vex-null-statements vex-no-statements items-empty-object items-null-list items-malformed items-notobject items-null-entry items-scalar-entry items-bad-fields items-mixed-expiry vex-bad-vulnerability vex-dir items-dir; do
   r6="$("$PY" "$WORK/r6main.py" "$FXRUN" "$variant" 2>/dev/null | tail -1)"
   eq "$r6" "rc=3 mutating=0" && ok || no "an unreadable or malformed reviewed input ($variant) stops the run: main() returns 3 and makes no mutating git/gh call" "$r6"
 done

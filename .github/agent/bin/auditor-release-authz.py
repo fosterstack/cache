@@ -51,18 +51,29 @@ def acceptance_verdict(issues, owner, number, cve, today):
 
 def affected_cves(vex_dir):
     """Return (affected_cve_set, malformed_files). A malformed VEX is NOT silently ignored
-    (R11 rank 7): it is a named hold reason."""
+    (R11 rank 7): it is a named hold reason. So is a VEX directory that cannot be listed or is not a
+    directory; only a directory that is truly absent means there is no VEX (cache#701)."""
     cves = set(); malformed = []
-    if vex_dir and os.path.isdir(vex_dir):
-        for f in glob.glob(os.path.join(vex_dir, "*.json")):
-            try:
-                for s in reviewed.read(f, as_name="x.openvex.json")["statements"]:     # a VEX of {} is malformed, not "no statements" (rc-5b fix 13)
-                    if s.get("status") == "affected":
-                        n = (s.get("vulnerability") or {}).get("name")
-                        if n:
-                            cves.add(n)
-            except Exception as e:
-                malformed.append("%s (%s)" % (os.path.basename(f), e))
+    if not vex_dir:
+        return cves, malformed
+    try:
+        if not reviewed.present(vex_dir):
+            return cves, malformed
+        with os.scandir(vex_dir) as it:
+            names = sorted(e.name for e in it if e.name.endswith(".json"))
+    except (reviewed.ReviewedInputInvalid, OSError) as e:
+        malformed.append("%s (%s)" % (os.path.basename(vex_dir.rstrip("/")) or vex_dir, e))
+        return cves, malformed
+    for name in names:
+        f = os.path.join(vex_dir, name)
+        try:
+            for s in reviewed.read(f, as_name="x.openvex.json")["statements"]:     # a VEX of {} is malformed, not "no statements" (rc-5b fix 13)
+                if s.get("status") == "affected":
+                    n = (s.get("vulnerability") or {}).get("name")
+                    if n:
+                        cves.add(n)
+        except Exception as e:
+            malformed.append("%s (%s)" % (name, e))
     return cves, malformed
 
 
@@ -74,17 +85,18 @@ def main():
     candpath = cli.opt("--candidate")
     if malformed:
         cli.writej(out, {"decision": "hold", "reasons": ["malformed candidate VEX: " + "; ".join(malformed)]}); return
-    if not candpath or not os.path.exists(candpath):
+    try:
+        cand = reviewed.read(candpath, as_name="accepted-items.json") if candpath else None     # the reader owns existence; a present inventory without its list is a hold
+    except reviewed.ReviewedInputInvalid as e:
+        cli.writej(out, {"decision": "hold", "reasons": ["malformed candidate inventory: %s" % e]}); return
+    if cand is None:
         decision = "hold" if aff else "promote"
         cli.writej(out, {"decision": decision,
                          "reasons": (["affected VEX but no inventory (fail closed)"] if aff else [])})
         return
-    cand = json.load(open(candpath))
     issues = json.load(open(cli.opt("--issues"))) if cli.opt("--issues") else {"issues": []}
-    items = cand.get("accepted_items")
+    items = cand["accepted_items"]                    # the reader refused an inventory without its list (a hold above)
     decision = "promote"; reasons = []
-    if items is None:
-        cli.writej(out, {"decision": "hold", "reasons": ["no accepted_items field (fail closed)"]}); return
     by_cve = {it.get("cve"): it for it in items}
     # completeness (R11 rank 7): every affected CVE must appear in the inventory. An
     # at-or-above item additionally needs an owner issue + recorded acceptance (below); a

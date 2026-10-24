@@ -126,8 +126,13 @@ class DefectLogInvalid(Exception):
 
 def load_defect_log(logpath):
     """The known-defect log as a dict ({} when there is none); DefectLogInvalid when unreadable."""
-    if not (logpath and os.path.exists(logpath)):
+    if not logpath:
         return {}
+    try:
+        if not reviewed.present(logpath):          # the reader owns existence (lstat): a dangling link or a log in an unreachable folder is present, and a stop
+            return {}
+    except reviewed.ReviewedInputInvalid as e:
+        raise DefectLogInvalid(str(e))
     try:
         with open(logpath) as fh:
             d = json.load(fh)

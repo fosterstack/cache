@@ -26,7 +26,7 @@ _TABLE = {
 def spec_for(name):
     """The required keys of the file called `name` (its basename): () for a file this reader has no rule for."""
     base = os.path.basename(name)
-    if "openvex" in base:
+    if base.endswith(".openvex.json"):
         return _OPENVEX
     return _TABLE.get(base, ())
 
@@ -45,15 +45,22 @@ def check(doc, path, as_name=None):
     return doc
 
 
-def read(path, as_name=None):
-    """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else that is not a readable JSON object carrying its required keys
-    is a stop. `as_name` reads a file under the rules of another name (the release gate's per-finding VEX files)."""
+def present(path):
+    """True when the file exists (lstat: a dangling symlink and a file in an unreachable folder are PRESENT), False when it is absent (the first run); any other failure to look is a stop."""
     try:
         os.lstat(path)
     except (FileNotFoundError, NotADirectoryError):
-        return None                                # absent (the first run); any other failure to look (EACCES on a parent, EIO) is a stop, not "missing"
+        return False
     except OSError as ex:
         raise ReviewedInputInvalid("%s cannot be looked at (%s)" % (path, type(ex).__name__))
+    return True
+
+
+def read(path, as_name=None):
+    """The parsed JSON object of a reviewed file, or None when the file does not exist (the first run). Anything else that is not a readable JSON object carrying its required keys
+    is a stop. `as_name` reads a file under the rules of another name (the release gate's per-finding VEX files)."""
+    if not present(path):
+        return None                                # absent (the first run); any other failure to look (EACCES on a parent, EIO) is a stop, not "missing"
     try:
         with open(path) as f:
             doc = json.load(f)

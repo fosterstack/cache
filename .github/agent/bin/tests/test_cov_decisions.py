@@ -307,10 +307,12 @@ def vexfile(*stmts):
 class PoamRemoveFromVex(TmpCase):
     def test_unparseable_and_no_statements(self):
         bad = self.put("bad.openvex.json", "{nope")
-        self.assertFalse(poam._remove_from_vex(bad, {"CVE-1"}))
+        with self.assertRaises(poam.reviewed.ReviewedInputInvalid):      # a VEX that cannot be read or has no statements list is a stop, never "nothing to remove" (cache#701)
+            poam._remove_from_vex(bad, {"CVE-1"})
         self.assertEqual(self.rt("bad.openvex.json"), "{nope")
         nost = self.put("n.openvex.json", {"x": 1})
-        self.assertFalse(poam._remove_from_vex(nost, {"CVE-1"}))
+        with self.assertRaises(poam.reviewed.ReviewedInputInvalid):
+            poam._remove_from_vex(nost, {"CVE-1"})
         self.assertEqual(self.rj("n.openvex.json"), {"x": 1})
 
     def test_no_match_leaves_file(self):
@@ -439,8 +441,9 @@ class AuthzMain(TmpCase):
         self.assertEqual(self.decide(), {"decision": "promote", "reasons": []})
 
     def test_no_accepted_items_field(self):
-        self.assertEqual(self.decide(cand={}),
-                         {"decision": "hold", "reasons": ["no accepted_items field (fail closed)"]})
+        r = self.decide(cand={})                               # an inventory without its list is malformed (the shared reader), a hold
+        self.assertEqual(r["decision"], "hold")
+        self.assertIn("malformed candidate inventory", r["reasons"][0])
 
     def test_completeness(self):
         self.assertEqual(self.decide(cand={"accepted_items": []}, vex=self.AFF),
