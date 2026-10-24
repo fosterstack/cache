@@ -66,8 +66,17 @@ if isinstance(d, dict):
             if isinstance(_st_, dict) and isinstance(_st_.get("run"), str):
                 _st_["run"] = "\n".join(_unwrap_(l) for l in _st_["run"].split("\n"))
 bad = []
-for k in sorted(set(d) - {"name", "on", "permissions", "jobs"}):
+for k in sorted(set(d) - {"name", "on", "permissions", "jobs", "concurrency"}):
     bad.append(f"the workflow sets `{k}`")
+# the one reviewed concurrency block (advisor, Oct 22; cache#583): a pull request's FIRST run attempt of a head shares a group with the pull request's other first attempts, so a newer
+# push cancels its older run; every other run (a re-run of any head, a push to main, a merge_group) gets a group of its own per run and attempt, so ci.yml itself never cancels it nor
+# replaces it as a pending run, and a re-run of an old head cancels nothing. Anything else is refused: a shared group or cancel-in-progress on other events could cancel a required check.
+# Concurrency groups are repository-wide: another workflow that picks a colliding group is not checked here (a computed group defeats a prefix check, and a cancel fails closed:
+# a cancelled check is not a success).
+if "concurrency" in d and d["concurrency"] != {
+        "group": "${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}",
+        "cancel-in-progress": "${{ github.event_name == 'pull_request' }}"}:
+    bad.append("the workflow's concurrency is not the reviewed block")
 if d.get("permissions") != {"contents": "read"}:
     bad.append("the workflow permissions are not exactly {contents: read}")
 on = d.get("on", {})
@@ -81,6 +90,15 @@ if not isinstance(push, dict) or push.get("branches") != ["main"]:
     bad.append("not triggered on push to main")
 elif set(push) != {"branches"}:
     bad.append("push is filtered: " + ", ".join(sorted(set(push) - {"branches"})))
+# the only triggers ci.yml may have: push (main), pull_request and merge_group (the merge queue). workflow_call and workflow_dispatch are refused: a called or dispatched run
+# would carry another context into the reviewed concurrency group.
+if isinstance(on, dict) and sorted(set(on) - {"push", "pull_request", "merge_group"}):
+    bad.append("ci.yml has triggers beyond push, pull_request and merge_group: " + ", ".join(sorted(set(on) - {"push", "pull_request", "merge_group"})))
+# no job of ci.yml may carry a concurrency setting: a job group competes with its parent workflow's group and can cancel the whole run
+for _jid, _j in (d.get("jobs") or {}).items():
+    # the one exception: the live test's one-at-a-time group (REQ-SCAN-012). It never cancels a run in progress and its group is shared with no workflow-level group.
+    if isinstance(_j, dict) and "concurrency" in _j and not (_jid == "live-test" and _j["concurrency"] == {"group": "vex-live-test", "cancel-in-progress": "false"}):
+        bad.append(f"the job {_jid} has `concurrency`")
 if "defaults" in d:
     bad.append("the workflow sets `defaults` (a shell override could skip every run)")
 job = d.get("jobs", {}).get("allowlist", {})
@@ -1206,7 +1224,27 @@ case_ name-expr-function      bad "d['jobs']['lint']['name'] = \"x \${{ format('
 case_ job-needs-list             bad "d['jobs']['allowlist']['needs'] = ['lint']"
 case_ job-timeout                bad "d['jobs']['allowlist']['timeout-minutes'] = '1'"
 case_ job-concurrency            bad "d['jobs']['allowlist']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ job-concurrency-test       bad "d['jobs']['test']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+# the live test's one-at-a-time group (REQ-SCAN-012, ratified): live-test alone may carry exactly this block (take 30, advisor)
+case_ live-test-concurrency-reviewed   ok  "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
+case_ live-test-concurrency-cancels    bad "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'true'}"
+case_ live-test-concurrency-group      bad "d['jobs']['live-test']['concurrency'] = {'group': 'x', 'cancel-in-progress': 'false'}"
+case_ live-test-concurrency-extra-key  bad "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false', 'other': 'x'}"
+case_ live-test-concurrency-string     bad "d['jobs']['live-test']['concurrency'] = 'vex-live-test'"
+case_ live-test-concurrency-no-cancel-key bad "d['jobs']['live-test']['concurrency'] = {'group': 'vex-live-test'}"
+case_ other-job-live-test-block        bad "d['jobs']['test']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
+case_ allowlist-live-test-block        bad "d['jobs']['allowlist']['concurrency'] = {'group': 'vex-live-test', 'cancel-in-progress': 'false'}"
+case_ job-concurrency-lint-same  bad "d['jobs']['lint']['concurrency'] = d['concurrency'] if 'concurrency' in d else {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
+case_ on-workflow-call           bad "d['on']['workflow_call'] = {}"
+case_ on-workflow-dispatch       bad "d['on']['workflow_dispatch'] = {}"
+case_ on-merge-group             ok  "d['on']['merge_group'] = {'types': ['checks_requested']}"
+case_ on-schedule                bad "d['on']['schedule'] = [{'cron': '0 0 * * *'}]"
 case_ wf-concurrency             bad "d['concurrency'] = {'group': 'x', 'cancel-in-progress': 'true'}"
+case_ wf-concurrency-reviewed    ok  "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-cancel-all  bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': 'true'}"
+case_ wf-concurrency-shared-ref  bad "d['concurrency'] = {'group': \"\${{ github.workflow }}-\${{ github.ref }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-rerun-shares bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && format('ci-pr-{0}', github.event.pull_request.number) || format('ci-{0}-{1}', github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
+case_ wf-concurrency-workflow-name bad "d['concurrency'] = {'group': \"\${{ github.event_name == 'pull_request' && github.run_attempt == '1' && format('{0}-pr-{1}', github.workflow, github.event.pull_request.number) || format('{0}-{1}-{2}', github.workflow, github.run_id, github.run_attempt) }}\", 'cancel-in-progress': \"\${{ github.event_name == 'pull_request' }}\"}"
 case_ job-permissions            bad "d['jobs']['allowlist']['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-widened     bad "d['permissions'] = {'contents': 'write'}"
 case_ wf-permissions-removed     bad "d.pop('permissions')"

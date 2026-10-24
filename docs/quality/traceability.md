@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 100 |
-| Acceptance criteria | 491 |
-| Release-blocking ACs | 130 |
-| ACs with mapped evidence | 481 |
-| Release-blocking ACs with mapped evidence | 130 |
+| Acceptance criteria | 494 |
+| Release-blocking ACs | 131 |
+| ACs with mapped evidence | 484 |
+| Release-blocking ACs with mapped evidence | 131 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 48 |
 | Confidence: implementation-only | 51 |
@@ -281,6 +281,7 @@ Stored entries shall survive a clean server restart: a key stored before shutdow
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-STORE-001-AC1 | Given a server that stored a key and shut down cleanly; when a new process starts on the same data directory and the key is requested; then the identical bytes return, and store totals reflect the entry | component | yes | approved | 1 item(s) |
+| REQ-STORE-001-AC2 | Given a store where two PUTs of different sizes replace the same key concurrently, in either completion order of their blob write and their index record; when both have completed; then the index records the size of the bytes now retrievable under that key, the store total equals the sum of the indexed sizes, and reconciliation at the next start finds nothing to correct | component | yes | approved | 9 item(s) |
 
 ### REQ-STORE-002 — Atomic writes
 
@@ -310,7 +311,7 @@ A PUT shall succeed only when the blob is on disk AND its metadata record is wri
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-STORE-004-AC1 | Given a cache whose metadata store fails on the record step; when a client PUTs an entry; then the PUT returns an error, the blob is not left on disk, and the entry is absent from both stores afterward | component | yes | approved | 2 item(s) |
+| REQ-STORE-004-AC1 | Given a cache whose metadata store fails on the record step; when a client PUTs an entry; then the PUT returns an error, the blob is not left on disk, and the entry is absent from both stores afterward | component | yes | approved | 3 item(s) |
 
 ### REQ-STORE-005 — Startup reconciliation after unclean shutdown
 
@@ -333,7 +334,7 @@ The server shall write a marker file at startup and remove it on clean shutdown.
 
 ### REQ-EVICT-001 — Size-capped LRU eviction
 
-With FSCACHE_MAX_BYTES set, the server shall bound the COMMITTED LIVE-CACHE BLOB BYTES - the total size of indexed, retrievable entries, measured after an operation completes - by evicting least-recently-used entries; with the cap at 0 the store shall be unbounded. This is a bounded live-cache size with documented temporary headroom, not a hard filesystem quota: temporary and in-flight disk usage during writes, and concurrent-write headroom, are outside this requirement and need requirements of their own before any hard disk ceiling is claimed.
+With FSCACHE_MAX_BYTES set, the server shall bound the COMMITTED LIVE-CACHE BLOB BYTES - the total size of indexed, retrievable entries, measured after an operation completes - by evicting least-recently-used entries; with the cap at 0 the store shall be unbounded. This is a bounded live-cache size with documented temporary headroom, not a hard filesystem quota: temporary and in-flight disk usage during writes, and concurrent-write headroom, are outside this requirement and need requirements of their own before any hard disk ceiling is claimed. That exclusion covers in-flight temporary disk usage only, never the accuracy of the index once the operations have completed (REQ-STORE-001-AC2).
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md "Full core"; docs/docker-deploy.md "Sizing"; internal/cache/cache.go*
 
@@ -641,6 +642,7 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 | REQ-REL-004-AC6 | Given a rescan scanner listed in .github/policy/scanners.json that cannot read the VEX itself (OSV-Scanner today; Grype and Trivy apply it themselves), and a finding for a CVE or alias that our published OpenVEX marks not_affected or fixed for this image's product; when the rescan statement is merged; then that finding is removed before it counts (it opens no tracking issue and raises no comment), is kept in the statement as vex_suppressed with the VEX document and statement that covered it, and every other finding still counts at any severity; a VEX document that is missing, cannot be read or does not parse stops the rescan as an operational error (never as 'no suppression'); the match is by CVE or alias for the image's product (the repository-wide product, or one scoped to this variant and architecture; the named package and version when the statement names subcomponents), never by CVE alone across products; and a scanner in scanners.json that is neither marked as reading the VEX natively nor covered by this filter fails a test, so a new scanner can never bypass the VEX by omission (advisor reading: ratified scanner-panel rule 4, the pipeline filter, applied to every scanner that cannot read the VEX) | unit |  | approved | 1 item(s) |
 | REQ-REL-004-AC7 | Given more open issues carry the daily-rescan label than one page holds; when the daily rescan looks for its tracking issue; then it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue' | unit |  | approved | 1 item(s) |
 | REQ-REL-004-AC8 | Given an image whose SBOM component list (package names and versions only, sorted, no timestamps, serial numbers or our own module's version) hashes the same as one Amazon Inspector already scanned the same UTC day; when the scan check or the rescan would call Amazon Inspector for it; then it reuses that day's Inspector findings instead of calling Inspector again; our VEX is still applied to the reused findings by our pipeline; a different hash, a different day, or a missing or unreadable stored result calls Inspector; a test proves reuse on a match and a fresh call on each of the three ways it can differ | ci-workflow |  | approved | 2 item(s) |
+| REQ-REL-004-AC9 | Given the toolchain-freshness job's bump branch, and a main whose ruleset requires signed commits; when bin/go-bump-open-pr.sh creates a bump branch (no branch and no pull request exist for it); then the branch is pushed at the commit the job started from (nothing new to sign), the one commit with the two bumped go.mod files is created through the API (createCommitOnBranch, which GitHub signs for the job's App token), and the API is asked whether that commit is verified; only then is the draft pull request created; a commit the API does not report as verified, or an API call that fails, deletes the pushed branch, opens no pull request and ends the job with exit 1 saying so; and no workflow file or script outside the tests runs git commit, git commit-tree or git merge, so no PR-opening bot has a commit path that produces an unsigned commit (rule: main requires signed commits; advisor handoff 0623 after cache#464 was found BLOCKED by an unsigned bump commit, same mechanism as REQ-REFRESH-001-AC34, no new credential) | unit |  | approved | 1 item(s) |
 
 ### REQ-REL-005 — Every CI action pinned to a commit digest
 
@@ -1364,7 +1366,7 @@ The image digest shall be the digest of the OCI index of the image tar (bin/oci-
 
 The release source shall include vendor/ generated in CI from checksum-verified downloads; every Go build shall use only vendored code; dependency-provenance.json at the repository root shall list per module its path, version, hash, checksum-log entry, upstream origin, commit (pseudo-versions) or tag (tagged versions), and license; any module whose origin or checksum-log entry cannot be found shall fail the build.
 
-*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/vendor-provenance.py; bin/vendor-check.sh; bin/vendoring-test.sh; bin/vendor-provenance-test.sh; .github/workflows/ci.yml; bin/check-file-allowlist.sh; vendor/modules.txt; dependency-provenance.json*
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/vendor-provenance.py; bin/vendor-provenance-records.py; bin/vendor-check.sh; bin/vendoring-test.sh; bin/vendor-provenance-test.sh; .github/workflows/ci.yml; bin/check-file-allowlist.sh; vendor/modules.txt; dependency-provenance.json*
 
 > Landed in two parts: the regenerate-and-compare check, the required `vendor` job and the vendor/ allowlist pattern (AC2, AC3, AC11 for bin/vendor-check.sh) in the vendor-check PR; the vendored tree, the provenance file and its check, the evidence file and the public wording (AC1, AC4-AC10, AC12-AC14, the provenance step of AC3 and AC11 for bin/vendor-provenance.py) in the vendored-tree PR, whose tests are bin/vendor-provenance-test.sh; the vendor-check cases stay in bin/vendoring-test.sh. The vendor job runs the provenance check; the release stage that assembles the evidence file is a separate release-chain change. AC13's public text (docs/dependencies.md) is a DRAFT held for the owner's discussion. build reads the sumdb record, the origins and the reviewed licenses file as files, so the network fetch of those records is a separate CI step outside this requirement. The SPDX licence id comes from a committed, reviewed licenses file, never from detection.
 
@@ -1384,6 +1386,7 @@ The release source shall include vendor/ generated in CI from checksum-verified 
 | REQ-VEND-001-AC12 | Given bin/vendor-provenance.py; when it is read and run; then it writes no signature, calls no signing tool and holds no key; vendor-evidence.json is signed afterwards, as a blob with a bundle, by release-sign.sh (REQ-CHAIN-007-AC8), and the claim of what that signature means is the chain's | unit |  | approved | 1 item(s) |
 | REQ-VEND-001-AC13 | Given README.md, docs/, the www site and the release notes; when the wording check runs; then a line that speaks of dependencies, vendored code or modules never says audited; the allowed claim reads "verified to be the same source the public checksum log records, from the stated upstream commit or tag" | unit |  | approved | 1 item(s) |
 | REQ-VEND-001-AC14 | Given a module whose module-cache record has no Origin; when dependency-provenance.json is built; then its origin is taken from test-evidence/dependency-origins.yaml, one entry per such module with module, version, repository URL, commit and the command that produced it; an entry for any other module (one the cache has an Origin for, or one not in the build list), or a commit that does not match the pseudo-version's hash, is refused; no other gap is filled | unit |  | approved | 1 item(s) |
+| REQ-VEND-001-AC15 | Given a go.mod, go.sum and vendor/ tree after a dependency bump, the committed reviewed files test-evidence/dependency-licenses.yaml and test-evidence/dependency-origins.yaml, and `bin/vendor-provenance-records.py --vendor-dir vendor --go-sum go.sum --licenses test-evidence/dependency-licenses.yaml [--recorded-origins test-evidence/dependency-origins.yaml] --out-dir DIR` with DIR absent; when it runs on a runner with network access; then it asks the Go toolchain (`go mod download -json`, at the toolchain's fixed install path, in an empty scratch module, with a closed environment: GOTOOLCHAIN=local, GOENV=off, the checksum database on at its default and no opt-out) for every module of vendor/modules.txt, and writes into DIR only the three files bin/vendor-provenance.py build reads (the checksum-log record, the origins the toolchain verified, the licences copied from the reviewed file); a module the toolchain cannot verify, that it does not report, that appears twice or is not in modules.txt, whose verified hash differs from go.sum, whose origin is not a git https address with the tagged version's tag ref or the pseudo-version's 40-hex commit, that has no origin and no entry in the recorded-origins file, or that has no licence in the reviewed file makes it exit 2 naming the module and write nothing; an existing DIR is refused; it never invents a licence, an origin or a commit and never writes dependency-provenance.json | unit |  | approved | 1 item(s) |
 
 ## BUILDAPK
 

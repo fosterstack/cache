@@ -123,6 +123,25 @@ func (s *Store) Record(key string, size int64) error {
 	})
 }
 
+// Lookup returns one key's record; ok is false (and err nil) when the key has none.
+func (s *Store) Lookup(key string) (Entry, bool, error) {
+	var e Entry
+	var ok bool
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		v := tx.Bucket(bucketName).Get([]byte(key))
+		if v == nil {
+			return nil
+		}
+		var derr error
+		if e, derr = decode(key, v); derr != nil {
+			return derr
+		}
+		ok = true
+		return nil
+	})
+	return e, ok, err
+}
+
 // Touch updates a key's last-access time to now without changing its
 // recorded size. Call this on every successful Get so LRU eviction reflects
 // read traffic, not just writes. A miss (key not recorded) is not an error
