@@ -1,12 +1,16 @@
 name: 'Stage: sign'
 
-# The Sign job of the v0.3.0 release chain (rules 50, 50a, 52, 52a, 53, 53b; the one new workflow file of v0.3.0).
-# It lives in its own file so its certificate identity (the workflow file at the tag) is not shared by any job that runs
-# the build: a step of another job cannot obtain a certificate in this identity, and a second workflow that calls this file
-# still carries its OWN top-level workflow in the certificate's Build Config URI, which the release policy pins to release.yml.
-# It receives only Build's digest list, verifies Build's signed Witness record (data, never run), compares the list with
-# the digest file that record attests, checks the list's format, and only then asks cosign for the provenance signature.
-# The identity token is requested by cosign inside its own process; no step of this file names it.
+# The Sign stage of the v0.3.0 release chain (rules 50, 50a, 52, 52a, 53, 53b; the one new workflow file of v0.3.0), two jobs of ONE file so that both carry ONE certificate
+# identity (the workflow file at the tag, with release.yml as the top-level workflow): no job that builds can obtain a certificate in it, and a second workflow that calls
+# this file still carries its OWN top-level workflow in the certificate's Build Config URI, which the release policy pins to release.yml.
+# The building jobs hold no identity token (owner, Oct 22 2026, ops/docs/ratify/2026-10-22-witness-signed-outside-build.md): their Witness records are made with a throwaway
+# key and leave as *.local.json files that nothing trusts. THIS stage checks each record against the artifacts it receives and signs it keyless; every later stage trusts
+# only a record signed here.
+#   sign:         receives Build's records (witness-build, witness-apk-<runner>) and the artifacts those records name (images, dist, the apks), checks them (bin/chain-verify.py
+#                 sign-records), signs the records, then checks Build's digest list against the signed record and asks cosign for the provenance signature.
+#   sign-rebuild: receives Rebuild's records (witness-rapk-<runner>, witness-rebuild with its verdict) and NO Rebuild apk or image (the owner's separation rule: Rebuild's
+#                 outputs never reach a job that signs); the Release stage's compare job, which holds both builds' apks, checks the signed rapk records' product digests.
+# The identity token is requested inside the signing process (cosign or Witness); no step of this file names it.
 # The shape of this file is judged by bin/chain-sign-wiring-test.sh (an allowlist), the checks by bin/chain-verify.py.
 
 on:
@@ -16,6 +20,15 @@ on:
         description: 'JSON {name: sha256:<hex>} of the digests Build produced (the only input)'
         required: true
         type: string
+      stage:
+        description: 'build or rebuild: which records this call signs (the release graph calls this file once for each)'
+        required: true
+        type: string
+      records:
+        description: 'JSON of the sha256 of the Rebuild record, verdict and rapk records, from the assemble job of Rebuild (the rebuild call only)'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -23,6 +36,7 @@ permissions:
 jobs:
   sign:
     name: sign
+    if: ${{ inputs.stage == 'build' }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -36,19 +50,137 @@ jobs:
         with:
           name: witness-build
           path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: digests
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: items
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: admission-baseline
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-apk-ubuntu-24.04
+          path: witness-apk-ubuntu-24.04
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-apk-ubuntu-24.04-arm
+          path: witness-apk-ubuntu-24.04-arm
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: images
+          path: artifacts/witness-build/out
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: artifacts/witness-build/dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: apk-ubuntu-24.04
+          path: artifacts/witness-apk-ubuntu-24.04/out
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: apk-ubuntu-24.04-arm
+          path: artifacts/witness-apk-ubuntu-24.04-arm/out
 
       - name: install cosign (pinned by checksum)
         run: bash bin/install-scanner.sh cosign
+
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
 
       - name: write Build's digest list to a file
         env:
           DIGESTS: ${{ inputs.digests }}
         run: printf '%s' "$DIGESTS" > digests.json
 
+      - name: check Build's records against the artifacts, then sign them
+        run: python3 -I -B bin/chain-verify.py sign-records --stage build --template .github/policy/release-policy.template.json --digests digests.json --artifacts-dir artifacts --out staged --record-dir witness-build --record-dir witness-apk-ubuntu-24.04 --record-dir witness-apk-ubuntu-24.04-arm
+
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+
       - name: check Build's record and the digests, then sign the provenance
-        run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+        run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record signed/witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provenance
           path: provenance
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-build
+          path: signed/witness-build
+
+
+
+  sign-rebuild:
+    name: sign-rebuild
+    if: ${{ inputs.stage == 'rebuild' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-rapk-ubuntu-24.04
+          path: witness-rapk-ubuntu-24.04
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-rapk-ubuntu-24.04-arm
+          path: witness-rapk-ubuntu-24.04-arm
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-rebuild
+          path: witness-rebuild
+
+      - name: install Witness (pinned by checksum)
+        run: bash bin/install-scanner.sh witness
+
+      - name: write Build's digest list to a file
+        env:
+          DIGESTS: ${{ inputs.digests }}
+        run: printf '%s' "$DIGESTS" > digests.json
+
+      - name: write Rebuild's record digests to a file
+        env:
+          RECORDS: ${{ inputs.records }}
+        run: printf '%s' "$RECORDS" > rebuild-records.json
+
+      - name: check Rebuild's records, then sign them
+        run: python3 -I -B bin/chain-verify.py sign-records --stage rebuild --template .github/policy/release-policy.template.json --digests digests.json --expect-digests rebuild-records.json --out staged --record-dir witness-rapk-ubuntu-24.04 --record-dir witness-rapk-ubuntu-24.04-arm --record-dir witness-rebuild
+
+      - name: sign the staged records and check each signed one
+        run: bash bin/witness-sign-staged.sh staged signed
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04
+          path: signed/witness-rapk-ubuntu-24.04
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-rapk-ubuntu-24.04-arm
+          path: signed/witness-rapk-ubuntu-24.04-arm
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed-witness-rebuild
+          path: signed/witness-rebuild

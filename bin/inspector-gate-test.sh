@@ -166,6 +166,46 @@ good["statements"] = bad["statements"] + good["statements"]; json.dump(good, ope
 PYX
 check "a malformed statement beside a good one: the good one still covers"     0 "1 covered" cand-production-amd64 "$w/sbom.json" "$w/vexed.json" "$w/sc-mixed.json"
 
+# The index itself (the #564 follow-up, Haiku out-of-diff note): covered() with NO image (the panel's per-image tally, which filters the statements first) must not be
+# satisfied by a product whose scope the grammar cannot read or that is not this gate's repository, so vex_index drops such a product at index time.
+IDXOUT="$(python3 - "$sut" <<'PYI'
+import importlib.util, sys
+sp = importlib.util.spec_from_file_location("g", sys.argv[1]); G = importlib.util.module_from_spec(sp); sp.loader.exec_module(G)
+OCI = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+def doc(*pids, subs=None):
+    prods = [dict({"@id": p}, **({"subcomponents": [{"@id": x} for x in subs]} if subs else {})) for p in pids]
+    return {"statements": [{"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": prods}]}
+PKG = ("busybox", "1.37.0")
+def cov(pid, image=None, subs=("pkg:generic/busybox@1.37.0",)):
+    return G.covered(G.vex_index(doc(pid, subs=list(subs))), "CVE-9999-1", PKG, image)
+def row(name, ok): print(("ok: " if ok else "FAIL: ") + name)
+row("index: the cache image product covers, with no image given", cov(OCI) is True)
+row("index: a variant/arch-scoped product covers, with no image given", cov(OCI + "&variant=production&arch=amd64") is True)
+row("index: the Go product covers, with no image given", cov("pkg:golang/github.com/fosterstack/cache") is True)
+row("index: a candidates-only product covers nothing, with no image given", cov("pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates") is False)
+row("index: a candidates-only product covers nothing, with an image given", cov("pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates", G.image_identity("cand-production-amd64")) is False)
+for q in ("&variant=debug", "&arch=riscv64", "&VARIANT=production", "&variant=%70roduction", "&variant=production&variant=production", "&arch", "&color=red"):
+    row("index: a malformed-scope product %r covers nothing, with no image given" % q, cov(OCI + q) is False)
+    row("index: a malformed-scope product %r covers nothing, with an image given" % q, cov(OCI + q, G.image_identity("cand-production-amd64")) is False)
+row("index: a malformed product beside a good one: the good one still covers", G.covered(G.vex_index(doc(OCI + "&variant=debug", OCI, subs=["pkg:generic/busybox@1.37.0"])), "CVE-9999-1", PKG, None) is True)
+row("index: the dropped product leaves no entry at all", G.vex_index(doc(OCI + "&variant=debug")) == {})
+GO = "pkg:golang/github.com/fosterstack/cache"
+for suffix in ("&arch=arm64", "&repository_url=ghcr.io/fosterstack/cache-candidates", "&x", "#sub", "/extra"):
+    row("index: the Go product with the suffix %r covers nothing (it names another module), with no image" % suffix, cov(GO + suffix, subs=()) is False)
+    row("index: the Go product with the suffix %r covers nothing, with an image" % suffix, cov(GO + suffix, G.image_identity("cand-production-amd64"), subs=()) is False)
+row("index: the plain Go product with no subcomponent still covers every package", cov(GO, subs=()) is True)
+# the @id the gate reads is the rescan's: the key when present (an empty @id is NOT replaced by identifiers.purl)
+def idoc(at, purl):
+    return {"statements": [{"vulnerability": {"name": "CVE-9999-1"}, "status": "not_affected", "products": [{"@id": at, "identifiers": {"purl": purl}, "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]}]}
+row("index: an empty @id beside an identifiers.purl of our image covers nothing", G.covered(G.vex_index(idoc("", OCI)), "CVE-9999-1", PKG, None) is False)
+row("index: an @id equal to the identifiers.purl covers", G.covered(G.vex_index(idoc(OCI, OCI)), "CVE-9999-1", PKG, None) is True)
+print("index-cases-run")
+PYI
+)"; idx_rc=$?
+echo "$IDXOUT" | sed 's/^/  /'
+[ "$idx_rc" = 0 ] && [ "$(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT")" = 34 ] && grep -qx 'index-cases-run' <<<"$IDXOUT" || { echo "FAIL: the index section ran $(grep -c '^\(ok\|FAIL\):' <<<"$IDXOUT") cases, want 34, or the section exited non-zero (a crash or a skipped case)"; fail=$((fail+1)); }
+pass=$((pass + $(grep -c '^ok:' <<<"$IDXOUT"))); fail=$((fail + $(grep -c '^FAIL:' <<<"$IDXOUT")))
+
 echo "----"
 echo "inspector-gate: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

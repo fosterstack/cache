@@ -81,7 +81,7 @@ def scope_of(product_id):
     unaffected."""
     base, q, query = product_id.partition("?")
     if base.startswith("pkg:golang/"):
-        return {} if not q and "@" not in base and "\n" not in product_id else None   # the Go product: unversioned, no qualifier (a pinned one never applies). A trailing newline (which OUR_PRODUCTS's $ lets through) is refused here although the rescan reads it as the Go product: the gate only ever blocks more, never suppresses more.
+        return {} if product_id == "pkg:golang/github.com/fosterstack/cache" else None   # the Go product: unversioned, no qualifier (a pinned one never applies). A trailing newline (which OUR_PRODUCTS's $ lets through) is refused here, and the rescan refuses the document (the exact product only): the gate only ever blocks more, never suppresses more.
     # only this gate's own repository: the images it scans are ghcr.io/fosterstack/cache:cand-<variant>-<arch>, so a statement that names only the
     # candidates repository covers none of them (bin/rescan-statement.py::_vex_match and bin/panel.py::_covers agree; REQ-REL-004-AC1)
     repo = {"pkg:oci/cache": "ghcr.io/fosterstack/cache"}.get(base)
@@ -121,13 +121,16 @@ def vex_index(doc):
         v = st.get("vulnerability") or {}
         ids = {v.get("name")} | set(v.get("aliases") or [])
         for p in st.get("products") or []:
-            pid = p.get("@id") or (p.get("identifiers") or {}).get("purl") or ""
-            if not OUR_PRODUCTS.match(pid):
+            pid = p.get("@id") if p.get("@id") is not None else (p.get("identifiers") or {}).get("purl") or ""   # an @id that is present (even "") is the id, as the rescan reads it; only a missing or null one falls back
+            if not isinstance(pid, str) or not OUR_PRODUCTS.match(pid):
+                continue
+            scope = scope_of(pid)
+            if scope is None:          # not this gate's repository, or a scope the grammar rejects: it covers nothing, with or without an image (covered(.., image=None) trusts the index)
                 continue
             subs = {name_version(s.get("@id")) for s in p.get("subcomponents") or []}
             for i in ids:
                 if i:
-                    idx.setdefault(i, []).append((subs, scope_of(pid)))
+                    idx.setdefault(i, []).append((subs, scope))
     return idx
 
 
