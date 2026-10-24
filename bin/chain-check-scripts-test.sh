@@ -451,6 +451,9 @@ if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I two repositories scan noth
 cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"; mkfake grype 0 120; mkfake osv-scanner 0 80; vexrepo "pkg:oci/cache?arch=amd64&repository_url=registry.example/team/cache#frag"; : > "$work/log"
 want_ok "AC4 I a qualifier before repository_url and a fragment after it still name the repository" "${SCAN[@]}"
 if grep -Fxq "grype-tag registry.example/team/cache:cand-fips-arm64" "$work/log"; then ok "AC4 I the repository is read whatever the qualifier order"; else bad "AC4 I qualifier order: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+vexrepo "pkg:oci/cache?repository_url=registry.example:5000/team/cache#repository_url=note"; : > "$work/log"
+want_ok "AC4 I a repository_url written inside the fragment is not a second parameter, and a registry port is read" "${SCAN[@]}"
+if grep -Fxq "grype-tag registry.example:5000/team/cache:cand-fips-arm64" "$work/log"; then ok "AC4 I the registry port stays in the repository"; else bad "AC4 I port: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
 vexrepo "pkg:oci/cache@sha256:$(printf 'a%.0s' $(seq 64))?repository_url=registry.example/team/cache"; : > "$work/log"
 want_ok "AC4 I the digest form of the cache image product names the repository too" "${SCAN[@]}"
 # every identifier of a product counts (grype's reader takes @id and identifiers.* alike), and a cache identifier in any form the check cannot read is not guessed at
@@ -463,6 +466,10 @@ a second repository only in identifiers.purl|{"@id":"pkg:oci/cache?repository_ur
 a second repository after the qualifier arch|pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache|pkg:oci/cache?arch=amd64&repository_url=ghcr.io/other/cache
 a duplicate repository_url|pkg:oci/cache?repository_url=ghcr.io/a/cache&repository_url=ghcr.io/a/cache|
 an empty repository_url|pkg:oci/cache?repository_url=|
+a trailing slash in the repository|pkg:oci/cache?repository_url=registry.example/team/|
+an empty path segment in the repository|pkg:oci/cache?repository_url=registry.example//team/cache|
+a port with no number|pkg:oci/cache?repository_url=registry.example:/team/cache|
+a repository with no path|pkg:oci/cache?repository_url=registry.example|
 a percent-encoded repository|pkg:oci/cache?repository_url=ghcr.io%2Ffosterstack%2Fcache|
 a path after the image name|pkg:oci/cache/extra?repository_url=ghcr.io/fosterstack/cache|
 a product that is not an object|"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"|
@@ -1310,7 +1317,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=444
+EXPECT=454
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

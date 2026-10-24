@@ -150,8 +150,8 @@ vex_image_repo() {   # the one repository the published VEX names for the cache 
   # (pkg:oci/cache followed by @ ? # / or the end) in any other form or with two repository_url, or a conflicting second repository, leaves nothing (fail closed).
   jq -r '[.statements[]?.products[]? | if type == "object" then ((.["@id"]?), ((.identifiers? | objects | .[]?))) else "pkg:oci/cache?malformed" end
           | select(type == "string" and test("^pkg:oci/cache([@?#/]|$)"))] as $ids
-    | if any($ids[]; (test("^pkg:oci/cache(@sha256:[0-9a-f]{64})?[?]([^#]*&)?repository_url=[a-z0-9][a-z0-9._:/-]*(&[^#]*)?(#.*)?$") | not) or ([match("repository_url=";"g")] | length) != 1) then empty
-      else [$ids[] | capture("repository_url=(?<r>[a-z0-9][a-z0-9._:/-]*)") | .r] | unique | if length == 1 then .[0] else empty end end' "$VEX" 2> /dev/null
+    | if any($ids[]; (test("^pkg:oci/cache(@sha256:[0-9a-f]{64})?[?]([^#]*&)?repository_url=[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)+(&[^#]*)?(#.*)?$") | not) or ([sub("#.*$"; "") | match("repository_url=";"g")] | length) != 1) then empty
+      else [$ids[] | sub("#.*$"; "") | capture("repository_url=(?<r>[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)+)") | .r] | unique | if length == 1 then .[0] else empty end end' "$VEX" 2> /dev/null
 }
 osv_archive() {
   local layout=$1 child=$2 arc=$3 tag=${4:-} abs m prog   # tag: the image name the archive carries (RepoTags); grype reads its identity from it, osv-scanner takes none
