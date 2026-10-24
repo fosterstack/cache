@@ -143,7 +143,8 @@ PHASES = {  # rules 55, 72, 79; the phases are split so that no witnessed comman
 SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase-acceptance.sh", "bin/check-phase-runtime.sh", "bin/check-phase-arm64.sh", "bin/check-scan.sh", "bin/check-govulncheck.py", "bin/check-fips.sh", "bin/check-artifacts.sh", "bin/check-acceptance.sh", "bin/check-guide.sh",
            "bin/acceptance-gradle.sh", "bin/acceptance-gradle-capped.sh", "bin/acceptance-maven.sh", "bin/acceptance-maven-capped.sh",
            "bin/acceptance-egress.sh", "bin/acceptance-k8s.sh", "bin/acceptance-serve.sh"]
-# REQ-CHAIN-006-AC14: the node image the k8s suite creates its cluster with, by digest (kind v0.33.0 release notes, https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0)
+# REQ-CHAIN-006-AC14: the node image the k8s suite creates its cluster with, by digest
+# (kind v0.33.0 release notes, https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0)
 NODE_IMAGE = "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
 CLUSTER = "kind create cluster --name fscache-accept --image " + NODE_IMAGE
 SUITE_STEPS = {  # acceptance.yml: each job runs the shared suite scripts, the capped one as the results step
@@ -325,12 +326,14 @@ def stage(path):
     body = [x for x in kinds if x != "down"]
     if body[:k] != want or body[k:k + 3] != ["witnessed"] * 3 or body[k + 3:k + 4] != ["rec"] or any(x != "up" for x in body[k + 4:]) or len(body) < k + 5:
         bad.append("steps must be checkout, install Witness, install each listed scanner, the kind and kubectl check "
-                       "(KIND_STEP), downloads, THREE witnessed steps, the records step, uploads (in that order); got %s" % kinds)
+                       "(KIND_STEP), downloads, THREE witnessed steps, the records step, uploads (in that order); got %s"
+                   % kinds)
     if "kind" in kinds and "down" in kinds and kinds.index("down") < kinds.index("kind"):
         bad.append("the downloads come after the installs")
     want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", GO_INSTALL)] + [("downid", "govulncheck-dl"), ("run", GV_HAND_LINE)] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
              [("run", "bash bin/witnessed-local.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS] + [("rec", "records"), ("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))]
-    bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, kind check, four downloads, the three witnessed steps, the two uploads")
+    bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, kind check, "
+                                               "four downloads, the three witnessed steps, the two uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
     if len(imgs) != 1 or (imgs[0].get("with") or {}).get("path") != "images":
         bad.append("exactly one download of the images artifact, into images/, is required; found %d" % len(imgs))

@@ -43,8 +43,9 @@
 #      missing). It passes only for a guide whose cannot-run list is empty or absent.
 #   Graph aligned with PR 2 (3e883b3): the release job needs EXACTLY check, rebuild and sign (build is reached through check); check
 #      needs exactly build and sign.
-#   Q8 REQ-CHAIN-006-AC14 (amended Oct 24, rule 13 of the simplest-correct-form rules): kind and kubectl come from the runner image (one step that
-#      prints their versions and fails labelled if either is missing), no kind action, the node image by digest (`stage`, `cluster`); the runtime phase runs the k8s suite.
+#   Q8 REQ-CHAIN-006-AC14 (amended Oct 24, rule 13 of the simplest-correct-form rules): kind and kubectl come from the
+#      runner image (one step that prints their versions and fails labelled if either is missing), no kind action, the
+#      node image by digest (`stage`, `cluster`); the runtime phase runs the k8s suite.
 set -euo pipefail
 # the red cases of this suite are the ones listed in test-evidence/known-red.json (KR-CHECK-1, KR-CHECK-2): the run passes only when they are EXACTLY the red cases
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then

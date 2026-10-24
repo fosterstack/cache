@@ -68,7 +68,8 @@ def literal_false(v):
 KIND_RUN = 'kind version || { echo "::error::PIPELINE, no kind"; exit 1; }'
 def is_kind_run(run):
     """the ONLY accepted way to have `kind` in the job (amended Oct 24, rule 13 of the simplest-correct-form rules): the
-    runner image's own kind, proved present by this one run step: it prints the version and fails with a labelled error"""
+    runner image's own kind, proved present by this one run step: it prints the version and fails with a labelled
+    error"""
     return run.strip() == KIND_RUN
 
 def crane_re(pre):
@@ -96,7 +97,8 @@ def judge_crane(name, steps, d, pre, bad):
         bad.append(f"{name}: the crane install step has a custom shell, working-directory or env")
 
 def judge_install(name, steps, d, pre, bad):
-    """the job checks the runner image's kind in ONE unconditional run step BEFORE the driver (no download, no install)"""
+    """the job checks the runner image's kind in ONE unconditional run step BEFORE the driver
+    (no download, no install)"""
     di = steps.index(d)
     cands = [(i, s) for i, s in enumerate(steps) if "run" in s and re.search(r"\bkind\b|install-scanner", str(s["run"])) and not crane_re(pre).match(str(s["run"]).strip())]
     good = [(i, s) for i, s in cands if is_kind_run(str(s["run"]))]
@@ -375,8 +377,8 @@ def common(name, job, bad):
         if i > di and "upload-artifact" not in str(s.get("uses", "")) and not is_cleanup:
             bad.append(f"{name}: a step after the driver other than the transcript upload and the identity token cleanup could alter the files before upload")
         if i < di and isrun and not is_resolver and not is_boot and not is_install and not is_refresher and not is_pin and not is_load:
-            bad.append(f"{name}: a run step before the driver other than the latest-release resolver, the one hash-pinned SDK install "
-                       f"and the one kind check (it could change what the driver sees)")
+            bad.append(f"{name}: a run step before the driver other than the latest-release resolver, "
+                       f"the one hash-pinned SDK install and the one kind check (it could change what the driver sees)")
     judge_install(name, steps, d, pre, bad)
     if weekly:
         judge_crane(name, steps, d, pre, bad)
@@ -1029,7 +1031,8 @@ for weekly in (False, True):
     bd = []
     judge_install("synth", st, st[-1], pre, bd)
     which = "weekly" if weekly else "rc"
-    result(not bd, f"the install judge accepts the kind check step ({which})" + ("" if not bd else ": " + "; ".join(bd)))
+    result(not bd, f"the install judge accepts the kind check step ({which})"
+           + ("" if not bd else ": " + "; ".join(bd)))
 def ins(st):
     return next(x for x in st if "install-scanner" in str(x.get("run", "")) or re.search(r"\bkind\b", str(x.get("run", ""))))
 
