@@ -670,12 +670,12 @@ if [ -n "${PIN_WIRING_JUDGE_GIT:-}" ]; then
   done
   # Two exact forms are accepted: main's own (judged here) or the landing form, chain-v030's ci.yml, judged by
   # pin-wiring-landing.sh in the same mode over the same commit. A head that fits neither is refused with both findings.
-  wf="$work/head-wf"; pol="$work/head-policy.json"
-  if main_out=$(PIN_WIRING_WORKFLOWS_DIR="$wf" PIN_WIRING_POLICY_FILE="$pol" judge "$work/head-ci.yml"); then exit 0; fi
+  export PIN_WIRING_WORKFLOWS_DIR="$work/head-wf" PIN_WIRING_POLICY_FILE="$work/head-policy.json"
+  if main_out=$(judge "$work/head-ci.yml"); then exit 0; fi
   landing="$here/.github/agent/tests/pin-wiring-landing.sh"
-  if [ -f "$landing" ] && land_out=$(bash "$landing" 2>&1); then exit 0; fi
-  printf '%s\n' "$main_out"
-  [ -z "${land_out:-}" ] || printf 'the landing form also refuses it: %s\n' "$land_out"
+  [ -f "$landing" ] || { printf '%s\nno landing judge at %s\n' "$main_out" "$landing"; exit 1; }
+  if land_out=$(bash "$landing" 2>&1); then exit 0; fi
+  printf '%s\nthe landing form also refuses it: %s\n' "$main_out" "$land_out"
   exit 1
 fi
 
@@ -1020,12 +1020,13 @@ done
 
 # ---- cutover: the landing form (chain-v030's ci.yml) -------------------------------------------------------
 # The gate runs this file over a PR head. Judge mode accepts main's own ci.yml or the landing form, which
-# pin-wiring-landing.sh (chain-v030's own judge, plus main's concurrency rules) accepts. The cases below read
-# chain-v030 as git objects; CI checks out every branch. The follow-up after the landing deletes this section.
+# pin-wiring-landing.sh accepts: it is chain-v030's own pin-wiring-test.sh, byte for byte (checked below).
+# The cases read chain-v030 as git objects at ONE pinned commit, the one the copy was taken from, so a later
+# push to chain-v030 cannot turn main red; the re-copy before the landing moves the pin. The follow-up after
+# the landing deletes this section.
+LANDING_COMMIT=2ffc417f3d7334559fb47816ec44f768ee7d980d
 landing_ref=""
-for r in origin/chain-v030 chain-v030; do
-  if git rev-parse -q --verify "$r^{commit}" > /dev/null 2>&1; then landing_ref=$(git rev-parse "$r"); break; fi
-done
+if git cat-file -e "$LANDING_COMMIT^{commit}" 2> /dev/null; then landing_ref=$LANDING_COMMIT; fi
 git_commit() { git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c; }
 landing_edit() {  # <ci.yml path> <python edit of the parsed file>
   python3 - "$1" "$2" <<'PYL'
@@ -1050,18 +1051,13 @@ lcase() {  # <name> <ok|bad> <python edit of chain-v030's ci.yml, or empty>: jud
   else failn=$((failn+1)); echo "FAIL landing:$1 -> $got, want $2 ($out)"; fi
 }
 if [ -z "$landing_ref" ]; then
-  failn=$((failn+1)); echo "FAIL landing form: no chain-v030 ref in this clone (CI fetches every branch)"
+  failn=$((failn+1)); echo "FAIL landing form: commit $LANDING_COMMIT is not in this clone (CI fetches every branch)"
 else
   J='d["jobs"]'
   WF_CONC='d["concurrency"] = {"group": "ci-pr", "cancel-in-progress": "true"}'
-  REVIEWED='{"group": "${{ github.event_name == '"'pull_request'"' && github.run_attempt == '"'1'"' && '
-  REVIEWED+='format('"'ci-pr-{0}'"', github.event.pull_request.number) || '
-  REVIEWED+='format('"'ci-{0}-{1}'"', github.run_id, github.run_attempt) }}", '
-  REVIEWED+='"cancel-in-progress": "${{ github.event_name == '"'pull_request'"' }}"}'
   COUNTING='[s for j in d["jobs"].values() for s in (j.get("steps") or [])'
   COUNTING+=' if "chain-hostile-test.sh" in (s.get("run") or "") and "suite-guard-run.py run" in s["run"]][0]'
   lcase chain-v030-as-it-is                    ok  ""
-  lcase with-the-reviewed-concurrency          ok  "d['concurrency'] = $REVIEWED"
   lcase wrong-workflow-concurrency             bad "$WF_CONC"
   lcase job-concurrency-on-lint                bad "$J['lint']['concurrency'] = {'group': 'x'}"
   lcase live-test-group-cancels                bad "$J['live-test']['concurrency']['cancel-in-progress'] = 'true'"
@@ -1073,20 +1069,14 @@ else
   lcase counting-step-env                      bad "x = $COUNTING; x['env'] = {'PINS_DRY': '1'}"
   lcase persona-step-removed                   bad "$J['allowlist-persona']['steps'].pop()"
   lcase pins-auditor-step-removed              bad "$J['allowlist-pins-auditor']['steps'].pop()"
-  # main's single-job allowlist-chain inside chain-v030's ci.yml fits neither form
-  SINGLE="[$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; $J['allowlist-chain'] = "
-  SINGLE+="{'name': 'allowlist-chain', 'runs-on': 'ubuntu-latest', 'steps': [{'run': 'true'}]}"
+  # main's own single-job allowlist-chain inside chain-v030's ci.yml fits neither form
+  MAIN="m = yaml.load(open('$here/.github/workflows/ci.yml'), Loader=yaml.BaseLoader)"
+  SINGLE="$MAIN; [$J.pop('allowlist-chain-%d' % k) for k in (1, 2, 3, 4)]; $J['allowlist-chain'] = m['jobs']['allowlist-chain']"
   lcase mixed-single-job-chain                 bad "$SINGLE"
-  # the landing judge's own cases, run over a full export of chain-v030, all pass
-  tree="$work/landing-tree"; rm -rf "$tree"; mkdir -p "$tree"; git archive "$landing_ref" | tar -x -C "$tree"
-  cp "$here/.github/agent/tests/pin-wiring-landing.sh" "$tree/.github/agent/tests/pin-wiring-test.sh"
-  ( cd "$tree" && git init -q . && git add -A && git_commit )
-  lout=$(cd "$tree" && bash .github/agent/tests/pin-wiring-test.sh 2>&1) || true
-  if printf '%s\n' "$lout" | grep -Eq '^pin-wiring: [0-9]+ passed, 0 failed$'; then
-    pass=$((pass+1)); echo "PASS landing judge: its own cases pass over chain-v030 ($(printf '%s\n' "$lout" | tail -1))"
-  else
-    failn=$((failn+1)); echo "FAIL landing judge over chain-v030: $(printf '%s\n' "$lout" | grep -E '^FAIL' | head -3)"
-  fi
+  # the landing judge is chain-v030's own, byte for byte
+  if git show "$landing_ref:.github/agent/tests/pin-wiring-test.sh" | cmp -s - "$here/.github/agent/tests/pin-wiring-landing.sh"
+  then pass=$((pass+1)); echo "PASS landing judge is chain-v030's pin-wiring-test.sh at $landing_ref, byte for byte"
+  else failn=$((failn+1)); echo "FAIL landing judge differs from chain-v030's pin-wiring-test.sh at $landing_ref"; fi
 fi
 
 echo "pin-wiring: $pass passed, $failn failed"
