@@ -427,6 +427,28 @@ for v in production fips; do for a in amd64 arm64; do
   if grep -Eq "^grype docker-archive:[^ ]*grype-$v-linux-$a\.tar " "$work/log"; then ok "AC4 S1 grype scanned the $v image's linux/$a child explicitly"; else bad "AC4 S1 no grype call on the archive of the $v image's linux/$a child"; fi
   if grep -Fxq "grype-tag ghcr.io/fosterstack/cache:cand-$v-$a" "$work/log"; then ok "AC4 I the archive of the $v image's linux/$a child carries the name ghcr.io/fosterstack/cache:cand-$v-$a (the VEX statements apply to it)"; else bad "AC4 I the $v/$a archive carries no cand-$v-$a name: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
 done; done
+# REQ-CHAIN-006-AC8 + AC4 (rc-5a I): a check script names no registry, so the repository of the archive name comes from the published VEX itself (the one cache image product
+# pkg:oci/cache?repository_url=REPO); a VEX that names none, or two different ones, cannot be judged: exit 2, nothing scanned under an invented name (AC4: cannot judge = red).
+vexrepo() { # vexrepo PRODUCT... -> a VEX document whose one statement has exactly these products
+  python3 - "$fx/.vex/fosterstack-cache.openvex.json" "$@" <<'PYR'
+import json, sys
+d = json.load(open("/dev/stdin" if False else sys.argv[1]))
+st = d["statements"][0]; st["products"] = [{"@id": x} for x in sys.argv[2:]]; d["statements"] = [st]
+json.dump(d, open(sys.argv[1], "w"))
+PYR
+}
+cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+vexrepo "pkg:oci/cache?repository_url=registry.example/team/cache&arch=amd64" "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"
+mkfake grype 0 120; mkfake osv-scanner 0 80; : > "$work/log"
+want_ok "AC4 I the repository comes from the VEX: a VEX naming registry.example/team/cache is scanned under that name" "${SCAN[@]}"
+if grep -Fxq "grype-tag registry.example/team/cache:cand-production-amd64" "$work/log" && ! grep -q '^grype-tag ghcr.io' "$work/log"; then ok "AC4 I the archive name carries the VEX's repository (its qualifiers dropped), not a fixed one"; else bad "AC4 I the archive name is not the VEX's repository: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+vexrepo "pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"; : > "$work/log"
+want_rc "AC4 I a VEX that names no cache image repository cannot be judged: exit 2" 2 "${SCAN[@]}"
+if grep -qi "names no single cache image repository" <<< "$out" && ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I a VEX with no cache image repository scans nothing under an image name and says why"; else bad "AC4 I no-repository VEX: log $(grep '^grype-tag' "$work/log" | tr '\n' ' ') out ${out:0:140}"; fi
+vexrepo "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache" "pkg:oci/cache?repository_url=ghcr.io/other/cache"; : > "$work/log"
+want_rc "AC4 I a VEX that names two different cache image repositories cannot be judged: exit 2" 2 "${SCAN[@]}"
+if ! grep -q '^grype-tag' "$work/log"; then ok "AC4 I two repositories scan nothing under an image name"; else bad "AC4 I two-repository VEX scanned: $(grep '^grype-tag' "$work/log" | tr '\n' ' ')"; fi
+cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"; mkfake grype 0 120; mkfake osv-scanner 0 80; : > "$work/log"
 bare_=$(grep -cE '^grype oci-dir:' "$work/log" || true)   # a count, not a pipe into grep -q (pipefail + SIGPIPE)
 if [ "$bare_" != 0 ]; then bad "AC4 S1 a grype image scan read the layout directly (no image name, so no VEX applies)"; else ok "AC4 S1 no grype image scan reads the layout directly"; fi
 for v in production fips; do for a in amd64 arm64; do
