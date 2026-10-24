@@ -329,7 +329,8 @@ def stage(path):
               + [("downid", "govulncheck-dl"), ("run", GV_HAND_LINE)]
               + [("down", x) for x in ARM_DOWNLOADS]
               + [("run", "bash bin/witnessed-local.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS]
-              + [("rec", "records"), ("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))])
+              + [("rec", "records"), ("up", ("witness-check", RECORD_DIRS)),
+                 ("up", ("check-results", "check-results"))])
     bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, "
                                                "four downloads, the three witnessed steps, the two uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
