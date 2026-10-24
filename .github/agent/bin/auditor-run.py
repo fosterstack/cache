@@ -842,11 +842,11 @@ def adjudicate(adjudicator, ctx, state):
     iters = 0; errored = False; refused = False
     for attempt, role in (("primary", "primary"), ("rephrase", "primary"), ("fallback", "fallback")):
         if state["tokens"] >= policy.TOKEN_BUDGET or iters >= policy.MAX_ITERATIONS:
+            if errored and not refused:
+                return "adjudicator_error"             # the model was unavailable, not stopped: the outage has its one aggregate issue, and the finding is not also reported as a stop
             state["stops"] = state.get("stops", 0) + 1
             by_iters = iters >= policy.MAX_ITERATIONS
             state.setdefault("stopped", []).append({"finding_id": ctx["finding_id"], "why": "iterations" if by_iters else "token budget"})
-            if errored and not refused:
-                return "adjudicator_error"
             return "iteration_stop" if by_iters else "budget_stop"     # neither is a genuine refusal: the iteration stop has its one aggregate issue, the budget stop goes to section 4 with no issue
         iters += 1; state["calls"] = state.get("calls", 0) + 1
         try:
