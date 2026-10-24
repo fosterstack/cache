@@ -639,6 +639,13 @@ class PurlVersion(unittest.TestCase):
         self.assertIsNone(R._ver_from_purl(None))
 
 
+class ResolveCarried(unittest.TestCase):
+    def test_a_statement_without_a_vulnerability_name_is_skipped(self):
+        """a carried statement that names no vulnerability cannot match a flagged entry, and is never reported as not re-checkable"""
+        stmts = [{"products": []}, {"vulnerability": {"name": "CVE-2099-1"}, "products": []}]
+        self.assertEqual(R._resolve_carried({}, stmts), ["CVE-2099-1"])
+
+
 class MergeConsolidate(Base):
     def _stmt(self, cve, purls, status="affected"):
         return R.vex.doc(cve, status, "2026-09-22T00:00:00Z", action="x", subcomponents=purls)["statements"][0]
