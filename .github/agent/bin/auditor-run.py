@@ -2045,18 +2045,15 @@ def _split_across(lit, squashed):
             suf = f[a:]
             if len(suf) < len(lit) and lit.startswith(suf):
                 reach.add(len(suf))
-    seen = set()
+    seen = set(reach)
     while reach:
         pos = reach.pop()
-        if pos in seen:
-            continue
-        seen.add(pos)
         r = lit[pos:]
         for f in fields:
             if f.startswith(r):
                 return True
-            if r.startswith(f):
-                reach.add(pos + len(f))
+            if r.startswith(f) and pos + len(f) not in seen:
+                seen.add(pos + len(f)); reach.add(pos + len(f))
     return False
 
 

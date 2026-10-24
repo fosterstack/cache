@@ -4033,7 +4033,7 @@ import importlib.util,os,sys
 sys.path.insert(0,'.github/agent/bin')
 spec=importlib.util.spec_from_file_location('r','.github/agent/bin/auditor-run.py'); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 good={'kind':'defect_log','package':'libpropose','keys':[{'scanner':'grype','finding_id':'CVE-2099-PROPOSE','purl':'pkg:deb/debian/libpropose@1.0'}],'note':'generalises from a recorded no-DSA pattern','evidence':'debian security tracker: no-DSA (minor)'}
-bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''), dict(good,evidence=['x']), dict(good,note=3), dict(good,keys='x'),
+bad=[dict(good,extra='x'), dict(good,kind='instructions'), dict(good,evidence=''), dict(good,evidence=['x']), dict(good,note=3), dict(good,package=3), dict(good,keys='x'),
      dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'p','extra':'y'}]), dict(good,keys=[{'scanner':'grype','finding_id':1,'purl':'p'}]),
      dict(good,note='proposed by Claude'), dict(good,evidence='per the gpt-5 analysis'), dict(good,package='anthropic-sdk'), dict(good,keys=[{'scanner':'grype','finding_id':'CVE-1','purl':'pkg:x/opus@1'}]),
      dict(good,note='x'*2001), None, 'x', [], {},
