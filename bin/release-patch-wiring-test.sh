@@ -512,5 +512,43 @@ print("; ".join(bad) or "ok")
 PY
 )
 if [ "$stages_out" = ok ]; then pass=$((pass+1)); echo "PASS stages-read-baseline → ok"; else failn=$((failn+1)); echo "FAIL stages-read-baseline ($stages_out)"; fi
+# the standing issue always updates (REQ-REL-009 AC1): run 39989891074 died with exit 126 (argument too long) because the whole commit
+# list went through --body, and the first fix (a 30-entry cap, each entry cut to 400 characters) dropped commits and could cut a redacted
+# token in two (Codex astra on #640). The step now sends ONE body of whole entries under 60000 bytes, never a slice of an entry, with the count
+# of the commits left out. Run the real step text against decisions of 31 and of 4000 long entries with a stub gh.
+issue_out=$(WF="$root/.github/workflows/release.yml" W="$work" python3 - <<'PY'
+import os, subprocess, json, yaml
+d = yaml.load(open(os.environ["WF"]), Loader=yaml.BaseLoader)
+st = [s for s in d["jobs"]["decide"]["steps"] if "standing information issue" in s.get("name", "")][0]
+w = os.environ["W"]
+stub = w + "/iss/bin"; os.makedirs(stub, exist_ok=True)
+open(stub + "/gh", "w").write('#!/bin/bash\nfor a in "$@"; do [ "${#a}" -lt 100000 ] || { echo "ARGLEN" >&2; exit 126; }; done\ncase "$1 $2" in "issue list") exit 0;; esac\nwhile [ $# -gt 0 ]; do [ "$1" = --body-file ] && cp "$2" "' + w + '/iss/body"; shift; done\n')
+os.chmod(stub + "/gh", 0o755)
+def run(entries):
+    os.system("rm -f %s/iss/body %s/iss/issue-body.md" % (w, w))
+    json.dump({"since": "v0.2.2", "not_clean": entries}, open(w + "/iss/decision.json", "w"))
+    r = subprocess.run(["bash", "-c", st["run"]], env={"PATH": stub + ":" + os.environ["PATH"], "RUNNER_TEMP": w + "/iss", "GH_TOKEN": "x"}, capture_output=True, text=True)
+    return r, (open(w + "/iss/body").read() if os.path.exists(w + "/iss/body") else "")
+bad = []
+# the stub refuses a long argument, so the old --body route would die here
+r, b = run(["x" * 120000])
+if r.returncode != 0: bad.append("an over-long entry made the step fail: rc=%s" % r.returncode)
+e31 = ["%07d: %s is shipped source or configuration; %s is shipped source or configuration" % (i, "p" * 600, "q" * 600) for i in range(31)]
+r, b = run(e31)
+if r.returncode != 0 or not all(("- " + x + "\n") in b for x in e31) or "more of" in b: bad.append("31 long entries: rc=%s, an entry is missing or cut" % r.returncode)
+long_entry = "abcdef1: src/" + "a" * 170 + "/" + "b" * 170 + ".go is shipped source or configuration; google.golang.org/protobuf is shipped source or configuration"
+r, b = run([long_entry])
+if r.returncode != 0 or ("- " + long_entry + "\n") not in b: bad.append("the google.golang.org entry was cut: rc=%s" % r.returncode)
+big = ["%07d: %s" % (i, "x" * 3000) for i in range(4000)]
+r, b = run(big)
+lines = [l for l in b.split("\n") if l.startswith("- ")]
+if r.returncode != 0 or len(b.encode()) >= 60000 or not lines or any(not l.endswith("x" * 3000) or len(l) != 3011 for l in lines):
+    bad.append("4000 entries: rc=%s size=%s lines=%s" % (r.returncode, len(b.encode()), len(lines)))
+elif "... and %d more of 4000 commits; the decide job log lists them all" % (4000 - len(lines)) not in b or "v0.2.2" not in b:
+    bad.append("4000 entries: the left-out count is wrong (placed %d)" % len(lines))
+print("ok" if not bad else "; ".join(bad))
+PY
+)
+if [ "$issue_out" = ok ]; then pass=$((pass+1)); echo "PASS standing-issue-one-body-whole-entries → ok"; else failn=$((failn+1)); echo "FAIL standing-issue-one-body-whole-entries ($issue_out)"; fi
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
