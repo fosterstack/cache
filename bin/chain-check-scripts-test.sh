@@ -860,7 +860,13 @@ if term_delay and not kind:   # one of the check's own servers (not a fake conta
 addr = os.environ.get("FSCACHE_ADDR", ":8080")
 with open(os.path.join(os.environ.get("FAKE_DIR", "."), "pid-%s" % os.getpid()), "w") as f:   # the test asks afterwards which servers are still alive
     f.write(str(os.getpid()))
-http.server.HTTPServer(("127.0.0.1", int(addr.rsplit(":", 1)[1])), H).serve_forever()
+if not kind:   # one of the check's own servers: the test asks afterwards which address the check gave it
+    with open(os.path.join(os.environ.get("FAKE_DIR", "."), "addr-%s" % os.getpid()), "w") as f:
+        f.write(addr + "\n")
+server = http.server.HTTPServer(("127.0.0.1", int(addr.rsplit(":", 1)[1])), H)
+# fscache logs the address it actually bound as JSON on stdout (":0" shows the real port); the check reads the port from that line
+print(json.dumps({"level": "INFO", "msg": "fscache: starting", "addr": "127.0.0.1:%d" % server.server_address[1]}), flush=True)
+server.serve_forever()
 PYS
 for b in fscache fscache-fips; do { echo '#!/usr/bin/env python3'; cat "$fa/server.py"; } > "$fa/real/$b"; chmod +x "$fa/real/$b"; done
 mkarch() { # mkarch DIR: the four Linux archives, each holding its binary
@@ -953,6 +959,16 @@ afail "PLAT-001-AC1 a missing amd64 archive fails naming it" fscache-fips -- "${
 mkarch "$fa/dist"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fa/real/fscache-fips.bad"; mkdir -p "$fa/bad"; cp "$fa/real/fscache-fips.bad" "$fa/bad/fscache-fips"; chmod +x "$fa/bad/fscache-fips"
 tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips; mkdig "$fa"
 afail "PLAT-001-AC1 a binary that exits at once does not execute: fails naming healthz" healthz -- "${ART[@]}"
+# a server that dies before it answers is noticed at once and its own last words are in the failure (before: a silent 10 s wait)
+printf '#!/usr/bin/env bash\necho "fscache: boom cannot bind" >&2\nexit 1\n' > "$fa/bad/fscache-fips"; chmod +x "$fa/bad/fscache-fips"
+tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips; mkdig "$fa"
+t0=$(date +%s); arun -- "${ART[@]}"; took=$(( $(date +%s) - t0 ))
+if [ "$rc" = 1 ] && grep -Fq healthz <<< "$out" && grep -Fq "boom cannot bind" <<< "$out" && [ "$took" -le 5 ]; then ok "PLAT-001-AC1 a server that dies before it answers fails within 5 s, naming healthz and carrying its own last log line"; else bad "PLAT-001-AC1 a dead server: rc=$rc after ${took}s: ${out:0:200}"; fi
+mkarch "$fa/dist"
+# the check never guesses a port: each of its three servers is told to listen on port 0 of the loopback and reports the port it got
+arun -- "${ART[@]}"
+addrs=$(cat "$work"/fakedir/addr-* 2> /dev/null | sort | uniq -c | tr -s ' ' | tr '\n' ';')
+if [ "$rc" = 0 ] && [ "$addrs" = " 3 127.0.0.1:0;" ]; then ok "PLAT-001-AC1 the check starts its three servers on 127.0.0.1:0 and reads the bound port from their log"; else bad "PLAT-001-AC1 the servers were given [$addrs] (rc=$rc): ${out:0:160}"; fi
 # REQ-CHAIN-006-AC17 (advisor 0385): the same checks for the linux/arm64 binaries and images, run by the check-arm64 job on an arm64 runner
 mkarch "$fa/dist"
 aok "AC17 --arch arm64: the arm64 binaries execute, the postures are truthful, the images have no shell and serve: exit 0" -- "${ART[@]}" --arch arm64
@@ -1609,7 +1625,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=574
+EXPECT=576
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
