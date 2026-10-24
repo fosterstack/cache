@@ -422,7 +422,8 @@ if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.split("#")[0].strip()) fo
 # the exact scan commands: each architecture once, Google's package count from its request log
 for j in ("panel-grype", "panel-inspector"):
     t = text(j)
-    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != 1 \
+    # panel-inspector makes its tars in a step of their own, before the cache restore, then scans each: two loops
+    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != (2 if j == "panel-inspector" else 1) \
             or 'layout-archive.sh "/tmp/oci/${v}" "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
         bad.append(f"{j} does not load each architecture once by the loop variable")
 t = text("panel-scout")      # Scout names the platform of an attested index, each architecture once
