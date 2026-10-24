@@ -702,5 +702,25 @@ for cve in CVE-2025-60876 CVE-2025-46394 CVE-2024-58251; do
 done
 vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.5.0)" "$PUBVEX"; expect "published VEX (CVE-2024-51744, Go product) still suppresses after the qualifier rule" clean false 0 1
 
+# the LATEST statement per (vulnerability id, product, subcomponent set) wins (rc-5a, ruling cache-667 item 4): by timestamp when both parse, else by document order
+lw() { # name want-verdict want-has want-count want-suppressed status[@ts] status[@ts]... : two statements for the finding CVE-2024-9999 on the cache image
+  local desc="$1" wv="$2" wh="$3" wc="$4" ws="$5"; shift 5; local arr="" sp sts ts
+  for sp in "$@"; do sts=${sp%%@*}; ts=""; [ "$sts" = "$sp" ] || ts=${sp#*@}
+    arr="$arr$(st CVE-2024-9999 '[]' "$sts" "[$PROD_REPO]" | jq -c --arg ts "$ts" 'if $ts == "" then . else .timestamp = $ts end'),"; done
+  vexdoc "$D/v/lw.json" "[${arr%,}]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw.json"; expect "$desc" "$wv" "$wh" "$wc" "$ws"
+}
+lw "latest: not_affected then affected (document order): the finding counts again" findings true 1 0 not_affected affected
+lw "latest: affected then not_affected (document order): suppressed" clean false 0 1 affected not_affected
+lw "latest: under_investigation after not_affected retracts too" findings true 1 0 not_affected under_investigation
+lw "latest: the timestamps beat the document order (affected earlier by time): suppressed" clean false 0 1 "not_affected@2026-02-01T00:00:00Z" "affected@2026-01-01T00:00:00Z"
+lw "latest: ...and the other way (affected later by time, earlier by position): counts" findings true 1 0 "affected@2026-02-01T00:00:00Z" "not_affected@2026-01-01T00:00:00Z"
+lw "latest: an unparseable timestamp falls back to document order for the pair" findings true 1 0 "not_affected@2026-01-01T00:00:00Z" "affected@garbage"
+lw "latest: a missing timestamp on one side falls back to document order" clean false 0 1 "affected@2026-02-01T00:00:00Z" not_affected
+lw "latest: equal timestamps: the later in the document wins" findings true 1 0 "not_affected@2026-01-01T00:00:00Z" "affected@2026-01-01T00:00:00Z"
+vexdoc "$D/v/lw-prod.json" "[$(st CVE-2024-9999 '[]' not_affected "[$PROD_REPO]"),$(st CVE-2024-9999 '[]' affected "[$PROD_GO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw-prod.json"
+expect "latest: an affected statement on another product (the Go product) does not retract the image's not_affected" clean false 0 1
+vexdoc "$D/v/lw-alias.json" "[$(st CVE-2024-9999 '["GO-2024-0001"]' not_affected "[$PROD_REPO]"),$(st GO-2024-0001 '[]' affected "[$PROD_REPO]")]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/lw-alias.json"
+expect "latest: a later affected statement under the alias retracts (same vulnerability)" findings true 1 0
+
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
