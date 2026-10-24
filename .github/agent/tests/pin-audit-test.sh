@@ -1116,6 +1116,13 @@ first = inv.inventory(dict(files)); pristine = dump(first)
 for it in first.values():
     it.step = "changed"; it.label = "changed"; it.version = "changed"
 assert dump(inv.inventory(dict(files))) == pristine
+callee_bad = {".github/workflows/caller.yml": "on: pull_request\njobs:\n  c:\n    uses: ./.github/workflows/callee.yml\n", ".github/workflows/callee.yml": "on: [\n  broken: : :\n"}
+callee_ok = dict(callee_bad, **{".github/workflows/callee.yml": "on: workflow_call\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n"})
+for files_ in (callee_ok, callee_bad, callee_ok, callee_bad):      # a warm caller whose callee becomes unreadable raises, every time
+    try:
+        inv.inventory(dict(files_)); assert files_ is callee_ok
+    except RuntimeError:
+        assert files_ is callee_bad
 long_line = {"bin/b.sh": "echo " + "y" * 4500 + "\n"}
 for _ in range(3):
     try:
@@ -1128,13 +1135,17 @@ check python3 - "$aud" "$here/../../.." <<'PY'
 import importlib.util, json, subprocess, sys, tempfile, os
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 inv, root = pa.inv, sys.argv[2]
-src = subprocess.run(["git", "-C", root, "show", "HEAD^1:.github/agent/supply-chain/pin-inventory.py"], capture_output=True, text=True)
+ipath = ".github/agent/supply-chain/pin-inventory.py"
+intro = subprocess.run(["git", "-C", root, "log", "-S_FILE_MEMO", "--reverse", "--format=%H", "HEAD", "--", ipath], capture_output=True, text=True).stdout.split()
+assert intro, "the commit that introduced the memo is not in this checkout's history"
+src = subprocess.run(["git", "-C", root, "show", intro[0] + "^:" + ipath], capture_output=True, text=True)      # the file as it was before the memo existed, whatever the parents of HEAD are
 assert src.returncode == 0, src.stderr[:200]
+assert "_FILE_MEMO" not in src.stdout, "the oracle is the memoising implementation"
 with tempfile.TemporaryDirectory() as d:
     p = os.path.join(d, "parent_inventory.py"); open(p, "w").write(src.stdout)
     ps = importlib.util.spec_from_file_location("parent_inventory", p); parent = importlib.util.module_from_spec(ps); ps.loader.exec_module(parent)
 paths = [".github", "bin/install-scanner.sh", ":(glob)**/*requirements*.txt", ":(glob)**/*.sh", ":(glob)**/action.yml", ":(glob)**/action.yaml", inv.PERSONA_TOOLS]
-revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD^1", "--", *paths).split()
+revs = inv.git(root, "log", "-n", "12", "--format=%H", "HEAD", "--", *paths).split()
 assert len(revs) >= 8, "a shallow checkout cannot prove the equivalence: " + str(len(revs))
 dump = lambda d: json.dumps({k: (i.kind, i.name, i.version, i.label, i.path, i.rawid, i.step, i.raw, i.src) for k, i in sorted(d.items())}, sort_keys=True)
 def run(mod, r):
