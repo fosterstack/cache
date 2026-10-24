@@ -334,7 +334,7 @@ def judge(t):
     # case 6: the CI wiring
     ci = t["docs"].get(".github/workflows/ci.yml") or {}
     job = (ci.get("jobs") or {}).get("allowlist")
-    me = [s for s in ((job or {}).get("steps") or []) if str((s or {}).get("run", "")).strip() == "bash .github/agent/tests/pip-pin-test.sh"]
+    me = [s for s in ((job or {}).get("steps") or []) if str((s or {}).get("run", "")).strip() in ("bash .github/agent/tests/pip-pin-test.sh", "python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json pip-pin-test.sh .github/agent/tests/pip-pin-test.sh")]
     if len(me) != 1:
         r.append(("C6", f"ci.yml's required allowlist job runs this test {len(me)} times, not once"))
     elif any(k in me[0] for k in ("if", "continue-on-error", "shell", "working-directory", "env")):

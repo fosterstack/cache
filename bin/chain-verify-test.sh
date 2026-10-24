@@ -469,6 +469,7 @@ add("sign_callertag", STAGES["sign"], T, PROV, D, config_ref=T2)                
 add("sign_callerbranch", STAGES["sign"], T, PROV, D, config_ref="refs/heads/main")        # right SAN, caller on a branch
 add("sign_noconfig", STAGES["sign"], T, PROV, D, no_config=True)                          # Build Config URI extension absent
 add("sign_wrongroot", STAGES["sign"], T, PROV, D, ca="otherroot")
+add("sibling_wrongroot", "other.yml", T, PROV, D, ca="otherroot")   # rc-2 R8: wrong in both ways, a sibling file's identity under an attacker root
 add("sign_otherdigests", STAGES["sign"], T, PROV, dict(D, apk="sha256:" + "d" * 64))
 add("sign_coll", STAGES["sign"], T, COLL, D, stmt="v0.1")
 # ---- timestamps (002-AC1). Stamps are taken at generation time (real wall clock = "now"); each case isolates its cause.
@@ -611,7 +612,7 @@ restamp("sign_prov", "sign_prov_toklabel", "tsp", label="rfc3161-response")     
 restamp("sign_prov", "sign_prov_frac", "rfc3161-response", frac=True)                # genTime with milliseconds, genuinely inside the window
 # a repeated extension in the certificate (the DER reader used to let the last one win, so a second SAN could replace the first)
 OID_SAN, OID_CFG = bytes.fromhex("551d11"), bytes.fromhex("2b06010401" + "83bf30" + "0112")
-def dup_ext(der, oid):
+def dup_ext(der, oid, resign=False):
     _, s, e = rd(der, 0); _, ts, te = rd(der, s)
     kids = []; i = ts
     while i < te: tg, cs, ce = rd(der, i); kids.append((tg, cs, ce, der[i:ce])); i = ce
@@ -624,9 +625,15 @@ def dup_ext(der, oid):
             assert more, "extension not found"
             raw = tlv(0xA3, tlv(0x30, b"".join(exts) + more[0]))
         out.append(raw)
-    return tlv(0x30, tlv(0x30, b"".join(out)) + der[te:e])
-for nm, oid in (("dupsan", OID_SAN), ("dupcfg", OID_CFG)):
-    reshape("build_coll", "build_" + nm, lambda g, oid=oid: to_pem(dup_ext(pem_der(g), oid)))
+    tbs = tlv(0x30, b"".join(out))
+    if not resign: return tlv(0x30, tbs + der[te:e])      # the signature is NOT redone: the certificate no longer chains (a broken signature)
+    # rc-2 R8: re-signed by the test intermediate (the leaf's issuer), so the certificate CHAINS and the reader meets the repeated extension on verified bytes
+    algid = der[te:e][:rd(der[te:e], 0)[2]]                # the signatureAlgorithm SEQUENCE, copied as it is
+    open(p("dup.tbs"), "wb").write(tbs)
+    sig = sh("openssl", "dgst", "-sha256", "-sign", p("interm.key"), p("dup.tbs"))
+    return tlv(0x30, tbs + algid + tlv(0x03, b"\x00" + sig))
+for nm, oid, rs in (("dupsan", OID_SAN, True), ("dupcfg", OID_CFG, True), ("dupsanbadsig", OID_SAN, False)):
+    reshape("build_coll", "build_" + nm, lambda g, oid=oid, rs=rs: to_pem(dup_ext(pem_der(g), oid, rs)))
 # step-8 round 4 (S-2): base64 is standard base64 and nothing else. Junk inside a field, and the URL-safe alphabet, are refused, not dropped/accepted.
 def mutate_field(src, name, fn):
     r = json.load(open(p(src + ".json"))); fn(r); json.dump(r, open(p(name + ".json"), "w"))
@@ -1158,6 +1165,8 @@ json.dump({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verifi
 PYF
 FAKE
 chmod +x "$work/fakebin/cosign"
+# rc-2 R1a: sign refuses a GITHUB_SHA that is not 40-hex and a GITHUB_RUN_ID that is not digits, so every case that signs runs with GitHub's own two variables set (the R1a cases below override them)
+export GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242
 PY3=$(command -v python3)
 MARK="$work/.start-marker"; : > "$MARK"
 : > "$work/cosign-all.log"; SIGNS_OK=0; LEAKS=0
@@ -1404,6 +1413,18 @@ assert env["signatures"] and env["payloadType"] == "application/vnd.in-toto+json
 # a real SLSA v1 predicate, not {}: buildDefinition and runDetails.builder.id (the Sign workflow identity)
 pr = st["predicate"]; assert pr.get("buildDefinition") and pr["runDetails"]["builder"]["id"].endswith("/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"), pr
 PY
+# rc-2 R1a (Fable R1 part a): `sign` writes GITHUB_SHA and GITHUB_RUN_ID into the signed provenance, so it refuses what is not a 40-hex commit or a run number, naming which, before cosign is asked
+SGN() { echo sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$1"; }
+GITHUB_SHA="" GITHUB_RUN_ID=424242 expect_refuse "R1a an empty GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-empty)
+[ ! -e "$work/sd/r1a-empty" ] && ok "R1a r1a-empty: no output folder was made" || bad "R1a r1a-empty: an output folder exists"
+GITHUB_SHA=0123456789abcdef GITHUB_RUN_ID=424242 expect_refuse "R1a a short GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-short)
+[ ! -e "$work/sd/r1a-short" ] && ok "R1a r1a-short: no output folder was made" || bad "R1a r1a-short: an output folder exists"
+GITHUB_SHA=0123456789ABCDEF0123456789ABCDEF01234567 GITHUB_RUN_ID=424242 expect_refuse "R1a an upper-case GITHUB_SHA is refused by sign, naming it" "github_sha" $(SGN r1a-upper)
+[ ! -e "$work/sd/r1a-upper" ] && ok "R1a r1a-upper: no output folder was made" || bad "R1a r1a-upper: an output folder exists"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID="" expect_refuse "R1a an empty GITHUB_RUN_ID is refused by sign, naming it" "github_run_id" $(SGN r1a-noid)
+[ ! -e "$work/sd/r1a-noid" ] && ok "R1a r1a-noid: no output folder was made" || bad "R1a r1a-noid: an output folder exists"
+GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=42a expect_refuse "R1a a GITHUB_RUN_ID that is not digits is refused by sign, naming it" "github_run_id" $(SGN r1a-badid)
+[ ! -e "$work/sd/r1a-badid" ] && ok "R1a r1a-badid: no output folder was made" || bad "R1a r1a-badid: an output folder exists"
 # the provenance says what was built from which source in which run (SLSA v1 buildDefinition / runDetails), from GitHub's own variables
 GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GITHUB_RUN_ID=424242 run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/meta" || true
 python3 - "$work/sd/meta" <<'PY' 2> /dev/null && ok "001-AC2 the provenance names the source commit and the run (resolvedDependencies gitCommit, invocationId = the run URL) and the Sign workflow as builder" || bad "001-AC2 the provenance lacks the commit or the run"
@@ -1686,6 +1707,8 @@ ln -sf attacker.pem "$work/certdir/$("$OPENSSL" x509 -hash -noout -in "$work/oth
 cp "$work/othertsaroot.pem" "$work/certdir/attacker-tsa.pem"   # the attacker's TIMESTAMP root is trusted by the store too, so the TSA path is exercised
 ln -sf attacker-tsa.pem "$work/certdir/$("$OPENSSL" x509 -hash -noout -in "$work/othertsaroot.pem").0"
 expect_refuse "B-1 a record that chains only to an attacker root is refused (no trust store)" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
+# rc-2 R8 (Fable R8): the certificate chain is verified BEFORE any field of the certificate is read; a record that is wrong in both ways (Check's identity, issued under the attacker root) is refused for its chain, not for the identity parsed from an unverified certificate
+expect_refuse "R8 a record with the wrong identity AND an attacker chain is refused for the chain first (the identity of an unverified certificate is not judged)" "root|!identity" verify $(V) --stage sign $(rec sibling_wrongroot) $(R)
 SSL_CERT_FILE="$work/otherroot.pem" expect_refuse "B-1 the same record is STILL refused when SSL_CERT_FILE trusts the attacker root" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
 SSL_CERT_DIR="$work/certdir" expect_refuse "B-1 the same record is STILL refused when SSL_CERT_DIR trusts the attacker root" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
 SSL_CERT_FILE="$work/othertsaroot.pem" SSL_CERT_DIR="$work/certdir" expect_refuse "B-1 a stamp from an attacker timestamp authority is STILL refused when the trust store knows its root" "timestamp" verify $(V) --stage sign $(rec sign_othertsa) $(R)
@@ -1808,9 +1831,12 @@ expect_refuse "B-1 (c) token bytes labelled as a response are refused (a respons
 # (d) a genTime with milliseconds is read (the fraction is dropped) and accepted when the stamp is genuinely inside the window
 expect_ok     "B-1 (d) a stamp whose genTime has milliseconds does not crash and is accepted when it is inside the window (the fraction is kept)" verify $(V) --stage sign $(rec sign_prov_frac) $(R)
 # S-1 (Sonnet): a certificate with a repeated extension is refused, whatever it says (a second SAN used to replace the first)
-expect_refuse "S-1 a certificate with a second SAN extension is refused before anything is trusted: repeated extension" "certificate|repeated" verify $(V) --stage build $(rec build_dupsan) $(R)
+# rc-2 R8: the duplicate-extension certificates are re-signed by the test intermediate, so they CHAIN and the reader meets them on verified bytes. OpenSSL itself refuses a repeated SAN (the chain check names "certificate"), so the SAN case is worded for either layer; the private-OID case below is the proof that the reader refuses a repeated extension
+expect_refuse "S-1 a certificate with a second SAN extension is refused (by openssl's chain check or by the reader): repeated extension" "certificate" verify $(V) --stage build $(rec build_dupsan) $(R)
+# rc-2 R8: a repeated SAN whose signature is broken is refused for the CHAIN: the reader never sees its fields
+expect_refuse "R8 a second SAN extension on a certificate whose signature is broken is refused for its chain, not for the repeated extension" "root|!repeated" verify $(V) --stage build $(rec build_dupsanbadsig) $(R)
 expect_refuse "S-1 a certificate with a second Build Config URI extension is refused: repeated extension" "certificate|repeated" verify $(V) --stage build $(rec build_dupcfg) $(R)
-expect_refuse "S-1 a repeated extension through check-build-record" "certificate|repeated" check-build-record --digests "$work/digests.json" --build-record "$work/build_dupsan.json" --policy "$work/policy.json" --now "$NOW"
+expect_refuse "S-1 a repeated extension through check-build-record" "certificate" check-build-record --digests "$work/digests.json" --build-record "$work/build_dupsan.json" --policy "$work/policy.json" --now "$NOW"
 # N-c: only a JOB-level `uses:` naming a .yml/.yaml file is a reusable workflow (not opened as a directory); a STEP-level reference to a
 # directory that is called thing.yml and holds an action.yml is followed
 mkdir -p "$work/tree/.github/workflows/acts/d.yml"
@@ -2347,7 +2373,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=855
+EXPECT=867
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

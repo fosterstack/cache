@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC33, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
+# proves: REQ-SUP-001-AC30, REQ-SUP-001-AC33, REQ-CHAIN-006-AC18, REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC16, REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
 # RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/check-stage.sh and PR 2's
 # bin/witnessed.sh do not exist): step 4.
 #
@@ -181,7 +181,7 @@ mkdig() { python3 "$work/mkdig.py" "$1"; }
 # ---- the throw-away tree and the fake tools ---------------------------------------------------------------------------------
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
 cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$root"/bin/loopback-get.sh "$fx/bin/" 2> /dev/null || true
-mkdir -p "$fx/.vex"; cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+mkdir -p "$fx/.vex"; cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
 for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
 mkdig "$fx"
@@ -554,9 +554,9 @@ FAKE_OSV_VULNS='[{"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "A
 FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}, {"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "AC4 F3 one excepted and one uncovered finding: the uncovered one fails the scan" osv-scanner "${SCAN[@]}"
 printf '{"statements": "not a list"}\n' > "$fx/.vex/fosterstack-cache.openvex.json"
 FAKE_OSV_VULNS="$VBUSY" want_fail "AC4 F3 an unreadable VEX document excepts nothing (fail closed)" osv-scanner "${SCAN[@]}"
-cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 # a statement scoped to ONE architecture excepts the finding on that platform child only: osv-scanner scans each child, and the child's platform reaches the matcher
-archvex() { python3 - "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json" "$@" <<'PYV'
+archvex() { python3 - "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json" "$@" <<'PYV'
 import copy, json, sys
 d = json.load(open(sys.argv[1])); base = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
 prod = d["statements"][1]["products"][0]; assert prod["@id"] == base
@@ -574,10 +574,10 @@ archvex amd64 arm64
 FAKE_OSV_VULNS="$VBUSY" want_fail "AC4 F3 statements scoped to each architecture do not except the finding on the go.mod sources (no platform)" go.mod "${SCAN[@]}"
 if jq -e '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | select(.name | test("^(production|fips)/linux/"))] | length == 4 and all(.[]; .verdict == "pass" and .vex_suppressed == 1)' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 F3 one statement scoped to each architecture excepts the finding on both platform children of each image"; else bad "AC4 F3 per-arch verdicts wrong: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | {name, verdict}]' "$fx/out/scan-results.json" 2>&1 | head -c 300)"; fi
 for badplat in amd64 odd/amd64 linux/arm64/v8 linux/ windows/amd64; do
-  pout=$(python3 "$root/bin/check-osv-vex.py" --vex "$root/.vex/fosterstack-cache.openvex.json" --report /dev/null --platform "$badplat" 2>&1) && prc=0 || prc=$?
+  pout=$(python3 "$root/bin/check-osv-vex.py" --vex "$root/test-evidence/vex-scope/busybox.openvex.json" --report /dev/null --platform "$badplat" 2>&1) && prc=0 || prc=$?
   if [ "$prc" = 1 ] && grep -Fq -- "platform" <<< "$pout" && grep -Fq -- "$badplat" <<< "$pout"; then ok "AC4 F3 check-osv-vex.py refuses the platform '$badplat' (only linux/amd64, linux/arm64 or none) naming it"; else bad "AC4 F3 check-osv-vex.py accepted or mis-reported platform '$badplat': rc=$prc ${pout:0:140}"; fi
 done
-cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+cp "$root/test-evidence/vex-scope/busybox.openvex.json" "$fx/.vex/fosterstack-cache.openvex.json"
 mkfake osv-scanner 0 80
 # ---- REQ-CHAIN-006-AC15: fresh vulnerability databases from the scanner's own host --------------------------------------------
 printf '{"scanners":["grype"]}\n' > "$fx/.github/policy/scanners.json"; rm -f "$fx/out/scan-results.json"
@@ -622,7 +622,7 @@ printf '{"scanners":["grype","osv-scanner"]}\n' > "$fx/.github/policy/scanners.j
 # ---- REQ-CHAIN-006-AC6: check-fips.sh -----------------------------------------------------------------------------------------
 cat > "$fake/docker" <<'EOF'
 #!/usr/bin/env bash
-echo "docker $* ${DOCKER_DEFAULT_PLATFORM:+--platform $DOCKER_DEFAULT_PLATFORM}" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
+echo "docker $* ${DOCKER_DEFAULT_PLATFORM:+--platform $DOCKER_DEFAULT_PLATFORM}" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"; [ "$1" = image ] && shift
 case "$1" in
   load) [ "$(tar -tf "${3:-x}" 2> /dev/null | grep -c 'index.json')" -ge 1 ] || { echo "docker: load: not an OCI layout archive" >&2; exit 1; }
         tar -tf "${3:-x}" > "$FAKE_DIR/members-$(basename "${3:-x}" .tar)" 2> /dev/null
@@ -631,7 +631,8 @@ case "$1" in
        [ -f "$FAKE_DIR/run-fails" ] && { echo "docker: start failed" >&2; exit 125; }
        echo "cid-$v"; echo "$v" > "$FAKE_DIR/last";;
   port) case "$2" in *production*) echo "127.0.0.1:40001";; *) echo "127.0.0.1:40002";; esac;;
-  rm|stop|logs|inspect) echo "$*" >> "$FAKE_DIR/removed";;
+  inspect) echo "$*" >> "$FAKE_DIR/removed"; case "$*" in *--format*localhost/fscache-serve-candidate) if [ -f "$FAKE_DIR/retag" ]; then echo "sha256:$(printf '%064d' 8)"; else echo "sha256:$(printf '%064d' 7)"; fi;; *--format*) echo "sha256:$(printf '%064d' 7)";; esac;;
+  rm|stop|logs) echo "$*" >> "$FAKE_DIR/removed";;
 esac
 exit 0
 EOF
@@ -1133,6 +1134,40 @@ rm -rf "$work/keep-p"; cp -R "$fx/images/production" "$work/keep-p"; rm -rf "$fx
 want_fail "AC5 F1 a valid OCI layout that is not Build's production image (digests.json intact) is refused naming the image before the suite or docker" image-production check-acceptance.sh gradle --digests digests.json --images images --out out
 if ! grep -q '^docker' "$work/log"; then ok "AC5 F1 nothing was loaded behind the refused production layout"; else bad "AC5 F1 docker ran: $(head -2 "$work/log" | tr '\n' '|')"; fi
 rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
+# ---- REQ-SUP-001-AC30: acceptance-serve.sh starts only a content-addressed image; check-acceptance.sh hands it the loaded image's ID ----------
+srv="$work/srv"; mkdir -p "$srv/bin" "$srv/fakedir"; cp "$root/bin/acceptance-serve.sh" "$srv/bin/"; printf '#!/bin/sh\nexit 0\n' > "$srv/bin/loopback-get.sh"
+H64=$(printf '%064d' 7); UP64=$(printf 'A%.0s' $(seq 1 64))
+serve() { # serve REF -> rc, out; the fake docker logs what ran
+  : > "$work/log"; rc=0; out=$(cd "$srv" && PATH="$fake:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$srv/fakedir" IMAGE_REF="$1" bash bin/acceptance-serve.sh gradle main 2>&1) || rc=$?
+}
+for ref in "fscache:production" "localhost/fa-production:latest" "sha256:${H64:0:63}" "SHA256:$H64" "sha256:$H64 extra" "name@sha256:${H64:0:63}" "-v/x:/y@sha256:$H64" "/@sha256:$H64" "a..b/x@sha256:$H64" "ghcr.io/o/R@sha256:$H64" "ghcr.io/o/r:t:u@sha256:$H64" "sha256:$UP64" "ghcr.io/o/r@sha256:$UP64" "$(printf 'sha256:%s\nfscache:production' "$H64")"; do
+  serve "$ref"
+  if [ "$rc" = 2 ] && ! grep -q '^docker tag' "$work/log" && ! grep -q '^docker run' "$work/log" && grep -Fq 'content-addressed' <<< "$out" && grep -Fq 'got: ' <<< "$out"; then ok "AC30 serve refuses '${ref//$'\n'/\\n}' before docker tag or run (exit 2, message names the rule and the ref)"; else bad "AC30 serve took '${ref//$'\n'/\\n}' (rc=$rc): $(head -2 "$work/log" | tr '\n' '|')"; fi
+done
+for ref in "sha256:$H64" "localhost/fa-production@sha256:$H64" "ghcr.io/fosterstack/cache:v0.3.0@sha256:$H64" "localhost:5000/team/app-x@sha256:$H64"; do
+  serve "$ref"
+  if [ "$rc" = 0 ] && grep -Eq "^docker tag sha256:$H64 localhost/fscache-serve-candidate( |$)" "$work/log" && grep -Eq '^docker run .* localhost/fscache-serve-candidate( |$)' "$work/log" && ! awk -v r="$ref" 'index($0, "docker run ") == 1 && index($0, r) { found = 1 } END { exit !found }' "$work/log"; then ok "AC30 serve starts the content-addressed image $ref: its inspected ID is tagged to the fixed local name and that name is run"; else bad "AC30 serve did not start $ref (rc=$rc): $(head -3 "$work/log" | tr '\n' '|') $out"; fi
+done
+# a re-tag between the tag and the run: the fixed local name must still resolve to the inspected ID right before docker run, or serve refuses and starts nothing
+mkdir -p "$srv/fakedir"; : > "$srv/fakedir/retag"
+serve "sha256:$H64"; rm -f "$srv/fakedir/retag"
+if [ "$rc" != 0 ] && ! grep -q '^docker run' "$work/log" && grep -Fq 'fscache-serve-candidate' <<< "$out"; then ok "AC30 serve refuses to start when the local name no longer resolves to the inspected image ID (no docker run)"; else bad "AC30 a re-tagged local name was run (rc=$rc): $(head -4 "$work/log" | tr '\n' '|') $out"; fi
+# a caller's nocasematch does not turn uppercase hex into valid hex
+: > "$work/log"; rc=0; out=$(cd "$srv" && PATH="$fake:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$srv/fakedir" IMAGE_REF="sha256:$UP64" bash -O nocasematch bin/acceptance-serve.sh gradle main 2>&1) || rc=$?
+if [ "$rc" = 2 ] && ! grep -q '^docker run' "$work/log"; then ok "AC30 serve refuses uppercase hex even when the caller sets nocasematch"; else bad "AC30 nocasematch let uppercase hex through (rc=$rc)"; fi
+# the wrapper: a tag named by `docker load` is turned into its image ID before serve sees it
+for sc in acceptance-serve acceptance-gradle acceptance-gradle-capped; do
+  case "$sc" in
+    acceptance-serve) printf '#!/usr/bin/env bash\n[ -z "${IMAGE_REF:-}" ] || printf "%%s\\n" "$IMAGE_REF" >> "$FAKE_DIR/serve-refs"\n' > "$fx/bin/$sc.sh";;
+    acceptance-gradle) printf '#!/usr/bin/env bash\nexit 0\n' > "$fx/bin/$sc.sh";;   # only the capped script writes the suite's results line
+    *) printf '#!/usr/bin/env bash\necho "results=[{\\"ac\\":\\"AC30\\",\\"result\\":\\"pass\\"}]" >> "${GITHUB_OUTPUT:-/dev/null}"\n' > "$fx/bin/$sc.sh";;
+  esac
+done
+mkdir -p "$work/fakedir"; rm -f "$work/fakedir/serve-refs"; run check-acceptance.sh gradle --digests digests.json --images images --out out
+if [ "$rc" = 0 ]; then ok "AC30 check-acceptance finishes (rc=0) with the serve stub and valid results lines"; else bad "AC30 check-acceptance rc=$rc: ${out:0:200}"; fi
+if [ -s "$work/fakedir/serve-refs" ] && [ "$(sort -u "$work/fakedir/serve-refs")" = "sha256:$H64" ]; then ok "AC30 check-acceptance passes serve the inspected image ID, never the tag docker load printed"; else bad "AC30 serve got: $(sort -u "$work/fakedir/serve-refs" 2> /dev/null | tr '\n' '|') (rc=$rc) $out"; fi
+if grep -Fq 'docker image inspect --format {{.Id}} fscache:production' "$work/log"; then ok "AC30 the ID comes from docker image inspect of the very name docker load printed (fscache:production)"; else bad "AC30 no docker image inspect --format ran: $(grep -c '^docker' "$work/log") docker calls"; fi
+rm -f "$fx/bin/acceptance-serve.sh" "$fx/bin/acceptance-gradle.sh" "$fx/bin/acceptance-gradle-capped.sh"
 # the same for check-acceptance.sh (its suite scripts are stubs here: what is under test is what docker load is given)
 for sc in acceptance-serve acceptance-gradle; do printf '#!/usr/bin/env bash\nexit 0\n' > "$fx/bin/$sc.sh"; done
 printf '#!/usr/bin/env bash\necho "results=[{\\"ac\\":\\"AC33\\",\\"result\\":\\"pass\\"}]" >> "${GITHUB_OUTPUT:-/dev/null}"\n' > "$fx/bin/acceptance-gradle-capped.sh"
@@ -1254,6 +1289,13 @@ gvt="$work/gv"; mkdir -p "$gvt/bin" "$gvt/.github/policy" "$gvt/fake" "$gvt/out"
 cp "$root/bin/check-govulncheck.py" "$gvt/bin/" 2> /dev/null || true
 printf 'module example.com/a\n' > "$gvt/go.mod"; mkdir -p "$gvt/vendor"; printf '# example.com/b v1.0.0\n' > "$gvt/vendor/modules.txt"
 printf '{"scanners":["grype","osv-scanner"],"source_scanners":["govulncheck"],"pr_gate":["grype","inspector"]}\n' > "$gvt/.github/policy/scanners.json"
+# the shipped main package is read from the recipes the build compiles from (build/melange.yaml and build/melange-fips.yaml: exactly one `go build`, CGO_ENABLED set), never from `go list`
+mkdir -p "$gvt/build"
+gv_recipe() { # gv_recipe NAME PACKAGE FILE [CGO]: a copy of the real recipe of that file's kind (the grammar pins the template's other lines), with the package and CGO_ENABLED set
+  local src="$root/build/melange.yaml"; case "$3" in *-fips.yaml) src="$root/build/melange-fips.yaml" ;; esac
+  sed -e "s#fscache \./cmd/fscache\$#fscache $2#" -e "s#^    CGO_ENABLED: .*#    CGO_ENABLED: \"${4:-0}\"#" "$src" > "$3"; }
+gv_recipes() { gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml" "${1:-0}"; gv_recipe fscache-fips ./cmd/fscache "$gvt/build/melange-fips.yaml" "${1:-0}"; }
+gv_recipes
 cat > "$gvt/fake/govulncheck" <<'EOF'
 #!/usr/bin/env bash
 # the scan runs with an explicit environment (the caller's variables do not reach it), so the case settings come from a file next to this fake
@@ -1261,10 +1303,14 @@ cat > "$gvt/fake/govulncheck" <<'EOF'
 echo "govulncheck $*" >> "$GV_LOG"
 echo "env GOFLAGS=${GOFLAGS:-} GOTOOLCHAIN=${GOTOOLCHAIN:-} GOPROXY=${GOPROXY:-} PATH1=${PATH%%:*}" >> "$GV_LOG"
 echo "pkgdriver GOPACKAGESDRIVER=${GOPACKAGESDRIVER-unset}" >> "$GV_LOG"
-echo "goenv GOOS=${GOOS-unset} GOARCH=${GOARCH-unset} CGO_ENABLED=${CGO_ENABLED-unset} GOAMD64=${GOAMD64-unset} GOPATH=${GOPATH-unset} GOCACHE=${GOCACHE-unset} GOMODCACHE=${GOMODCACHE-unset} GOENV=${GOENV-unset}" >> "$GV_LOG"
+echo "goenv GOOS=${GOOS-unset} GOARCH=${GOARCH-unset} CGO_ENABLED=${CGO_ENABLED-unset} GOAMD64=${GOAMD64-unset} GOPATH=${GOPATH-unset} GOCACHE=${GOCACHE-unset} GOMODCACHE=${GOMODCACHE-unset} GOENV=${GOENV-unset} GOFIPS140=${GOFIPS140-unset}" >> "$GV_LOG"
 case "$1" in -version) printf 'Go: go1.27.2\nScanner: govulncheck@v1.7.0\nDB: https://vuln.go.dev\nDB updated: 2026-10-10 00:00:00 +0000 UTC\n'; exit 0 ;; esac
 [ "${GV_RC:-0}" = 0 ] || { echo "govulncheck: boom" >&2; exit "$GV_RC"; }
-case "${GV_OUT:-clean}" in
+# one fake, three questions: which platform (GOARCH), which target (the last argument), which case. GV_OUT_ARM64 overrides GV_OUT on the arm64 runs, GV_OUT_EXPLICIT on the runs of an explicit package path.
+gv_case="${GV_OUT:-clean}"
+[ "${GOARCH:-}" != arm64 ] || gv_case="${GV_OUT_ARM64:-$gv_case}"
+case "${@: -1}" in ./...) ;; *) gv_case="${GV_OUT_EXPLICIT:-$gv_case}" ;; esac
+case "$gv_case" in
   clean) echo '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.7.0","db":"https://vuln.go.dev","db_last_modified":"2026-10-10T00:00:00Z","go_version":"go1.27.2","scan_level":"symbol"}}'
          echo '{"progress":{"message":"Scanning your code and 12 packages across 3 dependent modules for known vulnerabilities..."}}' ;;
   imported) echo '{"config":{"scanner_name":"govulncheck","scanner_version":"v1.7.0","db":"https://vuln.go.dev"}}'
@@ -1279,6 +1325,19 @@ case "${GV_OUT:-clean}" in
 esac
 EOF
 chmod +x "$gvt/fake/govulncheck"
+cat > "$gvt/fake/go" <<'EOF'
+#!/usr/bin/env bash
+[ ! -f "$(dirname "$0")/env" ] || . "$(dirname "$0")/env"
+echo "go $*" >> "$GV_LOG"
+[ "${GV_GO_RC:-0}" = 0 ] || exit "$GV_GO_RC"
+if [ "$1 $2 $3" = "mod edit -json" ]; then
+  if [ -n "${GV_GO_JSON:-}" ]; then cat "$GV_GO_JSON"; exit 0; fi
+  if [ -n "${GV_IGNORE:-}" ]; then printf '{"Module":{"Path":"example.com/a"},"Go":"1.27","Ignore":[{"Path":"%s"}]}\n' "$GV_IGNORE"; else printf '{"Module":{"Path":"example.com/a"},"Go":"1.27"}\n'; fi
+  exit 0
+fi
+exit 3
+EOF
+chmod +x "$gvt/fake/go"
 gvrun() { # gvrun [ENV=V ...] -- ARGS... : runs the script in the throw-away tree with the fake first on PATH
   local envs=(); while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
   rc=0; : > "$work/gvlog"; rm -rf "$gvt/out"
@@ -1286,7 +1345,7 @@ gvrun() { # gvrun [ENV=V ...] -- ARGS... : runs the script in the throw-away tre
   out=$( (cd "$gvt" && env "${envs[@]}" PATH="$gvt/fake:$PATH" python3 -I -B bin/check-govulncheck.py "$@") 2>&1) || rc=$?; }
 GVARGS=(--scanners .github/policy/scanners.json --out out)
 gvrun GV_OUT=clean -- "${GVARGS[@]}"
-if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && grep -q '^govulncheck -json ./\.\.\.$' "$work/gvlog" && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 2 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran once as govulncheck -json ./..."
+if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && [ "$(grep -c '^govulncheck -json ./\.\.\.$' "$work/gvlog")" = 2 ] && [ "$(grep -c '^govulncheck -json ./cmd/fscache$' "$work/gvlog")" = 4 ] && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 7 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran six times (./... and the shipped main on amd64 and arm64, then the shipped main on both with the FIPS build) after the version query"
 else bad "G a clean source scan -> rc=$rc $out | $(tr '\n' '|' < "$work/gvlog" | cut -c1-200)"; fi
 ( cd "$gvt/fake" && : > env && GV_LOG=/dev/null GV_OUT=clean ./govulncheck -json ./... > "$work/gv-expected.bin" ) 2> /dev/null
 if [ -f "$gvt/out/govulncheck.json" ] && cmp -s "$gvt/out/govulncheck.json" "$work/gv-expected.bin" && [ -s "$work/gv-expected.bin" ] \
@@ -1299,8 +1358,9 @@ if [ "$rc" = 0 ] && grep -q 'GOFLAGS=-mod=vendor GOTOOLCHAIN=local GOPROXY=off '
 else bad "G the caller's Go environment reached the scan: $(grep '^env' "$work/gvlog" | head -1) rc=$rc"; fi
 gvrun GOPACKAGESDRIVER=/tmp/evil-driver GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" = 0 ] && grep -q '^pkgdriver GOPACKAGESDRIVER=off$' "$work/gvlog"; then ok "G the scan sets GOPACKAGESDRIVER=off (no external package driver is searched for on PATH or taken from the caller's environment)"; else bad "G the package-driver setting is not off: $(grep '^pkgdriver' "$work/gvlog" | head -1) rc=$rc"; fi
-gvrun GOOS=windows GOARCH=arm64 CGO_ENABLED=0 GOAMD64=v4 GOPATH=/tmp/evil-path GOCACHE=/tmp/evil-cache GOMODCACHE=/tmp/evil-mod GOENV=/tmp/evil-env GV_OUT=clean -- "${GVARGS[@]}"
-if [ "$rc" = 0 ] && grep -q '^goenv GOOS=unset GOARCH=unset CGO_ENABLED=unset GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off$' "$work/gvlog"; then ok "G no Go setting of the caller (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV) reaches the scan and persisted Go configuration is off (GOENV=off)"
+gvrun GOOS=windows GOARCH=arm64 CGO_ENABLED=0 GOAMD64=v4 GOPATH=/tmp/evil-path GOCACHE=/tmp/evil-cache GOMODCACHE=/tmp/evil-mod GOENV=/tmp/evil-env GOFIPS140=evil GV_OUT=clean -- "${GVARGS[@]}"
+gvenv_='GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off'
+if [ "$rc" = 0 ] && [ "$(grep -c '^goenv ' "$work/gvlog")" = 7 ] && [ "$(grep -c "^goenv GOOS=unset GOARCH=unset CGO_ENABLED=unset $gvenv_ GOFIPS140=unset\$" "$work/gvlog")" = 1 ] && [ "$(grep -c -E "^goenv GOOS=linux GOARCH=(amd64|arm64) CGO_ENABLED=0 $gvenv_ GOFIPS140=unset\$" "$work/gvlog")" = 4 ] && [ "$(grep -c -E "^goenv GOOS=linux GOARCH=(amd64|arm64) CGO_ENABLED=0 $gvenv_ GOFIPS140=v1.0.0\$" "$work/gvlog")" = 2 ] && [ "$(grep -c 'GOARCH=arm64' "$work/gvlog")" = 3 ]; then ok "G no Go setting of the caller (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV, GOFIPS140) reaches the scan, persisted Go configuration is off (GOENV=off), and GOFIPS140=v1.0.0 is set on exactly the two FIPS runs"
 else bad "G the caller's platform or cache settings reached the scan: $(grep '^goenv' "$work/gvlog" | head -1) rc=$rc"; fi
 gvrun GV_OUT=called -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'GO-2099-0002' <<< "$out" && [ -f "$gvt/out/govulncheck.json" ]; then ok "G a finding that reaches a called symbol fails the scan, naming the advisory, and the file is still written"
@@ -1311,6 +1371,125 @@ else bad "G an imported-only finding -> rc=$rc $out"; fi
 for c in noconfig otherscanner otherdb empty notjson; do
   gvrun GV_OUT=$c -- "${GVARGS[@]}"
   if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G an output that is not a govulncheck run on its own database ($c) fails"; else bad "G $c was accepted or the script is missing: rc=$rc $out"; fi
+done
+# The two holes proved on the pinned govulncheck v1.7.0 (panel note, Oct 23): a go.mod `ignore` directive plus a decoy main package hid a called advisory from `./...` (an explicit package path
+# still found it), and a call that exists only in the linux/arm64 build was invisible to the amd64-only scan. The scan now refuses an `ignore` directive, scans the shipped main package(s) by
+# explicit path as well, and runs on linux/amd64 AND linux/arm64 (the build's CGO_ENABLED), each run judged: a called finding in any of the six fails, naming the platform and the target.
+gvrun GV_IGNORE=./cmd GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'ignore' <<< "$out" && grep -q './cmd' <<< "$out" && ! grep -q '^govulncheck ' "$work/gvlog" && [ ! -e "$gvt/out/govulncheck.json" ]; then ok "G a go.mod ignore directive fails before any scan, naming the ignored path"
+else bad "G a go.mod ignore directive -> rc=$rc $out"; fi
+gvrun GV_OUT=clean GV_OUT_EXPLICIT=called -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'GO-2099-0002' <<< "$out" && grep -q 'cmd/fscache' <<< "$out"; then ok "G a called advisory found only by the explicit scan of the shipped main package fails (the decoy-main case), naming the package"
+else bad "G the explicit-path scan finding was not judged: rc=$rc $out"; fi
+gvrun GV_OUT=clean GV_OUT_ARM64=called -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'GO-2099-0002' <<< "$out" && grep -q 'arm64' <<< "$out"; then ok "G a called advisory that only the linux/arm64 scan finds fails, naming arm64"
+else bad "G the arm64 scan finding was not judged: rc=$rc $out"; fi
+gvrun GV_OUT=clean GV_OUT_ARM64=called GV_OUT_EXPLICIT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'arm64' <<< "$out" && [ -f "$gvt/out/govulncheck.json" ] && cmp -s "$gvt/out/govulncheck.json" "$work/gv-expected.bin"; then ok "G the file written is still the amd64 ./... stream, byte for byte, when another run fails (it is the product the Release stage binds)"
+else bad "G govulncheck.json is not the amd64 ./... stream when a later run fails: rc=$rc"; fi
+gvrun GV_OUT=imported GV_OUT_ARM64=imported -- "${GVARGS[@]}"
+if [ "$rc" = 0 ]; then ok "G imported-only findings on both platforms still pass (the reachability rule is unchanged)"; else bad "G imported-only on both platforms failed: rc=$rc $out"; fi
+gvrun GV_GO_RC=1 GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G a go mod edit that fails stops the scan before it starts"; else bad "G a failing go mod edit was accepted: rc=$rc"; fi
+rm -f "$gvt/build/melange.yaml"
+gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog" && grep -q 'melange' <<< "$out"; then ok "G an unreadable build recipe fails closed before any scan, naming it"; else bad "G a missing recipe was accepted: rc=$rc $out"; fi
+gv_recipes
+for rc_ in 'no go build line|printf "package:\n  name: x\nenvironment:\n  environment:\n    CGO_ENABLED: \"0\"\n" > "$gvt/build/melange.yaml"' 'two go build lines|gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml"; echo "      go build -o /x ./cmd/other" >> "$gvt/build/melange.yaml"' 'a package pattern, not a path|gv_recipe fscache ./cmd/... "$gvt/build/melange.yaml"' 'a package that is not a relative path|gv_recipe fscache cmd/fscache "$gvt/build/melange.yaml"' 'a variable as the package|gv_recipe fscache "\$PKG" "$gvt/build/melange.yaml"' 'the two recipes name different packages|gv_recipe fscache ./cmd/other "$gvt/build/melange.yaml"' 'no CGO_ENABLED|sed -i.bak "/CGO_ENABLED/d" "$gvt/build/melange.yaml"; rm -f "$gvt/build/melange.yaml.bak"'; do
+  eval "${rc_#*|}"
+  gvrun GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the build recipe is read strictly, fail closed before any scan: ${rc_%%|*}"; else bad "G recipe case '${rc_%%|*}' accepted: rc=$rc"; fi
+  gv_recipes
+done
+# the closed line grammar: each mutation below is a shape the grammar must refuse before any scan (fail closed), in the standard recipe or the FIPS one
+gvfl_=$'      export GOFIPS140=v1.0.0\n'
+gvcases_=(
+  'a trailing comment on the build line|sed -i.bak "s/\(go build .*\)$/\1 # x/" "$gvt/build/melange.yaml"'
+  'a semicolon after the build line|sed -i.bak "s/\(go build .*\)$/\1 ; true/" "$gvt/build/melange.yaml"'
+  'an ampersand after the build line|sed -i.bak "s/\(go build .*\)$/\1 \&\& true/" "$gvt/build/melange.yaml"'
+  'a redirect and pipe on the build line|sed -i.bak "s/\(go build .*\)$/\1 > \/x/" "$gvt/build/melange.yaml"'
+  'a second package on the build line|sed -i.bak "s/\(go build .*\)$/\1 .\/cmd\/other/" "$gvt/build/melange.yaml"'
+  'a -tags flag|sed -i.bak "s/go build -trimpath/go build -tags x -trimpath/" "$gvt/build/melange.yaml"'
+  'an inline runs go build|printf "  - runs: go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'an absolute-path go|printf "      \/usr\/local\/go\/bin\/go build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'an extra export of a Go setting|printf "      export GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
+  'an export CGO_ENABLED line|printf "      export CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"'
+  'CGO_ENABLED named in a trailing description line|printf "      echo CGO_ENABLED=1\n" >> "$gvt/build/melange.yaml"'
+  'a command substitution on a go line|printf "      go version -m \$(id)\n" >> "$gvt/build/melange.yaml"'
+  'a backtick on a go line|printf "      go version -m \`id\`\n" >> "$gvt/build/melange.yaml"'
+  'a go command other than the two|printf "      go env -w GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
+  'a go word built by a command substitution|printf "      g\$(printf o) build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a quoted go word|printf "      g'"'"'o'"'"' build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a backslash go word|printf "      g\\\\o build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a command word from a variable|printf "      \$G build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a substitution on a line with no go word|printf "      echo \$(id)\n" >> "$gvt/build/melange.yaml"'
+  'GOFIPS140 in the standard recipe|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange.yaml"'
+  'the FIPS recipe without the GOFIPS140 export|sed -i.bak "/export GOFIPS140=v1.0.0/d" "$gvt/build/melange-fips.yaml"'
+  'the FIPS recipe with another GOFIPS140 value|sed -i.bak "s#export GOFIPS140=v1.0.0#export GOFIPS140=off#" "$gvt/build/melange-fips.yaml"'
+  'the FIPS recipe with GOFIPS140 twice|printf "      export GOFIPS140=v1.0.0\n" >> "$gvt/build/melange-fips.yaml"'
+  'a fifth environment key|sed -i.bak "s/^    GOPROXY: \"off\"$/    GOPROXY: \"off\"\n    GOAMD64: v3/" "$gvt/build/melange.yaml"'
+  'CGO_ENABLED set twice in the environment block|sed -i.bak "s/^    CGO_ENABLED: \"0\"$/    CGO_ENABLED: \"0\"\n    CGO_ENABLED: \"1\"/" "$gvt/build/melange.yaml"'
+  'CGO_ENABLED with a value other than 0 or 1|gv_recipe fscache ./cmd/fscache "$gvt/build/melange.yaml" 2'
+  'a quoted expansion as the command word|printf "      G=go\n      \"\$G\" build -tags x -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'an expansion after a wrapper word|printf "      env \$G build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'a glob as the command word|printf "      \/usr\/local\/go\/bin\/g? build -o \/x .\/cmd\/other\n" >> "$gvt/build/melange.yaml"'
+  'eval of a built string|printf "      eval \"g\"\"o build -o \/x .\/cmd\/other\"\n" >> "$gvt/build/melange.yaml"'
+  'a template line changed (the install directory)|sed -i.bak "s#^  - runs: mkdir -p /usr/local/#  - runs: mkdir -p /usr/local/x#" "$gvt/build/melange.yaml"'
+  'a template line removed (the git set-up)|sed -i.bak "/safe.directory/d" "$gvt/build/melange.yaml"'
+  'a template line added in a second step|printf "  - runs: true\n" >> "$gvt/build/melange.yaml"'
+  'an extra subpackage with a quoted runs key before the pipeline|sed -i.bak "s#^pipeline:#subpackages:\n  - name: audit-extra\n    pipeline:\n      - \"runs\": |\n          export GOFLAGS=-mod=mod\npipeline:#" "$gvt/build/melange.yaml"'
+  'an extra subpackage with an unquoted runs key before the pipeline|sed -i.bak "s#^pipeline:#subpackages:\n  - name: audit-extra\n    pipeline:\n      - runs: |\n          export GOFLAGS=-mod=mod\npipeline:#" "$gvt/build/melange.yaml"'
+  'a second package key after the pipeline holding nested content|printf "package:\n  extra: |\n    export GOFLAGS=-mod=mod\n" >> "$gvt/build/melange.yaml"'
+  'a second environment key after the pipeline|printf "environment:\n  contents:\n    packages:\n      - x=1\n" >> "$gvt/build/melange.yaml"'
+  'a no-break-space comment line that the shell runs|printf '"'"'      \302\240# || export GOFLAGS=-tags=audit_unscanned\n'"'"' >> "$gvt/build/melange.yaml"'
+  'an em-space comment line that the shell runs|printf '"'"'      \342\200\203# || export GOFLAGS=-tags=audit_unscanned\n'"'"' >> "$gvt/build/melange.yaml"'
+  'an ideographic-space comment line that the shell runs|printf '"'"'      \343\200\200# || export GOFLAGS=-tags=audit_unscanned\n'"'"' >> "$gvt/build/melange.yaml"'
+  'a subpackages key after the pipeline|printf "subpackages:\n  - name: x\n" >> "$gvt/build/melange.yaml"'
+  'a pipeline key under the package keys|sed -i.bak "s#^  epoch: 0#  epoch: 0\n  pipeline: x#" "$gvt/build/melange.yaml"'
+  'a package list line that is not a package|sed -i.bak "s#^      - busybox=#      - evil; true\n      - busybox=#" "$gvt/build/melange.yaml"'
+  'a runs step before the pipeline|sed -i.bak "s#^pipeline:#  extra:\n    - runs: true\npipeline:#" "$gvt/build/melange.yaml"'
+)
+for rc_ in "${gvcases_[@]}"; do
+  eval "${rc_#*|}"; rm -f "$gvt"/build/*.bak
+  gvrun GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the closed recipe grammar refuses before any scan: ${rc_%%|*}"; else bad "G grammar case '${rc_%%|*}' accepted: rc=$rc $out"; fi
+  gv_recipes
+done
+# Recipe lines whose text names a shell keyword the pin-age rule reads as a declaration are DATA in the fixture file beside this test (one tab-separated record per case:
+# label, the line appended to the standard recipe), read with `read` and never sourced, evaluated or run; the file carries no execute bit.
+while IFS=$'\t' read -r gvlabel_ gvline_; do
+  [ -n "$gvlabel_" ] || continue
+  printf '%s\n' "$gvline_" >> "$gvt/build/melange.yaml"
+  gvrun GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog"; then ok "G the closed recipe grammar refuses before any scan: $gvlabel_"; else bad "G grammar case '$gvlabel_' accepted: rc=$rc $out"; fi
+  gv_recipes
+done < "$root/bin/chain-check-scripts-fixtures.txt"
+# a package-pin bump (the refresh rewrites the `- pkg=ver` lines) is not a change of the grammar: it still scans
+gv_recipes; sed -i.bak 's#^      - busybox=1.38.0-r3#      - busybox=1.39.0-r1#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
+gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && grep -q 'busybox=1.39.0-r1' "$gvt/build/melange.yaml" && [ "$(grep -c '^govulncheck -json ' "$work/gvlog")" = 6 ]; then ok "G a package-pin bump in the recipes still passes the closed grammar (six runs)"; else bad "G a package-pin bump was refused or the scan did not run: rc=$rc $out"; fi
+gv_recipes
+# the package and CGO_ENABLED come from the recipes, never hard-coded: another path and CGO "1" reach the scan's target and environment
+gv_recipes 1; sed -i.bak 's#fscache ./cmd/fscache$#fscache ./cmd/other#' "$gvt/build/melange.yaml" "$gvt/build/melange-fips.yaml"; rm -f "$gvt"/build/*.bak
+gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && [ "$(grep -c '^govulncheck -json ./cmd/other$' "$work/gvlog")" = 4 ] && ! grep -q 'cmd/fscache' "$work/gvlog" && [ "$(grep -c 'CGO_ENABLED=1' "$work/gvlog")" = 6 ]; then ok "G the shipped package and CGO_ENABLED are the recipes' own (./cmd/other and \"1\" reach all six runs)"; else bad "G package/CGO were not taken from the recipes: rc=$rc $out | $(grep -c 'CGO_ENABLED=1' "$work/gvlog")"; fi
+gv_recipes
+# the real shape of `go mod edit -json` (this machine's Go writes it): a decoy `ignore` is read from the real field, and a module without one passes
+mkdir -p "$work/realmod" && printf 'module example.com/a\n\ngo 1.27\n\nignore ./decoy\n' > "$work/realmod/go.mod"
+if ( cd "$work/realmod" && GOFLAGS= GOTOOLCHAIN=local go mod edit -json > "$work/real-ignore.json" ) 2> /dev/null && grep -q '"Ignore"' "$work/real-ignore.json"; then
+  gvrun GV_GO_JSON="$work/real-ignore.json" GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog" && grep -q 'decoy' <<< "$out"; then ok "G the real go mod edit -json output with an ignore directive is refused, naming the path"; else bad "G real ignore output accepted: rc=$rc $out"; fi
+else ok "G (no Go on this machine writes the ignore field: the real-output case is skipped)"; fi
+printf 'module example.com/a\n\ngo 1.27\n' > "$work/realmod/go.mod"
+if ( cd "$work/realmod" && GOFLAGS= GOTOOLCHAIN=local go mod edit -json > "$work/real-plain.json" ) 2> /dev/null && ! grep -q '"Ignore"' "$work/real-plain.json"; then
+  gvrun GV_GO_JSON="$work/real-plain.json" GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" = 0 ]; then ok "G the real go mod edit -json output of a module without ignore passes"; else bad "G real plain output refused: rc=$rc $out"; fi
+else ok "G (no Go on this machine: the real plain-output case is skipped)"; fi
+# go mod edit -json that prints JSON which is not an object cannot say whether an ignore directive is there: refused (REQ-CHAIN-006-AC18), never read as "no ignore"
+for nj in '[]' 'null' '"x"' '5'; do
+  printf '%s\n' "$nj" > "$work/nonobj.json"
+  gvrun GV_GO_JSON="$work/nonobj.json" GV_OUT=clean -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && ! grep -q '^govulncheck ' "$work/gvlog" && [ ! -e "$gvt/out/govulncheck.json" ]; then ok "G go mod edit -json printing $nj (not an object) is refused before any scan (REQ-CHAIN-006-AC18)"; else bad "G non-object go mod JSON $nj accepted: rc=$rc $out"; fi
 done
 gvrun GV_RC=3 GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G a tool exit other than 0 fails (it could not run: nothing is clean behind it)"; else bad "G a failing tool was accepted"; fi
@@ -1351,7 +1530,7 @@ if [ "$(grep -c '^CANDIDATE_ENTRYPOINT=' "$root/bin/acceptance-egress.sh")" = 1 
 cl_=$(grep -- '--entrypoint /trace/strace' "$root/bin/acceptance-egress.sh" | grep -- 'fscache-cand-')
 n_cl_=$(printf '%s\n' "$cl_" | grep -c . || true)
 if [ "$n_cl_" = 1 ] && grep -Eq '"\$CANDIDATE_ENTRYPOINT"( >/dev/null)?[[:space:]]*$' <<< "$cl_"; then ok "acceptance-egress.sh: the one candidate strace launch line (--entrypoint /trace/strace) ends with \"\$CANDIDATE_ENTRYPOINT\""; else bad "acceptance-egress.sh: the candidate strace launch is not one line ending with \"\$CANDIDATE_ENTRYPOINT\""; fi
-EXPECT=444
+EXPECT=534
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
