@@ -259,6 +259,7 @@ ALLOW_PATTERNS=(
   '^dependency-provenance\.json$'
   '^bin/vendor-check\.sh$'
   '^bin/vendor-provenance\.py$'
+  '^bin/vendor-provenance-records\.py$'
   '^bin/vendoring-test\.sh$'
   '^bin/vendor-provenance-test\.sh$'
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs

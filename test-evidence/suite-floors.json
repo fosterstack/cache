@@ -3,11 +3,11 @@
  "admission-tag-signer-test.sh": 53,
  "analyze-egress-trace-test.sh": 11,
  "auditor-labels-test.sh": 22,
- "auditor-matrix-test.sh": 276,
+ "auditor-matrix-test.sh": 313,
  "branch-sweep-test.sh": 156,
  "chain-bind-test.sh": 184,
  "chain-build-admit-test.sh": 148,
- "chain-build-wiring-test.sh": 1045,
+ "chain-build-wiring-test.sh": 1050,
  "chain-check-scripts-test.sh": 310,
  "chain-check-wiring-test.sh": 302,
  "chain-hostile-test.sh": 279,
@@ -54,11 +54,11 @@
  "rescan-statement-test.sh": 198,
  "scout-root-cause-test.sh": 33,
  "suite-guard-test.sh": 91,
- "supply-chain-wiring-test.sh": 91,
+ "supply-chain-wiring-test.sh": 109,
  "verify-release-guide-test.sh": 69,
  "vex-both-scanners-test.sh": 47,
  "vex-forms-test.sh": 64,
  "vex-index-test.sh": 1159,
  "vex-scope-test.sh": 21,
- "workflow-consolidation-test.sh": 80
+ "workflow-consolidation-test.sh": 145
 }
