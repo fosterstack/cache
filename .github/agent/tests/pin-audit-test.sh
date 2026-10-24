@@ -1543,7 +1543,7 @@ for exc in (AttributeError("x"), KeyError("k"), TypeError("t"), IndexError("i"),
 PY
 CASE="structural closure (Fable ruling, round 6): every reader takes a mandatory need/rows with no default, and EVERY site that reads an answer (AST-enumerated in both programs: _http_dict, _gh_api, _gh_list, _gh_pages, _gh_json, _fetch_json, json.load/loads) has a {} / [{}] / null case that is refused; the optional keys are named (OSV vulns and next_page_token, a commit committer date, a Docker digest/images/push time, a PyPI file upload time, a release date on a draft) and accepted when absent; local policy and fixture files are covered too"
 check python3 - "$aud" <<'PY'
-import ast, importlib.util, inspect, io, json, os, subprocess, sys, tempfile, urllib.request
+import ast, collections, importlib.util, inspect, io, json, os, subprocess, sys, tempfile, urllib.request
 aud = sys.argv[1]
 spec = importlib.util.spec_from_file_location("pa", aud); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
 age, inv = pa.age, pa.inv
@@ -1569,7 +1569,7 @@ def sites(path):
     tree = ast.parse(open(path).read()); parents = {}
     for n in ast.walk(tree):
         for c in ast.iter_child_nodes(n): parents[c] = n
-    found = set()
+    found = collections.Counter()
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call): continue
         c = n.func; name = c.attr if isinstance(c, ast.Attribute) else getattr(c, "id", None)
@@ -1579,13 +1579,13 @@ def sites(path):
         while p in parents:
             p = parents[p]
             if isinstance(p, ast.FunctionDef): break
-        found.add((os.path.basename(path), p.name if isinstance(p, ast.FunctionDef) else "<module>", name))
+        found[(os.path.basename(path), p.name if isinstance(p, ast.FunctionDef) else "<module>", name)] += 1
         # a reader call names what it reads (a shape argument), never a bare read
         if name == "_http_dict": assert len(n.args) + len(n.keywords) >= 2, ("_http_dict without need", n.lineno)
         if name in ("_gh_api", "_gh_pages", "_gh_list"): assert len(n.args) + len(n.keywords) >= 2, (name + " without a shape", n.lineno)
         if name == "_gh_json": assert {k.arg for k in n.keywords} & {"need", "rows"}, ("_gh_json without need/rows", n.lineno)
     return found
-actual = sites(chk) | sites(aud)
+actual = sites(chk) + sites(aud)      # a Counter: how many calls of each reader sit in each function
 
 class P:
     def __init__(self, out, rc=0): self.stdout, self.stderr, self.returncode = out, "", rc
@@ -1733,6 +1733,14 @@ def c_live_ranges():
     # a vulnerability entry without a package or a range is read fail closed (unreadable), not skipped: checked through _ranges_of
     assert pa.LiveNet._ranges_of({"vulnerabilities": [{}]}, {"p"}) == ([], False)      # no package: not ours
     refuse("vulnerabilities 5", lambda: pa.LiveNet._ranges_of({"vulnerabilities": [5]}, {"p"}))
+    # live_ranges reads the same list the same way (round 7): a non-object entry is refused, and an entry for our package with a null, empty or missing range makes the answer unreadable (None: the dispute stays), never a narrower list
+    net._version_of = lambda i: "1.0"
+    net._memo.clear(); gh({"advisories/": {"vulnerabilities": [5]}}); refuse("live_ranges vulnerabilities 5", lambda: net.live_ranges(pk, "github", "GHSA-x"))
+    for rng in (None, "", " ", 7):
+        net._memo.clear(); gh({"advisories/": {"vulnerabilities": [{"package": {"name": pk.name}, "vulnerable_version_range": "< 1.0"}, {"package": {"name": pk.name}, "vulnerable_version_range": rng}]}})
+        assert net.live_ranges(pk, "github", "GHSA-x") is None, ("an unreadable range beside a readable one was dropped", rng)
+    net._memo.clear(); gh({"advisories/": {"vulnerabilities": [{"package": {"name": pk.name}, "vulnerable_version_range": "< 1.0"}, {"package": {"name": "other"}, "vulnerable_version_range": None}]}})
+    assert net.live_ranges(pk, "github", "GHSA-x") == ["< 1.0"], "an entry for another package must not hide ours"
 def c_lists_for():
     net._osv_records = lambda *a, **k: {}
     http(b"{}"); gh({"advisories?": "[]"}); refuse("pypi info {}", lambda: net._lists_for(pk, "1.0"))
@@ -1818,9 +1826,14 @@ CASES = {
     ("pin-audit.py", "tag_map", "_gh_pages"): c_tag_map, ("pin-audit.py", "modified", "_gh_json"): c_modified, ("pin-audit.py", "modified", "load"): c_modified,
     ("pin-audit.py", "load_exceptions", "load"): c_local_files, ("pin-audit.py", "file_issues", "loads"): c_file_issues, ("pin-audit.py", "main", "load"): c_main_fixtures,
 }
-missing, stale = actual - set(CASES), set(CASES) - actual
+# a function with more than one call of the same reader lists how many; each call has its probe in the named case (a new call in a known function changes the count and fails here)
+CALLS = {("pin-age-check.py", "observed", "_gh_api"): 2, ("pin-audit.py", "_lists_for", "_gh_json"): 2, ("pin-audit.py", "resolve_ref", "_gh_json"): 2, ("pin-audit.py", "versions", "_gh_json"): 3}
+expect = collections.Counter({k: CALLS.get(k, 1) for k in CASES})
+assert not set(CALLS) - set(CASES), ("CALLS names a site with no case", sorted(set(CALLS) - set(CASES)))
+missing, stale = set(actual) - set(CASES), set(CASES) - set(actual)
 assert not missing, ("a site that reads an answer has no case: add it to CASES with its {} / [{}] case", sorted(missing))
 assert not stale, ("a case names a site that no longer exists", sorted(stale))
+assert actual == expect, ("the number of calls of a reader in a function changed: probe the new call and update CALLS", {k: (actual[k], expect[k]) for k in expect if actual[k] != expect[k]})
 for fn in dict.fromkeys(CASES.values()):
     net = pa.LiveNet(["gh"], ".")      # a fresh object per case: no stub leaks from one to the next
     fn()

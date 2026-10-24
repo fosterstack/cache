@@ -501,9 +501,8 @@ class LiveNet:
         names = {_norm_name(package_of(item)), _norm_name(item.name)} | ({_norm_name(q["package"]["name"])} if q else set())
         rule = _go_rule(item, self._version_of(item) or "")
         names |= {_norm_name(p) for p in (rule.paths if rule else [])}   # AC14: GitHub files some Go ranges under the bare path
-        rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities",
-            []) if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
-        return rngs or None
+        rngs, unreadable = self._ranges_of(adv, names)
+        return None if unreadable else (rngs or None)   # an entry of ours with no readable range: the ranges are not known, never a narrower list
 
     def covered(self, item):
         """Is there an advisory source for this kind of item at all? (None-query items are reported as not checked, never as clean.)"""

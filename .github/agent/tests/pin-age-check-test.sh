@@ -4446,6 +4446,7 @@ assert dl, list(a)
 assert not any(it.sums == ["a" * 64] for it in dl), [it.sums for it in dl]      # the first arm's sum is not attached to the second arm's identical line
 assert inv.moved(a, b), "a sum-only edit of the second arm was not a moved item"
 assert not inv.moved(a, inv.inventory(files("b" * 64)))
+PY
 CASE="structural closure: an unexpected KeyError/AttributeError/TypeError/IndexError/ValueError while reading an answer ends the age check with exit 2 (cannot run, not a pass)"
 newcase struct-guard "$(sub bin/install-scanner.sh 'TRIVY_VER=0.74.0' 'TRIVY_VER=0.75.0')"
 check python3 - "$chk" "$work/struct-guard" <<'PY'
