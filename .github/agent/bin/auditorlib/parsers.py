@@ -7,6 +7,7 @@ through OSV's own aliases, never by editing the string. A malformed report raise
 ParseError rather than guessing. (Round-2 design rule: code does only what is exact.)
 """
 import json, re
+from auditorlib import policy
 
 
 class ParseError(ValueError):
@@ -94,7 +95,7 @@ _DETAIL_KEYS = frozenset(("severity", "fixed_version", "aliases", "known_exploit
 _SEVERITIES = ("negligible", "low", "medium", "high", "critical")       # bin/panel.py SEVERITIES, in rising order
 _VEX_KEYS = frozenset(("image", "scanner", "id", "package", "version"))
 _TEXT = re.compile(r"[^\x00-\x1f\x7f`]*")            # no control characters, no backtick (the issue text quotes with it)
-_ID = re.compile(r"[A-Za-z0-9?][A-Za-z0-9._:+-]*")          # CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result
+_ID = policy.FINDING_ID          # CVE-, GHSA-, DEBIAN-CVE-, GO- ids; the tally's "?" for an id-less result; capped, and the same grammar the unsettled-run counter keeps
 _NOCTL = r"[^\s\x00-\x1f\x7f"
 class _PurlGrammar:
     """The package-URL grammar the verdict allows: one rule, defined where the tally writes the URLs (bin/panel.py purl_ok)."""

@@ -1291,14 +1291,17 @@ items, err = hist({sys.argv[3]: "readable A listed by mistake", sys.argv[4]: "B"
 assert err is None, err
 assert sys.argv[6] in " ".join(repr(k) for k in items)
 PY
-CASE="oversize history: the list holds exactly the three Oct 20 RED commits of PR 459 (full lowercase 40-hex shas), each with a reason that names bin/chain-sign-wiring-test.sh"
+CASE="oversize history: the list holds exactly the three Oct 20 RED commits of PR 459 and the Oct 23 #597 fix-round-3 commit (full lowercase 40-hex shas), each with a reason that names its file"
 check python3 - "$aud" <<'PY'
 import importlib.util, re, sys
 spec = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(spec); spec.loader.exec_module(pa)
-want = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b"}
+want = {"792a2c7029de801fa7afbc16ceb36a636215f4b6", "6ff1768c0e63d0f60f6072267817062d53934a08", "dbc8d744f4d78cba6ca35ea53b96b6e6a43d311b", "6b8c70df66651667e530748db9bc22462e307bee"}
 assert set(pa.SKIP_UNREADABLE) == want, sorted(pa.SKIP_UNREADABLE)
 for k, why in pa.SKIP_UNREADABLE.items():
     assert re.fullmatch(r"[0-9a-f]{40}", k), k
+    if k == "6b8c70df66651667e530748db9bc22462e307bee":     # #597 fix round 3 (Oct 23 2026): a 4103-character command line in bin/chain-check-scripts-test.sh, since removed
+        assert isinstance(why, str) and "bin/chain-check-scripts-test.sh" in why and "#597" in why and "4103" in why, (k, why)
+        continue
     assert isinstance(why, str) and "bin/chain-sign-wiring-test.sh" in why and "PR 459" in why, (k, why)
 PY
 CASE="oversize history: no other error is swallowed: a listed revision that is unreadable for another reason (a broken tree) still stops the read"
