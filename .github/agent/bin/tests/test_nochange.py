@@ -113,12 +113,25 @@ class Load(unittest.TestCase):
         self.assertIsNone(bad(lambda d: d.update(pullability={K2: {"unknown_key": 1}})))
         self.assertIsNone(bad(lambda d: d.update(pullability={K2: {"pullable": {"nested": 1}}})))
         self.assertIsNone(bad(lambda d: d.update(pullability={K2: {"evidence": "x" * 5000}})))
+        for field, value in (("pullable", "yes"), ("pullable", 1), ("lift_trigger", 1), ("lift_trigger", True), ("hold", "arbitrary_disposition"),
+                             ("hold", 3), ("bump_attempted", "no"), ("component_fixed", ["1"]), ("evidence", ["x"]),
+                             ("evidence", {"k": {"deep": 1}}), ("evidence", {str(i): "v" for i in range(40)}),
+                             ("evidence", {"k": "x" * 5000})):
+            self.assertIsNone(bad(lambda d, f=field, v=value: d.update(pullability={K2: {f: v}})), (field, value))
         self.assertIsNone(bad(lambda d: d.update(narrative="text")))
         self.assertIsNone(bad(lambda d: d.update(narrative={"key": "nothex", "text": "t", "date": "2026-10-22"})))
         self.assertIsNone(bad(lambda d: d.update(narrative={"key": K1, "text": "", "date": "2026-10-22"})))
         self.assertIsNone(bad(lambda d: d.update(narrative={"key": K1, "text": "x" * 20001, "date": "2026-10-22"})))
         self.assertIsNone(bad(lambda d: d.update(narrative={"key": K1, "text": "t", "date": "soon"})))
         self.assertIsNone(bad(lambda d: d.update(narrative={"key": K1, "text": "t", "date": "2026-10-22", "x": 1})))
+
+    def test_the_known_good_pullability_shapes_are_valid(self):
+        for rec in ({"pullable": True}, {"pullable": False, "hold": "policy-held", "lift_trigger": "base >= 3"},
+                    {"hold": None, "evidence": None}, {"evidence": "text"}, {"evidence": {"how": "pin", "carrier": "nodejs", "n": 2, "ok": True}},
+                    {"bump_attempted": False, "bump_result": "none", "component_fixed": "1.2", "repo_version": "1.2",
+                     "base_release": "debian 12.6", "candidate_release": None}, {}):
+            d = good(); d["pullability"] = {K2: rec}
+            self.assertEqual(N.load(self.write(d)), d, rec)
 
     def test_no_narrative_and_no_verdicts_is_a_valid_state(self):
         d = good(); d["narrative"] = None; d["verdicts"] = {}; d["pullability"] = {}
@@ -145,6 +158,16 @@ class Use(unittest.TestCase):
     def test_a_returned_pullability_is_a_copy(self):
         s = good(); got = N.pullability(s, K2); got["pullable"] = True
         self.assertIs(N.pullability(s, K2)["pullable"], False)
+
+    def test_pull_record_keeps_a_valid_answer_whole_and_refuses_a_lossy_one(self):
+        ans = {"refused": False, "token_usage": 9, "pullable": False, "hold": "upstream-held", "lift_trigger": "n >= 2",
+               "evidence": {"how": "static", "carrier": "nodejs"}, "unread": "dropped"}
+        self.assertEqual(N.pull_record(ans), {"pullable": False, "hold": "upstream-held", "lift_trigger": "n >= 2",
+                                             "evidence": {"how": "static", "carrier": "nodejs"}})
+        self.assertEqual(N.pull_record({"refused": False}), {})
+        for key, value in (("lift_trigger", "x" * 5000), ("hold", "arbitrary_disposition"), ("pullable", "maybe"),
+                           ("evidence", {"k": {"deep": 1}}), ("lift_trigger", 12)):
+            self.assertIsNone(N.pull_record({"pullable": False, key: value}), (key, value))
 
     def test_dump_round_trips_through_load(self):
         d = tempfile.mkdtemp(); p = os.path.join(d, "s.json")

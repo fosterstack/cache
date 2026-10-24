@@ -913,20 +913,19 @@ import os, re, yaml
 wf = yaml.safe_load(open(os.environ["WF"]))
 steps = wf["jobs"]["audit"]["steps"]
 by = {s.get("name"): s for s in steps}
-f = by.get("Fetch the last successful run's no-change state")
+f = by.get("Select and download the day's main-candidate-rescan artifacts")     # the fetch lives in this existing step: no step is inserted before the audited download exception's index
 u = by.get("Upload the no-change state"); t = by.get("Upload the full audit trail")
 run = next(s for s in steps if "auditor-run.py" in (s.get("run") or ""))
 bad = []
-if not f: bad.append("no fetch step")
-else:
-    r = f["run"]
-    for need in ("--workflow auditor.yml", "--branch main", "--status success", "--event schedule", "--event workflow_dispatch", "-n auditor-state"):
-        if need not in r: bad.append("fetch lacks " + need)
-    if r.count("--branch main") < 2 or r.count("--workflow auditor.yml") < 2 or r.count("--status success") < 2:
-        bad.append("each run listing must be limited to this workflow, branch main and success")
-    if "pull_request" in r: bad.append("fetch names pull_request")
-    if f.get("env", {}).get("GH_TOKEN") != "${{ github.token }}": bad.append("fetch token is not the job token")
-if "--prev-state" not in run["run"] or "prev-state/auditor-state.json" not in run["run"]: bad.append("run step does not pass --prev-state")
+r = (f or {}).get("run", "")
+for need in ("--workflow auditor.yml", "--branch main", "--status success", "--event schedule", "--event workflow_dispatch", "-n auditor-state"):
+    if need not in r: bad.append("fetch lacks " + need)
+if r.count("--branch main") < 3 or r.count("--status success") < 2 or r.count("--workflow auditor.yml") < 2:
+    bad.append("each auditor-state run listing must be limited to this workflow, branch main and success")
+if "pull_request" in r: bad.append("fetch names pull_request")
+if (f or {}).get("env", {}).get("GH_TOKEN") != "${{ github.token }}": bad.append("fetch token is not the job token")
+if "--prev-state" in run["run"]: bad.append("the run step's text changed (its sha256 is bound by the pin checker's download exception)")
+if run.get("env", {}).get("AUDITOR_PREV_STATE") != "${{ runner.temp }}/prev-state/auditor-state.json": bad.append("run step does not set AUDITOR_PREV_STATE")
 if not u: bad.append("no upload step")
 else:
     w = u["with"]
@@ -934,7 +933,8 @@ else:
     if w.get("retention-days") != 3: bad.append("upload retention is not 3 days")
     if not re.fullmatch(r"actions/upload-artifact@[0-9a-f]{40}", u["uses"].split(" ")[0]): bad.append("upload action not a digest")
     cond = u.get("if", "")
-    if "inputs.adjudicator == 'real'" not in cond or "inputs.test_image == ''" not in cond: bad.append("upload not limited to real adjudicator on the day's candidate: " + cond)
+    for need in ("inputs.adjudicator == 'real'", "inputs.test_image == ''", "inputs.known_defect_log == '.github/agent/known-defect-log.json'"):
+        if need not in cond: bad.append("upload not limited by " + need)
     if not str(w.get("path", "")).endswith("auditor-out/.auditor/auditor-state.json"): bad.append("upload path")
 if "retention-days" in (t or {}).get("with", {}): bad.append("the audit trail's retention was changed")
 print("ok" if not bad else "; ".join(bad))

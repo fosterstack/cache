@@ -247,7 +247,7 @@ class PureHelpers(Base):
         self.assertEqual(st["tokens"], 14)
         self.assertIn("primary", st["roles_used"])
         self.assertEqual(ask.call_args.kwargs["attempt"], "narrative")
-        self.assertEqual(ask.call_args.kwargs["context"]["structured"]["commit"], "c1")
+        self.assertNotIn("commit", ask.call_args.kwargs["context"]["structured"])   # the model is told nothing the key leaves out
 
 
 # ---------------------------------------------------------------- no-change day (REQ-AUD-3 AC3)
@@ -298,6 +298,27 @@ class NoChange(Base):
             self.assertEqual(R.adjudicate("/x/real.py", self.CTX, st), "adjudicator_error")
         self.assertEqual(st["nc_verdicts"], {})
 
+    def test_the_stable_base_drops_the_day_counter_but_keeps_the_threshold_decision(self):
+        a = R._stable_base({"release": "debian 12.0", "behind_threshold_days": 30, "days_behind": 52})
+        b = R._stable_base({"release": "debian 12.0", "behind_threshold_days": 30, "days_behind": 53})
+        self.assertEqual(a, b); self.assertNotIn("days_behind", a); self.assertIs(a["behind_beyond_threshold"], True)
+        self.assertIs(R._stable_base({"days_behind": 3})["behind_beyond_threshold"], False)
+        self.assertEqual(R._stable_base({"release": "x"}), {"release": "x"})
+        self.assertEqual(R._stable_base(None), {})
+
+    def test_the_adjudication_fingerprint_follows_prompt_adjudicator_and_model(self):
+        adj = os.path.join(self.tmp, "adj.py"); open(adj, "w").write("print(1)")
+        with mock.patch.dict(os.environ, {"AUDITOR_MODEL_PRIMARY": "m-one"}):
+            base = R._adjudication_fingerprint(adj)
+            self.assertEqual(base, R._adjudication_fingerprint(adj))
+            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-two"
+            self.assertNotEqual(base, R._adjudication_fingerprint(adj))
+            os.environ["AUDITOR_MODEL_PRIMARY"] = "m-one"
+            open(adj, "w").write("print(2)")
+            self.assertNotEqual(base, R._adjudication_fingerprint(adj))
+            self.assertNotEqual(R._adjudication_fingerprint(os.path.join(self.tmp, "missing.py")), base)
+        self.assertNotIn("m-one", R._adjudication_fingerprint(adj))          # a digest, never the identifier itself
+
     def test_a_reused_pullability_verdict_makes_no_call(self):
         ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
         key = nochange.call_key("pullability", ctx)
@@ -312,11 +333,19 @@ class NoChange(Base):
         ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
         key = nochange.call_key("pullability", ctx)
         st = self.state()
-        ans = {"pullable": False, "lift_trigger": "x", "token_usage": 5, "surprise": {"nested": 1}, "evidence": "e"}
+        ans = {"pullable": False, "lift_trigger": "x", "token_usage": 5, "surprise": {"nested": 1}, "evidence": {"how": "e"}}
         with mock.patch.object(R.cli, "ask_model", return_value=ans):
             got = R._pullability("/x/real.py", ctx, st)
         self.assertEqual(got, ans)
-        self.assertEqual(st["nc_pull"], {key: {"pullable": False, "lift_trigger": "x", "evidence": "e"}})
+        self.assertEqual(st["nc_pull"], {key: {"pullable": False, "lift_trigger": "x", "evidence": {"how": "e"}}})
+
+    def test_a_pullability_answer_that_cannot_be_kept_whole_is_not_cached(self):
+        ctx = {"kind": "pullability", "finding_id": "C", "candidate_digest": "d"}
+        st = self.state()
+        ans = {"pullable": False, "lift_trigger": "x" * 5000, "token_usage": 5}
+        with mock.patch.object(R.cli, "ask_model", return_value=ans):
+            self.assertEqual(R._pullability("/x/real.py", ctx, st), ans)
+        self.assertEqual(st["nc_pull"], {})
 
     def test_a_reused_narrative_is_marked_unchanged_and_makes_no_call(self):
         secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
@@ -328,6 +357,15 @@ class NoChange(Base):
         ask.assert_not_called()
         self.assertEqual(text, "CVE-2099-3 needs a bump.\n\n(unchanged since 2026-10-22)")
         self.assertEqual(st["nc_narr"], {"key": key, "text": "CVE-2099-3 needs a bump.", "date": "2026-10-22"})
+
+    def test_the_narrative_request_is_exactly_what_its_key_covers(self):
+        secs = {n: [] for n in range(1, 8)}; secs[3] = [{"id": "CVE-2099-3"}]
+        reqs = []
+        for commit in ("c1", "c2"):
+            with mock.patch.object(R.cli, "ask_model", return_value={"narrative": "CVE-2099-3 needs a bump."}) as ask:
+                R._conclusion("/x/real.py", secs, {"commit": commit}, self.state())
+            reqs.append(ask.call_args.kwargs["context"])
+        self.assertEqual(reqs[0], reqs[1])
 
     def test_a_new_commit_alone_does_not_change_the_narrative_key(self):
         secs = {n: [] for n in range(1, 8)}

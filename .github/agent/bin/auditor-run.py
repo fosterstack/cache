@@ -932,7 +932,9 @@ def _pullability(adjudicator, ctx, state):
         return None
     state["tokens"] += int(ans.get("token_usage") or 0)
     state.setdefault("roles_used", set()).add("primary")
-    state.setdefault("nc_pull", {})[nc_key] = nochange.pull_record(ans)
+    rec = nochange.pull_record(ans)
+    if rec is not None:
+        state.setdefault("nc_pull", {})[nc_key] = rec
     return ans
 
 
@@ -1398,7 +1400,7 @@ def _dispose(c, findings, aliases, env, would, name=None):
         if (carrier or base_hold) and not gf["is_go"]:
             pctx = {"kind": "pullability", "finding_id": c, "component": gf["package"],
                     "installed_version": gf["installed"], "component_fixed": gf["fixed"],
-                    "purl": (subs or [None])[0], "carrier": carrier, "base": env.get("base"),
+                    "purl": (subs or [None])[0], "carrier": carrier, "base": _stable_base(env.get("base")),
                     "candidate_digest": env["digest"]}
             pull = _pullability(env["adjudicator"], pctx, env["state"])
             if pull is not None:
@@ -1589,6 +1591,32 @@ def _dispose(c, findings, aliases, env, would, name=None):
     return row, m_inc
 
 
+def _stable_base(base):
+    """the base block without its day counter: days_behind moves every day with no finding changing, so it would end every
+    no-change day. What the decisions use of it is whether it is beyond the threshold, which stays."""
+    b = dict(base or {})
+    if "days_behind" in b:
+        days = b.pop("days_behind")
+        b["behind_beyond_threshold"] = isinstance(days, int) and days > b.get("behind_threshold_days", 30)
+    return b
+
+
+def _adjudication_fingerprint(adjudicator):
+    """a digest of what the model's answers depend on besides the question: the standing prompt, the adjudicator client itself and
+    the configured model identifiers (hashed; the identifiers never leave the process)"""
+    import hashlib
+    h = hashlib.sha256()
+    for path in (os.path.join(HERE, "..", "prompts", "adjudicator.md"), adjudicator):
+        try:
+            h.update(open(path, "rb").read())
+        except OSError:
+            h.update(("unreadable:%s" % path).encode("utf-8"))
+        h.update(b"\0")
+    for v in sorted(_configured_model_values()):
+        h.update(v.encode("utf-8")); h.update(b"\0")
+    return h.hexdigest()
+
+
 def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     m, groups = C.manifest_findings(manifest_path)
     # A test image is never shipped, so no statement on `main` applies and nothing is delivered:
@@ -1626,9 +1654,10 @@ def run(manifest_path, dry, out, today, kevpath=None, adjudicator=None):
     import hashlib
     nc_hash = nochange.finding_set_hash(groups, {
         "digests": m.get("candidate_digests"), "knowledge": hashlib.sha256(knowledge_doc.encode("utf-8")).hexdigest(),
-        "gvc": [gvc, module, gvc_usable], "carriers": m.get("carriers") or [], "base": m.get("base") or {}})
+        "gvc": [gvc, module, gvc_usable], "carriers": m.get("carriers") or [], "base": _stable_base(m.get("base")),
+        "adjudication": _adjudication_fingerprint(adjudicator)})
     state.update(nc_verdicts={}, nc_pull={}, nc_narr=None, nc_today=today,
-                 nc_prev=nochange.matching(nochange.load(cli.opt("--prev-state")), nc_hash))
+                 nc_prev=nochange.matching(nochange.load(cli.opt("--prev-state") or os.environ.get("AUDITOR_PREV_STATE")), nc_hash))
     # Carried acceptances from the checkout: when a time box has passed, the finding must
     # REOPEN (§3) this run and its ignore be removed, never silently renewed (REQ-AUD-2 AC5c;
     # R1 outer round-8 #4). Read the delivered inventory the previous run left in the workspace.
@@ -2047,16 +2076,15 @@ def _narrative_ok(text, sections):
 
 def _narrative_structured(sections, m):
     st = m.get("scanner_status") or {}
-    return {"image": (m.get("candidate_digests") or {}).get("production"), "commit": m.get("commit"),
+    return {"image": (m.get("candidate_digests") or {}).get("production"),
             "package_counts": {s: (st.get(s) or {}).get("package_count") for s in _scanners(m)},
             "sections": {C.TITLES[n]: [r["id"] for r in sections[n]] for n in range(1, 8)}}
 
 
 def _narrative_key(sections, m):
-    """the key of a narrative: the structured record it is written for, without the commit (a new commit that changes no
-    finding is still a no-change day, REQ-AUD-3 AC3)"""
-    structured = _narrative_structured(sections, m); structured.pop("commit")
-    return nochange.call_key("narrative", structured)
+    """the key of a narrative: exactly the structured record the model is given. That record carries no commit: a new commit that
+    changes no finding is still a no-change day (REQ-AUD-3 AC3), and the narrative never needed one."""
+    return nochange.call_key("narrative", _narrative_structured(sections, m))
 
 
 def _conclusion(adjudicator, sections, m, state=None):

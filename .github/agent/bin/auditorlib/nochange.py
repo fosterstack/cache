@@ -19,6 +19,7 @@ MAX_BYTES = 1 << 20
 MAX_NARRATIVE = 20000
 MAX_FIELD = 2000
 CATEGORIES = ("false_positive", "not_affected_unreachable", "real_fixable", "risk_acceptance", "under_investigation")
+HOLDS = ("policy-held", "upstream-held")
 PULL_KEYS = ("pullable", "lift_trigger", "hold", "component_fixed", "candidate_release", "bump_attempted", "bump_result",
              "repo_version", "base_release", "evidence")
 STATE_KEYS = {"schema", "run_date", "finding_set_hash", "verdicts", "pullability", "narrative"}
@@ -44,8 +45,30 @@ def call_key(kind, ctx):
     return _digest([kind, ctx])
 
 
-def _scalar(v):
-    return v is None or isinstance(v, (bool, int)) or (isinstance(v, str) and len(v) <= MAX_FIELD)
+def _text(v):
+    return v is None or (isinstance(v, str) and len(v) <= MAX_FIELD)
+
+
+def _flag(v):
+    return v is None or isinstance(v, bool)
+
+
+def _evidence(v):
+    if _text(v):
+        return True
+    return (isinstance(v, dict) and len(v) <= 20 and all(isinstance(k, str) and len(k) <= 100 for k in v)
+            and all(x is None or isinstance(x, (bool, int)) or (isinstance(x, str) and len(x) <= MAX_FIELD) for x in v.values()))
+
+
+PULL_CHECKS = {"pullable": _flag, "bump_attempted": _flag, "hold": lambda v: v in (None,) + HOLDS, "evidence": _evidence,
+               "lift_trigger": _text, "component_fixed": _text, "candidate_release": _text, "bump_result": _text,
+               "repo_version": _text, "base_release": _text}
+
+
+def valid_pull(d):
+    """a pullability record the router can read without error: every key a known one, each of its own type, hold one of the
+    two supported holds"""
+    return isinstance(d, dict) and set(d) <= set(PULL_CHECKS) and all(PULL_CHECKS[k](v) for k, v in d.items())
 
 
 def _valid(doc):
@@ -62,7 +85,7 @@ def _valid(doc):
     if not isinstance(p, dict):
         return False
     for k, d in p.items():
-        if not (HEX64.fullmatch(k) and isinstance(d, dict) and set(d) <= set(PULL_KEYS) and all(_scalar(x) for x in d.values())):
+        if not (HEX64.fullmatch(k) and valid_pull(d)):
             return False
     n = doc["narrative"]
     if n is None:
@@ -110,8 +133,10 @@ def narrative(state, key):
 
 
 def pull_record(ans):
-    """the part of a pullability answer worth keeping: only the keys the router reads, only plain short values"""
-    return {k: ans[k] for k in PULL_KEYS if k in ans and _scalar(ans[k])}
+    """the pullability answer as it is kept: only the keys the router reads. An answer that cannot be kept whole and valid is
+    not kept at all (None): a lossy record would route differently on reuse than the fresh answer did."""
+    rec = {k: ans[k] for k in PULL_KEYS if k in ans}
+    return rec if valid_pull(rec) else None
 
 
 def dump(today, fs_hash, verdicts, pull, narr):
