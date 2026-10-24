@@ -17,6 +17,7 @@ def _load(name, fname):
 
 
 R = _load("auditor_run_reviewed", "auditor-run.py")
+PANEL = _load("auditor_panel_reviewed", "auditor-panel.py")
 
 # one entry per reviewed-input file name the agent reads: (a sample file name, the required keys, a valid document, documents that must stop)
 FILES = [
@@ -25,6 +26,20 @@ FILES = [
     ("accepted-items.json", ("accepted_items",), {"accepted_items": []}, [{}, {"accepted_items": None}, {"accepted_items": {}}, {"accepted_items": [None]}, {"accepted_items": ["x"]}, {"other": []}, []]),
     ("reopened-expired.json", ("reopened",), {"reopened": []}, [{}, {"reopened": None}, {"reopened": {}}, {"reopened": "x"}, {"reopened": [None]}, {"other": []}, []]),
     ("consistency.json", ("problems", "consistent"), {"consistent": True, "problems": []}, [{}, {"problems": []}, {"consistent": True}, {"consistent": True, "problems": None}, {"consistent": "yes", "problems": []}, {"consistent": True, "problems": [3]}, []]),
+    ("panel-state.json", ("version", "false", "real", "debates", "scores", "seat"),
+     {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"},
+     [{}, [], None, {"version": 1}, {"version": 2, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"},
+      {"version": 1, "false": None, "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [3], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": {}, "scores": {"A": 0, "B": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": "0", "B": 0}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0, "C": 1}, "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": [0, 0], "seat": "A"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}, "seat": "C"},
+      {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": 0, "B": 0}}]),
+    ("scanner-profiles.json", ("entries",), {"entries": []},
+     [{}, [], None, {"entries": None}, {"entries": {}}, {"entries": [None]}, {"comment": ["x"]}]),
     ("known-defect-log.json", ("defects",), {"defects": []}, [{}, {"defects": None}, {"defects": {}}, {"defects": [None]}, {"other": []}, []]),
 ]
 
@@ -36,10 +51,7 @@ EXEMPT = {n: _RUN_INTERNAL for n in (
     "result.json", "refusal-log.json", "probe.json", "pr.json", "plan.json", "parity.json", "package.json", "note.json", "leak.json", "govulncheck.json", "consumed.json",
     "budget.json", "adjudication.json", "accepted-item.json", ".status.json", ".json", "*.json")}
 EXEMPT["openvex-schema.json"] = "the JSON schema the VEX documents are validated against: a checked-in constant, not an input of a run"
-_PENDING = "persists across runs and is NOT run-internal: it is read by auditor-panel.py with a default for a missing or empty document; its required structure and its reader are the own PR named in ops/audits/reviews/cache-701.md (round 2 ruling), so until it lands the gap is declared here, not hidden"
-EXEMPT["panel-state.json"] = _PENDING
 EXEMPT["auditor-state.json"] = "the no-change-day state kept between runs: read by auditorlib/nochange.py with its own strict loader (regular file, size cap, strict JSON, schema fosterstack/auditor-state/v1 checked by _valid); anything unusable is None, i.e. the model is asked again, never a skipped decision"
-EXEMPT["scanner-profiles.json"] = _PENDING.replace("persists across runs and is NOT run-internal", "is reviewed policy (.github/policy/scanner-profiles.json) and NOT run-internal")
 
 # every json.load( / json.loads( in the agent programs outside auditorlib/reviewed.py: the file and how many, with the reason it is not a reviewed input read through the reader
 _SITES = {
@@ -57,17 +69,22 @@ _SITES = {
     "auditor-run.py": (3, "the known-defect log's own parse (after reviewed.present) and the gh issue list replies"),
     "auditor-poam.py": (2, "the package and the finding files written earlier in the same run"),
     "auditor-votes.py": (1, "the run's manifest"),
-    "auditor-panel.py": (13, "registry and scanner-database replies, image blobs, the persistent panel state and the PR files; the panel state and profiles are the declared gap above"),
+    "auditor-panel.py": (9, "registry and scanner-database replies, image blobs, the PR files (parsed by _checked_doc / _checked_state_text and then checked with the shared rules) and the panel's own run files; the persistent state and profiles are read through the shared reader with the panel's own SPECS (cmd_judge)"),
     "auditor-release-authz.py": (1, "the owner-issues list the run fetched with gh"),
     "auditor-report.py": (1, "run-state.json written earlier in the same run"),
     "auditor-suppress.py": (1, "the disposition file written earlier in the same run"),
     "auditor-vex-scope-check.py": (1, "a candidate VEX document: an empty one fails closed (no products, all_scoped false, nothing re-emitted)"),
-    "auditorlib/nochange.py": (1, "the no-change-day state: its own strict loader, an unusable file is no state (see EXEMPT auditor-state.json)"),
+    "auditorlib/nochange.py": (2, "the no-change-day state, read twice: load (verdict reuse) and load_unsettled (the unsettled-run counts), each its own strict loader; an unusable file is no state, a right-schema file with untrustworthy counts stops the run (see EXEMPT auditor-state.json)"),
     "auditorlib/parsers.py": (2, "the scanners' own reports"),
     "auditorlib/vex.py": (1, "the checked-in VEX schema"),
     "auditorlib/cli.py": (1, "the model client's reply"),
     "auditorlib/signed_commit.py": (1, "the GitHub API reply"),
 }
+
+
+def rd(path, name):
+    """read `path` as the file called `name`: the table of the library, or the scanner panel's own rules"""
+    return reviewed.read(path, spec=PANEL.SPECS.get(name))
 
 
 class TheTable(unittest.TestCase):
@@ -84,23 +101,31 @@ class TheTable(unittest.TestCase):
         for name, keys, good, bads in FILES:
             for bad in bads:
                 with self.assertRaises(reviewed.ReviewedInputInvalid, msg=repr((name, bad))):
-                    reviewed.read(self.write(name, bad))
-            self.assertEqual(reviewed.read(self.write(name, good)), good, name)
+                    rd(self.write(name, bad), name)
+            self.assertEqual(rd(self.write(name, good), name), good, name)
 
     def test_an_absent_file_is_none_and_a_non_json_or_unlookable_one_is_a_stop(self):
         for name, *_ in FILES:
-            self.assertIsNone(reviewed.read(os.path.join(self.d, "absent", name)), name)
+            self.assertIsNone(rd(os.path.join(self.d, "absent", name), name), name)
             p = os.path.join(self.d, name)
             with open(p, "w") as fh:
                 fh.write("{not json")
             with self.assertRaises(reviewed.ReviewedInputInvalid):
-                reviewed.read(p)
+                rd(p, name)
 
     def test_the_table_names_exactly_the_reviewed_files_and_their_required_keys(self):
         for name, keys, *_ in FILES:
-            self.assertEqual(tuple(k for k, _ in reviewed.spec_for(name)), keys, name)
+            self.assertEqual(tuple(k for k, _ in (PANEL.SPECS.get(name) or reviewed.spec_for(name))), keys, name)
         self.assertEqual(reviewed.spec_for("run-state.json"), ())
         self.assertEqual(reviewed.spec_for("whatever.openvex.json")[0][0], "statements")
+
+    def test_the_panel_scores_may_be_negative_integers_because_a_wrong_vote_costs_two_points(self):
+        # rule 13 scoring is +1 / -2 per vendor seat: a state the panel itself wrote carries negative scores and must pass the reader the next day
+        good = {"version": 1, "false": [], "real": [], "debates": [], "scores": {"A": -4, "B": 3}, "seat": "B"}
+        self.assertEqual(rd(self.write("panel-state.json", good), "panel-state.json"), good)
+        for bad in (1.5, "1", True, None):
+            with self.assertRaises(reviewed.ReviewedInputInvalid, msg=repr(bad)):
+                rd(self.write("panel-state.json", dict(good, scores={"A": bad, "B": 0})), "panel-state.json")
 
     def test_a_file_can_be_read_under_the_rules_of_another_name(self):
         p = self.write("CVE-2099-1.json", {})                       # the release gate's per-finding files carry no openvex in their name
@@ -117,7 +142,7 @@ class TheTable(unittest.TestCase):
                 src = fh.read()
             for lit in re.findall(r"[\"']([A-Za-z0-9_./*-]*\.json)[\"']", src):
                 seen.add(os.path.basename(lit) or lit)
-        undecided = sorted(n for n in seen if not reviewed.spec_for(n) and n not in EXEMPT)
+        undecided = sorted(n for n in seen if not reviewed.spec_for(n) and n not in PANEL.SPECS and n not in EXEMPT)
         self.assertEqual(undecided, [], "a new json file name: add it to the table of auditorlib/reviewed.py (a reviewed input) or to EXEMPT here with its reason")
 
 
@@ -132,6 +157,19 @@ class TheReadSites(unittest.TestCase):
             if n:
                 found[fn] = n
         self.assertEqual(found, {k: v[0] for k, v in _SITES.items()}, "a json.load outside auditorlib/reviewed.py: read the file through reviewed.read, or declare it in _SITES with the reason it is not a reviewed input")
+
+    def test_every_caller_of_the_panels_plain_json_helper_is_declared_with_its_reason(self):
+        # _load_json is the panel's PLAIN reader (a missing file is its default): a call that reads a reviewed or persistent input must go through reviewed.read instead
+        with open(os.path.join(BIN, "auditor-panel.py")) as fh:
+            src = fh.read()
+        declared = {
+            "path, default=None": "the definition",
+            "path": "rescan_binding: the rescan binding file the workflow step wrote for this run; checked field by field right after (run, heads, conclusion), not a reviewed input",
+            'os.path.join(a.out, "state.json")': "cmd_deliver: the judgment's own output of this run (written by cmd_judge from a validated state)",
+            'os.path.join(a.out, "day.json")': "cmd_deliver: the judgment's own output of this run",
+        }
+        sites = re.findall(r"_load_json\(((?:[^()]|\([^()]*\))*)\)", src)
+        self.assertEqual(sorted(s.strip() for s in sites), sorted(declared), "a new _load_json call: read persistent or reviewed inputs through reviewed.read, or declare the site here with its reason")
 
     def test_a_vex_is_recognised_by_its_suffix_only(self):
         self.assertTrue(reviewed.spec_for("a.openvex.json"))
