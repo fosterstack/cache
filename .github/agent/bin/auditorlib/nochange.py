@@ -110,7 +110,7 @@ def _valid(doc):
         return False
     if not (isinstance(doc["finding_set_hash"], str) and HEX64.fullmatch(doc["finding_set_hash"])):
         return False
-    if not (isinstance(doc["run_date"], str) and DATE.fullmatch(doc["run_date"])):
+    if not (isinstance(doc["run_date"], str) and DATE.fullmatch(doc["run_date"]) and _calendar(doc["run_date"])):
         return False
     v = doc["verdicts"]
     if not isinstance(v, dict) or not all(HEX64.fullmatch(k) and c in CATEGORIES for k, c in v.items()):
@@ -212,7 +212,11 @@ def load_unsettled(path, today):
         return "missing", {}
     if set(doc) == STATE_KEYS - {"unsettled"}:
         return "missing", {}
-    if set(doc) != STATE_KEYS or not _valid_unsettled(doc["unsettled"], today):
+    if set(doc) != STATE_KEYS or not _valid(dict(doc, unsettled={})):
+        return "missing", {}                      # not a state the no-change day would accept either: its counts are not trusted or carried, they restart
+    if doc["run_date"] > today:
+        raise CounterInvalid("the state is dated after today")
+    if not _valid_unsettled(doc["unsettled"], today):
         raise CounterInvalid("the unsettled-run counts are malformed")
     return "ok", doc["unsettled"]
 

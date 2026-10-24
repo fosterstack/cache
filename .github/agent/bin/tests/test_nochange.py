@@ -222,8 +222,7 @@ class Unsettled(unittest.TestCase):
 
     def test_an_auditor_state_with_untrustworthy_counts_raises(self):
         ok = {"CVE-2024-0001": {"runs": 3, "last": "2026-10-22"}}
-        bad = [json.dumps(dict(self.state(ok), extra=1)),
-               json.dumps(self.state([])), json.dumps(self.state({"bad id": ok["CVE-2024-0001"]})), json.dumps(self.state({"": ok["CVE-2024-0001"]})),
+        bad = [json.dumps(self.state([])), json.dumps(self.state({"bad id": ok["CVE-2024-0001"]})), json.dumps(self.state({"": ok["CVE-2024-0001"]})),
                json.dumps(self.state({"CVE-1": {"runs": 0, "last": "2026-10-22"}})), json.dumps(self.state({"CVE-1": {"runs": True, "last": "2026-10-22"}})),
                json.dumps(self.state({"CVE-1": {"runs": 10 ** 6, "last": "2026-10-22"}})), json.dumps(self.state({"CVE-1": {"runs": 1, "last": "yesterday"}})),
                json.dumps(self.state({"CVE-1": {"runs": 1}})), json.dumps(self.state({"CVE-1": {"runs": 1, "last": "2026-10-22", "x": 1}})),
@@ -246,6 +245,19 @@ class Unsettled(unittest.TestCase):
         with self.assertRaises(N.CounterInvalid):
             N.load_unsettled(self.write(self.state(c)), "2026-10-23")
         self.assertEqual(N.load_unsettled(self.write(self.state(c)), "2026-10-24"), ("ok", c))        # the same day is not the future
+
+    def test_a_state_the_no_change_day_would_reject_does_not_carry_its_counts(self):
+        ok = {"CVE-A": {"runs": 4, "last": "2026-10-22"}}
+        for k, v in (("run_date", "not-a-date"), ("run_date", "2026-02-30"), ("finding_set_hash", "x"), ("verdicts", {"nothex": "false_positive"}), ("pullability", []), ("narrative", 5)):
+            d = self.state(ok); d[k] = v
+            self.assertEqual(N.load_unsettled(self.write(d), "2026-10-23"), ("missing", {}), k)
+        d = self.state(ok); d["extra"] = 1
+        self.assertEqual(N.load_unsettled(self.write(d), "2026-10-23"), ("missing", {}))
+
+    def test_a_state_dated_after_today_is_corrupt(self):
+        d = self.state({"CVE-A": {"runs": 4, "last": "2026-10-22"}}); d["run_date"] = "2026-10-24"
+        with self.assertRaises(N.CounterInvalid):
+            N.load_unsettled(self.write(d), "2026-10-23")
 
     def test_a_date_that_is_not_on_the_calendar_is_corrupt(self):
         for d in ("2026-00-00", "2026-02-30", "2026-13-01"):
