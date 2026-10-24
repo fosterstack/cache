@@ -4520,5 +4520,22 @@ assert not any(it.sums == ["a" * 64] for it in dl), [it.sums for it in dl]      
 assert inv.moved(a, b), "a sum-only edit of the second arm was not a moved item"
 assert not inv.moved(a, inv.inventory(files("b" * 64)))
 PY
+# --- REQ-SUP-001-AC34: the committed file_pins row dates the committed Gradle wrapper jar sum (the repository's own exceptions file, read as the base branch's) ---
+newcase gjar "
+import pathlib
+p = pathlib.Path('.github/policy'); p.mkdir(parents=True, exist_ok=True)
+(p / 'gradle-wrapper-jar-sha256.txt').write_text('$FPTEXT\\n')"
+rc=0; python3 "$chk" --root "$work/gjar" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$root/.github/supply-chain-exceptions.json" >"$work/gjar.out" 2>&1 || rc=$?
+CASE="AC34: the committed row dates a checksum file holding the Gradle 9.7.1 wrapper jar sum (the file itself arrives with the wrapper-jar guard, cache#610): exit 0, names the file and the version"
+check test "$rc" -eq 0; check grep -q '9.7.1' "$work/gjar.out"; check grep -q 'gradle-wrapper-jar-sha256.txt' "$work/gjar.out"
+CASE="AC34: the committed row is exactly the Gradle 9.7.1 ruling: the canonical upstream URL alone, version 9.7.1, published 2026-08-19T15:30:28Z (the GitHub release v9.7.1 of gradle/gradle), the sum 44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42 (a wrong version, date or URL here is a failing case, not a silent pass)"
+check python3 - "$root/.github/supply-chain-exceptions.json" <<'PYROW'
+import json, sys
+rows = json.load(open(sys.argv[1]))["file_pins"]
+assert len(rows) == 1, rows
+r = rows[0]
+assert r == {"file": ".github/policy/gradle-wrapper-jar-sha256.txt", "content": "44863b32a936f4f80c5729858abea7a69ecdd37a611e57a726bc82b2b5892a42",
+             "upstream": "https://services.gradle.org/distributions/gradle-9.7.1-wrapper.jar.sha256", "version": "9.7.1", "published": "2026-08-19T15:30:28Z"}, r
+PYROW
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
