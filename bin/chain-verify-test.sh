@@ -1811,6 +1811,37 @@ expect_ok     "B-1 (d) a stamp whose genTime has milliseconds does not crash and
 expect_refuse "S-1 a certificate with a second SAN extension is refused before anything is trusted: repeated extension" "certificate|repeated" verify $(V) --stage build $(rec build_dupsan) $(R)
 expect_refuse "S-1 a certificate with a second Build Config URI extension is refused: repeated extension" "certificate|repeated" verify $(V) --stage build $(rec build_dupcfg) $(R)
 expect_refuse "S-1 a repeated extension through check-build-record" "certificate|repeated" check-build-record --digests "$work/digests.json" --build-record "$work/build_dupsan.json" --policy "$work/policy.json" --now "$NOW"
+# rc-2 R4 (REQ-CHAIN-007-AC12): the command the Release job runs on each of its six Witness records (python3 -I bin/chain-verify.py record-env --record FILE) accepts a record that carries no token and refuses a record that names or holds one; the record is a DSSE envelope as Witness wrote it, the payload base64
+python3 - "$work" <<'PYE'
+import base64, json, sys
+w = sys.argv[1]
+r = json.load(open(w + "/build_coll.json"))
+st = json.loads(base64.b64decode(r["payload"]))
+def leak(name, extra):
+    q = json.loads(json.dumps(st)); q.setdefault("predicate", {})["leak"] = extra
+    e = dict(r); e["payload"] = base64.b64encode(json.dumps(q).encode()).decode(); json.dump(e, open("%s/renv_%s.json" % (w, name), "w"))
+leak("gh", {"GH_TOKEN": "x"})
+leak("idt", {"ACTIONS_ID_TOKEN_REQUEST_URL": "https://token.invalid/x"})
+leak("jwt", "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4eHh4eHh4In0.c2lnbmF0dXJlLXh4eA")
+leak("pat", "github_pat_" + "A" * 30)
+leak("dhu", {"DOCKERHUB_USERNAME": "x"})
+leak("dht", {"DOCKERHUB_TOKEN": "x"})
+leak("apk", {"APK_RELEASE_SIGNING_KEY": "x"})
+leak("rt", {"ACTIONS_RUNTIME_FOO": "x"})
+leak("pem", "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n")
+leak("dckr", "dckr_pat_" + "B" * 30)
+PYE
+expect_ok     "R4 record-env accepts a Witness record that carries no token" record-env --record "$work/build_coll.json"
+expect_refuse "R4 record-env refuses a Witness record that names GH_TOKEN (inside the base64 payload)" "env|gh_token" record-env --record "$work/renv_gh.json"
+expect_refuse "R4 record-env refuses a Witness record that names an ACTIONS_ID_TOKEN_REQUEST variable" "env|actions_id_token_request" record-env --record "$work/renv_idt.json"
+expect_refuse "R4 record-env refuses a Witness record that holds a compact JWT" "env|jwt" record-env --record "$work/renv_jwt.json"
+expect_refuse "R4 record-env refuses a Witness record that holds a github_pat_ token value" "env|token" record-env --record "$work/renv_pat.json"
+expect_refuse "R4 record-env refuses a Witness record that names DOCKERHUB_USERNAME" "env|dockerhub_username" record-env --record "$work/renv_dhu.json"
+expect_refuse "R4 record-env refuses a Witness record that names DOCKERHUB_TOKEN" "env|dockerhub_token" record-env --record "$work/renv_dht.json"
+expect_refuse "R4 record-env refuses a Witness record that names APK_RELEASE_SIGNING_KEY" "env|apk_release_signing_key" record-env --record "$work/renv_apk.json"
+expect_refuse "R4 record-env refuses any ACTIONS_RUNTIME_ variable (a prefix, not two names)" "env|actions_runtime_foo" record-env --record "$work/renv_rt.json"
+expect_refuse "R4 record-env refuses a Witness record that holds a private key block" "env|private key" record-env --record "$work/renv_pem.json"
+expect_refuse "R4 record-env refuses a Witness record that holds a Docker Hub token value" "env|docker hub token" record-env --record "$work/renv_dckr.json"
 # N-c: only a JOB-level `uses:` naming a .yml/.yaml file is a reusable workflow (not opened as a directory); a STEP-level reference to a
 # directory that is called thing.yml and holds an action.yml is followed
 mkdir -p "$work/tree/.github/workflows/acts/d.yml"
@@ -2347,7 +2378,7 @@ expect_refuse "apk-compare: a file that is not JSON is refused" "apk-compare|jso
 expect_refuse "apk-compare: a JSON array in place of the object is refused" "apk-compare|object" $(ACV array)
 expect_refuse "apk-compare: a missing result file is refused" "apk-compare|missing" apk-compare --file "$work/ac_nothere.json" --digests "$work/acd.json"
 expect_refuse "apk-compare: Build's attested list without an apk digest is refused" "apk-compare|attested" $(ACV good acd_missing)
-EXPECT=855
+EXPECT=866
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

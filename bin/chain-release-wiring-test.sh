@@ -56,9 +56,9 @@ def wit(step, env):
     e = "".join(f"          {k}: {v}\n" for k, v in env.items())
     cond = "" if step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"   # a release candidate (a tag with a hyphen) ends after release-verify (AC14)
     return f"      - name: {step}\n" + cond + (f"        env:\n{e}" if env else "") + f"        run: bash bin/witnessed.sh {step} bin/{step}.sh\n"
-def renv(step):
-    cond = "" if step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"
-    return f"      - name: {step} record holds no token\n" + cond + f"        run: python3 -I bin/chain_items.py record-env --record witness-{step}/{step}-collection.json\n"
+def renv(step, always=False):
+    cond = "" if always or step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"
+    return f"      - name: {step} record holds no token\n" + cond + f"        run: python3 -I bin/chain-verify.py record-env --record witness-{step}/{step}-collection.json\n"
 REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}", "GH_TOKEN": "${{ github.token }}"}
 VDOWN = ("signed-witness-build", "digests", "items", "signed-witness-rebuild", "signed-witness-check", "check-results", "provenance", "apk-compare")      # what release-verify reads: the records and Check's govulncheck stream
 VPATH = {"signed-witness-build": "witness-build", "digests": "witness-build", "items": "witness-build", "signed-witness-rebuild": "witness-rebuild", "signed-witness-check": "witness-check", "check-results": "check-results", "provenance": "provenance", "apk-compare": "apk-compare"}
@@ -77,7 +77,7 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          + "      - name: compare Build's and Rebuild's apks\n        run: bash bin/release-compare.sh\n" + up_checked("apk-compare")
          + "  verify:\n    needs: compare\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
-         + inst("witness") + vdowns() + wit("release-verify", {}) + up("witness-release-verify").rstrip("\n") + "\n          if-no-files-found: error\n"
+         + inst("witness") + vdowns() + wit("release-verify", {}) + renv("release-verify", True) + up("witness-release-verify").rstrip("\n") + "\n          if-no-files-found: error\n"
          + "  release:\n    needs: [compare, verify]\n" + RC_COND + "    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
@@ -202,6 +202,26 @@ done
 expect ok "fixture: all release scripts and the helper are listed with sha256, tools, signs and runs" "" listed "$work/s/.github/policy/chain-scripts.json" "$work/s"
 expect ok "fixture: a Witness record with none of the credentials" "" record "$work/record.json" SENTINEL-VALUE-123
 mkdir -p "$work/rm" && expect ok "fixture: none of the old authorization machinery" "" removed "$work/rm"
+# ---- rc-2 R4 (Fable): the run strings of the real stage-promote.yml are EXECUTED: a clean record exits 0, a leaking one exits 1, a missing one exits 2 -------------
+python3 - "$root" "$work" <<'PYX' && ok "AC12 (R4) every record-env run string of the real stage-promote.yml executes: clean 0, leaking 1, missing 2 (seven steps: six in the release job, one in the verify job)" || bad "AC12 (R4) the record-env run strings do not execute as the grammar says"
+import base64, json, os, re, subprocess, sys, tempfile, yaml
+root, work = sys.argv[1], sys.argv[2]
+wf = yaml.safe_load(open(root + "/.github/workflows/stage-promote.yml"))
+runs = [(jn, s["run"]) for jn in ("verify", "release") for s in wf["jobs"][jn]["steps"] if "record-env" in (s.get("run") or "")]
+assert len(runs) == 7, runs
+def env(payload):
+    st = {"_type": "https://in-toto.io/Statement/v1", "predicateType": "https://witness.dev/attestations/collection/v0.1", "subject": [], "predicate": {"name": "x", "attestations": [payload]}}
+    return json.dumps({"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(json.dumps(st).encode()).decode(), "signatures": []})
+for jn, run in runs:
+    step = re.search(r"witness-(release-[a-z]+)/", run).group(1)
+    for kind, body, want in (("clean", env({"type": "environment", "attestation": {"variables": {"CI": "true"}}}), 0), ("leaking", env({"type": "environment", "attestation": {"variables": {"GH_TOKEN": "x"}}}), 1), ("missing", None, 2)):
+        with tempfile.TemporaryDirectory() as d:
+            os.symlink(root + "/bin", d + "/bin"); os.symlink(root + "/.github", d + "/.github")     # the verifier reads the helper hashes in .github/policy, as in the checkout
+            if body is not None:
+                os.makedirs("%s/witness-%s" % (d, step)); open("%s/witness-%s/%s-collection.json" % (d, step, step), "w").write(body)
+            r = subprocess.run(["bash", "-c", run], cwd=d, capture_output=True, text=True)
+            assert r.returncode == want, (jn, step, kind, r.returncode, want, r.stdout[-200:], r.stderr[-300:])
+PYX
 # ---- AC1: the stage file, mutated one rule at a time ----------------------------------------------------------------------
 m() { # m NAME REGEX REPL WORD LABEL
   if mutate "$work/stage.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" stage "$work/$1.yml"; fi
@@ -230,10 +250,12 @@ m s_dlgh    'name: dist\n          path: dist'            'name: dist\n         
 m s_upname  'name: release-evidence\n          path: release-evidence' 'name: anything\n          path: release-evidence' 'upload-artifact'  "AC1 an upload outside the allowlist"
 m s_noup    '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-evidence\n          path: release-evidence\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-release\n          path: witness-release\n' '' 'only uploads' "AC1 no upload of the evidence"
 # rc-2 R4 (Fable R4): the Release job checks each of its own six Witness records for a token (REQ-CHAIN-007-AC12) right after the witnessed steps and before any upload
-m s_re_none '      - name: release-apks record holds no token\n        if: [^\n]*\n        run: python3 -I bin/chain_items\.py record-env --record witness-release-apks/release-apks-collection\.json\n' '' 'Witness records for a token' "AC12 (R4) one of the six record checks is missing"
+m s_re_none '      - name: release-apks record holds no token\n        if: [^\n]*\n        run: python3 -I bin/chain-verify\.py record-env --record witness-release-apks/release-apks-collection\.json\n' '' 'Witness records for a token' "AC12 (R4) one of the six record checks is missing"
 m s_re_path '=record-env --record witness-release-sign/release-sign-collection.json' 'record-env --record witness-release-sign/release-apks-collection.json' 'none of checkout' "AC12 (R4) a record check that reads another step's record"
 m s_re_swallow '=record-env --record witness-release-publish/release-publish-collection.json' 'record-env --record witness-release-publish/release-publish-collection.json || true' 'none of checkout' "AC12 (R4) a record check whose failure is swallowed"
 m s_re_noif '(      - name: release-assets record holds no token\n)        if: [^\n]*\n' '\1' 'must carry' "AC12 (R4) a record check that runs for a release candidate (no if)"
+m s_vre_none '      - name: release-verify record holds no token[^\n]*\n        run: python3 -I bin/chain-verify\.py record-env --record witness-release-verify/release-verify-collection\.json\n' '' 'verify job: right after' "AC12 (R4) the verify job uploads its Witness record without checking it for a token"
+m s_vre_if '(      - name: release-verify record holds no token[^\n]*\n)' '\1        if: true\n' 'no env, no if' "AC12 (R4) the verify job's record check carries an if"
 m s_swap    'install cosign\n        run: bash bin/install-scanner.sh cosign\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install cosign\n        run: bash bin/install-scanner.sh cosign' 'start with checkout' "AC1 the installs in another order"
 m s_nocos   '      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n' ''                                                                    'start with checkout' "AC1 cosign is not installed"
 m s_snyk    'install-scanner.sh crane'                      'install-scanner.sh snyk'                                'none of checkout'   "AC1 an install of a tool outside the three"
@@ -562,7 +584,7 @@ assert "no credential exists" not in row["reason"], "row reason"
 h = open(sys.argv[3]).read().split("\nname:")[0]
 assert "it holds them only in the Witness steps that need them" not in h and "so no credential or key is read" not in h, "header"
 PY
-EXPECT=280
+EXPECT=283
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
