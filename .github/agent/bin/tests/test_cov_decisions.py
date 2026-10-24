@@ -305,6 +305,9 @@ def vexfile(*stmts):
 
 
 class PoamRemoveFromVex(TmpCase):
+    def test_a_file_that_vanished_between_the_listing_and_the_read_removes_nothing(self):
+        self.assertFalse(poam._remove_from_vex(self.p("gone.openvex.json"), {"CVE-1"}))
+
     def test_unparseable_and_no_statements(self):
         bad = self.put("bad.openvex.json", "{nope")
         with self.assertRaises(poam.reviewed.ReviewedInputInvalid):      # a VEX that cannot be read or has no statements list is a stop, never "nothing to remove" (cache#701)

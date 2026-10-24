@@ -650,6 +650,19 @@ class MergeConsolidate(Base):
                  "timestamp": "t", "version": version, "statements": statements})
         return out, supp
 
+    def test_two_retained_statements_without_an_id_are_made_separately_addressable(self):
+        # AC2 safety net: statements of DIFFERENT scopes that arrive with no @id (or the same one) never leave the merge sharing an @id
+        ws = self.d("ws"); a = self._stmt("CVE-2099-30", ["pkg:deb/a@1"]); b = self._stmt("CVE-2099-30", ["pkg:deb/b@1"])
+        a.pop("@id"); b.pop("@id")
+        self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"),
+                {"@context": "c", "@id": policy.VEX_BASE, "author": "a", "role": "vendor", "timestamp": "t", "version": 2, "statements": [a, b]})
+        _out, supp = self._supp([self._stmt("CVE-2099-31", ["pkg:deb/c@1"])], version=3)
+        R._merge_suppressions(ws, supp)
+        got = json.load(open(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json")))["statements"]
+        ids = [s["@id"] for s in got]
+        self.assertEqual(len(got), 3)
+        self.assertEqual(len(set(ids)), 3, ids)
+
     def test_corrupt_existing_vex_stops_the_run(self):
         # rc-5b fix 13: a reviewed file that is present but unreadable is a stop, never "no statements"
         ws = self.d("ws"); self.wj(os.path.join(ws, ".vex", "fosterstack-cache.openvex.json"), "{not json")
