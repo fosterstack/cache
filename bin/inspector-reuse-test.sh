@@ -1513,7 +1513,7 @@ mut_def W_INSPECTOR_DAY_BACK <<'EOF'
 if 'EXPECTED_REFS: "4"' in t:
     t = t.replace('          EXPECTED_REFS: "4"', '          EXPECTED_REFS: "4"\n          INSPECTOR_DAY: x', 1)
 else:
-    t = t.replace("      - name: Amazon Inspector scan every image tar\n", "      - name: Amazon Inspector scan every loaded image\n        env:\n          INSPECTOR_DAY: x\n", 1) if "scan every loaded" in t else t.replace("        id: insp-scan\n", "        id: insp-scan\n        env:\n          INSPECTOR_DAY: x\n", 1)
+    t = t.replace("      - name: Amazon Inspector scan every image tar\n", "      - name: Amazon Inspector scan every image tar\n        env:\n          INSPECTOR_DAY: x\n", 1) if "scan every image tar" in t else t.replace("        id: insp-scan\n", "        id: insp-scan\n        env:\n          INSPECTOR_DAY: x\n", 1)
 EOF
 for pair in "scan.yml scan" "main-candidate-rescan.yml rescan"; do
   set -- $pair; f=$1; k=$2

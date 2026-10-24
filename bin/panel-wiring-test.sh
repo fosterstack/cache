@@ -423,7 +423,8 @@ if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.split("#")[0].strip()) fo
 for j in ("panel-grype", "panel-inspector"):
     t = text(j)
     # panel-inspector makes its tars in a step of their own, before the cache restore, then scans each: two loops
-    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != (2 if j == "panel-inspector" else 1) \
+    loops = 2 if j == "panel-inspector" else 1
+    if not re.search(r"for arch in amd64 arm64; do", t) or t.count("for arch in") != loops \
             or 'layout-archive.sh "/tmp/oci/${v}" "${arch}"' not in t or 'cand-${v}-${arch}' not in t:
         bad.append(f"{j} does not load each architecture once by the loop variable")
 t = text("panel-scout")      # Scout names the platform of an attested index, each architecture once
@@ -587,7 +588,8 @@ case_ grype-keeps-partial     bad "s=$(step_of panel-grype 'for v in'); s['run']
 case_ scout-keeps-partial     bad "s=$(step_of panel-scout 'docker scout sbom'); s['run'] = s['run'].replace('rm -rf \"\${d}\"; ', '')"
 case_ grype-repo-config       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(' -c \"\$RUNNER_TEMP/empty-grype.yaml\"', '')"
 case_ grype-update-repo-config bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('grype db update -c \"\$RUNNER_TEMP/empty-grype.yaml\"', 'grype db update')"
-case_ grype-extra-archive-scan bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'] + chr(10) + 'grype \"docker-archive:/tmp/arc/x.tar\" -o json'"
+case_ grype-extra-archive-scan bad "s=$(step_of panel-grype 'for v in'); \
+  s['run'] = s['run'] + chr(10) + 'grype \"docker-archive:/tmp/arc/x.tar\" -o json'"
 case_ grype-no-env-refusal    bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"
 case_ pub-grype-repo-config   bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(' -c /tmp/empty-grype.yaml', '')"
 case_ pub-grype-no-env-refusal bad "s=$(step_of rescan 'grype "registry:'); s['run'] = s['run'].replace(\"compgen -e | grep '^GRYPE_'\", 'echo')"

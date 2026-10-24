@@ -14,6 +14,8 @@ die() { echo "layout-archive: $*" >&2; exit 1; }
 member() {
   [[ $1 =~ ^sha256:[0-9a-f]{64}$ ]] || die "not a sha256:<64 hex> digest: $1"
   local path="blobs/sha256/${1#sha256:}"
+  # sha256sum follows a symlink but tar would store the link itself, so only a regular file is hashed and shipped
+  [ -f "$layout/$path" ] && [ ! -L "$layout/$path" ] || die "$path is not a regular file"
   echo "${1#sha256:}  $path" | (cd "$layout" && sha256sum -c --quiet) > /dev/null 2>&1 \
     || die "$path is missing or does not match its digest"
   echo "$path"
@@ -28,11 +30,14 @@ child=$(jq -er --arg a "$arch" "$select | if length == 1 then .[0].digest else e
 manifest=$(member "$child")
 jq -e '(.layers | length) > 0' "$layout/$manifest" > /dev/null || die "the image $child has no layers"
 
+# each digest is prefixed with "d" so an empty one stays a line of its own and reaches member()
+digests=$(jq -er '[.config.digest, .layers[].digest][] | "d" + tostring' "$layout/$manifest") \
+  || die "the image $child has no config or no layers list"
 members=()
-for digest in $(jq -er '.config.digest, .layers[].digest' "$layout/$manifest"); do
-  path=$(member "$digest")
+while IFS= read -r digest; do
+  path=$(member "${digest#d}")
   members+=("$path")
-done
+done <<< "$digests"
 
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 printf '%s\n' "${members[@]}" | jq -R . \
