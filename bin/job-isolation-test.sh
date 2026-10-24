@@ -22,6 +22,7 @@ COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|goreleaser/goreleaser-action|\
 # Exclusions: none on the release-chain branch (cache#561 ruling B2). On main the table named the old release-chain jobs (stage-build build, stage-image assemble, stage-promote promote,
 # stage-reproducibility reproduce, stage-acceptance-artifacts artifacts) that the chain landing replaces; those jobs do not exist here, so the rows are gone (the requirement's own note
 # says the list shrinks to nothing at the landing). The stale-row check below stays: a row added later must name a job that exists.
+CREDENTIAL_CALLEES = ("stage-sign.yml", "stage-promote.yml")   # the only reusable workflows a credential-holding job may call (Sign and Release)
 BUILD_SIDE_FILES = ("stage-build.yml", "stage-reproducibility.yml", "stage-verify.yml")   # the release chain's Build, Rebuild and Check workflows (owner Oct 21 separate jobs, Oct 22 Witness)
 EXCLUDED_AC1 = {}
 EXCLUDED_AC2 = {}
@@ -129,6 +130,8 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
         if os.path.basename(f) in BUILD_SIDE_FILES and j.get("permissions", d.get("permissions")) is None:
             bad.append("%s/%s declares no permissions (neither the job nor the workflow): a build-side job would inherit its caller's, credentials included" % (key[0], jn))
         callee = os.path.basename(str(j.get("uses") or ""))
+        if j.get("uses") and w and not (str(j.get("uses")).startswith("./.github/workflows/") and callee in CREDENTIAL_CALLEES):
+            bad.append("%s/%s holds %s and calls a reusable workflow that is not Sign's or Release's local file (%s): the callee could build with the caller's credentials" % (key[0], jn, ", ".join(w), j.get("uses")))
         if str(j.get("uses") or "").startswith("./.github/workflows/") and callee in BUILD_SIDE_FILES and w:
             bad.append("%s/%s calls the build-side workflow %s and holds %s: only Sign's calls hold an identity token" % (key[0], jn, callee, ", ".join(w)))
         # a job that records a step with bin/witnessed-local.sh (Build, Rebuild, Check: the throwaway-key Witness records, owner Oct 22) is a build-side job whatever its scripts hide: no credential, and never the keyless bin/witnessed.sh
@@ -357,6 +360,12 @@ want_msg="declares no permissions"
 mutate "stage-reproducibility.yml rapk declares no permissions and neither does the workflow (it would inherit its caller's)" '
 edit("stage-reproducibility.yml", lambda s: s.replace("permissions:\n  contents: read\njobs:", "jobs:", 1))
 edit("stage-reproducibility.yml", lambda s: re.sub(r"(\n  rapk:\n.*?)    permissions:\n      contents: read\n", lambda m: m.group(1), s, count=1, flags=re.S))'
+# round 6 (reviewer A): a credential-holding job that calls a reusable workflow may call only Sign's or Release's local workflow files (a remote or any other callee could build with the caller's credentials)
+want_msg="calls a reusable workflow that is not"
+mutate "release.yml sign calls a remote reusable workflow with id-token: write" '
+edit("release.yml", lambda s: s.replace("    uses: ./.github/workflows/stage-sign.yml\n", "    uses: someone/else/.github/workflows/build.yml@0123456789abcdef0123456789abcdef01234567\n", 1))'
+mutate "release.yml sign calls a local workflow other than Sign's or Release's with id-token: write" '
+edit("release.yml", lambda s: s.replace("    uses: ./.github/workflows/stage-sign.yml\n", "    uses: ./.github/workflows/stage-verify.yml\n", 1))'
 want_msg=""
 # AC2: a second build in one job
 mutate "a second build step in one job (ci.yml gosec)" '
