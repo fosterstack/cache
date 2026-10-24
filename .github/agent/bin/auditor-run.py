@@ -2017,27 +2017,28 @@ _FORBIDDEN_LITERALS = [re.sub(r"[^a-z0-9]", "", w.lower()) for w in FORBIDDEN_NA
 
 
 def _split_across(lit, squashed):
-    """True when `lit` can be read off the squashed fields laid end to end in SOME order: a suffix of one field, then whole fields, then a prefix of another, each field used once.
-    Complete for a name split over any fields in any order; fail-closed (it may refuse an innocent proposal, never pass a split name)."""
-    n = len(squashed)
-
-    def rest(r, used):
-        if not r:
-            return True
-        for k in range(n):
-            if k in used or not squashed[k]:
-                continue
-            f = squashed[k]
-            if f.startswith(r) or (r.startswith(f) and rest(r[len(f):], used | {k})):
-                return True
-        return False
-
-    for i in range(n):
-        f = squashed[i]
+    """True when `lit` can be read off the squashed fields laid end to end in SOME order: a suffix of one field, then whole fields, then a prefix of another. A field may be
+    reused, which makes the search a walk over positions in `lit` (at most len(lit) x fields steps, never exponential) and only widens what is refused: fail-closed (it may refuse
+    an innocent proposal, never pass a split name)."""
+    fields = [f for f in set(squashed) if f]
+    reach = set()
+    for f in fields:
         for a in range(len(f)):
             suf = f[a:]
-            if lit.startswith(suf) and len(suf) < len(lit) and rest(lit[len(suf):], {i}):
+            if len(suf) < len(lit) and lit.startswith(suf):
+                reach.add(len(suf))
+    seen = set()
+    while reach:
+        pos = reach.pop()
+        if pos in seen:
+            continue
+        seen.add(pos)
+        r = lit[pos:]
+        for f in fields:
+            if f.startswith(r):
                 return True
+            if r.startswith(f):
+                reach.add(pos + len(f))
     return False
 
 

@@ -4049,7 +4049,11 @@ for k,v,prop in (('AUDITOR_MODEL_PRIMARY','secret-model-id-7',dict(good,note='us
     os.environ[k]=v
     if R._valid_proposal(prop) is not None: cfg_rej.append(v)
     del os.environ[k]
-print('OK' if ok and not rej and not cfg_rej else 'BAD kept=%r cfg=%r ok=%s'%(rej,cfg_rej,ok))" 2>/dev/null | tail -1)"
+import time
+os.environ['AUDITOR_MODEL_PRIMARY']='a'*13+'b'
+t0=time.time(); R._valid_proposal(dict(good,keys=[{'scanner':'a','finding_id':'a','purl':'a'}]*20)); fast=time.time()-t0<2
+del os.environ['AUDITOR_MODEL_PRIMARY']
+print('OK' if ok and fast and not rej and not cfg_rej else 'BAD kept=%r cfg=%r ok=%s'%(rej,cfg_rej,ok))" 2>/dev/null | tail -1)"
 eq "$r12p" "OK" && ok || no "_valid_proposal keeps a well-shaped proposal and refuses every mis-shaped or name-bearing one" "$r12p"
 eq "$REPO_STATE1" "$REPO_STATE0" && ok || no "checkout untouched by the suite" "$(printf '%s' "$REPO_STATE1" | tr '\n' ' ')"
 
