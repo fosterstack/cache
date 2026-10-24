@@ -170,8 +170,9 @@ def _sub_purl(sid):
 
 def _same_package(name, version, sub_name, sub_version):
     """namespace-preserving: the finding's full package name (namespace included) equals the subcomponent's, case-sensitively, and the versions are equal.
+    A subcomponent that names NO version stands for every version of that package (the same reading as the generated Inspector rule).
     busybox is not alpine/busybox or evil/busybox, and @scope/pkg is not pkg."""
-    return name == sub_name and version == sub_version
+    return name == sub_name and (not sub_version or version == sub_version)
 
 
 def _parse_product(pid):

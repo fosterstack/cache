@@ -7,7 +7,7 @@
 set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd)
-python3 - "$here/panel.py" "$here/../.vex/fosterstack-cache.openvex.json" <<'PY'
+python3 - "$here/panel.py" "$here/../test-evidence/vex-scope/busybox.openvex.json" <<'PY'
 import importlib.util, json, os, shutil, sys, tempfile
 spec = importlib.util.spec_from_file_location("panel", sys.argv[1]); P = importlib.util.module_from_spec(spec); spec.loader.exec_module(P)
 VEX = sys.argv[2]
