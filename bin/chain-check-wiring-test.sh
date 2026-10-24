@@ -24,8 +24,8 @@
 # for code a human can read: the stage file is four short lines, the helper is the only place with Witness flags, the judges accept the plain form
 # and reject variants instead of growing clever.
 #
-# CREDENTIALS (coordinator correction, Oct 9): Check holds NO secret and no cloud federation: the release scanners need none. id-token: write is
-# only for Witness to sign Check's own record. A test below refuses a secret, a registry login and a packages/attestations permission.
+# CREDENTIALS (coordinator correction, Oct 9; owner Oct 22): Check holds NO secret, no cloud federation and NO identity token: the release scanners need none, and
+# its Witness records are made with a throwaway key and signed by Sign (the sign-check job). A test below refuses a secret, a registry login and a packages/attestations permission.
 #
 # STEP-5 REVISIT (advisor rulings Q2-Q8, Oct 10), what changed and why:
 #   Q2 the helper judge is PR 2's accepted bin/witnessed.sh (token by process substitution, witness-STEP/STEP-collection.json, the four
