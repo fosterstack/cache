@@ -872,6 +872,12 @@ class SuppressionPR(Base):
         self.assertIn(["git", "checkout", "-B", self.BR, "b" * 40], fr.argvs())
         self.assertFalse(any(a[:2] == ["git", "rev-parse"] for a in fr.argvs()))         # no later lookup of the moving ref
 
+    def test_a_reviewed_input_that_stops_the_merge_after_the_checkout_still_ends_the_run(self):
+        fr = ApiRun()
+        with mock.patch.object(R, "_merge_suppressions", side_effect=R.ReviewedInputInvalid("damaged after the preflight")):
+            with self.assertRaises(R.ReviewedInputInvalid):                             # exit 3, not a "stage files" error to carry on from
+                self.real(fr, base_sha="b" * 40)
+
     def test_a_delivery_given_the_base_failure_returns_it_and_fetches_nothing_again(self):
         fr = ApiRun()
         self.assertEqual(self.real(fr, base_err="git fetch: offline"), (None, "git fetch: offline"))
