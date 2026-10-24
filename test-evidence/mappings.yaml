@@ -883,6 +883,9 @@ mappings:
   - ac: REQ-SUP-001-AC29
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_pin_plain_forms.py" }
+  - ac: REQ-SUP-001-AC30
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-SUP-001-AC33
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
