@@ -153,7 +153,7 @@ jobs:
       - name: load every variant/platform child into the docker daemon
         run: |
           set -euo pipefail
-          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image (no job installs it at run time)" >&2; exit 1; }   # the runner image's own skopeo; no package install at run time
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           : > /tmp/refs.txt
           for v in production fips; do
             for arch in amd64 arm64; do

@@ -219,7 +219,7 @@ jobs:
           KNOWN_DEFECT_LOG: ${{ inputs.known_defect_log }}
         run: |
           set -uo pipefail
-          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image (no job installs it at run time)" >&2; exit 1; }
+          command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }
           # govulncheck is built by the govulncheck-build job (no credential, module pinned there) and used only when its sha256 equals
           # that job's output; syft a pinned, checksummed release binary (below). Both best-effort: syft catalogues the image's
           # carriers and base OS (it reads distroless status.d)

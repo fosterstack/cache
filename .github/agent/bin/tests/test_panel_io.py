@@ -1820,7 +1820,8 @@ class Wiring(unittest.TestCase):                                            # RE
 
     def test_skopeo_is_checked_on_the_runner_not_installed(self):      # REQ-REL-004-AC10 (owner, Oct 24): the runner image's skopeo, checked by command -v; no job installs it at run time
         run = self.steps[self.step("auditor-manifest.py")]["run"]
-        self.assertIn('command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image (no job installs it at run time)" >&2; exit 1; }', run)
+        check = 'command -v skopeo > /dev/null || { echo "::error::skopeo is not on this runner image"; exit 1; }'
+        self.assertIn(check, run)
         self.assertNotRegex(run, r"apt(-get)?\s+install[^\n]*skopeo")
 
     def test_state_comes_only_from_an_open_panel_pr_or_main(self):         # review r1 R3; advisor 0186: through the tested command, bound to the delivery
