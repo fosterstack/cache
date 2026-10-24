@@ -22,6 +22,7 @@ COMPILE = re.compile(r"\bgo\s+(?:install|build)\b|goreleaser/goreleaser-action|\
 # Exclusions: none on the release-chain branch (cache#561 ruling B2). On main the table named the old release-chain jobs (stage-build build, stage-image assemble, stage-promote promote,
 # stage-reproducibility reproduce, stage-acceptance-artifacts artifacts) that the chain landing replaces; those jobs do not exist here, so the rows are gone (the requirement's own note
 # says the list shrinks to nothing at the landing). The stale-row check below stays: a row added later must name a job that exists.
+BUILD_SIDE_FILES = ("stage-build.yml", "stage-reproducibility.yml", "stage-verify.yml")   # the release chain's Build, Rebuild and Check workflows (owner Oct 21 separate jobs, Oct 22 Witness)
 EXCLUDED_AC1 = {}
 EXCLUDED_AC2 = {}
 # govulncheck is a Go module built from source by the installer arm `install-scanner.sh govulncheck`: a build the workflow text does not show. The tool argument is read after the
@@ -124,6 +125,12 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
             bad.append("%s/%s holds %s and builds in the step %r" % (key[0], jn, ", ".join(w), comp[0]))
         if w and unresolved:
             bad.append("%s/%s holds %s and runs the line %r in the step %r: a credential job may name install-scanner.sh only as exactly `bash bin/install-scanner.sh TOOL` (TOOL a literal word, not govulncheck) or a listed exception" % (key[0], jn, ", ".join(w), unresolved[0][1], unresolved[0][0]))
+        # the release chain's build-side workflows (Build, Rebuild, Check): a caller grants them no credential, and every job declares its own permissions (undeclared, it would inherit the caller's)
+        if os.path.basename(f) in BUILD_SIDE_FILES and j.get("permissions", d.get("permissions")) is None:
+            bad.append("%s/%s declares no permissions (neither the job nor the workflow): a build-side job would inherit its caller's, credentials included" % (key[0], jn))
+        callee = os.path.basename(str(j.get("uses") or ""))
+        if str(j.get("uses") or "").startswith("./.github/workflows/") and callee in BUILD_SIDE_FILES and w:
+            bad.append("%s/%s calls the build-side workflow %s and holds %s: only Sign's calls hold an identity token" % (key[0], jn, callee, ", ".join(w)))
         # a job that records a step with bin/witnessed-local.sh (Build, Rebuild, Check: the throwaway-key Witness records, owner Oct 22) is a build-side job whatever its scripts hide: no credential, and never the keyless bin/witnessed.sh
         stext = "\n".join(steps_text(s_) for s_ in (j.get("steps") or []))
         stext = re.sub(r"['\"\\]", "", re.sub(r"\\\n[ \t]*", "", stext))   # quotes, backslashes and continuations are not part of the word the shell runs (bin/witnessed-"local".sh is witnessed-local.sh)
@@ -134,7 +141,7 @@ for f in sorted(glob.glob(os.path.join(wf, "*.y*ml"))):
                 bad.append("%s/%s records its steps with witnessed-local.sh (a build-side job) and also runs the keyless witnessed.sh: a build-side job signs with the throwaway key only" % (key[0], jn))
         if w:   # fail closed: a credential job never names a script through a variable: a path word with a variable or a substitution after bash/sh/source/./, a variable assigned a path under bin/, or an env value under bin/ (any of them could hide the wrapper or a build from the rules above)
             for s_ in (j.get("steps") or []):
-                for l_ in steps_text(s_).split("\n"):
+                for l_ in re.sub(r"\\\n[ \t]*", "", steps_text(s_)).split("\n"):   # a backslash-newline continuation is one logical line
                     n_ = re.sub(r"['\"\\]", "", l_)
                     n_ = re.sub(r"\$\{?(?:RUNNER_TEMP|GITHUB_WORKSPACE)\}?", "/runner", n_)   # the runner's own fixed directories are not a hidden path
                     if re.search(r"\bbin/[^\s;&|)]*[$`]", n_) or re.search(r"(?:(?<![\w./-])(?:bash|sh|source|exec)\s+|(?<![\w.])\.\s+|(?<![\w.])\./)[^\s;&|)]*[$`]", n_) or re.search(r"\b\w+=[^\s$(`]*\bbin/", n_) or re.search(r"^\s*\w+:\s+\S*\bbin/", n_):
@@ -339,6 +346,17 @@ mwant=bad
 want_msg="install-scanner.sh"
 mutate "the audit job installs govulncheck through install-scanner.sh in the Go toolchain step" '
 edit("auditor.yml", lambda s: s.replace("          ./bin/install-scanner.sh go \\\n", "          ./bin/install-scanner.sh govulncheck \\\n", 1))'
+# round 5 (reviewers A and B): a continuation split inside a variable-built path; a caller that grants a credential to a build-side workflow; a build-side job that declares no permissions (it would inherit its caller's)
+want_msg="names a script path under bin/ through a variable"
+mutate "a credential job splits a variable-built wrapper path over a backslash-newline continuation" '
+edit("release.yml", lambda s: re.sub(r"(  decide:.*?    steps:\n)", lambda m: m.group(1) + "      - name: mutant\n        run: |\n          k=local\n          bash bin/witnessed-\\\n          ${k}.sh build x.sh\n", s, count=1, flags=re.S))'
+want_msg="calls the build-side workflow"
+mutate "release.yml rebuild (a caller of stage-reproducibility.yml) is granted id-token: write" '
+edit("release.yml", lambda s: re.sub(r"(  rebuild:\n    needs: \[build, sign\]\n    permissions:\n      contents: read\n)", lambda m: m.group(1) + "      id-token: write\n", s, count=1))'
+want_msg="declares no permissions"
+mutate "stage-reproducibility.yml rapk declares no permissions and neither does the workflow (it would inherit its caller's)" '
+edit("stage-reproducibility.yml", lambda s: s.replace("permissions:\n  contents: read\njobs:", "jobs:", 1))
+edit("stage-reproducibility.yml", lambda s: re.sub(r"(\n  rapk:\n.*?)    permissions:\n      contents: read\n", lambda m: m.group(1), s, count=1, flags=re.S))'
 want_msg=""
 # AC2: a second build in one job
 mutate "a second build step in one job (ci.yml gosec)" '
