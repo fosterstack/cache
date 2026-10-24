@@ -347,8 +347,12 @@ jobs:
           # the report lint renders with GitHub's own cmark-gfm (hash-pinned, test-only)
           python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/test-requirements.txt
           bash .github/agent/tests/auditor-parser-tests.sh
-          bash .github/agent/tests/auditor-matrix-test.sh
-          bash .github/agent/tests/auditor-labels-test.sh
+
+      - name: auditor requirements-matrix suite (REQ-CI-005, a counting step)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json auditor-matrix-test.sh .github/agent/tests/auditor-matrix-test.sh
+
+      - name: auditor report-label suite (REQ-CI-005, a counting step)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json auditor-labels-test.sh .github/agent/tests/auditor-labels-test.sh
 
       # The scanner-panel probe's request cap against the PINNED SDKs (Codex #155 phase-2 r2): both re-send once after a
       # 401 outside max_retries, so the cap is proven on the real SDK code, offline (a mock transport serves every request).
@@ -634,10 +638,11 @@ jobs:
       - name: PR-gate image verdict regressions (row 57 — counts, did-not-run, VEX coverage)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json inspector-gate-test.sh bin/inspector-gate-test.sh
 
+      - name: install the pinned grype for the VEX product-scope regressions and the suites after them (shard 4 keeps it with its consumers)
+        run: ./bin/install-scanner.sh grype
+
       - name: VEX product-scope regressions (audit R01 — exception bound to the FosterStack product)
-        run: |
-          ./bin/install-scanner.sh grype
-          bash bin/vex-scope-test.sh
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-scope-test.sh bin/vex-scope-test.sh
 
       - name: VEX applied by both gate scanners (REQ-REL-004-AC1 — covered suppressed, uncovered blocks, zero packages fails)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-both-scanners-test.sh bin/vex-both-scanners-test.sh
@@ -652,7 +657,10 @@ jobs:
         run: bash bin/scout-older-versions-test.sh
 
       - name: suite guard (no tracked test file is empty; the guard's own regressions)
-        run: bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh
+        run: bash bin/suite-guard.sh files
+
+      - name: the suite guard's own regressions (REQ-CI-005, a counting step)
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json suite-guard-test.sh bin/suite-guard-test.sh
 
       - name: suite floors only rise (against the merge base on a pull request)
         if: ${{ github.base_ref != '' }}
@@ -668,9 +676,6 @@ jobs:
 
       - name: "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-build-wiring-test.sh bin/chain-build-wiring-test.sh
-
-      - name: "the final image index that carries our OpenVEX for Docker Scout: the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)"
-        run: bash bin/vex-index-test.sh </dev/null
 
       - name: "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)"
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json chain-build-admit-test.sh bin/chain-build-admit-test.sh
@@ -784,7 +789,7 @@ jobs:
       - name: the scanner panel's judge — counts and quorum, the VEX, seen by N of M, unique findings audited (scanner-panel rules 3-9)
         run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json panel-test.sh bin/panel-test.sh
       - name: the final image index that carries our OpenVEX for Docker Scout — the tool and its sidecar, offline (REQ-REL-010-AC1, AC3)
-        run: bash bin/vex-index-test.sh </dev/null
+        run: python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json vex-index-test.sh bin/vex-index-test.sh </dev/null
       - name: the auditor's fixtures and tests follow the panel's image set — the unit and matrix suites pass with VARIANTS both ways (main's six images, chain-v030's four)
         run: bash .github/agent/tests/auditor-variants-test.sh
       - name: the automatic patch-release decision — fix-class commits, next patch, one a day, notes, floating tags (owner Oct 2)
