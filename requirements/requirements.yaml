@@ -4745,20 +4745,19 @@ requirements:
     notes: >
       A counting step is `python3 -I bin/suite-guard-run.py run test-evidence/suite-floors.json NAME PATH` (NAME the file name of PATH), which runs the suite
       once, shows its output as `bash PATH` would, requires exit 0 and a case count at or above the floor. The pin-wiring judge reads such a line back to the plain
-      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a counting step of an
-      unconditional job runs, runs the rest, and fails on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
+      `bash PATH` line it stands for, so the exact-step checks are the same in both forms. `suite-guard-run.py all` skips the suites a trusted counting step runs (one line, the whole step, in a plain job), runs the rest, and fails on a counting step that names an unfloored suite, a floors file other than the committed one, or a NAME that
       is not the file name of its PATH. The floors only rise as before.
     acceptance_criteria:
       - id: REQ-CI-005-AC1
-        given: "a suite named in the floors file and a counting step of an unconditional job of ci.yml that runs it"
+        given: "a suite named in the floors file and a counting step that is the whole run text of a step with no key but name and run, in a job with no key but name, runs-on and steps (so no if, needs, strategy or continue-on-error can skip it), whose PATH is the one file of that name"
         when: "the floor check of the workflow run (`suite-guard-run.py all`) runs"
-        then: "the suite is not run again by it; the suite ran once, in its own step, which required exit 0 and a case count at or above its floor; a suite that no unconditional counting step runs is still run by `all`"
+        then: "the suite is not run again by it; the suite ran once, in its own step, which required exit 0 and a case count at or above its floor; any other suite is still run by `all`, and a counting line that is not the whole of its step is refused"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC2
         given: "a counting step in ci.yml"
-        when: "it names an unfloored suite, a floors file other than test-evidence/suite-floors.json, a NAME that is not the file name of its PATH, or a form other than `run FLOORS NAME PATH`"
-        then: "`suite-guard-run.py all` fails, and the pin-wiring judge treats the line as unknown run text and refuses it"
+        when: "it names an unfloored suite, a floors file other than test-evidence/suite-floors.json, a NAME that is not the file name of its PATH, a PATH that is not the one file of that name, an env prefix other than CHAIN_TEST_REQUIRE_NETCUT=1, or a form other than `run FLOORS NAME PATH`"
+        then: "`suite-guard-run.py all` fails, and the pin-wiring judge (which reads the floors file of the judged commit) treats the line as unknown run text and refuses it"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-CI-005-AC3

@@ -35,12 +35,13 @@ def guard(*args):
 
 def cmd_run(floors, name, path, count_only):
     try:
-        if os.path.getsize(path) == 0 or not os.path.isfile(path):
+        if os.path.islink(path) or os.path.getsize(path) == 0 or not os.path.isfile(path):   # a symlink named for a suite is no suite (as `all` always held)
             raise OSError
     except OSError:
         print("suite-guard: suite %s: %s is empty or missing" % (name, path), file=sys.stderr)
         return 1
     with tempfile.NamedTemporaryFile("w+b", prefix="suite-guard-") as log:
+        sys.stdout.flush()      # the runner's own earlier lines come out before the suite's bytes
         proc = subprocess.Popen(["bash", path], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         for chunk in iter(lambda: proc.stdout.read1(65536), b""):   # the suite's own output stays in the step log as it would have under `bash PATH`
             log.write(chunk)
@@ -56,7 +57,7 @@ def cmd_run(floors, name, path, count_only):
     if frc != 0:
         print(msg, file=sys.stderr)
         return 1
-    print("suite-guard: %s: count %s rc=%d" % (name, n, rc))
+    print("suite-guard: %s: count %s rc=%d" % (name, n, rc)); sys.stdout.flush()
     if not count_only and rc != 0:
         print("suite-guard: suite %s exited %d" % (name, rc), file=sys.stderr)
         return 1
@@ -77,14 +78,18 @@ def suite_names(floors):
     return list(d)
 
 
-COUNTING = re.compile(r"(?:[A-Z][A-Z0-9_]*=[A-Za-z0-9_.-]+ )*python3 -I bin/suite-guard-run\.py run (\S+) (\S+) (\S+)(?: </dev/null)?")
+COUNTING = re.compile(r"(?:CHAIN_TEST_REQUIRE_NETCUT=1 )?python3 -I bin/suite-guard-run\.py run (\S+) (\S+) (\S+)(?: </dev/null)?")   # the one env prefix the floored steps of ci.yml carry; any other is not a counting step
 
 
 def counting_steps(root, floors, names):
-    """The suite names that an unconditional counting step of ROOT/.github/workflows/ci.yml runs (REQ-CI-005); a malformed one is a failure (the list, the bad count)."""
+    """{suite name: PATH} of the counting steps of ROOT/.github/workflows/ci.yml that are trusted (REQ-CI-005), and the number of malformed ones.
+    A counting step is trusted only if it is the WHOLE run text of its step (one line: no here-document, `exit` or branch around it), the step has no key but name and run,
+    and its job has no key but name, runs-on and steps (no if, needs, strategy, container or continue-on-error that could skip it): a line that fails any of this is not
+    trusted and its suite stays in the residual run of `all`. A line that mentions the runner's `run` form inside a longer step, or a counting step that names an
+    unfloored suite, another floors file or a NAME that is not the file name of its PATH, is malformed and fails `all`."""
     wf = os.path.join(root, ".github", "workflows", "ci.yml")
     if not os.path.isfile(wf):
-        return set(), 0
+        return {}, 0
     try:
         import yaml
         with open(wf) as f:
@@ -92,27 +97,33 @@ def counting_steps(root, floors, names):
         jobs = doc["jobs"]
     except Exception as e:
         die("%s cannot be read as a workflow (%s)" % (wf, e))
-    got, bad = set(), 0
+    got, bad = {}, 0
     for jname, job in jobs.items():
         if not isinstance(job, dict) or not isinstance(job.get("steps"), list):
             continue
+        plain_job = set(job) <= {"name", "runs-on", "steps"}
         for st in job["steps"]:
-            for line in str((st or {}).get("run") or "").split("\n"):
+            if not isinstance(st, dict) or not isinstance(st.get("run"), str):
+                continue
+            lines = [l for l in st["run"].split("\n") if l.strip()]
+            for line in lines:
+                if "suite-guard-run.py run" not in line or line.lstrip().startswith("#"):
+                    continue
                 m = COUNTING.fullmatch(line.strip())
                 if not m:
-                    if "suite-guard-run.py run" in line and not line.lstrip().startswith("#"):
-                        print("suite-guard: job %s: the line %r runs the suite runner in a form that is not `run FLOORS NAME PATH`" % (jname, line.strip()), file=sys.stderr)
-                        bad = 1
+                    print("suite-guard: job %s: the line %r runs the suite runner in a form that is not `run FLOORS NAME PATH`" % (jname, line.strip()), file=sys.stderr)
+                    bad = 1
                     continue
                 fl, name, path = m.groups()
                 if fl != floors or name not in names or os.path.basename(path) != name:
                     print("suite-guard: job %s: the counting step %r names a floors file other than %s, an unfloored suite, or a NAME that is not the file name of its PATH" % (jname, line.strip(), floors), file=sys.stderr)
                     bad = 1
                     continue
-                # a suite that a conditional step or job may skip is not counted: it stays in the residual run below
-                if job.get("if") is not None or st.get("if") is not None or job.get("continue-on-error") is not None or st.get("continue-on-error") is not None:
-                    continue
-                got.add(name)
+                if len(lines) != 1:
+                    print("suite-guard: job %s: the counting line %r is not the whole of its step" % (jname, line.strip()), file=sys.stderr)
+                    bad = 1
+                elif plain_job and set(st) <= {"name", "run"}:
+                    got[name] = os.path.normpath(path)
     return got, bad
 
 
@@ -130,8 +141,6 @@ def cmd_all(floors, root, count_only):
     counted, cbad = counting_steps(root, floors, set(names))
     bad = cbad
     for s in names:
-        if s in counted:
-            continue   # run, counted and held to its floor and exit 0 by its own step (REQ-CI-005-AC1)
         found = []
         for dp, dn, fn in os.walk(root):
             dn[:] = [d for d in dn if d != ".git"]
@@ -148,6 +157,13 @@ def cmd_all(floors, root, count_only):
         if not re.fullmatch(r"[A-Za-z0-9._+@/-]+", found[0]):
             print("suite-guard: the suite %s is at %r, which is not a plain path; not run" % (s, found[0]), file=sys.stderr)
             bad = 1
+            continue
+        if s in counted:   # run, counted and held to its floor and exit 0 by its own step (REQ-CI-005-AC1), provided that step runs THE file this search found
+            if os.path.normpath(os.path.relpath(found[0], root)) != counted[s]:
+                print("suite-guard: the counting step of %s runs %s, not %s (the one file of that name under %s)" % (s, counted[s], os.path.relpath(found[0], root), root), file=sys.stderr)
+                bad = 1
+            else:
+                print("suite-guard: %s: counted by its own step" % s)
             continue
         if cmd_run(floors, s, found[0], count_only) != 0:
             bad = 1
